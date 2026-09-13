@@ -76,8 +76,8 @@ describe('criterion 8: a remote session composes no session root', () => {
     const rec = path.join(await mkdtemp('cc-wire-'), 'frames.jsonl');
     const box = await fs.realpath(await mkdtemp('cc-remote-'));
     const tree = await seedRepo(path.join(box, 'app'));
-    // The config surface the walk used to pull, all of it present on the system
-    // so its absence locally is a fact about cc rather than about the fixture.
+    // The config surface a walk would pull, all of it present on the system so
+    // its absence locally is a fact about cc rather than about the fixture.
     await fs.mkdir(path.join(tree, '.claude', 'skills', 'deploy'), { recursive: true });
     await fs.writeFile(path.join(tree, '.claude', 'settings.json'), '{}\n');
     await fs.writeFile(path.join(tree, '.claude', 'skills', 'deploy', 'SKILL.md'), '# deploy\n');

@@ -198,12 +198,12 @@ describe('the four file-tool refusals', () => {
       ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
   });
 
-  // A2b — PINS the OTHER uniform rule, and it replaces a BAN that used to sit
-  // on the host-pinned wording. Every one of the four points at Bash, and every
-  // one names the machine Bash answers from. The host pin was the exception —
-  // a dead end that never mentioned Bash — and it is not any more: the dead end
-  // bought no concealment (a worker reaches the system's home through `ls ~/`
-  // regardless) while costing the agent its next move.
+  // A2b — PINS the OTHER uniform rule, and there is no BAN on the host-pinned
+  // wording. Every one of the four points at Bash, and every one names the
+  // machine Bash answers from — the host pin included, which is not an
+  // exception. A dead end there that never mentions Bash buys no concealment
+  // (a worker reaches the system's home through `ls ~/` regardless) while
+  // costing the agent its next move.
   test('A2b: every refusal points at Bash and names the machine Bash answers from', () => {
     const { classify, input } = fixture();
     const seen = new Set();
@@ -224,10 +224,10 @@ describe('the four file-tool refusals', () => {
   // the very sentence it was added to forbid.
   test('the Bash-pointer rule rejects a wording that drops the machine', () => {
     const intact = fixture().classify('/home/wk/.claude/settings.json').reason;
-    // THE MUTANTS HAVE TO DROP THE MACHINE, not merely reword around it. A
-    // first cut of this test replaced only the opening clause and left
-    // `'prod-box'` standing later in the same sentence — the rule passed it,
-    // correctly, and the weak mutant was the defect. Sentence-level surgery.
+    // THE MUTANTS HAVE TO DROP THE MACHINE, not merely reword around it.
+    // Replacing only the opening clause leaves `'prod-box'` standing later in
+    // the same sentence — the rule passes that, correctly, and the weak mutant
+    // is the defect. Sentence-level surgery.
     const sentences = intact.split(/(?<=\.)\s+/);
     const bashAt = sentences.findIndex(x => /\bBash\b/.test(x));
     assert.ok(bashAt >= 0, intact);
@@ -354,13 +354,13 @@ describe('the four file-tool refusals', () => {
     }
   });
 
-  // A4 — PINS the host-pin wording, and the assertion that matters is now the
-  // REMOTE QUALIFIER rather than the ban that used to be here.
+  // A4 — PINS the host-pin wording, and the assertion that matters is the
+  // REMOTE QUALIFIER, not a ban.
   //
-  // The ban is gone because the dead end it enforced prevented nothing: a
+  // There is no ban because the dead end one would enforce prevents nothing: a
   // worker reaches the system's `~/` through Bash whether the sentence mentions
-  // it or not. What replaces it is the property that makes naming Bash safe
-  // here — the wording states which machine Bash answers from, so an agent
+  // it or not. What stands in its place is the property that makes naming Bash
+  // safe here — the wording states which machine Bash answers from, so an agent
   // reading the system's copy of a cc-shaped path cannot take it for cc's.
   //
   // Reusing `excludedRefusal` for this class still fails: that wording names no
@@ -777,12 +777,12 @@ describe('the fault refusals — divergence and over-cap', () => {
     assert.throws(() => neverClaimsAbsence(`${reason} cc could not find it.`), /AssertionError/,
       'the absence rule accepted a wording that claims the file was not found');
     // …AND THE FILE-NAME CLAUSE, which needs a RULE of its own to be
-    // falsifiable at all. A first cut asserted that the wording with every
-    // occurrence of the path replaced no longer contains the path — a global
-    // replace cannot leave a match behind, so it passed by construction
-    // whatever `divergedRefusal` produced, while claiming to verify the
-    // clause. The rule below is a real function and each mutant is a real
-    // transformation of the shipped sentence.
+    // falsifiable at all. Asserting that the wording with every occurrence of
+    // the path replaced no longer contains the path passes by construction — a
+    // global replace cannot leave a match behind — whatever `divergedRefusal`
+    // produces, while claiming to verify the clause. The rule below is a real
+    // function and each mutant is a real transformation of the shipped
+    // sentence.
     for (const m of [namesTheFile.bind(null, dropAll(reason, P), P),
       // …and the near-miss: the DIRECTORY named but not the file, which is
       // what a wording built from a prefix would produce and which leaves a
@@ -846,11 +846,10 @@ describe('the fault refusals — divergence and over-cap', () => {
       'the deny classes the table produces and the ones ToolDenyClass declares disagree');
 
     // AND A FAULT-DRIVEN DENIAL CARRIES NO `class` — ASSERTED ON THE PRODUCT'S
-    // OWN RETURN VALUE. A first cut asserted it on an object literal the test
-    // itself had just built, which is definitionally true whatever
-    // `#classifyFile` returns: a mutant ADDING `class` to that return survived
-    // it, and the mutation harness does not run the typecheck that would have
-    // caught it either.
+    // OWN RETURN VALUE. Asserting it on an object literal the test itself built
+    // is definitionally true whatever `#classifyFile` returns: a mutant ADDING
+    // `class` to that return survives it, and the mutation harness does not run
+    // the typecheck that would catch it either.
     const d = await redirectWith(DIVERGED).preToolUse('Write', { file_path: P });
     assert.equal(d.decision, 'deny');
     assert.match(d.reason, /have diverged/, 'this is not the fault denial');

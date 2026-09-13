@@ -123,12 +123,12 @@ export function claudeProjectsRoot(): string {
 export function encodeCwd(abs: string): string {
   // Mirror Claude Code's own encoding: every char that isn't
   // alphanumeric or a hyphen becomes `-`. This includes underscores!
-  // Previously we kept underscores, which silently broke any project
-  // path containing `_` (notably the worktree dirs we create at
+  // Keeping underscores silently breaks any project path containing
+  // `_` (notably the worktree dirs we create at
   // `<project>_worktree_<id>`): the orchestrator's metadata appends
-  // landed at `<…>_worktree_<…>` while real claude wrote the actual
+  // land at `<…>_worktree_<…>` while real claude writes the actual
   // session to `<…>-worktree-<…>`. Two separate dirs, both half-empty,
-  // and resume / history-replay both broke.
+  // and resume / history-replay both broken.
   return abs.replace(/[^A-Za-z0-9-]/g, '-');
 }
 

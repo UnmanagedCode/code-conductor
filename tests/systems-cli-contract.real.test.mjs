@@ -100,8 +100,8 @@ t('PostToolUse still carries tool_response, and additionalContext still reaches 
 // fixed.
 //
 // THIS CASE RUNS *WITH* `deny`, so on its own it cannot tell the profile's
-// absence from the denial's effect — an earlier wording here claimed
-// deny-independence and this case never measured it. The DENY-OFF control lives
+// absence from the denial's effect, and must not be worded as though it did:
+// it does not measure deny-independence. The DENY-OFF control lives
 // in the case below, which is the same probe with `permissions` omitted; read
 // the two together.
 //

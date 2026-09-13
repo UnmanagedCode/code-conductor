@@ -172,10 +172,10 @@ describe('a session on a project on a system', () => {
   });
 
   // ── T2 ──────────────────────────────────────────────────────────────
-  // PINS: a WIDER mirror root does not move the session. It used to — the cwd
-  // was the local image root plus the project's offset inside it, so the
-  // advertisement decided the answer. The cwd is now the project's own path,
-  // which no advertisement addresses, and the locator has one candidate.
+  // PINS: a WIDER mirror root does not move the session. A cwd of the local
+  // image root plus the project's offset inside it would let the advertisement
+  // decide the answer; the cwd is the project's own path, which no
+  // advertisement addresses, and the locator has one candidate.
   test('T2: a wider mirror root leaves the session at the project path, and it still resolves', async () => {
     const w = await wideSystem(path.join('nest', 'app'));
     assert.equal((await adoptProject('app', w.tree, { system: w.id })).ok, true);
@@ -280,9 +280,9 @@ describe('a session on a project on a system', () => {
     assert.equal(g.body.data.short.isStale, true);
     assert.equal(g.body.data.medium.isStale, false);
 
-    // POST: the site whose cwd used to come from getWorktree/getProject. It has
-    // to reach the transcript to count anything, so `messageCount === 2` is the
-    // discriminating assertion — the remote tree path yields a throw, not a 2.
+    // POST: the site whose cwd must not come from getWorktree/getProject. It
+    // has to reach the transcript to count anything, so `messageCount === 2` is
+    // the discriminating assertion — the remote tree path yields a throw, not a 2.
     const origBin = process.env.CLAUDE_BIN;
     process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
     try {
@@ -354,12 +354,10 @@ describe('a session on a project on a system', () => {
     assert.ok(t2.events.length >= 1, `expected >= 1 event, got ${t2.events.length}`);
 
     // (d) A ROW WHOSE PROVIDER ANSWERS THE HANDSHAKE AND THEN DIES ON ITS FIRST
-    // OPERATION, and this arm CHANGED SHAPE with the geometry. It used to refuse
-    // 502 at create, because composing the session root was the first thing that
-    // touched the box. Nothing touches it at create any more — there is no
-    // session root to compose and the mirror advertisement is capability-gated —
-    // so the create SUCCEEDS and the box's death surfaces at the first operation
-    // that needs it. The read still works either way, which is what this arm has
+    // OPERATION. NOTHING TOUCHES THE BOX AT CREATE — there is no session root
+    // to compose and the mirror advertisement is capability-gated — so the
+    // create SUCCEEDS rather than refusing 502, and the box's death surfaces at
+    // the first operation that needs it. The read still works either way, which is what this arm has
     // always really been about.
     const dead = await bindRemoteSystem({ id: 'deadbox' });
     const deadTree = await seedRepo(path.join(dead.root, 'gamma'));
@@ -455,8 +453,8 @@ describe('a session on a project on a system', () => {
 
     const hit = await findSessionLocation(s.sessionId);
     assert.equal(hit.cwd, s.cwd);
-    // And that cwd IS the project's registered path — the two used to differ
-    // (the session ran in a local image of the tree), and their agreeing is
+    // And that cwd IS the project's registered path — the two differ only where
+    // the session runs in a local image of the tree, so their agreeing is
     // criterion 8 read off the locator.
     assert.equal(hit.cwd, (await getProject('app')).path);
   });

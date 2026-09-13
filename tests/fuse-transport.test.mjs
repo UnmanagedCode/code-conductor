@@ -221,9 +221,9 @@ describe('systemSource — the remote source over a real System handle', () => {
   // A CONTROL, NOT A CAP TEST, and labelled as one after review: no
   // implementation issues a `readFile` from a `stat` on any path, so the frame
   // assertion below holds with the cap check deleted, moved after the read, or
-  // never written. **T7b is where the cap is pinned.** Both kills this case
-  // used to claim were false, and a claim that cannot fail is worse than an
-  // absent one because it is counted.
+  // never written. **T7b is where the cap is pinned.** This case claims no kill
+  // of its own, because a claim that cannot fail is worse than an absent one:
+  // it is counted.
   test('T7 control — a stat reports an over-cap size and transfers nothing by itself', async () => {
     const box = await fs.realpath(await mkdtemp('cc-transport-'));
     const log = path.join(box, 'frames.log');
@@ -761,11 +761,11 @@ describe("the write path — mode, faults and the double reconcile", () => {
         'the fixture did not materialise the target at 0600, so a 0755 below would prove nothing');
 
       // The worker replaces the claimed path with a symlink to the other file,
-      // BY RENAME. `rm` then `symlink` is what a first cut did and it made this
-      // case VACUOUS: the freed inode number was handed straight back to the
-      // new symlink, the recorded inode matched, and the restore never ran —
-      // a green that exercised nothing. A rename holds both inodes at once, so
-      // the new one cannot be the old one.
+      // BY RENAME. `rm` then `symlink` would make this case VACUOUS: the freed
+      // inode number is handed straight back to the new symlink, the recorded
+      // inode matches, and the restore never runs — a green that exercises
+      // nothing. A rename holds both inodes at once, so the new one cannot be
+      // the old one.
       const dest = path.join(mirror, p);
       const wasIno = (await fs.lstat(dest)).ino;
       const tmpLink = `${dest}.link`;
@@ -929,11 +929,11 @@ describe("the write path — mode, faults and the double reconcile", () => {
       await fs.writeFile(path.join(mirror, p2), 'WRITTEN THROUGH THE UNION');
       // THE DAEMON'S OWN PAIR, in the daemon's own order: `flush` carries
       // FOR_WRITE (union.c `pt_flush`) and `release` carries RELEASE_ONLY once
-      // that flush has landed. A first cut sent RELEASE_ONLY first and a
-      // flags-0 frame second, which is not merely mislabelled — it drops the
-      // claim before pushing anything, so the push AND the adoption happened on
-      // an UNCLAIMED flags-0 DIRTY, a different route from the `stillOpen`
-      // flush route this arm exists to drive.
+      // that flush has landed. Sending RELEASE_ONLY first and a flags-0 frame
+      // second is not merely mislabelled — it drops the claim before pushing
+      // anything, so the push AND the adoption happen on an UNCLAIMED flags-0
+      // DIRTY, a different route from the `stillOpen` flush route this arm
+      // exists to drive.
       assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p2)).status, CCU_STATUS.READY);
       assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY, p2)).status, CCU_STATUS.READY);
       const afterPush = await reads();

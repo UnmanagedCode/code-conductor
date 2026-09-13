@@ -167,10 +167,10 @@ describe('remoteId in the project record', () => {
 
   // PINS A CONSEQUENCE OF THE FUSE GEOMETRY, and it is a NARROWING: the same
   // absolute path on two targets of one system is still two different trees,
-  // and adopting both used to be legal. It no longer is, because the CLI's
-  // working directory is now that path on both — so the two would name ONE
-  // transcript directory and their sessions would interleave in it, with
-  // findSessionLocation unable to tell them apart.
+  // and adopting both is REFUSED, because the CLI's working directory is that
+  // path on both — so the two would name ONE transcript directory and their
+  // sessions would interleave in it, with findSessionLocation unable to tell
+  // them apart.
   //
   // The refusal is the honest answer rather than the harm; the reason names the
   // holder so the operator can pick another path on one of the two targets.

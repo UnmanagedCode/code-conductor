@@ -413,7 +413,8 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
 
   // PINS: a record whose bootstrap never finished mounting still names the pids
   // it had already started, and teardown acts on them. This is the shape a
-  // failed launch leaves, and the one that used to signal nothing at all.
+  // failed launch leaves, and the one a teardown keyed on a finished mount
+  // signals nothing at all for.
   test('a stage:starting record is still torn down', async () => {
     const { rundir, record } = await seedRun({ stage: 'starting', minor: '', mountedAt: 0 });
     const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: [] });
@@ -857,8 +858,8 @@ describe('the tier table', () => {
 // ── FROM A LOGGED DENIAL TO A PIN ENTRY ────────────────────────────────────
 //
 // The daemon's event log is the instrument the pin list is DERIVED from, and
-// `runTeardown` used to `rm -rf` it with the run directory. These pin the
-// harvest, the suggestion and the wording.
+// `runTeardown` `rm -rf`s it with the run directory — so it has to be harvested
+// first. These pin the harvest, the suggestion and the wording.
 describe('the policy event harvest', () => {
   let prev, storeRoot;
   before(async () => {
@@ -1241,9 +1242,9 @@ describe('the policy event harvest', () => {
   });
 
   // PINS: `_awaitFuseMount` reads the event log BEFORE `fuse.teardown()`, which
-  // deletes it — the case the owner named. A spawn that died of a missing pin
-  // used to carry stderr alone, and stderr says "cannot open shared object file"
-  // without saying which array to add the object to.
+  // deletes it. Without that read a spawn that died of a missing pin carries
+  // stderr alone, and stderr says "cannot open shared object file" without
+  // saying which array to add the object to.
   // DIES UNDER: moving the read after the teardown; dropping the interpolation.
   test('a failed mount names the refused paths and the array to add them to', async () => {
     const rundir = await mkdtemp('cc-fuse-awaitmount-');
@@ -1696,7 +1697,7 @@ describe('the configuration-time containment refusal', () => {
   // THE CONSUMER IS ONLY HALF THE SWITCH, and this arm cannot see the other:
   // it drives `buildFusePlan`, so it is green whatever `wrapLaunch` and
   // bootstrap.sh do with the answer. The producer end — where an inherited
-  // value used to survive an untraced launch — is pinned in the `wrapLaunch`
+  // value can survive an untraced launch — is pinned in the `wrapLaunch`
   // describe above.
   //
   // Mutation it must die under: making `tracePath` unconditional; inverting the
@@ -1989,9 +1990,10 @@ describe('the clean verdict comes from namespace membership, not the recorded se
   });
 
   // PINS B2: the intent-only path — a bootstrap that died, or is still
-  // mid-handshake — has processes behind it, and used to signal NOBODY and then
-  // delete the directory. The handle that survives having no record is the
-  // marker the bootstrap's own execve put in their environments.
+  // mid-handshake — has processes behind it, so a teardown reading only the
+  // record signals NOBODY and then deletes the directory. The handle when there
+  // is no record is the marker the bootstrap's own execve put in their
+  // environments.
   test('an intent-only run directory reclaims its processes by marker', async () => {
     const { rundir } = await seedRun({}, { intentOnly: true });
     const BOOTSTRAP = 6001, ANCHOR2 = 6002;
@@ -2137,14 +2139,14 @@ describe('FuseSession lifecycle', () => {
   });
 
   // PINS THAT prepare() AND teardown() MAY NOT INTERLEAVE, and what the
-  // interleaving used to cost was not a socket. `_mutating` covers
-  // rewind/fork/prune only and the instance is in `byId` before `launch()`
-  // runs, so a `kill()` can reach `teardown()` while `launch()` is inside
-  // `prepare()`. A teardown that latched during prepare's
-  // `await ControlServer.listen()` left prepare to assign `#control`
-  // afterwards — latched WITH A LIVE SERVER — and the final teardown then
-  // early-returned on the latch, so the state machine never ran and the mount,
-  // the root daemon and the run directory survived the session.
+  // interleaving costs is not a socket. `_mutating` covers rewind/fork/prune
+  // only and the instance is in `byId` before `launch()` runs, so a `kill()`
+  // can reach `teardown()` while `launch()` is inside `prepare()`. A teardown
+  // that latches during prepare's `await ControlServer.listen()` leaves prepare
+  // to assign `#control` afterwards — latched WITH A LIVE SERVER — and the
+  // final teardown then early-returns on the latch, so the state machine never
+  // runs and the mount, the root daemon and the run directory survive the
+  // session.
   test('a teardown that races a prepare does not swallow the next teardown', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const d = fakeDriver();

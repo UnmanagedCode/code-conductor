@@ -98,10 +98,10 @@ describe('a provider that advertises no mirror', () => {
     assert.deepEqual(frames.filter(f => f.type === 'describeRemote'), []);
   });
 
-  // PINS THE ABSENT-BEHAVIOUR, which survived the geometry and CHANGED MEANING:
-  // it used to mean "offset zero, the CLI's cwd IS the image root". It now means
-  // THE NARROWEST MIRROR ROOT — the project's own path — which is the remote
-  // tier's boundary, with nothing excluded.
+  // PINS THE ABSENT-BEHAVIOUR: no advertisement means THE NARROWEST MIRROR ROOT
+  // — the project's own path — which is the remote tier's boundary, with
+  // nothing excluded. It does NOT mean "offset zero, the CLI's cwd IS the image
+  // root"; reading it that way is what the geometry removed.
   test('no advertisement means the narrowest mirror root: the project path', async () => {
     const tree = await seedTree(await fs.realpath(await mkdtemp('cc-remote-')));
     const remote = await bindRemoteSystem();

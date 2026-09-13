@@ -1763,8 +1763,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the only path every relaunch funnels through — rewind, respawn, resume
     // after a restart — so it is where a provider that changed its mirror root
     // or its excludes under a live session gets caught. Refusing is the whole
-    // response: the retarget machinery this replaces rebuilt a local image at a
-    // new geometry, and there is no local image any more.
+    // response: retargeting would mean rebuilding a local image at the new
+    // geometry, and there is no local image.
     const placement = this._redirectPlacement;
     const pinned = this._mirrorScope;
     if (placement && pinned) {

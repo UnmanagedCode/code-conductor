@@ -127,13 +127,13 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
   refusal. Evidence it works: in the §1 catalog, all ten
   `expectFail` ids were filled from an observed `--learn` pass and **all ten matched the adapter's
   ids verbatim**.
-- **A miss this doc's own drafting caught:** the README (and this file, before this pass) used to
-  name "three files that use `describe`" — `backend-spawn`, `backend-registry`, `mcp-inspect-tools`
-  — with "everything else is top-level" as the implied consequence. Re-derived
+- **The miss this rule exists to prevent:** naming "three files that use `describe`" —
+  `backend-spawn`, `backend-registry`, `mcp-inspect-tools` — with "everything else is top-level" as
+  the implied consequence is wrong. Re-derived
   (`rg -l '^describe\(' tests/*.test.mjs`), the real count is **eight**: those three plus
-  `mcp-instance-order`, `model-versions`, `session-backends`, `mcp-text-render`, `spawn-effort`. The
-  list had gone stale silently — nothing re-checks an enumeration like that — and "everything else is
-  top-level" is precisely the false reassurance rule 1 exists to prevent: it would have sent an agent
+  `mcp-instance-order`, `model-versions`, `session-backends`, `mcp-text-render`, `spawn-effort`. Such
+  a list goes stale silently — nothing re-checks an enumeration like that — and "everything else is
+  top-level" is precisely the false reassurance rule 1 exists to prevent: it sends an agent
   hand-constructing a leaf-only id against one of the five missing files, straight into the
   `IMPRECISE (extra-failures)` trap above. The fix is to never enumerate the files at all — check
   with the `rg` command above, which cannot go stale because it *is* the definition — which is why
@@ -332,10 +332,10 @@ marked otherwise.
   matches in-place's (131.2 s) exactly, and the spread inside the jobs=1 triplet exceeds the gap.
   Copy mode is not intrinsically faster; it pays 62 ms of `cpSync` instead of ms of snapshot/restore.
 - **Per-file narrow-scope sample** — a sample, not a swept bound; files that wait on drains/timeouts
-  sit at the top end. The bench-branch figures this section used to carry named a file,
-  `resume-manifest`, that never existed in this suite (no `tests/resume-manifest.test.mjs` ever
-  existed — `git log --all -- '*resume-manifest*'` returns nothing); the smallest real file by this
-  measure is `tests/manifest.test.mjs`. Re-measured directly (2026-08-12, `npm test -- tests/<file>.
+  sit at the top end. Do not re-cite bench-branch figures for this section without
+  re-measuring: they named a file, `resume-manifest`, that never existed in this suite (no
+  `tests/resume-manifest.test.mjs` — `git log --all -- '*resume-manifest*'` returns nothing); the
+  smallest real file by this measure is `tests/manifest.test.mjs`. Re-measured directly (2026-08-12, `npm test -- tests/<file>.
   test.mjs`, reading the runner's own `duration_ms`, host per this section's live session rather
   than §1's bench snapshot): `manifest` 0.34 s, `health` 0.75 s, `mcp-inspect-tools` 2.96 s,
   `instances` 3.48 s, `overage-action` 4.53 s. Same shape as the original claim (sub-second to

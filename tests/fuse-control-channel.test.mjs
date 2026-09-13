@@ -245,9 +245,10 @@ describe('the control channel, cc side', () => {
 
   // (a) THE WRITE WINDOW. Writes go straight into the mirror inode through the
   // worker's fd, so between the open's FETCH and the release's DIRTY there is
-  // NO FRAME AT THAT PATH — nothing for the per-path queue to order. Any STAT,
-  // second FETCH, or LIST of the parent used to re-shape the open inode to the
-  // source's size and destroy the unpushed bytes.
+  // NO FRAME AT THAT PATH — nothing for the per-path queue to order. Unless the
+  // claim holds them off, any STAT, second FETCH, or LIST of the parent
+  // re-shapes the open inode to the source's size and destroys the unpushed
+  // bytes.
   //
   // DIES UNDER: dropping the `#claimHolds` guard from `#stat`, from `#fetch`,
   // or the `#claimed.has(child)` skip from `#list`.
@@ -267,8 +268,8 @@ describe('the control channel, cc side', () => {
     const written = 'WORKER-WROTE-MUCH-MORE-THAN-THE-SOURCE-HAS\n';
     await fs.writeFile(inMirror(p), written);
 
-    // Every frame that used to clobber it, including a LIST of the parent,
-    // which is a DIFFERENT queue key and so never serialised against the write.
+    // Every frame that would clobber it, including a LIST of the parent, which
+    // is a DIFFERENT queue key and so never serialises against the write.
     assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
     assert.equal((await call(sock, CCU_OP.LIST, 0, '/srv/app')).status, CCU_STATUS.READY);
     assert.equal((await call(sock, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
@@ -286,10 +287,10 @@ describe('the control channel, cc side', () => {
     assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'SOURCE-CHANGED\n');
   });
 
-  // (b) A TRANSIENT READ ERROR IS NOT ABSENCE. `stat`/`list` used to swallow
-  // every errno into `null`; the handler then unmirrored a live entry and the
-  // reconcile deleted the SOURCE file. A single failed `readdir` took the whole
-  // directory with it.
+  // (b) A TRANSIENT READ ERROR IS NOT ABSENCE. `stat`/`list` swallowing every
+  // errno into `null` makes the handler unmirror a live entry, and the
+  // reconcile then deletes the SOURCE file. A single failed `readdir` takes the
+  // whole directory with it.
   //
   // DIES UNDER: `isSourceError` collapsed back into `null`, in `#stat`,
   // `#list` or `#fetch`.
@@ -331,9 +332,9 @@ describe('the control channel, cc side', () => {
 
   // (c) A RE-MATERIALISE BETWEEN THE MUTATION AND THE RECONCILE. The daemon
   // unlinks `mirror/p` and sends DIRTY; a STAT arriving between them is a
-  // separate queue entry and used to re-create `p` as a sparse zero-stub, which
-  // the reconcile then copied onto the source — `rm` reporting success, the
-  // dirent surviving, the bytes zeroed.
+  // separate queue entry and re-creates `p` as a sparse zero-stub, which the
+  // reconcile then copies onto the source — `rm` reporting success, the dirent
+  // surviving, the bytes zeroed.
   //
   // DIES UNDER: dropping the `#claimHolds` guard from `#stat`, or inferring the
   // removal from the mirror instead of reading the REMOVED bit.
@@ -430,11 +431,11 @@ describe('the control channel, cc side', () => {
 
 
     } finally {
-      // RELEASED HERE, NOT ONLY ON THE HAPPY PATH. Any failing assertion above
-      // used to skip `release()`, and `srv.close()` then awaited the drain of a
-      // handler that could never finish — so the test WEDGED instead of
-      // failing, and a mutation prover got TIMEOUT rather than a graded
-      // verdict. In CI that hangs rather than reds, which is worse than a
+      // RELEASED HERE, NOT ONLY ON THE HAPPY PATH. On the happy path alone any
+      // failing assertion above skips `release()`, and `srv.close()` then awaits
+      // the drain of a handler that can never finish — so the test WEDGES
+      // instead of failing, and a mutation prover gets TIMEOUT rather than a
+      // graded verdict. In CI that hangs rather than reds, which is worse than a
       // failure. A test whose cleanup depends on its own assertions passing
       // cannot fail cleanly.
       release();
