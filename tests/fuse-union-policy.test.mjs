@@ -705,6 +705,31 @@ describe('the compiled policy driver', { skip }, () => {
         `INVARIANT: pt_${op} gates the view derivation behind policy_cwd_component, so the `
         + 'floor costs a /proc read only on the cwd chain and not on every op');
 
+    // THE TWO OPEN SITES ARE GATED TOO, AND "IT IS ONLY AN OPEN" IS NOT A
+    // REASON TO SKIP THE GATE. `fd_view` has exactly ONE reader — pt_getattr's
+    // fi-arm floor — and that arm's own comment records it as a NO-OP TODAY,
+    // because libfuse passes `fi` to getattr only for regular files and the
+    // floor's S_ISDIR test is therefore false for every handle it passes. An
+    // ungated read here buys a field nothing reads and taxes `host`, the CLI's
+    // hottest tier, which was read-free before. Storing VIEW_CLI off the chain
+    // is harmless: policy_floor_applies cannot fire off the chain whatever the
+    // stored view says, so the two getattr arms still agree STRUCTURALLY —
+    // which is the property that arm's comment exists to protect.
+    //
+    // AND THE ARGUMENT IS PINNED PER SITE, WHICH THE FILE-WIDE BAN BELOW CANNOT
+    // DO: `fd_tier_set(fd, r.tier, 1, VIEW_CLI)` is round 1's exact defect
+    // shape — a hardcoded literal at the consumer that caused it — and a ban on
+    // the bare FIELD does not see a LITERAL. Every other consumer already has a
+    // per-site match; these two did not.
+    const open = bodyOfIn(src, 'open'), create = bodyOfIn(src, 'create');
+    for (const [name, body] of [['open', open], ['create', create]]) {
+      assert.match(body,
+        /fd_tier_set\(fd, r\.tier, [^,]+,\s*\n?\s*policy_cwd_component\(path\) \? route_view\(&r\) : VIEW_CLI\);/,
+        `INVARIANT: pt_${name} stores the view for the fi-arm floor, GATED on the chain compare — `
+        + 'an ungated route_view() here pays a /proc read per open at the CLI\'s hottest tier for a '
+        + 'field whose only reader is a no-op, and a hardcoded VIEW_CLI is round 1\'s defect');
+    }
+
     // AND NOTHING READS THE RAW FIELD OUTSIDE route() AND THE ACCESSOR.
     const outside = src.split('\n')
       .filter(l => /(?<![_\w])r\.view(?![_\w])/.test(l));
@@ -855,15 +880,16 @@ describe('the compiled policy driver', { skip }, () => {
     ]);
     const union = stripCComments(rawU), policy = stripCComments(rawP);
 
-    assert.match(policy, /static inline int policy_table_child_exists\(const char \*child, enum view v\)/,
+    assert.match(policy, /static inline int policy_table_child_exists\(const char \*child, enum view v, int scaffold\)/,
       'INVARIANT: policy.h owns the existence half of the dirent rule, where the unit fixture '
       + 'can drive it against a seam-injected host tree (b49)');
 
     const emit = union.slice(union.indexOf('static void pinned_children_emit('),
       union.indexOf('static int readdir_child('));
     assert.ok(emit.length > 100, 'pinned_children_emit is gone from union.c');
-    assert.match(emit, /policy_table_child_exists\(pc->full\[i\], v\)/,
-      'INVARIANT: the emit asks the predicate in the HANDLE\'s view');
+    assert.match(emit, /policy_table_child_exists\(pc->full\[i\], v, 0\)/,
+      'INVARIANT: the emit asks the predicate in the HANDLE\'s view, with the scaffold flag '
+      + 'CLEAR — a real directory has a backing store, so nothing there is taken on trust');
     // AND HOLDS NO SECOND, RAW-TIER COPY OF THE QUESTION. `pc->tier[i] == T_SYNTH`
     // and a bare fstatat here are the two halves of the shape that was wrong.
     assert.ok(!/pc->tier\[i\]/.test(emit),
@@ -880,10 +906,28 @@ describe('the compiled policy driver', { skip }, () => {
     // AND THE VIEW_HOST SYNTHETIC ARM GOES THROUGH IT. Before this the arm
     // called policy_synth_children directly and emitted unchecked.
     const readdir = bodyOfIn(union, 'readdir');
-    assert.match(readdir, /if \(h->view == VIEW_CLI\) \{\s*\n\s*policy_synth_children\(h->path, VIEW_CLI, synth_emit, &fc\);/,
-      'INVARIANT: the UNCHECKED scaffold emit is VIEW_CLI\'s alone — on a VIEW_CLI synthetic '
-      + 'node there is no backing store and a project child\'s existence is a question only a '
-      + 'control frame could answer, which a synthetic node must not send');
+    // THE SCAFFOLD ARM ASKS THE PREDICATE TOO, AND THE CARVE-OUT IS NARROWER
+    // THAN "VIEW_CLI SKIPS THE CHECK". It has two parts and only the first was
+    // ever written down: (i) for a `project` child the host is the WRONG AXIS —
+    // the orchestrator has nothing at systemPath, so host-probing it would drop
+    // the project from the marked `ls` and break §4's marked row, and the right
+    // axis is a control frame this card does not add; (ii) for a `host` pin
+    // child of that SAME node the host IS the right axis and the probe costs one
+    // fstatat with no control frame, so the carve-out does not reach it. Leaving
+    // (ii) unchecked left the MARKED CLI's `ls /etc` naming ETC_PINS entries
+    // absent on this host while `cat` answered -ENOENT — the third instance of
+    // card 2026-0403's class, and the reason that card could not close as
+    // absorbed while it stood.
+    assert.match(readdir, /if \(h->view == VIEW_CLI\) \{\s*\n\s*policy_synth_children\(h->path, VIEW_CLI, scaffold_emit, &fc\);/,
+      'INVARIANT: the VIEW_CLI scaffold streams its table children through scaffold_emit, which '
+      + 'asks policy_table_child_exists — an unchecked emit here lists a pinned name the CLI '
+      + 'cannot open');
+    const scaffold = union.slice(union.indexOf('static void scaffold_emit('),
+      union.indexOf('static int readdir_child('));
+    assert.ok(scaffold.length > 50, 'scaffold_emit is gone from union.c');
+    assert.match(scaffold, /policy_table_child_exists\(full, f->view, 1\)/,
+      'INVARIANT: and it asks with the scaffold flag SET — that flag is the carve-out, and it '
+      + 'reaches a `project` child and nothing else');
     const hostArm = readdir.slice(readdir.indexOf('if (h->view == VIEW_CLI)'));
     assert.match(hostArm, /pinned_children_of\(h->path, h->view, &pc\)/,
       'INVARIANT: the VIEW_HOST synthetic arm collects its table children…');

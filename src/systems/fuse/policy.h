@@ -517,17 +517,34 @@ static inline int policy_dirent_visible(const char *child, enum view v)
  * the name is EMITTED and the host answers for it — loud, rather than a name
  * silently missing from a listing.
  *
- * IT IS NOT ASKED ON A `VIEW_CLI` SYNTHETIC NODE'S OWN CHILDREN, and union.c
- * says why at the call site: there the scaffold has no backing store at all and
- * a `project` child's existence is a question only a control frame could answer,
- * which a synthetic node must not send.
+ * `scaffold` SAYS THE NODE HAS NO BACKING STORE — a `VIEW_CLI` synthetic node,
+ * where `policy_synth_children` is the only source of names. IT CARVES OUT ONE
+ * TIER AND NOT THE CHECK, AND THE REASON HAS TWO PARTS. Stating only the first
+ * is what makes the carve-out look wider than it is:
+ *
+ *   (i) for a `project` child the host is the WRONG AXIS. The orchestrator has
+ *       nothing at `systemPath`, so host-probing it would drop the project from
+ *       the MARKED `ls` of its parent — and the right axis is a control frame,
+ *       which a synthetic node must not send. Taken on trust, deliberately.
+ *  (ii) for a `host` pin child of THAT SAME NODE the host IS the right axis and
+ *       the probe costs one `fstatat` with no control frame — so the carve-out
+ *       does not reach it. Leaving (ii) unchecked left the marked CLI's
+ *       `ls /etc` naming `ETC_PINS` entries absent on this host while `cat`
+ *       answered -ENOENT: the third instance of card 2026-0403's class, and the
+ *       reason that card could not close as absorbed while it stood.
+ *
+ * THE FLAG IS INERT IN `VIEW_HOST` — that view cannot produce T_PROJECT at all —
+ * and `b49` asserts that rather than assuming it, so a later widening of the
+ * carve-out cannot hide behind the claim.
  */
-static inline int policy_table_child_exists(const char *child, enum view v)
+static inline int policy_table_child_exists(const char *child, enum view v, int scaffold)
 {
 	enum tier t = resolve_class(child, v);
 
 	if (t == T_SYNTH || t == T_BIND)
 		return 1;               /* a fixed node: it exists by construction */
+	if (scaffold && t == T_PROJECT)
+		return 1;               /* the wrong axis, not a skipped check */
 	return !policy_host_absent(child);
 }
 
@@ -1707,7 +1724,13 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
 		policy_event(EV_SERVED, op, path, "unmarked-host-served", tid);
 		return T_HOST;
 	}
-	return t;             /* a shorter host/bind pin, or the overlay node */
+	/* A SHORTER host OR bind PIN, THE OVERLAY NODE, OR `hide` — and `hide` is
+	 * the one a reader drops. Striking a `project` pin hands the
+	 * longest-prefix contest to whatever shorter pin covers the path, and a
+	 * `hide` pin is eligible to win it; route()'s T_HIDE arm then answers
+	 * -ENOENT before anything else, which is correct and is why the tier is
+	 * carried through here rather than substituted. */
+	return t;
 }
 
 /* ── the cwd chain ──────────────────────────────────────────────────────── */

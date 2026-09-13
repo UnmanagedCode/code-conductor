@@ -2721,7 +2721,7 @@ static void b49_table_child_exists(void)
 	char box[] = "/tmp/cc-policy-b49XXXXXX";
 	char sys[PATH_MAX], line[PATH_MAX + 32];
 	char excluded[PATH_MAX], hostpin[PATH_MAX], hostgone[PATH_MAX];
-	char anc_absent[PATH_MAX];
+	char anc_absent[PATH_MAX], anc_gone[PATH_MAX];
 
 	host_box(box);
 	hjoin(sys, sizeof(sys), box, "/app3");           /* the cwd; NEVER created */
@@ -2729,6 +2729,7 @@ static void b49_table_child_exists(void)
 	hjoin(hostpin, sizeof(hostpin), box, "/present");
 	hjoin(hostgone, sizeof(hostgone), box, "/gone");
 	hjoin(anc_absent, sizeof(anc_absent), box, "/absent-anc/leaf");
+	hjoin(anc_gone, sizeof(anc_gone), box, "/absent-anc");
 	hmkdir(box, "/present");
 
 	npins = 0;
@@ -2755,7 +2756,7 @@ static void b49_table_child_exists(void)
 	 *    rather than that one of them subsumes the other. */
 	CHECK(policy_dirent_visible(excluded, VIEW_HOST) == 1,
 	      "an excluded name is VISIBLE to an unmarked caller — fail -> host serves it");
-	CHECK(policy_table_child_exists(excluded, VIEW_HOST) == 0,
+	CHECK(policy_table_child_exists(excluded, VIEW_HOST, 0) == 0,
 	      "but nothing is THERE, so it must not be emitted: the orchestrator has nothing "
 	      "under a path it has nothing at");
 
@@ -2763,7 +2764,7 @@ static void b49_table_child_exists(void)
 	 *    EXISTS — the node is fixed. Dropping it is the regression where
 	 *    `cd <systemPath>` worked and `ls` of its parent omitted the name. */
 	CHECK(policy_dirent_visible(sys, VIEW_HOST) == 1, "the cwd is a visible child of its parent");
-	CHECK(policy_table_child_exists(sys, VIEW_HOST) == 1,
+	CHECK(policy_table_child_exists(sys, VIEW_HOST, 0) == 1,
 	      "and it EXISTS as the overlay node, though the orchestrator has nothing there");
 	CHECK(policy_host_absent(sys) == 1,
 	      "— asserted again here, so the row above cannot pass by the host happening to have it");
@@ -2772,40 +2773,66 @@ static void b49_table_child_exists(void)
 	 *    THE OTHER. `<box>/absent-anc` is a strict ancestor of a host pin and
 	 *    the orchestrator has neither. */
 	{
-		char anc[PATH_MAX];
-		hjoin(anc, sizeof(anc), box, "/absent-anc");
+		const char *anc = anc_gone;
 		CHECK(anc_find(anc) >= 0, "the ancestor is really in the table");
 		CHECK(policy_host_absent(anc) == 1, "and the orchestrator really lacks it");
 		CHECK(resolve_class(anc, VIEW_CLI) == T_SYNTH, "VIEW_CLI: a scaffold node");
-		CHECK(policy_table_child_exists(anc, VIEW_CLI) == 1,
+		CHECK(policy_table_child_exists(anc, VIEW_CLI, 0) == 1,
 		      "which exists by construction — the scaffold is what makes the pin reachable");
 		CHECK(resolve_class(anc, VIEW_HOST) == T_FAIL,
 		      "VIEW_HOST: the ancestor table is not consulted, so it is fail");
-		CHECK(policy_table_child_exists(anc, VIEW_HOST) == 0,
+		CHECK(policy_table_child_exists(anc, VIEW_HOST, 0) == 0,
 		      "and fail -> host answers -ENOENT, so it must not be emitted");
 	}
 
 	/* ── (4) THE ORDINARY HOST PIN, BOTH WAYS, IN BOTH VIEWS. */
-	CHECK(policy_table_child_exists(hostpin, VIEW_CLI) == 1, "a present host pin exists to the CLI");
-	CHECK(policy_table_child_exists(hostpin, VIEW_HOST) == 1, "and to everyone else");
-	CHECK(policy_table_child_exists(hostgone, VIEW_CLI) == 0,
+	CHECK(policy_table_child_exists(hostpin, VIEW_CLI, 0) == 1, "a present host pin exists to the CLI");
+	CHECK(policy_table_child_exists(hostpin, VIEW_HOST, 0) == 1, "and to everyone else");
+	CHECK(policy_table_child_exists(hostgone, VIEW_CLI, 0) == 0,
 	      "an ABSENT host pin does not — this is the `ls /etc` listing ld.so.preload defect");
-	CHECK(policy_table_child_exists(hostgone, VIEW_HOST) == 0, "in either view");
+	CHECK(policy_table_child_exists(hostgone, VIEW_HOST, 0) == 0, "in either view");
 
 	/* ── (5) A BIND TARGET IS A FIXED NODE TOO, in both views: `route()` serves
 	 *    it whether or not the orchestrator has the path, so a listing that
 	 *    omitted it would disagree with `stat`. */
-	CHECK(policy_table_child_exists("/proc", VIEW_CLI) == 1, "a bind target exists to the CLI");
-	CHECK(policy_table_child_exists("/proc", VIEW_HOST) == 1, "and to everyone else");
+	CHECK(policy_table_child_exists("/proc", VIEW_CLI, 0) == 1, "a bind target exists to the CLI");
+	CHECK(policy_table_child_exists("/proc", VIEW_HOST, 0) == 1, "and to everyone else");
 
 	/* ── (6) AND THE PROJECT TIER, TO THE CLI, IS STILL THE HOST QUESTION ON A
 	 *    REAL DIRECTORY'S MERGE — unchanged by this card. A project child the
 	 *    orchestrator lacks is not in the mirror either, which is what the real
 	 *    arm's backing stream already said. */
 	CHECK(resolve_class(sys, VIEW_CLI) == T_PROJECT, "the cwd is the remote tier to the CLI");
-	CHECK(policy_table_child_exists(sys, VIEW_CLI) == 0,
+	CHECK(policy_table_child_exists(sys, VIEW_CLI, 0) == 0,
 	      "and to the CLI it is a host question, answered no — the rule is view-shaped because "
 	      "WHICH paths are fixed nodes differs, not because the sentence does");
+
+	/* ── (7) THE SCAFFOLD AXIS, WHICH IS A CARVE-OUT OF TWO PARTS AND NOT OF
+	 *    ONE. On a node with NO BACKING STORE the host is the WRONG AXIS for a
+	 *    `project` child — the orchestrator has nothing at systemPath, so
+	 *    probing it would drop the project from the marked `ls` — and the right
+	 *    axis is a control frame a synthetic node must not send. It does NOT
+	 *    reach a `host` pin child of the same node, where the host IS the right
+	 *    axis and the probe costs one fstatat. Both halves are driven, because a
+	 *    case that drove only the first would license the flag skipping every
+	 *    check. */
+	CHECK(policy_table_child_exists(sys, VIEW_CLI, 1) == 1,
+	      "a `project` child of a scaffold node is taken on trust — the host is the wrong axis, "
+	      "and this is what keeps `app3` in the marked `ls` of its parent");
+	CHECK(policy_table_child_exists(hostgone, VIEW_CLI, 1) == 0,
+	      "but a `host` pin child of that SAME node is still checked, and an absent one is not "
+	      "emitted — the marked `ls /etc` naming an ETC_PINS entry `cat` answers -ENOENT for");
+	CHECK(policy_table_child_exists(hostpin, VIEW_CLI, 1) == 1,
+	      "while a present one is");
+	CHECK(policy_table_child_exists(anc_gone, VIEW_CLI, 1) == 1,
+	      "and a fixed node is unaffected by the flag — it exists by construction either way");
+	/* AND THE FLAG IS INERT IN VIEW_HOST, because that view cannot produce
+	 * T_PROJECT at all — asserted rather than assumed, so a later widening of
+	 * the carve-out cannot hide behind it. */
+	CHECK(resolve_class(sys, VIEW_HOST) != T_PROJECT, "VIEW_HOST cannot produce T_PROJECT");
+	CHECK(policy_table_child_exists(hostgone, VIEW_HOST, 1)
+	      == policy_table_child_exists(hostgone, VIEW_HOST, 0),
+	      "so the scaffold flag changes no VIEW_HOST answer");
 
 	close(policy_host_fd);
 	policy_host_fd = -1;

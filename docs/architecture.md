@@ -118,7 +118,7 @@
     | table said | marked caller | unmarked caller |
     |---|---|---|
     | `fail` | `-ENOENT`, `deny`/`unpinned-fail-closed` | **`host`, unconditionally**, plus a `served`/`unmarked-host-served` row |
-    | `project` | the remote, via the control frame — **never a host fallback** | the pin is **struck**, so the path re-resolves in `VIEW_HOST`: a shorter `host`/`bind` pin if one covers it, the **overlay node** if it is a cwd component the orchestrator lacks, else `fail` → **`host`** with a `served`/`unmarked-host-served` row. Never `T_PROJECT`, structurally |
+    | `project` | the remote, via the control frame — **never a host fallback** | the pin is **struck**, so the path re-resolves in `VIEW_HOST`: a shorter `host`/`bind` pin if one covers it, **`hide`** if a shorter `hide` pin does (hidden stays hidden — `route()`'s `T_HIDE` arm answers `-ENOENT` first), the **overlay node** if it is a cwd component the orchestrator lacks, else `fail` → **`host`** with a `served`/`unmarked-host-served` row. Never `T_PROJECT`, structurally |
     | `synth` | the read-only scaffold node, `0555`, listing its pinned children | the ancestor table is **not consulted**, so the path falls to `fail` → **`host`**: the orchestrator's real directory, with its real mode, ownership and write surface. This is the widening card 2026-0398 intended, not a regression |
     | `host` / `hide` / `bind` | unchanged | **unchanged** — `VIEW_HOST` strikes only `project` pins |
 

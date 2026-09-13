@@ -31,7 +31,10 @@
  *            `VIEW_HOST`, so an unmarked resolution cannot produce this tier,
  *            cannot send a control frame and cannot read the mirror. Such a
  *            path resolves in `VIEW_HOST` instead — to a shorter host or bind
- *            pin, to `fail` (and `fail` means host), or to the overlay node.
+ *            pin, to `hide` (striking a `project` pin hands the longest-prefix
+ *            contest to whatever shorter pin covers the path, and a `hide` pin
+ *            is eligible to win it: hidden stays hidden), to `fail` (and `fail`
+ *            means host), or to the overlay node.
  *   bind     a directory bootstrap.sh mounts the ORCHESTRATOR's own over, after
  *            the union is up. Served here as a read-only synthetic node purely
  *            so the bind target exists — /proc, /sys, /dev must never be tiers
@@ -1029,9 +1032,14 @@ static void synth_emit(void *ctx, const char *name, const char *full, enum tier 
  */
 #define MAX_PINNED_CHILDREN 64
 struct pinned_children {
+	/* NO `tier` COLUMN, DELIBERATELY. The collector used to carry the pin's
+	 * own tier here for the emit to branch on, and branching on the RAW pin
+	 * tier is exactly what dropped a project-pinned child resolving to the
+	 * overlay. `pinned_children_emit` resolves each name in the handle's view
+	 * instead, so a stored tier would be write-only AND a standing invitation
+	 * to read the wrong one. */
 	char      name[MAX_PINNED_CHILDREN][NAME_MAX + 1];
 	char      full[MAX_PINNED_CHILDREN][PATH_MAX];
-	enum tier tier[MAX_PINNED_CHILDREN];
 	char      seen[MAX_PINNED_CHILDREN];
 	size_t    n;
 };
@@ -1048,6 +1056,11 @@ static void pinned_children_collect(void *ctx, const char *name, const char *ful
 {
 	struct pinned_children *pc = ctx;
 
+	/* THE TIER IS DELIBERATELY DISCARDED — see `struct pinned_children`. The
+	 * emit resolves each name in the handle's VIEW; the pin's own tier is the
+	 * wrong answer for a project child that becomes the overlay. */
+	(void)t;
+
 	if (pc->n >= MAX_PINNED_CHILDREN) {
 		/* AN HONEST BOUND. Silently dropping names would lose them from
 		 * `ls` while `stat` kept working — this function's own defect,
@@ -1060,7 +1073,6 @@ static void pinned_children_collect(void *ctx, const char *name, const char *ful
 	 * its format-truncation analysis is right to say so. */
 	copy_bounded(pc->name[pc->n], sizeof(pc->name[0]), name);
 	copy_bounded(pc->full[pc->n], sizeof(pc->full[0]), full);
-	pc->tier[pc->n] = t;
 	pc->seen[pc->n] = 0;
 	pc->n++;
 }
@@ -1109,10 +1121,35 @@ static void pinned_children_emit(struct pinned_children *pc, enum view v,
 	for (i = 0; i < pc->n; i++) {
 		if (pc->seen[i])
 			continue;
-		if (!policy_table_child_exists(pc->full[i], v))
+		if (!policy_table_child_exists(pc->full[i], v, 0))
 			continue;
 		emit(ctx, pc->name[i], pc->full[i], resolve_class(pc->full[i], v));
 	}
+}
+
+/*
+ * THE SCAFFOLD'S OWN EMIT, and the one thing it adds is the existence check.
+ * A `VIEW_CLI` synthetic node has NO BACKING STORE, so `policy_synth_children`
+ * is the only source of names here and each one is a claim this function has to
+ * make good. `policy_table_child_exists`'s `scaffold` flag carves out exactly
+ * one tier — a `project` child, where the host is the wrong axis and the right
+ * one is a control frame a synthetic node must not send — and reaches nothing
+ * else. In particular a `host` pin child IS checked: without that the MARKED
+ * CLI's `ls /etc` named `ETC_PINS` entries absent on this host while `cat`
+ * answered -ENOENT, which is card 2026-0403's class on the one arm the rest of
+ * this card did not touch.
+ *
+ * STREAMED RATHER THAN COLLECTED, so the scaffold arm keeps no bound: routing it
+ * through `pinned_children_of` would have subjected `ls /` at the narrow root to
+ * MAX_PINNED_CHILDREN, which it has never been subject to.
+ */
+static void scaffold_emit(void *ctx, const char *name, const char *full, enum tier t)
+{
+	struct fillctx *f = ctx;
+
+	if (!policy_table_child_exists(full, f->view, 1))
+		return;
+	synth_emit(ctx, name, full, t);
 }
 
 /*
@@ -1184,7 +1221,7 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		 * is the whole reason this class exists, so they are named
 		 * whatever the orchestrator happens to hold. */
 		if (h->view == VIEW_CLI) {
-			policy_synth_children(h->path, VIEW_CLI, synth_emit, &fc);
+			policy_synth_children(h->path, VIEW_CLI, scaffold_emit, &fc);
 			return 0;
 		}
 		/* `VIEW_HOST` HAS A BACKING STORE — the orchestrator's own
@@ -1231,8 +1268,13 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	 * the same one-caller-two-answers defect as listing a `fail` name, just
 	 * inverted. At `mirrorRoot: "/"` that is every pinned path there is.
 	 *
-	 * The emit rule is policy_synth_children's, applied here as well: host,
-	 * project and bind are named; hide and fail are not. Collected FIRST so
+	 * The emit rule is policy_dirent_visible's, asked once for both arms —
+	 * and it is CALLER-SENSITIVE, so "host, project and bind are named; hide
+	 * and fail are not" describes `VIEW_CLI` ALONE. For a `VIEW_HOST` handle a
+	 * `fail`-pinned child of a real host directory IS named, because
+	 * `fail -> host` serves it and a name that view can open is a name it must
+	 * see — which is card 2026-0403's fix, not an oversight. `hide` is the one
+	 * rule both views share. Collected FIRST so
 	 * the dirent loop can mark the ones already present, and the remainder
 	 * emitted after — one small array, no hash set, because a directory's
 	 * pinned children are bounded by the pin list and not by the directory.
@@ -1614,7 +1656,16 @@ static int pt_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	int e = errno;
 	cred_leave();
 	if (fd == -1) { abandon_claim(path, r.tier); return -e; }
-	fd_tier_set(fd, r.tier, 1, route_view(&r));
+	/* GATED LIKE THE FLOOR SITES, AND FOR A SHARPER REASON: `fd_view`'s ONLY
+	 * reader is pt_getattr's fi arm, whose floor is a no-op today because
+	 * libfuse passes `fi` to getattr only for regular files. An ungated
+	 * route_view() here would pay a /proc mark read per open at `host`, the
+	 * CLI's hottest tier, for a field nothing reads. Storing VIEW_CLI off the
+	 * chain is harmless — policy_floor_applies cannot fire off the chain
+	 * whatever the stored view says — so the two arms still agree
+	 * STRUCTURALLY, which is the whole property that arm exists to keep. */
+	fd_tier_set(fd, r.tier, 1,
+		policy_cwd_component(path) ? route_view(&r) : VIEW_CLI);
 	if (fd < FDTIER_SLOTS) fd_claimed[fd] = 1;
 	fi->fh = fd;
 	return 0;
@@ -1636,7 +1687,8 @@ static int pt_open(const char *path, struct fuse_file_info *fi)
 		if (fi->flags & (O_WRONLY | O_RDWR)) abandon_claim(path, r.tier);
 		return -e;
 	}
-	fd_tier_set(fd, r.tier, (fi->flags & (O_WRONLY | O_RDWR)) != 0, route_view(&r));
+	fd_tier_set(fd, r.tier, (fi->flags & (O_WRONLY | O_RDWR)) != 0,
+		policy_cwd_component(path) ? route_view(&r) : VIEW_CLI);  /* gated; see pt_create */
 	/* Exactly the handles whose ROUTE carried FOR_WRITE, so the claim cc took
 	 * and the claim this daemon releases cannot disagree. */
 	if (fd < FDTIER_SLOTS && (fi->flags & (O_WRONLY | O_RDWR)))
@@ -1680,12 +1732,23 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 	 * AN UNMARKED CALLER IS ANSWERED FROM THE HOST, ALWAYS. Card 2026-0398
 	 * gave it an overlay node at the cwd, which is a T_SYNTH route — and this
 	 * body would have answered it with `fstatvfs(remote_fd)`, reaching into
-	 * the mirror for a caller whose whole invariant is that it cannot. No
-	 * bytes leak (the mirror is on the orchestrator's own filesystem, so the
-	 * numbers are the same ones the host fd reports), but "an unmarked caller
-	 * never reads the mirror" is a STRUCTURAL claim this file makes in its own
-	 * header, and an op that reaches for `remote_fd` on its behalf falsifies
-	 * it whatever the numbers say. */
+	 * the mirror for a caller whose whole invariant is that it cannot.
+	 *
+	 * NO BYTES CROSS EITHER WAY, and that conclusion is unconditional: statvfs
+	 * reports a filesystem's geometry and never a file's contents. WHETHER THE
+	 * TWO ANSWERS AGREE IS CONDITIONAL and is recorded as a standing condition
+	 * rather than asserted: the mirror is `<rundir>/mirror` under the store
+	 * root and the host fd is an O_PATH on `/`, so the numbers coincide only
+	 * where the store shares `/`'s filesystem. Put the store on its own mount
+	 * and an unmarked `df` would have reported the store's free space for a
+	 * path the caller is told is the orchestrator's — which is the second
+	 * reason to route it here, and the one that survives a different disk
+	 * layout.
+	 *
+	 * The first reason stands on its own: "an unmarked caller never reads the
+	 * mirror" is a STRUCTURAL claim this file makes in its own header, and an
+	 * op that reaches for `remote_fd` on its behalf falsifies it whatever the
+	 * numbers say. */
 	int fd = (r.tier == T_HOST || route_view(&r) == VIEW_HOST)
 		? policy_host_fd : remote_fd;
 	return fstatvfs(fd, stbuf) == -1 ? -errno : 0;
