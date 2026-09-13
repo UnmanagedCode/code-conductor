@@ -120,11 +120,11 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
   afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
   let n = 0;
-  // A NON-TEMP instance that has exited but is still in byId — the one state
-  // the removed respawn_instance existed for, and the only state in which a
-  // resume can find a superseded husk to reclaim. Built over REST because no
-  // MCP-spawned session can ever reach it (spawn_instance always spawns temp,
-  // and a temp worker is dropped from byId the moment its process exits).
+  // A NON-TEMP instance that has exited but is still in byId — the only state
+  // in which a resume can find a superseded husk to reclaim. Built over REST
+  // because no MCP-spawned session can ever reach it: a conducted spawn is
+  // always temp, and a temp worker is dropped from byId the moment its process
+  // exits.
   // The subprocess is killed on the Instance directly: DELETE /api/instances/:id
   // would remove it from byId and there would be nothing left to supersede.
   async function settledHusk({ mode = 'bypassPermissions' } = {}) {
@@ -231,10 +231,10 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
   }
 
   test('R6 spawn_instance({resume}) over a husk honours the mode override and transfers ownership', async () => {
-    // The two things a delegation branch (respawn_instance → instances.respawn)
-    // would have broken. respawn(id) takes an id and nothing else and relaunches
-    // the SAME Instance object, so it reuses the live `this.mode` and keeps
-    // whatever callerInstanceId the object was constructed with.
+    // The two things delegating an MCP resume to instances.respawn() would
+    // break. respawn(id) takes an id and nothing else and relaunches the SAME
+    // Instance object, so it reuses the live `this.mode` and keeps whatever
+    // callerInstanceId the object was constructed with.
     const { sessionId, oldId } = await settledHusk({ mode: 'bypassPermissions' });
 
     // A live conductor to be the caller.
