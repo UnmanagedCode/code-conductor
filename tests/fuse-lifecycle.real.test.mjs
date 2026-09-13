@@ -1392,7 +1392,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     await fs.mkdir(path.join(box, 'app', SUB), { recursive: true });
     // (e) reads the daemon's OWN output, through the PRODUCT'S OWN TRACE
     // SWITCH. `resolveTraceEnabled()` keys exactly on '1' and is read by
-    // `buildFusePlan` IN THIS PROCESS at spawn time (`Instance.launch`), so
+    // `buildFusePlan` IN THIS PROCESS at spawn time
+    // (`InstanceManager._doCreateResolved`), so
     // the switch is set before `spawnWorker()` and restored in the `finally`.
     const prevTrace = process.env.CC_FUSE_TRACE;
     process.env.CC_FUSE_TRACE = '1';
