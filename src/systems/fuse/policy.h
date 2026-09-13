@@ -75,9 +75,14 @@
  *      Such a path falls to `fail`, and `fail` means host.
  *
  * The one thing this view ADDS is the OVERLAY: a traverse-only node at a
- * component of the CLI's cwd the orchestrator does not have. It is irreducible —
- * a floor changes a mode, and at `systemPath` there is no node to put a mode on,
- * so `chdir` would get -ENOENT at every geometry including today's default.
+ * component of the CLI's cwd the orchestrator does not have. It is irreducible,
+ * and the reason is a MUST-HOLD-WHEN and not an always: WHEREVER the
+ * orchestrator lacks `systemPath` a floor has no node to put a mode on, so
+ * `chdir` gets -ENOENT at every geometry, today's default included. Whether it
+ * lacks it is deployment- and geometry-conditional — the clause is irreducible
+ * because it must hold WHEN it does, not because it always does. A host
+ * collision at that spelling is the exception, and it is divergence rather than
+ * a leak.
  *
  * WHY THE UNMARKED ANSWERS DO NOT VARY WITH THE GEOMETRY, which is the property
  * that makes 2026-0398's bug unreachable rather than merely fixed: with the
