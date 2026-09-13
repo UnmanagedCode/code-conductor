@@ -985,8 +985,8 @@ describe('the policy event harvest', () => {
   // suggestion for a path the CLI's own denial had asked for**. Nothing said so;
   // the row simply was not there.
   //
-  // This deliberately departs from plan §4a's "one row per distinct path" —
-  // recorded on the card — because the log exists so a pin suggestion reaches a
+  // This departs from "one row per distinct path" deliberately, because the
+  // log exists so a pin suggestion reaches a
   // human, and a path-keyed row can silently be the wrong one of the two.
   //
   // DIES UNDER: keying the harvest on the path alone (either row order);

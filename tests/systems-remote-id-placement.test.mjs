@@ -6,7 +6,7 @@
 // pins that at the record and at each surface that reads or writes it.
 //
 // The fixture keeps two targets behind ONE registered system, which is the
-// shape the whole card exists for: ten containers, one docker provider, one row
+// shape this file exists for: ten containers, one docker provider, one row
 // in Settings.
 //
 // Both targets are rooted at the SAME sandbox, deliberately. Root scoping is

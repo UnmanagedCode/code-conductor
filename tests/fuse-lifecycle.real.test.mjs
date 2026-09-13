@@ -296,7 +296,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // must exist on the host and its cwd chain is host-served end to end.
     //
     // TWO host-absent links, not one, so R14 can decide whether the chain ABOVE
-    // the cwd leaf needs traversal at all — the card's open question.
+    // the cwd leaf needs traversal at all, which is still open.
     await seedRepo(path.join(box, 'wide', 'appw'));                 // host: for the adopt probe only
     await seedRepo(path.join(fakeRemote, box, 'wide', 'appw'));     // the system's own copy
     await fs.writeFile(path.join(fakeRemote, box, 'wide', 'appw', 'remote-marker.txt'),
@@ -2077,8 +2077,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // (f) IS PINNED BECAUSE IT IS A DECISION AND NOT AN ACCIDENT, AND IT WAS
   // MEASURED HERE RATHER THAN DERIVED. `host` is a passthrough, so `fail →
   // host` gives an unmarked caller the host's WRITE side too — and the host's
-  // own permissions at the caller's uid become the ONLY gate, where before this
-  // card every unpinned path answered -ENOENT to everyone.
+  // own permissions at the caller's uid become the ONLY gate, rather than the
+  // blanket -ENOENT an unpinned path would otherwise answer to everyone.
   //
   // Both ends of that were measured on this host. As ROOT: R3's own probe — an
   // unmarked root shell — created `/usr/nope` on the orchestrator for real, and

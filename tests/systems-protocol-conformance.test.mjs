@@ -908,7 +908,7 @@ test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async 
   } finally { sys.dispose(); await rmrf(dir); }
 });
 
-// PINS THE EXTENSION POINT a later card will rely on: a `remoteDescriptor`
+// PINS THE EXTENSION POINT a later change will rely on: a `remoteDescriptor`
 // carrying a field cc does not know about is accepted and the field ignored.
 // Pinned so a future reader cannot "tighten" it away — a provider→cc field is
 // inert on arrival, which is what makes growing this frame safe without a

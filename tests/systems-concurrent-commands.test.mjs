@@ -74,8 +74,8 @@ const onSystem = (rel) => path.join(remote.root, rel);
 // none — so a spurious trip is a flaky red, which is strictly worse than the
 // fail-slow hang it exists to prevent. Measured standalone: 0.22 s quiet,
 // 0.81-1.10 s at 32-way starvation, 0.92-1.30 s at 72-way. Against 3 s that is
-// a 2.3x margin, where this suite's convention is ~75x and this branch already
-// carries a card about a 3.3x margin inverting under exactly this load; the
+// a 2.3x margin, where this suite's convention is ~75x and this branch has
+// already seen a 3.3x margin invert under exactly this load; the
 // gate runs the whole suite twice with provider processes alongside, so real
 // inflation beyond those standalone numbers is likely. 10 s gives ~7.7x at
 // 72-way and is still ~60x better than the 605 s hang. It costs nothing real:

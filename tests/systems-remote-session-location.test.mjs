@@ -146,8 +146,8 @@ describe('a session on a project on a system', () => {
   // PINS: a session on a remote project resolves, so a bare resume with NO
   // project lands at that session's own session root.
   // NOT claiming the REST and MCP arms have independent mechanisms — they share
-  // `_doCreateResolved`. The MCP arm is here because it is the form the card is
-  // about, and it shares this test's killer set rather than adding one.
+  // `_doCreateResolved`. The MCP arm is here because it is the form under test,
+  // and it shares this test's killer set rather than adding one.
   test('T1: a bare resume with no project recovers it, on both surfaces', async () => {
     const remote = await bindRemoteSystem();
     const tree = await seedRepo(path.join(remote.root, 'app'));

@@ -620,8 +620,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // It lives on the Instance rather than in either controller precisely so the
   // hub's defer does not depend on listener registration order — the hub's
-  // listener is registered BEFORE the renew controller's, which is why the
-  // pre-card code consumed the wake on the ARMED turn_end, a turn early.
+  // listener is registered BEFORE the renew controller's, so code reading
+  // controller state instead consumes the wake on the ARMED turn_end, a turn
+  // early.
   _rotation: { reason: RotationMechanism; startedAt: number } | null;
   // TRUE for the whole renewal sequence: from `arm()` until the reseed prompt()
   // has actually been accepted. A SECOND flag rather than a wider `_rotation`,

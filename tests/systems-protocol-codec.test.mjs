@@ -298,7 +298,7 @@ function clientFrameTypes(src) {
 // PINS THE DIAGNOSIS, not just the red. A frame whose own declaration carries no
 // `type: '…'` must be REPORTED AS THAT — not silently resolved to the next
 // interface's literal, which reds the pin below as `extra: [<neighbour>]` and
-// blames the doc table, which is innocent. On a card whose whole subject is an
+// blames the doc table, which is innocent. Where the whole subject is an
 // error message naming the wrong cause, a pin that names the wrong cause is the
 // same defect one layer up.
 test('the §3 pin resolves each frame to its OWN type literal, never a neighbour\'s', () => {

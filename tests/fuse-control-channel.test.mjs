@@ -1001,7 +1001,7 @@ describe('the control socket binds and connects at any store-root depth', () => 
     assert.equal(err.code, 'EINVAL', err.message);
   });
 
-  // T7 — THE CARD'S CENTRAL PROPERTY, at the actual syscall and with no FUSE
+  // T7 — THE CENTRAL PROPERTY, at the actual syscall and with no FUSE
   // and no sudo. `ControlServer.listen` must bind at a path no bind(2) can
   // take; a client forming its OWN fd address must complete a real frame; and
   // `close()` must still unlink the socket from the REAL path.
