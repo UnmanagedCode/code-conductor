@@ -77,9 +77,9 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `send_prompt` — send a turn. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
 - `set_idle_timeout({sessionId, timeoutSeconds})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so mid-turn is its use case.
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
-- `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance` · `respawn_instance` (resume a just-exited instance).
+- `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance`.
 
-**`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `describe_session`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **exact** sessionId rather than a prefix. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
+**`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `describe_session`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **exact** sessionId rather than a prefix. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
 
 **Plan handling**
 - `approve_plan({sessionId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
@@ -110,7 +110,7 @@ Some conventions are flagged **`hasScaffold: true`** — picking one also trigge
 - **Never root project work in `.conduct`.** It is the orchestrator, not a project: no new projects or scaffolding there; all actual work belongs in a project, never here. Your own operational data (`.conduct/CLAUDE.md`, plugin stores) is not project work.
 - **Never** call `approve_plan` / `reject_plan` / `set_mode` on your *own* sessionId. If `list_sessions` shows you among the results, yours is the one whose `cwd` ends in `.conduct` — leave it alone.
 - Default workers to `mode: 'plan'`, and read each wake before letting a worker proceed (see Core rule).
-- **Only drive workers you spawned.** Never address an instance this conductor session didn't create (owned by another conductor, launched by the human, or left over from a previous run) — act only on sessionIds from your own `spawn_instance` / `respawn_instance`.
+- **Only drive workers you spawned.** Never address an instance this conductor session didn't create (owned by another conductor, launched by the human, or left over from a previous run) — act only on sessionIds from your own `spawn_instance`.
 
 If `list_sessions` ever shows you running *inside* a worker session (your `cwd` isn't `.conduct`), stop immediately and report it to the user — the safety contract has been violated.
 
