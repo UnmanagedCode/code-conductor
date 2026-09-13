@@ -1,8 +1,8 @@
 // The in-process `local` System: cc's own machine, reached with `node:fs` and
 // the shared detached process-group runner. It is the built-in every project
 // resolves to until a remote system is registered, and its whole job is to be
-// INDISTINGUISHABLE from the direct calls it replaced — each method below is
-// the code that used to sit at the call site, moved behind the interface.
+// INDISTINGUISHABLE from a direct call — each method below is the code a call
+// site would otherwise run, behind the interface.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -33,7 +33,7 @@ function errCode(e: unknown): string | undefined {
 }
 
 // Shared mkdir-parent → write tmp(.pid.seq) → rename. Exported (and re-exported
-// from src/projects.ts, where it used to live and where most callers import it)
+// from src/projects.ts, where most callers import it)
 // because cc's own STORE writes go through it too — the store is always local,
 // so its atomic write and this system's are the same operation, not two.
 //

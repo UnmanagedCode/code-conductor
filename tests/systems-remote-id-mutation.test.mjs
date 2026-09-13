@@ -200,10 +200,10 @@ describe('changing a project target', () => {
   // ── What a permitted change invalidates ──────────────────────────────
 
   // PINS: A PERMITTED CHANGE LEAVES NOTHING LOCAL BEHIND, because there is
-  // nothing local to leave. This used to assert that the project's session root
-  // and manifest were REMOVED up front — a root left behind held the OLD
-  // target's CLAUDE.md and cached content at local paths a write-back would then
-  // push to the NEW target, a clobber invisible from either side. Under the
+  // nothing local to leave. A session root or manifest left behind would hold
+  // the OLD target's CLAUDE.md and cached content at local paths a write-back
+  // would then push to the NEW target, a clobber invisible from either side.
+  // Under the
   // union there is no cc-owned copy of the old target's bytes at all, so the
   // clobber is unreachable rather than cleaned up.
   test('a permitted change leaves no cc-owned copy of the old target', async () => {

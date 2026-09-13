@@ -1,11 +1,10 @@
 // A MIRROR ADVERTISEMENT THAT MOVES UNDER A LIVE SESSION IS SESSION-FATAL.
 //
-// The machinery this file used to pin — wipe the local image root, re-pull at
-// the new geometry, move the session's cwd, its path map and its transcript to
-// it — is DELETED rather than ported. Under the FUSE-union geometry there is no
-// local image to move: a session's cwd is the project's real path on its
-// system, which does not move, and what an advertisement changes is the
-// boundary of the union's remote tier.
+// There is no follow machinery: nothing wipes a local image root, re-pulls at
+// the new geometry, or moves the session's cwd, its path map or its transcript.
+// Under the FUSE-union geometry there is no local image to move — a session's
+// cwd is the project's real path on its system, which does not move, and what
+// an advertisement changes is the boundary of the union's remote tier.
 //
 // So a session cannot follow, and the honest answer is a named refusal on the
 // next relaunch: continuing at a geometry it did not start under is the silent

@@ -138,10 +138,10 @@ test('interrupting one command leaves a concurrent one untouched', async () => {
 // fail on their bound. This test cannot pass with a queue.
 //
 // THE SECOND HALF IS THE ONE THE STRIP MADE MATTER MORE. 300 distinct lines from
-// each, concurrently, each result holding exactly its own in order: this used to
-// be satisfiable only because the two agents had separate shells and therefore
-// separate parsers. Now every command has its own by construction, and a shared
-// nonce, decoder or pending slot is what would break it.
+// each, concurrently, each result holding exactly its own in order: this is
+// satisfiable only when each command has its own shell and therefore its own
+// parser. Every command has one by construction, and a shared nonce, decoder or
+// pending slot is what would break it.
 //
 // NOT CLAIMING: any ordering between the two, only simultaneous progress.
 test('two commands of one session genuinely overlap, and neither sees the other\'s output', async () => {

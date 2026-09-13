@@ -1,11 +1,10 @@
 // TWO PLACES, ONE CLAUDE CLI TRANSCRIPT DIRECTORY.
 //
-// The guard's JOB survived the geometry; the KEY it compares changed. It used to
-// compare `encodeCwd(sessionRootKey(project, worktree))` — a cc-owned name under
-// the store — and answered null for the local system, because a local place had
-// no session root to collide on. It now compares `encodeCwd(<the CLI's cwd>)`,
-// which is the place's real path on whatever machine it lives on, ACROSS EVERY
-// SYSTEM.
+// The guard compares `encodeCwd(<the CLI's cwd>)` — the place's real path on
+// whatever machine it lives on — ACROSS EVERY SYSTEM. It cannot key on a
+// cc-owned name under the store: `encodeCwd(sessionRootKey(project, worktree))`
+// is null for the local system, because a local place has no session root to
+// collide on.
 //
 // THE WIDENING IS FORCED, not tidy-minded. While a remote cwd lived under cc's
 // store it was disjoint from every local project path by construction, so a

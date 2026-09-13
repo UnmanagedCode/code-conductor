@@ -418,7 +418,7 @@ test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBy
 // REPAIRED RATHER THAN PINNED. `fs.readlink` of a non-symlink is EINVAL, and
 // `readlink -v` says "Invalid argument" — the same failure, observed by both
 // sides, which for a while cc answered `EUNKNOWN` to on the wire and `EINVAL`
-// to locally. The first cut of this file pinned that as a divergence.
+// to locally.
 //
 // THE CLOSED-TAXONOMY ARGUMENT FOR KEEPING IT RAN BACKWARDS: the taxonomy is
 // closed SO THAT every error a real call can produce is named, so an errno a

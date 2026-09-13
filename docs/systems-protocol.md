@@ -266,8 +266,8 @@ than from the orchestrator (`src/systems/fuse/tierTable.ts`). The **CLI's cwd
 does not move**: it is the project's own path on the system whatever the mirror
 root is, which is why an advertisement that changes under a live session is
 refused rather than followed (`MIRROR_ADVERTISEMENT_CHANGED`). Pinned in
-`tests/systems-mirror-wide.test.mjs`; the absence of any local image, and of the
-allow-list walk that used to fill one, in `tests/systems-session-root.test.mjs`.
+`tests/systems-mirror-wide.test.mjs`; the absence of any local image in
+`tests/systems-session-root.test.mjs`.
 
 ## 3. Frames
 

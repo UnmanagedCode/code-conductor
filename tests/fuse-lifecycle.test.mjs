@@ -2800,13 +2800,13 @@ describe('the boot sweep', () => {
   // T3. PINS the readdir loop's `keep.has(name)` keying,
   // where `keep` is derived through `fuseRunDirName`.
   //
-  // FULL UUIDS, AND THAT IS THE WHOLE POINT. The fixture this replaces used
-  // the 6-character `'live-1'`, under which the truncated name and the whole
-  // id are the SAME STRING — so it was green against the prefix shape and is
-  // green against the identity, and killed neither a truncation mutant nor a
-  // mutant deleting the `fuseRunDirName` derivation. With a real uuid a
-  // truncated `keep` entry no longer matches the directory on disk and the
-  // live session is torn down under itself.
+  // FULL UUIDS, AND THAT IS THE WHOLE POINT. Under a 6-character id like
+  // `'live-1'` the truncated name and the whole id are the SAME STRING, so such
+  // a fixture is green against the prefix shape and against the identity alike,
+  // and kills neither a truncation mutant nor a mutant deleting the
+  // `fuseRunDirName` derivation. With a real uuid a truncated `keep` entry no
+  // longer matches the directory on disk and the live session is torn down
+  // under itself.
   //
   // TWO ENTRIES, because "skipped" alone passes against a sweep that does
   // nothing at all: B is the control that proves the pass ran.
