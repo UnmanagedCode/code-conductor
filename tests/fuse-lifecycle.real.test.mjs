@@ -939,9 +939,15 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // `root:root` exactly like the fixed node, so uid/gid discriminate nothing
       // here, and a host whose `/usr` happened to be `0555` would make the mode
       // comparison vacuous too. A fixed node always reports mtime 0.
-      assert.notEqual(uMtime, '0',
-        `the unmarked /usr reports the fixed node's mtime 0, so this caller got the `
-        + `scaffold and not the orchestrator: ${un.stdout}`);
+      //
+      // AGAINST THE HOST'S OWN mtime, NOT MERELY AGAINST NON-ZERO. A node
+      // RECONSTRUCTED from the host stat but carrying a stale or invented
+      // `st_mtime` would satisfy both a non-zero check and the mode/uid/gid
+      // compare above, which is the one answer this assertion exists to pin.
+      // Deterministic here: nothing in the run writes `/usr`.
+      assert.equal(uMtime, String(Math.floor(hostUsr.mtimeMs / 1000)),
+        `the unmarked /usr did not report the ORCHESTRATOR's own mtime — '0' is the `
+        + `fixed node's, and any other value is a node reconstructed from it: ${un.stdout}`);
       // (c) AND THE SCAFFOLD IS READ-ONLY TO THE CLI, with EROFS rather than
       // EACCES — `policy_mutation_check` is the one place that choice is made,
       // and there is nothing behind the node to chmod.
@@ -956,8 +962,17 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       //
       // `exec`, AND NO `|| true`: `exec` replaces the shell, so the `||` branch
       // could never run — the assertion is on `.stdout`, as R7's is.
+      //
+      // `|| exit 9`, NOT `;`, AND THE DIFFERENCE IS BLAST RADIUS. Under `;` a
+      // FAILED mark read does not stop the shell: it would exec `rmdir` UNMARKED
+      // AND AS ROOT, and unmarked this path is host-served — so the op would run
+      // against the ORCHESTRATOR'S OWN `/usr`. It is bounded (`ENOTEMPTY`) and
+      // the arm reds either way, but it would red saying "a synthetic node
+      // accepted a mutation" over an errno that came from cc's own filesystem.
+      // Hard-failing the precondition leaves the match below to red on an empty
+      // stdout instead, which is the honest attribution. R9 owns this idiom.
       const wr = await inNsRoot(record.anchorPid,
-        '[ -e "$1" ]; exec rmdir "$2" 2>&1', marked, usr);
+        '[ -e "$1" ] || exit 9; exec rmdir "$2" 2>&1', marked, usr);
       assert.match(wr.stdout, /[Rr]ead-only file system/, `a synthetic node accepted a mutation: ${wr.stdout}`);
       // A CHILD of a synthetic dir is a different answer, and worth pinning
       // beside it: unpinned, so fail-closed -ENOENT rather than EROFS. The two
@@ -1646,9 +1661,11 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const loose = `cc-r15-unpinned-${process.pid}.txt`;
     await fs.writeFile(path.join(anchorDir, loose), 'ORCHESTRATOR-SIDE\n');
     // THE FLOOR'S SCOPE CONTROL, declared out here so the `finally` can remove
-    // it. ITS OWN LEAF NAME rather than R14's `off-chain`: `box` is shared by
-    // every arm in this file and R14 leaves its copy behind, so two arms on one
-    // fixture path would couple them.
+    // it. ITS OWN LEAF NAME rather than R14's `off-chain`, AND THE DIRECTION OF
+    // THE COUPLING IS THIS ONE: `box` is shared by every arm in the file, node
+    // runs them in declaration order, and THIS ARM RUNS FIRST — so it is R15's
+    // copy surviving into R14 that would matter, never R14's reaching back. The
+    // `process.pid` suffix and the `finally` removal below are what stop it.
     const offChain = path.join(anchorDir, `cc-r15-off-chain-${process.pid}`);
     let inst;
     try {
@@ -1684,6 +1701,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // keeps that honest is the scope control immediately below, not this
       // equality.
       const hostDir = await fs.stat(anchorDir);
+      // AND THE ON-CHAIN FIXTURE IS `0700`-SHAPED, asserted for the same reason
+      // the off-chain one below is. `mkdtemp` gives `<box>` `0700` today, but it
+      // is shared by every arm in this file: an arm that chmodded it
+      // world-traversable would turn this equality into a floor-BLIND one that
+      // still passes, which is exactly the quiet relaxation this arm rules out.
+      assert.equal((hostDir.mode & 0o111), 0o100, 'the on-chain fixture is not 0700-shaped');
       const st = await unmarked('exec /usr/bin/stat -c "%a %u %g" "$1"', at);
       assert.equal(st.stdout.trim(),
         `${((hostDir.mode & 0o7777) | 0o111).toString(8)} ${hostDir.uid} ${hostDir.gid}`,
