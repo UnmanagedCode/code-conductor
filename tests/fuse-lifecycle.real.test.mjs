@@ -873,7 +873,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // on SYNTHETIC mountpoints. A `mount --bind` onto a FUSE synthetic node that
   // the kernel refused would kill every launch, and the named contingency was
   // to render the three as `host` pins of empty directories instead.
-  test('R3 — the mount comes up fail-closed and the three binds land on synthetic nodes', async () => {
+  //
+  // AND, SINCE CARD 2026-0404, THE CALLER SPLIT AT ONE REAL PATH: the MARKED
+  // CLI meets the synthetic scaffold at `/usr` — fixed attributes, EROFS on a
+  // mutation — while an UNMARKED caller meets the orchestrator's own directory
+  // at that same spelling. `pt_getattr` is out of the unit driver's reach, so a
+  // real mount is the only instrument that can put the two side by side.
+  test('R3 — the mount comes up fail-closed to the CLI, the three binds land on synthetic nodes, and the scaffold is the marked caller’s answer alone', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
     try {
@@ -883,18 +889,90 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         assert.ok(nsMounts.includes(path.join(record.root, b)),
           `${b} was not bind-mounted onto its synthetic node: ${JSON.stringify(nsMounts.filter(m => m.startsWith(record.root)))}`);
       }
-      // The synthetic node answers ITS OWN fixed attributes, not the host
-      // directory's — the assertion the unit driver cannot make because it
-      // cannot reach pt_getattr. `/usr` exists on the host with a real mtime
-      // and 0755; inside the chroot it is a scaffold.
-      const st = await inNs(record.anchorPid, 'stat -c "%a %u %g %Y" "$1"', inside(record, '/usr'));
+      // ── THE SCAFFOLD IS THE MARKED CALLER'S ANSWER ALONE ─────────────────
+      //
+      // REWRITTEN BY CARD 2026-0404, AND THE CHANGE IS STATED RATHER THAN MADE
+      // SILENTLY. This used to be ONE stat, made by an UNMARKED shell, asserting
+      // `555 0 0 0`. The assertion is from `56a525a0` and PREDATES card
+      // 2026-0398: under criterion 4 clause (2) an unmarked caller is served the
+      // orchestrator, and D25 enumerates this very path — `/`, `/usr`, `/bin`,
+      // `/etc`, `/home`, `/root` — among those whose unmarked answer changed, so
+      // it could not pass after that card. The INVARIANT survives with its
+      // CALLER MOVED: the scaffold is asserted to the MARKED CLI, and the
+      // unmarked answer is asserted BESIDE it rather than dropped.
+      //
+      // PINNED HERE AND NOWHERE ELSE: the caller split at ONE real path. The
+      // unit driver cannot reach `pt_getattr`, so a real mount is the only place
+      // the two answers to one `stat` can be put side by side.
+      const marked = inside(record, inst._fuse.plan.markPath);
+      const usr = inside(record, '/usr');
+      // (a) THE MARKED CLI GETS THE SCAFFOLD: `policy_fixed_dir`'s own fixed
+      // `0555 root:root` with mtime 0, not the host's real mode and real mtime.
+      // `/usr` carries no pin of its own and is a strict ancestor of many `host`
+      // pins (`ETC_PINS`, `LOADER_OBJECTS` and `BOOTSTRAP_CHAIN` all seed
+      // `/usr/...`), so it is `T_SYNTH` to this caller.
+      //
+      // MARK-THEN-`exec`, the idiom R7 already runs and passes on: `[ -e ]` is a
+      // shell BUILTIN, so the marking `getattr` is made by the shell's own
+      // thread group; `policy_mark_tid` marks the TGID; and `exec` keeps both
+      // the TGID and the start time `policy_is_marked_tid` validates against. A
+      // FORKED `stat` would be a new thread group and would answer the unmarked
+      // question instead — do not drop the `exec`.
+      const st = await inNs(record.anchorPid,
+        '[ -e "$1" ]; exec /usr/bin/stat -c "%a %u %g %Y" "$2"', marked, usr);
       assert.equal(st.ok, true, st.stderr);
       assert.equal(st.stdout.trim(), '555 0 0 0',
-        `the synthetic /usr answered the host’s attributes: ${st.stdout}`);
-      // And it is READ-ONLY, with EROFS rather than EACCES — AS ROOT, because
-      // at uid 1000 `default_permissions` answers EACCES from the kernel before
-      // the daemon is consulted and the arm under test is never reached.
-      const wr = await inNsRoot(record.anchorPid, 'rmdir "$1" 2>&1 || true', inside(record, '/usr'));
+        `the synthetic /usr answered the host’s attributes to the MARKED CLI: ${st.stdout} ${st.stderr}`);
+      // (b) AND AN UNMARKED CALLER AT THE SAME PATH GETS THE ORCHESTRATOR'S OWN
+      // DIRECTORY, read with `fs.stat` from cc's own process and never a
+      // literal. `/usr` is NOT on the CLI's cwd chain — the cwd is `<box>/app`
+      // under `/tmp` — so `policy_cwd_component` is false, no traversal floor
+      // applies, and the host's raw mode is the whole answer.
+      const hostUsr = await fs.stat('/usr');
+      const un = await inNs(record.anchorPid, 'exec /usr/bin/stat -c "%a %u %g %Y" "$1"', usr);
+      assert.equal(un.ok, true, un.stderr);
+      const [uMode, uUid, uGid, uMtime] = un.stdout.trim().split(' ');
+      assert.equal(`${uMode} ${uUid} ${uGid}`,
+        `${(hostUsr.mode & 0o7777).toString(8)} ${hostUsr.uid} ${hostUsr.gid}`,
+        `an unmarked caller did not get the orchestrator's own /usr: ${un.stdout} ${un.stderr}`);
+      // `%Y` IS WHAT CARRIES THE SPLIT, AND IT HAS TO BE ASSERTED. Host `/usr` is
+      // `root:root` exactly like the fixed node, so uid/gid discriminate nothing
+      // here, and a host whose `/usr` happened to be `0555` would make the mode
+      // comparison vacuous too. A fixed node always reports mtime 0.
+      //
+      // AGAINST THE HOST'S OWN mtime, NOT MERELY AGAINST NON-ZERO. A node
+      // RECONSTRUCTED from the host stat but carrying a stale or invented
+      // `st_mtime` would satisfy both a non-zero check and the mode/uid/gid
+      // compare above, which is the one answer this assertion exists to pin.
+      // Deterministic here: nothing in the run writes `/usr`.
+      assert.equal(uMtime, String(Math.floor(hostUsr.mtimeMs / 1000)),
+        `the unmarked /usr did not report the ORCHESTRATOR's own mtime — '0' is the `
+        + `fixed node's, and any other value is a node reconstructed from it: ${un.stdout}`);
+      // (c) AND THE SCAFFOLD IS READ-ONLY TO THE CLI, with EROFS rather than
+      // EACCES — `policy_mutation_check` is the one place that choice is made,
+      // and there is nothing behind the node to chmod.
+      //
+      // MARKED, AND THAT IS NOT COSMETIC. Unmarked, `/usr` is host-served, so an
+      // unmarked `rmdir` here would run against the ORCHESTRATOR'S OWN `/usr` —
+      // the exact shape of the `/usr/nope` incident recorded just below.
+      //
+      // AS ROOT, because at uid 1000 `default_permissions` answers EACCES from
+      // the kernel against the node's own `0555 root:root` before the daemon is
+      // consulted, and the arm under test is never reached.
+      //
+      // `exec`, AND NO `|| true`: `exec` replaces the shell, so the `||` branch
+      // could never run — the assertion is on `.stdout`, as R7's is.
+      //
+      // `|| exit 9`, NOT `;`, AND THE DIFFERENCE IS BLAST RADIUS. Under `;` a
+      // FAILED mark read does not stop the shell: it would exec `rmdir` UNMARKED
+      // AND AS ROOT, and unmarked this path is host-served — so the op would run
+      // against the ORCHESTRATOR'S OWN `/usr`. It is bounded (`ENOTEMPTY`) and
+      // the arm reds either way, but it would red saying "a synthetic node
+      // accepted a mutation" over an errno that came from cc's own filesystem.
+      // Hard-failing the precondition leaves the match below to red on an empty
+      // stdout instead, which is the honest attribution. R9 owns this idiom.
+      const wr = await inNsRoot(record.anchorPid,
+        '[ -e "$1" ] || exit 9; exec rmdir "$2" 2>&1', marked, usr);
       assert.match(wr.stdout, /[Rr]ead-only file system/, `a synthetic node accepted a mutation: ${wr.stdout}`);
       // A CHILD of a synthetic dir is a different answer, and worth pinning
       // beside it: unpinned, so fail-closed -ENOENT rather than EROFS. The two
@@ -1568,7 +1646,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // hiding names. And the box is one the RUNNER OWNS, so the uid can genuinely
   // write — asserting `mkdir` against a directory nobody may write to would pass
   // for the wrong reason.
-  test('R15 — at the default root an unmarked caller gets the orchestrator\'s own directory, names and write surface', async () => {
+  //
+  // AND, SINCE CARD 2026-0404, THE TRAVERSAL FLOOR AND ITS SCOPE AT THIS ROOT.
+  // `<box>` is on the CLI's cwd chain, so the mode it reports is the host's with
+  // `0111` OR'd in; a sibling directory that is NOT on the chain reports its
+  // real mode. Both are asserted, because the first alone would pass under an
+  // unscoped floor.
+  test('R15 — at the default root an unmarked caller gets the orchestrator\'s own directory, names and write surface, and the cwd-chain floor is scoped', async () => {
     const before = snapshot(runRoot);
     // AN ANCESTOR OF A PIN, AND ASSERTED TO BE ONE. `<box>/app` is the project,
     // so `<box>` is a strict ancestor of a `project` pin and carries no pin of
@@ -1576,6 +1660,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const anchorDir = box;
     const loose = `cc-r15-unpinned-${process.pid}.txt`;
     await fs.writeFile(path.join(anchorDir, loose), 'ORCHESTRATOR-SIDE\n');
+    // THE FLOOR'S SCOPE CONTROL, declared out here so the `finally` can remove
+    // it. ITS OWN LEAF NAME rather than R14's `off-chain`, AND THE DIRECTION OF
+    // THE COUPLING IS THIS ONE: `box` is shared by every arm in the file, node
+    // runs them in declaration order, and THIS ARM RUNS FIRST — so it is R15's
+    // copy surviving into R14 that would matter, never R14's reaching back. The
+    // `process.pid` suffix and the `finally` removal below are what stop it.
+    const offChain = path.join(anchorDir, `cc-r15-off-chain-${process.pid}`);
     let inst;
     try {
       inst = await spawnWorker();
@@ -1595,13 +1686,57 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // (a) THE MODE AND OWNER ARE THE ORCHESTRATOR'S OWN, read with `fs.stat`
       // from cc's own process and never a literal. `0555 0 0` is the synthetic
-      // node this used to be.
+      // node this used to be, and the uid/gid halves are still what kill it.
+      //
+      // WITH THE TRAVERSAL FLOOR'S `0111` OR'd IN — CORRECTED BY CARD 2026-0404,
+      // AND SAID OUT LOUD RATHER THAN RELAXED QUIETLY. `<box>` is a component of
+      // the CLI's cwd (`<box>/app`), so `policy_cwd_component` holds,
+      // `policy_floor_applies` is true in `VIEW_HOST`, and
+      // `policy_floor_traversal` ORs `0111` onto the reported mode — criterion 4
+      // clause (3)'s "a traversal floor so every directory it is handed can be
+      // entered", verbatim. The floor-BLIND expectation this replaces and R14's
+      // floor-AWARE one AT THIS SAME PATH landed in ONE commit (`2d1ad17f`, card
+      // 2026-0398), so the file made two contradictory statements about `<box>`;
+      // this is the arm being brought onto the rule its own card landed. What
+      // keeps that honest is the scope control immediately below, not this
+      // equality.
       const hostDir = await fs.stat(anchorDir);
+      // AND THE ON-CHAIN FIXTURE IS `0700`-SHAPED, asserted for the same reason
+      // the off-chain one below is. `mkdtemp` gives `<box>` `0700` today, but it
+      // is shared by every arm in this file: an arm that chmodded it
+      // world-traversable would turn this equality into a floor-BLIND one that
+      // still passes, which is exactly the quiet relaxation this arm rules out.
+      assert.equal((hostDir.mode & 0o111), 0o100, 'the on-chain fixture is not 0700-shaped');
       const st = await unmarked('exec /usr/bin/stat -c "%a %u %g" "$1"', at);
       assert.equal(st.stdout.trim(),
-        `${(hostDir.mode & 0o7777).toString(8)} ${hostDir.uid} ${hostDir.gid}`,
-        `an ancestor-of-a-pin directory did not report the orchestrator's own attributes — `
-        + `'555 0 0' is the synthetic node this card removed: ${st.stdout} ${st.stderr}`);
+        `${((hostDir.mode & 0o7777) | 0o111).toString(8)} ${hostDir.uid} ${hostDir.gid}`,
+        `an ancestor-of-a-pin ON-CHAIN directory did not report the orchestrator's own `
+        + `attributes with the floor applied — '555 0 0' is the synthetic node this card `
+        + `removed: ${st.stdout} ${st.stderr}`);
+
+      // AND THE FLOOR IS SCOPED TO THE CHAIN, AT THE DEFAULT NARROW ROOT. A host
+      // directory that is NOT a cwd component keeps its real mode, unfloored.
+      // Without this the equality above would pass just as well under an
+      // UNSCOPED floor — which would grant traversal the host itself denies, and
+      // would make the floor-aware rewrite the quiet relaxation it must not be.
+      //
+      // R14 CARRIES THE SAME CONTROL AND IT IS NOT A DUPLICATE: R14's is at a
+      // WIDE mirror root, and this one is at the DEFAULT root, which is the
+      // geometry every worker runs today and where the floor's scope had no
+      // real-mount pin at all.
+      //
+      // AN EXPLICIT `chmod` BESIDE THE `mode:`, because the runner's umask is
+      // not this arm's to assume — and the `0700` shape is ASSERTED, so a
+      // fixture that came out world-traversable cannot make the check vacuous.
+      await fs.mkdir(offChain, { recursive: true, mode: 0o700 });
+      await fs.chmod(offChain, 0o700);
+      const hostOff = await fs.stat(offChain);
+      assert.equal((hostOff.mode & 0o111), 0o100, 'the off-chain fixture is not 0700-shaped');
+      const offStat = await unmarked('exec /usr/bin/stat -c "%a %u %g" "$1"', inside(record, offChain));
+      assert.equal(offStat.stdout.trim(),
+        `${(hostOff.mode & 0o7777).toString(8)} ${hostOff.uid} ${hostOff.gid}`,
+        `an OFF-CHAIN host directory was floored, so the floor is unscoped: `
+        + `${offStat.stdout} ${offStat.stderr}`);
 
       // (b) THE LISTING IS THE ORCHESTRATOR'S OWN, INCLUDING AN UNPINNED NAME.
       // The unpinned file is the 2026-0403 half: before the dirent predicate
@@ -1638,6 +1773,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     } finally {
       if (inst) await instances.remove(inst.id);
       await fs.rm(path.join(anchorDir, loose), { force: true });
+      await fs.rm(offChain, { recursive: true, force: true });
     }
     assertNoResidue(before, runRoot, null, 'R15');
   });
