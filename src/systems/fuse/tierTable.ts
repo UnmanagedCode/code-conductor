@@ -140,6 +140,11 @@ const ETC_PINS = [
 //
 // `libcap-ng.so.0` is `setpriv`'s, from `ldd` on this host — one layer below
 // the interpreter chain above, and covered by no other entry here.
+//
+// THE LIST IS HAND-MAINTAINED, and entries keep arriving the expensive way:
+// several were added by reading the refusal log AFTER a spawn had already died
+// on them. Deriving it from `ldd` of the binaries this file already pins is the
+// shape that stops the next one being found that way.
 const LOADER_OBJECTS = [
   '/usr/lib64/ld-linux-x86-64.so.2',
   '/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',

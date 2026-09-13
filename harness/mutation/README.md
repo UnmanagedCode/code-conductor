@@ -95,6 +95,13 @@ And the standing one, which is not a construct but a test: **`A16`'s sha256 latc
 only failing test is `A16` is **unattributed** — re-run it narrower rather than recording `KILLED`.
 RATIONALE.md §5.1c has the measurement and the scoping recipe.
 
+And its counterpart on the other side: **the prover cannot see the real gate's arms at all.** It
+mutates source and re-runs the DEFAULT suite, where `tests/fuse-lifecycle.real.test.mjs`'s arms
+self-skip — and an arm that never executes contributes neither a pass nor a kill. So a C mutant
+reported as a survivor is a survivor *of the default suite*, not of the FUSE coverage as a whole.
+Running the gate once before merge (`RUN_FUSE_LIFECYCLE=1`, about 72 seconds) is the only thing that
+reads those arms.
+
 ## What to expect
 
 - `baseline` is **two full-suite passes** (baseline + canary). On a 16-core host a full suite pass is

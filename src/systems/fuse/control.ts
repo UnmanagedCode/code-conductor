@@ -168,6 +168,20 @@ export function sunPathAddress(dirfd: number, name: string): string {
   return addr;
 }
 
+// TWO REJECTED MECHANISMS, both of which work and both of which are
+// disqualified on a PROPERTY rather than on taste. Anyone reaching for more
+// room inside the 108-byte budget will find one of them first.
+//
+//  - `chdir` + a relative bind. cwd is process-global in Node and cc is a
+//    concurrent multi-session server, so a second session preparing between the
+//    first's `chdir` and its `listen` binds in the WRONG directory.
+//  - The abstract namespace (and `/dev/shm`, which fails the same way through
+//    the mandatory `/dev` bind mount). An abstract socket is scoped by the
+//    NETWORK namespace, and the design unshares only `--mount` — so it would be
+//    reachable BY NAME from every process in the chroot with no privilege at
+//    all, which is strictly worse than a filesystem socket the tier table can
+//    keep out of the union.
+
 // ── the handler ─────────────────────────────────────────────────────────────
 
 const ENOENT = 2, EIO = 5, EACCES = 13, EFBIG = 27;
