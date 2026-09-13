@@ -1392,7 +1392,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     await fs.mkdir(path.join(box, 'app', SUB), { recursive: true });
     // (e) reads the daemon's OWN output, through the PRODUCT'S OWN TRACE
     // SWITCH. `resolveTraceEnabled()` keys exactly on '1' and is read by
-    // `buildFusePlan` IN THIS PROCESS at spawn time (instances.ts:4965), so
+    // `buildFusePlan` IN THIS PROCESS at spawn time (`Instance.launch`), so
     // the switch is set before `spawnWorker()` and restored in the `finally`.
     const prevTrace = process.env.CC_FUSE_TRACE;
     process.env.CC_FUSE_TRACE = '1';
@@ -1468,8 +1468,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // a shell's exit code: the routed tier is in the trace, and the root is
       // NOT in the event log while the two paths under it are.
       // THE PLAN'S OWN PATH, not one this arm chose: `buildFusePlan` puts the
-      // trace at `<rundir>/trace.log` (plan.ts:233) and `wrapLaunch` hands
-      // exactly that to the worker as `CC_FUSE_TRACE_LOG` (wrap.ts:88). Read
+      // trace at `<rundir>/trace.log` (`plan.tracePath`) and `wrapLaunch` hands
+      // exactly that to the worker as `CC_FUSE_TRACE_LOG`. Read
       // HERE, inside the `try` — the `finally`'s `remove` reclaims the rundir
       // and takes the trace with it, which is also why this arm leaves no
       // temp directory of its own behind.
@@ -1480,10 +1480,10 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // distinguished rather than collapsed — but only REACHABLE causes are
       // named. THE PRODUCT TURNS THE TRACE ON and this arm asks it to, over a
       // chain of four explicit links: `CC_FUSE_TRACE=1` →
-      // `resolveTraceEnabled()` (plan.ts:144) → `plan.tracePath` =
-      // `<rundir>/trace.log` (plan.ts:233) → `wrapLaunch` emitting
-      // `CC_FUSE_TRACE_LOG` (wrap.ts:88) → bootstrap.sh exporting
-      // `CC_UNION_TRACE` from it (bootstrap.sh:146).
+      // `resolveTraceEnabled()` → `plan.tracePath` = `<rundir>/trace.log`
+      // (both in `src/systems/fuse/plan.ts`) → `wrapLaunch` emitting
+      // `CC_FUSE_TRACE_LOG` (`src/systems/fuse/wrap.ts`) → bootstrap.sh
+      // exporting `CC_UNION_TRACE` from it (its `CC_UNION_TRACE` assignment).
       //
       // AN AMBIENT `CC_UNION_TRACE` IS NOT A CHANNEL, and must not become one
       // again: bootstrap.sh's `else` arm unsets it exactly so that `sudo -E`,
