@@ -40,12 +40,13 @@
 // unpinned, so `tier_of` can never return `T_FAIL` and an unpinned `/bin/sh`
 // would be `project` tier — i.e. the REMOTE's shell, not the orchestrator's
 // one the chroot is built around. The pin is a longer prefix than `project /`,
-// which is the only thing keeping it host-served. (What is NOT the reason any
-// more, since card 2026-0388: it is not that the unmarked caller loses the
-// substitution there — `policy_caller_tier` substitutes `project` → `host`
-// wherever the host has an entry, so an unmarked caller is covered at a wide
-// root with or without these pins.) Measured by building the real table both
-// ways.
+// which is the only thing keeping it host-served FOR THE MARKED CLI. (What is
+// NOT the reason, and has not been since card 2026-0388: it is not that an
+// UNMARKED caller loses anything here. Since card 2026-0398 an unmarked caller
+// resolves in `VIEW_HOST`, where every `project` pin is struck — so it is served
+// the orchestrator's own `/bin/sh` at a wide root with or without these pins,
+// and at every other geometry identically. The pins are for the CLI.) Measured
+// by building the real table both ways.
 //
 // The split, from the measured pre-mark window plus `ldd`, recorded rather than
 // acted on:

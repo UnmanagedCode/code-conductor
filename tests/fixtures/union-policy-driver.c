@@ -287,11 +287,11 @@ static void b1_prefix(void)
 	pin("host\t/tmp/app");
 	pin("project\t/tmp/app/inner");
 	anc_build();
-	CHECK(tier_of("/tmp/app") == T_HOST, "the pin itself is host");
-	CHECK(tier_of("/tmp/app/x") == T_HOST, "a child at a boundary is host");
-	CHECK(tier_of("/tmp/apple") == T_FAIL, "/tmp/apple does NOT match the pin /tmp/app");
-	CHECK(tier_of("/tmp/app-1/x") == T_FAIL, "a sibling sharing the first bytes does not match");
-	CHECK(tier_of("/tmp/app/inner/deep") == T_PROJECT, "the LONGER pin wins over the shorter");
+	CHECK(tier_of("/tmp/app", VIEW_CLI) == T_HOST, "the pin itself is host");
+	CHECK(tier_of("/tmp/app/x", VIEW_CLI) == T_HOST, "a child at a boundary is host");
+	CHECK(tier_of("/tmp/apple", VIEW_CLI) == T_FAIL, "/tmp/apple does NOT match the pin /tmp/app");
+	CHECK(tier_of("/tmp/app-1/x", VIEW_CLI) == T_FAIL, "a sibling sharing the first bytes does not match");
+	CHECK(tier_of("/tmp/app/inner/deep", VIEW_CLI) == T_PROJECT, "the LONGER pin wins over the shorter");
 }
 
 /* ── B2: an unpinned path is fail-closed, never remote-first ────────────── */
@@ -300,12 +300,12 @@ static void b2_failclosed(void)
 	CHECK((int)T_FAIL == 0, "T_FAIL is enum index 0 (got %d)", (int)T_FAIL);
 	pin("host\t/etc/passwd");
 	anc_build();
-	CHECK(tier_of("/nowhere/at/all") == T_FAIL, "an unpinned path is T_FAIL");
-	CHECK(tier_of("/nowhere/at/all") == (enum tier)0, "and T_FAIL is what tier_of returns for no match");
+	CHECK(tier_of("/nowhere/at/all", VIEW_CLI) == T_FAIL, "an unpinned path is T_FAIL");
+	CHECK(tier_of("/nowhere/at/all", VIEW_CLI) == (enum tier)0, "and T_FAIL is what tier_of returns for no match");
 	/* The mechanism, not just the value: an EMPTY table answers fail for
 	 * everything, which is what "fail-closed by construction" means. */
 	npins = 0;
-	CHECK(tier_of("/") == T_FAIL, "with no pins at all, even / is fail");
+	CHECK(tier_of("/", VIEW_CLI) == T_FAIL, "with no pins at all, even / is fail");
 }
 
 /* ── B3: the ancestor set is EXACT membership, not a prefix rule ────────── */
@@ -313,13 +313,13 @@ static void b3_ancestors(void)
 {
 	pin("host\t/usr/bin/sh");
 	anc_build();
-	CHECK(resolve_class("/usr") == T_SYNTH, "a strict ancestor of a pin is synthetic");
-	CHECK(resolve_class("/usr/bin") == T_SYNTH, "and so is the next one down");
-	CHECK(resolve_class("/") == T_SYNTH, "/ is always in the set");
-	CHECK(resolve_class("/usr/bin/sh") == T_HOST, "the pin itself keeps its own tier");
-	CHECK(resolve_class("/usrX") == T_FAIL, "/usrX is NOT an ancestor — membership is exact");
-	CHECK(resolve_class("/usr/bi") == T_FAIL, "nor is a prefix of a component");
-	CHECK(resolve_class("/usr/lib") == T_FAIL, "nor an unrelated sibling");
+	CHECK(resolve_class("/usr", VIEW_CLI) == T_SYNTH, "a strict ancestor of a pin is synthetic");
+	CHECK(resolve_class("/usr/bin", VIEW_CLI) == T_SYNTH, "and so is the next one down");
+	CHECK(resolve_class("/", VIEW_CLI) == T_SYNTH, "/ is always in the set");
+	CHECK(resolve_class("/usr/bin/sh", VIEW_CLI) == T_HOST, "the pin itself keeps its own tier");
+	CHECK(resolve_class("/usrX", VIEW_CLI) == T_FAIL, "/usrX is NOT an ancestor — membership is exact");
+	CHECK(resolve_class("/usr/bi", VIEW_CLI) == T_FAIL, "nor is a prefix of a component");
+	CHECK(resolve_class("/usr/lib", VIEW_CLI) == T_FAIL, "nor an unrelated sibling");
 }
 
 /* An exactly-pinned path is that pin, never a synthetic node: the pin is the
@@ -330,8 +330,8 @@ static void b3b_exact_pin_wins(void)
 	pin("host\t/usr/bin/sh");
 	anc_build();
 	CHECK(anc_find("/usr") < 0, "an exactly-pinned ancestor is dropped from the set");
-	CHECK(resolve_class("/usr") == T_HOST, "and resolves to its pin");
-	CHECK(resolve_class("/usr/bin") == T_HOST, "its unpinned child follows the pin, not the set");
+	CHECK(resolve_class("/usr", VIEW_CLI) == T_HOST, "and resolves to its pin");
+	CHECK(resolve_class("/usr/bin", VIEW_CLI) == T_HOST, "its unpinned child follows the pin, not the set");
 }
 
 /* ── B4: a synthetic dir lists exactly its own children ─────────────────── */
@@ -358,7 +358,7 @@ static void b4_children(void)
 	anc_build();
 
 	nlisted = 0;
-	policy_synth_children("/", collect, NULL);
+	policy_synth_children("/", VIEW_CLI, collect, NULL);
 	CHECK(listed_has("usr"), "/ lists the synthetic ancestor usr");
 	CHECK(listed_has("srv"), "/ lists the synthetic ancestor srv");
 	CHECK(listed_has("proc"), "/ lists the bind node proc");
@@ -368,19 +368,19 @@ static void b4_children(void)
 	CHECK(nlisted == 5, "/ lists exactly its five children, got %zu", nlisted);
 
 	nlisted = 0;
-	policy_synth_children("/run", collect, NULL);
+	policy_synth_children("/run", VIEW_CLI, collect, NULL);
 	CHECK(nlisted == 0, "a hide child is suppressed from its parent's listing, got %zu", nlisted);
 
 	nlisted = 0;
-	policy_synth_children("/var", collect, NULL);
+	policy_synth_children("/var", VIEW_CLI, collect, NULL);
 	CHECK(nlisted == 0, "a fail child is suppressed too — every op on it answers -ENOENT");
 
 	nlisted = 0;
-	policy_synth_children("/usr", collect, NULL);
+	policy_synth_children("/usr", VIEW_CLI, collect, NULL);
 	CHECK(nlisted == 1 && listed_has("bin"), "/usr lists exactly bin");
 
 	nlisted = 0;
-	policy_synth_children("/usr/bin", collect, NULL);
+	policy_synth_children("/usr/bin", VIEW_CLI, collect, NULL);
 	CHECK(nlisted == 1 && listed_has("sh"), "/usr/bin lists exactly the host pin sh");
 }
 
@@ -397,7 +397,7 @@ static void b5_getattr(void)
 	pin("host\t/usr/bin/sh");
 	anc_build();
 
-	CHECK(policy_synth_getattr("/zzz-no-such-root-on-this-host", &st) == 0,
+	CHECK(policy_synth_getattr("/zzz-no-such-root-on-this-host", &st, VIEW_CLI) == 0,
 	      "a synthetic node over a nonexistent host path still answers");
 	CHECK((st.st_mode & 07777) == 0555 && S_ISDIR(st.st_mode), "mode is a 0555 directory (got %o)", st.st_mode);
 	CHECK(st.st_uid == 0 && st.st_gid == 0, "uid and gid are 0");
@@ -406,19 +406,19 @@ static void b5_getattr(void)
 	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "all three times are 0");
 	CHECK(st.st_ino >= SYNTH_INO_BASE, "the inode comes from the ancestor table");
 
-	CHECK(policy_synth_getattr("/usr", &st2) == 0, "and over a host path that DOES exist");
+	CHECK(policy_synth_getattr("/usr", &st2, VIEW_CLI) == 0, "and over a host path that DOES exist");
 	CHECK(st2.st_mtime == 0 && (st2.st_mode & 07777) == 0555,
 	      "it answers the fixed node, not the host's /usr (mode %o mtime %lld)",
 	      st2.st_mode, (long long)st2.st_mtime);
 	CHECK(st2.st_ino != st.st_ino, "two synthetic nodes get distinct inodes");
-	CHECK(policy_synth_getattr("/not/in/the/table", &st2) == -ENOENT,
+	CHECK(policy_synth_getattr("/not/in/the/table", &st2, VIEW_CLI) == -ENOENT,
 	      "a path outside the table is not synthetic");
 
 	/* Stable across calls, which is what makes the inode usable at all. */
 	{
 		struct stat a, b;
-		policy_synth_getattr("/usr", &a);
-		policy_synth_getattr("/usr", &b);
+		policy_synth_getattr("/usr", &a, VIEW_CLI);
+		policy_synth_getattr("/usr", &b, VIEW_CLI);
 		CHECK(a.st_ino == b.st_ino, "a synthetic inode is stable for the life of the mount");
 	}
 }
@@ -436,6 +436,20 @@ static void b6_erofs(void)
 }
 
 /* ── B7: unmarked at a project path is -ENOENT ──────────────────────────── */
+/*
+ * DEFENCE IN DEPTH SINCE CARD 2026-0398, AND NO LONGER THE LIVE MECHANISM.
+ * Until that card this mark check was the only thing denying an unmarked caller
+ * at a project path. It is now unreachable in production: an unmarked caller
+ * resolves in `VIEW_HOST`, where `tier_of` skips every `project` pin, so no
+ * unmarked resolution can produce T_PROJECT and route() cannot dispatch one
+ * here. The live mechanism is the VIEW, where the invariant is structural —
+ * `b41` is what pins it.
+ *
+ * THE CHECK STAYS AND SO DOES THIS CASE. It is a liveness guard on the only
+ * function that sends a control frame, and -ENOENT is still the correct answer
+ * if a later edit ever reopens the route. This case drives it directly, which is
+ * the only way it CAN be driven now.
+ */
 static void b7_unmarked(void)
 {
 	pin("project\t/srv/app");
@@ -456,7 +470,7 @@ static void b7_unmarked(void)
 	/* THE OTHER HALF OF CRITERION 6: a host pin is served to marked and
 	 * unmarked callers alike, and route() reaches it without consulting the
 	 * mark at all — the classification alone decides. */
-	CHECK(resolve_class("/usr/bin/sh") == T_HOST,
+	CHECK(resolve_class("/usr/bin/sh", VIEW_CLI) == T_HOST,
 	      "a host pin classifies as host with no caller in the question");
 }
 
@@ -833,11 +847,12 @@ static void b0_parse(void)
 	CHECK(pins_parse_line(l4) == -1, "`synth` is REJECTED — it is derived, never parsed");
 	CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
 	{
-		/* AND `cwd` IS REJECTED THE SAME WAY. This is the STRUCTURAL
-		 * proof that the cwd-chain exemption can never enter the
-		 * artifact the hook's tier table shares: T_CWD is derived in C
-		 * by route(), so no pins file can name it and no `cwd` entry can
-		 * reach `renderPinsFile`'s consumers. */
+		/* AND `cwd` IS REJECTED THE SAME WAY. `T_CWD` itself is gone
+		 * (card 2026-0398 deleted the exemption it served), so this is
+		 * now the standing guard that no derived class can be smuggled
+		 * into the artifact the hook's tier table shares:
+		 * `renderPinsFile`'s consumers can only ever see the five kinds
+		 * `pins_parse_line` accepts. */
 		char lc[] = "cwd\t/srv/app";
 		CHECK(pins_parse_line(lc) == -1, "`cwd` is REJECTED — it is derived, never parsed");
 		CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
@@ -964,242 +979,8 @@ static void b15_unreconcilable(void)
 }
 
 /* ── B17: the cwd exemption at the project root ─────────────────────────── */
-/*
- * THIS LAYER IS MANDATORY AND THE REAL GATE CANNOT SUBSTITUTE FOR IT.
- * `MOUNT_OPTS` carries `default_permissions`, so through a real mount the
- * KERNEL refuses an unmarked `opendir` against the 0111 node before the daemon
- * is ever asked — the daemon's own op allow-list, the gate that actually
- * enforces the conjunction, is MASKED by a lower layer. A masked guard is
- * unkillable by mutation: break it and every real-mount test still passes. Only
- * this fixture can prove it.
- *
- * `argv[2..]` are op names, handed over by the .mjs so the allow-list is driven
- * from the SAME literal the source-shape test checks against union.c's op
- * strings. Running the case with no ops still asserts the two named below.
- */
-static void b17_cwd_exempt(int argc, char **argv)
-{
-	char tmpl[] = "/tmp/cc-policy-cwdXXXXXX";
-	int fd = mkstemp(tmpl);
-	char line[512];
-	struct stat st;
-	int n_sub = 0, n_file = 0, n_root = 0, i;
-	int calls;
-
-	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	event_fp = fdopen(fd, "w+");
-	setvbuf(event_fp, NULL, _IOLBF, 0);
-	/* NO HOST fd: this case drives the exemption, whose answer the
-	 * host-existence substitution does not change — and stating the seam
-	 * explicitly is what stops a future default silently substituting
-	 * this chain out from under the case. */
-	policy_host_fd = -1;
-
-	pin("project\t/srv/app");              /* pins[0] */
-	pin("host\t/etc");                     /* pins[1] */
-	/* A PROJECT PIN AT A PATH THAT DOES NOT EXIST ON THIS HOST (C7): if the
-	 * node were ever filled from a host stat it would answer -ENOENT here. */
-	pin("project\t/zzz-no-such-root-on-this-host/app");   /* pins[2] */
-	anc_build();
-	/* THE CWD, AS A SEAM. It lives in policy.h precisely so this fixture can
-	 * assign it; union.c reads it from CC_UNION_CWD and refuses to mount
-	 * without it. Here the cwd IS the project root, which is the default
-	 * configuration and what makes b17 the root-only case that b22 widens. */
-	cwd_path = "/srv/app";
-	proc_set(500, 500, 111);               /* an unmarked thread group */
-	proc_set(600, 600, 222);               /* the one we mark */
-	policy_mark_tid(600);
-
-	/* ── C1: the root resolves, and only for an unmarked caller ─────── */
-	CHECK(policy_cwd_exempt("getattr", "/srv/app", 500) == 1,
-	      "an UNMARKED caller may getattr the exact project root");
-	CHECK(xport_calls == 0, "and the exemption sent no control frame");
-
-	/* ── C2: a marked caller is NOT exempted ────────────────────────── */
-	CHECK(policy_cwd_exempt("getattr", "/srv/app", 600) == 0,
-	      "a MARKED caller is not exempted — it gets the real routed answer");
-	CHECK(policy_project_route("getattr", "/srv/app", 600, CCU_STAT, 0) == 0,
-	      "and that answer is the routed one");
-	CHECK(xport_calls == 1, "which took exactly one control round trip (%d)", xport_calls);
-	calls = xport_calls;                   /* every unmarked op below adds none */
-
-	/* ── C3: nothing inside it, both directions of the ruling ───────── */
-	CHECK(policy_cwd_exempt("getattr", "/srv/app/README.md", 500) == 0,
-	      "a FILE in the project tree is not exempt");
-	CHECK(policy_project_route("getattr", "/srv/app/README.md", 500, CCU_STAT, 0) == -ENOENT,
-	      "and it is denied");
-	CHECK(policy_cwd_exempt("getattr", "/srv/app/src", 500) == 0,
-	      "a project-tier DIRECTORY that is not the root is not exempt either");
-	CHECK(policy_project_route("getattr", "/srv/app/src", 500, CCU_STAT, 0) == -ENOENT,
-	      "and it is denied");
-	CHECK(xport_calls == calls, "no control frame was sent on the unmarked caller's behalf");
-
-	/* ── C4: the op allow-list is `getattr` alone ───────────────────── */
-	CHECK(policy_cwd_exempt("opendir", "/srv/app", 500) == 0,
-	      "opendir is NOT exempt — a directory's listing is content inside it");
-	CHECK(policy_cwd_exempt("access", "/srv/app", 500) == 0,
-	      "neither is access — default_permissions means the kernel answers it");
-	for (i = 2; i < argc; i++)
-		CHECK(policy_cwd_exempt(argv[i], "/srv/app", 500) == 0,
-		      "`%s` is not exempt", argv[i]);
-
-	/* ── C6: the node's attributes, against literals ────────────────── */
-	CHECK(policy_cwd_getattr("/srv/app", &st) == 0, "the cwd node answers");
-	CHECK((st.st_mode & 07777) == 0111 && S_ISDIR(st.st_mode),
-	      "mode is a 0111 directory — enter, do not read (got %o)", st.st_mode);
-	CHECK(st.st_nlink == 2, "nlink is 2");
-	CHECK(st.st_uid == 0 && st.st_gid == 0, "uid and gid are 0");
-	CHECK(st.st_size == 0, "size is 0");
-	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "all three times are 0");
-	/* THE INODE IS THE CHAIN'S OWN SUB-RANGE, not policy_bind_ino's. Written
-	 * as the arithmetic rather than as a number so the three sub-ranges' bases
-	 * stay visible; b27 pins the disjointness. `/srv/app` is at depth 2. */
-	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + npins + 2,
-	      "the inode is in the cwd chain's sub-range, at the component's depth");
-	CHECK(st.st_ino != policy_bind_ino("/srv/app"),
-	      "and NOT the exact-pin inode — the two ranges are distinct");
-	CHECK(policy_cwd_getattr("/etc", &st) == -ENOENT,
-	      "a path off the cwd chain gets no cwd node, host pin or not");
-	CHECK(policy_cwd_exempt("getattr", "/etc", 500) == 0,
-	      "and an unmarked caller is not exempted at one");
-
-	/* ── C7: it touches no filesystem and asks nobody ───────────────── */
-	/* THE CWD MOVES for this check alone: the point is that the node answers
-	 * for a path that DOES NOT EXIST ON THIS HOST, so the cwd has to be that
-	 * path. Restored below, because the cache arithmetic that follows is about
-	 * `/srv/app`. */
-	cwd_path = "/zzz-no-such-root-on-this-host/app";
-	CHECK(policy_cwd_getattr("/zzz-no-such-root-on-this-host/app", &st) == 0,
-	      "a cwd over a nonexistent host path still answers");
-	CHECK((st.st_mode & 07777) == 0111 && S_ISDIR(st.st_mode),
-	      "with the same fixed mode (got %o)", st.st_mode);
-	CHECK(st.st_nlink == 2 && st.st_uid == 0 && st.st_gid == 0 && st.st_size == 0,
-	      "and the same fixed nlink, ownership and size");
-	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "and the same zero times");
-	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + npins + 2,
-	      "and its own depth's inode in the chain sub-range");
-	CHECK(policy_cwd_exempt("getattr", "/zzz-no-such-root-on-this-host/app", 500) == 1,
-	      "and it is exempt without the path existing");
-	CHECK(policy_cwd_getattr("/nowhere/at/all", &st) == -ENOENT,
-	      "a path off the chain gets no cwd node either");
-	CHECK(policy_cwd_exempt("getattr", "/nowhere/at/all", 500) == 0,
-	      "and an unmarked caller is not exempted at one");
-	cwd_path = "/srv/app";
-	CHECK(xport_calls == calls,
-	      "NO CONTROL FRAME for any unmarked op (%d)", xport_calls);
-
-	/* AND NO CACHE ENTRY, ASSERTED RATHER THAN ASSUMED. `cache_put` is pure
-	 * in-process memory and never touches the transport, so `xport_calls`
-	 * alone cannot see one — an exemption implemented by routing through
-	 * ccu_call/cache_put would satisfy every check above.
-	 *
-	 * THE CACHE'S OWN KEY IS THE INSTRUMENT: it is (tgid, path), and
-	 * `policy_project_route` consults it for any op but FETCH. So an entry
-	 * written by an UNMARKED exempted getattr would be found by that SAME
-	 * thread group once marked, and would serve it with no round trip. One
-	 * tgid, one path, across the mark transition: FLAT means an entry
-	 * existed, +1 means none did. It is also why an unmarked denial is never
-	 * written back — a mark arriving later must be visible on the very next
-	 * op rather than one TTL after it. */
-	/* WHAT THIS CASE DOES NOT COVER, SO NOBODY LATER CREDITS IT WITH BOTH
-	 * HALVES. The plan's C7 mutant — "implement the exemption by routing
-	 * getattr through ccu_call/cache_put" — has two sides. The policy.h side
-	 * (this predicate or policy_cwd_getattr sending a frame or writing an
-	 * entry) is what the arithmetic below kills. The union.c side — pt_getattr
-	 * answering an exempted getattr from the MIRROR instead of calling
-	 * policy_cwd_getattr — is INVISIBLE HERE BY CONSTRUCTION: this fixture
-	 * drives the predicate and policy_cwd_getattr directly and never reaches
-	 * an op body, so the frame and entry counts come out identical either way.
-	 * That half rests on R8(d)'s '111 0 0' literal, which a mirror-routed
-	 * answer cannot satisfy — the mirror entry carries the source's real mode
-	 * and ownership, not this node's fixed ones. */
-	proc_set(700, 700, 333);
-	CHECK(policy_cwd_exempt("getattr", "/srv/app", 700) == 1,
-	      "a second unmarked thread group is exempted too");
-	policy_mark_tid(700);
-	CHECK(policy_project_route("getattr", "/srv/app", 700, CCU_STAT, 0) == 0,
-	      "and once MARKED it gets the routed answer");
-	CHECK(xport_calls == calls + 1,
-	      "which cost a control round trip — so the exemption wrote NO CACHE ENTRY "
-	      "the mark could then be served from (%d, expected %d)", xport_calls, calls + 1);
-	calls = xport_calls;
-	/* THE POSITIVE CONTROL, and without it the assertion above is a claim
-	 * about a mechanism that might not exist: an entry at (700, "/srv/app")
-	 * really does suppress the round trip. So the +1 is evidence there was
-	 * no entry, rather than evidence the cache never serves anything. */
-	CHECK(policy_project_route("getattr", "/srv/app", 700, CCU_STAT, 0) == 0,
-	      "the SAME marked route again is answered");
-	CHECK(xport_calls == calls,
-	      "from the cache, with no second round trip — which is what an entry "
-	      "written by the exemption would have done to the call above (%d)", xport_calls);
-
-	/* THE EVENT LOG: the two paths under the root are refused BY NAME, and
-	 * the root itself is not refused at all. */
-	rewind(event_fp);
-	while (fgets(line, sizeof(line), event_fp)) {
-		if (strstr(line, "\tunmarked-project-denied\t") == NULL) continue;
-		if (strstr(line, "\t/srv/app/src\t"))       n_sub++;
-		if (strstr(line, "\t/srv/app/README.md\t")) n_file++;
-		if (strstr(line, "\t/srv/app\t"))           n_root++;
-	}
-	CHECK(n_file == 1, "the file's denial is logged unmarked-project-denied (%d)", n_file);
-	CHECK(n_sub == 1, "so is the subdirectory's (%d)", n_sub);
-	CHECK(n_root == 0, "and the project ROOT is refused to nobody (%d)", n_root);
-	fclose(event_fp);
-	event_fp = NULL;
-	unlink(tmpl);
-}
-
 /* ── B18: the wide advertised mirror root IS repaired by the widening ────── */
-/*
- * THE PRIMARY PROOF OF THE CWD-CHAIN WIDENING, and it lives at the policy layer
- * because a mount test cannot see it: `default_permissions` makes the KERNEL
- * refuse the unmarked `opendir` against the 0111 node before the daemon's own
- * op allow-list is ever asked.
- *
- * INVERTED FROM WHAT IT ASSERTED BEFORE, and the inversion IS the evidence card
- * 2026-0375 is closed. When a provider advertises `mirrorRoot: '/'`,
- * `buildTierTable` emits TWO project pins, so an intermediate directory such as
- * `/srv` matches the `/` pin by longest prefix: project tier with NO EXACT PIN.
- * Under the old `pin_exact` test that made it not exempt, and a chdir to
- * `/srv/app` died one component early at `/srv`. The 2026-09-08 owner amendment
- * exempts every directory component of the cwd, so that chdir must now succeed
- * — and this case asserts the exemption at `/srv` where it used to assert the
- * denial.
- *
- * The residual was created by 2026-0373's narrowness and removed by a ruling,
- * not by a defect fix. 2026-0382 absorbs 2026-0375.
- */
-static void b18_cwd_wide_mirror(void)
-{
-	/* NO HOST fd: this case drives the exemption, whose answer the
-	 * host-existence substitution does not change — and stating the seam
-	 * explicitly is what stops a future default silently substituting
-	 * this chain out from under the case. */
-	policy_host_fd = -1;
-	pin("project\t/");
-	pin("project\t/srv/app");
-	anc_build();
-	cwd_path = "/srv/app";
-	proc_set(500, 500, 111);
-
-	CHECK(tier_of("/srv") == T_PROJECT, "an intermediate dir is project tier by longest prefix");
-	CHECK(pin_exact("/srv") == NULL, "with no exact pin of its own");
-	/* THE INVERSION. `pin_exact` said no; the chain predicate says yes. */
-	CHECK(policy_cwd_exempt("getattr", "/srv", 500) == 1,
-	      "so it IS exempt as a cwd chain component, and the chdir through it lives");
-	CHECK(policy_cwd_exempt("getattr", "/", 500) == 1, "so is the root: /");
-	CHECK(policy_cwd_exempt("getattr", "/srv/app", 500) == 1, "and the cwd itself");
-	/* AND NO FURTHER. A sibling of the intermediate component, a child of the
-	 * cwd and an unrelated project-tier path all stay denied — the widening is
-	 * to the chain, not to the tier. */
-	CHECK(policy_cwd_exempt("getattr", "/srvX", 500) == 0, "a sibling of /srv is not");
-	CHECK(policy_cwd_exempt("getattr", "/srv/other", 500) == 0, "nor a sibling of the cwd");
-	CHECK(policy_cwd_exempt("getattr", "/srv/app/sub", 500) == 0, "nor a child of the cwd");
-	CHECK(policy_cwd_exempt("getattr", "/etc", 500) == 0, "nor an unrelated project-tier dir");
-}
-
-/* ── B19: the caller-tier matrix, all seven tiers × {marked, unmarked} ───── */
+/* ── B19: the caller-tier matrix, all six tiers × {marked, unmarked} ─────── */
 /*
  * THE RULING IN ONE TRUTH TABLE, RUN TWICE — ONCE PER HOST AXIS. Since the
  * 2026-09-09 ruling the map is no longer a function of `(t, marked)` alone:
@@ -1222,18 +1003,26 @@ static void b19_caller_tier_matrix(void)
 	host_box(box);
 	hfile(box, "/p");
 	hjoin(probe, sizeof(probe), box, "/p");
+	/* THE CWD IS ELSEWHERE, deliberately: the probe path must not be a chain
+	 * component, or the overlay would answer and this case would be about
+	 * the chain instead of about the map. */
+	cwd_path = "/srv/app";
 
 	for (pass = 0; pass < 2; pass++) {
 		int t;
-		int seen_fail_sub = 0, seen_project_sub = 0, seen_identity = 0;
+		int seen_sub = 0, seen_identity = 0;
 
-		/* PASS 0: no host fd at all — the host has nothing anywhere.
-		 * PASS 1: the real root, at a path this case created. */
+		/* PASS 0: no host fd at all. PASS 1: the real root, at a path
+		 * this case created. THE TWO PASSES MUST AGREE — that is the
+		 * assertion. Before card 2026-0398 host-entry existence was the
+		 * discriminator at T_PROJECT and the two passes differed there;
+		 * the view replaced it, so the geometry AND the host axis are
+		 * both out of the decision now. */
 		policy_host_fd = pass ? host_root_fd() : -1;
-		CHECK(policy_host_has(probe) == pass,
+		CHECK(policy_host_absent(probe) == !pass,
 		      "pass %d: the host axis is really %s", pass, pass ? "host-has" : "host-lacks");
 
-		for (t = 0; t <= (int)T_CWD; t++) {
+		for (t = 0; t <= (int)T_SYNTH; t++) {
 			enum tier ti = (enum tier)t;
 			enum tier marked   = policy_caller_tier("getattr", probe, ti, 1, 500);
 			enum tier unmarked = policy_caller_tier("getattr", probe, ti, 0, 500);
@@ -1244,66 +1033,69 @@ static void b19_caller_tier_matrix(void)
 			 * where the host copy is a DIFFERENT FILE. */
 			CHECK(marked == ti, "pass %d marked: %s is unchanged (got %s)",
 			      pass, tier_name(ti), tier_name(marked));
-			if (ti == T_FAIL) {
-				/* UNCONDITIONAL, so it fires on both passes. */
+			if (ti == T_FAIL || ti == T_PROJECT || ti == T_SYNTH) {
+				/* THE THREE CALLER-SENSITIVE TIERS, and they land
+				 * on the SAME answer on BOTH passes: `project`
+				 * and `synth` re-resolve in VIEW_HOST, where an
+				 * unpinned non-chain path is `fail`, and `fail`
+				 * is host unconditionally. */
 				CHECK(unmarked == T_HOST,
-				      "pass %d unmarked: fail → host (got %s)", pass, tier_name(unmarked));
-				seen_fail_sub++;
-			} else if (ti == T_PROJECT && pass == 1) {
-				CHECK(unmarked == T_HOST,
-				      "pass 1 unmarked: project → host WHERE THE HOST HAS AN ENTRY (got %s)",
-				      tier_name(unmarked));
-				seen_project_sub++;
+				      "pass %d unmarked: %s → host (got %s)",
+				      pass, tier_name(ti), tier_name(unmarked));
+				seen_sub++;
 			} else {
-				/* project-without-a-host-entry, hide, bind,
-				 * synth, host, cwd — EVERY ONE unchanged, and
+				/* hide, bind, host — every one unchanged, and
 				 * each for its own reason: hide is what keeps
 				 * the mirror and the control socket
 				 * unreachable, bind is resolved by unmarked
-				 * `mount` before the mark fires, synth answers
-				 * a fixed stat, host already IS the host. */
+				 * `mount` before the mark fires, host already
+				 * IS the host. VIEW_HOST strikes only `project`
+				 * pins, so none of the three can move. */
 				CHECK(unmarked == ti, "pass %d unmarked: %s is unchanged (got %s)",
 				      pass, tier_name(ti), tier_name(unmarked));
 				seen_identity++;
 			}
 		}
-		/* NON-VACUITY, PER PASS: the loop really drove seven tiers and
-		 * really saw the substitutions this pass is meant to see, so an
-		 * empty or short loop cannot read as a pass. */
-		CHECK(seen_fail_sub == 1, "pass %d: the T_FAIL row was driven", pass);
-		CHECK(seen_project_sub == (pass ? 1 : 0),
-		      "pass %d: the T_PROJECT substitution fired exactly where the host axis says (%d)",
-		      pass, seen_project_sub);
-		CHECK(seen_identity == (pass ? 5 : 6),
-		      "pass %d: and the remaining rows were identity (%d)", pass, seen_identity);
+		/* NON-VACUITY, PER PASS: the loop really drove six tiers and saw
+		 * three substitutions and three identities, so an empty or short
+		 * loop cannot read as a pass. */
+		CHECK(seen_sub == 3, "pass %d: all three caller-sensitive tiers were driven (%d)",
+		      pass, seen_sub);
+		CHECK(seen_identity == 3, "pass %d: and the remaining three were identity (%d)",
+		      pass, seen_identity);
 		if (policy_host_fd >= 0) close(policy_host_fd);
 		policy_host_fd = -1;
 	}
+	cwd_path = NULL;
 	hrm(box, "/p");
 	rmdir(box);
 }
 
-/* ── B20: the caller-sensitive set is EXACTLY {T_FAIL, T_PROJECT} ───────── */
+/* ── B20: the set is EXACTLY {T_FAIL, T_PROJECT, T_SYNTH} ───────────────── */
 /*
  * SEPARATE FROM B19 BECAUSE THE PREDICATE IS SEPARATE, and route() consults it
  * BEFORE the map: a tier wrongly in this set pays two /proc reads per op and
  * hands `policy_caller_tier` a tier it was not asked about, while a tier
- * wrongly out of it can never be substituted no matter what the map says.
+ * wrongly OUT of it can never be substituted no matter what the map says — and
+ * that second direction is what T_SYNTH is doing here. Dropping it leaves every
+ * ancestor-of-a-pin directory answering an unmarked caller with a 0555 scaffold
+ * node over a directory the orchestrator HAS, which epic criterion 4 calls "a
+ * violation, not a rounding" and which nothing else in this fixture can see.
  */
 static void b20_caller_sensitive_set(void)
 {
 	int t;
 	int n_sensitive = 0;
 
-	for (t = 0; t <= (int)T_CWD; t++) {
+	for (t = 0; t <= (int)T_SYNTH; t++) {
 		enum tier ti = (enum tier)t;
-		int want = (ti == T_FAIL || ti == T_PROJECT);
+		int want = (ti == T_FAIL || ti == T_PROJECT || ti == T_SYNTH);
 		CHECK(policy_tier_is_caller_sensitive(ti) == want,
 		      "%s is %scaller-sensitive", tier_name(ti), want ? "" : "NOT ");
 		if (policy_tier_is_caller_sensitive(ti))
 			n_sensitive++;
 	}
-	CHECK(n_sensitive == 2, "exactly two tiers are caller-sensitive (%d)", n_sensitive);
+	CHECK(n_sensitive == 3, "exactly three tiers are caller-sensitive (%d)", n_sensitive);
 }
 
 /* ── B21: the substitution denies nowhere; only policy_project_route does ── */
@@ -1331,20 +1123,20 @@ static void b21_unmarked_refused_only_at_project(void)
 	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* unmarked, and stays unmarked */
 
-	/* THE HOST HAS AN ENTRY AT EVERY PROBE PATH, so the T_PROJECT rule is
-	 * exercised on the side where it CAN substitute — the arm that would
-	 * write a `deny` row if the substitution ever denied. */
+	/* THE HOST HAS AN ENTRY AT EVERY PROBE PATH — the side that once decided
+	 * the T_PROJECT rule, kept because it is still the arm that would write a
+	 * `deny` row if the substitution ever denied. */
 	host_box(box);
 	policy_host_fd = host_root_fd();
 
 	/* EVERY TIER, one distinct path each so the dedupe cannot collapse rows
 	 * and hide one. */
-	for (t = 0; t <= (int)T_CWD; t++) {
+	for (t = 0; t <= (int)T_SYNTH; t++) {
 		char suffix[32], path[PATH_MAX];
 		snprintf(suffix, sizeof(suffix), "/probe-%d", t);
 		hfile(box, suffix);
 		hjoin(path, sizeof(path), box, suffix);
-		CHECK(policy_host_has(path) == 1, "the host has probe-%d", t);
+		CHECK(policy_host_absent(path) == 0, "the host has probe-%d", t);
 		(void)policy_caller_tier("getattr", path, (enum tier)t, 0, 500);
 	}
 	rewind(event_fp);
@@ -1353,7 +1145,9 @@ static void b21_unmarked_refused_only_at_project(void)
 		if (strncmp(line, "served\t", 7) == 0)   n_served++;
 	}
 	CHECK(n_deny == 0, "the substitution denies at NO tier (%d deny rows)", n_deny);
-	CHECK(n_served == 2, "and it serves at exactly two — T_FAIL and T_PROJECT (%d served rows)", n_served);
+	CHECK(n_served == 3,
+	      "and it serves at exactly three — T_FAIL, T_PROJECT and T_SYNTH, all under the "
+	      "one `fail -> host` rule they re-resolve into (%d served rows)", n_served);
 
 	/* AND THE ONE DENIAL THERE IS. Non-vacuity for the zero above: an
 	 * unmarked caller CAN be denied, at the project tier, and the sink this
@@ -1371,7 +1165,7 @@ static void b21_unmarked_refused_only_at_project(void)
 	unlink(tmpl);
 	close(policy_host_fd);
 	policy_host_fd = -1;
-	for (t = 0; t <= (int)T_CWD; t++) {
+	for (t = 0; t <= (int)T_SYNTH; t++) {
 		char suffix[32];
 		snprintf(suffix, sizeof(suffix), "/probe-%d", t);
 		hrm(box, suffix);
@@ -1431,25 +1225,32 @@ static void b22_cwd_chain_extent(void)
 	CHECK(policy_cwd_component("/root/app") == 1, "while the cwd itself is on it");
 	CHECK(policy_cwd_component("/root") == 1, "and its parent");
 
-	/* ── the whole conjunction, through policy_cwd_exempt ───────────── */
+	/* ── WHAT THE PREDICATE NOW DECIDES: the OVERLAY's domain, reached
+	 *    through resolve_class rather than through an exemption. The host
+	 *    fd is unset, so `policy_host_absent` answers 1 everywhere and the
+	 *    chain predicate is the only live conjunct — which is exactly the
+	 *    isolation this case wants. ─────────────────────────────────── */
 	cwd_path = "/root/app3";
-	CHECK(policy_cwd_exempt("getattr", "/root", 500) == 1,
-	      "an unmarked caller may getattr an intermediate component");
-	CHECK(policy_cwd_exempt("getattr", "/root/app", 500) == 0,
-	      "and not its prefix-sharing sibling");
-	CHECK(policy_cwd_exempt("readdir", "/root", 500) == 0,
-	      "the op allow-list still holds on a chain component");
-	CHECK(policy_cwd_exempt("getattr", "/root", 600) == 0,
-	      "and a MARKED caller is still not exempted anywhere on the chain");
+	pin("project\t/root/app3");
+	anc_build();
+	CHECK(resolve_class("/root", VIEW_HOST) == T_SYNTH,
+	      "an intermediate component the host lacks gets the overlay node");
+	CHECK(resolve_class("/root/app", VIEW_HOST) == T_FAIL,
+	      "and its prefix-sharing sibling does NOT — it falls to fail, which is host");
+	CHECK(resolve_class("/root/app3/sub", VIEW_HOST) == T_FAIL,
+	      "nor does a child of the cwd: the chain is upward only");
+	CHECK(resolve_class("/root", VIEW_CLI) != T_SYNTH || anc_find("/root") >= 0,
+	      "and VIEW_CLI reaches T_SYNTH only through the ancestor table, never the overlay");
 
-	/* ── NO CWD AT ALL IS FAIL-CLOSED, and union.c refuses to mount on
-	 *    it precisely because this is what it would mean: the project root
-	 *    itself un-exempted, and card 2026-0373 regressed. ───────────── */
+	/* ── NO CWD AT ALL IS FAIL-CLOSED, and union.c refuses to mount on it
+	 *    precisely because this is what it would mean: no floor, no overlay
+	 *    node, and every unmarked chdir dead at its destination exactly as
+	 *    before card 2026-0373. ───────────────────────────────────────── */
 	cwd_path = NULL;
 	CHECK(policy_cwd_component("/") == 0, "with no cwd injected, / is not a component");
 	CHECK(policy_cwd_component("/root/app3") == 0, "nor is the project root");
-	CHECK(policy_cwd_exempt("getattr", "/root/app3", 500) == 0,
-	      "so nothing is exempt and every unmarked chdir dies");
+	CHECK(resolve_class("/root/app3", VIEW_HOST) == T_FAIL,
+	      "so no overlay node exists anywhere and the chdir dies");
 }
 
 /* ── B24: every reason maps to exactly ONE kind, at the policy.h sites ──── */
@@ -1457,8 +1258,10 @@ static void b22_cwd_chain_extent(void)
  * THE KIND IS PINNED WHERE IT IS PRODUCED — read back out of the sink, never
  * asserted against a second transcription of the classification.
  *
- * THIS CASE COVERS EVERY REASON policy.h EMITS — the four control/mark ones,
- * BOTH caller-sensitive substitutions and the granted cwd traversal.
+ * THIS CASE COVERS EVERY REASON policy.h EMITS — the four control/mark ones and
+ * the single substitution row. It was seven before card 2026-0398: the project
+ * substitution and the granted cwd traversal both had reasons of their own, and
+ * both mechanisms are gone.
  * The other seven live in union.c op bodies no deterministic fixture can reach;
  * their kinds are pinned by a SOURCE-DERIVED two-directional set equality in
  * tests/fuse-union-policy.test.mjs, which reads every `policy_event(` call site
@@ -1467,9 +1270,7 @@ static void b22_cwd_chain_extent(void)
  */
 static void b24_event_kinds(void)
 {
-	char box[] = "/tmp/cc-policy-b24hXXXXXX";
 	char tmpl[] = "/tmp/cc-policy-b24XXXXXX";
-	char hostpath[PATH_MAX];
 	int fd = mkstemp(tmpl);
 	char line[4096];
 	int i, rows = 0;
@@ -1479,10 +1280,8 @@ static void b24_event_kinds(void)
 		{ "remote-absent",                "deny"   },
 		{ "control-refused",              "deny"   },
 		{ "unmarked-host-served",         "served" },
-		{ "unmarked-project-host-served", "served" },
-		{ "cwd-traversal-served",         "served" },
 	};
-	int found[7] = { 0, 0, 0, 0, 0, 0, 0 };
+	int found[5] = { 0, 0, 0, 0, 0 };
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
@@ -1505,14 +1304,6 @@ static void b24_event_kinds(void)
 	canned_reply(CCU_REFUSED, 0);
 	(void)policy_project_route("getattr", "/srv/app/refused", 4000, CCU_STAT, 0);
 	(void)policy_caller_tier("getattr", "/unpinned/thing", T_FAIL, 0, 5000);
-	host_box(box);
-	hfile(box, "/collide");
-	hjoin(hostpath, sizeof(hostpath), box, "/collide");
-	policy_host_fd = host_root_fd();
-	(void)policy_caller_tier("getattr", hostpath, T_PROJECT, 0, 5000);
-	close(policy_host_fd);
-	policy_host_fd = -1;
-	(void)policy_cwd_exempt("getattr", "/srv/app", 5000);
 
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
@@ -1539,35 +1330,35 @@ static void b24_event_kinds(void)
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
-	hrm(box, "/collide");
-	rmdir(box);
 }
 
-/* ── B25: one served row per (path, thread group), for BOTH substitutions ── */
+/* ── B25: one served row per (path, thread group) ────────────────────────── */
 /*
  * THE SUBSTITUTION'S COST, PAID. After a substitution an unmarked caller's
  * missing object writes no `deny` row at all — the host's ENOENT is not a
  * policy event, and route() could not know about it anyway. So the row fires on
  * the SUBSTITUTION itself, whatever the subsequent host read does, and it means
  * "an unmarked caller was routed to the host" — which is precisely the fact the
- * pin list, and now the host-shadowing surface, are read from.
+ * pin list is read from.
  *
  * AND IT IS `served`, NOT `deny`: the op was not refused. A `deny` here would
  * put an every-shell-startup path into R4's fatal filter.
  *
- * THE TWO REASONS ARE DISTINCT AND BOTH ARE DRIVEN HERE, because they answer
- * different questions: the `fail` row feeds `suggestPin`, while the `project`
- * row's volume by path is how much of the project tree the host shadows.
+ * ONE REASON NOW, WHERE THERE WERE TWO. `unmarked-project-host-served` existed
+ * because the project rule was a SECOND rule with a host-existence test of its
+ * own; card 2026-0398 replaced it with the view, so a project-tier path simply
+ * re-resolves in `VIEW_HOST` and lands on the SAME `fail -> host` rule as
+ * everything else. Both are driven here, at one path each, to pin that they now
+ * produce the same row rather than two.
  */
 static void b25_substitution_logged_per_path_and_tgid(void)
 {
 	char box[] = "/tmp/cc-policy-b25hXXXXXX";
 	char tmpl[] = "/tmp/cc-policy-b25XXXXXX";
-	char have[PATH_MAX], lack[PATH_MAX];
-	char n_have[PATH_MAX + 64], n_lack[PATH_MAX + 64];
+	char have[PATH_MAX], n_have[PATH_MAX + 64];
 	char line[4096];
 	int fd = mkstemp(tmpl);
-	int n_served_a = 0, n_served_b = 0, n_served_have = 0, n_any_lack = 0;
+	int n_served_a = 0, n_served_b = 0, n_served_have = 0;
 	int n_any_project = 0, n_deny_project = 0, rows = 0;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
@@ -1582,7 +1373,6 @@ static void b25_substitution_logged_per_path_and_tgid(void)
 	host_box(box);
 	hfile(box, "/have");
 	hjoin(have, sizeof(have), box, "/have");
-	hjoin(lack, sizeof(lack), box, "/lack");
 	policy_host_fd = host_root_fd();
 
 	/* TWICE at one path, once at another, ONE CALLER THROUGHOUT: the row is
@@ -1592,22 +1382,18 @@ static void b25_substitution_logged_per_path_and_tgid(void)
 	(void)policy_caller_tier("getattr", "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
 	(void)policy_caller_tier("open",    "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
 	(void)policy_caller_tier("getattr", "/var/other", T_FAIL, 0, 500);
-	/* AND THE SAME AGAIN AT T_PROJECT WHERE THE HOST HAS AN ENTRY: two ops,
-	 * one row, under the reason of its own. */
-	(void)policy_caller_tier("getattr", have, T_PROJECT, 0, 500);
+	/* AND THE SAME AGAIN AT T_PROJECT: two ops, one row, under the SAME
+	 * reason — the re-resolution lands on `fail`, which is host. */
+	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 0, 500) == T_HOST,
+	      "an unmarked caller at a project path re-resolves to host");
 	(void)policy_caller_tier("open",    have, T_PROJECT, 0, 500);
-	/* AT A PROJECT PATH THE HOST HAS NOTHING AT the substitution declines
-	 * and writes NOTHING — this is the path that still reaches
-	 * `policy_project_route`. */
-	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 0, 500) == T_PROJECT,
-	      "a host-absent project path is not substituted");
-	/* AND THERE THE DENIAL IS STILL THE ANSWER — the ruling read from the
-	 * log's side. */
-	CHECK(policy_project_route("getattr", "/srv/app/f", 500, CCU_STAT, 0) == -ENOENT,
-	      "the project tier still denies an unmarked caller where the host has nothing");
 
-	snprintf(n_have, sizeof(n_have), "served\tgetattr\t%s\tunmarked-project-host-served\t", have);
-	snprintf(n_lack, sizeof(n_lack), "\t%s\t", lack);
+	/* THE PROJECT TIER'S OWN DENIAL IS STILL THE ANSWER FOR ANYTHING THAT
+	 * REACHES IT — defence in depth now, since no unmarked caller can. */
+	CHECK(policy_project_route("getattr", "/srv/app/f", 500, CCU_STAT, 0) == -ENOENT,
+	      "policy_project_route still denies an unmarked caller");
+
+	snprintf(n_have, sizeof(n_have), "served\tgetattr\t%s\tunmarked-host-served\t", have);
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
 		rows++;
@@ -1616,7 +1402,6 @@ static void b25_substitution_logged_per_path_and_tgid(void)
 		if (strstr(line, "served\tgetattr\t/var/other\tunmarked-host-served\t"))
 			n_served_b++;
 		if (strstr(line, n_have)) n_served_have++;
-		if (strstr(line, n_lack)) n_any_lack++;
 		if (strstr(line, "\t/srv/app/f\t")) {
 			n_any_project++;
 			if (strncmp(line, "deny\t", 5) == 0) n_deny_project++;
@@ -1625,9 +1410,8 @@ static void b25_substitution_logged_per_path_and_tgid(void)
 	CHECK(n_served_a == 1, "one served row per distinct path for one caller, across two ops (%d)", n_served_a);
 	CHECK(n_served_b == 1, "and the second distinct path has its own (%d)", n_served_b);
 	CHECK(n_served_have == 1,
-	      "the project substitution writes ONE unmarked-project-host-served row across two ops (%d)",
-	      n_served_have);
-	CHECK(n_any_lack == 0, "and a host-absent project path writes no row at all (%d)", n_any_lack);
+	      "the project path writes ONE unmarked-host-served row across two ops — the same "
+	      "reason as `fail`, not a second one (%d)", n_served_have);
 	CHECK(n_any_project == 1, "the denied project path produced exactly one row (%d)", n_any_project);
 	CHECK(n_deny_project == 1, "and it is a DENY row, never a served one (%d)", n_deny_project);
 	CHECK(rows == 4, "four rows in total, so nothing extra was emitted (%d)", rows);
@@ -1638,94 +1422,6 @@ static void b25_substitution_logged_per_path_and_tgid(void)
 	policy_host_fd = -1;
 	hrm(box, "/have");
 	rmdir(box);
-}
-
-/* ── B26: the cwd node is traverse-only, at EVERY chain component ────────── */
-/*
- * THE MODE WHERE IT IS PRODUCED, and the op allow-list where nothing can mask
- * it. Through a real mount `default_permissions` + `0111` makes the KERNEL
- * refuse an unmarked `opendir` before the daemon is asked, so the daemon's own
- * allow-list — the unconditional gate, and the only one for a caller with
- * CAP_DAC_READ_SEARCH — is invisible there. A masked guard is
- * mutation-unkillable: this fixture is the only layer that can prove it.
- *
- * `argv[2..]` are op names, handed over by the .mjs from the SAME literal the
- * source-shape test set-compares against union.c's own routed ops — so an op
- * added there without being classified fails rather than silently joining the
- * allow-list.
- */
-static void b26_cwd_traverse_only(int argc, char **argv)
-{
-	static const char *chain[] = { "/", "/root", "/root/app3" };
-	char tmpl[] = "/tmp/cc-policy-b26XXXXXX";
-	int fd = mkstemp(tmpl);
-	char line[512];
-	struct stat st;
-	size_t c;
-	int i, n_readdir = 0, n_opendir = 0;
-
-	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	event_fp = fdopen(fd, "w+");
-	setvbuf(event_fp, NULL, _IOLBF, 0);
-	/* NO HOST fd: this case drives the exemption, whose answer the
-	 * host-existence substitution does not change — and stating the seam
-	 * explicitly is what stops a future default silently substituting
-	 * this chain out from under the case. */
-	policy_host_fd = -1;
-
-	/* A WIDE ADVERTISED ROOT, so every chain component really is project tier
-	 * and `policy_project_route` is the function that would answer it. */
-	pin("project\t/");
-	pin("project\t/root/app3");
-	anc_build();
-	cwd_path = "/root/app3";
-	proc_set(500, 500, 111);               /* unmarked */
-
-	for (c = 0; c < sizeof(chain) / sizeof(chain[0]); c++) {
-		const char *p = chain[c];
-
-		CHECK(policy_cwd_getattr(p, &st) == 0, "%s answers", p);
-		CHECK(S_ISDIR(st.st_mode),
-		      "%s is a DIRECTORY — the kernel refuses chdir on anything else "
-		      "with ENOTDIR before the mode is read at all", p);
-		CHECK((st.st_mode & 07777) == 0111,
-		      "%s is 0111, enter-and-not-read (got %o)", p, st.st_mode & 07777);
-		CHECK(st.st_nlink == 2,
-		      "%s reports nlink 2 — the minimum for any directory, so the "
-		      "number of remote SUBDIRECTORIES is not disclosed", p);
-		CHECK(st.st_uid == 0 && st.st_gid == 0,
-		      "%s is root:root, so no owner bit widens it for any uid", p);
-		CHECK(st.st_size == 0, "%s reports size 0", p);
-		CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0,
-		      "%s reports all three times as 0", p);
-
-		/* THE OP ALLOW-LIST, ON A CHAIN COMPONENT AND NOT ONLY THE ROOT. */
-		CHECK(policy_cwd_exempt("getattr", p, 500) == 1, "%s: getattr is exempt", p);
-		CHECK(policy_cwd_exempt("readdir", p, 500) == 0,
-		      "%s: readdir is NOT — a listing is the content of the directory", p);
-		CHECK(policy_cwd_exempt("opendir", p, 500) == 0,
-		      "%s: neither is opendir", p);
-		for (i = 2; i < argc; i++)
-			CHECK(policy_cwd_exempt(argv[i], p, 500) == 0,
-			      "%s: `%s` is not exempt", p, argv[i]);
-	}
-
-	/* AND WHAT HAPPENS TO THE REFUSED OPS: route()'s T_PROJECT arm falls
-	 * through to policy_project_route, which denies and names it. */
-	CHECK(policy_project_route("readdir", "/root", 500, CCU_STAT, 0) == -ENOENT,
-	      "a readdir of a chain component is denied");
-	CHECK(policy_project_route("opendir", "/root/app3", 500, CCU_STAT, 0) == -ENOENT,
-	      "and so is an opendir of the cwd");
-	rewind(event_fp);
-	while (fgets(line, sizeof(line), event_fp)) {
-		if (strstr(line, "deny\treaddir\t/root\tunmarked-project-denied\t"))       n_readdir++;
-		if (strstr(line, "deny\topendir\t/root/app3\tunmarked-project-denied\t"))  n_opendir++;
-	}
-	CHECK(n_readdir == 1, "the refused readdir is logged unmarked-project-denied (%d)", n_readdir);
-	CHECK(n_opendir == 1, "and so is the refused opendir (%d)", n_opendir);
-	fclose(event_fp);
-	event_fp = NULL;
-	unlink(tmpl);
 }
 
 /* ── B27: every chain component gets a DISTINCT inode, in its own range ─── */
@@ -1764,7 +1460,12 @@ static void b27_cwd_ino_distinct(void)
 		 * node would hand back 0xAAAA… here — outside every asserted range
 		 * — where a zero-init would have looked like a plausible inode. */
 		memset(&st, 0xAA, sizeof(st));
-		CHECK(policy_cwd_getattr(chain[i], &st) == 0, "%s answers", chain[i]);
+		/* THROUGH THE OVERLAY'S OWN NODE, in VIEW_HOST: `policy_cwd_ino`
+		 * is reached from `policy_synth_getattr` now, not from a
+		 * dedicated cwd getattr. No host fd is open, so
+		 * `policy_host_absent` answers 1 and every chain component takes
+		 * the overlay. */
+		CHECK(policy_synth_getattr(chain[i], &st, VIEW_HOST) == 0, "%s answers", chain[i]);
 		ino[i] = (unsigned long long)st.st_ino;
 	}
 
@@ -2139,73 +1840,6 @@ static void b31_dedupe_tgid(void)
 }
 
 /* ── B32: a GRANTED cwd traversal writes a row naming the caller ─────────── */
-/*
- * THE EXEMPTION WAS COMPLETELY SILENT, so no capture could show which process
- * needed which link of the chain — and that question is the whole reason the
- * identity columns exist. It is `served`: the op succeeded, off the tier
- * table's script.
- *
- * EMITTED ON THE GRANT AND NOWHERE ELSE. All three ways the conjunction can
- * fail are driven, because a row on a REFUSED traversal would report an
- * exemption that never happened.
- */
-static void b32_cwd_row(void)
-{
-	char tmpl[] = "/tmp/cc-policy-b32XXXXXX";
-	int fd = mkstemp(tmpl);
-	char line[4096];
-	int rows = 0, n_grant = 0;
-
-	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	event_fp = fdopen(fd, "w+");
-	setvbuf(event_fp, NULL, _IOLBF, 0);
-	/* NO HOST fd: this case drives the exemption, whose answer the
-	 * host-existence substitution does not change — and stating the seam
-	 * explicitly is what stops a future default silently substituting
-	 * this chain out from under the case. */
-	policy_host_fd = -1;
-
-	pin("project\t/");
-	pin("project\t/root/app3");
-	anc_build();
-	cwd_path = "/root/app3";
-	proc_set(500, 500, 111);               /* unmarked */
-	proc_set_identity(500, "sh", "/bin/sh", 7);
-	proc_set(600, 600, 222);
-	proc_set_identity(600, "claude", "claude", 6);
-	policy_mark_tid(600);
-
-	CHECK(policy_cwd_exempt("getattr", "/root", 500) == 1, "the traversal is granted");
-	/* THE THREE REFUSALS, each of which must write nothing. */
-	CHECK(policy_cwd_exempt("getattr", "/root", 600) == 0, "a MARKED caller is not exempt");
-	CHECK(policy_cwd_exempt("readdir", "/root", 500) == 0, "nor is a non-getattr op");
-	CHECK(policy_cwd_exempt("getattr", "/root/other", 500) == 0, "nor an off-chain path");
-
-	rewind(event_fp);
-	while (fgets(line, sizeof(line), event_fp)) {
-		char *col[8];
-		int n = split_row(line, col, 8);
-
-		rows++;
-		CHECK(n == 8, "the row has eight columns (%d)", n);
-		if (n != 8) continue;
-		if (strcmp(col[3], "cwd-traversal-served") != 0) continue;
-		n_grant++;
-		CHECK(strcmp(col[0], "served") == 0,
-		      "the granted traversal is kind `served` — the op was not refused (%s)", col[0]);
-		CHECK(strcmp(col[1], "getattr") == 0 && strcmp(col[2], "/root") == 0,
-		      "and names the op and the chain component (%s %s)", col[1], col[2]);
-		CHECK(strcmp(col[5], "500") == 0,
-		      "and the thread group that needed the link (%s)", col[5]);
-		CHECK(strcmp(col[6], "sh") == 0, "with its comm (%s)", col[6]);
-	}
-	CHECK(n_grant == 1, "exactly one cwd-traversal-served row (%d)", n_grant);
-	CHECK(rows == 1, "and NOTHING at all for the three refused traversals (%d rows)", rows);
-	fclose(event_fp);
-	event_fp = NULL;
-	unlink(tmpl);
-}
-
 /* ── field-vectors: the C encoder's output, for the .mjs decoder to read ──── */
 /*
  * THE CROSS-LANGUAGE ROUND TRIP, in the idiom `frame-vectors` already uses: the
@@ -2229,238 +1863,31 @@ static void b32_cwd_row(void)
  *
  * `argv[2]` is the log path, and it is NOT unlinked — the .mjs reads it.
  */
-/* ── B33: the host-existence probe ──────────────────────────────────────── */
-/*
- * PINS: `policy_host_has` answers off `policy_host_fd` using `policy_rel` — the
- * same fd and the same relativiser the T_HOST arm opens with, which is what
- * makes a second spelling structurally impossible rather than merely absent.
- */
-static void b33_host_existence(void)
-{
-	char box[] = "/tmp/cc-policy-b33XXXXXX";
-	char f[PATH_MAX], d[PATH_MAX], dangle[PATH_MAX], absent[PATH_MAX];
-
-	host_box(box);
-	hfile(box, "/f");
-	hmkdir(box, "/d");
-	hsymlink(box, "/dangle", "./nothing-here");
-	hjoin(f, sizeof(f), box, "/f");
-	hjoin(d, sizeof(d), box, "/d");
-	hjoin(dangle, sizeof(dangle), box, "/dangle");
-	hjoin(absent, sizeof(absent), box, "/absent");
-
-	/* A NEGATIVE fd ANSWERS 0 — the pre-substitution behaviour, and the axis
-	 * every case that leaves the seam unset relies on. Asserted at a path
-	 * that DOES exist, so it cannot pass by accident. */
-	policy_host_fd = -1;
-	CHECK(policy_host_has(f) == 0, "with no host fd the probe answers 0 for a file that EXISTS");
-	CHECK(policy_host_has("/") == 0, "and 0 for / as well");
-
-	policy_host_fd = host_root_fd();
-	CHECK(policy_host_has(f) == 1, "a present file is a host entry");
-	CHECK(policy_host_has(d) == 1, "so is a present directory");
-	CHECK(policy_host_has(absent) == 0, "an absent path is not");
-	/* AT_SYMLINK_NOFOLLOW, matching pt_getattr's own T_HOST arm: a dangling
-	 * host symlink IS a host entry. Following instead would route a path the
-	 * host names to the remote. */
-	CHECK(policy_host_has(dangle) == 1, "and a DANGLING symlink is one too");
-	CHECK(policy_host_has("/") == 1, "the root itself is an entry, via policy_rel's \".\"");
-
-	/* THE RELATIVISER ITSELF, both arms — the probe and the T_HOST arm share
-	 * this one function, so its contract is pinned where it is defined. */
-	CHECK(strcmp(policy_rel("/"), ".") == 0, "policy_rel maps \"/\" to \".\"");
-	CHECK(policy_rel(f) == f + 1, "and strips exactly the leading slash otherwise");
-
-	close(policy_host_fd);
-	policy_host_fd = -1;
-	hrm(box, "/f");
-	hrm(box, "/d");
-	hrm(box, "/dangle");
-	rmdir(box);
-}
-
-/* ── B34: host-entry existence is the discriminator at T_PROJECT ────────── */
-/*
- * PINS: at T_PROJECT an UNMARKED caller is substituted to T_HOST exactly where
- * the host has an entry, stays T_PROJECT where it has none, and a MARKED caller
- * is identity at both — with the substitution's own row written once and only
- * for the substituted path.
- */
-static void b34_project_host_substitution(void)
-{
-	char box[] = "/tmp/cc-policy-b34XXXXXX";
-	char tmpl[] = "/tmp/cc-policy-b34evXXXXXX";
-	char have[PATH_MAX], lack[PATH_MAX], needle[PATH_MAX + 64];
-	char line[4096];
-	int fd = mkstemp(tmpl);
-	int rows = 0, n_have = 0;
-
-	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	event_fp = fdopen(fd, "w+");
-	setvbuf(event_fp, NULL, _IOLBF, 0);
-
-	host_box(box);
-	hfile(box, "/have");
-	hjoin(have, sizeof(have), box, "/have");
-	hjoin(lack, sizeof(lack), box, "/lack");
-	policy_host_fd = host_root_fd();
-
-	proc_set(500, 500, 111);               /* unmarked, and stays unmarked */
-	proc_set(600, 600, 222);
-	policy_mark_tid(600);
-
-	CHECK(policy_host_has(have) == 1, "the host HAS the first probe path");
-	CHECK(policy_host_has(lack) == 0, "and has NOTHING at the second");
-
-	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 0, 500) == T_HOST,
-	      "unmarked at a project path the host has → host");
-	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 0, 500) == T_PROJECT,
-	      "unmarked at a project path the host lacks → project, unchanged");
-	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 1, 600) == T_PROJECT,
-	      "MARKED at the host-having path → project: the mirror, never a host fallback");
-	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 1, 600) == T_PROJECT,
-	      "and marked at the host-lacking one is project too");
-
-	snprintf(needle, sizeof(needle), "served\tgetattr\t%s\tunmarked-project-host-served\t", have);
-	rewind(event_fp);
-	while (fgets(line, sizeof(line), event_fp)) {
-		rows++;
-		if (strstr(line, needle)) n_have++;
-	}
-	CHECK(n_have == 1, "the substitution wrote exactly one served/unmarked-project-host-served row (%d)", n_have);
-	CHECK(rows == 1, "and it is the ONLY row: the three non-substituting calls wrote none (%d)", rows);
-
-	fclose(event_fp);
-	event_fp = NULL;
-	unlink(tmpl);
-	close(policy_host_fd);
-	policy_host_fd = -1;
-	hrm(box, "/have");
-	rmdir(box);
-}
-
-/* ── B35: the T_FAIL substitution was NOT gated on host existence ───────── */
-/*
- * PINS: at T_FAIL an unmarked caller is substituted to T_HOST even where the
- * host has NOTHING — which is what leaves the unmarked CREATE at an unpinned
- * path working (real gate R13(f)), and is the deliberate asymmetry with
- * T_PROJECT's rule.
- */
-static void b35_fail_substitution_is_unconditional(void)
-{
-	char box[] = "/tmp/cc-policy-b35XXXXXX";
-	char tmpl[] = "/tmp/cc-policy-b35evXXXXXX";
-	char lack[PATH_MAX], needle[PATH_MAX + 64];
-	char line[4096];
-	int fd = mkstemp(tmpl);
-	int rows = 0, n_row = 0;
-
-	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	event_fp = fdopen(fd, "w+");
-	setvbuf(event_fp, NULL, _IOLBF, 0);
-
-	host_box(box);
-	hjoin(lack, sizeof(lack), box, "/never-created");
-	policy_host_fd = host_root_fd();
-	proc_set(500, 500, 111);               /* unmarked */
-
-	/* NON-VACUITY FIRST: the probe really answers "no host entry" here, so a
-	 * substitution that HAD been gated would not fire. */
-	CHECK(policy_host_has(lack) == 0, "the host has nothing at the fail-tier path");
-	CHECK(policy_caller_tier("getattr", lack, T_FAIL, 0, 500) == T_HOST,
-	      "and T_FAIL substitutes to host anyway — the rule is unconditional");
-
-	snprintf(needle, sizeof(needle), "served\tgetattr\t%s\tunmarked-host-served\t", lack);
-	rewind(event_fp);
-	while (fgets(line, sizeof(line), event_fp)) {
-		rows++;
-		if (strstr(line, needle)) n_row++;
-	}
-	CHECK(n_row == 1, "and it is logged under its OWN reason, unmarked-host-served (%d)", n_row);
-	CHECK(rows == 1, "with no second row (%d)", rows);
-
-	fclose(event_fp);
-	event_fp = NULL;
-	unlink(tmpl);
-	close(policy_host_fd);
-	policy_host_fd = -1;
-	rmdir(box);
-}
-
-/* ── B36: the traversal bound falls out of route()'s ORDERING ───────────── */
-/*
- * PINS: run in route()'s order — substitution first, exemption second — the cwd
- * chain is served from the host down to the LAST ancestor the host has, and the
- * exemption is consulted only BELOW it. No walk, no new mechanism: the bound is
- * a property of the order alone.
- *
- * FIVE CHAIN LEVELS, and the host holds the top three: "/", "/tmp" and the
- * mkdtemp'd box are real, `<box>/a` is created here, `<box>/a/b` and
- * `<box>/a/b/c` are named and never created.
- */
-static void b36_traversal_bound_by_first_host_ancestor(void)
-{
-	char box[] = "/tmp/cc-policy-b36XXXXXX";
-	char a[PATH_MAX], b[PATH_MAX], c[PATH_MAX], child[PATH_MAX], sibling[PATH_MAX];
-
-	host_box(box);
-	hmkdir(box, "/a");
-	hjoin(a, sizeof(a), box, "/a");
-	hjoin(b, sizeof(b), box, "/a/b");
-	hjoin(c, sizeof(c), box, "/a/b/c");
-	hjoin(child, sizeof(child), box, "/a/b/c/child");
-	hjoin(sibling, sizeof(sibling), box, "/a/bb");
-	policy_host_fd = host_root_fd();
-
-	cwd_path = c;
-	proc_set(500, 500, 111);               /* unmarked */
-
-	/* ABOVE AND AT THE FIRST HOST-HAVING ANCESTOR: the substitution answers
-	 * first, so route() never reaches the exemption for these links. */
-	CHECK(policy_caller_tier("getattr", "/", T_PROJECT, 0, 500) == T_HOST,
-	      "/ is host-served, so the exemption is not consulted there");
-	CHECK(policy_caller_tier("getattr", "/tmp", T_PROJECT, 0, 500) == T_HOST,
-	      "and so is /tmp");
-	CHECK(policy_caller_tier("getattr", box, T_PROJECT, 0, 500) == T_HOST,
-	      "and the box itself");
-	CHECK(policy_caller_tier("getattr", a, T_PROJECT, 0, 500) == T_HOST,
-	      "and <box>/a — the LAST link the host has");
-
-	/* BELOW IT: the substitution declines, so the T_PROJECT arm is reached
-	 * and the exemption is what answers. */
-	CHECK(policy_caller_tier("getattr", b, T_PROJECT, 0, 500) == T_PROJECT,
-	      "<box>/a/b has no host entry, so the tier stands");
-	CHECK(policy_cwd_exempt("getattr", b, 500) == 1, "and THERE the exemption fires");
-	CHECK(policy_caller_tier("getattr", c, T_PROJECT, 0, 500) == T_PROJECT,
-	      "the cwd leaf has no host entry either");
-	CHECK(policy_cwd_exempt("getattr", c, 500) == 1, "and it is exempt too");
-
-	/* AND NO FURTHER, in either direction. */
-	CHECK(policy_cwd_exempt("getattr", child, 500) == 0, "a CHILD of the cwd is not exempt");
-	CHECK(policy_cwd_exempt("getattr", sibling, 500) == 0, "nor an off-chain sibling");
-
-	close(policy_host_fd);
-	policy_host_fd = -1;
-	cwd_path = NULL;
-	hrm(box, "/a");
-	rmdir(box);
-}
-
 /* ── B37: an unmarked caller can never be routed to the remote ──────────── */
 /*
- * PINS: over all seven tiers × {host-has, host-lacks} × {marked, unmarked},
+ * PINS: over all six tiers × {host-has, host-lacks} × {marked, unmarked},
  * `policy_caller_tier` returns either its INPUT tier or T_HOST and nothing
- * else, and at (unmarked, T_PROJECT, host-has) it is T_HOST rather than
- * T_PROJECT. That is the mechanical statement of "an unmarked caller never
- * receives remote file content, at any mirrorRoot".
+ * else, and at (unmarked, T_PROJECT) it is T_HOST ON BOTH HOST AXES. That is
+ * the mechanical statement of "an unmarked caller never receives remote file
+ * content, at any mirrorRoot" — and the host axis dropping out of it is card
+ * 2026-0398: the view denies the remote, where a probe used to.
+ *
+ * B33 THROUGH B36 STOOD HERE AND ARE DELETED WITH THEIR SUBJECTS — the
+ * host-existence probe (`b48` replaces it at the opposite polarity), the
+ * project tier's own substitution rule, the `fail` rule's asymmetry with it
+ * (`b43` carries what survives) and the traversal bound.
  */
 static void b37_unmarked_never_gets_remote(void)
 {
 	char box[] = "/tmp/cc-policy-b37XXXXXX";
 	char have[PATH_MAX], lack[PATH_MAX];
 	int t, h, m;
-	int n_fail_sub = 0, n_project_sub = 0, n_identity = 0;
+	int n_fail_sub = 0, n_project_sub = 0, n_synth_sub = 0, n_identity = 0;
 
+	/* NO CWD INJECTED, deliberately: with the chain empty the overlay cannot
+	 * fire, so every re-resolution lands on `fail` and this case stays about
+	 * the map's RANGE rather than about the chain. `b39` owns the chain. */
+	cwd_path = NULL;
 	host_box(box);
 	hfile(box, "/have");
 	hjoin(have, sizeof(have), box, "/have");
@@ -2468,10 +1895,10 @@ static void b37_unmarked_never_gets_remote(void)
 	policy_host_fd = host_root_fd();
 	proc_set(500, 500, 111);
 
-	CHECK(policy_host_has(have) == 1, "the host-has axis is real");
-	CHECK(policy_host_has(lack) == 0, "and so is the host-lacks axis");
+	CHECK(policy_host_absent(have) == 0, "the host-has axis is real");
+	CHECK(policy_host_absent(lack) == 1, "and so is the host-lacks axis");
 
-	for (t = 0; t <= (int)T_CWD; t++) {
+	for (t = 0; t <= (int)T_SYNTH; t++) {
 		for (h = 0; h < 2; h++) {
 			const char *p = h ? have : lack;
 			for (m = 0; m < 2; m++) {
@@ -2485,6 +1912,7 @@ static void b37_unmarked_never_gets_remote(void)
 				if (got == ti) { n_identity++; continue; }
 				if (ti == T_FAIL) n_fail_sub++;
 				if (ti == T_PROJECT) n_project_sub++;
+				if (ti == T_SYNTH) n_synth_sub++;
 			}
 		}
 	}
@@ -2492,15 +1920,927 @@ static void b37_unmarked_never_gets_remote(void)
 	 * disjunction above. */
 	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 0, 500) == T_HOST,
 	      "unmarked at a host-having project path is HOST, never project");
-	/* NON-VACUITY: both substitutions were driven, and so were the
+	/* AND THE HOST AXIS IS OUT OF THE DECISION, which is the half card
+	 * 2026-0398 changed: all three caller-sensitive tiers substitute on BOTH
+	 * axes now, where `project` once substituted on the host-has axis alone.
+	 * The view, not the probe, is what denies the remote. */
+	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 0, 500) == T_HOST,
+	      "and so is an unmarked caller at a project path the host does NOT have");
+	/* NON-VACUITY: every substitution was driven, and so were the
 	 * identities — a loop that ran zero times would satisfy the disjunction. */
 	CHECK(n_fail_sub == 2, "the T_FAIL substitution fired on both host axes, unmarked (%d)", n_fail_sub);
-	CHECK(n_project_sub == 1, "the T_PROJECT one fired on the host-has axis alone (%d)", n_project_sub);
-	CHECK(n_identity >= 4, "and at least four identities were driven (%d)", n_identity);
+	CHECK(n_project_sub == 2, "the T_PROJECT one on both axes too (%d)", n_project_sub);
+	CHECK(n_synth_sub == 2, "and the T_SYNTH one on both axes (%d)", n_synth_sub);
+	CHECK(n_identity == 18,
+	      "18 identities: 12 marked (six tiers x two axes) and six unmarked at "
+	      "host/hide/bind (%d)", n_identity);
 
 	close(policy_host_fd);
 	policy_host_fd = -1;
 	hrm(box, "/have");
+	rmdir(box);
+}
+
+/* ── the three geometries, built from one input ─────────────────────────── */
+/*
+ * N, M and W are the three `mirrorRoot` values card 2026-0398's discriminator
+ * table was hand-tested at: equal to `systemPath`, a STRICT ANCESTOR of it, and
+ * `/`. `buildTierTable` emits `project mirrorRoot` AND `project systemPath`
+ * (tierTable.ts), which is what made the space between them project-tier — the
+ * bug. Everything else in the table is identical at all three, so these three
+ * builds differ in exactly the one way the product's geometry does.
+ *
+ * FIRST OCCURRENCE OF A PREFIX WINS, mirroring `buildTierTable`'s own dedupe: at
+ * N the two project entries are the same string and the table carries one.
+ */
+static const char *GEOM_NAME[3] = {
+	"N (mirrorRoot == systemPath)",
+	"M (mirrorRoot a strict ancestor)",
+	"W (mirrorRoot == /)",
+};
+
+static void geometry_ex(int g, const char *box, const char *systempath,
+			const char *const *extra)
+{
+	char line[PATH_MAX + 32];
+	const char *root = g == 0 ? systempath : g == 1 ? box : "/";
+	size_t i;
+
+	npins = 0;
+	pin("host\t/etc/hostname");
+	pin("hide\t/run/cc-union-scaffold");
+	pin("bind\t/proc");
+	/* EXTRA PINS BEFORE THE PROJECT ENTRIES, because `pins_parse_line` appends
+	 * and `tier_of` takes the LONGEST prefix — order does not decide the
+	 * answer, but building them here keeps a case's own shape adjacent to the
+	 * table it is varying. */
+	for (i = 0; extra && extra[i]; i++)
+		pin(extra[i]);
+	snprintf(line, sizeof(line), "project\t%s", root);
+	pin(line);
+	if (strcmp(root, systempath) != 0) {
+		snprintf(line, sizeof(line), "project\t%s", systempath);
+		pin(line);
+	}
+	anc_build();
+}
+
+static void geometry(int g, const char *box, const char *systempath)
+{
+	geometry_ex(g, box, systempath, NULL);
+}
+
+/* ── B38: the unmarked view does not vary with the geometry ─────────────── */
+/*
+ * PINS THE RULE'S WHOLE CLAIM. Build the pin set for N, M and W and assert the
+ * `VIEW_HOST` resolution of one fixed path set is IDENTICAL across all three.
+ * The moment a geometry re-enters the unmarked answer — a `mirrorRoot` test, an
+ * ancestor-table consultation that a `project` pin's presence changes, a rule
+ * keyed on how deep the project sits — this case dies.
+ *
+ * NON-VACUITY IS ASSERTED, NOT ASSUMED: `VIEW_CLI` is checked to DIFFER across
+ * the same three builds at the same path, so the three geometries really are
+ * three and the invariance above is a property of the view rather than of a
+ * table that never changed.
+ */
+static void b38_view_is_geometry_invariant(void)
+{
+	char box[] = "/tmp/cc-policy-b38XXXXXX";
+	char sys[PATH_MAX], leaf[PATH_MAX];
+	enum tier want[8];
+	const char *paths[8];
+	int g, i;
+
+	host_box(box);
+	hjoin(sys, sizeof(sys), box, "/app3");          /* NEVER created: the remote's */
+	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	policy_host_fd = host_root_fd();
+	cwd_path = sys;
+
+	paths[0] = "/";
+	paths[1] = box;
+	paths[2] = sys;
+	paths[3] = leaf;
+	paths[4] = "/etc/hostname";
+	paths[5] = "/tmp";
+	paths[6] = "/run/cc-union-scaffold";
+	paths[7] = "/proc";
+
+	for (g = 0; g < 3; g++) {
+		geometry(g, box, sys);
+		for (i = 0; i < 8; i++) {
+			enum tier got = resolve_class(paths[i], VIEW_HOST);
+			if (g == 0) { want[i] = got; continue; }
+			CHECK(got == want[i],
+			      "%s: %s resolves %s, same as at N", GEOM_NAME[g], paths[i], tier_name(got));
+		}
+	}
+
+	/* AND THE ANSWERS ARE THE RIGHT ONES, not merely equal — three builds
+	 * that all answered T_FAIL everywhere would satisfy the loop above. */
+	geometry(0, box, sys);
+	CHECK(resolve_class("/", VIEW_HOST) == T_FAIL,
+	      "/ is the orchestrator's own, via fail -> host — never the scaffold node");
+	CHECK(resolve_class(box, VIEW_HOST) == T_FAIL, "and so is the directory above the project");
+	CHECK(resolve_class(sys, VIEW_HOST) == T_SYNTH,
+	      "the cwd itself, which the orchestrator does not have, is the overlay node");
+	CHECK(resolve_class(leaf, VIEW_HOST) == T_FAIL,
+	      "a file UNDER the cwd is not a chain component: fail, and the host answers -ENOENT");
+	CHECK(resolve_class("/etc/hostname", VIEW_HOST) == T_HOST, "a host pin is untouched");
+	CHECK(resolve_class("/run/cc-union-scaffold", VIEW_HOST) == T_HIDE,
+	      "and so is `hide` — VIEW_HOST strikes `project` alone");
+	CHECK(resolve_class("/proc", VIEW_HOST) == T_BIND, "and `bind`");
+
+	/* NON-VACUITY: the three builds really differ, in VIEW_CLI, at the path
+	 * the geometry is about. */
+	{
+		enum tier cli[3];
+		for (g = 0; g < 3; g++) {
+			geometry(g, box, sys);
+			cli[g] = resolve_class(box, VIEW_CLI);
+		}
+		CHECK(cli[0] == T_SYNTH,
+		      "VIEW_CLI at N: the directory above the project is a synthetic ancestor (%s)",
+		      tier_name(cli[0]));
+		CHECK(cli[1] == T_PROJECT, "VIEW_CLI at M: it is the remote tier (%s)", tier_name(cli[1]));
+		CHECK(cli[2] == T_PROJECT, "VIEW_CLI at W: the remote tier too (%s)", tier_name(cli[2]));
+	}
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	rmdir(box);
+}
+
+/* ── B39: the chdir lives at every geometry ─────────────────────────────── */
+/*
+ * PINS: every component of the cwd chain is ENTERABLE in `VIEW_HOST` at N, M and
+ * W — by the orchestrator's own directory with the floor's `--x` bits, or by the
+ * overlay node where the orchestrator has none. This is the bug of card
+ * 2026-0398 stated as an invariant: at M the intervening component carries an
+ * EXACT `project` pin and at W it is covered by prefix match, and BOTH arms had
+ * never been run before this case.
+ *
+ * THE 0700 LINK IS THE FIXTURE'S POINT, and it is asserted to be real rather
+ * than assumed: the chain directory is created 0700, so its mode grants `x` to
+ * the OWNER ALONE, and any other uid is refused search on it by the kernel under
+ * `default_permissions`. That is exactly the orchestrator's `/root` in the card's
+ * reproduction. The case asserts the un-floored mode really denies the other
+ * two classes before asserting the floor grants them.
+ */
+static void b39_chdir_lives_at_every_geometry(void)
+{
+	char box[] = "/tmp/cc-policy-b39XXXXXX";
+	char mid[PATH_MAX], sys[PATH_MAX];
+	struct stat raw;
+	int g;
+
+	host_box(box);
+	hmkdir(box, "/home");
+	hjoin(mid, sizeof(mid), box, "/home");
+	hjoin(sys, sizeof(sys), box, "/home/app3");      /* NEVER created */
+	if (chmod(mid, 0700) != 0) { printf("FAIL %s: chmod\n", case_name); exit(1); }
+	policy_host_fd = host_root_fd();
+	cwd_path = sys;
+
+	/* THE AXIS IS REAL: a 0700 directory has NO group or other execute bit,
+	 * so a caller that is not its owner cannot traverse it — which is the
+	 * whole reason the floor exists. */
+	CHECK(fstatat(policy_host_fd, policy_rel(mid), &raw, 0) == 0, "the chain link is there");
+	CHECK((raw.st_mode & 0111) == 0100,
+	      "and is 0700-shaped: owner-execute only, no group or other search (mode %o)",
+	      (unsigned)(raw.st_mode & 07777));
+
+	for (g = 0; g < 3; g++) {
+		const char *chain[4];
+		int i;
+
+		geometry(g, box, sys);
+		chain[0] = "/";
+		chain[1] = box;
+		chain[2] = mid;
+		chain[3] = sys;
+
+		for (i = 0; i < 4; i++) {
+			enum tier t = resolve_class(chain[i], VIEW_HOST);
+			struct stat st;
+
+			CHECK(t != T_PROJECT,
+			      "%s: %s is not the remote tier for an unmarked caller", GEOM_NAME[g], chain[i]);
+			if (t == T_SYNTH) {
+				CHECK(policy_synth_getattr(chain[i], &st, VIEW_HOST) == 0
+				      && (st.st_mode & 0111) == 0111,
+				      "%s: %s is the overlay node, and it is traversable",
+				      GEOM_NAME[g], chain[i]);
+				continue;
+			}
+			CHECK(t == T_FAIL || t == T_HOST,
+			      "%s: %s is served by the orchestrator (%s)",
+			      GEOM_NAME[g], chain[i], tier_name(t));
+			CHECK(fstatat(policy_host_fd, policy_rel(chain[i]), &st, 0) == 0,
+			      "%s: and the orchestrator really has %s", GEOM_NAME[g], chain[i]);
+			policy_floor_traversal(chain[i], &st, VIEW_HOST);
+			CHECK((st.st_mode & 0111) == 0111,
+			      "%s: the floor makes %s traversable for every uid (mode %o)",
+			      GEOM_NAME[g], chain[i], (unsigned)(st.st_mode & 07777));
+		}
+		/* THE ONE THE BUG LIVED AT, named on its own so a loop that
+		 * skipped it cannot read as a pass: at M the intervening
+		 * component carries an EXACT project pin, at W it is covered by
+		 * prefix match, and at N it carries none. */
+		CHECK(resolve_class(mid, VIEW_CLI) == (g == 0 ? T_SYNTH : T_PROJECT),
+		      "%s: VIEW_CLI at the intervening component is %s — the geometry is really built",
+		      GEOM_NAME[g], tier_name(resolve_class(mid, VIEW_CLI)));
+	}
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	hrm(box, "/home");
+	rmdir(box);
+}
+
+/* ── B40: the marked CLI's resolution is untouched ──────────────────────── */
+/*
+ * CONSTRAINT 5. `VIEW_CLI` is the tier table as written, at every geometry, and
+ * the expectations below are SPELLED OUT rather than derived from
+ * `resolve_class` — a derivation from the function under test would survive any
+ * mutation of it.
+ */
+static void b40_marked_is_untouched(void)
+{
+	char box[] = "/tmp/cc-policy-b40XXXXXX";
+	char sys[PATH_MAX], leaf[PATH_MAX];
+	int g;
+
+	host_box(box);
+	hjoin(sys, sizeof(sys), box, "/app3");
+	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	policy_host_fd = host_root_fd();
+	cwd_path = sys;
+
+	for (g = 0; g < 3; g++) {
+		geometry(g, box, sys);
+		/* THE PROJECT ITSELF IS THE REMOTE TIER AT ALL THREE. */
+		CHECK(resolve_class(sys, VIEW_CLI) == T_PROJECT,
+		      "%s: the project root is the remote tier to the CLI", GEOM_NAME[g]);
+		CHECK(resolve_class(leaf, VIEW_CLI) == T_PROJECT,
+		      "%s: and so is a file inside it", GEOM_NAME[g]);
+		/* THE SPACE ABOVE IT IS WHERE THE GEOMETRY SHOWS, and the CLI
+		 * still sees exactly what `buildTierTable` wrote. */
+		CHECK(resolve_class(box, VIEW_CLI) == (g == 0 ? T_SYNTH : T_PROJECT),
+		      "%s: the directory above the project is %s to the CLI",
+		      GEOM_NAME[g], g == 0 ? "a synthetic ancestor" : "the remote tier");
+		CHECK(resolve_class("/", VIEW_CLI) == (g == 2 ? T_PROJECT : T_SYNTH),
+		      "%s: and / is %s", GEOM_NAME[g], g == 2 ? "the remote tier" : "a synthetic ancestor");
+		/* AND THE REST OF THE TABLE IS UNMOVED. */
+		CHECK(resolve_class("/etc/hostname", VIEW_CLI) == T_HOST, "%s: host pin", GEOM_NAME[g]);
+		CHECK(resolve_class("/run/cc-union-scaffold", VIEW_CLI) == T_HIDE, "%s: hide pin", GEOM_NAME[g]);
+		CHECK(resolve_class("/proc", VIEW_CLI) == T_BIND, "%s: bind pin", GEOM_NAME[g]);
+		/* `/var/lib/nothing-pinned` and not `/tmp`: the box lives under
+		 * /tmp, so /tmp is an ANCESTOR of the project pin at N and M and
+		 * would answer T_SYNTH. An unpinned path must be off every
+		 * ancestor chain for this row to say what it means. */
+		CHECK(resolve_class("/var/lib/nothing-pinned", VIEW_CLI) == (g == 2 ? T_PROJECT : T_FAIL),
+		      "%s: and an unpinned path outside the mirror root is fail", GEOM_NAME[g]);
+		/* THE MARK STILL SELECTS IT: a marked caller takes the identity
+		 * map at every tier, so nothing above can be re-routed. */
+		CHECK(policy_caller_tier("getattr", sys, T_PROJECT, 1, 600) == T_PROJECT,
+		      "%s: and a MARKED caller keeps the remote tier", GEOM_NAME[g]);
+	}
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	rmdir(box);
+}
+
+/* ── B41: no unmarked resolution can name the remote ────────────────────── */
+/*
+ * CONSTRAINT 3, STRUCTURALLY. Over the same path set × three geometries,
+ * `VIEW_HOST` never yields T_PROJECT — so `policy_project_route` is unreachable
+ * from an unmarked caller, no control frame can be sent on its behalf and the
+ * mirror cannot be read. This is the assertion that replaces the old
+ * host-existence guard, and it holds without consulting the host at all.
+ *
+ * AND THE RE-RESOLUTION'S RANGE, WHICH IS {T_HOST, T_SYNTH, T_FAIL, T_HIDE} AND
+ * NOT THE THREE FIRST WRITTEN DOWN. Striking a `project` pin hands the
+ * longest-prefix contest to whatever SHORTER pin covers the path, and a `hide`
+ * pin is eligible to win it — so a path under a `hide` pin and a LONGER
+ * `project` pin is T_PROJECT to the CLI and T_HIDE to everyone else. That is
+ * the correct answer (hidden stays hidden, and `route()`'s T_HIDE arm answers
+ * -ENOENT before anything else), and this case builds the overlap deliberately:
+ * the earlier three-member claim was never met by a geometry that could
+ * contradict it.
+ */
+static void b41_no_unmarked_resolution_names_the_remote(void)
+{
+	char box[] = "/tmp/cc-policy-b41XXXXXX";
+	char sys[PATH_MAX], leaf[PATH_MAX];
+	char hidden[PATH_MAX], hidden_pin[PATH_MAX + 16], inner_pin[PATH_MAX + 24];
+	char inner[PATH_MAX];
+	const char *extra[3];
+	const char *paths[9];
+	int g, i, n_checked = 0, n_synth = 0, n_fail = 0, n_hide = 0;
+
+	host_box(box);
+	hjoin(sys, sizeof(sys), box, "/app3");
+	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	/* THE OVERLAP: a `hide` prefix with a LONGER `project` pin inside it, and
+	 * the checked path under both. */
+	hjoin(hidden, sizeof(hidden), box, "/hidden");
+	hjoin(inner, sizeof(inner), box, "/hidden/inner/f.txt");
+	snprintf(hidden_pin, sizeof(hidden_pin), "hide\t%s", hidden);
+	snprintf(inner_pin, sizeof(inner_pin), "project\t%s/inner", hidden);
+	extra[0] = hidden_pin;
+	extra[1] = inner_pin;
+	extra[2] = NULL;
+	policy_host_fd = host_root_fd();
+	cwd_path = sys;
+
+	paths[0] = "/";
+	paths[1] = box;
+	paths[2] = sys;
+	paths[3] = leaf;
+	paths[4] = "/etc/hostname";
+	paths[5] = "/tmp";
+	paths[6] = "/run/cc-union-scaffold";
+	paths[7] = "/proc";
+	paths[8] = inner;
+
+	for (g = 0; g < 3; g++) {
+		geometry_ex(g, box, sys, extra);
+		for (i = 0; i < 9; i++) {
+			enum tier host = resolve_class(paths[i], VIEW_HOST);
+
+			CHECK(host != T_PROJECT,
+			      "%s: %s cannot be the remote tier unmarked (%s)",
+			      GEOM_NAME[g], paths[i], tier_name(host));
+			/* THE RE-RESOLUTION'S RANGE, at every path whose VIEW_CLI
+			 * tier is one policy_caller_tier re-resolves. */
+			if (policy_tier_is_caller_sensitive(resolve_class(paths[i], VIEW_CLI))
+			    && resolve_class(paths[i], VIEW_CLI) != T_FAIL) {
+				CHECK(host == T_HOST || host == T_SYNTH
+				      || host == T_FAIL || host == T_HIDE,
+				      "%s: %s re-resolves inside {host, synth, fail, hide} (%s)",
+				      GEOM_NAME[g], paths[i], tier_name(host));
+				n_checked++;
+				if (host == T_SYNTH) n_synth++;
+				if (host == T_FAIL)  n_fail++;
+				if (host == T_HIDE)  n_hide++;
+			}
+			/* AND THE MAP ITSELF NEVER HANDS BACK THE REMOTE. */
+			CHECK(policy_caller_tier("getattr", paths[i],
+						 resolve_class(paths[i], VIEW_CLI), 0, 500) != T_PROJECT,
+			      "%s: and policy_caller_tier does not either at %s", GEOM_NAME[g], paths[i]);
+		}
+		/* THE OVERLAP, ASSERTED ON ITS OWN so it cannot be lost inside the
+		 * disjunction above — and BOTH halves, because a case where the
+		 * VIEW_CLI tier were not T_PROJECT would never reach the
+		 * re-resolution and would prove nothing about its range. */
+		CHECK(resolve_class(inner, VIEW_CLI) == T_PROJECT,
+		      "%s: the overlap path is the remote tier to the CLI (%s)",
+		      GEOM_NAME[g], tier_name(resolve_class(inner, VIEW_CLI)));
+		CHECK(resolve_class(inner, VIEW_HOST) == T_HIDE,
+		      "%s: and T_HIDE once the project pin is struck — the shorter hide pin wins "
+		      "the contest (%s)", GEOM_NAME[g], tier_name(resolve_class(inner, VIEW_HOST)));
+		/* AND THE MAP CARRIES IT THROUGH UNCHANGED, so route()'s T_HIDE arm
+		 * answers -ENOENT: hidden stays hidden for an unmarked caller, which
+		 * is what keeps the mirror and the control socket unreachable. */
+		CHECK(policy_caller_tier("getattr", inner, T_PROJECT, 0, 500) == T_HIDE,
+		      "%s: policy_caller_tier hands back T_HIDE, not a substitution", GEOM_NAME[g]);
+	}
+	/* NON-VACUITY: the re-resolution was really exercised, and it really
+	 * produced more than one member of the range — including the fourth. */
+	CHECK(n_checked >= 12, "the re-resolution was driven at least twelve times (%d)", n_checked);
+	CHECK(n_synth >= 3, "and landed on the overlay node at least once per geometry (%d)", n_synth);
+	CHECK(n_fail >= 3, "and on fail at least once per geometry (%d)", n_fail);
+	CHECK(n_hide == 3, "and on HIDE once per geometry (%d)", n_hide);
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	rmdir(box);
+}
+
+/* ── B43: an uncovered path is still the host's, at every geometry ──────── */
+/*
+ * `fail -> host` IS UNTOUCHED AND UNCONDITIONAL — the 2026-09-08 "host means
+ * host" decision that real-gate arm R13(f) depends on, and the one rule card
+ * 2026-0398 did NOT change. Driven for an unpinned FILE and for an unpinned
+ * directory that is NOT a chain component, so the overlay cannot be what makes
+ * it pass, and on both host axes so the probe cannot be either.
+ */
+static void b43_uncovered_is_still_the_hosts(void)
+{
+	char box[] = "/tmp/cc-policy-b43XXXXXX";
+	char sys[PATH_MAX], loose[PATH_MAX], absent[PATH_MAX];
+	int g;
+
+	host_box(box);
+	hmkdir(box, "/loose");
+	hfile(box, "/loose/f");
+	hjoin(sys, sizeof(sys), box, "/app3");
+	hjoin(loose, sizeof(loose), box, "/loose");
+	hjoin(absent, sizeof(absent), box, "/loose/nothing-here");
+	policy_host_fd = host_root_fd();
+	cwd_path = sys;
+
+	for (g = 0; g < 3; g++) {
+		geometry(g, box, sys);
+		CHECK(policy_cwd_component(loose) == 0, "%s: the probe dir is OFF the chain", GEOM_NAME[g]);
+		CHECK(resolve_class(loose, VIEW_HOST) == T_FAIL,
+		      "%s: an unpinned directory off the chain is fail", GEOM_NAME[g]);
+		CHECK(policy_caller_tier("getattr", loose, T_FAIL, 0, 500) == T_HOST,
+		      "%s: and fail is host for an unmarked caller", GEOM_NAME[g]);
+		/* UNCONDITIONAL: the host does not have this one, and it is
+		 * STILL host — which is what keeps the unmarked CREATE at an
+		 * unpinned path alive (R13(f)). */
+		CHECK(policy_host_absent(absent) == 1, "%s: the host really lacks it", GEOM_NAME[g]);
+		CHECK(policy_caller_tier("getattr", absent, T_FAIL, 0, 500) == T_HOST,
+		      "%s: an unpinned path the host LACKS is host too — the rule is not gated",
+		      GEOM_NAME[g]);
+	}
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	hrm(box, "/loose/f");
+	hrm(box, "/loose");
+	rmdir(box);
+}
+
+/* ── B44: a directory names what the resolving view can open ────────────── */
+/*
+ * CARD 2026-0403'S KILLER, AND IT RUNS AT THE DEFAULT NARROW ROOT — which is
+ * where the defect lives today and where a regression would be least visible.
+ * Measured at a real mount before this case was written (card 2026-0398 step 0):
+ * an unmarked `ls` of a directory reached through `fail -> host` emitted NOTHING
+ * while `cat` on its children returned their bytes, and a `fail`-pinned child of
+ * a host-pinned real directory was omitted from the listing while `cat` on it
+ * worked.
+ *
+ * THE PROJECT ROW IS THE ONE THAT READS ODDLY AND IS STATED PLAINLY: a
+ * project-pinned child is visible in BOTH views — as the remote's name to the
+ * CLI, and as the HOST's name to everyone else, because `VIEW_HOST` strikes the
+ * pin and `fail -> host` then serves it. What is `VIEW_CLI`-only is the TIER
+ * VALUE T_PROJECT, which `VIEW_HOST` cannot produce at all; that is `b41`'s.
+ */
+static void b44_dirent_visible(void)
+{
+	/* THE DEFAULT NARROW ROOT: mirrorRoot == systemPath. */
+	pin("project\t/root/app3");
+	pin("host\t/etc");
+	pin("fail\t/etc/excluded");
+	pin("hide\t/run/cc-union-scaffold");
+	pin("bind\t/proc");
+	anc_build();
+	cwd_path = "/root/app3";
+
+	/* T_HIDE — INVISIBLE TO EVERYONE. It is what keeps the mirror and cc's
+	 * control socket unreachable, and it is the one subtraction constraint 3
+	 * forces on constraint 2. */
+	CHECK(policy_dirent_visible("/run/cc-union-scaffold", VIEW_CLI) == 0,
+	      "a `hide` child is invisible to the CLI");
+	CHECK(policy_dirent_visible("/run/cc-union-scaffold", VIEW_HOST) == 0,
+	      "and to everyone else — the one name neither view may list");
+
+	/* T_FAIL — THE DEFECT. Invisible to the CLI, whose every op at such a
+	 * name answers -ENOENT; visible to everyone else, because `fail -> host`
+	 * serves it unconditionally. Both instances: an EXPLICIT `fail` pin, and
+	 * a name no pin covers at all. */
+	CHECK(policy_dirent_visible("/etc/excluded", VIEW_CLI) == 0,
+	      "an excluded child is invisible to the CLI: its every op answers -ENOENT");
+	CHECK(policy_dirent_visible("/etc/excluded", VIEW_HOST) == 1,
+	      "and VISIBLE to everyone else, who can open it — card 2026-0403, the exclude instance");
+	CHECK(policy_dirent_visible("/tmp/loose", VIEW_CLI) == 0,
+	      "an unpinned child is invisible to the CLI");
+	CHECK(policy_dirent_visible("/tmp/loose", VIEW_HOST) == 1,
+	      "and visible to everyone else — the `ls /tmp` instance measured at the mount");
+
+	/* HOST, BIND — VISIBLE TO BOTH: neither view strikes them. */
+	CHECK(policy_dirent_visible("/etc/hosts", VIEW_CLI) == 1, "a host child is visible to the CLI");
+	CHECK(policy_dirent_visible("/etc/hosts", VIEW_HOST) == 1, "and to everyone else");
+	CHECK(policy_dirent_visible("/proc", VIEW_CLI) == 1, "a bind target is visible to the CLI");
+	CHECK(policy_dirent_visible("/proc", VIEW_HOST) == 1, "and to everyone else");
+
+	/* SYNTH — the ancestor in VIEW_CLI, the host's own directory in
+	 * VIEW_HOST. Visible either way, for two different reasons. */
+	CHECK(resolve_class("/root", VIEW_CLI) == T_SYNTH, "/root is a synthetic ancestor to the CLI");
+	CHECK(policy_dirent_visible("/root", VIEW_CLI) == 1, "and it is listed");
+	CHECK(policy_dirent_visible("/root", VIEW_HOST) == 1,
+	      "and to everyone else it is the orchestrator's own directory, also listed");
+
+	/* PROJECT — visible to both, and the tier value is the CLI's alone. */
+	CHECK(resolve_class("/root/app3", VIEW_CLI) == T_PROJECT, "the project root is T_PROJECT to the CLI");
+	CHECK(policy_dirent_visible("/root/app3", VIEW_CLI) == 1, "and the CLI may list it");
+	CHECK(resolve_class("/root/app3", VIEW_HOST) != T_PROJECT,
+	      "VIEW_HOST cannot produce T_PROJECT at all");
+	CHECK(policy_dirent_visible("/root/app3", VIEW_HOST) == 1,
+	      "and everyone else sees the name too — as the host's, not the remote's");
+
+	/* AND `policy_synth_children` ASKS THE SAME PREDICATE, so the two arms
+	 * cannot drift: the `fail`-pinned child is absent from the CLI's listing
+	 * of /etc and present in everyone else's. */
+	{
+		size_t n_cli, n_host, i;
+		int cli_named = 0, host_named = 0;
+
+		nlisted = 0;
+		n_cli = policy_synth_children("/etc", VIEW_CLI, collect, NULL);
+		for (i = 0; i < nlisted; i++)
+			if (!strcmp(listed[i], "excluded")) cli_named = 1;
+		CHECK(cli_named == 0, "policy_synth_children omits the excluded child for the CLI");
+		nlisted = 0;
+		n_host = policy_synth_children("/etc", VIEW_HOST, collect, NULL);
+		for (i = 0; i < nlisted; i++)
+			if (!strcmp(listed[i], "excluded")) host_named = 1;
+		CHECK(host_named == 1, "and names it for everyone else");
+		CHECK(n_host == n_cli + 1, "exactly one name differs (%zu vs %zu)", n_host, n_cli);
+	}
+	cwd_path = NULL;
+}
+
+/* ── B46: the floor's SCOPE ─────────────────────────────────────────────── */
+/*
+ * PINS: the floor fires ONLY on a `VIEW_HOST` DIRECTORY that is a cwd-chain
+ * component. Not on a file, not off the chain, not for `VIEW_CLI`.
+ *
+ * THE SCOPE IS WHAT MAKES CONSTRAINT 1 MORE EXACTLY SATISFIED, NOT LESS: an
+ * unscoped floor would grant traversal the host itself denies, which is more
+ * than "what that uid would normally be able to do". Everything off the chain
+ * keeps its real mode.
+ */
+static void b46_floor_scope(void)
+{
+	struct stat dir, file;
+
+	cwd_path = "/root/app3";
+	memset(&dir, 0, sizeof(dir));
+	dir.st_mode = S_IFDIR | 0700;
+	memset(&file, 0, sizeof(file));
+	file.st_mode = S_IFREG | 0600;
+
+	CHECK(policy_floor_applies("/root", dir.st_mode, VIEW_HOST) == 1,
+	      "a VIEW_HOST directory on the chain is floored");
+	CHECK(policy_floor_applies("/root", dir.st_mode, VIEW_CLI) == 0,
+	      "the MARKED CLI's view is never floored — it gets the real mode");
+	CHECK(policy_floor_applies("/root", file.st_mode, VIEW_HOST) == 0,
+	      "a FILE on the chain is not: the floor grants path resolution, and a file is not a link");
+	CHECK(policy_floor_applies("/root/other", dir.st_mode, VIEW_HOST) == 0,
+	      "a directory OFF the chain keeps its real mode");
+	CHECK(policy_floor_applies("/root/app3/sub", dir.st_mode, VIEW_HOST) == 0,
+	      "and so does a directory BELOW the cwd — the chain is upward only");
+	CHECK(policy_floor_applies("/root/app", dir.st_mode, VIEW_HOST) == 0,
+	      "and the prefix-sharing sibling is not on the chain either");
+
+	/* THE EFFECT ITSELF, AND ITS EXTENT: exactly the three execute bits,
+	 * and nothing else in the stat. */
+	{
+		struct stat st = dir;
+		policy_floor_traversal("/root", &st, VIEW_HOST);
+		CHECK(st.st_mode == (dir.st_mode | 0111),
+		      "the floor sets exactly 0111 and changes nothing else (%o -> %o)",
+		      (unsigned)dir.st_mode, (unsigned)st.st_mode);
+		st = dir;
+		policy_floor_traversal("/root/other", &st, VIEW_HOST);
+		CHECK(st.st_mode == dir.st_mode, "and off the chain it changes nothing at all");
+		st = file;
+		policy_floor_traversal("/root", &st, VIEW_HOST);
+		CHECK(st.st_mode == file.st_mode, "nor on a file");
+	}
+
+	/* THE OVERLAY NODE IS ALREADY 0555 AND THE FLOOR IS A NO-OP ON IT — the
+	 * two mechanisms do not compound. */
+	{
+		struct stat st;
+		policy_fixed_dir(&st, 0555, 1);
+		policy_floor_traversal("/root/app3", &st, VIEW_HOST);
+		CHECK((st.st_mode & 07777) == 0555, "the overlay node is unchanged by the floor");
+	}
+	cwd_path = NULL;
+}
+
+/* ── B47: the floor is applied at EVERY op that reports permission ──────── */
+/*
+ * §5.4'S ENUMERATION, AND THE SEAM-INSIDE-A-SEAM IT EXISTS TO CLOSE. The four
+ * reporting ops are `pt_getattr`'s path arm, `pt_getattr`'s fh arm,
+ * `pt_readdir`'s per-child stat and `pt_access`. The first three hold a
+ * `struct stat` and go through `policy_floor_traversal`; `pt_access` holds a
+ * mask and goes through `policy_floor_mask`. WHICH OP BODIES CALL THEM is a
+ * source-shape assertion in tests/fuse-union-policy.test.mjs — no fixture can
+ * reach a libfuse op body. What is pinned HERE is that the two entry points
+ * AGREE, which is the property an omission would break:
+ *
+ *   `stat` and `fstat` see the same mode, because both are the same function
+ *   over the same stat; the readdir child stat, whose mode is only the type
+ *   bits from `d_type`, gains the same three bits; and `access(X_OK)` answers
+ *   the mode those three report while `access(R_OK)` is still referred to the
+ *   host. Without the last of those, `test -x /root` and `stat /root` disagree
+ *   from one caller — the exact defect class this filesystem exists to remove.
+ */
+static void b47_floor_is_applied_at_every_reporting_op(void)
+{
+	char box[] = "/tmp/cc-policy-b47XXXXXX";
+	char mid[PATH_MAX], off[PATH_MAX];
+	struct stat path_arm, fh_arm, child;
+
+	host_box(box);
+	hmkdir(box, "/home");
+	hmkdir(box, "/other");
+	hjoin(mid, sizeof(mid), box, "/home");
+	hjoin(off, sizeof(off), box, "/other");
+	if (chmod(mid, 0700) != 0) { printf("FAIL %s: chmod\n", case_name); exit(1); }
+	policy_host_fd = host_root_fd();
+	cwd_path = mid;                        /* the chain ends AT the 0700 link */
+
+	/* THE THREE STAT-SHAPED SITES, each fed the stat its own op would hold. */
+	CHECK(fstatat(policy_host_fd, policy_rel(mid), &path_arm, AT_SYMLINK_NOFOLLOW) == 0,
+	      "pt_getattr's path arm: the host's own stat");
+	fh_arm = path_arm;                     /* pt_getattr's fh arm: an fstat of the same node */
+	memset(&child, 0, sizeof(child));
+	/* pt_readdir hands filler() a stat whose mode is `d_type << 12` and
+	 * nothing else; for a directory that is exactly S_IFDIR, with no
+	 * permission bits at all. */
+	child.st_mode = S_IFDIR;
+
+	policy_floor_traversal(mid, &path_arm, VIEW_HOST);
+	policy_floor_traversal(mid, &fh_arm, VIEW_HOST);
+	policy_floor_traversal(mid, &child, VIEW_HOST);
+
+	CHECK(path_arm.st_mode == fh_arm.st_mode,
+	      "stat and fstat report the SAME mode (%o vs %o) — flooring one arm only is the "
+	      "mutant this kills", (unsigned)path_arm.st_mode, (unsigned)fh_arm.st_mode);
+	CHECK((path_arm.st_mode & 0111) == 0111, "and it is traversable (%o)",
+	      (unsigned)(path_arm.st_mode & 07777));
+	CHECK((child.st_mode & 0111) == 0111,
+	      "the readdir child stat agrees with both (%o)", (unsigned)(child.st_mode & 07777));
+	CHECK(S_ISDIR(child.st_mode), "and is still a directory");
+
+	/* THE FOURTH SITE, WHICH HAS NO STAT: the mask `pt_access` hands the
+	 * host. X_OK is granted where the mode above says it is; R_OK is
+	 * untouched, so the host still answers for the read. */
+	CHECK(policy_floor_mask(mid, X_OK, VIEW_HOST) == 0,
+	      "access(X_OK) is granted outright — it agrees with the mode stat reported");
+	CHECK(policy_floor_mask(mid, R_OK, VIEW_HOST) == R_OK,
+	      "access(R_OK) is referred to the host unchanged — the floor grants resolution, not access");
+	CHECK(policy_floor_mask(mid, R_OK | X_OK, VIEW_HOST) == R_OK,
+	      "and a combined mask keeps exactly the half the host must answer");
+	CHECK(policy_floor_mask(mid, W_OK, VIEW_HOST) == W_OK, "a write probe is untouched");
+	/* F_OK IS 0, and the mask must come back 0 UNCHANGED rather than as a
+	 * grant — union.c's call site distinguishes the two, and conflating them
+	 * would answer "it exists" for every existence probe on the chain. */
+	CHECK(policy_floor_mask(mid, F_OK, VIEW_HOST) == F_OK,
+	      "an existence probe is unchanged, so the host is still asked");
+
+	/* AND THE SCOPE HOLDS AT THIS ENTRY POINT TOO. */
+	CHECK(policy_floor_mask(off, X_OK, VIEW_HOST) == X_OK,
+	      "off the chain the mask is untouched");
+	CHECK(policy_floor_mask(mid, X_OK, VIEW_CLI) == X_OK,
+	      "and the marked CLI's access is never floored");
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	hrm(box, "/home");
+	hrm(box, "/other");
+	rmdir(box);
+}
+
+/* ── B48: the absence probe falls NOT ABSENT on an unknown error ────────── */
+/*
+ * THE FAILURE DIRECTION, WHICH IS THE WHOLE OF THIS PROBE'S RISK. It answers
+ * ABSENT only for the errnos that MEAN absence; on anything else — ELOOP from an
+ * intermediate symlink, EIO, NFS under root_squash — it answers NOT ABSENT, so
+ * no node is synthesized and the path falls to `fail -> host` where the host
+ * answers for itself.
+ *
+ * WHY THAT DIRECTION. Falling ABSENT on an unknown error would place a
+ * traverse-only node over a directory the orchestrator may really have, hiding
+ * it and its write surface SILENTLY — the exact failure class card 2026-0398
+ * took a day to diagnose. Falling NOT ABSENT breaks `chdir` at that one path,
+ * loudly, with an event row naming it. Loud and reversible beats silent and
+ * hiding.
+ *
+ * THE POLARITY IS THE INVERSE OF THE DELETED `policy_host_has`, which is why
+ * that function was deleted rather than reused: reusing it would have picked the
+ * wrong direction silently.
+ */
+static void b48_probe_falls_not_absent(void)
+{
+	char box[] = "/tmp/cc-policy-b48XXXXXX";
+	char f[PATH_MAX], d[PATH_MAX], dangle[PATH_MAX], absent[PATH_MAX];
+	char under_file[PATH_MAX], loop[PATH_MAX], via_loop[PATH_MAX];
+	char toolong[PATH_MAX];
+	size_t i;
+
+	host_box(box);
+	hfile(box, "/f");
+	hmkdir(box, "/d");
+	hsymlink(box, "/dangle", "./nothing-here");
+	hsymlink(box, "/loop", "loop");                 /* points at itself */
+	hjoin(f, sizeof(f), box, "/f");
+	hjoin(d, sizeof(d), box, "/d");
+	hjoin(dangle, sizeof(dangle), box, "/dangle");
+	hjoin(absent, sizeof(absent), box, "/absent");
+	hjoin(under_file, sizeof(under_file), box, "/f/under");
+	hjoin(loop, sizeof(loop), box, "/loop");
+	hjoin(via_loop, sizeof(via_loop), box, "/loop/x");
+
+	/* A NEGATIVE fd ANSWERS 1 — "no host at all", the axis every case that
+	 * leaves the seam unset relies on. Asserted at a path that DOES exist,
+	 * so it cannot pass by accident. */
+	policy_host_fd = -1;
+	CHECK(policy_host_absent(f) == 1, "with no host fd the probe answers ABSENT for a file that EXISTS");
+	CHECK(policy_host_absent("/") == 1, "and for / as well");
+
+	policy_host_fd = host_root_fd();
+	/* PRESENT — NOT ABSENT. */
+	CHECK(policy_host_absent(f) == 0, "a present file is not absent");
+	CHECK(policy_host_absent(d) == 0, "nor is a present directory");
+	CHECK(policy_host_absent("/") == 0, "nor the root itself, via policy_rel's \".\"");
+	/* AT_SYMLINK_NOFOLLOW: a DANGLING symlink is an entry, so it is not an
+	 * absence and no node is synthesized over it. */
+	CHECK(policy_host_absent(dangle) == 0, "and a DANGLING symlink is an entry, not an absence");
+
+	/* THE THREE ABSENCE ERRNOS. */
+	CHECK(policy_host_absent(absent) == 1, "ENOENT: a path that is not there IS absent");
+	CHECK(policy_host_absent(under_file) == 1,
+	      "ENOTDIR: a path under a FILE is absent — it cannot exist at that spelling");
+	for (i = 0; i < sizeof(toolong) - 1; i++)
+		toolong[i] = i == 0 ? '/' : 'x';
+	toolong[sizeof(toolong) - 1] = '\0';
+	CHECK(policy_host_absent(toolong) == 1, "ENAMETOOLONG: and neither can an over-long one");
+
+	/* AND THE ONE THAT IS NOT AN ABSENCE. An intermediate symlink loop
+	 * raises ELOOP while an entry at the final spelling may well exist —
+	 * AT_SYMLINK_NOFOLLOW spares only the FINAL component — so ELOOP is not
+	 * a statement about the entry, and the probe must not read it as one. */
+	{
+		struct stat st;
+		errno = 0;
+		CHECK(fstatat(policy_host_fd, policy_rel(via_loop), &st, AT_SYMLINK_NOFOLLOW) == -1
+		      && errno == ELOOP,
+		      "the fixture really produces ELOOP (errno %d)", errno);
+	}
+	CHECK(policy_host_absent(via_loop) == 0,
+	      "ELOOP is NOT an absence: the probe falls NOT ABSENT, so no node hides the host");
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	hrm(box, "/f");
+	hrm(box, "/d");
+	hrm(box, "/dangle");
+	hrm(box, "/loop");
+	rmdir(box);
+}
+
+/* ── B49: a table-derived name exists only if this view can open it ─────── */
+/*
+ * THE SECOND HALF OF THE DIRENT RULE, AND IT IS NOT `policy_dirent_visible`.
+ * That predicate answers "may this view SEE this name". This one answers "is
+ * there anything there at all" — and the two were conflated at every emit site
+ * in the first round of card 2026-0398, which produced three separate
+ * `ls`/`cat` disagreements:
+ *
+ *   an `exclude` under the project put a name into an unmarked listing of the
+ *   overlay cwd while every op on it answered -ENOENT;
+ *   a project-pinned child resolving to the OVERLAY was host-checked, found
+ *   absent and dropped, so `stat <systemPath>` answered and `cd` worked while
+ *   `ls` of its parent omitted the name; and
+ *   an off-chain host-absent ANCESTOR was emitted unchecked, which is true of a
+ *   VIEW_CLI scaffold node and false in VIEW_HOST.
+ *
+ * THE RULE IS ONE SENTENCE: a fixed node exists by construction, and everything
+ * else exists exactly where the orchestrator has it. What makes it view-shaped
+ * is that WHICH paths are fixed nodes differs between the views — the ancestor
+ * table in VIEW_CLI, the cwd overlay in VIEW_HOST.
+ */
+static void b49_table_child_exists(void)
+{
+	char box[] = "/tmp/cc-policy-b49XXXXXX";
+	char sys[PATH_MAX], line[PATH_MAX + 32];
+	char excluded[PATH_MAX], hostpin[PATH_MAX], hostgone[PATH_MAX];
+	char anc_absent[PATH_MAX], anc_gone[PATH_MAX];
+
+	host_box(box);
+	hjoin(sys, sizeof(sys), box, "/app3");           /* the cwd; NEVER created */
+	hjoin(excluded, sizeof(excluded), box, "/app3/node_modules");
+	hjoin(hostpin, sizeof(hostpin), box, "/present");
+	hjoin(hostgone, sizeof(hostgone), box, "/gone");
+	hjoin(anc_absent, sizeof(anc_absent), box, "/absent-anc/leaf");
+	hjoin(anc_gone, sizeof(anc_gone), box, "/absent-anc");
+	hmkdir(box, "/present");
+
+	npins = 0;
+	snprintf(line, sizeof(line), "project\t%s", sys);            pin(line);
+	snprintf(line, sizeof(line), "fail\t%s", excluded);          pin(line);
+	snprintf(line, sizeof(line), "host\t%s", hostpin);           pin(line);
+	snprintf(line, sizeof(line), "host\t%s", hostgone);          pin(line);
+	snprintf(line, sizeof(line), "host\t%s", anc_absent);        pin(line);
+	pin("bind\t/proc");
+	anc_build();
+	cwd_path = sys;
+	policy_host_fd = host_root_fd();
+
+	/* THE AXES ARE REAL, asserted before anything leans on them. */
+	CHECK(policy_host_absent(sys) == 1, "the orchestrator has nothing at the cwd");
+	CHECK(policy_host_absent(hostpin) == 0, "and does have the present host pin");
+	CHECK(policy_host_absent(hostgone) == 1, "and nothing at the absent one");
+	CHECK(resolve_class(sys, VIEW_HOST) == T_SYNTH, "so the cwd is the overlay node");
+
+	/* ── (1) THE EXCLUDE UNDER THE OVERLAY. `policy_dirent_visible` says an
+	 *    unmarked caller MAY see a `fail` name — and there is nothing there,
+	 *    because the orchestrator has nothing at the parent either. Both
+	 *    predicates are driven, so the case pins that they answer DIFFERENTLY
+	 *    rather than that one of them subsumes the other. */
+	CHECK(policy_dirent_visible(excluded, VIEW_HOST) == 1,
+	      "an excluded name is VISIBLE to an unmarked caller — fail -> host serves it");
+	CHECK(policy_table_child_exists(excluded, VIEW_HOST, 0) == 0,
+	      "but nothing is THERE, so it must not be emitted: the orchestrator has nothing "
+	      "under a path it has nothing at");
+
+	/* ── (2) THE PROJECT-PINNED CHILD THAT IS THE OVERLAY. Visible, and it
+	 *    EXISTS — the node is fixed. Dropping it is the regression where
+	 *    `cd <systemPath>` worked and `ls` of its parent omitted the name. */
+	CHECK(policy_dirent_visible(sys, VIEW_HOST) == 1, "the cwd is a visible child of its parent");
+	CHECK(policy_table_child_exists(sys, VIEW_HOST, 0) == 1,
+	      "and it EXISTS as the overlay node, though the orchestrator has nothing there");
+	CHECK(policy_host_absent(sys) == 1,
+	      "— asserted again here, so the row above cannot pass by the host happening to have it");
+
+	/* ── (3) THE ANCESTOR, WHICH IS A FIXED NODE IN ONE VIEW AND NOTHING IN
+	 *    THE OTHER. `<box>/absent-anc` is a strict ancestor of a host pin and
+	 *    the orchestrator has neither. */
+	{
+		const char *anc = anc_gone;
+		CHECK(anc_find(anc) >= 0, "the ancestor is really in the table");
+		CHECK(policy_host_absent(anc) == 1, "and the orchestrator really lacks it");
+		CHECK(resolve_class(anc, VIEW_CLI) == T_SYNTH, "VIEW_CLI: a scaffold node");
+		CHECK(policy_table_child_exists(anc, VIEW_CLI, 0) == 1,
+		      "which exists by construction — the scaffold is what makes the pin reachable");
+		CHECK(resolve_class(anc, VIEW_HOST) == T_FAIL,
+		      "VIEW_HOST: the ancestor table is not consulted, so it is fail");
+		CHECK(policy_table_child_exists(anc, VIEW_HOST, 0) == 0,
+		      "and fail -> host answers -ENOENT, so it must not be emitted");
+	}
+
+	/* ── (4) THE ORDINARY HOST PIN, BOTH WAYS, IN BOTH VIEWS. */
+	CHECK(policy_table_child_exists(hostpin, VIEW_CLI, 0) == 1, "a present host pin exists to the CLI");
+	CHECK(policy_table_child_exists(hostpin, VIEW_HOST, 0) == 1, "and to everyone else");
+	CHECK(policy_table_child_exists(hostgone, VIEW_CLI, 0) == 0,
+	      "an ABSENT host pin does not — this is the `ls /etc` listing ld.so.preload defect");
+	CHECK(policy_table_child_exists(hostgone, VIEW_HOST, 0) == 0, "in either view");
+
+	/* ── (5) A BIND TARGET IS A FIXED NODE TOO, in both views: `route()` serves
+	 *    it whether or not the orchestrator has the path, so a listing that
+	 *    omitted it would disagree with `stat`. */
+	CHECK(policy_table_child_exists("/proc", VIEW_CLI, 0) == 1, "a bind target exists to the CLI");
+	CHECK(policy_table_child_exists("/proc", VIEW_HOST, 0) == 1, "and to everyone else");
+
+	/* ── (6) AND THE PROJECT TIER, TO THE CLI, IS STILL THE HOST QUESTION ON A
+	 *    REAL DIRECTORY'S MERGE — unchanged by this card. A project child the
+	 *    orchestrator lacks is not in the mirror either, which is what the real
+	 *    arm's backing stream already said. */
+	CHECK(resolve_class(sys, VIEW_CLI) == T_PROJECT, "the cwd is the remote tier to the CLI");
+	CHECK(policy_table_child_exists(sys, VIEW_CLI, 0) == 0,
+	      "and to the CLI it is a host question, answered no — the rule is view-shaped because "
+	      "WHICH paths are fixed nodes differs, not because the sentence does");
+
+	/* ── (7) THE SCAFFOLD AXIS, WHICH IS A CARVE-OUT OF TWO PARTS AND NOT OF
+	 *    ONE. On a node with NO BACKING STORE the host is the WRONG AXIS for a
+	 *    `project` child: a project path's existence to the CLI is the MIRROR's
+	 *    question, BY TIER, wherever the host happens to hold it — and the right
+	 *    channel is a control frame a synthetic node must not send. The axis is
+	 *    the argument, NOT "the orchestrator has nothing at systemPath": this
+	 *    fixture's own box makes the host-absent case, but that case is
+	 *    deployment- and geometry-conditional in production and the carve-out
+	 *    does not rest on it. It does NOT reach a `host` pin child of the same
+	 *    node, where the host IS the right axis and the probe costs one fstatat.
+	 *    Both halves are driven, because a case that drove only the first would
+	 *    license the flag skipping every check. */
+	CHECK(policy_table_child_exists(sys, VIEW_CLI, 1) == 1,
+	      "a `project` child of a scaffold node is taken on trust — the host is the wrong axis, "
+	      "and this is what keeps the project in the marked `ls` of its parent at every geometry");
+	CHECK(policy_table_child_exists(hostgone, VIEW_CLI, 1) == 0,
+	      "but a `host` pin child of that SAME node is still checked, and an absent one is not "
+	      "emitted — the marked `ls /etc` naming an ETC_PINS entry `cat` answers -ENOENT for");
+	CHECK(policy_table_child_exists(hostpin, VIEW_CLI, 1) == 1,
+	      "while a present one is");
+	CHECK(policy_table_child_exists(anc_gone, VIEW_CLI, 1) == 1,
+	      "and a fixed node is unaffected by the flag — it exists by construction either way");
+	/* AND THE FLAG IS INERT IN VIEW_HOST, because that view cannot produce
+	 * T_PROJECT at all — asserted rather than assumed, so a later widening of
+	 * the carve-out cannot hide behind it. */
+	CHECK(resolve_class(sys, VIEW_HOST) != T_PROJECT, "VIEW_HOST cannot produce T_PROJECT");
+	CHECK(policy_table_child_exists(hostgone, VIEW_HOST, 1)
+	      == policy_table_child_exists(hostgone, VIEW_HOST, 0),
+	      "so the scaffold flag changes no VIEW_HOST answer");
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	hrm(box, "/present");
 	rmdir(box);
 }
 
@@ -2608,26 +2948,28 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b14-reasons"))   b14_control_reasons();
 	else if (!strcmp(c, "b15-unreconcilable")) b15_unreconcilable();
 	else if (!strcmp(c, "b16-abandon"))   b16_abandon();
-	else if (!strcmp(c, "b17-cwd-exempt")) b17_cwd_exempt(argc, argv);
-	else if (!strcmp(c, "b18-cwd-wide-mirror")) b18_cwd_wide_mirror();
 	else if (!strcmp(c, "b19-caller-tier-matrix")) b19_caller_tier_matrix();
 	else if (!strcmp(c, "b20-caller-sensitive-set")) b20_caller_sensitive_set();
 	else if (!strcmp(c, "b21-unmarked-refused-only-at-project")) b21_unmarked_refused_only_at_project();
 	else if (!strcmp(c, "b22-cwd-chain-extent")) b22_cwd_chain_extent();
 	else if (!strcmp(c, "b24-event-kinds")) b24_event_kinds();
 	else if (!strcmp(c, "b25-substitution-logged-per-path-and-tgid")) b25_substitution_logged_per_path_and_tgid();
-	else if (!strcmp(c, "b26-cwd-traverse-only")) b26_cwd_traverse_only(argc, argv);
 	else if (!strcmp(c, "b27-cwd-ino-distinct")) b27_cwd_ino_distinct();
 	else if (!strcmp(c, "b28-cwd-input-validated")) b28_cwd_input_validated();
 	else if (!strcmp(c, "b29-escape"))    b29_escape();
 	else if (!strcmp(c, "b30-absence"))   b30_absence();
 	else if (!strcmp(c, "b31-dedupe-tgid")) b31_dedupe_tgid();
-	else if (!strcmp(c, "b32-cwd-row"))   b32_cwd_row();
-	else if (!strcmp(c, "b33-host-existence")) b33_host_existence();
-	else if (!strcmp(c, "b34-project-host-substitution")) b34_project_host_substitution();
-	else if (!strcmp(c, "b35-fail-substitution-is-unconditional")) b35_fail_substitution_is_unconditional();
-	else if (!strcmp(c, "b36-traversal-bound-by-first-host-ancestor")) b36_traversal_bound_by_first_host_ancestor();
 	else if (!strcmp(c, "b37-unmarked-never-gets-remote")) b37_unmarked_never_gets_remote();
+	else if (!strcmp(c, "b38-view-is-geometry-invariant")) b38_view_is_geometry_invariant();
+	else if (!strcmp(c, "b39-chdir-lives-at-every-geometry")) b39_chdir_lives_at_every_geometry();
+	else if (!strcmp(c, "b40-marked-is-untouched")) b40_marked_is_untouched();
+	else if (!strcmp(c, "b41-no-unmarked-resolution-names-the-remote")) b41_no_unmarked_resolution_names_the_remote();
+	else if (!strcmp(c, "b43-uncovered-is-still-the-hosts")) b43_uncovered_is_still_the_hosts();
+	else if (!strcmp(c, "b44-dirent-visible")) b44_dirent_visible();
+	else if (!strcmp(c, "b46-floor-scope")) b46_floor_scope();
+	else if (!strcmp(c, "b47-floor-is-applied-at-every-reporting-op")) b47_floor_is_applied_at_every_reporting_op();
+	else if (!strcmp(c, "b48-probe-falls-not-absent")) b48_probe_falls_not_absent();
+	else if (!strcmp(c, "b49-table-child-exists")) b49_table_child_exists();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }

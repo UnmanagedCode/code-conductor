@@ -622,11 +622,11 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     assert.equal(w.env.CC_FUSE_CONTROL, plan.controlSock);
     assert.equal(w.env.CC_FUSE_MARK_PATH, plan.markPath);
     assert.equal(w.env.CC_FUSE_EVENT_LOG, plan.eventLog);
-    // THE CWD IS NOW A MOUNT PRECONDITION TOO (`CC_UNION_CWD`), because the
-    // cwd-chain exemption REPLACED the exact-pin test: without it every
-    // component is denied and the launch dies at the `cd`, project root
-    // included. It rides as `CC_FUSE_CWD`, which `wrapLaunch` already set for
-    // the bootstrap's own `cd`.
+    // THE CWD IS A MOUNT PRECONDITION TOO (`CC_UNION_CWD`): it is the whole
+    // domain of the floor and of the overlay, so without it nothing is floored,
+    // no overlay node exists, and the launch dies at the `cd`. It rides as
+    // `CC_FUSE_CWD`, which `wrapLaunch` already set for the bootstrap's own
+    // `cd`.
     assert.equal(w.env.CC_FUSE_CWD, plan.cwdInside);
   });
 });
@@ -682,6 +682,41 @@ describe('the tier table', () => {
   test('the project is the only `project` entry', () => {
     const t = buildTierTable(input);
     assert.deepEqual(t.filter(e => e.tier === 'project').map(e => e.prefix), ['/srv/app']);
+  });
+
+  // ── THE STRICT-ANCESTOR GEOMETRY, WHICH NOTHING BUILT BEFORE ─────────────
+  //
+  // PINS the CONFIGURATION half of card 2026-0398's bug: under a `mirrorRoot`
+  // that is a STRICT ANCESTOR of `systemPath`, `buildTierTable` emits TWO
+  // `project` entries, and the shallower one covers every directory between
+  // them by prefix — which is what made the orchestrator's own `/srv` resolve
+  // the remote tier and killed every spawn in chdir(). The daemon's half is the
+  // view (`b38`/`b39`); this is the half that says the geometry the view is
+  // invariant to is really the geometry the product builds.
+  //
+  // The M arm of that discriminator had never been exercised by any test: every
+  // fixture before this one set `mirrorRoot === systemPath`.
+  test('a mirrorRoot that is a strict ancestor emits two project entries, the shallower exact', () => {
+    const t = buildTierTable(tierFixtureInput({ systemPath: '/srv/app', mirrorRoot: '/srv' }));
+    const project = t.filter(e => e.tier === 'project').map(e => e.prefix);
+    assert.deepEqual(project, ['/srv', '/srv/app'],
+      'the remote tier\'s boundary first, the project inside it second');
+    // AN EXACT ENTRY ON THE ANCESTOR, not merely coverage: it is what makes
+    // `/srv` itself — and everything under it that is not the project — resolve
+    // T_PROJECT for the marked CLI.
+    assert.ok(t.some(e => e.tier === 'project' && e.prefix === '/srv'),
+      '/srv carries an exact project pin, so the space between it and the project is remote');
+    // AND `/` IS STILL NOT ONE, so the W arm is a different table again.
+    assert.equal(t.filter(e => e.tier === 'project' && e.prefix === '/').length, 0);
+  });
+
+  // AND THE WIDEST ARM: `mirrorRoot: '/'` pins the root itself, which is what
+  // removes `/` from the derived ancestor set in the daemon (anc_build drops any
+  // ancestor carrying an exact pin) and is why `b38` has to assert the unmarked
+  // answer at `/` is the same as it is at the narrow root.
+  test('a mirrorRoot of / pins the root itself as project', () => {
+    const t = buildTierTable(tierFixtureInput({ systemPath: '/srv/app', mirrorRoot: '/' }));
+    assert.deepEqual(t.filter(e => e.tier === 'project').map(e => e.prefix), ['/', '/srv/app']);
   });
 
   // ── A11/A12: the epic's "two mechanisms, never one list" ──────────────────
@@ -1307,11 +1342,12 @@ describe('the mount literals', () => {
   // libfuse, a real socket and a real mount), so each refusal is pinned from
   // the source, beside A16 and for A16's reason.
   //
-  // `CC_UNION_CWD` IS NEW WITH 2026-0382 AND THE ABSENCE OF A DEFAULT IS THE
-  // POINT. The cwd-chain exemption REPLACED the exact-pin test rather than
-  // being disjoined with it, so a missing cwd un-exempts the project root as
-  // well as the chain — regressing card 2026-0373 while looking exactly like a
-  // working mount. A default would be worse than the refusal.
+  // `CC_UNION_CWD` CAME IN WITH 2026-0382 AND THE ABSENCE OF A DEFAULT IS THE
+  // POINT. Since card 2026-0398 the chain is the whole domain of the floor and
+  // of the overlay, so a missing cwd means no floor, no overlay node, and every
+  // unmarked chdir dead at its destination — regressing card 2026-0373 while
+  // looking exactly like a working mount. A default would be worse than the
+  // refusal.
   test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd', async () => {
     const { readFile } = await import('node:fs/promises');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
