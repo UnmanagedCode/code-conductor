@@ -1959,15 +1959,23 @@ static const char *GEOM_NAME[3] = {
 	"W (mirrorRoot == /)",
 };
 
-static void geometry(int g, const char *box, const char *systempath)
+static void geometry_ex(int g, const char *box, const char *systempath,
+			const char *const *extra)
 {
 	char line[PATH_MAX + 32];
 	const char *root = g == 0 ? systempath : g == 1 ? box : "/";
+	size_t i;
 
 	npins = 0;
 	pin("host\t/etc/hostname");
 	pin("hide\t/run/cc-union-scaffold");
 	pin("bind\t/proc");
+	/* EXTRA PINS BEFORE THE PROJECT ENTRIES, because `pins_parse_line` appends
+	 * and `tier_of` takes the LONGEST prefix — order does not decide the
+	 * answer, but building them here keeps a case's own shape adjacent to the
+	 * table it is varying. */
+	for (i = 0; extra && extra[i]; i++)
+		pin(extra[i]);
 	snprintf(line, sizeof(line), "project\t%s", root);
 	pin(line);
 	if (strcmp(root, systempath) != 0) {
@@ -1975,6 +1983,11 @@ static void geometry(int g, const char *box, const char *systempath)
 		pin(line);
 	}
 	anc_build();
+}
+
+static void geometry(int g, const char *box, const char *systempath)
+{
+	geometry_ex(g, box, systempath, NULL);
 }
 
 /* ── B38: the unmarked view does not vary with the geometry ─────────────── */
@@ -2210,20 +2223,38 @@ static void b40_marked_is_untouched(void)
  * mirror cannot be read. This is the assertion that replaces the old
  * host-existence guard, and it holds without consulting the host at all.
  *
- * AND THE RE-RESOLUTION'S RANGE, which §5.2 states and this measures over the
- * driven set: for every input tier `policy_caller_tier` re-resolves — T_PROJECT
- * and T_SYNTH — the answer is one of {T_HOST, T_SYNTH, T_FAIL}.
+ * AND THE RE-RESOLUTION'S RANGE, WHICH IS {T_HOST, T_SYNTH, T_FAIL, T_HIDE} AND
+ * NOT THE THREE FIRST WRITTEN DOWN. Striking a `project` pin hands the
+ * longest-prefix contest to whatever SHORTER pin covers the path, and a `hide`
+ * pin is eligible to win it — so a path under a `hide` pin and a LONGER
+ * `project` pin is T_PROJECT to the CLI and T_HIDE to everyone else. That is
+ * the correct answer (hidden stays hidden, and `route()`'s T_HIDE arm answers
+ * -ENOENT before anything else), and this case builds the overlap deliberately:
+ * the earlier three-member claim was never met by a geometry that could
+ * contradict it.
  */
 static void b41_no_unmarked_resolution_names_the_remote(void)
 {
 	char box[] = "/tmp/cc-policy-b41XXXXXX";
 	char sys[PATH_MAX], leaf[PATH_MAX];
-	const char *paths[8];
-	int g, i, n_checked = 0, n_synth = 0, n_fail = 0;
+	char hidden[PATH_MAX], hidden_pin[PATH_MAX + 16], inner_pin[PATH_MAX + 24];
+	char inner[PATH_MAX];
+	const char *extra[3];
+	const char *paths[9];
+	int g, i, n_checked = 0, n_synth = 0, n_fail = 0, n_hide = 0;
 
 	host_box(box);
 	hjoin(sys, sizeof(sys), box, "/app3");
 	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	/* THE OVERLAP: a `hide` prefix with a LONGER `project` pin inside it, and
+	 * the checked path under both. */
+	hjoin(hidden, sizeof(hidden), box, "/hidden");
+	hjoin(inner, sizeof(inner), box, "/hidden/inner/f.txt");
+	snprintf(hidden_pin, sizeof(hidden_pin), "hide\t%s", hidden);
+	snprintf(inner_pin, sizeof(inner_pin), "project\t%s/inner", hidden);
+	extra[0] = hidden_pin;
+	extra[1] = inner_pin;
+	extra[2] = NULL;
 	policy_host_fd = host_root_fd();
 	cwd_path = sys;
 
@@ -2235,10 +2266,11 @@ static void b41_no_unmarked_resolution_names_the_remote(void)
 	paths[5] = "/tmp";
 	paths[6] = "/run/cc-union-scaffold";
 	paths[7] = "/proc";
+	paths[8] = inner;
 
 	for (g = 0; g < 3; g++) {
-		geometry(g, box, sys);
-		for (i = 0; i < 8; i++) {
+		geometry_ex(g, box, sys, extra);
+		for (i = 0; i < 9; i++) {
 			enum tier host = resolve_class(paths[i], VIEW_HOST);
 
 			CHECK(host != T_PROJECT,
@@ -2248,24 +2280,42 @@ static void b41_no_unmarked_resolution_names_the_remote(void)
 			 * tier is one policy_caller_tier re-resolves. */
 			if (policy_tier_is_caller_sensitive(resolve_class(paths[i], VIEW_CLI))
 			    && resolve_class(paths[i], VIEW_CLI) != T_FAIL) {
-				CHECK(host == T_HOST || host == T_SYNTH || host == T_FAIL,
-				      "%s: %s re-resolves inside {host, synth, fail} (%s)",
+				CHECK(host == T_HOST || host == T_SYNTH
+				      || host == T_FAIL || host == T_HIDE,
+				      "%s: %s re-resolves inside {host, synth, fail, hide} (%s)",
 				      GEOM_NAME[g], paths[i], tier_name(host));
 				n_checked++;
 				if (host == T_SYNTH) n_synth++;
 				if (host == T_FAIL)  n_fail++;
+				if (host == T_HIDE)  n_hide++;
 			}
 			/* AND THE MAP ITSELF NEVER HANDS BACK THE REMOTE. */
 			CHECK(policy_caller_tier("getattr", paths[i],
 						 resolve_class(paths[i], VIEW_CLI), 0, 500) != T_PROJECT,
 			      "%s: and policy_caller_tier does not either at %s", GEOM_NAME[g], paths[i]);
 		}
+		/* THE OVERLAP, ASSERTED ON ITS OWN so it cannot be lost inside the
+		 * disjunction above — and BOTH halves, because a case where the
+		 * VIEW_CLI tier were not T_PROJECT would never reach the
+		 * re-resolution and would prove nothing about its range. */
+		CHECK(resolve_class(inner, VIEW_CLI) == T_PROJECT,
+		      "%s: the overlap path is the remote tier to the CLI (%s)",
+		      GEOM_NAME[g], tier_name(resolve_class(inner, VIEW_CLI)));
+		CHECK(resolve_class(inner, VIEW_HOST) == T_HIDE,
+		      "%s: and T_HIDE once the project pin is struck — the shorter hide pin wins "
+		      "the contest (%s)", GEOM_NAME[g], tier_name(resolve_class(inner, VIEW_HOST)));
+		/* AND THE MAP CARRIES IT THROUGH UNCHANGED, so route()'s T_HIDE arm
+		 * answers -ENOENT: hidden stays hidden for an unmarked caller, which
+		 * is what keeps the mirror and the control socket unreachable. */
+		CHECK(policy_caller_tier("getattr", inner, T_PROJECT, 0, 500) == T_HIDE,
+		      "%s: policy_caller_tier hands back T_HIDE, not a substitution", GEOM_NAME[g]);
 	}
 	/* NON-VACUITY: the re-resolution was really exercised, and it really
-	 * produced more than one member of the range. */
-	CHECK(n_checked >= 9, "the re-resolution was driven at least nine times (%d)", n_checked);
+	 * produced more than one member of the range — including the fourth. */
+	CHECK(n_checked >= 12, "the re-resolution was driven at least twelve times (%d)", n_checked);
 	CHECK(n_synth >= 3, "and landed on the overlay node at least once per geometry (%d)", n_synth);
 	CHECK(n_fail >= 3, "and on fail at least once per geometry (%d)", n_fail);
+	CHECK(n_hide == 3, "and on HIDE once per geometry (%d)", n_hide);
 
 	close(policy_host_fd);
 	policy_host_fd = -1;
@@ -2645,6 +2695,125 @@ static void b48_probe_falls_not_absent(void)
 	rmdir(box);
 }
 
+/* ── B49: a table-derived name exists only if this view can open it ─────── */
+/*
+ * THE SECOND HALF OF THE DIRENT RULE, AND IT IS NOT `policy_dirent_visible`.
+ * That predicate answers "may this view SEE this name". This one answers "is
+ * there anything there at all" — and the two were conflated at every emit site
+ * in the first round of card 2026-0398, which produced three separate
+ * `ls`/`cat` disagreements:
+ *
+ *   an `exclude` under the project put a name into an unmarked listing of the
+ *   overlay cwd while every op on it answered -ENOENT;
+ *   a project-pinned child resolving to the OVERLAY was host-checked, found
+ *   absent and dropped, so `stat <systemPath>` answered and `cd` worked while
+ *   `ls` of its parent omitted the name; and
+ *   an off-chain host-absent ANCESTOR was emitted unchecked, which is true of a
+ *   VIEW_CLI scaffold node and false in VIEW_HOST.
+ *
+ * THE RULE IS ONE SENTENCE: a fixed node exists by construction, and everything
+ * else exists exactly where the orchestrator has it. What makes it view-shaped
+ * is that WHICH paths are fixed nodes differs between the views — the ancestor
+ * table in VIEW_CLI, the cwd overlay in VIEW_HOST.
+ */
+static void b49_table_child_exists(void)
+{
+	char box[] = "/tmp/cc-policy-b49XXXXXX";
+	char sys[PATH_MAX], line[PATH_MAX + 32];
+	char excluded[PATH_MAX], hostpin[PATH_MAX], hostgone[PATH_MAX];
+	char anc_absent[PATH_MAX];
+
+	host_box(box);
+	hjoin(sys, sizeof(sys), box, "/app3");           /* the cwd; NEVER created */
+	hjoin(excluded, sizeof(excluded), box, "/app3/node_modules");
+	hjoin(hostpin, sizeof(hostpin), box, "/present");
+	hjoin(hostgone, sizeof(hostgone), box, "/gone");
+	hjoin(anc_absent, sizeof(anc_absent), box, "/absent-anc/leaf");
+	hmkdir(box, "/present");
+
+	npins = 0;
+	snprintf(line, sizeof(line), "project\t%s", sys);            pin(line);
+	snprintf(line, sizeof(line), "fail\t%s", excluded);          pin(line);
+	snprintf(line, sizeof(line), "host\t%s", hostpin);           pin(line);
+	snprintf(line, sizeof(line), "host\t%s", hostgone);          pin(line);
+	snprintf(line, sizeof(line), "host\t%s", anc_absent);        pin(line);
+	pin("bind\t/proc");
+	anc_build();
+	cwd_path = sys;
+	policy_host_fd = host_root_fd();
+
+	/* THE AXES ARE REAL, asserted before anything leans on them. */
+	CHECK(policy_host_absent(sys) == 1, "the orchestrator has nothing at the cwd");
+	CHECK(policy_host_absent(hostpin) == 0, "and does have the present host pin");
+	CHECK(policy_host_absent(hostgone) == 1, "and nothing at the absent one");
+	CHECK(resolve_class(sys, VIEW_HOST) == T_SYNTH, "so the cwd is the overlay node");
+
+	/* ── (1) THE EXCLUDE UNDER THE OVERLAY. `policy_dirent_visible` says an
+	 *    unmarked caller MAY see a `fail` name — and there is nothing there,
+	 *    because the orchestrator has nothing at the parent either. Both
+	 *    predicates are driven, so the case pins that they answer DIFFERENTLY
+	 *    rather than that one of them subsumes the other. */
+	CHECK(policy_dirent_visible(excluded, VIEW_HOST) == 1,
+	      "an excluded name is VISIBLE to an unmarked caller — fail -> host serves it");
+	CHECK(policy_table_child_exists(excluded, VIEW_HOST) == 0,
+	      "but nothing is THERE, so it must not be emitted: the orchestrator has nothing "
+	      "under a path it has nothing at");
+
+	/* ── (2) THE PROJECT-PINNED CHILD THAT IS THE OVERLAY. Visible, and it
+	 *    EXISTS — the node is fixed. Dropping it is the regression where
+	 *    `cd <systemPath>` worked and `ls` of its parent omitted the name. */
+	CHECK(policy_dirent_visible(sys, VIEW_HOST) == 1, "the cwd is a visible child of its parent");
+	CHECK(policy_table_child_exists(sys, VIEW_HOST) == 1,
+	      "and it EXISTS as the overlay node, though the orchestrator has nothing there");
+	CHECK(policy_host_absent(sys) == 1,
+	      "— asserted again here, so the row above cannot pass by the host happening to have it");
+
+	/* ── (3) THE ANCESTOR, WHICH IS A FIXED NODE IN ONE VIEW AND NOTHING IN
+	 *    THE OTHER. `<box>/absent-anc` is a strict ancestor of a host pin and
+	 *    the orchestrator has neither. */
+	{
+		char anc[PATH_MAX];
+		hjoin(anc, sizeof(anc), box, "/absent-anc");
+		CHECK(anc_find(anc) >= 0, "the ancestor is really in the table");
+		CHECK(policy_host_absent(anc) == 1, "and the orchestrator really lacks it");
+		CHECK(resolve_class(anc, VIEW_CLI) == T_SYNTH, "VIEW_CLI: a scaffold node");
+		CHECK(policy_table_child_exists(anc, VIEW_CLI) == 1,
+		      "which exists by construction — the scaffold is what makes the pin reachable");
+		CHECK(resolve_class(anc, VIEW_HOST) == T_FAIL,
+		      "VIEW_HOST: the ancestor table is not consulted, so it is fail");
+		CHECK(policy_table_child_exists(anc, VIEW_HOST) == 0,
+		      "and fail -> host answers -ENOENT, so it must not be emitted");
+	}
+
+	/* ── (4) THE ORDINARY HOST PIN, BOTH WAYS, IN BOTH VIEWS. */
+	CHECK(policy_table_child_exists(hostpin, VIEW_CLI) == 1, "a present host pin exists to the CLI");
+	CHECK(policy_table_child_exists(hostpin, VIEW_HOST) == 1, "and to everyone else");
+	CHECK(policy_table_child_exists(hostgone, VIEW_CLI) == 0,
+	      "an ABSENT host pin does not — this is the `ls /etc` listing ld.so.preload defect");
+	CHECK(policy_table_child_exists(hostgone, VIEW_HOST) == 0, "in either view");
+
+	/* ── (5) A BIND TARGET IS A FIXED NODE TOO, in both views: `route()` serves
+	 *    it whether or not the orchestrator has the path, so a listing that
+	 *    omitted it would disagree with `stat`. */
+	CHECK(policy_table_child_exists("/proc", VIEW_CLI) == 1, "a bind target exists to the CLI");
+	CHECK(policy_table_child_exists("/proc", VIEW_HOST) == 1, "and to everyone else");
+
+	/* ── (6) AND THE PROJECT TIER, TO THE CLI, IS STILL THE HOST QUESTION ON A
+	 *    REAL DIRECTORY'S MERGE — unchanged by this card. A project child the
+	 *    orchestrator lacks is not in the mirror either, which is what the real
+	 *    arm's backing stream already said. */
+	CHECK(resolve_class(sys, VIEW_CLI) == T_PROJECT, "the cwd is the remote tier to the CLI");
+	CHECK(policy_table_child_exists(sys, VIEW_CLI) == 0,
+	      "and to the CLI it is a host question, answered no — the rule is view-shaped because "
+	      "WHICH paths are fixed nodes differs, not because the sentence does");
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	hrm(box, "/present");
+	rmdir(box);
+}
+
 static void print_vec(const char *label, const char *b, size_t n)
 {
 	size_t i;
@@ -2770,6 +2939,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b46-floor-scope")) b46_floor_scope();
 	else if (!strcmp(c, "b47-floor-is-applied-at-every-reporting-op")) b47_floor_is_applied_at_every_reporting_op();
 	else if (!strcmp(c, "b48-probe-falls-not-absent")) b48_probe_falls_not_absent();
+	else if (!strcmp(c, "b49-table-child-exists")) b49_table_child_exists();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }

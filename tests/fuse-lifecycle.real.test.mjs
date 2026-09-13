@@ -2237,8 +2237,11 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // `0555`, NOT THE `0111` OF THE DELETED T_CWD NODE (card 2026-0398). The
       // traverse-only mode existed because that node sat over a PROJECT path
       // where a listing could name remote content; with the remote struck from
-      // an unmarked caller's view the listing is EMPTY BY CONSTRUCTION, which is
-      // what the `ls` below asserts — it now SUCCEEDS and names nothing, where
+      // an unmarked caller's view the listing is EMPTIED BY THE EMIT'S OWN
+      // EXISTENCE CHECK — `policy_table_child_exists` drops every table name the
+      // orchestrator does not have, and it has nothing under a path it has
+      // nothing at — which is what the `ls` below asserts: it now SUCCEEDS and
+      // names nothing, where
       // before the kernel refused it on the mode. Both facts are pinned: an
       // empty listing that failed would be indistinguishable from a leak that
       // the shell happened to swallow.

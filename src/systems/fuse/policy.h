@@ -364,12 +364,22 @@ static inline enum tier resolve_class(const char *path, enum view v)
 }
 
 /*
- * A synthetic node's attributes, and they are FIXED. Existence, mtime and size
+ * A synthetic node's ATTRIBUTES, and they are FIXED. Existence, mtime and size
  * are exactly what the tier table withholds, so this must never consult the
  * host directory of the same name: `/usr` inside the chroot is a scaffold cc
  * built to make its pins reachable, not the host's `/usr` seen through a
  * keyhole. Nothing here touches the filesystem, which is what makes that
  * structural rather than a habit.
+ *
+ * H9 IS A RULE ABOUT ATTRIBUTES AND NOT ABOUT NAMES, and the scope has to be
+ * said out loud because a reader will otherwise take it as forbidding the merge
+ * that now happens. `policy_fixed_dir`'s fixed mode, nlink, size and times are
+ * what would disclose the orchestrator's metadata, and they are untouched.
+ * `pt_readdir`'s `VIEW_HOST` arm reads the orchestrator's directory for NAMES,
+ * and `policy_table_child_exists` probes it for EXISTENCE — neither reports a
+ * single attribute of it, and `pinned_children_emit`'s own host probe was always
+ * the precedent that the generalisation "a synthetic node must not stat the
+ * host" was too broad.
  *
  * 0555 root:root, nlink 2, size 0, all three times 0.
  */
@@ -396,9 +406,16 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
  * could name remote content; 0555 there would have handed an unmarked caller
  * "the content of these remote directories", which the 2026-09-08 amendment
  * forbade. With the remote struck from `VIEW_HOST` the overlay node's listing is
- * EMPTY BY CONSTRUCTION — `policy_synth_children` finds no pin or ancestor under
- * a path the orchestrator does not have — so it names nothing remote and the
- * reason for the split is gone. `policy_mutation_check`'s -EROFS still applies
+ * EMPTY, BUT NOT FOR THE REASON FIRST WRITTEN DOWN, AND THE CORRECTION MATTERS
+ * BECAUSE THE FALSE VERSION WOULD LET A READER DELETE THE CHECK THAT MAKES IT
+ * TRUE. It is NOT that "`policy_synth_children` finds no pin or ancestor under a
+ * path the orchestrator does not have" — that function scans the PIN TABLE,
+ * which knows nothing about what the orchestrator holds, and an `exclude` or a
+ * deeper pin under the project puts names there readily. The emptiness comes
+ * from the EMIT: `policy_table_child_exists` drops every table name the
+ * orchestrator does not have, and it has nothing under a path it has nothing
+ * at. What survives is fixed nodes, which name nothing remote either. So the
+ * node's listing names nothing remote, and the reason for the split is gone. `policy_mutation_check`'s -EROFS still applies
  * and is still right: the orchestrator has nothing at this path, so constraint 1
  * owes nothing there.
  *
@@ -474,6 +491,44 @@ static inline int policy_dirent_visible(const char *child, enum view v)
 	if (t == T_FAIL)
 		return v == VIEW_HOST;
 	return 1;
+}
+
+/*
+ * AND THE OTHER HALF: IS THERE ANYTHING THERE? `policy_dirent_visible` answers
+ * "may this view SEE this name"; it does not answer "is there anything to
+ * open". Conflating the two put three separate `ls`/`cat` disagreements into
+ * card 2026-0398's first round, one per emit site, and this is the predicate
+ * that separates them.
+ *
+ * THE RULE IS ONE SENTENCE: a FIXED NODE exists by construction, and everything
+ * else exists exactly where the orchestrator has it. What makes it view-shaped
+ * is not the sentence but WHICH PATHS ARE FIXED NODES — the ancestor table in
+ * `VIEW_CLI`, the cwd overlay in `VIEW_HOST` — so the same child can be a node
+ * that certainly exists to one caller and a host question to the other.
+ *
+ * WHY THE PIN'S OWN TIER IS THE WRONG THING TO ASK, and this is the trap: a
+ * `project` pin at the cwd resolves to the OVERLAY for an unmarked caller, so
+ * branching on the pin tier host-checks a node that exists by construction and
+ * drops it — `stat <systemPath>` answering and `cd` working while `ls` of its
+ * parent omits the name. Resolve in the view, then ask.
+ *
+ * PROBED THROUGH `policy_host_absent`, so the failure direction is the one that
+ * function documents: an unknown error answers "not absent", which here means
+ * the name is EMITTED and the host answers for it — loud, rather than a name
+ * silently missing from a listing.
+ *
+ * IT IS NOT ASKED ON A `VIEW_CLI` SYNTHETIC NODE'S OWN CHILDREN, and union.c
+ * says why at the call site: there the scaffold has no backing store at all and
+ * a `project` child's existence is a question only a control frame could answer,
+ * which a synthetic node must not send.
+ */
+static inline int policy_table_child_exists(const char *child, enum view v)
+{
+	enum tier t = resolve_class(child, v);
+
+	if (t == T_SYNTH || t == T_BIND)
+		return 1;               /* a fixed node: it exists by construction */
+	return !policy_host_absent(child);
 }
 
 /*
@@ -1417,9 +1472,11 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
  * also drive them, the way it drives `policy_proc`, `policy_clock` and
  * `ccu_xport`.
  *
- * NEGATIVE UNTIL `main()` OPENS IT, and the probe answers 0 on a negative fd —
- * which is the pre-substitution behaviour, and the axis the unit fixture uses
- * to drive "the host has nothing".
+ * NEGATIVE UNTIL `main()` OPENS IT, and `policy_host_absent` answers 1 on a
+ * negative fd — "no host at all", which is the axis the unit fixture uses to
+ * drive "the orchestrator has nothing". The polarity is stated here because the
+ * DELETED `policy_host_has` answered 0 in the same situation, and a reader
+ * carrying that direction across would invert every overlay decision.
  */
 static int policy_host_fd = -1;
 
@@ -1618,9 +1675,18 @@ static inline int policy_tier_is_caller_sensitive(enum tier t)
  *
  * IT CAN NEVER RETURN T_PROJECT FOR AN UNMARKED CALLER, and that is now
  * STRUCTURAL rather than asserted: `resolve_class(path, VIEW_HOST)` cannot
- * produce it, because `tier_of` skips every `project` pin in that view. The
- * re-resolution's range is provably {T_HOST, T_SYNTH, T_FAIL}; `b41` asserts it
- * rather than assuming it.
+ * produce it, because `tier_of` skips every `project` pin in that view.
+ *
+ * THE RE-RESOLUTION'S RANGE IS {T_HOST, T_SYNTH, T_FAIL, T_HIDE}, AND T_HIDE IS
+ * NOT AN OVERSIGHT. Striking a `project` pin hands the longest-prefix contest to
+ * whatever SHORTER pin covers the path, and a `hide` pin is eligible to win it —
+ * so a path under a `hide` prefix with a LONGER `project` pin inside it is
+ * T_PROJECT to the CLI and T_HIDE to everyone else. That is the correct answer:
+ * `hide` is what keeps the mirror and cc's control socket unreachable, and
+ * route()'s T_HIDE arm answers -ENOENT before anything else, so the tier is
+ * carried through here unchanged rather than substituted. `b41` builds the
+ * overlap deliberately and asserts all four — the three-member claim this
+ * paragraph replaces was never met by a geometry that could contradict it.
  *
  * TWO REASONS, NOT ONE, and the `fail` row keeps its own: it feeds `suggestPin`,
  * which the substituted-project row correctly must not.
@@ -1687,22 +1753,6 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
  * `main()` refuses, alongside CC_UNION_MARK_PATH and CC_UNION_CONTROL and for
  * the same class of reason — one input enables the project tier at all, this one
  * enables entry to it. */
-/* THE CWD, INJECTED ONCE, COMPARED PER OP. Same shape as `mark_path`: one
- * string, no derived table, so NOTHING CAN GO STALE when the cwd changes —
- * there is no component list to leave behind.
- *
- * IT LIVES HERE AND NOT IN union.c, AND THAT IS A DESIGN REQUIREMENT. The unit
- * fixture compiles policy.h alone and assigns this directly as a seam, the way
- * it assigns `policy_proc`, `policy_clock` and `ccu_xport`; a variable in
- * union.c is undrivable, which is exactly why `mark_path`'s own event is
- * COVERED NOWHERE. Do not repeat that placement.
- *
- * NULL IS FAIL-CLOSED AND union.c REFUSES TO MOUNT ON IT: with no cwd every
- * component is denied, project root included, so a default would silently
- * un-exempt 2026-0373's fix while looking like it worked. `main()` refuses,
- * alongside CC_UNION_MARK_PATH and CC_UNION_CONTROL and for the same class of
- * reason — one input enables the project tier at all, this one enables entry to
- * it. */
 static const char *cwd_path = NULL;
 
 /*
@@ -1714,7 +1764,8 @@ static const char *cwd_path = NULL;
  * `path.posix.relative` rather than a string prefix, so that `/app-backup` is
  * not inside `/app`. The trap is identical here in the other direction — for a
  * cwd of `/root/app3` the candidate `/root/app` IS a string prefix, and a bare
- * strncmp would exempt a directory that is not on the chain at all. C has no
+ * strncmp would put a directory on the chain that is not on it at all — which
+ * would floor it, or hang an overlay node off it. C has no
  * path.posix.relative, so this is that rule.
  *
  * BOTH DIRECTIONS OF THE SIBLING TRAP ARE REJECTED, BY DIFFERENT MECHANICS, and

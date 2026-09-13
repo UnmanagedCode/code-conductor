@@ -379,6 +379,9 @@ describe('the compiled policy driver', { skip }, () => {
     ['b47-floor-is-applied-at-every-reporting-op',
                       'the floor’s TWO entry points agree: `stat`, `fstat` and the readdir child stat report the same 0111, and policy_floor_mask grants X_OK exactly where they do while referring R_OK and F_OK to the host unchanged',
                       'floor in one pt_getattr arm only ⇒ stat and fstat disagree; omit policy_floor_mask ⇒ `test -x /root` refuses what `stat /root` advertises, from one caller; clear R_OK as well ⇒ the floor grants access, not just resolution; return 0 for F_OK ⇒ every existence probe on the chain answers yes without asking the host'],
+    ['b49-table-child-exists',
+                      'a table-derived dirent name is emitted only where the RESOLVING VIEW can open it: a fixed node (ancestor in VIEW_CLI, overlay in VIEW_HOST, bind in both) exists by construction, everything else exactly where the orchestrator has it — driven over an excluded child of an overlay, a project-pinned child that IS the overlay, an ancestor the host lacks, a present and an absent host pin, and a bind target',
+                      'branch on the RAW PIN TIER ⇒ the project-pinned overlay child is host-checked and dropped (`cd <systemPath>` works while `ls` of its parent omits the name) and a host-absent ancestor is emitted unchecked in VIEW_HOST; drop the T_SYNTH/T_BIND arm ⇒ the overlay cwd vanishes from its parent’s listing; drop the host probe ⇒ an excluded child of an overlay is listed while every op on it answers -ENOENT; reuse policy_dirent_visible for this question ⇒ visibility and existence collapse and all three return'],
     ['b48-probe-falls-not-absent',
                       'policy_host_absent answers ABSENT for ENOENT / ENOTDIR / ENAMETOOLONG and for a negative fd, NOT ABSENT for a present file, directory or DANGLING symlink, and NOT ABSENT for an ELOOP — the failure direction that keeps an unknown error loud instead of silently hiding a host directory',
                       '`return fstatat(...) != 0` ⇒ ELOOP reads as absence and a synthetic node hides real host data, the silent-hiding direction; reuse policy_host_has’s polarity ⇒ every answer inverts; drop AT_SYMLINK_NOFOLLOW ⇒ a dangling symlink reads as absent and gets an overlay node; return 0 for a negative fd ⇒ the seam-unset axis every other case leans on collapses'],
@@ -591,8 +594,9 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(getattr, /policy_floor_traversal\(path, st,\s*\n?\s*fh >= 0/,
       'INVARIANT: the fh arm takes its view from the open\'s own fd_view record, not from a '
       + 'fresh /proc read — the fast path stays fast');
-    assert.match(getattr, /policy_floor_traversal\(path, st, r\.view\);/,
-      'INVARIANT: the path arm floors with the view its ROUTE resolved in');
+    assert.match(getattr, /policy_floor_traversal\(path, st, route_view\(&r\)\);/,
+      'INVARIANT: the path arm floors with the view the ROUTE derives — a bare `r.view` here '
+      + 'is VIEW_CLI on every host-pinned chain component, and the floor declines');
 
     // THE READDIR CHILD STAT, in the one helper both dirent streams share.
     const child = src.slice(src.indexOf('static int readdir_child('),
@@ -603,7 +607,7 @@ describe('the compiled policy driver', { skip }, () => {
 
     // THE MASK.
     const access = bodyOfIn(src, 'access');
-    assert.match(access, /policy_floor_mask\(path, mask, r\.view\)/,
+    assert.match(access, /policy_floor_mask\(path, mask, route_view\(&r\)\)/,
       'INVARIANT: pt_access clears X_OK through policy_floor_mask — without it `test -x` and '
       + '`stat` disagree from one caller');
     assert.match(access, /floored != mask && floored == 0/,
@@ -627,6 +631,85 @@ describe('the compiled policy driver', { skip }, () => {
       const body = op === 'readdir_child' ? child : bodyOfIn(src, op);
       assert.ok(body.includes(`${fn}(`), `${op} no longer calls ${fn}`);
     }
+  });
+
+  // ── THE VIEW IS DERIVED WHEREVER IT IS CONSUMED, NOT ONLY WHERE THE TIER
+  //    NEEDED SUBSTITUTING ────────────────────────────────────────────────────
+  //
+  // THE DEFECT THIS PINS. `policy_tier_is_caller_sensitive` is a gate on the
+  // TIER: it is right that `host`/`hide`/`bind` resolve identically in both
+  // views, so the routed path's own answer does not need the mark. But the view
+  // does not stay with the routed path — it is carried into the dirhandle and
+  // used to classify CHILDREN, and into the floor, which requires VIEW_HOST.
+  // Deriving it only inside the gate left two live failures:
+  //
+  //   an unmarked `ls` of a HOST-PINNED directory classified its children in
+  //   VIEW_CLI, so an unpinned child was hidden while `cat` on it returned the
+  //   bytes — card 2026-0403's defect class, at the call site `b44` cannot
+  //   reach; and
+  //
+  //   a cwd-chain component covered by a HOST pin never entered the gate, so
+  //   the floor declined and an unmarked spawn died in chdir() on a
+  //   search-denied orchestrator directory — this card's own symptom.
+  //
+  // THE FIX IS LAZY, NOT UNCONDITIONAL, AND THE COST IS WHY. Setting the view
+  // in `route()` for every op would pay a /proc mark read per op at `host`, the
+  // CLI's hottest tier under attr_timeout=0. `route_view()` derives it ONCE per
+  // route, on demand, and seeds itself for free when the gate already computed
+  // `marked` — so the read is paid only where a consumer actually asks.
+  test('the view is derived wherever it is consumed, not only inside the caller-sensitive gate', async () => {
+    const raw = await fs.readFile(UNION_C, 'utf8');
+    const src = stripCComments(raw);
+
+    assert.match(src, /static enum view route_view\(struct route \*r\)/,
+      'INVARIANT: union.c has ONE lazy view accessor — without it the view is whatever the '
+      + 'caller-sensitive gate left behind, which is VIEW_CLI on every host/hide/bind route');
+    // MEMOISED, so one route reads /proc at most once however many consumers ask.
+    assert.match(src, /if \(!r->view_known\)/,
+      'INVARIANT: route_view memoises — a consumer asking twice must not pay two /proc reads');
+    assert.match(src, /struct route \{[\s\S]*?unsigned char view_known;[\s\S]*?\};/,
+      'INVARIANT: struct route carries the memo flag beside the view');
+    assert.match(src, /r->view_known = 0;/,
+      'INVARIANT: route() clears the memo — a stack-garbage flag would serve a previous '
+      + 'route\'s view');
+    // AND THE GATE SEEDS IT, so the hot caller-sensitive path pays no SECOND read.
+    assert.match(src, /r->view\s*=\s*marked \? VIEW_CLI : VIEW_HOST;\s*\n\s*r->view_known = 1;/,
+      'INVARIANT: the gate seeds the memo from the `marked` it already derived — otherwise a '
+      + 'project-tier consumer pays a second /proc read on the CLI\'s hottest tier');
+
+    // EVERY CONSUMER ASKS THE ACCESSOR. A bare `r.view` at any of these is the
+    // defect above: correct for a caller-sensitive tier and silently VIEW_CLI
+    // for every other.
+    const opendir = bodyOfIn(src, 'opendir');
+    assert.match(opendir, /h->view = route_view\(&r\);/,
+      'INVARIANT: pt_opendir derives the view for the HANDLE — a host-pinned directory never '
+      + 'enters the gate, so `r.view` there is VIEW_CLI and every child is misclassified');
+    const getattr = bodyOfIn(src, 'getattr');
+    assert.match(getattr, /policy_floor_traversal\(path, st, route_view\(&r\)\);/,
+      'INVARIANT: pt_getattr\'s path arm derives the view for the floor — a cwd component '
+      + 'covered by a host pin never enters the gate');
+    const access = bodyOfIn(src, 'access');
+    assert.match(access, /policy_floor_mask\(path, mask, route_view\(&r\)\)/,
+      'INVARIANT: pt_access derives it too, or `test -x` and `stat` disagree on exactly the '
+      + 'chain links a host pin covers');
+    assert.match(getattr, /return policy_synth_getattr\(path, st, route_view\(&r\)\);/,
+      'INVARIANT: and so does the synthetic answer — T_BIND is view-invariant and T_SYNTH is '
+      + 'caller-sensitive, but reasoning from the tier is what produced this defect');
+
+    // THE COST GATE IS A COST GATE AND NOT THE RULE. Both floor sites test the
+    // bounded string compare BEFORE paying the /proc read; `policy_floor_applies`
+    // still re-tests it, so a mutant dropping it from the predicate is killed by
+    // `b46` rather than masked here.
+    for (const [op, body] of [['getattr', getattr], ['access', access]])
+      assert.ok(/policy_cwd_component\(path\)/.test(body),
+        `INVARIANT: pt_${op} gates the view derivation behind policy_cwd_component, so the `
+        + 'floor costs a /proc read only on the cwd chain and not on every op');
+
+    // AND NOTHING READS THE RAW FIELD OUTSIDE route() AND THE ACCESSOR.
+    const outside = src.split('\n')
+      .filter(l => /(?<![_\w])r\.view(?![_\w])/.test(l));
+    assert.deepEqual(outside, [],
+      `these sites read the route's raw view field instead of asking route_view(): ${outside.join(' | ')}`);
   });
 
   // ── BOTH readdir ARMS ASK ONE PREDICATE ────────────────────────────────────
@@ -712,8 +795,9 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(src, /struct dirhandle \{[\s\S]*?enum view view;[\s\S]*?\};/,
       'INVARIANT: the dirhandle carries the view opendir routed with, so every dirent in one '
       + 'listing is classified the same way');
-    assert.match(bodyOfIn(src, 'opendir'), /h->view = r\.view;/,
-      'INVARIANT: and pt_opendir records it');
+    assert.match(bodyOfIn(src, 'opendir'), /h->view = route_view\(&r\);/,
+      'INVARIANT: and pt_opendir DERIVES it — a host-pinned directory never enters the '
+      + 'caller-sensitive gate, so a bare `r.view` classifies its children in the wrong view');
     assert.match(src, /static void fd_tier_set\(int fd, enum tier t, int writable, enum view v\)/,
       'INVARIANT: the per-fd table takes the view from the SAME call the open already makes — a '
       + 'separate setter is how a handle acquires a tier and a view from two decisions');
@@ -724,13 +808,87 @@ describe('the compiled policy driver', { skip }, () => {
     // node's inode comes from the chain's sub-range and not from the ancestor
     // table it is deliberately not in — hard-coding VIEW_CLI here makes every
     // overlay node answer -ENOENT, and the chdir dies at its destination.
-    assert.match(bodyOfIn(src, 'getattr'), /return policy_synth_getattr\(path, st, r\.view\);/,
-      'INVARIANT: pt_getattr answers a synthetic node in the route\'s own view');
+    assert.match(bodyOfIn(src, 'getattr'), /return policy_synth_getattr\(path, st, route_view\(&r\)\);/,
+      'INVARIANT: pt_getattr answers a synthetic node in the view the ROUTE derives');
 
     // AND THE MARK IS READ ONCE PER OP, in route() and nowhere else.
-    assert.equal((src.match(/policy_is_marked_tid\(/g) ?? []).length, 1,
-      'INVARIANT: union.c reads the mark exactly once, in route() — a second call site pays a '
-      + 'second /proc read and can disagree with the view already derived');
+    // TWO CALL SITES, AND EXACTLY TWO: `route()`'s gate, which pays the read
+    // where the TIER needs it, and `route_view()`, which pays it where a
+    // CONSUMER needs it and memoises so one route cannot pay twice. A third
+    // would be an op body deriving its own, which is both a second /proc read
+    // and a chance to disagree with the view already on the route.
+    assert.equal((src.match(/policy_is_marked_tid\(/g) ?? []).length, 2,
+      'INVARIANT: union.c reads the mark in exactly two places — route()\'s caller-sensitive '
+      + 'gate and route_view()\'s memo');
+    const routeBody = src.slice(src.indexOf('static int route('), src.indexOf('#define ROUTE('));
+    assert.ok(routeBody.length > 200, 'route() is gone from union.c');
+    assert.match(routeBody, /marked = policy_is_marked_tid\(/,
+      'INVARIANT: one of them is route()\'s caller-sensitive gate');
+    assert.match(src.slice(src.indexOf('static enum view route_view(')), /policy_is_marked_tid\(/,
+      'INVARIANT: and the other is route_view()\'s memo');
+  });
+
+  // ── A TABLE-DERIVED NAME IS EMITTED ONLY IF THE VIEW CAN OPEN IT ───────────
+  //
+  // §5.5 IN THE DIRECTION THE FIRST ROUND MISSED. `policy_dirent_visible` answers
+  // "may this view SEE this name"; it does not answer "is there anything there".
+  // Three breaches came of conflating them, all at the merge boundary:
+  //
+  //   the VIEW_HOST synthetic arm emitted the table's children with no existence
+  //   check at all, so an `exclude` under the project put `node_modules` into an
+  //   unmarked `ls` of the overlay cwd while every op on it answered -ENOENT;
+  //
+  //   `pinned_children_emit` branched on the RAW PIN TIER, so a project-pinned
+  //   child that resolves to the OVERLAY in VIEW_HOST was host-checked, found
+  //   absent and dropped — `stat <systemPath>` answering and `cd` working while
+  //   `ls` of its parent omitted the name, which is a regression this card
+  //   introduced; and
+  //
+  //   the same function's T_SYNTH branch emitted unchecked, which is true of a
+  //   VIEW_CLI scaffold node and false in VIEW_HOST, where an off-chain
+  //   host-absent ancestor is `fail` -> host -> -ENOENT.
+  //
+  // ONE PREDICATE ANSWERS ALL THREE, in policy.h where `b49` drives it.
+  test('a table-derived dirent is emitted only where the resolving view can open it', async () => {
+    const [rawU, rawP] = await Promise.all([
+      fs.readFile(UNION_C, 'utf8'), fs.readFile(POLICY_H, 'utf8'),
+    ]);
+    const union = stripCComments(rawU), policy = stripCComments(rawP);
+
+    assert.match(policy, /static inline int policy_table_child_exists\(const char \*child, enum view v\)/,
+      'INVARIANT: policy.h owns the existence half of the dirent rule, where the unit fixture '
+      + 'can drive it against a seam-injected host tree (b49)');
+
+    const emit = union.slice(union.indexOf('static void pinned_children_emit('),
+      union.indexOf('static int readdir_child('));
+    assert.ok(emit.length > 100, 'pinned_children_emit is gone from union.c');
+    assert.match(emit, /policy_table_child_exists\(pc->full\[i\], v\)/,
+      'INVARIANT: the emit asks the predicate in the HANDLE\'s view');
+    // AND HOLDS NO SECOND, RAW-TIER COPY OF THE QUESTION. `pc->tier[i] == T_SYNTH`
+    // and a bare fstatat here are the two halves of the shape that was wrong.
+    assert.ok(!/pc->tier\[i\]/.test(emit),
+      'INVARIANT: the emit no longer branches on the RAW PIN TIER — that is what dropped a '
+      + 'project-pinned child resolving to the overlay');
+    assert.ok(!/fstatat\(/.test(emit),
+      'INVARIANT: and holds no inline host probe beside the predicate');
+    // THE TIER IT HANDS THE CALLBACK IS THE RESOLVED ONE, so `synth_emit`'s
+    // SYNTHETIC() test and policy_synth_getattr agree with the classification the
+    // emit just made.
+    assert.match(emit, /resolve_class\(pc->full\[i\], v\)/,
+      'INVARIANT: the emitted tier is resolved in the view, not copied from the pin');
+
+    // AND THE VIEW_HOST SYNTHETIC ARM GOES THROUGH IT. Before this the arm
+    // called policy_synth_children directly and emitted unchecked.
+    const readdir = bodyOfIn(union, 'readdir');
+    assert.match(readdir, /if \(h->view == VIEW_CLI\) \{\s*\n\s*policy_synth_children\(h->path, VIEW_CLI, synth_emit, &fc\);/,
+      'INVARIANT: the UNCHECKED scaffold emit is VIEW_CLI\'s alone — on a VIEW_CLI synthetic '
+      + 'node there is no backing store and a project child\'s existence is a question only a '
+      + 'control frame could answer, which a synthetic node must not send');
+    const hostArm = readdir.slice(readdir.indexOf('if (h->view == VIEW_CLI)'));
+    assert.match(hostArm, /pinned_children_of\(h->path, h->view, &pc\)/,
+      'INVARIANT: the VIEW_HOST synthetic arm collects its table children…');
+    assert.match(hostArm, /pinned_children_emit\(&pc, h->view, synth_emit, &fc\)/,
+      'INVARIANT: …and emits them through the checked path, hostd or no hostd');
   });
 
   // ── THE EVENT LOG'S KIND CLASSIFICATION, DERIVED AND SET-COMPARED ─────────
@@ -871,7 +1029,7 @@ describe('the compiled policy driver', { skip }, () => {
   test('route() substitutes the caller-sensitive tier, after the mark and before dispatch', async () => {
     const src = await fs.readFile(UNION_C, 'utf8');
     assert.match(src,
-      /if \(policy_tier_is_caller_sensitive\(r->tier\)\) \{\s*\n\s*marked = policy_is_marked_tid\(\(pid_t\)fuse_get_context\(\)->pid\);\s*\n\s*r->view = marked \? VIEW_CLI : VIEW_HOST;\s*\n\s*r->tier = policy_caller_tier\(op, path, r->tier, marked,\s*\n\s*\(pid_t\)fuse_get_context\(\)->pid\);\s*\n\s*\}/,
+      /if \(policy_tier_is_caller_sensitive\(r->tier\)\) \{\s*\n\s*marked = policy_is_marked_tid\(\(pid_t\)fuse_get_context\(\)->pid\);\s*\n(?:\s*\/\*[\s\S]*?\*\/\s*\n)?\s*r->view = marked \? VIEW_CLI : VIEW_HOST;\s*\n\s*r->view_known = 1;\s*\n\s*r->tier = policy_caller_tier\(op, path, r->tier, marked,\s*\n\s*\(pid_t\)fuse_get_context\(\)->pid\);\s*\n\s*\}/,
       'INVARIANT: route() asks policy_tier_is_caller_sensitive, derives `marked` from the '
       + 'CALLING THREAD id and reassigns r->tier from policy_caller_tier with it — for the mark '
       + 'AND for the log row\'s identity columns. The call site is missing, takes a different '

@@ -587,14 +587,52 @@ struct route {
 	 * macro body would expand to `r.<the argument>` and not compile. */
 	uint8_t     intent;
 	/* THE VIEW THIS ROUTE RESOLVED IN — the marked CLI's or everyone
-	 * else's — carried so every op body that re-asks policy.h a question
-	 * about the same path asks it in the SAME view the tier came from.
-	 * Re-deriving it per op body would pay a second /proc read and could
-	 * disagree with the tier already in hand. */
+	 * else's — DERIVED LAZILY AND MEMOISED. Read it through `route_view()`
+	 * and never directly; the raw field is only meaningful once
+	 * `view_known` is set, and a source-shape assertion in
+	 * tests/fuse-union-policy.test.mjs forbids a bare `r.view` outside the
+	 * accessor for exactly that reason. */
 	enum view   view;
+	unsigned char view_known;
 };
 
 #define SYNTHETIC(t) ((t) == T_SYNTH || (t) == T_BIND)
+
+/*
+ * THE CALLER'S VIEW, DERIVED WHERE IT IS CONSUMED AND NOT WHERE THE TIER WAS
+ * DECIDED. The two are different questions and conflating them was a live
+ * defect: `policy_tier_is_caller_sensitive` is a gate on the ROUTED PATH'S OWN
+ * TIER, and it is right that `host`, `hide` and `bind` resolve identically in
+ * both views — but the view does not stay with the routed path. It is carried
+ * into the dirhandle and used to classify CHILDREN, and into the floor, which
+ * requires VIEW_HOST. Deriving it only inside the gate left an unmarked `ls` of
+ * a HOST-PINNED directory classifying its children in VIEW_CLI (so an unpinned
+ * child was hidden while `cat` on it returned the bytes — card 2026-0403's
+ * defect class), and left the floor declining on a cwd-chain component a host
+ * pin covers (so an unmarked spawn died in chdir() on a search-denied
+ * orchestrator directory — card 2026-0398's own symptom).
+ *
+ * LAZY, NOT UNCONDITIONAL, AND THE COST IS THE WHOLE REASON. Setting the view
+ * in `route()` for every op would pay a /proc mark read PER OP at `host`, the
+ * CLI's hottest tier under attr_timeout=0 — which is exactly what the gate
+ * exists to avoid. This pays it once per route, only when a consumer asks, and
+ * the gate seeds it for free from the `marked` it already derived. The two floor
+ * sites ask only after `policy_cwd_component()` — a bounded string compare —
+ * has said the floor could apply at all, so on the hot path the read is not
+ * reached.
+ *
+ * MEMOISED RATHER THAN RE-READ, so several consumers on one route cannot
+ * disagree with each other or pay twice.
+ */
+static enum view route_view(struct route *r)
+{
+	if (!r->view_known) {
+		r->view = policy_is_marked_tid((pid_t)fuse_get_context()->pid)
+			? VIEW_CLI : VIEW_HOST;
+		r->view_known = 1;
+	}
+	return r->view;
+}
 
 /*
  * fd -> the tier its open() routed to, and whether that fd was opened for
@@ -667,6 +705,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	r->fd     = -1;
 	r->intent = cflags;
 	r->view   = VIEW_CLI;
+	r->view_known = 0;
 	r->tier   = resolve_class(path, VIEW_CLI);
 
 	/* THE MARKING EVENT, before tier dispatch: reading the CLI's own binary
@@ -677,12 +716,21 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	 * log row; this only asks. Placed here rather than inside an arm because
 	 * the substitution has to happen BEFORE dispatch: the T_HOST arm below is
 	 * what gives the substituted route its host fd. The /proc read is paid
-	 * only where the answer can differ, and `marked` is derived ONCE and
-	 * shared with the exemption below — a second read would double the per-op
-	 * /proc cost at the CLI's hottest tier under attr_timeout=0. */
+	 * only where the TIER's answer can differ, and `marked` is derived ONCE
+	 * and seeds `route_view()`'s memo — a second read would double the per-op
+	 * /proc cost at the CLI's hottest tier under attr_timeout=0.
+	 *
+	 * THIS GATE IS ABOUT THE TIER AND NOT ABOUT THE VIEW, and the distinction
+	 * is load-bearing: `host`, `hide` and `bind` resolve identically in both
+	 * views, so the routed path's own answer needs no mark — but a CONSUMER of
+	 * the view (the dirhandle, the floor) may still need one, and that is what
+	 * `route_view()` is for. */
 	if (policy_tier_is_caller_sensitive(r->tier)) {
 		marked = policy_is_marked_tid((pid_t)fuse_get_context()->pid);
+		/* SEEDING `route_view()`'s MEMO FROM THE READ THE GATE ALREADY
+		 * PAID, so a caller-sensitive route never pays a second one. */
 		r->view = marked ? VIEW_CLI : VIEW_HOST;
+		r->view_known = 1;
 		r->tier = policy_caller_tier(op, path, r->tier, marked,
 			(pid_t)fuse_get_context()->pid);
 	}
@@ -796,7 +844,7 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 	{
 		ROUTE("getattr", path, 0, CCU_STAT);
 		if (SYNTHETIC(r.tier))
-			return policy_synth_getattr(path, st, r.view);
+			return policy_synth_getattr(path, st, route_view(&r));
 		cred_enter();
 		rc = fstatat(r.fd, rp, st, AT_SYMLINK_NOFOLLOW);
 		int e = errno;
@@ -807,8 +855,15 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 		 * component the orchestrator HAS is reported with its `--x` bits
 		 * set, because default_permissions makes the kernel decide
 		 * traversal from the mode this daemon reports. Inside the
-		 * cred_leave(), on the stat the host just gave us. */
-		policy_floor_traversal(path, st, r.view);
+		 * cred_leave(), on the stat the host just gave us.
+		 *
+		 * THE OUTER `policy_cwd_component` IS A COST GATE, NOT THE RULE:
+		 * it keeps `route_view()`'s /proc read off every getattr that
+		 * could not be floored anyway. `policy_floor_applies` re-tests
+		 * the same predicate, so it remains the single authority and a
+		 * mutant dropping it from there is still killed by `b46`. */
+		if (policy_cwd_component(path))
+			policy_floor_traversal(path, st, route_view(&r));
 		return 0;
 	}
 }
@@ -831,8 +886,8 @@ static int pt_access(const char *path, int mask)
 	 * `if (!mask) return 0;` would answer "it exists" for every existence
 	 * probe without asking the host — the floor must only ever short-circuit
 	 * a mask it actually changed. */
-	{
-		int floored = policy_floor_mask(path, mask, r.view);
+	if (policy_cwd_component(path)) {         /* the cost gate; see pt_getattr */
+		int floored = policy_floor_mask(path, mask, route_view(&r));
 		if (floored != mask && floored == 0)
 			return 0;
 		mask = floored;
@@ -908,10 +963,13 @@ static int pt_opendir(const char *path, struct fuse_file_info *fi)
 		return -ENOMEM;
 	snprintf(h->path, sizeof(h->path), "%s", path);
 	h->tier = r.tier;
-	h->view = r.view;
+	/* ONE /proc READ PER LISTING, and it is not optional: every dirent this
+	 * handle streams is classified in this view, and a host-pinned directory
+	 * never entered the caller-sensitive gate. */
+	h->view = route_view(&r);
 
 	if (SYNTHETIC(r.tier)) {
-		if (r.view == VIEW_HOST) {
+		if (h->view == VIEW_HOST) {
 			/* UNDER THE CALLER'S CREDENTIALS, not root's: an
 			 * unreadable host directory must be evaluated against
 			 * the caller, and emitting nothing extra there is
@@ -1023,43 +1081,37 @@ static void pinned_children_mark(struct pinned_children *pc, const char *name)
 }
 
 /*
- * EMITTED ONLY IF IT IS REALLY THERE. The asymmetry with
- * `policy_synth_children`, which emits unchecked, is deliberate: H9 is a rule
- * about a synthetic node's ATTRIBUTES — `policy_fixed_dir`'s fixed mode, nlink,
- * size and times are what would disclose the orchestrator's metadata, and they
- * are untouched. It was once glossed here as "H9 forbids a synthetic node from
- * statting the host", which generalises an attributes rule to DIRENTS; this
- * function's own fstatat two lines below is the precedent that the
- * generalisation was always too broad, and `VIEW_HOST`'s synthetic arm now reads
- * the orchestrator's directory for NAMES on the same footing.
+ * EMITTED ONLY IF THE RESOLVING VIEW CAN OPEN IT — `policy_table_child_exists`,
+ * which owns the whole of that question, in policy.h where `b49` drives it.
+ * These are names the BACKING STREAM did not produce, so each one is a MERGE
+ * ADDITION and has to be shown to exist; without the check every session's
+ * `ls /etc` listed `ld.so.preload` and `claude-code` — both ETC_PINS entries,
+ * both absent on this host — for `cat` to answer -ENOENT.
  *
- * Without it every session's `ls /etc` listed `ld.so.preload` and
- * `claude-code` — both ETC_PINS entries, both absent on this host — for `cat`
- * to answer -ENOENT. That is criterion 1's `ls`/`cat` disagreement, which the
- * previous fix reintroduced in the opposite direction.
+ * IN THE HANDLE'S VIEW, AND NOT FROM THE PIN'S OWN TIER. That was the shape
+ * here and it was wrong in both directions: a `project` pin at the cwd resolves
+ * to the OVERLAY for an unmarked caller, so the pin tier host-checked a node
+ * that exists by construction and dropped it (`cd <systemPath>` working while
+ * `ls` of its parent omitted the name); and a `T_SYNTH` pin tier was emitted
+ * unchecked, which is true of a VIEW_CLI scaffold node and false in VIEW_HOST,
+ * where an off-chain host-absent ancestor is `fail` -> host -> -ENOENT.
  *
- * A `host` or `bind` pin is checked against the host root; a `project` child
- * that survived the mark step is not in the mirror and so is not there either.
+ * THE TIER HANDED TO `emit` IS THE RESOLVED ONE for the same reason, so
+ * `synth_emit`'s SYNTHETIC() test and `policy_synth_getattr` agree with the
+ * classification this loop just made rather than with the table's raw label.
  */
-static void pinned_children_emit(struct pinned_children *pc,
+static void pinned_children_emit(struct pinned_children *pc, enum view v,
 				 void (*emit)(void *, const char *, const char *, enum tier),
 				 void *ctx)
 {
-	struct stat st;
 	size_t i;
 
 	for (i = 0; i < pc->n; i++) {
 		if (pc->seen[i])
 			continue;
-		if (pc->tier[i] == T_SYNTH) {
-			/* Its own node, from the ancestor table. Nothing to
-			 * stat, and H9 says do not try. */
-			emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
+		if (!policy_table_child_exists(pc->full[i], v))
 			continue;
-		}
-		if (fstatat(policy_host_fd, policy_rel(pc->full[i]), &st, AT_SYMLINK_NOFOLLOW) == -1)
-			continue;
-		emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
+		emit(ctx, pc->name[i], pc->full[i], resolve_class(pc->full[i], v));
 	}
 }
 
@@ -1124,24 +1176,38 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		policy_synth_getattr(h->path, &st, h->view);
 		if (filler(buf, ".", &st, 0, 0) || filler(buf, "..", &st, 0, 0))
 			return 0;
-		/* THE NORMAL CASE, AND THE ONLY ONE `VIEW_CLI` HAS: the node's
-		 * own pinned and ancestral children, and nothing else. */
-		if (!h->hostd) {
-			policy_synth_children(h->path, h->view, synth_emit, &fc);
+		/* THE SCAFFOLD, AND THE UNCHECKED EMIT IS `VIEW_CLI`'s ALONE.
+		 * Here there is NO BACKING STORE at all, so a `project` child's
+		 * existence is a question only a control frame could answer —
+		 * and a synthetic node must not send one. The ancestors and pins
+		 * below it are exactly what makes a pinned leaf reachable, which
+		 * is the whole reason this class exists, so they are named
+		 * whatever the orchestrator happens to hold. */
+		if (h->view == VIEW_CLI) {
+			policy_synth_children(h->path, VIEW_CLI, synth_emit, &fc);
 			return 0;
 		}
-		/* THE ABSENCE PROBE'S STALE WINDOW, CLOSED. An overlay node
-		 * exists only where the orchestrator had nothing at `opendir`
-		 * time; if it has gained the directory since, its names are
-		 * emitted here rather than hidden behind a node that has no
-		 * business shadowing them. Near-vacuous by construction, which
-		 * is why the `!h->hostd` arm above is the one that normally
-		 * runs — but the failure it guards is silent, and silent hiding
-		 * is what constraints 1 and 2 forbid.
+		/* `VIEW_HOST` HAS A BACKING STORE — the orchestrator's own
+		 * filesystem — so the same names are MERGE ADDITIONS and go
+		 * through the checked path, hostd or no hostd. On an overlay
+		 * node that is usually empty: the orchestrator has nothing at
+		 * the parent, so it has nothing at any child either, and the
+		 * only survivors are fixed nodes. Emitting them unchecked put an
+		 * `exclude`d `node_modules` into an unmarked listing while every
+		 * op on it answered -ENOENT.
 		 *
-		 * Dedupe exactly as the real arm does, and for the same reason:
-		 * a name in both streams must be filled once. */
+		 * THE HOST STREAM IS THE ABSENCE PROBE'S STALE WINDOW, CLOSED:
+		 * an overlay node exists only where the orchestrator had nothing
+		 * at `opendir` time, and if it has gained the directory since,
+		 * its names are emitted rather than hidden behind a node with no
+		 * business shadowing them. `NULL` is the normal case, not an
+		 * error. Dedupe exactly as the real arm does, and for the same
+		 * reason: a name in both streams must be filled once. */
 		pinned_children_of(h->path, h->view, &pc);
+		if (!h->hostd) {
+			pinned_children_emit(&pc, h->view, synth_emit, &fc);
+			return 0;
+		}
 		rewinddir(h->hostd);
 		while ((de = readdir(h->hostd)) != NULL) {
 			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
@@ -1149,7 +1215,7 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			if (readdir_child(h, buf, filler, de, &pc))
 				return 0;
 		}
-		pinned_children_emit(&pc, synth_emit, &fc);
+		pinned_children_emit(&pc, h->view, synth_emit, &fc);
 		return 0;
 	}
 
@@ -1182,7 +1248,7 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	{
 		struct fillctx fc = { buf, filler, 0, h->view };
 
-		pinned_children_emit(&pc, synth_emit, &fc);
+		pinned_children_emit(&pc, h->view, synth_emit, &fc);
 	}
 	return 0;
 }
@@ -1548,7 +1614,7 @@ static int pt_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	int e = errno;
 	cred_leave();
 	if (fd == -1) { abandon_claim(path, r.tier); return -e; }
-	fd_tier_set(fd, r.tier, 1, r.view);
+	fd_tier_set(fd, r.tier, 1, route_view(&r));
 	if (fd < FDTIER_SLOTS) fd_claimed[fd] = 1;
 	fi->fh = fd;
 	return 0;
@@ -1570,7 +1636,7 @@ static int pt_open(const char *path, struct fuse_file_info *fi)
 		if (fi->flags & (O_WRONLY | O_RDWR)) abandon_claim(path, r.tier);
 		return -e;
 	}
-	fd_tier_set(fd, r.tier, (fi->flags & (O_WRONLY | O_RDWR)) != 0, r.view);
+	fd_tier_set(fd, r.tier, (fi->flags & (O_WRONLY | O_RDWR)) != 0, route_view(&r));
 	/* Exactly the handles whose ROUTE carried FOR_WRITE, so the claim cc took
 	 * and the claim this daemon releases cannot disagree. */
 	if (fd < FDTIER_SLOTS && (fi->flags & (O_WRONLY | O_RDWR)))
@@ -1607,9 +1673,21 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 	ROUTE("statfs", path, 0, 0);
 	(void)rp;
 	/* `df /` must answer, and a synthetic node has no backing store of its
-	 * own — every tier but `host` is materialised into the mirror, so that
-	 * is the filesystem whose free space the caller is actually consuming. */
-	int fd = r.tier == T_HOST ? policy_host_fd : remote_fd;
+	 * own — for the MARKED CLI every tier but `host` is materialised into the
+	 * mirror, so that is the filesystem whose free space it is actually
+	 * consuming.
+	 *
+	 * AN UNMARKED CALLER IS ANSWERED FROM THE HOST, ALWAYS. Card 2026-0398
+	 * gave it an overlay node at the cwd, which is a T_SYNTH route — and this
+	 * body would have answered it with `fstatvfs(remote_fd)`, reaching into
+	 * the mirror for a caller whose whole invariant is that it cannot. No
+	 * bytes leak (the mirror is on the orchestrator's own filesystem, so the
+	 * numbers are the same ones the host fd reports), but "an unmarked caller
+	 * never reads the mirror" is a STRUCTURAL claim this file makes in its own
+	 * header, and an op that reaches for `remote_fd` on its behalf falsifies
+	 * it whatever the numbers say. */
+	int fd = (r.tier == T_HOST || route_view(&r) == VIEW_HOST)
+		? policy_host_fd : remote_fd;
 	return fstatvfs(fd, stbuf) == -1 ? -errno : 0;
 }
 
@@ -1893,15 +1971,17 @@ int main(int argc, char *argv[])
 	 * THE CWD IS THE PROJECT TIER'S ONLY DOOR FOR AN UNMARKED CALLER, and it
 	 * plays the same structural role as the mark path: one input enables the
 	 * project tier at all, this one enables ENTRY to it. `policy_cwd_component`
-	 * answers 0 for every path when this is NULL, so the chain — the project
-	 * root included — would be denied and the bootstrap would die at its `cd`.
-	 * A DEFAULT WOULD BE WORSE THAN THE REFUSAL: it would silently un-exempt
-	 * the project root and regress card 2026-0373 while looking like it worked.
+	 * answers 0 for every path when this is NULL, so nothing would be floored,
+	 * no overlay node would exist, and the bootstrap would die at its `cd`.
+	 * A DEFAULT WOULD BE WORSE THAN THE REFUSAL: it would silently leave the
+	 * project root unenterable and regress card 2026-0373 while looking like
+	 * it worked.
 	 */
 	if (!cwd_path) {
 		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CWD is required; "
 				"without it no directory component of the CLI's cwd is "
-				"exempt and every unmarked spawn dies at its chdir\n");
+				"made traversable and every unmarked spawn dies at its "
+				"chdir\n");
 		return 1;
 	}
 	/* NORMALISED, NOT NORMALISABLE. cc owns this input (`plan.cwdInside`), so a
