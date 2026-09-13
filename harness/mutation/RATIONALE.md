@@ -29,8 +29,7 @@ conditions.
   confirming the figure.
 - Catalog under test: **10 mutants across 10 distinct source files** (deliberately, so Phase A pays
   10 distinct narrow baselines), 9 expected `KILLED` + 1 deliberate `SURVIVED`. Measured
-  2026-08-12 on branch `code-conductor/mutation-copy-bench` (bench scripts and raw artifacts were
-  not merged and may no longer exist — see §9).
+  2026-08-12; the bench scripts and raw artifacts were not kept — see §9 for how to redo it.
 - **Do not re-cite any number below without these conditions**, and specifically not for a catalog
   with a different files-to-mutants ratio; §6 explains why that ratio is the dominant variable.
 
@@ -39,32 +38,29 @@ conditions.
 Lead with the conclusion: **keep `in-place`; never pass `--copy`.**
 
 **§2.1 What actually breaks, and how little of it.**
-- `code-mutant/lib/workspace.mjs:46` — `copyTree`'s `excluded` set contains `.git`
+- `copyTree`'s `excluded` set in `code-mutant` contains `.git`
   **unconditionally**, for a plain clone exactly as much as for a worktree. *The old README's
   reasoning — that a cc worktree's `.git` is a pointer file — was wrong.* The exclusion fires either
   way; the pointer file matters only to the shape of a fix (§9). Upstream says the same at
   `code-mutant/README.md` → "Isolation modes": "for a worktree and an ordinary clone alike".
-- Blast radius, audited: **22 of 226 `tests/*.test.mjs` files name the `git` binary**, as of
-  `acfad1d`:
+- Blast radius, audited: **22 of 226 `tests/*.test.mjs` files name the `git` binary** — re-derive
+  with the commands below, because the count goes stale silently:
   ```bash
   ls tests/*.test.mjs | wc -l                                # 226
   rg -l -e "'git'" -e '"git"' tests/*.test.mjs | wc -l        # 22
   ```
   **All 22 build their own throwaway repo and target it explicitly** (`git -C <tmpdir>`, or the
-  explicit-`cwd` helper at `tests/list-sessions-grouping.test.mjs:40`) — verified: no git invocation
+  explicit-`cwd` helper at `tests/list-sessions-grouping.test.mjs`) — verified: no git invocation
   in `tests/` runs against the checkout's own root.
 - **Exactly one assertion needs the tree it runs in to be a repo:**
-  `tests/plugins-supervisor.test.mjs:165` — `assert.match(rec.gitHead, /^[0-9a-f]{40}$/)`, reaching
-  git via `src/plugins/supervisor.ts:215` `headSha()` (`git -C <cwd> rev-parse HEAD` at `:217`, null
-  on any failure). Note the contrast that proves the audit: `tests/plugins-registry.test.mjs:154`
-  asserts `gitHead === null` for a non-repo temp dir, and `tests/worktrees.test.mjs`'s `merge-base`
-  (`:309`) / `symbolic-ref` (`:67`) / `git status --porcelain` calls all run against repos the test
-  built.
+  `tests/plugins-supervisor.test.mjs` — `assert.match(rec.gitHead, /^[0-9a-f]{40}$/)`, reaching
+  git via `src/plugins/supervisor.ts`'s `headSha()` (`git -C <cwd> rev-parse HEAD`, null on any
+  failure). Note the contrast that proves the audit: `tests/plugins-registry.test.mjs`
+  asserts `gitHead === null` for a non-repo temp dir, and `tests/worktrees.test.mjs`'s `merge-base`,
+  `symbolic-ref` and `git status --porcelain` calls all run against repos the test built.
 - **No cc test compares against a specific real sha, a real branch name, a tag, or real history.**
   This is why nothing *fails* under copy mode once a repo exists — and why nothing would *notice*
   the fabrication in §2.2.
-- History, so nobody re-inflates this: cc commit `0a94b4e` ("Drop the unverifiable '11 test files
-  shell out to git' claim") already cut an unverifiable count as a grep artifact.
 
 **§2.2 Copy mode runs green here — and that is the problem.**
 - It is reachable with **no harness change beyond one `setup` hook** doing an idempotent `git init`
@@ -85,26 +81,24 @@ Lead with the conclusion: **keep `in-place`; never pass `--copy`.**
   The gate failure was real; "copy mode cannot run here" was not.
 - **The three assertions that go green while measuring the wrong thing.** This is the actual reason
   to stay in-place:
-  1. `tests/plugins-supervisor.test.mjs:165` matches on *shape* (40 hex chars), so it passes against
-     the synthetic commit's sha `487dee682c4f9ac0ef1ddbff886c92317ea00521` — a sha that exists
-     nowhere in cc's history (the real worktree HEAD at measurement was
-     `dd01a42122dfd59a8766fdb33d63ebdd54d0e0b7`). The copy also claims branch `main` while the real
-     worktree was on `code-conductor/mutation-copy-bench`. Green for the wrong reason.
+  1. `tests/plugins-supervisor.test.mjs`'s `assert.match(rec.gitHead, /^[0-9a-f]{40}$/)` matches on
+     *shape*, so it passes against the copy's synthetic commit — a sha that exists nowhere in cc's
+     history. The copy also claims branch `main` while the worktree was on a feature branch. Green
+     for the wrong reason.
   2. `tests/store-isolation.test.mjs` — asserts the resolved store is not inside `REAL_STORE_DIR` and
      that `assertStoreIsolated(REAL_STORE_DIR)` throws. Root cause of the inversion:
-     `tests/safeStoreRoot.mjs:30` derives `repoRoot` from `import.meta.url`, so `REAL_STORE_DIR`
-     (`:32`) is the REAL store root in the real tree but `/tmp/.code-conductor`
-     in a copy. Both assertions then hold against a path nothing writes — and worse, in the copy
+     `tests/safeStoreRoot.mjs` derives `repoRoot` from `import.meta.url`, so its `REAL_STORE_DIR`
+     is the REAL store root in the real tree but `/tmp/.code-conductor` in a copy. Both assertions then hold against a path nothing writes — and worse, in the copy
      `assertStoreIsolated` **would not trip on the genuine production store**. The backstop is
-     *inverted while reading green*, including the run-level check at `tests/run.mjs:30`
+     *inverted while reading green*, including the run-level check at `tests/run.mjs`
      (`assertStoreIsolated(orchStoreRoot())`).
-  3. `tests/safeStoreRoot.test.mjs:24` — `assertSafeTestRunRoot refuses a real, non-temp path`
+  3. `tests/safeStoreRoot.test.mjs` — `assertSafeTestRunRoot refuses a real, non-temp path`
      passes `repoRoot`, which **is** under `os.tmpdir()` in a copy. It still refuses, but via the
      wrong-shape-directory branch, not the not-a-temp-path branch its name claims.
 - Correct the old README's temp-path detail while here: the relocation prefix is
-  **`code-mutant-w0-`**, not `code-mutant-run-*` — `code-mutant/lib/workspace.mjs:106`
-  (`code-mutant-${label}-`) with `code-mutant/lib/runner.mjs:135` passing ``label: `w${i}` ``.
-- Close with the scope of the harm: **no data is ever at risk** — `tests/run.mjs:21-22` pins
+  **`code-mutant-w0-`**, not `code-mutant-run-*` — `code-mutant/lib/workspace.mjs`
+  (`code-mutant-${label}-`) with `code-mutant/lib/runner.mjs` passing ``label: `w${i}` ``.
+- Close with the scope of the harm: **no data is ever at risk** — `tests/run.mjs` pins
   `PROJECTS_ROOT`/`CLAUDE_PROJECTS_ROOT` to a fresh `mkdtemp` before any test file forks and every
   child inherits it. What is lost is *guarantee*, not safety. **The cost of copy mode here is
   honesty, not time.**
@@ -126,16 +120,16 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
   ```
   The `IMPRECISE` detail reads *"the mutant is too broad, rewrite it smaller"* — advice that sends
   you to rewrite a mutant that was already correct. That is why the README makes it a rule.
-- How to obtain ids: `run --all --learn` (added upstream in `f032689`; `SKILL.md` step 5 directs it)
+- How to obtain ids: `run --all --learn` (`SKILL.md` step 5 directs it)
   reports each mutant's observed failing set without grading. Fallback for a single mutation:
   `probe --learn --json` and read `results[0].failedTests` — bare `probe --json` with no
-  `--expect-fail` refuses outright in counted mode (`mutate.mjs:413`); `--learn` is what lifts that
+  `--expect-fail` refuses outright in counted mode (`mutate.mjs`); `--learn` is what lifts that
   refusal. Evidence it works: in the §1 catalog, all ten
   `expectFail` ids were filled from an observed `--learn` pass and **all ten matched the adapter's
   ids verbatim**.
 - **A miss this doc's own drafting caught:** the README (and this file, before this pass) used to
   name "three files that use `describe`" — `backend-spawn`, `backend-registry`, `mcp-inspect-tools`
-  — with "everything else is top-level" as the implied consequence. Re-derived at `acfad1d`
+  — with "everything else is top-level" as the implied consequence. Re-derived
   (`rg -l '^describe\(' tests/*.test.mjs`), the real count is **eight**: those three plus
   `mcp-instance-order`, `model-versions`, `session-backends`, `mcp-text-render`, `spawn-effort`. The
   list had gone stale silently — nothing re-checks an enumeration like that — and "everything else is
@@ -148,14 +142,14 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
 ### §4 Why `narrowTo: "names"` does not work here
 
 - The `node-test` adapter declares `canNameFilter = true`
-  (`code-mutant/lib/adapters/node-test.mjs:19`) and substitutes
+  (`code-mutant/lib/adapters/node-test.mjs`) and substitutes
   `--test-name-pattern '<regex>' 'tests/foo.test.mjs'`.
 - But `tests/run.mjs` is **not** the `node --test` CLI. It is a programmatic runner that treats
-  *every* argument as a file path — `tests/run.mjs:55-57`: `process.argv.slice(2)`, each
+  *every* argument as a file path — `tests/run.mjs`: `process.argv.slice(2)`, each
   `path.resolve`d against cwd. The flag and the pattern are resolved as filenames, so the scope runs
   the wrong files.
 - **`validate` will not warn.** Its `narrow-downgraded` warning
-  (`code-mutant/lib/validate.mjs:138`, documented at `code-mutant/mutants.schema.md:172`) fires only
+  (`code-mutant/lib/validate.mjs`, documented at `code-mutant/mutants.schema.md`) fires only
   when the adapter cannot name-filter. Here the adapter claims it can and the project silently
   cannot, so the pre-flight is clean and the rule has to be written down instead.
 - It degrades safely (`IMPRECISE`/`ERROR`, never a false `KILLED`/`SURVIVED`) — the cost is a wasted
@@ -166,8 +160,8 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
 The *rule* — env-gated opt-in tests are outside mutation proof — is in the README. This section is
 the data and the derivation.
 
-**§5.1 Snapshot of the gates — as of `acfad1d`, a starting point to re-derive, not a fact to trust.**
-Re-derived at card 2026-0355 (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
+**§5.1 Snapshot of the gates — a starting point to re-derive, not a fact to trust.**
+Re-derived with (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
 sort -u`) → **six**, not the four this table listed: `RUN_FUSE_LIFECYCLE` and `RUN_DOCKER_SYSTEM`
 were added after the snapshot. `RUN_CLI_CONTRACT` is a **seventh** and the grep above misses it —
 it is read in `tests/cliContractCase.mjs`, a shared helper rather than a `*.test.mjs`, so re-derive
@@ -179,7 +173,7 @@ with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
 | `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
-| `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED at card 2026-0355 by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here: that the libfuse op bodies CALL the policy (R3); `route()`'s host arm and its no-fallback rule (R2); that `mount --bind` succeeds onto a synthetic node (R3); the socket transport itself and that a dead cc is REPORTED as an error rather than wedging the mount (R6). **`-EIO` on a dead cc is NOT in that set** — the driver's `b12` drives it deterministically through the injected transport. **And two claims no arm covers at all**, recorded rather than assigned to one: that `fuse_get_context()->pid` is a TID in practice (S1 §6 Q1's measurement is real; the instrument that produced it was deleted by ledger row D2), and that the marking event fires on the CLI's own first read of its binary (no longer load-bearing — `bootstrap.sh` fires it deliberately). `src/systems/fuse/PROVENANCE.md` → "The policy split" carries the same two-kind split at the source. |
+| `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here: that the libfuse op bodies CALL the policy (R3); `route()`'s host arm and its no-fallback rule (R2); that `mount --bind` succeeds onto a synthetic node (R3); the socket transport itself and that a dead cc is REPORTED as an error rather than wedging the mount (R6). **`-EIO` on a dead cc is NOT in that set** — the driver's `b12` drives it deterministically through the injected transport. **And two claims no arm covers at all**, recorded rather than assigned to one: that `fuse_get_context()->pid` is a TID in practice (measured, but the instrument that produced the measurement no longer exists), and that the marking event fires on the CLI's own first read of its binary (not load-bearing — `bootstrap.sh` fires it deliberately). |
 | `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
 | `RUN_CLI_CONTRACT` | the real-`claude` CLI-behaviour contract cases (`systems-cli-*.real`), read through `tests/cliContractCase.mjs`. Deliberately left UNSET by `npm run gate:systems` — see its header for the pricing. |
 
@@ -189,9 +183,9 @@ with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 `tests/fuse-lifecycle.test.mjs`'s **A16** asserts them. That latch is a **deliberate-edit
 disclosure**, not behavioural coverage — and it fires for *any* byte changed in either file.
 
-**Consequence for a prover:** a C mutant run at whole-suite scope is killed by A16 whatever it
+**Consequence for a mutation run:** a C mutant run at whole-suite scope is killed by A16 whatever it
 did, so its failure set is attribution-free and a KILLED verdict says nothing about whether the
-behaviour is covered. Measured on card 2026-0355: `abandon_claim`'s two mutants were killed
+behaviour is covered. Measured: `abandon_claim`'s two mutants were killed
 **only** by A16, and the function had no behavioural coverage anywhere, real-mount arms included.
 
 **How to run C mutants so the verdict means something:**
@@ -206,33 +200,33 @@ behaviour is covered. Measured on card 2026-0355: `abandon_claim`'s two mutants 
   is why `policy.h` exists and why logic keeps moving into it.
 
 
-### §5.1d Measured equivalences in the FUSE policy — do not re-derive these
+### §5.1d Standing equivalence conditions in the FUSE policy — do not re-derive these
 
-**These four were authored, run and PROVED equivalent rather than assumed.** Each reads A16-only
-(§5.1c) *by necessity*: it changes `policy.h` or `union.c` bytes, so the latch fires, and no
-behavioural test can fire because there is no behaviour to catch. A future prover re-authoring them
-burns a round to reach the same verdict, so the reasoning is recorded here — in a committed file,
-because `.mutation/` is gitignored and does not survive a merge. The catalog entries carry the same
-text in their `waivedNote`; **if the two ever disagree, this file is the record and the catalog is
-the scratch copy.**
+**Each row below was authored, run and PROVED equivalent rather than assumed**, and each reads
+A16-only (§5.1c) *by necessity*: it changes `policy.h` or `union.c` bytes, so the latch fires, and
+no behavioural test can fire because there is no behaviour to catch. Re-authoring one burns a round
+to reach the same verdict, so the reasoning is recorded here — in a committed file, because
+`.mutation/` is gitignored and does not survive a merge. The catalog entries carry the same text in
+their `waivedNote`; **if the two ever disagree, this file is the record and the catalog is the
+scratch copy.**
+
+**A row states the CONDITION under which the mutation is equivalent, not a past verdict.** When a
+condition stops holding, the row's mutant becomes killable and the row goes.
 
 | mutant | mutation | why it is equivalent |
 |---|---|---|
-| `m-388-ct-rule-order-swap` | swap the two rules inside `policy_caller_tier` | The rules discriminate on **disjoint tier values** (`t == T_FAIL` vs `t == T_PROJECT && …`), so at most one can fire for any input and neither can shadow the other. Order is not load-bearing **here** — which was ALSO true of the ordering in `route()` until card 2026-0398 deleted `policy_cwd_exempt` — that ordering carried the traversal bound and is gone with it, so the source-shape assertion that pinned it is gone too. **The rules are no longer disjoint in the same way either**: `policy_caller_tier` now re-resolves for `T_PROJECT` *or* `T_SYNTH` and then falls into the `T_FAIL` rule, so the two `if`s are SEQUENTIAL rather than exclusive and swapping them is no longer equivalent — a swap would stop the re-resolution's `fail` answers reaching the substitution. Re-file this mutant before re-running it. |
-| ~~`m-388-hh-drop-negfd`~~ | ~~delete `if (policy_host_fd < 0) return 0;` from `policy_host_has`~~ | **SUBJECT DELETED BY CARD 2026-0398.** `policy_host_has` is replaced by `policy_host_absent`, whose negative-fd answer is the OPPOSITE (`return 1`, "no host at all") and is pinned DIRECTLY by `b48` rather than through an `EBADF` fallback — `fstatat` on a negative dirfd fails `EBADF`, which `policy_host_absent` classifies as *not* an absence errno and so answers 0, the wrong way. Deleting the guard is therefore **killable now**, and the equivalence does not carry over. |
-| `m-388-hh-raw-path` | `fstatat(policy_host_fd, path, …)` instead of `policy_rel(path)` | **EQUIVALENT ONLY UNDER A STANDING CONDITION, and the condition is the durable fact here:** `bootstrap.sh` hard-codes `CC_UNION_HOST_ROOT=/` (`bootstrap.sh:151`), so the host fd is always on `/` and a raw absolute path names the same object `policy_rel(path)` does. **If the host root ever becomes non-`/`, this stops being equivalent and becomes a live defect.** **Carried across card 2026-0398 with its subject renamed:** the probe is `policy_host_absent` now, of inverse polarity, and `policy_floor_mask` and `policy_table_child_exists` make the same call — so the standing condition covers three call sites, not one. **The cases named in the earlier round's verdict — `b33` and `b36` — no longer exist**; `b48` drives the probe and `b49` drives the child-existence predicate, and neither can kill this mutant for the reason above. |
-| ~~`m-388-route-drop-notmarked`~~ | ~~delete `!marked &&` at `route()`'s `policy_cwd_exempt` call site~~ | **SUBJECT DELETED BY CARD 2026-0398** — see [README.md](README.md) → "Declared non-behavioural mutants". The call site and the exemption are both gone. |
+| `m-388-ct-rule-order-swap` | swap the two rules inside `policy_caller_tier` | The rules discriminate on **disjoint tier values** (`t == T_FAIL` vs `t == T_PROJECT && …`), so at most one can fire for any input and neither can shadow the other — order is not load-bearing. **They are not disjoint in the same way throughout**: `policy_caller_tier` now re-resolves for `T_PROJECT` *or* `T_SYNTH` and then falls into the `T_FAIL` rule, so the two `if`s are SEQUENTIAL rather than exclusive and swapping them is no longer equivalent — a swap would stop the re-resolution's `fail` answers reaching the substitution. Re-file this mutant before re-running it. |
+| `m-388-hh-raw-path` | `fstatat(policy_host_fd, path, …)` instead of `policy_rel(path)` | **EQUIVALENT ONLY UNDER A STANDING CONDITION, and the condition is the durable fact here:** `bootstrap.sh` hard-codes `CC_UNION_HOST_ROOT=/` (its `CC_UNION_HOST_ROOT` assignment in the daemon's environment block), so the host fd is always on `/` and a raw absolute path names the same object `policy_rel(path)` does. **If the host root ever becomes non-`/`, this stops being equivalent and becomes a live defect.** **THE CONDITION COVERS THREE CALL SITES, not one** — `policy_host_absent`, `policy_floor_mask` and `policy_table_child_exists` all make the same call, so a change to the host root invalidates the equivalence at all three. `b48` drives the probe and `b49` drives the child-existence predicate, and neither can kill this mutant for the reason above. |
 
-**Why not just mark them `waived` and move on?** Because two of them are equivalent *for a stated
-reason that can expire* — the host-root spelling for `m-388-hh-raw-path`, the agreement of the two
-mark reads for `m-388-route-drop-notmarked` — and a bare "waived" loses the condition. A waiver
-whose condition is not written down becomes an unexamined assumption the next round inherits.
+**Why not just mark them `waived` and move on?** Because a row here is equivalent *for a stated
+reason that can expire* — the host-root spelling for `m-388-hh-raw-path`, say — and a bare
+"waived" loses the condition. A waiver whose condition is not written down becomes an unexamined assumption the next round inherits.
 
 **§5.1b The CAPABILITY gate, which is a different animal from an env flag.**
 
 `tests/fuse-union-policy.test.mjs` compiles `tests/fixtures/union-policy-driver.c` and skips when it
 cannot. It is NOT env-gated — nothing opts into it — so it runs by default on any host with a
-toolchain, and a prover reading a `SURVIVED` from a mutant in `policy.h` or `union.c` must
+toolchain, and anyone reading a `SURVIVED` from a mutant in `policy.h` or `union.c` must
 **check the toolchain before filing it**: a silently skipped C test is indistinguishable from a
 passing one.
 
@@ -254,8 +248,8 @@ Enabling any of them needs something a review environment does not have (the rea
 sibling; a network voice download), so the whole set is out of scope for mutation proof — report
 such a claim as unprovable-by-this-harness rather than mutating it.
 
-**§5.1a What `{tests}` resolves to, and it is NOT derived from the mutated file** (measured at card
-2026-0355, `code-mutant` `lib/narrow.mjs` + `lib/adapters/node-test.mjs`). The scope comes from the
+**§5.1a What `{tests}` resolves to, and it is NOT derived from the mutated file** (measured;
+`code-mutant`'s `lib/narrow.mjs` + `lib/adapters/node-test.mjs`). The scope comes from the
 MUTANT's own declared `expectFail` ∪ `expectPass` refs, mapped through the adapter's
 `scopeOf(ref) = splitRef(ref).file` — so it is **language-agnostic about the source**: a mutant in a
 `.c` or `.h` file scopes exactly as a `.ts` one does, to the test files the author named, at file
@@ -329,8 +323,8 @@ marked otherwise.
   (10.7 s) and Phase B at jobs=1 (10.9 s) are **the same ten commands run twice** — once unmutated
   on the primary workspace, once mutated in the pool. `--jobs` parallelises only the second pass, so
   it can at best halve the narrow-scope work. **More mutants across more files makes this worse:**
-  each new *file* adds a serial Phase-A baseline. (Inferred from `code-mutant/lib/runner.mjs:214-218`
-  vs `:225`, plus the measured 10.7 s / 10.9 s near-equality.) The arithmetic would only change if
+  each new *file* adds a serial Phase-A baseline. (Inferred from `code-mutant`'s runner, which
+  runs the two passes separately, plus the measured 10.7 s / 10.9 s near-equality.) The arithmetic would only change if
   Phase B came to dominate — many mutants concentrated in *few* files — which is not the practice
   this harness is built for (a handful of mutants spread across the files under review).
 - Note the trap in the copy-vs-in-place gap: copy at jobs=1 (136.8 s) is 3.9% under the in-place
@@ -347,8 +341,8 @@ marked otherwise.
   `instances` 3.48 s, `overage-action` 4.53 s. Same shape as the original claim (sub-second to
   ~4–5 s across the suite); do not re-cite these five numbers either without re-measuring — this
   section's whole point is that the bench-branch figures cannot be trusted without their source.
-- Runtimes scale with core count: `tests/run.mjs:45-51` runs files at `min(4, cores/2)` concurrency
-  (`TEST_CONCURRENCY` overrides), and `tests/run.mjs:107` sets a 60 s per-file ceiling. Note the
+- Runtimes scale with core count: `tests/run.mjs` runs files at `min(4, cores/2)` concurrency
+  (`TEST_CONCURRENCY` overrides), and `tests/run.mjs` sets a 60 s per-file ceiling. Note the
   consequence for reading the jobs numbers: a single run is **already 4-way concurrent** on 16 cores,
   so `--jobs 4` means up to 16 concurrent test files plus their forked children and bound ports.
 
@@ -382,7 +376,7 @@ byte-identical `failedTests` sets per mutant**; 9 `KILLED` + 1 `SURVIVED`, exit 
 `mutation-not-intact` never fired; `noTrace.ok` true in all 10 with `residue: []` in all 9 copy runs
 and byte-identical in-place `git status --porcelain` before/after; `reproducible` true in all 10.
 Per-mutant `durationMs` was flat across job levels, i.e. no measurable contention penalty. So
-code-mutant's worker-ordinal fix (`694953a`) holds here and the documented
+code-mutant's worker-ordinal fix holds here and the documented
 false-`SURVIVED`/false-`IMPRECISE` history did not reproduce. **Caveat:** jobs=4 means 4 copies ×
 4-way internal file concurrency = 16 test files at once plus forked children and bound ports; this
 was a 16-core / 30 GiB host and the result should not be extrapolated to a smaller one (Termux
@@ -399,10 +393,8 @@ wedged, hung, or thrashed.
   would give a copy real history and a real HEAD, removing §2.2's honesty cost. It buys ≤8% of wall
   clock (§6), so it is deferred: the price of copy mode here is honesty and a trust obligation, not
   time.
-- **Provenance and re-measurement.** The measurements in §1/§6/§8 came from
-  `harness/mutation/bench/` on branch `code-conductor/mutation-copy-bench`
-  (`RESULTS.md`, `bench.mjs`, `phases.mjs`, `sweep.sh`, `mutants.json`), **not merged and possibly
-  discarded** — this file is the surviving record. To redo it: a 10-mutant catalog spread across 10
+- **How to re-measure.** The bench scripts and raw artifacts behind §1/§6/§8 were not kept — this
+  file is the surviving record. To redo it: a 10-mutant catalog spread across 10
   distinct source files, `run --all` under `{--copy --jobs N | --in-place} --json` with N
   interleaved 1,2,4, wall clock from `process.hrtime` (note `/usr/bin/time` and `bc` are absent on
   this host), and phase boundaries taken from the runner's own stderr progress lines timestamped by

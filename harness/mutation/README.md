@@ -58,10 +58,10 @@ state.
    SET THAT NAMES IT.** It surfaces as `IMPRECISE`, never as a failure, so a stale ref reads as a
    *mutant* problem and invites rewriting a mutant that was already correct. This is a recurring
    trap on the FUSE-union epic specifically, because its driver cases carry long invariant
-   sentences in their titles (`tests/fuse-union-policy.test.mjs`'s `CASES` table) and a card that
-   sharpens one wording re-anchors nothing: card 2026-0388 renamed `b24`'s and `b25`'s titles and
-   two inherited mutants (`m-b8-starttime-inverted`, `m-cevent-key-adds-op`) went `IMPRECISE` on
-   that alone — same killers, unchanged coverage. **On any round that touches a title in `CASES`,
+   sentences in their titles (`tests/fuse-union-policy.test.mjs`'s `CASES` table), and a change
+   that only sharpens one wording re-anchors nothing: an inherited mutant whose referenced titles
+   are renamed goes `IMPRECISE` on that alone — same killers, unchanged coverage. **On any round
+   that touches a title in `CASES`,
    re-run `--learn` for the inherited mutants before reading a verdict**, and re-anchor from the
    observed set rather than editing the mutant.
 
@@ -83,21 +83,20 @@ state.
 
 A mutant listed here **legitimately SURVIVES**. Each is a construct whose removal changes no
 answer the suite (or any caller) can observe *under the stated condition*; they are declared by the
-implementer at the time the construct lands, so a prover waives them instead of re-discovering and
-re-filing them every round. State the waiver — and its condition — in the round's report; do not
-silently drop it.
+implementer at the time the construct lands, so anyone re-running mutants waives them instead of
+re-discovering and re-filing them every round. State the waiver — and its condition — in the
+round's report; do not silently drop it.
 
-| construct | mutation that survives | why nothing can kill it |
-|---|---|---|
-| ~~`!marked &&` at `route()`'s `policy_cwd_exempt` call site~~ | — | **SUBJECT DELETED BY CARD 2026-0398.** `policy_cwd_exempt` and its call site are gone: an unmarked caller resolves in `VIEW_HOST`, where the chain is answered by the orchestrator's own directory (floored) or by the overlay node, so there is no conditional grant and no second mark read to guard. The row is kept rather than dropped so a prover reading an older round's verdict finds the supersession instead of a missing entry. |
+**No construct currently carries a declared waiver.** When one is added, give it a row here with
+its condition, in the shape RATIONALE.md §5.1d uses.
 
 And the standing one, which is not a construct but a test: **`A16`'s sha256 latch
 (`tests/fuse-lifecycle.test.mjs`) is a deliberate-edit disclosure, not coverage.** A C mutant whose
 only failing test is `A16` is **unattributed** — re-run it narrower rather than recording `KILLED`.
 RATIONALE.md §5.1c has the measurement and the scoping recipe.
 
-And its counterpart on the other side: **the prover cannot see the real gate's arms at all.** It
-mutates source and re-runs the DEFAULT suite, where `tests/fuse-lifecycle.real.test.mjs`'s arms
+And its counterpart on the other side: **a mutation run cannot see the real gate's arms at all.**
+It mutates source and re-runs the DEFAULT suite, where `tests/fuse-lifecycle.real.test.mjs`'s arms
 self-skip — and an arm that never executes contributes neither a pass nor a kill. So a C mutant
 reported as a survivor is a survivor *of the default suite*, not of the FUSE coverage as a whole.
 Running the gate once before merge (`RUN_FUSE_LIFECYCLE=1`, about 72 seconds) is the only thing that
