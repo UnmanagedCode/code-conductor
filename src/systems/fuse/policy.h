@@ -1789,7 +1789,7 @@ static const char *cwd_path = NULL;
  * a case that exercises one proves half the guard: `path = /root/srv` against
  * `cwd = /root/srv2` is rejected by `cwd_path[9] == '2'`; `path = /root/srv2`
  * against `cwd = /root/srv` is rejected by `strncmp` itself, which meets
- * `cwd`'s '\0' against '3'. `b22` drives both.
+ * `cwd`'s '\0' against '2'. `b22` drives both.
  */
 static inline int policy_cwd_component(const char *path)
 {

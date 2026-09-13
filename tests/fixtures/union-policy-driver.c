@@ -1174,7 +1174,7 @@ static void b21_unmarked_refused_only_at_project(void)
  *   cwd /root/srv2, path /root/srv   → rejected by the BOUNDARY test
  *                                      (`cwd_path[9] == '2'`)
  *   cwd /root/srv,  path /root/srv2  → rejected by `strncmp` itself, which
- *                                      meets cwd's '\0' against '3'
+ *                                      meets cwd's '\0' against '2'
  */
 static void b22_cwd_chain_extent(void)
 {
