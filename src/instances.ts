@@ -337,6 +337,17 @@ export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
 }
 
+// An instance with a process attached, or inside a window where one is coming
+// back (a prune's kill→relaunch under rotationPending, a respawn/rewind under
+// `_relaunching`). The single PER-INSTANCE form of "is this worker live";
+// isSessionLive and the resume reclaim in _doCreate are its only readers, so
+// neither can drift from the other — and that is load-bearing, because the
+// reclaim's safety rests on the guard being false only when every instance it
+// can then reach is settled.
+function isLiveOrComingUp(inst: Instance): boolean {
+  return inst.proc != null || inst.rotationPending || inst.relaunching;
+}
+
 // Annotation on the `soft_interrupted` event the turn-start guard emits when a
 // turn begins during an overage lockout. Rendered by public/blocks.js as
 // `⏸ Turn interrupted: <text>` — the observed defect was that such a turn was cut
@@ -4219,13 +4230,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // THE liveness authority for a public sessionId (governance reads this, and
   // only this — see liveForSession above for the "is there a proc I can
   // address right now" counterpart).
-  // Three states collapse to one boolean: proc-attached, a resume in flight
-  // (no registry entry exists yet), and a relaunch window — the instance is
-  // registered with proc null, covering a prune's kill→relaunch (rotationPending)
-  // and rewindToUserMessage's/InstanceManager.respawn's (_relaunching), which
-  // are structurally the same window but outside the renew/prune `_rotation`
-  // machinery. A caller that used liveForSession alone would read a
-  // genuinely-coming-up worker as gone in any of these.
+  // Two sources collapse to one boolean: a resume in flight (no registry entry
+  // exists yet), and ANY registered instance answering to the session for which
+  // isLiveOrComingUp holds — proc-attached, or inside a relaunch window where
+  // proc is null but a process is coming back. A caller that used liveForSession
+  // alone would read a genuinely-coming-up worker as gone in the latter.
+  //
+  // `.some()` over EVERY answering instance, not anyForSession's first match:
+  // an exited instance the registry still holds must never SHADOW a live one.
+  // First-match made this answer false while a process was running — the state
+  // `_doCreate`'s reclaim now prevents, but which a long-running orchestrator
+  // may already hold, and which this must survive either way. It is also what
+  // makes the reclaim safe to run behind this guard: false here means every
+  // answering instance is settled.
   //
   // `_resumingPublicIds` covers from THIS check onward — not the whole
   // create({resume}) call. `publicIdFor`/`resolveBacking` are awaited BEFORE
@@ -4235,8 +4252,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // the REST spawn route still can.
   isSessionLive(sessionId: string): boolean {
     if (this._resumingPublicIds.has(sessionId)) return true;
-    const inst = this.anyForSession(sessionId);
-    return !!inst && (inst.proc != null || inst.rotationPending || inst.relaunching);
+    return this.idsForSession(sessionId)
+      .some(id => { const i = this.byId.get(id); return i != null && isLiveOrComingUp(i); });
   }
   // Any instance (live or exited) for a sessionId, or null — the `.find(Boolean)`
   // counterpart used where a non-running instance is still a valid target.
@@ -4430,21 +4447,52 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (resume) {
       publicId = await publicIdFor(resume);
       resume = await resolveBacking(resume);
-      // Check-and-claim, with NO await between them. `liveForSession` covers a
-      // session already spawned — which create()'s synchronous prefix can only see
-      // when the caller named a form already in memory; `_resumingPublicIds` covers
-      // one still inside its own resume, which that prefix cannot see at all.
-      const live = this.liveForSession(publicId);
-      if (live || this._resumingPublicIds.has(publicId)) {
+      // Check-and-claim, with NO await between them. `isSessionLive` SUBSUMES the
+      // pair this used to test — `_resumingPublicIds` is its first line (a session
+      // still inside its own resume, which create()'s synchronous prefix cannot see
+      // at all) and a proc-attached instance its second (a session already spawned,
+      // which that prefix sees only when the caller named a form already in memory)
+      // — and adds the relaunch windows. Those windows are a real double-spawn hole,
+      // not a formality: a resume issued during a prune's kill→relaunch or a
+      // respawn/rewind's passes a `proc`-only guard and starts a second CLI on one
+      // transcript. It is also the guard the reclaim below runs behind.
+      if (this.isSessionLive(publicId)) {
+        // Read ONLY to build the message — never to decide.
+        const live = this.liveForSession(publicId);
         throw Object.assign(
           new Error(`session ${publicId} is already attached to a running instance`
-            + (live ? ` (${live.id.slice(0, 8)}…)` : ' (a resume is already in flight)')),
+            + (live ? ` (${live.id.slice(0, 8)}…)`
+              : this._resumingPublicIds.has(publicId) ? ' (a resume is already in flight)'
+                : ' (a relaunch is in flight)')),
           { statusCode: 409 },
         );
       }
       this._resumingPublicIds.add(publicId);
     }
     try {
+      // Past the guard above, isSessionLive(publicId) is false, so NO instance
+      // answering to this session is live or coming up — every one of them is a
+      // superseded husk of the session we are about to resume. Retire them before
+      // _doCreateResolved registers the new instance: leaving one in byId makes
+      // anyForSession resolve the husk instead of the live worker, and strands its
+      // auto-resume deadline (which holds the GLOBAL overage lockout), idle-wake
+      // edges, renew arm, redirect connection and tmp root, none of which anything
+      // else reclaims. remove() is the one teardown that does all of that, and its
+      // kill() early-outs on an already-settled instance, so it terminates nothing.
+      // Inside the `_resumingPublicIds` claim, which is what makes an await here
+      // sound. src/routes.ts's detachInstancesForSession does the same thing for
+      // the same reason; this is that rule applied at the chokepoint.
+      if (publicId) {
+        for (const staleId of this.idsForSession(publicId)) {
+          try { await this.remove(staleId); }
+          catch (e) {
+            // 404 = the temp-exit status listener deleted it from byId while we
+            // awaited. That path is a strict subset of this one and leaves the same
+            // post-condition, so a lost race is a success. Anything else is real.
+            if ((e as { statusCode?: number }).statusCode !== 404) throw e;
+          }
+        }
+      }
       return await this._doCreateResolved({ ...opts, resume }, publicId);
     } finally {
       if (publicId) this._resumingPublicIds.delete(publicId);
