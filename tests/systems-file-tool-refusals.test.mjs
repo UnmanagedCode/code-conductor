@@ -45,7 +45,7 @@ const TIER_TABLE_SRC = path.join(path.dirname(fileURLToPath(import.meta.url)),
 const SYSTEM_ID = 'prod-box';
 const SYSTEM_PATH = '/srv/app';
 const MIRROR_ROOT = '/srv';
-const RUN_DIR = '/workspaces/cc-projects/.code-conductor/systems/fuse/run/inst-1';
+const RUN_DIR = '/home/wk/cc-projects/.cc-store/systems/fuse/run/inst-1';
 
 // Two excludes INSIDE the project (legal, active) and one that is also a bind
 // mount, plus one OUTSIDE the mirror root, which criterion 4 calls inert.
@@ -181,7 +181,7 @@ describe('the four file-tool refusals', () => {
     const { classify, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       const r = classify(p);
       assert.equal(r.decision, 'deny', p);
       neverClaimsAbsence(r.reason);
@@ -208,7 +208,7 @@ describe('the four file-tool refusals', () => {
     const { classify, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       const r = classify(p);
       assert.equal(r.decision, 'deny', p);
       namesBashOnTheSystem(r.reason, SYSTEM_ID);
@@ -223,7 +223,7 @@ describe('the four file-tool refusals', () => {
   // prevent, so the rule must reject it — otherwise the rule is satisfied by
   // the very sentence it was added to forbid.
   test('the Bash-pointer rule rejects a wording that drops the machine', () => {
-    const intact = fixture().classify('/home/node/.claude/settings.json').reason;
+    const intact = fixture().classify('/home/wk/.claude/settings.json').reason;
     // THE MUTANTS HAVE TO DROP THE MACHINE, not merely reword around it. A
     // first cut of this test replaced only the opening clause and left
     // `'prod-box'` standing later in the same sentence — the rule passed it,
@@ -253,7 +253,7 @@ describe('the four file-tool refusals', () => {
     // merely strict.
     const { classify, input } = fixture();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       namesBashOnTheSystem(classify(p).reason, SYSTEM_ID);
     }
   });
@@ -291,7 +291,7 @@ describe('the four file-tool refusals', () => {
     // regex matching everything.
     const { classify, input } = fixture();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       neverClaimsAbsence(classify(p).reason);
     }
   });
@@ -311,7 +311,7 @@ describe('the four file-tool refusals', () => {
   test('banning `absent` or `exists` would reject the contract, so the accept-half bites', () => {
     const { classify, input } = fixture();
     const shipped = ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]
       .map((p) => classify(p).reason);
 
     for (const [word, overTight] of [['absent', /\babsent\b/i], ['exists', /\bexists\b/i]]) {
@@ -367,8 +367,8 @@ describe('the four file-tool refusals', () => {
   // orchestrator and no pin prefix.
   test('A4: a host-pinned path names Bash AND the machine Bash answers from', () => {
     const { classify, input } = fixture();
-    const reason = denied(classify('/home/node/.claude/settings.json'), 'host-pinned');
-    assert.match(reason, /'\/home\/node\/.claude'/, 'it names the prefix');
+    const reason = denied(classify('/home/wk/.claude/settings.json'), 'host-pinned');
+    assert.match(reason, /'\/home\/wk\/.claude'/, 'it names the prefix');
     assert.match(reason, /settings/, "it names the class, from the entry's own `why`");
     assert.match(reason, /ORCHESTRATOR/, 'it says whose machine the pin is on');
     namesBashOnTheSystem(reason, SYSTEM_ID);
@@ -539,12 +539,12 @@ describe('the four file-tool refusals', () => {
   // longest-prefix breaks plan mode for every remote-backed worker.
   test('A9: ~/.claude/plans is allowed under a denied ~/.claude', () => {
     const { classify } = fixture();
-    assert.deepEqual(classify('/home/node/.claude/plans/a-plan.md'), { decision: 'allow' });
-    denied(classify('/home/node/.claude/projects/x/y.jsonl'), 'host-pinned');
-    denied(classify('/home/node/.claude/.credentials.json'), 'host-pinned');
+    assert.deepEqual(classify('/home/wk/.claude/plans/a-plan.md'), { decision: 'allow' });
+    denied(classify('/home/wk/.claude/projects/x/y.jsonl'), 'host-pinned');
+    denied(classify('/home/wk/.claude/.credentials.json'), 'host-pinned');
     // And the component boundary is respected — a prefix-SHARING sibling of the
     // allowed directory is not allowed.
-    denied(classify('/home/node/.claude/plans-backup/x.md'), 'host-pinned');
+    denied(classify('/home/wk/.claude/plans-backup/x.md'), 'host-pinned');
   });
 
   // A10 — PINS CRITERION 15, in the only two ways it can be pinned:
@@ -695,7 +695,7 @@ describe('the four file-tool refusals', () => {
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
     });
-    assert.deepEqual(await redirect.preToolUse('TodoWrite', { file_path: '/home/node/.claude/x' }),
+    assert.deepEqual(await redirect.preToolUse('TodoWrite', { file_path: '/home/wk/.claude/x' }),
       { decision: 'allow' });
   });
 });
@@ -837,7 +837,7 @@ describe('the fault refusals — divergence and over-cap', () => {
     const { classify: c2, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       seen.add(c2(p).class);
     }
     // BOTH DIRECTIONS: a declared member no probe reaches fails here, and a

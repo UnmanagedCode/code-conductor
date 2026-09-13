@@ -454,7 +454,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     sourceOverrideRoot: '', tracePath: '',
   };
   const wrapped = () => wrapLaunch(
-    { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/node', PATH: '/opt/bin:/usr/bin' } },
+    { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/wk', PATH: '/opt/bin:/usr/bin' } },
     { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
   );
 
@@ -478,7 +478,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // the emitted variable on anything in `spec.env`; renaming one end only.
   test('the worker-side trace path is emitted only when the plan has one, and an inherited one is STRIPPED', () => {
     const inherited = {
-      HOME: '/home/node', PATH: '/opt/bin',
+      HOME: '/home/wk', PATH: '/opt/bin',
       // Every spelling an operator might have in their own environment. Each
       // is a value the OLD non-emptiness test on the bootstrap side accepted.
       CC_FUSE_TRACE: '0', CC_FUSE_TRACE_LOG: '/somewhere/stale.log',
@@ -597,7 +597,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // whole host-pin design rests on those paths keeping their spelling.
   test('preserves the caller environment and carries the plan in CC_FUSE_*', () => {
     const w = wrapped();
-    assert.equal(w.env.HOME, '/home/node');
+    assert.equal(w.env.HOME, '/home/wk');
     assert.equal(w.env.CC_FUSE_ROOT, plan.root);
     assert.equal(w.env.CC_FUSE_PINS, plan.pinsPath);
     assert.equal(w.env.CC_FUSE_BIN, '/store/bin/union-abc');
@@ -639,17 +639,17 @@ describe('the tier table', () => {
     localRoots: [
       { prefix: '/store/attachments/app', access: 'allow', why: 'uploads' },
       { prefix: '/store/session-tmp/inst-1', access: 'allow', why: 'own tmp' },
-      { prefix: '/home/node/.claude/plans', access: 'allow', why: 'plan mode writes here' },
-      { prefix: '/home/node/.claude', access: 'deny', why: 'the CLI\'s own state' },
-      { prefix: '/home/node/.claude/projects', access: 'deny', why: 'every session\'s transcripts' },
+      { prefix: '/home/wk/.claude/plans', access: 'allow', why: 'plan mode writes here' },
+      { prefix: '/home/wk/.claude', access: 'deny', why: 'the CLI\'s own state' },
+      { prefix: '/home/wk/.claude/projects', access: 'deny', why: 'every session\'s transcripts' },
       { prefix: '/opt/plugins/p1', access: 'allow', why: 'a plugin root' },
     ],
     claudeCommand: '/usr/local/share/npm-global/bin/claude',
     execPath: '/usr/local/bin/node',
-    selfProjectDir: '/workspaces/cc-projects/code-conductor',
-    projectsRoot: '/workspaces/cc-projects',
-    homeDir: '/home/node',
-    runDir: '/workspaces/cc-projects/.code-conductor/systems/fuse/run/inst-1',
+    selfProjectDir: '/home/wk/cc',
+    projectsRoot: '/home/wk/cc-projects',
+    homeDir: '/home/wk',
+    runDir: '/home/wk/cc-projects/.cc-store/systems/fuse/run/inst-1',
     systemPath: '/srv/app',
     mirrorRoot: '/srv/app',
     exclude: [],
@@ -663,9 +663,9 @@ describe('the tier table', () => {
   test('node, the projects root and every localRoot are host-pinned', () => {
     const t = buildTierTable(input);
     assert.equal(tierOf(t, '/usr/local/bin/node'), 'host');
-    assert.equal(tierOf(t, '/workspaces/cc-projects'), 'host');
-    assert.equal(tierOf(t, '/workspaces/cc-projects/code-conductor'), 'host');
-    assert.equal(tierOf(t, '/home/node'), 'host');
+    assert.equal(tierOf(t, '/home/wk/cc-projects'), 'host');
+    assert.equal(tierOf(t, '/home/wk/cc'), 'host');
+    assert.equal(tierOf(t, '/home/wk'), 'host');
     for (const r of input.localRoots) assert.equal(tierOf(t, r.prefix), 'host', r.prefix);
   });
 
@@ -787,9 +787,9 @@ describe('the tier table', () => {
   // PINS: a prefix appearing twice keeps its FIRST decision, so the table's
   // meaning cannot depend on construction order.
   test('a duplicate prefix keeps its first tier', () => {
-    const t = buildTierTable({ ...input, localRoots: [...input.localRoots, { prefix: '/home/node', access: 'allow', why: 'a second spelling of the home pin' }] });
-    assert.deepEqual(t.filter(e => e.prefix === '/home/node').length, 1);
-    assert.equal(tierOf(t, '/home/node'), 'host');
+    const t = buildTierTable({ ...input, localRoots: [...input.localRoots, { prefix: '/home/wk', access: 'allow', why: 'a second spelling of the home pin' }] });
+    assert.deepEqual(t.filter(e => e.prefix === '/home/wk').length, 1);
+    assert.equal(tierOf(t, '/home/wk'), 'host');
   });
 
   // PINS: the interpreter chain bootstrap.sh execs INSIDE the union as root,
@@ -1762,8 +1762,8 @@ describe('the configuration-time containment refusal', () => {
     // directory holding the projects root DO stay `project` — that is not the
     // hazard: a LIST materialises one level of entries and never descends.)
     //
-    // COMPONENT-BOUNDARY containment, not `startsWith`: `/workspaces/cc-projectsX`
-    // is not inside `/workspaces/cc-projects`. And the ITERATION COUNT is
+    // COMPONENT-BOUNDARY containment, not `startsWith`: `/home/wk/cc-projectsX`
+    // is not inside `/home/wk/cc-projects`. And the ITERATION COUNT is
     // asserted, so a future repointing cannot silently empty this loop again —
     // which is exactly how it was empty when it landed.
     const inside = (p, root) => p === root || p.startsWith(root + path.sep);

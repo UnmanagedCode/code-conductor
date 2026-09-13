@@ -14,8 +14,9 @@ artefact rather than a coverage finding. You do not need it to run a pass.
 ## Run a pass
 
 Runs from the repo root or any `code-conductor_worktree_*` — both are direct children of the
-projects root, so the relative path resolves from either (absolute fallback:
-`/workspaces/cc-projects/code-mutant/mutate.mjs`).
+projects root, so the relative path resolves from either. The `code-mutant` runner is expected as a
+SIBLING CHECKOUT of the projects root; where that root lives is environment-specific and is not
+recorded here.
 
 **Never pass `--copy`: this project runs `in-place`, and a copy cannot be trusted here.**
 

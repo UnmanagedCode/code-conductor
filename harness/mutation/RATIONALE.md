@@ -17,8 +17,8 @@ conditions.
 - Host: `nproc` 16; 30.8 GiB RAM with ~16–17 GiB already in use by unrelated processes;
   ~5.8 GiB swap in use before any run and unmoved by every run; `/proc/loadavg` `3.71 4.19 4.42` at
   start — **the host was not idle**.
-- `node` v24.18.0, `git` 2.55.0. `node_modules` is a symlink to the primary checkout
-  (`/workspaces/cc-projects/code-conductor/node_modules`). Tree clean at every gate; 7.2 MB
+- `node` v24.18.0, `git` 2.55.0. `node_modules` is a symlink to the primary checkout's
+  `node_modules` at the projects root. Tree clean at every gate; 7.2 MB
   excluding `.git`/`node_modules`, 518 tracked files.
 - Suite at measurement time: `npm test` exit 0, **2616 tests / 2603 pass / 0 fail / 13 skipped**,
   node's own `duration_ms 56777` — i.e. **~57 s**, not the ~41 s the old README claimed. The
@@ -93,7 +93,7 @@ Lead with the conclusion: **keep `in-place`; never pass `--copy`.**
   2. `tests/store-isolation.test.mjs` — asserts the resolved store is not inside `REAL_STORE_DIR` and
      that `assertStoreIsolated(REAL_STORE_DIR)` throws. Root cause of the inversion:
      `tests/safeStoreRoot.mjs:30` derives `repoRoot` from `import.meta.url`, so `REAL_STORE_DIR`
-     (`:32`) is `/workspaces/cc-projects/.code-conductor` in the real tree but `/tmp/.code-conductor`
+     (`:32`) is the REAL store root in the real tree but `/tmp/.code-conductor`
      in a copy. Both assertions then hold against a path nothing writes — and worse, in the copy
      `assertStoreIsolated` **would not trip on the genuine production store**. The backstop is
      *inverted while reading green*, including the run-level check at `tests/run.mjs:30`

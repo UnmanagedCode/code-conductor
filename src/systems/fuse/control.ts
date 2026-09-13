@@ -301,12 +301,13 @@ export class ControlServer {
   // and serve whatever now sits at that path as though it were fresh. The inode
   // changes in every one of those cases and in none of the safe ones.
   //
-  // WHAT IT RESTS ON, recorded rather than assumed: millisecond mtime.
-  // `find -printf '%T@'` is seconds.nanoseconds on GNU and `code-system`'s
-  // baseline probe already refuses a target whose `stat` drops sub-second
-  // precision. A source file rewritten within one mtime tick AT AN IDENTICAL
-  // SIZE is missed; the window is nanoseconds, and it is named here rather than
-  // defended against.
+  // WHAT IT RESTS ON, recorded rather than assumed: millisecond mtime. The
+  // wire's `find -printf '%T@'` is seconds.nanoseconds on GNU, so no precision
+  // is lost at the source. A SOURCE WHOSE `stat` COLLAPSES SUB-SECOND
+  // PRECISION MUST BE REFUSED before this check is trusted — nothing here
+  // enforces that. A source file rewritten within one mtime tick AT AN
+  // IDENTICAL SIZE is missed; the window is nanoseconds, and it is named here
+  // rather than defended against.
   //
   // Per-session, like the mirror it describes: both die with this server.
   #fresh = new Map<string, { size: number; mtimeMs: number; ino: bigint }>();

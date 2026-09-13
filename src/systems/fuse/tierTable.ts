@@ -119,8 +119,9 @@ export type ToolDenyClass = 'excluded' | 'outside-mirror-root' | 'bind-mount' | 
 // payload (S1 §7.1, measured).
 export const BIND_MOUNTS = ['/proc', '/sys', '/dev'] as const;
 
-// Identity, name resolution, TLS trust and managed settings, from
-// rig/pins.s3.txt. ld.so.cache indexes THIS host's libraries; served from the
+// Identity, name resolution, TLS trust and managed settings. The array below
+// IS the artifact and the single source.
+// ld.so.cache indexes THIS host's libraries; served from the
 // remote it would name objects that do not exist here. ld.so.preload and
 // /etc/claude-code are pinned on the hazard rather than on a measurement: a
 // remote-supplied one would preload a remote object into a host binary, or
@@ -329,7 +330,7 @@ export function resolveOnPath(cmd: string): string {
 
 // A launcher binary's pins: the path itself, its realpath, and the install
 // prefix above both. Pinning the leaves alone left every parent directory in an
-// npm-global chain falling back on a getattr (rig/pins.s3.txt); one prefix
+// npm-global chain falling back on a getattr; one prefix
 // covers the walk.
 export function binaryPins(bin: string): string[] {
   const abs = resolveOnPath(bin);
