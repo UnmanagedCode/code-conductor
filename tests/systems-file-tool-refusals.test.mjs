@@ -48,7 +48,8 @@ const MIRROR_ROOT = '/srv';
 const RUN_DIR = '/home/wk/cc-projects/.cc-store/systems/fuse/run/inst-1';
 
 // Two excludes INSIDE the project (legal, active) and one that is also a bind
-// mount, plus one OUTSIDE the mirror root, which criterion 4 calls inert.
+// mount, plus one OUTSIDE the mirror root, which is inert: no path under the
+// mirror root is ever within it, so `isExcluded` can never return it.
 const EXCLUDE = ['/srv/app/secrets', '/proc', '/var/lib/elsewhere'];
 
 // The novel pair is what makes the ALLOW-set test a derivation test: neither

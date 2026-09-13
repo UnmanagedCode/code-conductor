@@ -1358,7 +1358,7 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(bodyOf('release'), /push_mirror_flags\(|push_mirror\(/, 'pt_release stopped pushing');
     // AND THE PUSH THAT close(2) ACTUALLY SEES. The kernel discards release's
     // return value, so a reconcile answered only there is a refusal the worker
-    // never learns about — criterion 10. `flush` is where close(2) reads from.
+    // never learns about. `flush` is where close(2) reads from.
     assert.match(bodyOf('flush'), /push_mirror_flags\(|push_mirror\(/,
       'the push is not in flush, so a refused reconcile cannot reach close(2)');
     // EVERY CLAIMING OP RELEASES ITS CLAIM WHEN IT FAILS, or the path stays

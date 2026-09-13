@@ -71,7 +71,7 @@
  *      send a control frame or read the mirror.
  *   2. THE ANCESTOR TABLE IS NOT CONSULTED (resolve_class), because a synthetic
  *      read-only node standing in for a directory the orchestrator HAS is a
- *      subtraction — epic criterion 4 calls it "a violation, not a rounding".
+ *      subtraction — "a violation, not a rounding".
  *      Such a path falls to `fail`, and `fail` means host.
  *
  * The one thing this view ADDS is the OVERLAY: a traverse-only node at a
@@ -1639,8 +1639,7 @@ static inline int policy_floor_mask(const char *path, int mask, enum view v)
  *              ancestor-of-a-pin directory falls to `fail` there — and `fail`
  *              means host. Without this member nothing would ever ask, and an
  *              unmarked caller would keep meeting a 0555 scaffold node over a
- *              directory the orchestrator HAS: "a violation, not a rounding"
- *              (epic criterion 4).
+ *              directory the orchestrator HAS: "a violation, not a rounding".
  *   T_FAIL     substituted to host UNCONDITIONALLY, and it may also become the
  *              OVERLAY node on the cwd chain.
  *

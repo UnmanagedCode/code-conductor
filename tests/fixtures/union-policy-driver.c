@@ -1070,8 +1070,8 @@ static void b19_caller_tier_matrix(void)
  * wrongly OUT of it can never be substituted no matter what the map says — and
  * that second direction is what T_SYNTH is doing here. Dropping it leaves every
  * ancestor-of-a-pin directory answering an unmarked caller with a 0555 scaffold
- * node over a directory the orchestrator HAS, which epic criterion 4 calls "a
- * violation, not a rounding" and which nothing else in this fixture can see.
+ * node over a directory the orchestrator HAS — "a violation, not a rounding"
+ * — and which nothing else in this fixture can see.
  */
 static void b20_caller_sensitive_set(void)
 {

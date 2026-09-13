@@ -1320,7 +1320,7 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
  * the worker's intent.
  *
  * THE RETURN VALUE IS THE OP'S. A reconcile that could not land must not leave
- * the caller thinking it did (epic criterion 10), so every caller returns this.
+ * the caller thinking it did, so every caller returns this.
  */
 static int push_mirror_flags(const char *op, const char *path, uint8_t flags)
 {
