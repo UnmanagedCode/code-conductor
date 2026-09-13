@@ -157,10 +157,10 @@ const namesTheFile = (reason, p) => {
 const dropAll = (reason, p) => reason.split(p).join('a file');
 
 describe('the four file-tool refusals', () => {
-  // A1 — PINS every clause of the excluded refusal, restored verbatim from the
-  // deleted file bridge (a83bb40d^:src/systems/mirror.ts). Each clause earns its
-  // place against the one failure mode; deleting the anti-ENOENT clause leaves
-  // a sentence a model reads as "absent".
+  // A1 — PINS every clause of the excluded refusal (`excludedRefusal`,
+  // src/systems/mirror.ts). Each clause earns its place against the one failure
+  // mode; deleting the anti-ENOENT clause leaves a sentence a model reads as
+  // "absent".
   test('A1: the excluded refusal carries every clause', () => {
     const { classify } = fixture();
     const reason = denied(classify('/srv/app/secrets/key.pem'), 'excluded');
