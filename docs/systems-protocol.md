@@ -522,9 +522,9 @@ expiry kills the command and reports `{code:124,timedOut:true}` exactly as any
 other bounded `exec` does — **except when the provider reports nothing**, where
 what fires is cc's own backstop at `timeoutMs + EXEC_TIMEOUT_SLACK_MS` and the
 failure carries `abandonedAfterMs` instead (§5's rules). It does **one** job — the longest a command may run.
-It used to do three, also capping how long a wedged shell stayed wedged and how
-long a queued command waited for its turn, and both of those went with the
-long-lived shell and the queue.
+It is not also a cap on how long a wedged shell stays wedged or how long a
+queued command waits for its turn: there is no long-lived shell and no queue
+for it to bound.
 
 The tool timeout a redirected `Bash` carries reaches cc **not at all**, and cc
 needs it for nothing. At the tool timeout the CLI **detaches** the forwarder and
