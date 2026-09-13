@@ -1752,7 +1752,7 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 }
 
 /*
- * THE PUSH LIVES IN `flush`, NOT IN `release`, AND THAT IS EPIC CRITERION 10.
+ * THE PUSH LIVES IN `flush`, NOT IN `release`.
  *
  * The kernel DISCARDS `release`'s return value — a reconcile that refused there
  * would be logged and nowhere else, and `close()` would return 0 to a worker
