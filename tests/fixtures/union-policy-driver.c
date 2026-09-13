@@ -437,18 +437,16 @@ static void b6_erofs(void)
 
 /* ── B7: unmarked at a project path is -ENOENT ──────────────────────────── */
 /*
- * DEFENCE IN DEPTH SINCE CARD 2026-0398, AND NO LONGER THE LIVE MECHANISM.
- * Until that card this mark check was the only thing denying an unmarked caller
- * at a project path. It is now unreachable in production: an unmarked caller
- * resolves in `VIEW_HOST`, where `tier_of` skips every `project` pin, so no
- * unmarked resolution can produce T_PROJECT and route() cannot dispatch one
- * here. The live mechanism is the VIEW, where the invariant is structural —
- * `b41` is what pins it.
+ * A LIVENESS GUARD, DRIVEN HERE. In production an unmarked caller cannot reach
+ * `policy_project_route` at all: it resolves in `VIEW_HOST`, where `tier_of`
+ * skips every `project` pin, so no unmarked resolution can produce T_PROJECT
+ * and route() cannot dispatch one here. The live mechanism is the VIEW, where
+ * the invariant is structural — `b41` pins it.
  *
- * THE CHECK STAYS AND SO DOES THIS CASE. It is a liveness guard on the only
- * function that sends a control frame, and -ENOENT is still the correct answer
- * if a later edit ever reopens the route. This case drives it directly, which is
- * the only way it CAN be driven now.
+ * THE MARK CHECK STAYS AS DEFENCE IN DEPTH on the only function that sends a
+ * control frame, and -ENOENT is still the correct answer if a later edit ever
+ * reopens the route. This case drives it directly, which is the only way it CAN
+ * be driven.
  */
 static void b7_unmarked(void)
 {
@@ -847,10 +845,9 @@ static void b0_parse(void)
 	CHECK(pins_parse_line(l4) == -1, "`synth` is REJECTED — it is derived, never parsed");
 	CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
 	{
-		/* AND `cwd` IS REJECTED THE SAME WAY. `T_CWD` itself is gone
-		 * (card 2026-0398 deleted the exemption it served), so this is
-		 * now the standing guard that no derived class can be smuggled
-		 * into the artifact the hook's tier table shares:
+		/* AND `cwd` IS REJECTED THE SAME WAY — as is any derived
+		 * class. This is the standing guard that no derived class can
+		 * be smuggled into the artifact the hook's tier table shares:
 		 * `renderPinsFile`'s consumers can only ever see the five kinds
 		 * `pins_parse_line` accepts. */
 		char lc[] = "cwd\t/srv/app";
@@ -876,17 +873,16 @@ static void b0_parse(void)
  * b15 — WHAT A PROJECT-TIER OP OWES WHEN THE RECONCILE CANNOT CARRY IT.
  *
  * `policy_unreconcilable` has exactly `policy_mutation_check`'s shape — pure,
- * tier in, errno out, no libfuse — and it was reachable only from a regex over
- * union.c and from real-gate R7, which a mutation prover cannot run. Both of
- * its directions are asserted here, so `return -EOPNOTSUPP` -> `return 0` and a
- * flipped tier test die in the deterministic suite.
+ * tier in, errno out, no libfuse. Both of its directions are asserted here, so
+ * `return -EOPNOTSUPP` -> `return 0` and a flipped tier test die in the
+ * DETERMINISTIC suite rather than only under the real gate.
  */
 /* ── B16: abandon_claim ─────────────────────────────────────────────────── */
 /*
- * THE GUARD AGAINST THE WORST FAILURE MODE IN THIS TICKET, and until now it had
- * no behavioural coverage anywhere: the prover measured that both its mutants
- * were killed ONLY by A16's sha256 latch, which fires for any C edit and so
- * says nothing about behaviour.
+ * THE GUARD AGAINST THE WORST FAILURE MODE OF THE CLAIM MECHANISM, and its
+ * only behavioural coverage — without this case both of `policy_abandon_claim`'s
+ * mutants are killed ONLY by A16's sha256 latch, which fires for any C edit and
+ * so says nothing about behaviour.
  *
  * What it owes: a project-tier abandon SENDS A FRAME — a DIRTY carrying
  * CCU_FLAG_RELEASE_ONLY, because the op failed before mutating and the mirror
@@ -894,10 +890,9 @@ static void b0_parse(void)
  * — and invalidates the cached routing decision. At any other tier it sends
  * nothing, because no other tier ever took a claim.
  *
- * IT PINNED A BARE ZERO UNTIL CARD 2026-0356's REFINE ROUND, and the byte below
- * is the whole of what changed: a flagless frame is indistinguishable from
- * `pt_release`'s frame for a handle that WROTE and never flushed. The reasoning
- * is at the assertion.
+ * A BARE ZERO would be indistinguishable on the wire from `pt_release`'s
+ * releasing frame for a handle that WROTE and never flushed. The reasoning is
+ * at the assertion.
  */
 static void b16_abandon(void)
 {
@@ -923,19 +918,18 @@ static void b16_abandon(void)
 	 *
 	 * A REMOVED bit would tell cc to delete the source entry for an op that
 	 * merely failed. A FOR_WRITE bit would tell it to KEEP the claim, the
-	 * opposite of the whole point. AND A BARE ZERO — which this case pinned
-	 * until card 2026-0356 — is indistinguishable on the wire from the
-	 * releasing frame of a handle that WROTE and never flushed, so cc read an
-	 * abandon as a reconcile: it pushed the mirror's unmodified cache copy
-	 * and, if that push failed, recorded a `diverged` fault and froze its
-	 * cache for the session on a file the worker never wrote.
+	 * opposite of the whole point. AND A BARE ZERO is indistinguishable on
+	 * the wire from the releasing frame of a handle that WROTE and never
+	 * flushed, so cc would read an abandon as a reconcile: it would push the
+	 * mirror's unmodified cache copy and, if that push failed, record a
+	 * `diverged` fault and freeze its cache for the session on a file the
+	 * worker never wrote.
 	 *
 	 * RELEASE_ONLY says what an abandon means and nothing else — release the
 	 * claim, carry nothing — so no push is attempted and no fault can arise.
-	 * It also drops a whole-file upload from every error path, which
-	 * `policy_abandon_claim`'s own block in policy.h had already named as a
-	 * cost, and with it the hazard of overwriting the box's newer bytes with
-	 * cc's stale cache copy. */
+	 * It also drops a whole-file upload from every error path, and with it
+	 * the hazard of overwriting the box's newer bytes with cc's stale cache
+	 * copy. */
 	CHECK(last_req[5] == CCU_FLAG_RELEASE_ONLY,
 	      "the abandon frame is not RELEASE_ONLY, so cc reads it as a reconcile of worker bytes");
 	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 0,
@@ -982,10 +976,9 @@ static void b15_unreconcilable(void)
 /* ── B18: the wide advertised mirror root IS repaired by the widening ────── */
 /* ── B19: the caller-tier matrix, all six tiers × {marked, unmarked} ─────── */
 /*
- * THE RULING IN ONE TRUTH TABLE, RUN TWICE — ONCE PER HOST AXIS. Since the
- * 2026-09-09 ruling the map is no longer a function of `(t, marked)` alone:
- * `path` enters it through the host filesystem, so a single-pass matrix would
- * pin only half of it. Pass 1 leaves `policy_host_fd = -1` (the host has
+ * THE WHOLE MAP IN ONE TRUTH TABLE, RUN TWICE — ONCE PER HOST AXIS, so that a
+ * single-pass matrix cannot pin half of it while the host filesystem quietly
+ * decides the other half. Pass 1 leaves `policy_host_fd = -1` (the host has
  * nothing) and pass 2 opens the real root at a path this case created.
  *
  * THE LOOP BOUND CANNOT SILENTLY UNDER-COVER. `tier_name` (policy.h) switches
@@ -1014,10 +1007,8 @@ static void b19_caller_tier_matrix(void)
 
 		/* PASS 0: no host fd at all. PASS 1: the real root, at a path
 		 * this case created. THE TWO PASSES MUST AGREE — that is the
-		 * assertion. Before card 2026-0398 host-entry existence was the
-		 * discriminator at T_PROJECT and the two passes differed there;
-		 * the view replaced it, so the geometry AND the host axis are
-		 * both out of the decision now. */
+		 * assertion: the geometry AND the host axis are both out of the
+		 * decision. */
 		policy_host_fd = pass ? host_root_fd() : -1;
 		CHECK(policy_host_absent(probe) == !pass,
 		      "pass %d: the host axis is really %s", pass, pass ? "host-has" : "host-lacks");
@@ -1123,9 +1114,8 @@ static void b21_unmarked_refused_only_at_project(void)
 	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* unmarked, and stays unmarked */
 
-	/* THE HOST HAS AN ENTRY AT EVERY PROBE PATH — the side that once decided
-	 * the T_PROJECT rule, kept because it is still the arm that would write a
-	 * `deny` row if the substitution ever denied. */
+	/* THE HOST HAS AN ENTRY AT EVERY PROBE PATH — the side where a denial
+	 * would write a `deny` row if the substitution ever denied one. */
 	host_box(box);
 	policy_host_fd = host_root_fd();
 
@@ -1244,8 +1234,8 @@ static void b22_cwd_chain_extent(void)
 
 	/* ── NO CWD AT ALL IS FAIL-CLOSED, and union.c refuses to mount on it
 	 *    precisely because this is what it would mean: no floor, no overlay
-	 *    node, and every unmarked chdir dead at its destination exactly as
-	 *    before card 2026-0373. ───────────────────────────────────────── */
+	 *    node, and every unmarked chdir dead at its destination.
+	 *    ───────────────────────────────────────────────────────────────── */
 	cwd_path = NULL;
 	CHECK(policy_cwd_component("/") == 0, "with no cwd injected, / is not a component");
 	CHECK(policy_cwd_component("/root/srv2") == 0, "nor is the project root");
@@ -1259,10 +1249,8 @@ static void b22_cwd_chain_extent(void)
  * asserted against a second transcription of the classification.
  *
  * THIS CASE COVERS EVERY REASON policy.h EMITS — the four control/mark ones and
- * the single substitution row. It was seven before card 2026-0398: the project
- * substitution and the granted cwd traversal both had reasons of their own, and
- * both mechanisms are gone.
- * The other seven live in union.c op bodies no deterministic fixture can reach;
+ * the single substitution row.
+ * The other reasons live in union.c op bodies no deterministic fixture can reach;
  * their kinds are pinned by a SOURCE-DERIVED two-directional set equality in
  * tests/fuse-union-policy.test.mjs, which reads every `policy_event(` call site
  * in both C sources. Split deliberately, and stated so neither half is credited
@@ -1344,12 +1332,10 @@ static void b24_event_kinds(void)
  * AND IT IS `served`, NOT `deny`: the op was not refused. A `deny` here would
  * put an every-shell-startup path into R4's fatal filter.
  *
- * ONE REASON NOW, WHERE THERE WERE TWO. `unmarked-project-host-served` existed
- * because the project rule was a SECOND rule with a host-existence test of its
- * own; card 2026-0398 replaced it with the view, so a project-tier path simply
- * re-resolves in `VIEW_HOST` and lands on the SAME `fail -> host` rule as
- * everything else. Both are driven here, at one path each, to pin that they now
- * produce the same row rather than two.
+ * ONE REASON FOR BOTH SUBSTITUTIONS. A project-tier path re-resolves in
+ * `VIEW_HOST` and lands on the SAME `fail -> host` rule as everything else, so
+ * both carry the one `unmarked-host-served` reason. Both are driven here, at one
+ * path each, to pin that they produce the same row rather than two.
  */
 static void b25_substitution_logged_per_path_and_tgid(void)
 {
@@ -1426,20 +1412,18 @@ static void b25_substitution_logged_per_path_and_tgid(void)
 
 /* ── B27: every chain component gets a DISTINCT inode, in its own range ─── */
 /*
- * WHY THIS MATTERS, and the justification is something that FIRES rather than
- * the `getcwd` story §3b measured as false:
+ * WHY THIS MATTERS, and the justification is something that FIRES:
  *
  *   1. `use_ino = 1` is the daemon's own stated invariant (`pt_init`: "A union
  *      must not invent st_ino… synthetic nodes supply their own from the
  *      ancestor table, in a range no real filesystem here hands out"). Distinct
  *      nodes get distinct inodes is a contract this file already makes.
- *   2. `test -ef` compares (st_dev, st_ino) and is REACHABLE under this ruling:
- *      measured at two `stat` calls and no readdir, which is exactly what an
- *      exempted component allows. Under a collision `[ /root -ef /root/srv2 ]`
- *      would answer TRUE, which is plainly false.
+ *   2. `test -ef` compares (st_dev, st_ino) in two `stat` calls and no readdir,
+ *      so it is REACHABLE at a chain component. Under a collision
+ *      `[ /root -ef /root/srv2 ]` would answer TRUE, which is plainly false.
  *
- * `getcwd(2)` does NOT observe it — measured on glibc 2.41, it answers from the
- * dentry cache and emits no getdents — and `chdir(2)` compares no inodes. Named
+ * `getcwd(2)` does NOT observe it — it answers from the dentry cache and emits
+ * no getdents — and `chdir(2)` compares no inodes. Named
  * here so the property is defended by the mechanisms that actually exercise it.
  */
 static void b27_cwd_ino_distinct(void)
@@ -1530,9 +1514,8 @@ static void b28_cwd_input_validated(void)
 	CHECK(policy_cwd_normalised("/root/srv2") == 1, "and a plain absolute path");
 	CHECK(policy_cwd_normalised("/a") == 1, "and a one-component one");
 
-	/* REFUSED, BUT NOT BY THE CLAUSE THAT NAMES IT — and the plan's case table
-	 * claimed the opposite ("accept a trailing slash ⇒ predicate case dies").
-	 * Measured false: deleting `policy_cwd_normalised`'s trailing-slash clause
+	/* REFUSED, BUT NOT BY THE CLAUSE THAT NAMES IT: deleting
+	 * `policy_cwd_normalised`'s trailing-slash clause
 	 * leaves this green, because a trailing slash leaves an EMPTY FINAL
 	 * COMPONENT and the `end == c` clause refuses that. So this assertion pins
 	 * the OUTCOME and no single clause; the C clause is redundant-by-
@@ -1597,9 +1580,8 @@ static void b28_cwd_input_validated(void)
 /*
  * THE ROW IS TAB-SEPARATED AND NEWLINE-TERMINATED, so any field that can carry
  * an arbitrary byte can DESTROY it. `/proc/<pid>/cmdline` is NUL-separated and
- * a `bash -c` argv holds the whole script, newlines included: the instrument
- * this daemon was forked from produced 1662 unparsable rows out of ~3000 for
- * exactly that reason and the analysis silently dropped them.
+ * a `bash -c` argv holds the whole script, newlines included: ONE unescaped
+ * field splits one row into many and a consumer cannot recover the rest.
  *
  * `\\` IS FIRST, AND THAT ORDER IS THE ROUND TRIP. Escaping a tab to `\t`
  * before escaping the backslash would make a literal `\` followed by `t`
@@ -1778,11 +1760,11 @@ static void b30_absence(void)
 
 /* ── B31: the dedupe key carries the TGID, and pid/tgid are two columns ──── */
 /*
- * WITHOUT THE TGID IN THE KEY THE ENRICHMENT IS ACTIVELY MISLEADING: the key
- * was (path, reason), so the FIRST caller to reach a path won the row and every
- * later one was silently dropped — and the row would then answer "who asked?"
- * with "whoever happened to be first". Attribution is the point of the column,
- * so it is the point of the key.
+ * WITHOUT THE TGID IN THE KEY THE ENRICHMENT IS ACTIVELY MISLEADING: a
+ * (path, reason) key lets the FIRST caller to reach a path win the row and
+ * silently drops every later one — so the row answers "who asked?" with
+ * "whoever happened to be first". Attribution is the point of the column, so it
+ * is the point of the key.
  */
 static void b31_dedupe_tgid(void)
 {
@@ -1839,7 +1821,6 @@ static void b31_dedupe_tgid(void)
 	unlink(tmpl);
 }
 
-/* ── B32: a GRANTED cwd traversal writes a row naming the caller ─────────── */
 /* ── field-vectors: the C encoder's output, for the .mjs decoder to read ──── */
 /*
  * THE CROSS-LANGUAGE ROUND TRIP, in the idiom `frame-vectors` already uses: the
@@ -1848,8 +1829,7 @@ static void b31_dedupe_tgid(void)
  * transcription of the format. A C-only or a JS-only test proves neither half.
  *
  * FIVE ROWS, ONE PER SHAPE THE DECODER HAS TO TELL APART: an ordinary argv, the
- * FORGERY (below), and the three /proc outcomes that are not a value. Before
- * this only `ok` and `gone` ever crossed the boundary.
+ * FORGERY (below), and the three /proc outcomes that are not a value.
  *
  * THE FORGERY IS THE POINT OF ROW 2. A field whose RAW bytes END with a literal
  * `\` followed by `!truncated` encodes to `…\\!truncated` — because `\\` is
@@ -1869,13 +1849,9 @@ static void b31_dedupe_tgid(void)
  * `policy_caller_tier` returns either its INPUT tier or T_HOST and nothing
  * else, and at (unmarked, T_PROJECT) it is T_HOST ON BOTH HOST AXES. That is
  * the mechanical statement of "an unmarked caller never receives remote file
- * content, at any mirrorRoot" — and the host axis dropping out of it is card
- * 2026-0398: the view denies the remote, where a probe used to.
- *
- * B33 THROUGH B36 STOOD HERE AND ARE DELETED WITH THEIR SUBJECTS — the
- * host-existence probe (`b48` replaces it at the opposite polarity), the
- * project tier's own substitution rule, the `fail` rule's asymmetry with it
- * (`b43` carries what survives) and the traversal bound.
+ * content, at any mirrorRoot". THE VIEW DENIES THE REMOTE, not a host probe,
+ * which is why the host axis drops out of the map entirely — `b43` and `b48`
+ * carry what the earlier host-probe arms proved.
  */
 static void b37_unmarked_never_gets_remote(void)
 {
@@ -1920,10 +1896,9 @@ static void b37_unmarked_never_gets_remote(void)
 	 * disjunction above. */
 	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 0, 500) == T_HOST,
 	      "unmarked at a host-having project path is HOST, never project");
-	/* AND THE HOST AXIS IS OUT OF THE DECISION, which is the half card
-	 * 2026-0398 changed: all three caller-sensitive tiers substitute on BOTH
-	 * axes now, where `project` once substituted on the host-has axis alone.
-	 * The view, not the probe, is what denies the remote. */
+	/* AND THE HOST AXIS IS OUT OF THE DECISION: all three caller-sensitive
+	 * tiers substitute on BOTH axes. THE VIEW, NOT A HOST PROBE, is what
+	 * denies the remote. */
 	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 0, 500) == T_HOST,
 	      "and so is an unmarked caller at a project path the host does NOT have");
 	/* NON-VACUITY: every substitution was driven, and so were the
@@ -1943,12 +1918,12 @@ static void b37_unmarked_never_gets_remote(void)
 
 /* ── the three geometries, built from one input ─────────────────────────── */
 /*
- * N, M and W are the three `mirrorRoot` values card 2026-0398's discriminator
- * table was hand-tested at: equal to `systemPath`, a STRICT ANCESTOR of it, and
- * `/`. `buildTierTable` emits `project mirrorRoot` AND `project systemPath`
- * (tierTable.ts), which is what made the space between them project-tier — the
- * bug. Everything else in the table is identical at all three, so these three
- * builds differ in exactly the one way the product's geometry does.
+ * N, M and W are the three `mirrorRoot` values the product's geometry takes:
+ * equal to `systemPath`, a STRICT ANCESTOR of it, and `/`. `buildTierTable`
+ * emits `project mirrorRoot` AND `project systemPath` (tierTable.ts), which is
+ * what makes the space between them project-tier. Everything else in the table
+ * is identical at all three, so these three builds differ in exactly the one
+ * way the product's geometry does.
  *
  * FIRST OCCURRENCE OF A PREFIX WINS, mirroring `buildTierTable`'s own dedupe: at
  * N the two project entries are the same string and the table carries one.
@@ -2076,17 +2051,16 @@ static void b38_view_is_geometry_invariant(void)
 /*
  * PINS: every component of the cwd chain is ENTERABLE in `VIEW_HOST` at N, M and
  * W — by the orchestrator's own directory with the floor's `--x` bits, or by the
- * overlay node where the orchestrator has none. This is the bug of card
- * 2026-0398 stated as an invariant: at M the intervening component carries an
- * EXACT `project` pin and at W it is covered by prefix match, and BOTH arms had
- * never been run before this case.
+ * overlay node where the orchestrator has none. At M the intervening component
+ * carries an EXACT `project` pin and at W it is covered by prefix match, so all
+ * three shapes of the chain are driven.
  *
  * THE 0700 LINK IS THE FIXTURE'S POINT, and it is asserted to be real rather
  * than assumed: the chain directory is created 0700, so its mode grants `x` to
  * the OWNER ALONE, and any other uid is refused search on it by the kernel under
- * `default_permissions`. That is exactly the orchestrator's `/root` in the card's
- * reproduction. The case asserts the un-floored mode really denies the other
- * two classes before asserting the floor grants them.
+ * `default_permissions` — exactly the orchestrator's `/root` shape. The case
+ * asserts the un-floored mode really denies the other two classes before
+ * asserting the floor grants them.
  */
 static void b39_chdir_lives_at_every_geometry(void)
 {
@@ -2144,10 +2118,10 @@ static void b39_chdir_lives_at_every_geometry(void)
 			      "%s: the floor makes %s traversable for every uid (mode %o)",
 			      GEOM_NAME[g], chain[i], (unsigned)(st.st_mode & 07777));
 		}
-		/* THE ONE THE BUG LIVED AT, named on its own so a loop that
-		 * skipped it cannot read as a pass: at M the intervening
-		 * component carries an EXACT project pin, at W it is covered by
-		 * prefix match, and at N it carries none. */
+		/* THE INTERVENING COMPONENT, named on its own so a loop that
+		 * skipped it cannot read as a pass: at M it carries an EXACT
+		 * project pin, at W it is covered by prefix match, and at N it
+		 * carries none. */
 		CHECK(resolve_class(mid, VIEW_CLI) == (g == 0 ? T_SYNTH : T_PROJECT),
 		      "%s: VIEW_CLI at the intervening component is %s — the geometry is really built",
 		      GEOM_NAME[g], tier_name(resolve_class(mid, VIEW_CLI)));
@@ -2220,18 +2194,16 @@ static void b40_marked_is_untouched(void)
  * CONSTRAINT 3, STRUCTURALLY. Over the same path set × three geometries,
  * `VIEW_HOST` never yields T_PROJECT — so `policy_project_route` is unreachable
  * from an unmarked caller, no control frame can be sent on its behalf and the
- * mirror cannot be read. This is the assertion that replaces the old
- * host-existence guard, and it holds without consulting the host at all.
+ * mirror cannot be read. It holds WITHOUT consulting the host at all.
  *
- * AND THE RE-RESOLUTION'S RANGE, WHICH IS {T_HOST, T_SYNTH, T_FAIL, T_HIDE} AND
- * NOT THE THREE FIRST WRITTEN DOWN. Striking a `project` pin hands the
+ * AND THE RE-RESOLUTION'S RANGE, WHICH IS {T_HOST, T_SYNTH, T_FAIL, T_HIDE}.
+ * Striking a `project` pin hands the
  * longest-prefix contest to whatever SHORTER pin covers the path, and a `hide`
  * pin is eligible to win it — so a path under a `hide` pin and a LONGER
  * `project` pin is T_PROJECT to the CLI and T_HIDE to everyone else. That is
  * the correct answer (hidden stays hidden, and `route()`'s T_HIDE arm answers
- * -ENOENT before anything else), and this case builds the overlap deliberately:
- * the earlier three-member claim was never met by a geometry that could
- * contradict it.
+ * -ENOENT before anything else), and this case builds the overlap deliberately
+ * and asserts all four.
  */
 static void b41_no_unmarked_resolution_names_the_remote(void)
 {
@@ -2325,9 +2297,8 @@ static void b41_no_unmarked_resolution_names_the_remote(void)
 
 /* ── B43: an uncovered path is still the host's, at every geometry ──────── */
 /*
- * `fail -> host` IS UNTOUCHED AND UNCONDITIONAL — the 2026-09-08 "host means
- * host" decision that real-gate arm R13(f) depends on, and the one rule card
- * 2026-0398 did NOT change. Driven for an unpinned FILE and for an unpinned
+ * `fail -> host` IS UNTOUCHED AND UNCONDITIONAL — the rule real-gate arm
+ * R13(f) depends on. Driven for an unpinned FILE and for an unpinned
  * directory that is NOT a chain component, so the overlay cannot be what makes
  * it pass, and on both host axes so the probe cannot be either.
  */
@@ -2372,13 +2343,12 @@ static void b43_uncovered_is_still_the_hosts(void)
 
 /* ── B44: a directory names what the resolving view can open ────────────── */
 /*
- * CARD 2026-0403'S KILLER, AND IT RUNS AT THE DEFAULT NARROW ROOT — which is
- * where the defect lives today and where a regression would be least visible.
- * Measured at a real mount before this case was written (card 2026-0398 step 0):
- * an unmarked `ls` of a directory reached through `fail -> host` emitted NOTHING
- * while `cat` on its children returned their bytes, and a `fail`-pinned child of
- * a host-pinned real directory was omitted from the listing while `cat` on it
- * worked.
+ * THE DEFECT CLASS THIS CASE KILLS, AND IT RUNS AT THE DEFAULT NARROW ROOT —
+ * where a regression would be least visible. The regression looks like this: an
+ * unmarked `ls` of a directory reached through `fail -> host` emits NOTHING
+ * while `cat` on its children returns their bytes, and a `fail`-pinned child of
+ * a host-pinned real directory is omitted from the listing while `cat` on it
+ * works.
  *
  * THE PROJECT ROW IS THE ONE THAT READS ODDLY AND IS STATED PLAINLY: a
  * project-pinned child is visible in BOTH views — as the remote's name to the
@@ -2405,18 +2375,18 @@ static void b44_dirent_visible(void)
 	CHECK(policy_dirent_visible("/run/cc-union-scaffold", VIEW_HOST) == 0,
 	      "and to everyone else — the one name neither view may list");
 
-	/* T_FAIL — THE DEFECT. Invisible to the CLI, whose every op at such a
+	/* T_FAIL — INVISIBLE TO THE CLI, whose every op at such a
 	 * name answers -ENOENT; visible to everyone else, because `fail -> host`
 	 * serves it unconditionally. Both instances: an EXPLICIT `fail` pin, and
 	 * a name no pin covers at all. */
 	CHECK(policy_dirent_visible("/etc/excluded", VIEW_CLI) == 0,
 	      "an excluded child is invisible to the CLI: its every op answers -ENOENT");
 	CHECK(policy_dirent_visible("/etc/excluded", VIEW_HOST) == 1,
-	      "and VISIBLE to everyone else, who can open it — card 2026-0403, the exclude instance");
+	      "and VISIBLE to everyone else, who can open it (the exclude instance)");
 	CHECK(policy_dirent_visible("/tmp/loose", VIEW_CLI) == 0,
 	      "an unpinned child is invisible to the CLI");
 	CHECK(policy_dirent_visible("/tmp/loose", VIEW_HOST) == 1,
-	      "and visible to everyone else — the `ls /tmp` instance measured at the mount");
+	      "and visible to everyone else (the unpinned instance)");
 
 	/* HOST, BIND — VISIBLE TO BOTH: neither view strikes them. */
 	CHECK(policy_dirent_visible("/etc/hosts", VIEW_CLI) == 1, "a host child is visible to the CLI");
@@ -2617,14 +2587,14 @@ static void b47_floor_is_applied_at_every_reporting_op(void)
  *
  * WHY THAT DIRECTION. Falling ABSENT on an unknown error would place a
  * traverse-only node over a directory the orchestrator may really have, hiding
- * it and its write surface SILENTLY — the exact failure class card 2026-0398
- * took a day to diagnose. Falling NOT ABSENT breaks `chdir` at that one path,
+ * it and its write surface SILENTLY — which is the failure class the ABSENT
+ * direction produces. Falling NOT ABSENT breaks `chdir` at that one path,
  * loudly, with an event row naming it. Loud and reversible beats silent and
  * hiding.
  *
- * THE POLARITY IS THE INVERSE OF THE DELETED `policy_host_has`, which is why
- * that function was deleted rather than reused: reusing it would have picked the
- * wrong direction silently.
+ * THE POLARITY IS THE INVERSE OF A `host_has`-SHAPED PROBE, which is why there
+ * is only one reader of absence: a has-shaped probe reused at a new call site
+ * picks the wrong direction silently.
  */
 static void b48_probe_falls_not_absent(void)
 {
@@ -2699,8 +2669,7 @@ static void b48_probe_falls_not_absent(void)
 /*
  * THE SECOND HALF OF THE DIRENT RULE, AND IT IS NOT `policy_dirent_visible`.
  * That predicate answers "may this view SEE this name". This one answers "is
- * there anything there at all" — and the two were conflated at every emit site
- * in the first round of card 2026-0398, which produced three separate
+ * there anything there at all" — and conflating them produces three separate
  * `ls`/`cat` disagreements:
  *
  *   an `exclude` under the project put a name into an unmarked listing of the
@@ -2799,7 +2768,8 @@ static void b49_table_child_exists(void)
 	CHECK(policy_table_child_exists("/proc", VIEW_HOST, 0) == 1, "and to everyone else");
 
 	/* ── (6) AND THE PROJECT TIER, TO THE CLI, IS STILL THE HOST QUESTION ON A
-	 *    REAL DIRECTORY'S MERGE — unchanged by this card. A project child the
+	 *    REAL DIRECTORY'S MERGE — the rule is view-shaped because WHICH paths
+	 *    are fixed nodes differs, not because the sentence does. A project child the
 	 *    orchestrator lacks is not in the mirror either, which is what the real
 	 *    arm's backing stream already said. */
 	CHECK(resolve_class(sys, VIEW_CLI) == T_PROJECT, "the cwd is the remote tier to the CLI");
