@@ -527,20 +527,6 @@ export function buildTools(): Tool[] {
       annotations: { destructiveHint: true, idempotentHint: true },
     },
     {
-      name: 'respawn_instance',
-      description:
-        'Respawn an exited/crashed worker against its sessionId (--resume). The in-memory ' +
-        'event ring is preserved across the respawn. Requires an in-memory instance for the ' +
-        'session (a recently-exited one); to bring back a session with no in-memory instance ' +
-        'use spawn_instance({resume:sessionId}).',
-      inputSchema: {
-        type: 'object',
-        properties: { sessionId: { type: 'string', description: 'Worker sessionId.' } },
-        required: ['sessionId'],
-      },
-      handler: h.respawnInstance,
-    },
-    {
       name: 'create_worktree',
       description:
         'Create a fresh git worktree off the project\'s current HEAD without spawning an instance. ' +

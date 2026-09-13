@@ -137,32 +137,6 @@ test('every conductor-facing projection emits exactly the allowlist', async () =
 
 });
 
-test('respawn_instance returns exactly the allowlist over the wire', async () => {
-  // respawn_instance's success path needs an EXITED-but-still-in-memory
-  // instance, and no MCP-spawned session can ever be in that state:
-  // spawn_instance always spawns temp, and a temp worker is dropped from byId
-  // the moment its process exits. So arrange that state over REST instead —
-  // create NON-temp (byId retains non-temps indefinitely) and kill the
-  // instance directly on the Instance object; DELETE /api/instances/:id would
-  // remove it from byId and turn the call into the SESSION_NOT_LIVE refusal.
-  await api(baseUrl, 'POST', '/api/projects', { name: 'demo4' });
-  const created = await api(baseUrl, 'POST', '/api/instances',
-    { project: 'demo4', temp: false, mode: 'bypassPermissions' });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const inst = instances.get(created.body.id);
-  assert.ok(inst, 'REST-created instance must be in byId');
-  await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sessionId = inst.sessionId;
-  await inst.kill({ graceMs: 50 });
-  await waitFor(() => !inst.proc && (inst.status === 'exited' || inst.status === 'crashed'));
-
-  const view = await callTool('respawn_instance', { sessionId });
-  assert.equal(view.sessionId, sessionId,
-    'the respawned session is returned — anything else here is a soft refusal body');
-  assert.deepEqual(sorted(Object.keys(view)), sorted(CONDUCTOR_VIEW_KEYS),
-    'respawn_instance must emit exactly the allowlist, same as spawn_instance');
-});
-
 // Reduce a TS source to its CODE SKELETON: comments removed, and the CONTENTS of
 // string / template / regex literals emptied (delimiters and `${}` braces stay,
 // so nesting is preserved). Every scrape below reads this rather than the raw
@@ -344,7 +318,7 @@ function assertRoutesThroughProjection(src) {
   // list (so a smuggled key never reaches the text) and tests/mcp-contract
   // asserts the shape over the wire. Read this gate as "no handler quietly
   // stops naming the shared projection", which is the drift it exists to catch.
-  for (const fn of ['listSessions', 'describeSession', 'spawnInstance', 'respawnInstance']) {
+  for (const fn of ['listSessions', 'describeSession', 'spawnInstance']) {
     const body = bodyOf(src, `export async function ${fn}(`);
     assert.match(body, /toConductorView\(|conductorRowView\(/,
       `${fn} must CALL a shared projection (toConductorView / conductorRowView) — `
@@ -371,10 +345,9 @@ function assertRoutesThroughProjection(src) {
 }
 
 test('every worker-summary handler routes through the single projection', async () => {
-  // Defense-in-depth behind the wire checks above (spawn_instance and
-  // respawn_instance both have one now). This scrape pins what a key-set check
-  // cannot: that every worker-summary handler routes through the ONE shared
-  // projection. A handler that hand-rolled its own projection emitting exactly
+  // Defense-in-depth behind spawn_instance's wire check above. This scrape pins
+  // what a key-set check cannot: that every worker-summary handler routes
+  // through the ONE shared projection. A handler that hand-rolled its own projection emitting exactly
   // CONDUCTOR_VIEW_KEYS would pass its wire check but fail here — a second
   // projection is exactly how a field escapes the documented list.
   const src = codeSkeleton(await fs.readFile(HANDLERS_SRC, 'utf8'));

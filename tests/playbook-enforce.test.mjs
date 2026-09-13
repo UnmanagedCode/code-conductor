@@ -763,10 +763,9 @@ test('a worker bound by a previous run still retires when it exits', async () =>
 // the test above — no retire is ever written and a `live:true` row from a
 // previous orchestrator process persists forever. Without reconciliation this
 // wedges every future `workers:"one"` spawn into that stage: `kill_instance`
-// is SESSION_UNKNOWN (no registry entry), `respawn_instance` is
-// SESSION_NOT_LIVE, and `spawn_instance({resume})` is SESSION_UNKNOWN too (the
-// seeded worker never got a first prompt, so it has no transcript to resume
-// from). The seeded sessionIds below never existed as real instances in this
+// is SESSION_UNKNOWN (no registry entry), and `spawn_instance({resume})` is
+// SESSION_UNKNOWN too (the seeded worker never got a first prompt, so it has no
+// transcript to resume from). The seeded sessionIds below never existed as real instances in this
 // process, which is exactly what "unknown to the instance registry" means.
 test('a reboot cannot wedge a workers:"one" stage: capacity counts live processes, so the slot is free by construction', async () => {
   const rootPlanId = 'reboot0000-0000-4000-8000-0000000000aa';
