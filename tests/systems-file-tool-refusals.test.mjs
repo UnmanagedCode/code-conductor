@@ -684,8 +684,8 @@ describe('the four file-tool refusals', () => {
     }
   });
 
-  // PINS: a tool cc does not own is untouched. The seam widened to Read in S2,
-  // and a branch that classified every tool's every string input would refuse
+  // PINS: a tool cc does not own is untouched. The seam covers Read, and a
+  // branch that classified every tool's every string input would refuse
   // WebFetch and TodoWrite calls that have nothing to do with the filesystem.
   test('a non-file tool is not classified at all', async () => {
     const { tiers, session } = fixture();

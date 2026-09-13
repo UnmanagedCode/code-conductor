@@ -15,7 +15,7 @@
 // WHY `wait(2)` IS NEVER CALLED, so it is not optimised back in: it blocks on
 // the whole thread group, a thread stuck in FUSE I/O never leaves the kernel,
 // and an orphan reparented to pid 1 cannot be waited on at all (ECHILD) — which
-// is the shape a production supervisor is actually in (S3 §A3 W-ORPHAN). cc is
+// is the shape a production supervisor is actually in. cc is
 // never the daemon's parent in any case: the daemon is started by the bootstrap
 // and reparents to pid 1 when the bootstrap's pid execs on. So `REAPED` is not
 // a state cc can produce, and a single-threaded zombie is reported as

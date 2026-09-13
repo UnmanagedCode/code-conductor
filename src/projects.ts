@@ -1525,7 +1525,7 @@ export async function listSessionsForCwdWithCounts(
     out.push({
       // The one projected field. Every sidecar below stays keyed to the FILENAME
       // — that is what they are keyed to on disk, and re-keying them would have
-      // needed a migration this card deliberately does not have.
+      // needed a migration, deliberately not written.
       sessionId: projectRowId(sid, lineage),
       firstPrompt,
       title: titles.get(sid) ?? null,

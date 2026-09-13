@@ -548,7 +548,7 @@ static ssize_t control_roundtrip(void *ctx, const unsigned char *req, size_t req
 	return (ssize_t)CCU_REPLY_LEN;
 }
 
-/* ── per-request credentials (verbatim from S1; see the header) ─────────── */
+/* ── per-request credentials (see the header) ───────────────────────────── */
 
 static inline void cred_enter(void)
 {

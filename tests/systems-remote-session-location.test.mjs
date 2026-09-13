@@ -249,11 +249,11 @@ describe('a session on a project on a system', () => {
   // events, GET /summary's staleness count is the real message count, and
   // POST /summary 200s where the pre-fix route returned a clean 404 — and where
   // a PROBE-ONLY widening would have 500'd, `flattenTranscript` throwing at the
-  // tree path with no `statusCode`. That 500 is the counterfactual this card's
+  // tree path with no `statusCode`. That 500 is the counterfactual the widening's
   // scope exists to avoid, never shipped behaviour. POST is exercised through the real
   // route with `CLAUDE_BIN` pointed at tests/fake-claude-summarize.mjs, the
-  // same device tests/session-summaries.test.mjs uses — an earlier draft of
-  // this file omitted the arm claiming it "spawns `claude`", which was FALSE
+  // same device tests/session-summaries.test.mjs uses — omitting the arm on the
+  // grounds that it "spawns `claude`" would be FALSE
   // and left one of the two sites §3.3 exists to fix undiscriminated.
   // NOT claiming the generated summary TEXT is good: the fake binary owns that,
   // and what is pinned here is the status and the message count the route read

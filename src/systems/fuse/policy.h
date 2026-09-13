@@ -1920,7 +1920,7 @@ static inline int policy_cwd_normalised(const char *p)
  * CRITERION 6, AND THE ORDER IS THE POLICY.
  *
  * Takes the CALLING THREAD's id — union.c hands it `fuse_get_context()->pid`,
- * which S1 measured to be a TID — and answers 0 (serve the path from the
+ * measured to be a TID — and answers 0 (serve the path from the
  * mirror) or a negative errno. It reaches libfuse through nothing, so the whole
  * of it is drivable from a unit fixture with a fake /proc, a fake clock and a
  * fake transport.

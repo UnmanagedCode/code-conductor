@@ -794,7 +794,8 @@ export class ProviderSystem implements System, ShellHost {
 // THE RULES ARE THE PARSER'S OWN, and it applies all three rather than a prefix
 // of them, because A SETTLE THE PARSER THEN REJECTS IS WORSE THAN NO SETTLE AT
 // ALL: `#runOneShot` would throw `ESHELLGONE` on a command that succeeded, which
-// is this card's own defect class reintroduced at the seam that removed it.
+// reintroduces the settle-then-reject defect class at the very seam that
+// removes it.
 //   * the marker only counts at the START of a line — a command that echoes it
 //     mid-line is output, not a boundary;
 //   * only once that line has ENDED, because the tail decides what it is;

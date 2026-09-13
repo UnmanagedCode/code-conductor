@@ -2,7 +2,7 @@
 // `remoteSource.ts` was built as an interface for, and the first thing in this
 // epic that crosses a wire.
 //
-// NO ROOT ARGUMENT, AND THAT IS THE EPIC'S WHOLE POINT. A path `P` from the
+// NO ROOT ARGUMENT, AND THAT IS THE WHOLE POINT. A path `P` from the
 // daemon is the path ON THE SYSTEM: one spelling, no `root + P` arithmetic, and
 // therefore no place for one to be wrong. `localDirSource` needs a root because
 // it is pretending; this does not because it is not.

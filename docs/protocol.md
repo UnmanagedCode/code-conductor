@@ -514,7 +514,7 @@ A **file format with real readers**, which is why it is here and not only in [ar
 
 ### The identity columns
 
-`pid` is the **calling thread** (`fuse_get_context()->pid`, which S1 measured to be a TID); `tgid` is its thread group — the id the mark, the resolution cache and the dedupe key are all on, and the id `CC_FUSE_TRACE` rows can be joined on. Both are logged because neither substitutes for the other. `comm` and `cmdline` are read from the **tgid**.
+`pid` is the **calling thread** (`fuse_get_context()->pid`, measured to be a TID); `tgid` is its thread group — the id the mark, the resolution cache and the dedupe key are all on, and the id `CC_FUSE_TRACE` rows can be joined on. Both are logged because neither substitutes for the other. `comm` and `cmdline` are read from the **tgid**.
 
 **IDENTITY IS SAMPLED AT POLICY TIME**, after the decision and after the dedupe — so the two /proc reads it costs, `comm` and `cmdline`, are paid once per **distinct row** rather than once per op. The `tgid` read is **not**: the dedupe key needs it, so it happens on every call — the same read `mark_of` and `policy_project_route` already make. Identity can never change an answer. `exec(2)` replaces `comm`, `cmdline` and `exe` while leaving pid, tgid and start time untouched, so **no validation can make the sample authoritative for the op that triggered it**: a row may name what the process *became*. The header line says so in the file.
 

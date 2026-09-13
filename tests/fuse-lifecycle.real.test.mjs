@@ -1694,7 +1694,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(st.stdout.trim(),
         `${((hostDir.mode & 0o7777) | 0o111).toString(8)} ${hostDir.uid} ${hostDir.gid}`,
         `an ancestor-of-a-pin ON-CHAIN directory did not report the orchestrator's own `
-        + `attributes with the floor applied — '555 0 0' is the synthetic node this card `
+        + `attributes with the floor applied — '555 0 0' alone would be the synthetic node `
         + `removed: ${st.stdout} ${st.stderr}`);
 
       // AND THE FLOOR IS SCOPED TO THE CHAIN, AT THE DEFAULT NARROW ROOT. A host

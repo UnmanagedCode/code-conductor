@@ -10,8 +10,8 @@
 // unix socket, same frames, same mirror — so a delta is the source's and
 // nothing else's:
 //
-//   --arm localdir   `localDirSource(<tmpdir>)`. THE CONTROL: S1's and S2's
-//                    cost, and what every previous figure in this epic was.
+//   --arm localdir   `localDirSource(<tmpdir>)`. THE CONTROL: the cost with no
+//                    provider and no transport in the path.
 //   --arm reference  `systemSource` over a ProviderSystem on the reference
 //                    provider — the whole NDJSON → base64 → 64 KiB chunking
 //                    path, deterministic and in-repo, which isolates the

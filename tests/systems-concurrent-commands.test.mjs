@@ -129,7 +129,7 @@ test('interrupting one command leaves a concurrent one untouched', async () => {
   assert.equal(ok.stdout.trim(), 'SURVIVED');
 });
 
-// PINS THE PROPERTY THIS CARD MOST EXPOSES: two commands of one session
+// PINS THE PROPERTY ONE-SHOT EXECUTION MOST EXPOSES: two commands of one session
 // GENUINELY OVERLAP, and each result holds exactly its own output, in order.
 //
 // STRUCTURAL, not wall-clock. Neither command can finish unless the other was

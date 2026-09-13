@@ -641,9 +641,9 @@ describe('a worker session on a remote system', () => {
   // own included — exactly as locally — so such a sentence has no subject.
   //
   // EACH NEGATIVE IS A CLAIM SOMEONE WOULD PLAUSIBLY RE-ADD, not a grep for
-  // absence: the retired per-agent sentence, the two clauses cut from its draft
-  // before it shipped, and the "every command starts at the project root" fact
-  // that this card deliberately did NOT put here — it is delivered by cc's own
+  // absence: a per-agent shell-state sentence, the two clauses that would
+  // over-claim beside it, and the "every command starts at the project root"
+  // fact that is deliberately NOT here — it is delivered by cc's own
   // notice on the one command whose `cd` was discarded, at the point of use,
   // which the workspace "push what nothing volunteers" rule prefers to a
   // sentence every session pays for.

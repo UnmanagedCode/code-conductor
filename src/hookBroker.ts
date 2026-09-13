@@ -7,9 +7,9 @@
 //
 // It answers two hook events. `PreToolUse` is the original: auto-allow, or hold
 // the response open behind an ask-mode permission card. `PostToolUse` is
-// registered only for a session redirected to another system and is a RESERVED
-// S3 SEAM with no consumer today: the union writes through, so there is nothing
-// to report back. It stays wired because S3's lazy per-open mirror pushes at
+// registered only for a session redirected to another system and has no
+// consumer today: the union writes through, so there is nothing to report back.
+// It stays wired because the daemon's lazy per-open mirror pushes at
 // `release`, which can fail AFTER the tool has already returned success, and
 // `additionalContext` is the only channel that can put that in front of the
 // worker in band — a tool result can be annotated but never replaced.

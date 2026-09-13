@@ -19,7 +19,7 @@ import { renderPinsFile, type TierEntry } from './tierTable.ts';
 // `fuse_main` untouched and needs no source change to honour them (its
 // `pt_init` sets only `use_ino` and `kernel_cache`).
 //
-// The epic's reason: FUSE's attribute cache is per-inode, not per-caller, so
+// The reason: FUSE's attribute cache is per-inode, not per-caller, so
 // one path measurably answered 15 bytes to `stat` and 33 to `cat` across the
 // routing boundary. `allow_other` + `default_permissions` are mandatory from
 // the first mount — the daemon runs as root and serves callers of another uid.

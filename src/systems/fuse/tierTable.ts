@@ -108,7 +108,7 @@ export interface LocalRoot {
 // what each has to say about the answer Bash gives — see the wordings below.
 export type ToolDenyClass = 'excluded' | 'outside-mirror-root' | 'bind-mount' | 'host-pinned';
 
-// UNCONDITIONAL, AND NEVER MERGED INTO THE TIER TABLE. The epic's reasoning,
+// UNCONDITIONAL, AND NEVER MERGED INTO THE TIER TABLE. The reasoning,
 // restated once here so a later editor cannot merge them: a provider
 // advertising no excludes would otherwise lose /proc bind-mounting (and
 // /proc/self/exe with it), while an unusual exclude like /var/lib/secrets would
@@ -167,9 +167,9 @@ const LOADER_OBJECTS = [
   //     /usr/local/bin/node: error while loading shared libraries:
   //     libstdc++.so.6: cannot open shared object file
   //
-  // `libstdc++` and `libgcc_s` are node's own NEEDED set — one layer the S1
-  // brief's six objects did not cover, because S1 never had to load node inside
-  // the union. `libcap.so.2` is libsystemd's, reached through the
+  // `libstdc++` and `libgcc_s` are node's own NEEDED set — a layer the CLI's
+  // own loader closure does not cover, because it is reached only when node
+  // itself is loaded inside the union. `libcap.so.2` is libsystemd's, reached through the
   // `libnss_systemd` dlopen closure already pinned above.
   '/usr/lib/x86_64-linux-gnu/libstdc++.so.6',
   '/usr/lib/x86_64-linux-gnu/libgcc_s.so.1',
