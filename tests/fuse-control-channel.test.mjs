@@ -41,7 +41,7 @@ function call(sock, op, flags, p, raw) {
       fn(v);
     };
     const onErr = (e) => done(reject, e);
-    // A SERVER-SIDE `destroy()` IS A CLEAN FIN, NOT AN `error` (card 2026-0371).
+    // A SERVER-SIDE `destroy()` IS A CLEAN FIN, NOT AN `error`.
     // `ControlServer.close()` destroys every live connection, so a frame in
     // flight across a teardown ends this stream with no error event at all —
     // and settling on `data`/`error` alone hangs until the runner's timeout,
@@ -152,7 +152,7 @@ describe('the control channel, cc side', () => {
   });
 
   // PINS: FETCH always copies, with no revalidation shortcut, so freshness at
-  // open is exact — that is the contract S3's per-open revalidate inherits.
+  // open is exact — the contract the per-open revalidate rests on.
   // Dies if FETCH skips the copy when the stub's size already matches.
   test('FETCH copies the bytes, and copies them AGAIN when the source changes', async () => {
     await fs.writeFile(at('/srv/app/f.txt'), 'first');
@@ -860,7 +860,7 @@ describe('the control channel, cc side', () => {
   // `close()` produces for a frame in flight across a teardown. A `call()` that
   // listened for `data` and `error` alone never settled on it and the case hung
   // until the runner's 60 s timeout, which reads as a wedged handler rather
-  // than as the close it is (card 2026-0371).
+  // than as the close it is.
   //
   // The one in-flight case elsewhere in this file concedes in its own comment
   // that the reply/FIN order is a race, so reverting the fix reds it only in
@@ -915,7 +915,7 @@ describe('the control channel, cc side', () => {
   });
 });
 
-describe('localDirSource — the S2 fake remote', () => {
+describe('localDirSource — the fake remote', () => {
   let root, box;
   before(async () => {
     box = await mkdtemp('cc-src-');
@@ -956,7 +956,7 @@ describe('localDirSource — the S2 fake remote', () => {
   });
 });
 
-// ── CARD 2026-0387: THE ADDRESS HAS NO LENGTH BUDGET ────────────────────────
+// ── THE ADDRESS HAS NO LENGTH BUDGET ───────────────────────────────────────
 //
 // The socket FILE still lives at `<rundir>/control.sock`, whose depth follows
 // the store root's. What changed is the ADDRESS handed to bind(2)/connect(2):
@@ -985,8 +985,8 @@ describe('the control socket binds and connects at any store-root depth', () => 
 
   // T8 — T7'S PREMISE, and the thing that stops this whole block going vacuous
   // the day someone shortens the padding. A bare listen on the SAME real path
-  // must still be EINVAL: that is the defect card 2026-0387 removes, and the
-  // errno is neither ENAMETOOLONG nor anything else self-describing.
+  // must still be EINVAL, and the errno is neither ENAMETOOLONG nor anything
+  // else self-describing.
   //
   // PINS: the fixture path really is over the cliff, at the syscall.
   test('T8: a bare listen on the same real path is still EINVAL', async () => {

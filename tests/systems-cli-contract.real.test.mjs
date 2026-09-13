@@ -185,9 +185,9 @@ t('a Bash pattern deny is still enforced under bypassPermissions', async () => {
 // non-empty string `agent_id`, and the main agent's does not carry the field at
 // all.
 //
-// CC NO LONGER CONSUMES IT (card 2026-0312 deleted the per-agent shell it keyed,
-// because no command's state reaches any later command for a subagent's to
-// re-base). This stays as a CLI-CONTRACT FACT, established by a real-binary run:
+// CC DOES NOT CONSUME IT: no command's state reaches any later command, so
+// there is nothing for a subagent's id to key. This stays as a CLI-CONTRACT
+// FACT, established by a real-binary run:
 // the shape is a real thing about the CLI, it is the natural channel for any
 // future per-agent behaviour, and re-establishing it later would cost another
 // real-binary session. Nothing in `src/` reads it, so a regression here changes

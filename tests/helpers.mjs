@@ -260,8 +260,8 @@ export function stripMessageBoundaryHeader(body) {
 // created. The length has to come from subdirectories INSIDE `baseDir`:
 // `tmpRegistry.mkdtemp` refuses to register anything but a direct child of the
 // real tmpdir, so a longer PREFIX is not available to a test that wants its
-// fixtures cleaned up. Card 2026-0387's tests use it to put a store root, and
-// therefore a control-socket path, past Linux's 107-byte `sun_path` budget.
+// fixtures cleaned up. Tests use it to put a store root, and therefore a
+// control-socket path, past Linux's 107-byte `sun_path` budget.
 export async function padPathTo(baseDir, minBytes) {
   let p = path.resolve(baseDir);
   while (Buffer.byteLength(p) < minBytes) {

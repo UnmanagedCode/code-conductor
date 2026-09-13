@@ -77,21 +77,19 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
   assert.equal(d.updatedInput.description, 'x');
 });
 
-// INVERTED on card 2026-0312 §2 D-b: this used to pin that a positive tool
-// `timeout` rode out as `--timeout <ms>` on the forwarder's argv. NOTHING of the
-// tool's own timeout travels any more, and cc needs it for nothing: its only
-// consumer was the wait bound on a queue that no longer exists, and at the tool
-// timeout the CLI DETACHES the forwarder rather than killing it (card 2026-0305
-// §3), so the command keeps running under cc's own ceiling. A kill, when one
-// comes, closes the socket — cc's cancellation channel, which needs no number.
+// NOTHING of the tool's own timeout travels on the forwarder's argv, and cc
+// needs it for nothing: at the tool timeout the CLI DETACHES the forwarder
+// rather than killing it, so the command keeps running under cc's own ceiling.
+// A kill, when one comes, closes the socket — cc's cancellation channel, which
+// needs no number.
 //
 // THE ARGV IS WHERE THIS IS OBSERVABLE AT ALL, which is this test's reason to
 // exist: re-adding the flag would change no far-side behaviour cc can see, so
 // only the argv can catch it coming back.
 //
-// EVERY SHAPE THAT USED TO PRODUCE A FLAG is asserted here, not just one: the
-// guard that dropped the others (`Number.isFinite(timeout) && timeout > 0`) went
-// with the flag, so a partial restoration would put `--timeout Infinity` on a
+// EVERY SHAPE THAT COULD PRODUCE A FLAG is asserted here, not just one: there
+// is no `Number.isFinite(timeout) && timeout > 0` guard to drop the others, so
+// a partial restoration would put `--timeout Infinity` on a
 // real argv.
 test('neither a tool timeout nor an agent id rides out on the argv', async () => {
   const argvFor = async (input) =>
@@ -128,11 +126,11 @@ test('a forwarded command runs on the system and not on cc', async () => {
   assert.notEqual(miss.code, 0);
 });
 
-// INVERTED on card 2026-0312 — THE PARITY THIS CARD EXISTS FOR, at the layer a
-// worker actually meets it. This used to assert that `cd` AND `export` carried
-// between an agent's commands. Neither does: every command runs in its own
-// shell, which is what a local session already does (measured on CLI 2.1.258 —
-// a local Bash call persists nothing and the harness announces the cwd reset).
+// THE PARITY, at the layer a worker actually meets it: neither `cd` nor
+// `export` carries between two redirected commands, because every command runs
+// in its own shell — which is what a local session already does (measured on
+// CLI 2.1.258 — a local Bash call persists nothing and the harness announces
+// the cwd reset).
 test('nothing carries between two redirected commands — every one starts at the project root', async () => {
   await fs.mkdir(onSystem('sub'), { recursive: true });
   await bash('cd sub');
@@ -180,11 +178,9 @@ test('a forwarded command streams its output before it finishes', async () => {
   assert.equal(r.code, 0);
 });
 
-// T7 — INVERTED on card 2026-0312, and the ORDER inverts with the content. The
-// R5 notice said a shell had been RESTARTED and went out FIRST, ahead of output
-// that might be wrong because the exports were gone. There is no restart; what a
-// worker now needs to be told is that its `cd` was discarded, and that cannot be
-// known until the command has ended — so the notice arrives LAST.
+// T7 — THE NOTICE ARRIVES LAST, and the ORDER is part of the content: what a
+// worker needs to be told is that its `cd` was discarded, and that cannot be
+// known until the command has ended.
 //
 // NOT CLAIMING that the CLI's own wording matches cc's. The CLI prints its own
 // line when ITS shell's cwd moves; cc's string is its own and is pinned here.
@@ -251,15 +247,13 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 // else. The unrelated concurrent command completes normally, and the cancelled
 // one does not run to completion on the system.
 //
-// RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
-// waiting for its TURN on a shell, and there is no turn any more. WHAT IT PINS
-// IS THE EFFECT, not a call stopped short: instrumented, this test's
-// cancellation throws at the re-check AFTER `exec` returns, and the reference
-// provider is measured to have SPAWNED the `touch` and killed it before it ran
-// (card 2026-0328 §1, §5).
+// WHAT IT PINS IS THE EFFECT, not a call stopped short: instrumented, this
+// test's cancellation throws at the re-check AFTER `exec` returns, and the
+// reference provider is measured to have SPAWNED the `touch` and killed it
+// before it ran.
 //
 // THE WRITE THEREFORE SITS BEHIND A DELAY THE COMMAND MUST SURVIVE, and the
-// witness is read past it (card 2026-0331 §1b, §1e, §2):
+// witness is read past it:
 //   - Its absence below is the kill landing inside a 400 ms budget stated in the
 //     command text, rather than outrunning the ~10 ms a bare `touch` takes to
 //     start and run. That ~10 ms was the entire margin of the no-delay form, and
@@ -285,8 +279,7 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 //     What stays pinned is that the kill HAPPENS (the no-relay mutant dies six
 //     ways) and that its latency is BOUNDED — ~400 ms here, 280 ms / 1500 ms at
 //     the siblings above — so an unboundedly slow kill is still caught. A real
-//     kill-latency SLO would be a new requirement carrying its own number
-//     (card 2026-0331 §G-9, §G-10).
+//     kill-latency SLO would be a new requirement carrying its own number.
 test('a cancelled call does not run to completion, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
@@ -312,11 +305,11 @@ test('a cancelled call does not run to completion, and a concurrent one is untou
 // ITS BOUNDARY TWIN is `interrupting one call stops it inside the container and
 // leaves a concurrent call alone` in tests/systems-docker-boundary.real.test.mjs
 // — the same shape, witnessed from inside the container instead of on cc's own
-// filesystem. Card 2026-0312 re-based THIS file and missed that one, which then
-// sat red unnoticed because that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and
-// is in neither gated command (card 2026-0327). Change one, change both.
+// filesystem. That suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and is in
+// neither gated command, so a change made here alone sits red there unnoticed.
+// Change one, change both.
 //
-// NOT the same claim as the RE-FRAMED test above, and the difference is what
+// NOT the same claim as the EFFECT test above, and the difference is what
 // each test puts between ISSUING the call and CANCELLING it. That one puts
 // nothing there — it aborts on the next statement, so it never establishes that
 // the command started. This one interposes a delay, and its boundary twin goes
@@ -349,11 +342,10 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // value cannot tell "was not run" from "was run and its result discarded":
 // `ProviderShell`'s pre-crossing check and its post-exec re-check throw the SAME
 // `cancelled()`, so the caller sees one indistinguishable failure whether the
-// call was stopped before it crossed or crossed and had its result thrown away
-// (card 2026-0327). B's write sits behind a delay it must survive for the reason
-// the RE-FRAMED test above carries in full: read immediately, its absence is a
-// ~10 ms race, and an effect landing before the kill would be correct anyway
-// (card 2026-0331 §1b, §1e, §2).
+// call was stopped before it crossed or crossed and had its result thrown away.
+// B's write sits behind a delay it must survive for the reason the EFFECT test
+// above carries in full: read immediately, its absence is a ~10 ms race, and an
+// effect landing before the kill would be correct anyway.
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
@@ -413,7 +405,7 @@ test('a forwarded command reports the real exit code', async () => {
 // exactly the leak that makes a worker distrust every other tool result.
 // PINS: a file tool aimed INSIDE the project is allowed with nothing added and
 // nothing rewritten — the union serves it, so there is no pull, no push and no
-// translation. S2 hooks these tools to REFUSE the paths the union does not
+// translation. These tools are hooked to REFUSE the paths the union does not
 // serve (tests/systems-file-tool-refusals.test.mjs); this is the other half,
 // and without it a hook that denied everything would pass that file.
 //
@@ -442,20 +434,15 @@ test('Glob and Grep are refused by name if they ever reach the hook', async () =
 
 
 
-// T3 — A LIVE PRE-EXISTING DEFECT, FOUND WHILE PLANNING THIS CARD AND FIXED ON
-// IT. `SessionRedirect.close()` did not reap an in-flight command in the
-// one-shot mode — the mode card 2026-0312 makes the only mode. It closed
-// SHELLS, and in one-shot mode there is no shell, so nothing reached the
+// T3 — `SessionRedirect.close()` REAPS AN IN-FLIGHT COMMAND in one-shot mode,
+// which is the only mode. A close that reached SHELLS alone would reach
+// nothing, because in one-shot mode there is no shell between it and the
 // running `exec`.
 //
-// MEASURED IN BOTH MODES BEFORE THE STRIP, identical rig, with a witness file
-// that only appears if the command completes: the persistent mode gave
-// `code=1` and the command did NOT complete; the fallback gave `code=0` WITH
-// THE COMMAND'S OUTPUT, having run to completion on the far side 1.2s after
-// the session was torn down. Reachable in production TODAY on any provider that
-// did not advertise `persistentShell` — this card does not introduce it, it
-// PROMOTES a fallback-only defect to the only behaviour, so shipping the strip
-// without the fix ships a regression in effect.
+// MEASURED, identical rig, with a witness file that only appears if the command
+// completes: closing a shell gave `code=1` and the command did NOT complete;
+// reaching no shell gave `code=0` WITH THE COMMAND'S OUTPUT, having run to
+// completion on the far side 1.2s after the session was torn down.
 //
 // THE WITNESS IS THE FAR SIDE'S OWN FILESYSTEM. cc's bookkeeping cannot tell
 // teardown from forgetting: `close()` drops its handle either way, so any
@@ -490,7 +477,7 @@ test('close() reaps a command that is still in flight', async () => {
   await redirect.close();
 });
 
-// S1 — PINS THAT `runForwarded` DETACHES WHAT IT ATTACHED. It relays two abort
+// PINS THAT `runForwarded` DETACHES WHAT IT ATTACHED. It relays two abort
 // sources into a per-call controller, and the `removeEventListener` loop in its
 // `finally` is what keeps the SESSION-lived controller from accumulating one
 // listener per command the session has ever run. That leak was measured before
@@ -564,12 +551,12 @@ test('a redirect keeps working after close(), because a rewind calls it too', as
 });
 
 
-// ── A WIDE MIRROR: the two things it would silently break (card 2026-0259) ──
+// ── A WIDE MIRROR: the two things it would silently break ──────────────────
 //
-// Before P7 one field — the map's far end — was three things at once: the
-// mapping anchor, the shell's cwd, and the needle the Bash annotation looks
-// for. Widening it to a mirror root would have repurposed all three. These pin
-// the two that are outright defects.
+// One field — the map's far end — must not be three things at once: the mapping
+// anchor, the shell's cwd, and the needle the Bash annotation looks for.
+// Widening it to a mirror root repurposes all three. These pin the two that are
+// outright defects.
 
 // A redirect whose mirror is the whole filesystem, with the project still where
 // it was. The provider is recorded so an assertion can be made on the frame cc

@@ -8,7 +8,7 @@
 // `spawn_instance({resume})` form (the one an MCP conductor uses, and the one
 // spawn_instance's own description advertises as recovering the project and
 // worktree automatically) refused `400 project required` for all of them — the
-// same refusal a typo'd UUID gets (card 2026-0292).
+// same refusal a typo'd UUID gets.
 //
 // THE SCOPE IS RESUME **AND** READ, deliberately wider than "resume". Two
 // consuming sites turn a hit into a TRANSCRIPT CWD, and both re-derived it from

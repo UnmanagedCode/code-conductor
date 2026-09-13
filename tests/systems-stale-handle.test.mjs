@@ -5,7 +5,7 @@
 // retention is out of the registry's reach. The failure this suite pins out is
 // the worst one available on this seam: the retained handle silently relaunches
 // the OLD provider command and runs the session's work on the PRE-SWAP machine,
-// reporting success (card 2026-0347).
+// reporting success.
 //
 // "It failed" is never the evidence here, and neither is "it succeeded". Two
 // roots hold different MARKER bytes and are served by two different launch

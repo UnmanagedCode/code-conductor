@@ -12,11 +12,11 @@
 // WHAT IT DOES NOT PROVE: latency (that is measured, not asserted —
 // tests/fuse-transport-bench.mjs) and a real container.
 //
-// NOTHING HERE MOUNTS, AND THAT IS MAINTAINED RATHER THAN INHERITED. Two arms
-// used to: a spawn that SUCCEEDS attaches `_fuse`, runs the full preflight and
-// makes a real mount, so the file reddened on any host without `/dev/fuse` or
-// `sudo -n` — the exact hosts this header claims immunity from — and added a
-// participant to the only real-mount contention in `npm test` (card 2026-0370).
+// NOTHING HERE MOUNTS, AND THAT IS MAINTAINED RATHER THAN INHERITED. A spawn
+// that SUCCEEDS attaches `_fuse`, runs the full preflight and makes a real
+// mount, which would redden the file on any host without `/dev/fuse` or
+// `sudo -n` — the exact hosts this header claims immunity from — and would add
+// a participant to the only real-mount contention in `npm test`.
 // The refusal arms are safe and stay: their probe runs BEFORE
 // `assertFuseAvailable` and `prepare()`, which is asserted by T16's
 // no-run-directory check. Anything needing a SUCCESSFUL spawn is driven at the
@@ -409,7 +409,7 @@ describe('systemSource — the remote source over a real System handle', () => {
 // is unconditional passes the first arm and fails the second, and a copy that
 // is unconditional does the reverse. Asserted on `readFile` FRAMES, because the
 // bytes are correct either way and only the wire can tell them apart.
-// One request, one reply. Settles on a clean FIN too (card 2026-0371).
+// One request, one reply. Settles on a clean FIN too.
 function call(sock, op, flags, p) {
   return new Promise((resolve, reject) => {
     let buf = Buffer.alloc(0);
@@ -1272,7 +1272,7 @@ describe('the launch probe — is the box still there, asked now', () => {
   // mount-free. Reaching a successful probe through `POST /api/instances`
   // requires `_fuse` to be attached, which means a real mount, `sudo -n` and
   // `/dev/fuse` — in a file whose header promises none of them, and in the
-  // default suite, which is the contention shape card 2026-0370 records. The
+  // default suite, which is the real-mount contention shape. The
   // invariant is about `assertRemoteLive` and is asserted on it.
   //
   // DIES UNDER: memoising the answer on the handshake, the way the three

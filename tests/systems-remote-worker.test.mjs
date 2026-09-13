@@ -176,8 +176,8 @@ describe('a worker session on a remote system', () => {
   // A redirected session that still offered Grep would answer searches from a
   // session root holding the config surface and nothing else.
   //
-  // The `Read` clause is DELIBERATELY INVERTED FROM S1: S2 hooks Read to REFUSE
-  // a path the union does not serve to this session (criterion 11), so a Read
+  // The `Read` clause: Read is hooked to REFUSE a path the union does not serve
+  // to this session (criterion 11), so a Read
   // missing from this matcher would leak an -ENOENT the model reads as "the
   // file is absent". It is hooked and NOT gated — see the ask-mode arm in
   // tests/systems-redirect-hooks.test.mjs.
@@ -187,7 +187,7 @@ describe('a worker session on a remote system', () => {
     assert.deepEqual(settings.permissions.deny, ['Glob', 'Grep']);
     assert.match(settings.hooks.PreToolUse[0].matcher, /\bRead\b/,
       'Read is not hooked — the refusal seam criterion 11 needs is gone');
-    assert.ok(settings.hooks.PostToolUse, 'the PostToolUse seam is still registered for S3');
+    assert.ok(settings.hooks.PostToolUse, 'the PostToolUse write-back seam is still registered');
   });
 
   // PINS B5: a worker can read its OWN backgrounded command's interim output.
@@ -375,8 +375,8 @@ describe('a worker session on a remote system', () => {
   });
 
 
-  // PINS: THE MIXED CASE, which the spike measured as the normal one — a Bash
-  // write followed by an Edit on the same file. Both changes survive on the
+  // PINS: THE MIXED CASE, measured as the normal one — a Bash write followed
+  // by an Edit on the same file. Both changes survive on the
   // system, because the Edit's pull refreshed the local copy first.
   test('a Bash write and an Edit on the same file both survive on the system', async () => {
     await fs.writeFile(onSystem('mix.txt'), 'alpha\nbeta\n');
@@ -402,23 +402,20 @@ describe('a worker session on a remote system', () => {
   // a kill that left it running would leave work on someone else's machine with
   // nobody to read it.
   //
-  // NOT a tool TIMEOUT, which is what an earlier wording here said: at the
-  // timeout the CLI detaches the forwarder rather than killing it (card
-  // 2026-0305 §3), so this test drives the kill itself rather than reproducing
-  // one the timeout would have caused.
+  // NOT a tool TIMEOUT: at the timeout the CLI detaches the forwarder rather
+  // than killing it, so this test drives the kill itself rather than
+  // reproducing one the timeout would have caused.
   //
-  // RE-BASED on card 2026-0312: this also used to assert the NEXT command was
-  // told its shell had been restarted. Nothing is restarted — the command's own
-  // `exec` was killed and no state was shared for anyone to lose — so telling
-  // the next command it lost its exports would be an R5-class false statement
-  // about state it never had. What it must still say is nothing at all, which is
-  // asserted here.
+  // IT MUST NOT ASSERT THE NEXT COMMAND IS TOLD ITS SHELL WAS RESTARTED.
+  // Nothing is restarted — the command's own `exec` is killed and no state is
+  // shared for anyone to lose — so telling the next command it lost its exports
+  // would be an R5-class false statement about state it never had. What it must
+  // say is nothing at all, which is asserted here.
   //
   // ITS BOUNDARY TWIN is `killing the forwarder stops the command inside the
-  // container` in tests/systems-docker-boundary.real.test.mjs. Card 2026-0312
-  // re-based THIS copy and missed that one, which then sat red unnoticed because
-  // that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and is in neither gated
-  // command (card 2026-0327). Change one, change both.
+  // container` in tests/systems-docker-boundary.real.test.mjs. That suite is
+  // opt-in behind `RUN_DOCKER_SYSTEM=1` and is in neither gated command, so a
+  // change made here alone sits red there unnoticed. Change one, change both.
   test('killing the forwarder stops the command on the system', async () => {
     const marker = onSystem('slow-finished.txt');
     const started = onSystem('slow-started.txt');
@@ -487,11 +484,11 @@ describe('a worker session on a remote system', () => {
   // the workspace "System-prompt docs" rule: each sentence must change what the
   // agent DOES. Both do, and both were measured. The first pre-empts the
   // coordinate divergence the worker meets the moment a command prints a path.
-  // The second is the correction the spike forced: an earlier wording that said
-  // system paths "are the system's copies of what you see locally" sent the model
-  // straight to `Read /app/greeting.py`, which cannot work — the CLI reads
-  // locally. It must say files are read and edited at their LOCAL paths and that
-  // system paths appear only in command output.
+  // The second says the CLI's file tools and the shell see the SAME path: the
+  // CLI is chrooted at the system path, so that path IS the working directory
+  // and a prohibition on using it would forbid the only path that works. It
+  // makes no claim about where such a path can APPEAR, which is the claim a
+  // wrong wording gets wrong.
   
   // PINS THE `inProcess` DEFAULT — the fail-safe polarity, which had no test.
   // Both STATED directions were pinned (RealClaudeLauncher declares `false`, the
@@ -609,10 +606,9 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /^# System$/m);
     assert.match(block, /\/app.*prod-box/s);
     assert.match(block, /Bash.*run/s);
-    // THE CORRECTION, and its subject changed with the geometry: the CLI is
-    // chrooted at the system path, so that path IS the working directory. A
-    // prohibition on using it — which is what this doc used to carry — would
-    // forbid the only path that works.
+    // THE CORRECTION: the CLI is chrooted at the system path, so that path IS
+    // the working directory, and a prohibition on using it would forbid the
+    // only path that works.
     assert.match(block, /working directory/);
     assert.match(block, /same path/);
     assert.ok(!/never at their/.test(block),
@@ -622,7 +618,7 @@ describe('a worker session on a remote system', () => {
     assert.ok(!/^# System$/m.test(local), 'a local project carries no such section');
   });
   
-  // PINS S5: the pair says nothing false. This is a SYSTEM PROMPT — a worker
+  // PINS: the pair says nothing false. This is a SYSTEM PROMPT — a worker
   // holding a false statement from it has to decide which of the two to trust —
   // and every wording this sentence has had was falsified by a later change, so
   // the claims it must not make are pinned rather than only the ones it makes.
@@ -639,14 +635,10 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /same path/);
   });
 
-  // PINS A DELETION, WHICH IS THE ONLY WAY A DELETION FROM A SYSTEM PROMPT STAYS
-  // DELETED. Card 2026-0312 removed a third sentence saying shell state was PER
-  // AGENT. It existed for an asymmetry that no longer exists: `export` used to
-  // persist across an agent's own commands while a local session persisted
-  // nothing, which invited the false generalisation that a dispatched subagent
-  // inherited it. With one shell per command nothing an agent's command sets
-  // reaches ANY later command, its own included — exactly as locally — so the
-  // sentence's subject is gone.
+  // PINS A DELETION, WHICH IS THE ONLY WAY A DELETION FROM A SYSTEM PROMPT
+  // STAYS DELETED. NO SENTENCE MAY SAY SHELL STATE IS PER AGENT: with one shell
+  // per command nothing an agent's command sets reaches ANY later command, its
+  // own included — exactly as locally — so such a sentence has no subject.
   //
   // EACH NEGATIVE IS A CLAIM SOMEONE WOULD PLAUSIBLY RE-ADD, not a grep for
   // absence: the retired per-agent sentence, the two clauses cut from its draft

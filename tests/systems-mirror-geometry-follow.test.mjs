@@ -209,12 +209,11 @@ describe('a mirror advertisement that moves under a live session', () => {
   //
   // WHAT IT ASSERTS, and the boundary is deliberate: that a `fail` line really
   // rendered (a cc-side artifact fact), and that THE MOUNT COMES UP. NOTHING
-  // about what the daemon then does with that pin. Phase A's `fail` entries have
-  // no `route()` case and take the frozen `default:` arm — a real, recorded
-  // behaviour window that H5 closes (src/systems/fuse/PROVENANCE.md D1) — so an
-  // expectation about routing here would outlive the change that should kill it.
-  // This matters MORE because Phase B rewrites that arm: without this, H5 lands
-  // on unmeasured ground.
+  // about what the daemon then does with that pin. An expectation about routing
+  // here would outlive the change that should kill it, so the boundary is held
+  // at the artifact and the mount: what `route()` does with a `fail` entry is
+  // pinned by `tests/fuse-union-policy.test.mjs`, against the daemon's own
+  // source.
   //
   // GEOMETRY: mirror root `<box>/nest`, project `<box>/nest/app`, exclude
   // `<box>/nest/other` — inside the root (so it is active, not inert) and

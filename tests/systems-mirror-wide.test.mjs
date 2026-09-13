@@ -1,24 +1,19 @@
 // A MIRROR ROOT WIDER THAN THE PROJECT, after the FUSE-union geometry.
 //
-// This file replaces two whose subject was deleted with the file bridge, and it
-// carries their surviving claims rather than dropping them:
+// WHAT THIS FILE COVERS:
 //
-//   * `systems-mirror-instance.test.mjs` asked whether a live session works "one
-//     level inside the image" — the CLI's cwd was `imageRoot + offset` under a
-//     wide advertisement. There is no image and no offset; the surviving claim
-//     is that a wide advertisement does not move the session, which is asserted
-//     below and again in systems-mirror-geometry-cold-resume.
-//   * `systems-mirror-bridge.test.mjs` asked whether an out-of-project path was
-//     pulled, edited and pushed back over the bridge, and whether two system
-//     paths could collide on one local path. Both questions presuppose a local
-//     image; the surviving claim is that the wider slice is REACHABLE, which is
-//     now decided by the union's tier table rather than by a path map.
-//     fileBridge's two carried semantics — mode preservation and sticky
-//     divergence — are recorded in docs/architecture.md as S3's specification.
+//   * A WIDE ADVERTISEMENT DOES NOT MOVE THE SESSION — asserted below and again
+//     in systems-mirror-geometry-cold-resume. There is no local image and no
+//     offset for it to move the session to.
+//   * THE WIDER SLICE IS REACHABLE, decided by the union's tier table rather
+//     than by a path map. Two system paths cannot collide on one local path,
+//     because there is no local path for them to collide on.
 //
-// WHAT IS ACTUALLY NEW HERE: `mirrorRoot` is the boundary of the union's REMOTE
-// tier. Widening it moves what is served from the system rather than what is
-// copied to cc, and the project keeps its own narrower entry inside it.
+// `mirrorRoot` IS THE BOUNDARY OF THE UNION'S REMOTE TIER. Widening it moves
+// what is served from the system rather than what is copied to cc, and the
+// project keeps its own narrower entry inside it. The mode-preservation and
+// sticky-divergence semantics are specified in docs/architecture.md → what
+// `fileBridge` carried.
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -140,7 +135,7 @@ describe('a mirror root wider than the project', () => {
     assert.equal(tierOf(narrow, '/box/OUT-OF-PROJECT.txt'), null);
   });
 
-  // PINS: THE INPUT TO CARD 2026-0388'S REGRESSION. Under `mirrorRoot: '/'`
+  // PINS: the wide-root collapse. Under `mirrorRoot: '/'`
   // `buildTierTable` emits a `project /` pin, so every UNPINNED INTERMEDIATE
   // DIRECTORY — /bin, /usr/lib, /etc, /root — resolves `project` instead of
   // being derived as a synthetic ancestor, while the exact host pins inside them

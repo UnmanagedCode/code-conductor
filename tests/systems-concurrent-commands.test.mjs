@@ -1,15 +1,10 @@
-// TWO COMMANDS OF ONE SESSION, AT THE SAME TIME. This file was
-// tests/systems-agent-shells.test.mjs and was about A SHELL PER AGENT: a worker
-// session used to run every command in ONE long-lived shell on the far side, so
-// a subagent's `cd` re-based the main agent's next command and a subagent
-// inherited the session's exports, and the fix was to key a shell per agent.
+// TWO COMMANDS OF ONE SESSION, AT THE SAME TIME.
 //
-// Card 2026-0312 deleted the long-lived shell outright — one `exec` per command
-// — which SUBSUMES that guarantee by construction and strictly strengthens it:
-// no command's state reaches ANY later command, including its own agent's, so
-// there is nothing left to keep apart. Fifteen of the eighteen tests retired
-// with the mechanism they measured, and the file was renamed rather than left
-// carrying a header about a shell that no longer exists.
+// THERE IS NO LONG-LIVED SHELL — one `exec` per command — so no command's state
+// reaches ANY later command, including its own agent's, and there is nothing
+// left to keep apart. A subagent's `cd` cannot re-base the main agent's next
+// command and a subagent inherits no exports, by construction rather than by
+// keying a shell per agent.
 //
 // WHAT IS LEFT IS THE PART THE STRIP MADE MATTER MORE, because nothing
 // serialises any more and concurrency therefore goes UP: two commands of one

@@ -44,9 +44,9 @@ describe('the mirror advertisement', () => {
   beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
   afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
 
-  // ── card 2026-0259 §2.4, shape ──────────────────────────────────────
+  // ── the advertisement's shape ───────────────────────────────────────
 
-  // PINS: every malformed advertisement in card 2026-0259 §2.4's table is refused
+  // PINS: every malformed advertisement in the shape table is refused
   // MIRROR_ADVERTISEMENT_INVALID with the offending value quoted, and every
   // valid one resolves. cc never normalises on the provider's behalf: a
   // normalised-away `..` is exactly how a hostile root would be smuggled past a
@@ -159,9 +159,9 @@ describe('the mirror advertisement', () => {
     );
   });
 
-  // ── card 2026-0259 §3, geometry, and §2.4's two refusals ────────────
+  // ── geometry, and the two shape refusals ────────────────────────────
 
-  // PINS: the offset table in card 2026-0259 §3, including the prefix-SHARING sibling
+  // PINS: the offset table, including the prefix-SHARING sibling
   // (`/app` vs `/app-backup`) that a string prefix would wrongly claim.
   // Containment is decided with path.posix.relative, never startsWith.
   //

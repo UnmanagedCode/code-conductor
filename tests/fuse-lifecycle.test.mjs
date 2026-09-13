@@ -156,8 +156,8 @@ const liveBoth = () => ({
 
 describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   // PINS: unmounts are issued deepest-first, and every one of them is issued
-  // BEFORE the abort. Both halves matter — a set assertion would pass on the
-  // ordering that made S2's own abort a no-op.
+  // BEFORE the abort. Both halves matter — a set assertion would pass on an
+  // ordering that makes the abort a no-op.
   test('unmounts deepest-first, and all of them before the abort', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
@@ -326,8 +326,8 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     assert.deepEqual(d2.calls, []);
   });
 
-  // PINS: S3 §A5 — a count of fusectl entries is not a count of live daemons.
-  // Stale minors are COUNTED and never aborted.
+  // PINS: a count of fusectl entries is not a count of live daemons. Stale
+  // minors are COUNTED and never aborted.
   test('a fusectl minor with no record of ours is counted, never aborted', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
@@ -462,11 +462,11 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   //
   // A20t below drives `buildFusePlan` — the CONSUMER of the operator's switch —
   // and is green against every mutant of what follows, because the defect this
-  // pins lives in what `wrapLaunch` EMITS. That produce-vs-consume gap is the
-  // shape that cost S2 its worst bug.
+  // pins lives in what `wrapLaunch` EMITS. A produce-vs-consume gap is exactly
+  // where a defect hides from the consumer's own tests.
   //
-  // THE DEFECT: `CC_FUSE_TRACE` used to name BOTH cc's on/off switch and the
-  // worker-side path. `instances.ts` builds the worker env as
+  // THE DEFECT IT RULES OUT: `CC_FUSE_TRACE` naming BOTH cc's on/off switch and
+  // the worker-side path. `instances.ts` builds the worker env as
   // `{...process.env}` and the spread at the top of `wrapLaunch`'s object runs
   // FIRST, so an orchestrator started with `CC_FUSE_TRACE=0` — the natural way
   // to turn a thing off — put `"0"` into the path slot, the bootstrap's
@@ -632,8 +632,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
 });
 
 describe('the tier table', () => {
-  // `localRoots` are DECLARATIONS now (S2 §4.2): each carries the bit the hook
-  // reads. Every one is still host-pinned for the daemon whatever the bit says,
+  // `localRoots` are DECLARATIONS: each carries the bit the hook reads. Every one is still host-pinned for the daemon whatever the bit says,
   // which is what the first test below asserts.
   const input = {
     localRoots: [
@@ -686,7 +685,7 @@ describe('the tier table', () => {
 
   // ── THE STRICT-ANCESTOR GEOMETRY, WHICH NOTHING BUILT BEFORE ─────────────
   //
-  // PINS the CONFIGURATION half of card 2026-0398's bug: under a `mirrorRoot`
+  // PINS the CONFIGURATION half of the bug: under a `mirrorRoot`
   // that is a STRICT ANCESTOR of `systemPath`, `buildTierTable` emits TWO
   // `project` entries, and the shallower one covers every directory between
   // them by prefix — which is what made the orchestrator's own `/srv` resolve
@@ -719,16 +718,14 @@ describe('the tier table', () => {
     assert.deepEqual(t.filter(e => e.tier === 'project').map(e => e.prefix), ['/', '/srv/app']);
   });
 
-  // ── A11/A12: the epic's "two mechanisms, never one list" ──────────────────
+  // ── A11/A12: "two mechanisms, never one list" ─────────────────────────────
   //
-  // DELIBERATELY INVERTED FROM S1, which asserted `tierOf(t, b) === undefined`.
-  // S1 kept BIND_MOUNTS out of the table because the frozen daemon had no kind
-  // for them; S2 has to tell the daemon those three paths exist as directories,
-  // because `bootstrap.sh` binds OVER them and a `mount --bind` onto a target
-  // the daemon answers -ENOENT for kills the launch (S2 §4.3, §13 K4). The
-  // never-merge rule is unchanged and is now asserted as what it always was —
-  // a claim about DERIVATION, not about absence: each kind comes from exactly
-  // one source and no input to one moves the other.
+  // BIND_MOUNTS ARE IN THE TABLE, not absent from it: the daemon has to be told
+  // those three paths exist as directories, because `bootstrap.sh` binds OVER
+  // them and a `mount --bind` onto a target the daemon answers -ENOENT for
+  // kills the launch. The never-merge rule is therefore asserted as a claim
+  // about DERIVATION, not about absence: each kind comes from exactly one
+  // source and no input to one moves the other.
   //
   // PINS: `bind` is derived only from the constant; `fail` only from the
   // advertisement's excludes.
@@ -857,7 +854,7 @@ describe('the tier table', () => {
 //
 // Each of these is a value cc renders or hands to a frozen daemon, where the
 // consequence of a drift is invisible from every other assertion in the suite.
-// ── FROM A LOGGED DENIAL TO A PIN ENTRY (card 2026-0382, step 4) ────────────
+// ── FROM A LOGGED DENIAL TO A PIN ENTRY ────────────────────────────────────
 //
 // The daemon's event log is the instrument the pin list is DERIVED from, and
 // `runTeardown` used to `rm -rf` it with the run directory. These pin the
@@ -1040,9 +1037,9 @@ describe('the policy event harvest', () => {
   });
 
   // PINS: THE OTHER HALF OF THE SAME KEY — the TGID — with the reason and the
-  // path held FIXED, so only the caller distinguishes the two rows. The daemon
-  // gained this half in the same commit (card 2026-0389) and the harvest had to
-  // follow: at `(path, reason)` the first caller to reach a path wins the row
+  // path held FIXED, so only the caller distinguishes the two rows. The
+  // daemon's key carries this half and the harvest has to follow: at
+  // `(path, reason)` the first caller to reach a path wins the row
   // and every later one is silently dropped, which would make the identity
   // columns answer "who asked?" with "whoever happened to be first".
   // DIES UNDER: dropping the tgid from the parse key (the second caller's row
@@ -1071,8 +1068,7 @@ describe('the policy event harvest', () => {
   // valid UTF-8: a latin-1 filename or a binary argument puts a lone high byte
   // in it. Reading it as `utf8` replaces that byte with U+FFFD before
   // `pathRaw`/`comm.raw`/`cmdline.raw` are formed, so the store — the artifact
-  // that outlives the session and that card 2026-0388's captures are taken
-  // from — carries corrupted evidence.
+  // that outlives the session — carries corrupted evidence.
   // DIES UNDER: reading the session log as `utf8`; writing the store body as a
   // string (`appendFile` re-encodes latin1 code units as two UTF-8 bytes).
   test('the harvest carries a non-UTF-8 byte into the store unchanged', async () => {
@@ -1169,7 +1165,7 @@ describe('the policy event harvest', () => {
   });
 
   // PINS: THE DENIAL SENTENCE NAMES THE ACTING PROCESS as `comm[pid]`, which is
-  // the whole of what card 2026-0389 bought on this surface — `deny getattr
+  // the whole of the sentence's point — `deny getattr
   // /bin unpinned-fail-closed` could not tell the bootstrap shell dying at
   // `exec` from a hook subprocess poking around. The PID is the calling thread's,
   // which is what the trace can be joined on.
@@ -1312,12 +1308,12 @@ describe('the policy event harvest', () => {
 });
 
 describe('the mount literals', () => {
-  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a fork of
-  // the frozen spike instrument and diverges from it by design, one PROVENANCE.md
-  // ledger row at a time; editing it without regenerating the pin in the same
-  // commit is the undisclosed drift this catches. Needs no compiler, so it runs
-  // everywhere — and it iterates the pin file's ROWS, so it covers `policy.h`
-  // the moment Phase B adds a second line.
+  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. Editing a build source
+  // without regenerating the pin in the same commit is the undisclosed drift
+  // this catches. Needs no compiler, so it runs everywhere — and it iterates
+  // the pin file's ROWS rather than naming one source, so it covers every
+  // source the pin file names: `union.c` and `policy.h` today, and any source
+  // a later row adds.
   test('A16: union.c.sha256 matches the source it pins', async () => {
     const { createHash } = await import('node:crypto');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
@@ -1342,12 +1338,11 @@ describe('the mount literals', () => {
   // libfuse, a real socket and a real mount), so each refusal is pinned from
   // the source, beside A16 and for A16's reason.
   //
-  // `CC_UNION_CWD` CAME IN WITH 2026-0382 AND THE ABSENCE OF A DEFAULT IS THE
-  // POINT. Since card 2026-0398 the chain is the whole domain of the floor and
-  // of the overlay, so a missing cwd means no floor, no overlay node, and every
-  // unmarked chdir dead at its destination — regressing card 2026-0373 while
-  // looking exactly like a working mount. A default would be worse than the
-  // refusal.
+  // `CC_UNION_CWD` HAS NO DEFAULT, AND THAT ABSENCE IS THE POINT. The chain is
+  // the whole domain of the floor and of the overlay, so a missing cwd means no
+  // floor, no overlay node, and every unmarked chdir dead at its destination —
+  // while looking exactly like a working mount. A default would be worse than
+  // the refusal.
   test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd', async () => {
     const { readFile } = await import('node:fs/promises');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
@@ -1377,10 +1372,10 @@ describe('the mount literals', () => {
   // 2c — THE BOOTSTRAP'S MARK ORDERING, PINNED AT THE LAYER THAT ENFORCES IT.
   //
   // THE INVARIANT: the CLI's thread group makes NO union op before the marking
-  // event except its own interpreter load. That is what keeps S2 §9.1's
-  // straddle hazard closed in production — measured at 65 pre-mark ops over 16
-  // distinct paths, every one of them `host` or `synth`, zero resolving
-  // `project`, `fail` or `hide`.
+  // event except its own interpreter load. That is what stops one path
+  // answering one way to a thread group's pre-mark ops and another way to its
+  // post-mark ones — measured, every pre-mark op `host` or `synth` and none
+  // resolving `project`, `fail` or `hide`.
   //
   // THE ENFORCING LAYER FOR A SHELL SCRIPT'S STATEMENT ORDER IS THE SCRIPT
   // TEXT, so this is a source-text test and needs no sudo and no mount. It runs
@@ -1454,8 +1449,7 @@ describe('the mount literals', () => {
   // correction: "outside the chroot" is true unconditionally, "no spelling
   // inside it" only of paths resolved through the mount. The bind-mounted
   // /proc supplies another spelling — `/proc/<ccpid>/root/<rundir>/mirror` —
-  // which resolves today (card 2026-0394). See the comment on the pins-file
-  // assertion below.
+  // which resolves today. See the comment on the pins-file assertion below.
   test('A18: the mirror is under rundir, not under root, and rundir is hidden', async () => {
     const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
     const plan = buildFusePlan({
@@ -1470,7 +1464,7 @@ describe('the mount literals', () => {
     // And nothing inside the chroot can name it THROUGH THE UNION — which is
     // exactly what this asserts and all it asserts: the pins file's only
     // mention of the run directory is the `hide` rule itself. It says nothing
-    // about the bind-mounted /proc, which reaches it (card 2026-0394).
+    // about the bind-mounted /proc, which reaches it.
     const named = plan.pinsText.split('\n').filter(l => !l.startsWith('#') && l.includes(plan.rundir));
     assert.deepEqual(named, [`hide\t${plan.rundir}`]);
   });
@@ -1777,7 +1771,7 @@ describe('the configuration-time containment refusal', () => {
     assert.equal(at('/'), 'project', 'the widest advertised mirror root is remote-tier');
   });
 
-  // ── CARD 2026-0387: THE STORE ROOT'S DEPTH IS NOT A CONFIGURATION ERROR ──
+  // ── THE STORE ROOT'S DEPTH IS NOT A CONFIGURATION ERROR ─────────────────
 
   // T1 — PINS: no configuration-time length refusal governs the real socket
   // path any more. The second assertion is the NON-VACUITY CONTROL: without it
@@ -1864,7 +1858,7 @@ describe('the configuration-time containment refusal', () => {
 // mount scaffolding down UNCONDITIONALLY.
 //
 // Measured as a real leak (a listening `Server@…/control.sock` surviving a
-// whole test file), and shipped in `127e4643` with no test — this is that debt.
+// whole test file); the leak shipped untested, and this is that debt.
 // Prototype-only stand-ins, following `tests/instance-liveness.test.mjs`: the
 // question is which branch each caller takes, and a booted server would add a
 // launch path without adding an assertion.
@@ -2254,7 +2248,7 @@ describe('FuseSession lifecycle', () => {
     });
   });
 
-  // T5 — CARD 2026-0387. PINS: `#prepare()` refuses a run directory ANOTHER
+  // T5. PINS: `#prepare()` refuses a run directory ANOTHER
   // instance owns, and the predicate is OWNERSHIP rather than EXISTENCE.
   //
   // Both arms are needed and neither is the other's restatement. Without the
@@ -2413,7 +2407,7 @@ describe('the record-independent orphan backstop', () => {
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
   });
 
-  // T4 — CARD 2026-0387. PINS THE SECOND SET: `liveIds` reaching
+  // T4. PINS THE SECOND SET: `liveIds` reaching
   // `reclaimOrphanProcesses` as WHOLE ids, read off `/proc/<pid>/environ`'s
   // `CC_FUSE_INSTANCE_ID` — never through a directory name. BOTH DIRECTIONS:
   // the skip alone is also what a backstop that never fires produces, so the
@@ -2803,7 +2797,7 @@ describe('the boot sweep', () => {
   // PINS: a LIVE session's directory is not touched. The sweep runs at boot
   // where there are none, but the parameter exists and a sweep that ignored it
   // would tear down a running worker.
-  // T3 — CARD 2026-0387. PINS the readdir loop's `keep.has(name)` keying,
+  // T3. PINS the readdir loop's `keep.has(name)` keying,
   // where `keep` is derived through `fuseRunDirName`.
   //
   // FULL UUIDS, AND THAT IS THE WHOLE POINT. The fixture this replaces used
