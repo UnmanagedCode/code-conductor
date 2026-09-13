@@ -1132,9 +1132,10 @@ static void pinned_children_emit(struct pinned_children *pc, enum view v,
  * A `VIEW_CLI` synthetic node has NO BACKING STORE, so `policy_synth_children`
  * is the only source of names here and each one is a claim this function has to
  * make good. `policy_table_child_exists`'s `scaffold` flag carves out exactly
- * one tier — a `project` child, where the host is the wrong axis and the right
- * one is a control frame a synthetic node must not send — and reaches nothing
- * else. In particular a `host` pin child IS checked: without that the MARKED
+ * one tier — a `project` child, where the host is the wrong axis because a
+ * project path's existence to the CLI is the MIRROR's question, by tier,
+ * wherever the host happens to hold it, and the right channel is a control
+ * frame a synthetic node must not send — and reaches nothing else. In particular a `host` pin child IS checked: without that the MARKED
  * CLI's `ls /etc` named `ETC_PINS` entries absent on this host while `cat`
  * answered -ENOENT, which is card 2026-0403's class on the one arm the rest of
  * this card did not touch.
@@ -1213,13 +1214,17 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		policy_synth_getattr(h->path, &st, h->view);
 		if (filler(buf, ".", &st, 0, 0) || filler(buf, "..", &st, 0, 0))
 			return 0;
-		/* THE SCAFFOLD, AND THE UNCHECKED EMIT IS `VIEW_CLI`'s ALONE.
-		 * Here there is NO BACKING STORE at all, so a `project` child's
-		 * existence is a question only a control frame could answer —
-		 * and a synthetic node must not send one. The ancestors and pins
-		 * below it are exactly what makes a pinned leaf reachable, which
-		 * is the whole reason this class exists, so they are named
-		 * whatever the orchestrator happens to hold. */
+		/* THE SCAFFOLD, AND ITS EMIT IS CHECKED TOO — `scaffold_emit`
+		 * asks `policy_table_child_exists` with the flag SET, which
+		 * carves out `T_PROJECT` and nothing else. A `host` pin child
+		 * absent on the orchestrator is NOT named here, and that is the
+		 * point: naming it left the MARKED CLI's `ls /etc` disagreeing
+		 * with `cat`. What the flag buys is the one tier where the host
+		 * is the wrong axis — a project path's existence to the CLI is
+		 * the MIRROR's question, by tier — and this node cannot ask it,
+		 * because the right channel is a control frame a synthetic node
+		 * must not send. So the project is taken on trust and nothing
+		 * else is. */
 		if (h->view == VIEW_CLI) {
 			policy_synth_children(h->path, VIEW_CLI, scaffold_emit, &fc);
 			return 0;

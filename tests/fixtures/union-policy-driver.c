@@ -2809,16 +2809,19 @@ static void b49_table_child_exists(void)
 
 	/* ── (7) THE SCAFFOLD AXIS, WHICH IS A CARVE-OUT OF TWO PARTS AND NOT OF
 	 *    ONE. On a node with NO BACKING STORE the host is the WRONG AXIS for a
-	 *    `project` child — the orchestrator has nothing at systemPath, so
-	 *    probing it would drop the project from the marked `ls` — and the right
-	 *    axis is a control frame a synthetic node must not send. It does NOT
-	 *    reach a `host` pin child of the same node, where the host IS the right
-	 *    axis and the probe costs one fstatat. Both halves are driven, because a
-	 *    case that drove only the first would license the flag skipping every
-	 *    check. */
+	 *    `project` child: a project path's existence to the CLI is the MIRROR's
+	 *    question, BY TIER, wherever the host happens to hold it — and the right
+	 *    channel is a control frame a synthetic node must not send. The axis is
+	 *    the argument, NOT "the orchestrator has nothing at systemPath": this
+	 *    fixture's own box makes the host-absent case, but that case is
+	 *    deployment- and geometry-conditional in production and the carve-out
+	 *    does not rest on it. It does NOT reach a `host` pin child of the same
+	 *    node, where the host IS the right axis and the probe costs one fstatat.
+	 *    Both halves are driven, because a case that drove only the first would
+	 *    license the flag skipping every check. */
 	CHECK(policy_table_child_exists(sys, VIEW_CLI, 1) == 1,
 	      "a `project` child of a scaffold node is taken on trust — the host is the wrong axis, "
-	      "and this is what keeps `app3` in the marked `ls` of its parent");
+	      "and this is what keeps the project in the marked `ls` of its parent at every geometry");
 	CHECK(policy_table_child_exists(hostgone, VIEW_CLI, 1) == 0,
 	      "but a `host` pin child of that SAME node is still checked, and an absent one is not "
 	      "emitted — the marked `ls /etc` naming an ETC_PINS entry `cat` answers -ENOENT for");

@@ -522,10 +522,17 @@ static inline int policy_dirent_visible(const char *child, enum view v)
  * TIER AND NOT THE CHECK, AND THE REASON HAS TWO PARTS. Stating only the first
  * is what makes the carve-out look wider than it is:
  *
- *   (i) for a `project` child the host is the WRONG AXIS. The orchestrator has
- *       nothing at `systemPath`, so host-probing it would drop the project from
- *       the MARKED `ls` of its parent — and the right axis is a control frame,
+ *   (i) for a `project` child the host is the WRONG AXIS: a project path's
+ *       existence to the CLI is the MIRROR's question, BY TIER, wherever the
+ *       host happens to hold it — and the right channel is a control frame,
  *       which a synthetic node must not send. Taken on trust, deliberately.
+ *
+ *       DO NOT REST THIS ON "the orchestrator has nothing at `systemPath`",
+ *       which an earlier draft did. That is deployment- and geometry-
+ *       conditional — `_assertRemoteMountable` lstats the mirror root through
+ *       the SYSTEM's provider, which is the remote in production and host-local
+ *       only in the gate fixture — so the DROP it predicts is a wide-root
+ *       phenomenon, while the axis argument above holds at every geometry.
  *  (ii) for a `host` pin child of THAT SAME NODE the host IS the right axis and
  *       the probe costs one `fstatat` with no control frame — so the carve-out
  *       does not reach it. Leaving (ii) unchecked left the marked CLI's
