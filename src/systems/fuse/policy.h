@@ -1798,15 +1798,15 @@ static const char *cwd_path = NULL;
  * rule `withinPosix` (src/systems/mirror.ts) keeps by going through
  * `path.posix.relative` rather than a string prefix, so that `/app-backup` is
  * not inside `/app`. The trap is identical here in the other direction — for a
- * cwd of `/root/app3` the candidate `/root/app` IS a string prefix, and a bare
+ * cwd of `/root/srv2` the candidate `/root/srv` IS a string prefix, and a bare
  * strncmp would put a directory on the chain that is not on it at all — which
  * would floor it, or hang an overlay node off it. C has no
  * path.posix.relative, so this is that rule.
  *
  * BOTH DIRECTIONS OF THE SIBLING TRAP ARE REJECTED, BY DIFFERENT MECHANICS, and
- * a case that exercises one proves half the guard: `path = /root/app` against
- * `cwd = /root/app3` is rejected by `cwd_path[9] == '3'`; `path = /root/app3`
- * against `cwd = /root/app` is rejected by `strncmp` itself, which meets
+ * a case that exercises one proves half the guard: `path = /root/srv` against
+ * `cwd = /root/srv2` is rejected by `cwd_path[9] == '2'`; `path = /root/srv2`
+ * against `cwd = /root/srv` is rejected by `strncmp` itself, which meets
  * `cwd`'s '\0' against '3'. `b22` drives both.
  */
 static inline int policy_cwd_component(const char *path)
@@ -1843,7 +1843,7 @@ static inline int policy_cwd_component(const char *path)
  *      nodes get distinct inodes is a contract this file already makes.
  *   2. `test -ef` compares (st_dev, st_ino) and needs only two `stat` calls and
  *      no readdir — measured — so it is REACHABLE under this ruling. Under a
- *      collision `[ /root -ef /root/app3 ]` would answer TRUE, which is false.
+ *      collision `[ /root -ef /root/srv2 ]` would answer TRUE, which is false.
  *
  * NOT `getcwd`, and that correction is recorded so nobody re-derives the wrong
  * reason: measured on glibc 2.41, `getcwd(2)` answers from the dentry cache and
@@ -1884,7 +1884,7 @@ static inline unsigned long long policy_cwd_ino(const char *path)
  * the failure is legible.
  *
  * A DOUBLED SLASH — OR A `.`/`..` COMPONENT — IS THE CASE THAT BITES, and it
- * bites at the LAST component: `cwd = /root//app3` matches `/` and `/root` and
+ * bites at the LAST component: `cwd = /root//srv2` matches `/` and `/root` and
  * then fails on the cwd ITSELF, so a chdir walks the whole chain and dies at
  * its destination. A TRAILING slash, by contrast, still matches everything —
  * the boundary test reads it as the separator it wants — so that half of the

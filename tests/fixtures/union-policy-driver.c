@@ -1181,9 +1181,9 @@ static void b21_unmarked_refused_only_at_project(void)
  *
  * The two directions are rejected by DIFFERENT MECHANICS, so a case exercising
  * one proves half the guard:
- *   cwd /root/app3, path /root/app   → rejected by the BOUNDARY test
- *                                      (`cwd_path[9] == '3'`)
- *   cwd /root/app,  path /root/app3  → rejected by `strncmp` itself, which
+ *   cwd /root/srv2, path /root/srv   → rejected by the BOUNDARY test
+ *                                      (`cwd_path[9] == '2'`)
+ *   cwd /root/srv,  path /root/srv2  → rejected by `strncmp` itself, which
  *                                      meets cwd's '\0' against '3'
  */
 static void b22_cwd_chain_extent(void)
@@ -1194,35 +1194,35 @@ static void b22_cwd_chain_extent(void)
 	 * this chain out from under the case. */
 	policy_host_fd = -1;
 	pin("project\t/");
-	pin("project\t/root/app3");
+	pin("project\t/root/srv2");
 	anc_build();
 	proc_set(500, 500, 111);               /* unmarked */
 	proc_set(600, 600, 222);
 	policy_mark_tid(600);
 
-	cwd_path = "/root/app3";
+	cwd_path = "/root/srv2";
 	/* ── ON the chain ──────────────────────────────────────────────── */
 	CHECK(policy_cwd_component("/") == 1, "/ is on the chain");
 	CHECK(policy_cwd_component("/root") == 1, "and the intermediate component");
-	CHECK(policy_cwd_component("/root/app3") == 1, "and the cwd itself");
+	CHECK(policy_cwd_component("/root/srv2") == 1, "and the cwd itself");
 	/* ── OFF it — the sibling trap, direction one ───────────────────── */
-	CHECK(policy_cwd_component("/root/app") == 0,
-	      "/root/app is a SIBLING sharing a prefix — the boundary check is the "
+	CHECK(policy_cwd_component("/root/srv") == 0,
+	      "/root/srv is a SIBLING sharing a prefix — the boundary check is the "
 	      "only thing rejecting it");
-	CHECK(policy_cwd_component("/root/ap") == 0, "and so is /root/ap");
+	CHECK(policy_cwd_component("/root/sr") == 0, "and so is /root/sr");
 	CHECK(policy_cwd_component("/roo") == 0, "and /roo, a prefix of a component");
-	CHECK(policy_cwd_component("/root/app3x") == 0, "and /root/app3x");
-	CHECK(policy_cwd_component("/root/app3/sub") == 0,
+	CHECK(policy_cwd_component("/root/srv2x") == 0, "and /root/srv2x");
+	CHECK(policy_cwd_component("/root/srv2/sub") == 0,
 	      "a CHILD of the cwd is not a component — the chain is upward only");
 	CHECK(policy_cwd_component("/root/other") == 0, "nor an unrelated sibling");
-	CHECK(policy_cwd_component("relative/app3") == 0, "nor a relative path");
+	CHECK(policy_cwd_component("relative/srv2") == 0, "nor a relative path");
 
 	/* ── the sibling trap, DIRECTION TWO: the same pair reversed ────── */
-	cwd_path = "/root/app";
-	CHECK(policy_cwd_component("/root/app3") == 0,
-	      "with cwd /root/app the LONGER sibling /root/app3 is off the chain — "
+	cwd_path = "/root/srv";
+	CHECK(policy_cwd_component("/root/srv2") == 0,
+	      "with cwd /root/srv the LONGER sibling /root/srv2 is off the chain — "
 	      "rejected by strncmp, not by the boundary test");
-	CHECK(policy_cwd_component("/root/app") == 1, "while the cwd itself is on it");
+	CHECK(policy_cwd_component("/root/srv") == 1, "while the cwd itself is on it");
 	CHECK(policy_cwd_component("/root") == 1, "and its parent");
 
 	/* ── WHAT THE PREDICATE NOW DECIDES: the OVERLAY's domain, reached
@@ -1230,14 +1230,14 @@ static void b22_cwd_chain_extent(void)
 	 *    fd is unset, so `policy_host_absent` answers 1 everywhere and the
 	 *    chain predicate is the only live conjunct — which is exactly the
 	 *    isolation this case wants. ─────────────────────────────────── */
-	cwd_path = "/root/app3";
-	pin("project\t/root/app3");
+	cwd_path = "/root/srv2";
+	pin("project\t/root/srv2");
 	anc_build();
 	CHECK(resolve_class("/root", VIEW_HOST) == T_SYNTH,
 	      "an intermediate component the host lacks gets the overlay node");
-	CHECK(resolve_class("/root/app", VIEW_HOST) == T_FAIL,
+	CHECK(resolve_class("/root/srv", VIEW_HOST) == T_FAIL,
 	      "and its prefix-sharing sibling does NOT — it falls to fail, which is host");
-	CHECK(resolve_class("/root/app3/sub", VIEW_HOST) == T_FAIL,
+	CHECK(resolve_class("/root/srv2/sub", VIEW_HOST) == T_FAIL,
 	      "nor does a child of the cwd: the chain is upward only");
 	CHECK(resolve_class("/root", VIEW_CLI) != T_SYNTH || anc_find("/root") >= 0,
 	      "and VIEW_CLI reaches T_SYNTH only through the ancestor table, never the overlay");
@@ -1248,8 +1248,8 @@ static void b22_cwd_chain_extent(void)
 	 *    before card 2026-0373. ───────────────────────────────────────── */
 	cwd_path = NULL;
 	CHECK(policy_cwd_component("/") == 0, "with no cwd injected, / is not a component");
-	CHECK(policy_cwd_component("/root/app3") == 0, "nor is the project root");
-	CHECK(resolve_class("/root/app3", VIEW_HOST) == T_FAIL,
+	CHECK(policy_cwd_component("/root/srv2") == 0, "nor is the project root");
+	CHECK(resolve_class("/root/srv2", VIEW_HOST) == T_FAIL,
 	      "so no overlay node exists anywhere and the chdir dies");
 }
 
@@ -1435,7 +1435,7 @@ static void b25_substitution_logged_per_path_and_tgid(void)
  *      nodes get distinct inodes is a contract this file already makes.
  *   2. `test -ef` compares (st_dev, st_ino) and is REACHABLE under this ruling:
  *      measured at two `stat` calls and no readdir, which is exactly what an
- *      exempted component allows. Under a collision `[ /root -ef /root/app3 ]`
+ *      exempted component allows. Under a collision `[ /root -ef /root/srv2 ]`
  *      would answer TRUE, which is plainly false.
  *
  * `getcwd(2)` does NOT observe it — measured on glibc 2.41, it answers from the
@@ -1444,15 +1444,15 @@ static void b25_substitution_logged_per_path_and_tgid(void)
  */
 static void b27_cwd_ino_distinct(void)
 {
-	static const char *chain[] = { "/", "/root", "/root/app3" };
+	static const char *chain[] = { "/", "/root", "/root/srv2" };
 	unsigned long long ino[3];
 	size_t i, j;
 
 	pin("project\t/");                     /* pins[0] */
-	pin("project\t/root/app3");            /* pins[1] */
+	pin("project\t/root/srv2");            /* pins[1] */
 	pin("bind\t/proc");                    /* pins[2] */
 	anc_build();
-	cwd_path = "/root/app3";
+	cwd_path = "/root/srv2";
 
 	for (i = 0; i < 3; i++) {
 		struct stat st;
@@ -1508,14 +1508,14 @@ static void b27_cwd_ino_distinct(void)
  * that enforces it.
  *
  * A DOUBLED SLASH — OR A `.`/`..` COMPONENT — IS THE CASE THAT BITES, and it
- * bites at the LAST component: with `cwd = /root//app3`, `policy_cwd_component`
+ * bites at the LAST component: with `cwd = /root//srv2`, `policy_cwd_component`
  * matches `/` and `/root` and then fails on the cwd ITSELF, because the
  * comparison meets the spelling's second '/' against `a`. So the chdir walks
  * every intermediate component and dies at its destination, which is the
  * hardest shape to diagnose from the outside. Asserted below rather than
  * asserted ABOUT.
  *
- * A TRAILING SLASH IS DIFFERENT AND IS REFUSED ANYWAY. `cwd = /root/app3/`
+ * A TRAILING SLASH IS DIFFERENT AND IS REFUSED ANYWAY. `cwd = /root/srv2/`
  * still matches every component, because the boundary test reads the trailing
  * '/' as the separator it is looking for — so this half of the predicate buys
  * no behavioural rescue and is here because CC OWNS THE INPUT: `plan.cwdInside`
@@ -1527,7 +1527,7 @@ static void b27_cwd_ino_distinct(void)
 static void b28_cwd_input_validated(void)
 {
 	CHECK(policy_cwd_normalised("/") == 1, "/ is normalised");
-	CHECK(policy_cwd_normalised("/root/app3") == 1, "and a plain absolute path");
+	CHECK(policy_cwd_normalised("/root/srv2") == 1, "and a plain absolute path");
 	CHECK(policy_cwd_normalised("/a") == 1, "and a one-component one");
 
 	/* REFUSED, BUT NOT BY THE CLAUSE THAT NAMES IT — and the plan's case table
@@ -1539,14 +1539,14 @@ static void b28_cwd_input_validated(void)
 	 * construction and deliberately kept. The same conceptual check one layer
 	 * up, in `buildFusePlan`, IS load-bearing — see policy_cwd_normalised's own
 	 * comment for why the two differ. */
-	CHECK(policy_cwd_normalised("/root/app3/") == 0, "a TRAILING slash is refused");
-	CHECK(policy_cwd_normalised("/root//app3") == 0, "so is a doubled slash");
+	CHECK(policy_cwd_normalised("/root/srv2/") == 0, "a TRAILING slash is refused");
+	CHECK(policy_cwd_normalised("/root//srv2") == 0, "so is a doubled slash");
 	CHECK(policy_cwd_normalised("//root") == 0, "including a leading doubled slash");
-	CHECK(policy_cwd_normalised("/root/./app3") == 0, "so is a `.` component");
-	CHECK(policy_cwd_normalised("/root/../app3") == 0, "and a `..` component");
+	CHECK(policy_cwd_normalised("/root/./srv2") == 0, "so is a `.` component");
+	CHECK(policy_cwd_normalised("/root/../srv2") == 0, "and a `..` component");
 	CHECK(policy_cwd_normalised("/root/..") == 0, "and a trailing `..`");
 	CHECK(policy_cwd_normalised("/root/.") == 0, "and a trailing `.`");
-	CHECK(policy_cwd_normalised("root/app3") == 0, "a RELATIVE path is refused");
+	CHECK(policy_cwd_normalised("root/srv2") == 0, "a RELATIVE path is refused");
 	CHECK(policy_cwd_normalised("") == 0, "and so is the empty string");
 	CHECK(policy_cwd_normalised(NULL) == 0, "and NULL — the unset variable");
 
@@ -1562,17 +1562,17 @@ static void b28_cwd_input_validated(void)
 	 * then fails on the cwd itself, so the chdir dies at its destination —
 	 * which is exactly the failure `union.c`'s mount refusal replaces with a
 	 * named one. */
-	cwd_path = "/root//app3";
+	cwd_path = "/root//srv2";
 	CHECK(policy_cwd_component("/root") == 1,
 	      "a doubled-slash cwd still matches the intermediate component");
-	CHECK(policy_cwd_component("/root/app3") == 0,
+	CHECK(policy_cwd_component("/root/srv2") == 0,
 	      "and then fails on the CWD ITSELF, so the chdir dies at its destination");
 	/* THE OTHER HALF, AND IT IS THE HONEST ONE: a trailing slash matches
 	 * everything, so refusing it buys no behavioural rescue. It is refused
 	 * because a non-normalised input is a cc defect, not because the
 	 * comparison breaks on it. */
-	cwd_path = "/root/app3/";
-	CHECK(policy_cwd_component("/root/app3") == 1,
+	cwd_path = "/root/srv2/";
+	CHECK(policy_cwd_component("/root/srv2") == 1,
 	      "a TRAILING-slash cwd still matches the cwd — the boundary test reads "
 	      "the trailing '/' as the separator, so this spelling is refused on "
 	      "ownership of the input rather than on a broken comparison");
@@ -2012,8 +2012,8 @@ static void b38_view_is_geometry_invariant(void)
 	int g, i;
 
 	host_box(box);
-	hjoin(sys, sizeof(sys), box, "/app3");          /* NEVER created: the remote's */
-	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	hjoin(sys, sizeof(sys), box, "/srv2");          /* NEVER created: the remote's */
+	hjoin(leaf, sizeof(leaf), box, "/srv2/src/x.ts");
 	policy_host_fd = host_root_fd();
 	cwd_path = sys;
 
@@ -2098,7 +2098,7 @@ static void b39_chdir_lives_at_every_geometry(void)
 	host_box(box);
 	hmkdir(box, "/home");
 	hjoin(mid, sizeof(mid), box, "/home");
-	hjoin(sys, sizeof(sys), box, "/home/app3");      /* NEVER created */
+	hjoin(sys, sizeof(sys), box, "/home/srv2");      /* NEVER created */
 	if (chmod(mid, 0700) != 0) { printf("FAIL %s: chmod\n", case_name); exit(1); }
 	policy_host_fd = host_root_fd();
 	cwd_path = sys;
@@ -2174,8 +2174,8 @@ static void b40_marked_is_untouched(void)
 	int g;
 
 	host_box(box);
-	hjoin(sys, sizeof(sys), box, "/app3");
-	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	hjoin(sys, sizeof(sys), box, "/srv2");
+	hjoin(leaf, sizeof(leaf), box, "/srv2/src/x.ts");
 	policy_host_fd = host_root_fd();
 	cwd_path = sys;
 
@@ -2244,8 +2244,8 @@ static void b41_no_unmarked_resolution_names_the_remote(void)
 	int g, i, n_checked = 0, n_synth = 0, n_fail = 0, n_hide = 0;
 
 	host_box(box);
-	hjoin(sys, sizeof(sys), box, "/app3");
-	hjoin(leaf, sizeof(leaf), box, "/app3/src/x.ts");
+	hjoin(sys, sizeof(sys), box, "/srv2");
+	hjoin(leaf, sizeof(leaf), box, "/srv2/src/x.ts");
 	/* THE OVERLAP: a `hide` prefix with a LONGER `project` pin inside it, and
 	 * the checked path under both. */
 	hjoin(hidden, sizeof(hidden), box, "/hidden");
@@ -2340,7 +2340,7 @@ static void b43_uncovered_is_still_the_hosts(void)
 	host_box(box);
 	hmkdir(box, "/loose");
 	hfile(box, "/loose/f");
-	hjoin(sys, sizeof(sys), box, "/app3");
+	hjoin(sys, sizeof(sys), box, "/srv2");
 	hjoin(loose, sizeof(loose), box, "/loose");
 	hjoin(absent, sizeof(absent), box, "/loose/nothing-here");
 	policy_host_fd = host_root_fd();
@@ -2389,13 +2389,13 @@ static void b43_uncovered_is_still_the_hosts(void)
 static void b44_dirent_visible(void)
 {
 	/* THE DEFAULT NARROW ROOT: mirrorRoot == systemPath. */
-	pin("project\t/root/app3");
+	pin("project\t/root/srv2");
 	pin("host\t/etc");
 	pin("fail\t/etc/excluded");
 	pin("hide\t/run/cc-union-scaffold");
 	pin("bind\t/proc");
 	anc_build();
-	cwd_path = "/root/app3";
+	cwd_path = "/root/srv2";
 
 	/* T_HIDE — INVISIBLE TO EVERYONE. It is what keeps the mirror and cc's
 	 * control socket unreachable, and it is the one subtraction constraint 3
@@ -2432,11 +2432,11 @@ static void b44_dirent_visible(void)
 	      "and to everyone else it is the orchestrator's own directory, also listed");
 
 	/* PROJECT — visible to both, and the tier value is the CLI's alone. */
-	CHECK(resolve_class("/root/app3", VIEW_CLI) == T_PROJECT, "the project root is T_PROJECT to the CLI");
-	CHECK(policy_dirent_visible("/root/app3", VIEW_CLI) == 1, "and the CLI may list it");
-	CHECK(resolve_class("/root/app3", VIEW_HOST) != T_PROJECT,
+	CHECK(resolve_class("/root/srv2", VIEW_CLI) == T_PROJECT, "the project root is T_PROJECT to the CLI");
+	CHECK(policy_dirent_visible("/root/srv2", VIEW_CLI) == 1, "and the CLI may list it");
+	CHECK(resolve_class("/root/srv2", VIEW_HOST) != T_PROJECT,
 	      "VIEW_HOST cannot produce T_PROJECT at all");
-	CHECK(policy_dirent_visible("/root/app3", VIEW_HOST) == 1,
+	CHECK(policy_dirent_visible("/root/srv2", VIEW_HOST) == 1,
 	      "and everyone else sees the name too — as the host's, not the remote's");
 
 	/* AND `policy_synth_children` ASKS THE SAME PREDICATE, so the two arms
@@ -2475,7 +2475,7 @@ static void b46_floor_scope(void)
 {
 	struct stat dir, file;
 
-	cwd_path = "/root/app3";
+	cwd_path = "/root/srv2";
 	memset(&dir, 0, sizeof(dir));
 	dir.st_mode = S_IFDIR | 0700;
 	memset(&file, 0, sizeof(file));
@@ -2489,9 +2489,9 @@ static void b46_floor_scope(void)
 	      "a FILE on the chain is not: the floor grants path resolution, and a file is not a link");
 	CHECK(policy_floor_applies("/root/other", dir.st_mode, VIEW_HOST) == 0,
 	      "a directory OFF the chain keeps its real mode");
-	CHECK(policy_floor_applies("/root/app3/sub", dir.st_mode, VIEW_HOST) == 0,
+	CHECK(policy_floor_applies("/root/srv2/sub", dir.st_mode, VIEW_HOST) == 0,
 	      "and so does a directory BELOW the cwd — the chain is upward only");
-	CHECK(policy_floor_applies("/root/app", dir.st_mode, VIEW_HOST) == 0,
+	CHECK(policy_floor_applies("/root/srv", dir.st_mode, VIEW_HOST) == 0,
 	      "and the prefix-sharing sibling is not on the chain either");
 
 	/* THE EFFECT ITSELF, AND ITS EXTENT: exactly the three execute bits,
@@ -2515,7 +2515,7 @@ static void b46_floor_scope(void)
 	{
 		struct stat st;
 		policy_fixed_dir(&st, 0555, 1);
-		policy_floor_traversal("/root/app3", &st, VIEW_HOST);
+		policy_floor_traversal("/root/srv2", &st, VIEW_HOST);
 		CHECK((st.st_mode & 07777) == 0555, "the overlay node is unchanged by the floor");
 	}
 	cwd_path = NULL;
@@ -2724,8 +2724,8 @@ static void b49_table_child_exists(void)
 	char anc_absent[PATH_MAX], anc_gone[PATH_MAX];
 
 	host_box(box);
-	hjoin(sys, sizeof(sys), box, "/app3");           /* the cwd; NEVER created */
-	hjoin(excluded, sizeof(excluded), box, "/app3/node_modules");
+	hjoin(sys, sizeof(sys), box, "/srv2");           /* the cwd; NEVER created */
+	hjoin(excluded, sizeof(excluded), box, "/srv2/node_modules");
 	hjoin(hostpin, sizeof(hostpin), box, "/present");
 	hjoin(hostgone, sizeof(hostgone), box, "/gone");
 	hjoin(anc_absent, sizeof(anc_absent), box, "/absent-anc/leaf");
