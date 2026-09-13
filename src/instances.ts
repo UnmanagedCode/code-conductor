@@ -4570,7 +4570,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     //       the tier to {backend, model}) and restart-manifest restore.
     //   (b) resume with no explicit backend — the durable sidecar records which
     //       backend ran the session (one of the two bits jsonl can't carry),
-    //       covering UI resume / crash / anchor / respawn_instance uniformly.
+    //       covering UI resume / crash / anchor auto-resume uniformly.
     // An EXPLICIT backend that isn't in the registry must refuse, not fall back to
     // `claude`: `finalModel` keeps the caller's foreign model id, so the fallback
     // would launch a real `claude --model <foreign-id>` against the Anthropic
@@ -4758,7 +4758,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // conductor retrying a mistyped sessionId) skips it, and would otherwise
     // spawn `claude --resume <bogus>` → exit 1 "No conversation found" →
     // crash, repeatably. Bailing here means no phantom crashed Instance is
-    // registered, so a follow-up respawn_instance also soft-refuses cleanly.
+    // registered, so a retry of the same spawn_instance({resume}) soft-refuses
+    // identically rather than resolving through a half-built instance.
     if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
       // NO GEOMETRY FOLLOW, and nothing to follow to. A remote session's cwd
       // is the project's path on its system, fixed for the life of the
@@ -4851,8 +4852,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // gets a BRAND NEW Instance object (firstPrompt starts null) — unlike the
     // manifest-driven restart-resume path (resumeRestart.ts), which seeds it
     // from its own in-memory snapshot, every OTHER resume (a UI "resume dead
-    // session" click, crash/anchor auto-resume, respawn_instance) had nothing
-    // recovering it, so the next prompt()'s fallback-when-null guard
+    // session" click, crash/anchor auto-resume, spawn_instance({resume})) had
+    // nothing recovering it, so the next prompt()'s fallback-when-null guard
     // (see prompt() below) would clobber the label with whatever was just
     // typed. `--resume` does not fork history into a new jsonl (verified:
     // same sessionId, same file, across a real resume) — the original file
