@@ -123,12 +123,12 @@ export function claudeProjectsRoot(): string {
 export function encodeCwd(abs: string): string {
   // Mirror Claude Code's own encoding: every char that isn't
   // alphanumeric or a hyphen becomes `-`. This includes underscores!
-  // Previously we kept underscores, which silently broke any project
-  // path containing `_` (notably the worktree dirs we create at
+  // Keeping underscores silently breaks any project path containing
+  // `_` (notably the worktree dirs we create at
   // `<project>_worktree_<id>`): the orchestrator's metadata appends
-  // landed at `<…>_worktree_<…>` while real claude wrote the actual
+  // land at `<…>_worktree_<…>` while real claude writes the actual
   // session to `<…>-worktree-<…>`. Two separate dirs, both half-empty,
-  // and resume / history-replay both broke.
+  // and resume / history-replay both broken.
   return abs.replace(/[^A-Za-z0-9-]/g, '-');
 }
 
@@ -1525,7 +1525,7 @@ export async function listSessionsForCwdWithCounts(
     out.push({
       // The one projected field. Every sidecar below stays keyed to the FILENAME
       // — that is what they are keyed to on disk, and re-keying them would have
-      // needed a migration this card deliberately does not have.
+      // needed a migration, deliberately not written.
       sessionId: projectRowId(sid, lineage),
       firstPrompt,
       title: titles.get(sid) ?? null,
@@ -1635,18 +1635,14 @@ interface SessionPlace {
 // project's tree path lands on the OTHER MACHINE for a project on a system, and
 // then reads an empty transcript. It is REQUIRED for that reason — an optional
 // field invites `hit.cwd ?? proj.path`, which is precisely the bug this fixes
-// (card 2026-0292). It is NOT a public field: `GET /sessions/:id/locate`
+// It is NOT a public field: `GET /sessions/:id/locate`
 // projects the body explicitly so it stays in-process.
 //
-// WHICH CWD A PLACE ADMITS is now the same question wherever its tree is: the
-// CLI ran at the place's own path, on whatever machine that is. A remote
-// session used to run in a cc-owned local session root, so a place admitted a
-// SET of candidate cwds; under the chroot it runs at the project's real path
-// and admits exactly one.
+// WHICH CWD A PLACE ADMITS is the same question wherever its tree is: the CLI
+// runs at the place's own path, on whatever machine that is — exactly one
+// candidate per place.
 //
-// ONE PASS. The second pass — the raw path on the system, which a remote place
-// used to offer only as a fallback — is now the primary, so the two collapsed
-// into each other.
+// ONE PASS: the place's own path is the primary and only candidate.
 // WHAT THIS NEEDS FROM THE SYSTEM. THE ONE HOME for this contract — the sites
 // that care (`src/mcp/handlers.ts`'s disk branch, `docs/architecture.md`,
 // tests/systems-remote-session-location.test.mjs) point here instead of keeping
@@ -1668,7 +1664,7 @@ interface SessionPlace {
 //     rather than only costing a swallowed failure.
 //   - A WEDGED box can stall this lookup up to DEFAULT_OP_TIMEOUT_MS
 //     (src/systems/providerSystem.ts) — one exec per project on that box,
-//     measured (card 2026-0299 §2). Bounded, not removed.
+//     measured. Bounded, not removed.
 // The lazy composition below is what keeps both off a lookup that a nearer
 // place already answers.
 export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {

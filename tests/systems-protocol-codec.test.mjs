@@ -219,11 +219,10 @@ test('capability negotiation: a missing key is false, an unknown key is ignored'
     'only a literal true enables a capability');
 });
 
-// PINS THE DECODE HALF of the rule card 2026-0312's descriptor deletion rests
-// on: an unknown FIELD on a KNOWN frame survives decoding untouched rather than
-// being rejected. Separate from the unknown-capability-key and unknown-frame-type
-// rules — this one is about a frame cc fully understands carrying more than cc
-// reads, which is every pre-0312 provider's hello.
+// PINS THE DECODE HALF of the no-descriptor rule: an unknown FIELD on a KNOWN
+// frame survives decoding untouched rather than being rejected. Separate from
+// the unknown-capability-key and unknown-frame-type rules — this one is about a
+// frame cc fully understands carrying more than cc reads.
 //
 // NOT CLAIMING that anything downstream reads the field; the handshake half is
 // tests/systems-provider-supervision.test.mjs's.
@@ -299,7 +298,7 @@ function clientFrameTypes(src) {
 // PINS THE DIAGNOSIS, not just the red. A frame whose own declaration carries no
 // `type: '…'` must be REPORTED AS THAT — not silently resolved to the next
 // interface's literal, which reds the pin below as `extra: [<neighbour>]` and
-// blames the doc table, which is innocent. On a card whose whole subject is an
+// blames the doc table, which is innocent. Where the whole subject is an
 // error message naming the wrong cause, a pin that names the wrong cause is the
 // same defect one layer up.
 test('the §3 pin resolves each frame to its OWN type literal, never a neighbour\'s', () => {

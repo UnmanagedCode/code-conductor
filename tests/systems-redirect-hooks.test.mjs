@@ -1,10 +1,10 @@
 // The hook plumbing redirection needs: what the injected settings ask the CLI
 // for, and what the broker answers.
 //
-// Two things are new here and both are load-bearing. The broker used to speak
-// only allow/deny on PreToolUse; it now also carries `updatedInput` (the Bash
-// rewrite) and answers PostToolUse with `additionalContext` (the write-back
-// note). And the ask card must render the command the WORKER asked for, not the
+// Two things here are load-bearing beyond allow/deny on PreToolUse. The broker
+// also carries `updatedInput` (the Bash rewrite) and answers PostToolUse with
+// `additionalContext` (the write-back note). And the ask card must render the
+// command the WORKER asked for, not the
 // forwarder invocation it was rewritten into — under redirection every Bash
 // call looks alike to the permission layer, so a card built from the post-hook
 // input would show every command as the same opaque line.
@@ -58,16 +58,15 @@ test('a non-redirected session gets the settings it always got', () => {
 });
 
 // PINS: a redirected session HOOKS Read, still registers PostToolUse (no
-// consumer today; S3's write-back needs the seam), and REMOVES Glob and Grep,
+// consumer today; a write-back needs the seam), and REMOVES Glob and Grep,
 // because a marked CLI's Grep spawns an unmarked `rg` that would search the
 // wrong side and return silently wrong results.
 //
-// DELIBERATELY INVERTED FROM S1, which asserted Read was NOT hooked. S1's
-// reason held for the hook Read used to have — a PreToolUse pull the union made
-// unnecessary. S2 gives it a different job (criterion 11): a Read aimed at a
+// READ IS HOOKED TO REFUSE, NOT TO PULL (criterion 11): the union puts a served
+// path's bytes there, so no PreToolUse pull is needed — but a Read aimed at a
 // path the union does not serve to this session has to meet cc's refusal rather
-// than an -ENOENT the model reads as "the file is absent". The clause that
-// mattered in S1 survives as A14 below — hooked, and still not gated.
+// than an -ENOENT the model reads as "the file is absent". Hooked, and still
+// NOT gated — A14 below.
 //
 // A15: EVERY FILE_TOOLS KEY IS IN THE MATCHER, enumerated from the exported map
 // rather than transcribed, so a fifth file tool declared without being hooked
@@ -90,7 +89,7 @@ test('a redirected session hooks every file tool, keeps PostToolUse, and removes
   assert.doesNotMatch(local.hooks.PreToolUse[0].matcher, /\bRead\b/);
 });
 
-// PINS S3: a redirected session asks the CLI NOT to inject its dynamic git
+// PINS: a redirected session asks the CLI NOT to inject its dynamic git
 // instructions. The CLI shells out to run that git itself — unmarked, and
 // outside cc's remote-forwarded Bash tool — and the union's project tier has no
 // host side by design, so an unmarked caller there gets the remote's copy or
@@ -241,10 +240,10 @@ test('the ask card carries the pre-rewrite input, and the allow still rewrites',
   assert.deepEqual(res.body.hookSpecificOutput.updatedInput, { command: "node fwd -- 'npm test'" });
 });
 
-// A14 — PINS: `Read` IS HOOKED AND STILL NOT GATED, in ask mode. DELIBERATELY
-// INVERTED FROM S1, whose "no exemption" assertion was correct only while Read
-// was unhooked: S2 hooks it to refuse an unserved path (criterion 11), and
-// without the exemption every read on a remote project becomes a permission
+// A14 — PINS: `Read` IS HOOKED AND STILL NOT GATED, in ask mode. It is hooked
+// to refuse an unserved path (criterion 11), and a "no exemption" rule would
+// hold only for an UNHOOKED Read: without the exemption every read on a remote
+// project becomes a permission
 // card — a regression against a local session, where reads are deliberately not
 // gated (src/settings.ts → ASK_GATED_TOOL_MATCHER).
 //
@@ -358,7 +357,7 @@ test('a local ask-mode gate is not narrowed by tool name', async () => {
 // PINS: the redirect exemption is a fixed list, not the complement of a gated
 // set. A tool that is hooked under redirect but named in no list GATES — so
 // widening the redirect matcher later cannot open a new auto-allow with nobody
-// deciding it (card 2026-0339).
+// deciding it.
 test('a redirected ask-mode session gates a tool that is in no list', async () => {
   const { b, events } = broker({ mode: 'ask', redirect: {
     preToolUse: async () => ({ decision: 'allow' }),

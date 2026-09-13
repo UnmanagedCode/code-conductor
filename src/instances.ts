@@ -620,8 +620,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // It lives on the Instance rather than in either controller precisely so the
   // hub's defer does not depend on listener registration order — the hub's
-  // listener is registered BEFORE the renew controller's, which is why the
-  // pre-card code consumed the wake on the ARMED turn_end, a turn early.
+  // listener is registered BEFORE the renew controller's, so code reading
+  // controller state instead consumes the wake on the ARMED turn_end, a turn
+  // early.
   _rotation: { reason: RotationMechanism; startedAt: number } | null;
   // TRUE for the whole renewal sequence: from `arm()` until the reseed prompt()
   // has actually been accepted. A SECOND flag rather than a wider `_rotation`,
@@ -663,7 +664,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Resolved by the CURRENT launch's terminal latch — 'exit' OR 'close',
   // whichever arrives first. kill() awaits THIS, never a raw 'exit': a child
   // whose spawn FAILED emits 'error' then 'close' and never exits at all
-  // (card 2026-0286 §1). Non-nullable so kill() needs no fallback branch.
+  // Non-nullable so kill() needs no fallback branch.
   _procEnded: Promise<void>;
   parser: Parser;
   ring: EventLog;
@@ -1763,8 +1764,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the only path every relaunch funnels through — rewind, respawn, resume
     // after a restart — so it is where a provider that changed its mirror root
     // or its excludes under a live session gets caught. Refusing is the whole
-    // response: the retarget machinery this replaces rebuilt a local image at a
-    // new geometry, and there is no local image any more.
+    // response: retargeting would mean rebuilding a local image at the new
+    // geometry, and there is no local image.
     const placement = this._redirectPlacement;
     const pinned = this._mirrorScope;
     if (placement && pinned) {
@@ -1865,10 +1866,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (rec) return;
     const stderr = this._stderr.trim();
     // WHAT THE DAEMON REFUSED, READ BEFORE TEARDOWN — which deletes the run
-    // directory and the event log with it. This is the case the owner named: a
-    // spawn that died of a missing pin used to carry stderr alone, and stderr
-    // says "cannot open shared object file" without saying which list to add
-    // the object to. Best-effort: a failed read must not replace the mount
+    // directory and the event log with it. A spawn that dies of a missing pin
+    // carries stderr alone, and stderr says "cannot open shared object file"
+    // without naming which list to add the object to; the event log names the
+    // refused paths and the array. Best-effort: a failed read must not replace the mount
     // failure with a read failure.
     let events = '';
     try {
@@ -2128,17 +2129,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // per-session directory.
     //
     // A backgrounded Bash's tool result tells the worker, verbatim, to `Read`
-    // the task file it names under that root — a path on THIS machine. The
-    // THE PIN IS STILL RIGHT; ITS ORIGINAL REASON IS NOT, and saying so is the
-    // point — a correct pin whose stated reason is visibly false is what the
-    // next reader deletes.
+    // the task file it names under that root — a path on THIS machine.
     //
-    // It was: the redirect refused any file path outside the session root, so a
-    // task file under the per-uid tmp root was unreadable and the refusal's
-    // advice ("use Bash") was wrong. No file tool is hooked any more, so no
-    // refusal is involved.
-    //
-    // WHAT KEEPS IT: `sessionTmpDir(id)` is in the `localRoots` array below,
+    // WHAT KEEPS THE PIN — and it is not a refusal: no file tool is hooked for
+    // a path outside the project's tree, so nothing here turns on one.
+    // `sessionTmpDir(id)` is in the `localRoots` array below,
     // which seeds the union's HOST tier (tierTable.ts, `localRoots` → `add
     // ('host', …)`). So this exact directory is served from the orchestrator's
     // own filesystem inside the chroot, and the worker's task output means the
@@ -2246,7 +2241,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // strands the instance with a live `proc` whose pid is undefined — and
     // `proc != null` is this codebase's liveness oracle (liveForSession /
     // isSessionLive), so every reaper then reads the corpse as alive
-    // (card 2026-0286 §2). The latch is one-shot: a healthy child emits both
+    // The latch is one-shot: a healthy child emits both
     // events, and _handleExit must run exactly once.
     const launched = this.proc;
     let ended = false;
@@ -2672,7 +2667,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A SUBSTITUTION-backend subprocess that crashed on its own (not a commanded
     // kill) is the silent-launch-failure case: the wrapper command died — or
     // NEVER STARTED, since the terminal latch also routes a failed spawn here
-    // (card 2026-0286 §2), in which case `stderr` is null and the reason rides on
+    // in which case `stderr` is null and the reason rides on
     // the preceding `spawn_error`. Surface it distinctly from the bare `exit`,
     // carrying the captured stderr where there is any. Plain claude exits and
     // clean/commanded wrapper exits are untouched.
@@ -2719,7 +2714,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // meaningful on an archived session.
   //
   // Reached by a session whose spawn FAILED as well as by a killed one
-  // (card 2026-0286 §1): there is no jsonl, so this marks a sessionId no file
+  // there is no jsonl, so this marks a sessionId no file
   // backs. Inert only because every reader stat-gates the file first (see
   // src/archivedSessions.ts's header + src/projects.ts's session-row build); a
   // reader that enumerates the set without that stat would surface a phantom
@@ -2874,10 +2869,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw new Error('prompt requires non-empty text or at least one valid attachment');
     }
 
-    // NO `@path` PRE-HYDRATION any more. The CLI expands a mention itself and
-    // fires no hook for it — measured — which used to mean a remote file was
-    // simply absent from the turn unless cc had pulled it first. Under the
-    // chroot the mention resolves through the union like any other path.
+    // NO `@path` PRE-HYDRATION: the CLI expands a mention itself and fires no
+    // hook for it — measured — and under the chroot the mention resolves
+    // through the union like any other path, so cc pre-pulling would fetch a
+    // path the union already serves.
     // A real prompt is a genuine turn boundary — any Skill invocation still
     // awaiting its content injection is stale (see parser.ts:attachSkillLoad).
     this.parser.expirePendingSkillLoads();
@@ -3281,7 +3276,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._interruptDeadline = setTimeout(() => {
       this._interruptDeadline = null;
       // Fired already ⇒ the request DID leave; an ACKed-but-not-honoured stop is
-      // a different defect with a different flag (card 2026-0207), not this one.
+      // a different defect with a different flag, not this one.
       if (!this._interruptArmed || this._interruptFired) return;
       if (this.status !== 'turn' || !this.proc) return;
       const blocks = [...this._quiescence.openBlocks.keys()];
@@ -3546,7 +3541,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The launch's terminal latch, NOT a fresh proc.once('exit'): a child whose
     // spawn failed never emits 'exit', and its 'close' has usually already been
     // delivered by the time anything gets around to reaping it — a listener
-    // registered here would never fire (card 2026-0286 §4).
+    // registered here would never fire.
     const ended = this._procEnded;
     const t1 = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch { /* ignore */ }
@@ -3883,7 +3878,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A rewind/respawn rewrites the CLI's prefix, so a command still running on
     // the system belongs to a conversation the worker no longer has. Stop it —
     // and NOTE that the redirect keeps serving this session afterwards, which is
-    // why close() re-arms rather than staying torn down (card 2026-0312 §3c).
+    // why close() re-arms rather than staying torn down.
     void this._redirect?.close();
     // Per-turn cache-miss capture is owned by _setStatus (into-'turn' reset)
     // and the spawn() that always follows a wipe. But a rewind/respawn rewrites
@@ -4649,11 +4644,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // A REMOTE PROJECT'S `cwd` IS ITS PATH ON ITS OWN SYSTEM, and that is the
     // whole of criterion 8: one spelling per path, whichever tool names it.
     //
-    // It used to be a cc-owned local session root holding a pulled copy of the
-    // config surface the CLI reads implicitly, with `systemCwd` keeping the
-    // other half. Under the FUSE-union chroot the CLI runs INSIDE the project's
-    // real tree, so `cwd` and the shell's cwd are the same string and there is
-    // no second coordinate system to keep.
+    // Under the FUSE-union chroot the CLI runs INSIDE the project's real tree,
+    // so `cwd` and the shell's cwd are the same string and there is no second
+    // coordinate system to keep.
     let redirectPlacement: RedirectPlacement | null = null;
     let mirrorScopeForSession: MirrorScope | null = null;
     let mirrorInert: string[] = [];
@@ -4666,11 +4659,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         worktree: worktreeMeta?.worktreeName ?? null,
       };
       // THE MIRROR ADVERTISEMENT, resolved here because its answer may be
-      // "there should not be a session here at all" — and because
-      // `composeSessionRoot`, which used to ask, is gone. What it decides has
-      // changed shape but not job: `mirrorRoot` is no longer the far end of a
-      // prefix rule over a local image, it is the boundary of the union's
-      // REMOTE TIER, and `exclude` is what that tier must not serve.
+      // "there should not be a session here at all". What it decides:
+      // `mirrorRoot` is the boundary of the union's REMOTE TIER, and `exclude`
+      // is what that tier must not serve.
       //
       // ONE round trip per connection generation (ProviderSystem memoises it),
       // and NONE AT ALL for a provider that does not advertise the capability —
@@ -4721,11 +4712,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // crash, repeatably. Bailing here means no phantom crashed Instance is
     // registered, so a follow-up respawn_instance also soft-refuses cleanly.
     if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
-      // NO GEOMETRY FOLLOW any more, and nothing to follow to. A remote
-      // session's cwd is the project's path on its system, which is fixed for
-      // the life of the registration — so the search space a moved mirror
-      // advertisement used to create is empty, and this refusal is the whole
-      // answer again.
+      // NO GEOMETRY FOLLOW, and nothing to follow to. A remote session's cwd
+      // is the project's path on its system, fixed for the life of the
+      // registration — there is no geometry to follow, so a moved mirror
+      // advertisement is a refusal and nothing else.
       {
         // `cwd` rides as a PROPERTY, not just interpolated into the message:
         // spawnInstance (src/mcp/handlers.ts) rebuilds the conductor-facing
@@ -4866,11 +4856,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${line}` } });
       }
       // PINNED FOR THE SESSION. The advertisement is read once, at create, and
-      // a relaunch re-reads it only to refuse when it MOVED — see launch(). The
-      // machinery that used to follow a moved advertisement to a new local
-      // geometry is deleted rather than ported: there is no local geometry to
-      // move to any more, and a session whose remote tier silently changed
-      // shape mid-life is a worse outcome than a named refusal.
+      // a relaunch re-reads it only to refuse when it MOVED — see launch(). A
+      // moved advertisement is a refusal, not a follow: a session whose remote
+      // tier silently changed shape mid-life is a worse outcome than a named
+      // refusal.
       inst._mirrorScope = mirrorScopeForSession;
       // THE HOST-LOCAL PREFIXES THIS SESSION MAY REACH, each declaring whether a
       // FILE TOOL may name it. Every one is host-pinned for the daemon whatever
@@ -5163,7 +5152,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 
   // Apply a CHANGED overage policy to sessions already marked under the old one.
-  // The policy is live authority, not just trip-time input (card 2026-0231): the
+  // The policy is live authority, not just trip-time input: the
   // moment it is no longer 'stop-resume', no session may carry a resumption mark.
   // Iterates byId, NOT _overageResume.timers: a session mid-verify (fireNow/_tick
   // delete their timers entry before awaiting fetchUsage) has no timer but is still
@@ -5265,7 +5254,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // `resumeRestart.ts`'s restored-deadline re-arm, is excluded from it and carries
   // its own root-scoping note there.
   //
-  // ROOT-SCOPED (card 2026-0212): the unit of stopping is the TREE, so
+  // ROOT-SCOPED: the unit of stopping is the TREE, so
   // membership is resolved from the tree's root, not from the session. A tree with
   // no Claude agent → e.g. {ollama} → unmonitored → EXEMPT (never auto-stopped,
   // queued, or armed). A tree with any Claude agent → {anthropic} → in-flow — which
@@ -5293,7 +5282,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // STOPPING is a TREE fact; TRIPPING is a per-session BACKEND fact. Do not unify
     // these two predicates — they answer different questions:
     //   - `_inUsageWindowFlow` (root-scoped) asks "is this session a member of a tree
-    //     the stop must halt?" — the tree is the unit of stopping (card 2026-0212);
+    //     the stop must halt?" — the tree is the unit of stopping;
     //   - HERE we ask "did the monitored account emit this 429?", which only the
     //     EMITTING session's own backend can answer. An ollama-backed worker talks to
     //     the ollama endpoint, so its `rate_limit_event` reports ollama's window — it
@@ -5332,7 +5321,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Route a single overage stop across all live instances. EVERY session it
   // touches gets `_directOverageStop` — nothing is sent to anything: the account is
   // throttled, so a message into it is exactly the burn the stop exists to prevent
-  // (card 2026-0203). A mid-turn session is soft-interrupted; an idle one has no
+  // A mid-turn session is soft-interrupted; an idle one has no
   // turn to interrupt and is instead severed, marked, and armed for resume on the
   // spot.
   _routeOverageStop({ resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
@@ -5340,7 +5329,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // usage-window domain (e.g. ollama-only): they consume no monitored account
     // window, so they are never stopped/marked. A Claude conductor's ollama-only
     // worker is NOT such a case — its root tree contains the conductor's `claude`,
-    // so it is stopped along with the conductor (card 2026-0212).
+    // so it is stopped along with the conductor.
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors are in control and which workers they protect.
     const inControlConductors = new Map<string, Instance>();  // conductor id → conductor instance
@@ -5368,7 +5357,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // workers are NOT: the conductor is not asked to halt them, so they are stopped
     // directly.
     //
-    // ONE branch (card 2026-0189): a `.conduct` orchestrator is never `conducted`,
+    // ONE branch: a `.conduct` orchestrator is never `conducted`,
     // so it is never a protected worker ⇒ `unarmed` is false for it ⇒ it takes
     // exactly the arming the old conductor branch gave it, and `if (!unarmed)
     // continue` skips the owner-marking that does not apply.
@@ -5408,7 +5397,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
   // The ONE stop path, for every session routing touches — mid-turn or idle.
   // NOTHING is sent here: the account is throttled, so a message into it is the
-  // burn the stop exists to prevent (card 2026-0203). For stop-resume, mark the
+  // burn the stop exists to prevent. For stop-resume, mark the
   // instance so its resume arms. `armResume` defaults to `resume` and splits off
   // only for a conductor's own worker, which is stopped un-armed.
   //
@@ -5459,8 +5448,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //     re-adds the parent from `callerInstanceId` on every call, so a severed
   //     worker whose turn starts again re-arms its conductor's wake at
   //     `onTurnStart`. Without severing here, the guard's own interrupt then wakes
-  //     that conductor with an `internal:true` stub — violating 2026-0203 from
-  //     inside 2026-0204.
+  //     that conductor with an `internal:true` stub — violating the
+  //     no-prompt-into-a-throttled-account rule from inside the turn-start
+  //     lockout guard.
   _severOverageWakes(inst: Instance): void {
     for (const callerId of this._idleHub.severForOverageStop(inst.id)) {
       const caller = this.byId.get(callerId);
@@ -5468,7 +5458,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  // Turn-start lockout guard (card 2026-0204). A turn that begins during an overage
+  // Turn-start lockout guard. A turn that begins during an overage
   // stop-resume lockout is stopped rather than run against the throttled account —
   // wired at the turn-START seam rather than per send site, because the observed
   // defect was workers re-invoked by a path the enumerated sites did not cover.

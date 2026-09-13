@@ -8,8 +8,8 @@
 // the list; the count is deliberately not restated here), so no fallback is a
 // flag nobody has run.
 //
-// WHAT IT PROVES FOR A THIRD-PARTY PROVIDER IS NARROWER, and card 2026-0313
-// measured how much: see docs/systems-protocol.md §10.
+// WHAT IT PROVES FOR A THIRD-PARTY PROVIDER IS NARROWER: see
+// docs/systems-protocol.md §10.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -84,8 +84,8 @@ for (const config of CAPABILITY_CONFIGS) {
 
   // ── Handshake and capability negotiation ─────────────────────────
 
-  // The descriptor assertions went with card 2026-0312: the hello carries no
-  // `system` object at all, and this suite's provider sends none — so every
+  // The hello carries no `system` object at all, and this suite's provider
+  // sends none — so every
   // operation below is also the positive half of "a hello with no descriptor
   // yields a System that works" (T8's other half is in
   // tests/systems-provider-supervision.test.mjs).
@@ -191,7 +191,7 @@ for (const config of CAPABILITY_CONFIGS) {
 
   // ── detach: end the operation without ending the command ─────────
   //
-  // MEASURED (card 2026-0318 §1, §3): a `cmd &` job inherits the command's
+  // MEASURED: a `cmd &` job inherits the command's
   // stdout pipe, so the provider's `'close'` — and with it the `exit` frame —
   // does not fire when the command exits. cc therefore settles a redirected
   // command on its OWN framing sentinel, and then has to tell the provider that
@@ -266,12 +266,11 @@ for (const config of CAPABILITY_CONFIGS) {
     }
   });
 
-  // THE PARITY PIN (card 2026-0318 §3). The two shipped configurations used to
-  // DISAGREE about whether a redirected background job survives its command:
-  // cc's abandon timer sent `close`, which reaps the survivor through the
-  // process group where it has one and cannot reach it where it does not. A
-  // sentinel-settle closes that divergence — the job survives in BOTH, which is
-  // what a LOCAL Bash call does (card 2026-0318 §1/Q3).
+  // THE PARITY PIN. A redirected background job survives its command in BOTH
+  // shipped capability configurations, which is what a LOCAL Bash call does.
+  // Without it the two DISAGREE: a `close`-based abandon reaps the survivor
+  // through the process group where it has one and cannot reach it where it
+  // does not. A sentinel-settle closes that divergence.
   //
   // NOTE ON ITS RED: the settle is what this asserts on, so before the fix the
   // run throws ETIMEDOUT and the aliveness assertion is never reached. That is
@@ -693,10 +692,8 @@ test('a bound handle names its remote on exec, readFile and writeFile', async ()
   });
 });
 
-// RE-BASED on card 2026-0312, not deleted: this used to prove the §4 rule
-// through a `stdin` frame, which no longer exists. The RULE does — a follow-on
-// frame carries no `remoteId` and the `id` is its whole address — so it is
-// re-based on `signal`, one of the two follow-on frames that survive.
+// THE §4 RULE — a follow-on frame carries no `remoteId` and the `id` is its
+// whole address — proven on `signal`, one of the two follow-on frames.
 //
 // A LONG command plus a signal that lands on it: the signal frame names no
 // remote, and the only way it can reach the right child is through the id the
@@ -859,8 +856,8 @@ test('parseFindLines refuses a malformed entry rather than skipping it', () => {
 //
 // Outside the per-configuration loop: no configuration in CAPABILITY_CONFIGS
 // passes a mirror flag, and the frame's behaviour does not depend on the other
-// capabilities. (The count is deliberately not restated here — it moved from
-// three to two on card 2026-0312 and the harness owns it.)
+// capabilities. (The count is deliberately not restated here — the harness
+// owns it.)
 
 // PINS: the frame round-trips, and both halves of the advertisement survive it.
 //
@@ -911,7 +908,7 @@ test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async 
   } finally { sys.dispose(); await rmrf(dir); }
 });
 
-// PINS THE EXTENSION POINT a later card will rely on: a `remoteDescriptor`
+// PINS THE EXTENSION POINT a later change will rely on: a `remoteDescriptor`
 // carrying a field cc does not know about is accepted and the field ignored.
 // Pinned so a future reader cannot "tighten" it away — a provider→cc field is
 // inert on arrival, which is what makes growing this frame safe without a
@@ -958,7 +955,7 @@ test('a write above the protocol cap is refused before a byte reaches the wire',
   } finally { sys.dispose(); }
 });
 
-// ── The third-party contract (card 2026-0313) ────────────────────────
+// ── The third-party contract ─────────────────────────────────────────
 
 // PINS: `CC_CONFORMANCE_REMOTE_ID` binds every fixture handle to that target,
 // an explicit `{ remoteId: null }` still beats it, and the binding rides the

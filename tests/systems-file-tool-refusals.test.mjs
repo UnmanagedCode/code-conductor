@@ -45,10 +45,11 @@ const TIER_TABLE_SRC = path.join(path.dirname(fileURLToPath(import.meta.url)),
 const SYSTEM_ID = 'prod-box';
 const SYSTEM_PATH = '/srv/app';
 const MIRROR_ROOT = '/srv';
-const RUN_DIR = '/workspaces/cc-projects/.code-conductor/systems/fuse/run/inst-1';
+const RUN_DIR = '/home/wk/cc-projects/.cc-store/systems/fuse/run/inst-1';
 
 // Two excludes INSIDE the project (legal, active) and one that is also a bind
-// mount, plus one OUTSIDE the mirror root, which criterion 4 calls inert.
+// mount, plus one OUTSIDE the mirror root, which is inert: no path under the
+// mirror root is ever within it, so `isExcluded` can never return it.
 const EXCLUDE = ['/srv/app/secrets', '/proc', '/var/lib/elsewhere'];
 
 // The novel pair is what makes the ALLOW-set test a derivation test: neither
@@ -157,10 +158,10 @@ const namesTheFile = (reason, p) => {
 const dropAll = (reason, p) => reason.split(p).join('a file');
 
 describe('the four file-tool refusals', () => {
-  // A1 — PINS every clause of the excluded refusal, restored verbatim from the
-  // deleted file bridge (a83bb40d^:src/systems/mirror.ts). Each clause earns its
-  // place against the one failure mode; deleting the anti-ENOENT clause leaves
-  // a sentence a model reads as "absent".
+  // A1 — PINS every clause of the excluded refusal (`excludedRefusal`,
+  // src/systems/mirror.ts). Each clause earns its place against the one failure
+  // mode; deleting the anti-ENOENT clause leaves a sentence a model reads as
+  // "absent".
   test('A1: the excluded refusal carries every clause', () => {
     const { classify } = fixture();
     const reason = denied(classify('/srv/app/secrets/key.pem'), 'excluded');
@@ -181,7 +182,7 @@ describe('the four file-tool refusals', () => {
     const { classify, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       const r = classify(p);
       assert.equal(r.decision, 'deny', p);
       neverClaimsAbsence(r.reason);
@@ -198,17 +199,17 @@ describe('the four file-tool refusals', () => {
       ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
   });
 
-  // A2b — PINS the OTHER uniform rule, and it replaces a BAN that used to sit
-  // on the host-pinned wording. Every one of the four points at Bash, and every
-  // one names the machine Bash answers from. The host pin was the exception —
-  // a dead end that never mentioned Bash — and it is not any more: the dead end
-  // bought no concealment (a worker reaches the system's home through `ls ~/`
-  // regardless) while costing the agent its next move.
+  // A2b — PINS the OTHER uniform rule, and there is no BAN on the host-pinned
+  // wording. Every one of the four points at Bash, and every one names the
+  // machine Bash answers from — the host pin included, which is not an
+  // exception. A dead end there that never mentions Bash buys no concealment
+  // (a worker reaches the system's home through `ls ~/` regardless) while
+  // costing the agent its next move.
   test('A2b: every refusal points at Bash and names the machine Bash answers from', () => {
     const { classify, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       const r = classify(p);
       assert.equal(r.decision, 'deny', p);
       namesBashOnTheSystem(r.reason, SYSTEM_ID);
@@ -223,11 +224,11 @@ describe('the four file-tool refusals', () => {
   // prevent, so the rule must reject it — otherwise the rule is satisfied by
   // the very sentence it was added to forbid.
   test('the Bash-pointer rule rejects a wording that drops the machine', () => {
-    const intact = fixture().classify('/home/node/.claude/settings.json').reason;
-    // THE MUTANTS HAVE TO DROP THE MACHINE, not merely reword around it. A
-    // first cut of this test replaced only the opening clause and left
-    // `'prod-box'` standing later in the same sentence — the rule passed it,
-    // correctly, and the weak mutant was the defect. Sentence-level surgery.
+    const intact = fixture().classify('/home/wk/.claude/settings.json').reason;
+    // THE MUTANTS HAVE TO DROP THE MACHINE, not merely reword around it.
+    // Replacing only the opening clause leaves `'prod-box'` standing later in
+    // the same sentence — the rule passes that, correctly, and the weak mutant
+    // is the defect. Sentence-level surgery.
     const sentences = intact.split(/(?<=\.)\s+/);
     const bashAt = sentences.findIndex(x => /\bBash\b/.test(x));
     assert.ok(bashAt >= 0, intact);
@@ -253,7 +254,7 @@ describe('the four file-tool refusals', () => {
     // merely strict.
     const { classify, input } = fixture();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       namesBashOnTheSystem(classify(p).reason, SYSTEM_ID);
     }
   });
@@ -291,7 +292,7 @@ describe('the four file-tool refusals', () => {
     // regex matching everything.
     const { classify, input } = fixture();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       neverClaimsAbsence(classify(p).reason);
     }
   });
@@ -311,7 +312,7 @@ describe('the four file-tool refusals', () => {
   test('banning `absent` or `exists` would reject the contract, so the accept-half bites', () => {
     const { classify, input } = fixture();
     const shipped = ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]
       .map((p) => classify(p).reason);
 
     for (const [word, overTight] of [['absent', /\babsent\b/i], ['exists', /\bexists\b/i]]) {
@@ -354,21 +355,21 @@ describe('the four file-tool refusals', () => {
     }
   });
 
-  // A4 — PINS the host-pin wording, and the assertion that matters is now the
-  // REMOTE QUALIFIER rather than the ban that used to be here.
+  // A4 — PINS the host-pin wording, and the assertion that matters is the
+  // REMOTE QUALIFIER, not a ban.
   //
-  // The ban is gone because the dead end it enforced prevented nothing: a
+  // There is no ban because the dead end one would enforce prevents nothing: a
   // worker reaches the system's `~/` through Bash whether the sentence mentions
-  // it or not. What replaces it is the property that makes naming Bash safe
-  // here — the wording states which machine Bash answers from, so an agent
+  // it or not. What stands in its place is the property that makes naming Bash
+  // safe here — the wording states which machine Bash answers from, so an agent
   // reading the system's copy of a cc-shaped path cannot take it for cc's.
   //
   // Reusing `excludedRefusal` for this class still fails: that wording names no
   // orchestrator and no pin prefix.
   test('A4: a host-pinned path names Bash AND the machine Bash answers from', () => {
     const { classify, input } = fixture();
-    const reason = denied(classify('/home/node/.claude/settings.json'), 'host-pinned');
-    assert.match(reason, /'\/home\/node\/.claude'/, 'it names the prefix');
+    const reason = denied(classify('/home/wk/.claude/settings.json'), 'host-pinned');
+    assert.match(reason, /'\/home\/wk\/.claude'/, 'it names the prefix');
     assert.match(reason, /settings/, "it names the class, from the entry's own `why`");
     assert.match(reason, /ORCHESTRATOR/, 'it says whose machine the pin is on');
     namesBashOnTheSystem(reason, SYSTEM_ID);
@@ -539,12 +540,12 @@ describe('the four file-tool refusals', () => {
   // longest-prefix breaks plan mode for every remote-backed worker.
   test('A9: ~/.claude/plans is allowed under a denied ~/.claude', () => {
     const { classify } = fixture();
-    assert.deepEqual(classify('/home/node/.claude/plans/a-plan.md'), { decision: 'allow' });
-    denied(classify('/home/node/.claude/projects/x/y.jsonl'), 'host-pinned');
-    denied(classify('/home/node/.claude/.credentials.json'), 'host-pinned');
+    assert.deepEqual(classify('/home/wk/.claude/plans/a-plan.md'), { decision: 'allow' });
+    denied(classify('/home/wk/.claude/projects/x/y.jsonl'), 'host-pinned');
+    denied(classify('/home/wk/.claude/.credentials.json'), 'host-pinned');
     // And the component boundary is respected — a prefix-SHARING sibling of the
     // allowed directory is not allowed.
-    denied(classify('/home/node/.claude/plans-backup/x.md'), 'host-pinned');
+    denied(classify('/home/wk/.claude/plans-backup/x.md'), 'host-pinned');
   });
 
   // A10 — PINS CRITERION 15, in the only two ways it can be pinned:
@@ -684,8 +685,8 @@ describe('the four file-tool refusals', () => {
     }
   });
 
-  // PINS: a tool cc does not own is untouched. The seam widened to Read in S2,
-  // and a branch that classified every tool's every string input would refuse
+  // PINS: a tool cc does not own is untouched. The seam covers Read, and a
+  // branch that classified every tool's every string input would refuse
   // WebFetch and TodoWrite calls that have nothing to do with the filesystem.
   test('a non-file tool is not classified at all', async () => {
     const { tiers, session } = fixture();
@@ -695,7 +696,7 @@ describe('the four file-tool refusals', () => {
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
     });
-    assert.deepEqual(await redirect.preToolUse('TodoWrite', { file_path: '/home/node/.claude/x' }),
+    assert.deepEqual(await redirect.preToolUse('TodoWrite', { file_path: '/home/wk/.claude/x' }),
       { decision: 'allow' });
   });
 });
@@ -777,12 +778,12 @@ describe('the fault refusals — divergence and over-cap', () => {
     assert.throws(() => neverClaimsAbsence(`${reason} cc could not find it.`), /AssertionError/,
       'the absence rule accepted a wording that claims the file was not found');
     // …AND THE FILE-NAME CLAUSE, which needs a RULE of its own to be
-    // falsifiable at all. A first cut asserted that the wording with every
-    // occurrence of the path replaced no longer contains the path — a global
-    // replace cannot leave a match behind, so it passed by construction
-    // whatever `divergedRefusal` produced, while claiming to verify the
-    // clause. The rule below is a real function and each mutant is a real
-    // transformation of the shipped sentence.
+    // falsifiable at all. Asserting that the wording with every occurrence of
+    // the path replaced no longer contains the path passes by construction — a
+    // global replace cannot leave a match behind — whatever `divergedRefusal`
+    // produces, while claiming to verify the clause. The rule below is a real
+    // function and each mutant is a real transformation of the shipped
+    // sentence.
     for (const m of [namesTheFile.bind(null, dropAll(reason, P), P),
       // …and the near-miss: the DIRECTORY named but not the file, which is
       // what a wording built from a prefix would produce and which leaves a
@@ -837,7 +838,7 @@ describe('the fault refusals — divergence and over-cap', () => {
     const { classify: c2, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
-      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      '/home/wk/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       seen.add(c2(p).class);
     }
     // BOTH DIRECTIONS: a declared member no probe reaches fails here, and a
@@ -846,11 +847,10 @@ describe('the fault refusals — divergence and over-cap', () => {
       'the deny classes the table produces and the ones ToolDenyClass declares disagree');
 
     // AND A FAULT-DRIVEN DENIAL CARRIES NO `class` — ASSERTED ON THE PRODUCT'S
-    // OWN RETURN VALUE. A first cut asserted it on an object literal the test
-    // itself had just built, which is definitionally true whatever
-    // `#classifyFile` returns: a mutant ADDING `class` to that return survived
-    // it, and the mutation harness does not run the typecheck that would have
-    // caught it either.
+    // OWN RETURN VALUE. Asserting it on an object literal the test itself built
+    // is definitionally true whatever `#classifyFile` returns: a mutant ADDING
+    // `class` to that return survives it, and the mutation harness does not run
+    // the typecheck that would catch it either.
     const d = await redirectWith(DIVERGED).preToolUse('Write', { file_path: P });
     assert.equal(d.decision, 'deny');
     assert.match(d.reason, /have diverged/, 'this is not the fault denial');

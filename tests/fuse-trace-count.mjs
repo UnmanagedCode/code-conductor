@@ -6,7 +6,7 @@
 // an instrument, like `fuse-transport-bench.mjs`. It asserts nothing. It
 // reports three counts off a `CC_FUSE_TRACE=1` capture, which is what turns the
 // two-handle premise from an argument into a standing condition with a check
-// (src/systems/fuse/PROVENANCE.md → D13c).
+// (docs/architecture.md → the two-handle window).
 //
 // THE LINE SHAPE is `union.c`'s `tr()`:
 //   <op>\t<path>\ttier=<t> cflags=<n> pid=… tgid=… mark=… exe=… cmd=…

@@ -71,9 +71,9 @@ describe('a remote project refuses what it cannot do, by name', () => {
   // ── Failure state: at session start ──────────────────────────────────
 
   // PINS CRITERION 8: a worker on a remote project runs at the project's REAL
-  // PATH ON ITS SYSTEM. It used to run in a cc-owned session root under the
-  // store — the second spelling this whole change exists to remove — and the
-  // store must now hold no session root at all.
+  // PATH ON ITS SYSTEM, and the store holds no session root at all. A cc-owned
+  // session root under the store is the second spelling of the project's tree —
+  // the thing this whole change exists to remove.
   test('spawning a worker on a remote project runs it at the path on the system', async () => {
     await adoptRemote();
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app' });

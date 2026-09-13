@@ -1,9 +1,9 @@
 // WHERE THE REMOTE'S BYTES COME FROM — the one interface cc's control handler
-// talks to, and the S2 implementation of it.
+// talks to, and its implementations.
 //
 // The handler (control.ts) knows about frames, the mirror and serialisation; it
-// knows nothing about how a file is reached. That split is what made S3 a
-// SUBSTITUTION rather than a rewrite: production passes `systemSource`
+// knows nothing about how a file is reached. That split is what makes the
+// production source a SUBSTITUTION rather than a rewrite: production passes `systemSource`
 // (systemSource.ts), a real `System` handle behind the same five methods, and
 // not one signature here changed for it.
 
@@ -27,9 +27,9 @@ export interface RemoteChild extends RemoteStat {
 }
 
 // THE SOURCE COULD NOT BE ASKED — distinct from the source having nothing
-// there. Conflating the two is how a transient EMFILE became an `rm` of a live
-// file: the handler read "absent", removed the mirror entry, and the reconcile
-// then removed the source's.
+// there. Conflating the two is how a transient EMFILE becomes an `rm` of a live
+// file: the handler reads "absent", removes the mirror entry, and the reconcile
+// then removes the source's.
 export interface SourceError { error: string }
 
 export function isSourceError(x: unknown): x is SourceError {
@@ -74,14 +74,13 @@ export interface RemoteSource {
 //   1. the unit suite's. `tests/fuse-control-channel.test.mjs` drives the whole
 //      control channel against it with no provider and no latency.
 //   2. the real lifecycle gate's. Criteria 3 and 4 are only checkable when the
-//      remote's bytes DIFFER from the host's at the same path — S1's bind-mount
-//      stand-in made them identical and the distinction unobservable — and that
+//      remote's bytes DIFFER from the host's at the same path — a bind-mount
+//      stand-in makes them identical and the distinction unobservable — and that
 //      gate must not need a container. `CC_FUSE_SOURCE_OVERRIDE_ROOT` selects
 //      it, and `src/instances.ts` reports it loudly on the session's stream,
 //      because a session using it is not talking to its system at all.
-//   3. THE MEASUREMENT CONTROL. Every latency figure in S1, S2 and the three
-//      spikes was taken against this; it is the arm the transport's cost is
-//      reported against (tests/fuse-transport-bench.mjs).
+//   3. THE MEASUREMENT CONTROL: the arm the transport's cost is reported
+//      against (tests/fuse-transport-bench.mjs).
 //
 // WHAT IT PROVES: the control channel, the mirror discipline and the tier
 // policy — every frame, every materialisation, every refusal. WHAT IT DOES NOT
@@ -97,10 +96,10 @@ export function localDirSource(root: string): RemoteSource {
   };
 
   // `null` MEANS THE SOURCE HAS NOTHING THERE, and an error means the source
-  // could not be asked — a distinction the first cut of this file did not make.
-  // Swallowing EMFILE or EACCES into `null` told the handler "absent", which
-  // then removed a live mirror entry and, at the next reconcile, a live SOURCE
-  // file. An error is now its own value and never reaches an absence path.
+  // could not be ASKED — conflating them makes the handler read an EMFILE or
+  // EACCES as "absent", which then removes a live mirror entry and, at the next
+  // reconcile, a live SOURCE file. An error is its own value and never reaches
+  // an absence path.
   const statAt = async (abs: string): Promise<RemoteStat | null | SourceError> => {
     try {
       const st = await fsp.lstat(abs);
@@ -184,7 +183,7 @@ export function localDirSource(root: string): RemoteSource {
           st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null;
         const cur = await fsp.lstat(abs).catch(() => null);
 
-        // AN ABSENT MIRROR ENTRY IS NO LONGER A DELETION. `push` is reached
+        // AN ABSENT MIRROR ENTRY IS NOT A DELETION. `push` is reached
         // only for a DIRTY whose REMOVED bit is clear, so the mirror is
         // supposed to be holding the entry; its absence means cc's own cache
         // lost it, and the caller refuses rather than deleting the source. A
@@ -216,8 +215,8 @@ export function localDirSource(root: string): RemoteSource {
         // the replacement fresh permissions, so the mirror's own mode is
         // already the post-rename one and copying it cannot restore the
         // original. Remembering the pre-edit mode across that rename is a
-        // different mechanism and is S3's (docs/architecture.md → "What
-        // `fileBridge` carried, and where it has to land again").
+        // different mechanism, specified at docs/architecture.md → "What
+        // `fileBridge` carried, and where it has to land again".
         await fsp.copyFile(src, abs);
         await fsp.chmod(abs, mirror.mode & 0o7777);
         await fsp.utimes(abs, new Date(mirror.atimeMs), new Date(mirror.mtimeMs));

@@ -44,8 +44,7 @@
 // and the four in FILE_TOOLS — no `LS`, no `Glob`, no `Grep`, no `MultiEdit`,
 // no `NotebookRead`.
 //
-// WHAT MAKES THAT ARGV THE RIGHT ONE, because an earlier version of this comment
-// got it wrong and the error was load-bearing: the argv was read off
+// WHAT MAKES THAT ARGV THE RIGHT ONE: the argv is read off
 // `Instance._spawnArgv` of a REAL redirected worker rather than reconstructed,
 // so it includes `--permission-prompt-tool stdio` and cc's own `--settings`.
 // `stdio` CHANGES THE PROFILE — it un-strips the interactive tools, 30 with it
@@ -87,7 +86,7 @@ import type { Fault } from './fuse/control.ts';
 // interface, so a bare System (LocalSystem) is correctly refused while every
 // provider-backed one is accepted. Re-basing it on `exec` — which `System` does
 // have — would make every local project look redirectable
-// (card 2026-0312 §2 D-a). src/instances.ts reads this to refuse
+// src/instances.ts reads this to refuse
 // 501 WORKER_SESSIONS_NEED_A_SHELL.
 export type RedirectableSystem = System & ShellHost;
 
@@ -147,8 +146,8 @@ export const FILE_TOOLS: Record<string, string> = {
 // A marked CLI's `Grep` spawns an UNMARKED `rg`, which the union routes by the
 // caller rule as a stranger — so it would search the wrong side and return
 // silently wrong results rather than failing. Re-enabling them needs mark
-// inheritance, which is measured CLOSED (handover §5, S3 §B3): cc's plumbing IS
-// the worker's process subtree, so no ancestry cut separates them.
+// inheritance, which is measured CLOSED: cc's plumbing IS the worker's process
+// subtree, so no ancestry cut separates them.
 const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
 
 // THE OUTPUT FENCE for one redirected command, and the reason the redirected
@@ -214,7 +213,7 @@ export class SessionRedirect {
   // ONE for the whole session, built on first use. It holds configuration only —
   // the project root, the fence, the ceiling — because no command's state
   // reaches any later command, so there is nothing left for a per-agent one to
-  // keep apart (card 2026-0312 §3a).
+  // keep apart.
   #shell: ProviderShell | null = null;
 
   // WHAT `close()` PULLS. There is no shell process to close any more, so
@@ -222,8 +221,7 @@ export class SessionRedirect {
   // and every command combines it with its caller's own signal. Without it a
   // command survives its session and runs to completion on someone else's
   // machine with nobody left to read the result — measured, and reachable in
-  // production before this card on any provider without `persistentShell`
-  // (card 2026-0312 §3c F-3).
+  // production on any provider without `persistentShell`.
   //
   // REPLACED ON EVERY close(), NOT ABORTED ONCE, and this is load-bearing:
   // `close()` is NOT terminal for a redirect. Instance exit and DELETE never
@@ -314,16 +312,12 @@ export class SessionRedirect {
   #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
-    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and cc needs it for nothing. It
-    // once became cc's deadline, which killed the command at the same instant the
-    // CLI DETACHED the forwarder and handed the agent a pointer to it (card
-    // 2026-0305 §4); it then became a wait bound on the shell's queue, and card
-    // 2026-0312 removed the queue.
+    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and cc needs it for nothing.
     //
     // AT THE TOOL TIMEOUT THE CLI DETACHES, IT DOES NOT KILL, and hands the
     // agent a background task — measured at CLI 2.1.258, for a rewritten
     // forwarder command and for the same command left un-rewritten alike, and
-    // whether its output was flowing or silent (card 2026-0310 §1.2). The
+    // whether its output was flowing or silent. The
     // command keeps running, bounded by cc's ceiling, which is why that ceiling
     // sits above the documented max rather than at it. What the CLI DOES kill
     // the forwarder for — an interrupt, or a background task the worker stops —
@@ -383,7 +377,7 @@ export class SessionRedirect {
   // carrying frames for both. The per-command nonce defends something else
   // (forgery within one stream) and is not what makes this safe.
   //
-  // WHAT BOUNDS cc's HEAP WITH N IN FLIGHT (card 2026-0312 §G-4): the output
+  // WHAT BOUNDS cc's HEAP WITH N IN FLIGHT: the output
   // fence below is PER COMMAND, so the exposure is `N × maxOutputBytes`. N is
   // whatever the CLI's own Bash concurrency is — realistically 1-10, since the
   // model issues Bash calls one turn at a time and a wide fan-out is a handful

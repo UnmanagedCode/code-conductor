@@ -60,7 +60,7 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   //    server leaves its dead closure installed for the next importer; nothing
   //    resets them globally, only each test's own `finally`.
   //  - `instances.setClaudePluginDirsResolver` below is the instance-scoped
-  //    shape and the target end state (card 2026-0167).
+  //    shape and the target end state.
   //
   // Consolidating the four into one `setHostProviders({…})` object was
   // considered and DECLINED: it is the same process-wide module-global state
@@ -257,7 +257,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // Readiness is informational only (a stderr warning banner). Run it AFTER
   // we're listening — never gate port availability on a `claude --version`
   // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting
-  // it here previously delayed listen() past test poll deadlines under load.)
+  // it here delays listen() past test poll deadlines under load.)
   checkClaudeReadiness()
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
     .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));

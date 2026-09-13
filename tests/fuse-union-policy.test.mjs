@@ -13,8 +13,7 @@
 // would make a silently skipped C test indistinguishable from a passing one.
 //
 // WHAT THIS FILE CANNOT REACH, stated up front so a SURVIVED here is read
-// against a known boundary rather than argued about (plan 2026-0355 §7.1, and
-// PROVENANCE.md's policy-split section). It is a boundary of TWO kinds and the
+// against a known boundary rather than argued about. It is a boundary of TWO kinds and the
 // difference matters to whoever files the verdict:
 //
 //   COVERED ELSEWHERE, by a named arm — `route()`'s host arm and its
@@ -24,14 +23,13 @@
 //   and cc's half in `systems-mirror-geometry-follow`).
 //
 //   COVERED NOWHERE, and recorded as such rather than assigned to an arm that
-//   does not exist — that `fuse_get_context()->pid` is a TID in practice, and
+//   does not exist — that `fuse_get_context()->pid` is a TID in practice (a
+//   nontrivial share of a live session's ops arrive with pid != tgid), and
 //   that the marking event fires on the CLI's own first read of its binary.
-//   Both rest on S1 §6 Q1's measurement (983 of 14 677 ops had pid != tgid),
-//   which is real and historical; the INSTRUMENT that produced it was the
-//   spike's identity trace, deleted by ledger row D2. No live arm re-measures
-//   either. `bootstrap.sh` now fires the marking event deliberately, so the
-//   second one is no longer load-bearing for the launch — R2 would fail if the
-//   mark did not reach the CLI's thread group — but nothing pins the TID claim.
+//   No live arm re-measures either. `bootstrap.sh` fires the marking event
+//   deliberately, so the second claim is not load-bearing for the launch — R2
+//   fails if the mark does not reach the CLI's thread group — but nothing pins
+//   the TID claim.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -270,25 +268,20 @@ describe('the compiled policy driver', { skip }, () => {
     // `pt_readdir` (union.c), which no unit fixture can reach. cc's half is
     // killed by `tests/systems-mirror-geometry-follow.test.mjs`'s fail-pin arm.
     // THE DAEMON'S HALF IS CURRENTLY UNKILLED, and saying so is the point of
-    // this note: R2 was credited with it and R2 reads a FILE — no arm anywhere
-    // runs a real directory listing through the mount. Recorded in
-    // PROVENANCE.md's "what is measured where" as a real gap.
+    // this note: R2 is easily credited with it and R2 reads a FILE — no arm
+    // anywhere runs a real directory listing through the mount. A real gap,
+    // recorded rather than assigned to an arm that does not cover it.
     ['b5-getattr',    'the synthetic node is fixed 0555/uid0/mtime0 and touches no filesystem',
                       'fstatat the host directory of the same name'],
     ['b6-erofs',      'a mutation on a synthetic or bind node is EROFS, not EACCES',
                       'return -EACCES, or let T_BIND through'],
     // `or serve the host` is NOT reachable from here: the host arm is
     // `route()`'s (union.c), which no unit fixture can call. Real gate R2.
-    // RE-SCOPED BY 2026-0382: this guard had been defence in depth behind a
-    // wider plan in which `project` was substituted to `host` for an unmarked
-    // caller; the owner narrowed the substitution to `fail` alone, which made
-    // the mark check the live production mechanism for one card's worth of
-    // history. Recorded because the reasoning is what moved, not the assertion.
-    // RE-SCOPED AGAIN BY 2026-0398, AND THE DIRECTION IS BACK. An unmarked
+    // DEFENCE IN DEPTH, NOT THE LIVE MECHANISM. An unmarked
     // caller resolves in VIEW_HOST, where `tier_of` skips every `project` pin —
     // so no unmarked resolution can produce T_PROJECT and route() cannot
-    // dispatch one here. The mark check is DEFENCE IN DEPTH once more, and the
-    // live mechanism is the view (b41). Kept, because deleting a liveness guard
+    // dispatch one here. The live mechanism is the view (b41). Kept, because
+    // deleting a liveness guard
     // on the only function that sends a control frame is not worth the risk.
     ['b7-unmarked',   'an unmarked caller at a project path gets -ENOENT and sends no frame — defence in depth behind the view, which is where the invariant is now structural',
                       'delete the mark check in policy_project_route'],
@@ -328,7 +321,7 @@ describe('the compiled policy driver', { skip }, () => {
                       'make the substitution emit a `deny` row at any substituted tier; drop any of the three ⇒ the served count falls; give the re-resolved tiers a reason of their own ⇒ the count is unchanged but b24’s reason set breaks; make policy_project_route stop denying'],
     ['b22-cwd-chain-extent',
                       'the cwd chain is ancestor-or-equal AT A COMPONENT BOUNDARY — both directions of the prefix-sharing sibling trap — and it is the OVERLAY’s whole domain: an unset cwd synthesizes nothing anywhere',
-                      "drop the `/`-boundary check ⇒ /root/app and /roo join the chain for a cwd of /root/app3; use tier_of instead of the chain ⇒ a child of the cwd gets an overlay node; make policy_cwd_component answer for a NULL cwd_path ⇒ the unset-cwd arm dies; drop the overlay clause from resolve_class ⇒ the cwd itself stops answering. NOT `default cwd_path in main()` — that mutant lives in union.c, which this fixture cannot reach; A16b's no-default source pin is what kills it"],
+                      "drop the `/`-boundary check ⇒ /root/srv and /roo join the chain for a cwd of /root/srv2; use tier_of instead of the chain ⇒ a child of the cwd gets an overlay node; make policy_cwd_component answer for a NULL cwd_path ⇒ the unset-cwd arm dies; drop the overlay clause from resolve_class ⇒ the cwd itself stops answering. NOT `default cwd_path in main()` — that mutant lives in union.c, which this fixture cannot reach; A16b's no-default source pin is what kills it"],
     ['b27-cwd-ino-distinct',
                       'every chain component gets a DISTINCT st_ino — now read through the overlay node’s own policy_synth_getattr in VIEW_HOST — and the chain sub-range is disjoint from both the ancestor range and the exact-pin range',
                       'route the chain through policy_bind_ino ⇒ every unpinned component collapses to SYNTH_INO_BASE + MAX_ANC; drop the `npins` term ⇒ the chain overlaps the pin range; take the overlay node’s inode from anc_find ⇒ it answers -ENOENT, the node the chain is not in'],
@@ -354,7 +347,7 @@ describe('the compiled policy driver', { skip }, () => {
     ['b37-unmarked-never-gets-remote',
                       'over 6 tiers × {host-has, host-lacks} × {marked, unmarked} the map returns the INPUT tier or T_HOST and nothing else, and at (unmarked, project) it is T_HOST ON BOTH HOST AXES',
                       'return any third tier from the map; return T_PROJECT for an unmarked caller at a host-having project path (the ruling violated). NOT `make the map op-sensitive` — every case here drives `"getattr"` only, so a mutant keying on the op while PRESERVING getattr survives the whole unit fixture, and the graded mutation suite with it (that suite sets no RUN_FUSE_LIFECYCLE). Measured by hand at the real gate, where the two variants die in DIFFERENT places: keying the T_PROJECT rule alone dies at R2 and at R13(d)’s host-shadowed half — pt_getattr still substitutes, the shell’s open does not, and the read fails — while keying BOTH rules dies at R2 and at R13(a), the first fail-tier open in the file, so (b) and (f) never run'],
-    // ── 2026-0398: ONE RULE, TWO VIEWS, NO GEOMETRY IN EITHER ────────────
+    // ── ONE RULE, TWO VIEWS, NO GEOMETRY IN EITHER ───────────────────────
     ['b38-view-is-geometry-invariant',
                       'the VIEW_HOST resolution of one fixed path set is IDENTICAL at all three geometries (mirrorRoot == systemPath, a strict ancestor, and /), and the answers are the right ones — while VIEW_CLI DIFFERS across the same three builds',
                       'key anything unmarked on mirrorRoot; let VIEW_HOST consult the ancestor table ⇒ `/` is synth at N and fail at W and the identity dies at the first path; stop striking `project` pins in VIEW_HOST ⇒ the space between mirrorRoot and systemPath answers per-geometry again; strike `hide` or `bind` too'],
@@ -369,10 +362,10 @@ describe('the compiled policy driver', { skip }, () => {
                       'stop striking `project` pins in VIEW_HOST ⇒ an unmarked caller names the remote and policy_project_route becomes reachable again; return the input tier unchanged from the re-resolution ⇒ T_PROJECT survives; substitute T_HIDE to host in the re-resolution ⇒ the mirror and the control socket become reachable to an unmarked caller at a project-pinned spelling, and the n_hide count dies; drop the overlap from the geometry ⇒ the fourth member goes unmet and the range claim is vacuous again'],
     ['b43-uncovered-is-still-the-hosts',
                       '`fail -> host` is untouched and UNCONDITIONAL at all three geometries, for an unpinned file and for an unpinned directory that is NOT a chain component — including a path the host does not have',
-                      'gate the T_FAIL substitution on policy_host_absent ⇒ the unmarked CREATE at an unpinned path (real gate R13(f)) dies, the 2026-09-08 "host means host" decision reverted; make the overlay fire off the chain ⇒ an unpinned directory becomes a synthetic node'],
+                      'gate the T_FAIL substitution on policy_host_absent ⇒ the unmarked CREATE at an unpinned path (real gate R13(f)) dies and `fail -> host` stops being unconditional; make the overlay fire off the chain ⇒ an unpinned directory becomes a synthetic node'],
     ['b44-dirent-visible',
-                      'card 2026-0403, AT THE DEFAULT NARROW ROOT: policy_dirent_visible answers per view — T_HIDE invisible to both, T_FAIL invisible to VIEW_CLI and visible to VIEW_HOST (both the explicit `fail` pin and the wholly unpinned name), host/bind/synth/project visible to both — and policy_synth_children asks the SAME predicate',
-                      'restore the caller-insensitive `T_HIDE || T_FAIL` filter ⇒ an unmarked `ls /tmp` emits nothing while `cat /tmp/x` works, the measured defect; drop the T_HIDE clause ⇒ the run dir and the mirror are listed; make T_FAIL visible to VIEW_CLI ⇒ `ls` and `cat` disagree for the CLI; leave policy_synth_children’s own tier test inline ⇒ the two arms drift'],
+                      'AT THE DEFAULT NARROW ROOT: policy_dirent_visible answers per view — T_HIDE invisible to both, T_FAIL invisible to VIEW_CLI and visible to VIEW_HOST (both the explicit `fail` pin and the wholly unpinned name), host/bind/synth/project visible to both — and policy_synth_children asks the SAME predicate',
+                      'restore the caller-insensitive `T_HIDE || T_FAIL` filter ⇒ an unmarked `ls /tmp` emits nothing while `cat /tmp/x` works; drop the T_HIDE clause ⇒ the run dir and the mirror are listed; make T_FAIL visible to VIEW_CLI ⇒ `ls` and `cat` disagree for the CLI; leave policy_synth_children’s own tier test inline ⇒ the two arms drift'],
     ['b46-floor-scope',
                       'the floor fires ONLY on a VIEW_HOST directory that is a cwd-chain component — not a file, not off the chain, not below the cwd, not the prefix-sharing sibling, not VIEW_CLI — and its effect is exactly `|= 0111` with nothing else in the stat touched',
                       'drop the S_ISDIR guard; drop policy_cwd_component ⇒ an unscoped floor grants traversal the host denies (constraint 1); drop the VIEW_HOST guard ⇒ the marked CLI is handed a mode the host does not report; widen 0111 to 0555'],
@@ -381,7 +374,7 @@ describe('the compiled policy driver', { skip }, () => {
                       'floor in one pt_getattr arm only ⇒ stat and fstat disagree; omit policy_floor_mask ⇒ `test -x /root` refuses what `stat /root` advertises, from one caller; clear R_OK as well ⇒ the floor grants access, not just resolution; return 0 for F_OK ⇒ every existence probe on the chain answers yes without asking the host'],
     ['b49-table-child-exists',
                       'a table-derived dirent name is emitted only where the RESOLVING VIEW can open it: a fixed node (ancestor in VIEW_CLI, overlay in VIEW_HOST, bind in both) exists by construction, everything else exactly where the orchestrator has it — driven over an excluded child of an overlay, a project-pinned child that IS the overlay, an ancestor the host lacks, a present and an absent host pin, and a bind target. AND THE SCAFFOLD AXIS: on a node with no backing store the flag carves out T_PROJECT and NOTHING ELSE — a project child is taken on trust, a host pin child of that same node is still checked in both directions, a fixed node is unaffected, and the flag changes no VIEW_HOST answer at all',
-                      'branch on the RAW PIN TIER ⇒ the project-pinned overlay child is host-checked and dropped (`cd <systemPath>` works while `ls` of its parent omits the name) and a host-absent ancestor is emitted unchecked in VIEW_HOST; drop the T_SYNTH/T_BIND arm ⇒ the overlay cwd vanishes from its parent’s listing; drop the host probe ⇒ an excluded child of an overlay is listed while every op on it answers -ENOENT; reuse policy_dirent_visible for this question ⇒ visibility and existence collapse and all three return. ON THE FLAG: widen the carve-out past T_PROJECT (`if (scaffold) return 1`) ⇒ the marked CLI’s `ls /etc` names ETC_PINS entries absent on this host while `cat` answers -ENOENT, card 2026-0403’s third instance restored; drop the carve-out (`scaffold` ignored) ⇒ a project child of a scaffold node is host-probed on the wrong axis and the project leaves the marked `ls` of its parent, breaking §4’s marked row; make the flag reach VIEW_HOST ⇒ the inertness assertion dies'],
+                      'branch on the RAW PIN TIER ⇒ the project-pinned overlay child is host-checked and dropped (`cd <systemPath>` works while `ls` of its parent omits the name) and a host-absent ancestor is emitted unchecked in VIEW_HOST; drop the T_SYNTH/T_BIND arm ⇒ the overlay cwd vanishes from its parent’s listing; drop the host probe ⇒ an excluded child of an overlay is listed while every op on it answers -ENOENT; reuse policy_dirent_visible for this question ⇒ visibility and existence collapse and all three return. ON THE FLAG: widen the carve-out past T_PROJECT (`if (scaffold) return 1`) ⇒ the marked CLI’s `ls /etc` names ETC_PINS entries absent on this host while `cat` answers -ENOENT; drop the carve-out (`scaffold` ignored) ⇒ a project child of a scaffold node is host-probed on the wrong axis and the project leaves the marked `ls` of its parent, breaking §4’s marked row; make the flag reach VIEW_HOST ⇒ the inertness assertion dies'],
     ['b48-probe-falls-not-absent',
                       'policy_host_absent answers ABSENT for ENOENT / ENOTDIR / ENAMETOOLONG and for a negative fd, NOT ABSENT for a present file, directory or DANGLING symlink, and NOT ABSENT for an ELOOP — the failure direction that keeps an unknown error loud instead of silently hiding a host directory',
                       '`return fstatat(...) != 0` ⇒ ELOOP reads as absence and a synthetic node hides real host data, the silent-hiding direction; reuse policy_host_has’s polarity ⇒ every answer inverts; drop AT_SYMLINK_NOFOLLOW ⇒ a dangling symlink reads as absent and gets an overlay node; return 0 for a negative fd ⇒ the seam-unset axis every other case leans on collapses'],
@@ -641,16 +634,16 @@ describe('the compiled policy driver', { skip }, () => {
   // views, so the routed path's own answer does not need the mark. But the view
   // does not stay with the routed path — it is carried into the dirhandle and
   // used to classify CHILDREN, and into the floor, which requires VIEW_HOST.
-  // Deriving it only inside the gate left two live failures:
+  // Deriving it only inside the gate leaves two live failures:
   //
-  //   an unmarked `ls` of a HOST-PINNED directory classified its children in
-  //   VIEW_CLI, so an unpinned child was hidden while `cat` on it returned the
-  //   bytes — card 2026-0403's defect class, at the call site `b44` cannot
-  //   reach; and
+  //   an unmarked `ls` of a HOST-PINNED directory classifies its children in
+  //   VIEW_CLI, so an unpinned child is hidden while `cat` on it returns the
+  //   bytes — the defect class this source-shape assertion guards, at the call
+  //   site `b44` cannot reach; and
   //
-  //   a cwd-chain component covered by a HOST pin never entered the gate, so
-  //   the floor declined and an unmarked spawn died in chdir() on a
-  //   search-denied orchestrator directory — this card's own symptom.
+  //   a cwd-chain component covered by a HOST pin never enters the gate, so
+  //   the floor declines and an unmarked spawn dies in chdir() on a
+  //   search-denied orchestrator directory.
   //
   // THE FIX IS LAZY, NOT UNCONDITIONAL, AND THE COST IS WHY. Setting the view
   // in `route()` for every op would pay a /proc mark read per op at `host`, the
@@ -739,10 +732,9 @@ describe('the compiled policy driver', { skip }, () => {
 
   // ── BOTH readdir ARMS ASK ONE PREDICATE ────────────────────────────────────
   //
-  // Card 2026-0403 was TWO INSTANCES OF ONE DEFECT — a caller-insensitive tier
-  // filter in `pt_readdir`'s real arm and the same test inline in
-  // `policy_synth_children` — so the fix is one predicate and the pin is that
-  // neither arm holds a second copy. A second inline `ct == T_FAIL` would pass
+  // A CALLER-INSENSITIVE TIER FILTER IS THE SAME DEFECT TWICE — once in
+  // `pt_readdir`'s real arm and once inline in `policy_synth_children` — so the
+  // rule is ONE predicate and the pin is that neither arm holds a second copy. A second inline `ct == T_FAIL` would pass
   // every behavioural test while re-hiding a name an unmarked caller can open.
   test('both readdir arms classify dirents through policy_dirent_visible alone', async () => {
     const [rawU, rawP] = await Promise.all([
@@ -758,7 +750,7 @@ describe('the compiled policy driver', { skip }, () => {
       union.indexOf('static int pt_readdir('));
     assert.match(child, /if \(!policy_dirent_visible\(child, h->view\)\)/,
       'INVARIANT: the dirent stream asks policy_dirent_visible in the HANDLE\'s view — a '
-      + 'caller-insensitive filter here is card 2026-0403');
+      + 'caller-insensitive filter here serves one caller two answers');
 
     // THE SYNTHETIC STREAM, through policy_synth_children.
     const synthAt = policy.indexOf('static inline size_t policy_synth_children(');
@@ -866,8 +858,7 @@ describe('the compiled policy driver', { skip }, () => {
   //   `pinned_children_emit` branched on the RAW PIN TIER, so a project-pinned
   //   child that resolves to the OVERLAY in VIEW_HOST was host-checked, found
   //   absent and dropped — `stat <systemPath>` answering and `cd` working while
-  //   `ls` of its parent omitted the name, which is a regression this card
-  //   introduced; and
+  //   `ls` of its parent omits the name; and
   //
   //   the same function's T_SYNTH branch emitted unchecked, which is true of a
   //   VIEW_CLI scaffold node and false in VIEW_HOST, where an off-chain
@@ -903,23 +894,20 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(emit, /resolve_class\(pc->full\[i\], v\)/,
       'INVARIANT: the emitted tier is resolved in the view, not copied from the pin');
 
-    // AND THE VIEW_HOST SYNTHETIC ARM GOES THROUGH IT. Before this the arm
-    // called policy_synth_children directly and emitted unchecked.
+    // AND THE VIEW_HOST SYNTHETIC ARM GOES THROUGH IT.
     const readdir = bodyOfIn(union, 'readdir');
     // THE SCAFFOLD ARM ASKS THE PREDICATE TOO, AND THE CARVE-OUT IS NARROWER
-    // THAN "VIEW_CLI SKIPS THE CHECK". It has two parts and only the first was
-    // ever written down: (i) for a `project` child the host is the WRONG AXIS —
+    // THAN "VIEW_CLI SKIPS THE CHECK". It has two parts:
+    // (i) for a `project` child the host is the WRONG AXIS —
     // a project path's existence to the CLI is the MIRROR's question, by tier,
     // wherever the host happens to hold it, and the right channel is a control
-    // frame this card does not add. NOT "the orchestrator has nothing at
+    // frame a synthetic node must not send. NOT "the orchestrator has nothing at
     // systemPath": that is deployment- and geometry-conditional, and the axis
     // argument holds without it; (ii) for a `host` pin
     // child of that SAME node the host IS the right axis and the probe costs one
-    // fstatat with no control frame, so the carve-out does not reach it. Leaving
-    // (ii) unchecked left the MARKED CLI's `ls /etc` naming ETC_PINS entries
-    // absent on this host while `cat` answered -ENOENT — the third instance of
-    // card 2026-0403's class, and the reason that card could not close as
-    // absorbed while it stood.
+    // fstatat with no control frame, so the carve-out does not reach it.
+    // Leaving (ii) unchecked leaves the MARKED CLI's `ls /etc` naming ETC_PINS
+    // entries absent on this host while `cat` answers -ENOENT.
     assert.match(readdir, /if \(h->view == VIEW_CLI\) \{\s*\n\s*policy_synth_children\(h->path, VIEW_CLI, scaffold_emit, &fc\);/,
       'INVARIANT: the VIEW_CLI scaffold streams its table children through scaffold_emit, which '
       + 'asks policy_table_child_exists — an unchecked emit here lists a pinned name the CLI '
@@ -976,16 +964,14 @@ describe('the compiled policy driver', { skip }, () => {
     'self-recursion':            'EV_SERVED',
     // The readdir SUCCEEDS; a name past MAX_PINNED_CHILDREN is dropped from it.
     'pinned-children-truncated': 'EV_SERVED',
-    // 2026-0382: an unmarked caller was routed to the host at an unpinned path.
+    // an unmarked caller was routed to the host at an unpinned path.
     'unmarked-host-served':      'EV_SERVED',
-    // 2026-0398 RETIRED TWO REASONS, and the deletions are the point rather
-    // than an omission: `unmarked-project-host-served` existed because the
-    // project rule was a SECOND rule with a host-existence test of its own, and
-    // `cwd-traversal-served` recorded a grant by an exemption that no longer
-    // exists. A project-tier path now re-resolves in VIEW_HOST and lands on the
-    // `unmarked-host-served` row above, and the cwd chain is answered by the
-    // host or by the overlay with no grant to record. Re-adding either means
-    // re-adding a mechanism — which is what the set comparison below forces.
+    // TWO REASONS ARE DELIBERATELY ABSENT, and their absence is the point rather
+    // than an omission: a project-tier path re-resolves in VIEW_HOST and lands
+    // on the `unmarked-host-served` row above, and the cwd chain is answered by
+    // the host or by the overlay with no grant to record. Re-adding either
+    // reason means re-adding its mechanism — which is what the set comparison
+    // below forces.
   };
 
   test('every reason the daemon emits carries exactly one kind, and the set matches both ways', async () => {
@@ -1101,11 +1087,8 @@ describe('the compiled policy driver', { skip }, () => {
     assert.equal((body.match(/policy_is_marked_tid\(/g) ?? []).length, 1,
       'INVARIANT: route() derives the mark exactly once and shares it — a second call site '
       + 'pays a second /proc read on every caller-sensitive op');
-    // THERE IS NO ORDERING LEFT TO PIN HERE, and saying so is the point: the
-    // traversal bound this test used to guard — "stop at the first ancestor the
-    // host has", a property of running the substitution before the cwd
-    // exemption — is GONE with the exemption (card 2026-0398). An unmarked
-    // caller resolves in VIEW_HOST, where the chain is answered by the host or
+    // THERE IS NO ORDERING LEFT TO PIN HERE, and saying so is the point: an
+    // unmarked caller resolves in VIEW_HOST, where the chain is answered by the host or
     // by the overlay and there is no grant whose extent an ordering could bound.
     assert.ok(!/policy_cwd_exempt\(/.test(src),
       'INVARIANT: the cwd exemption is gone from union.c — its rule is the view now, and a '
@@ -1162,9 +1145,9 @@ describe('the compiled policy driver', { skip }, () => {
   // so `open` at `cflags=2` is a WRITE open and `cflags=0` is a read one.
   //
   // IT IS AN INSTRUMENT CLAIM AND THAT IS WHY IT IS PINNED. The two-handle
-  // premise is carried as a standing condition whose CHECK is a
-  // `CC_FUSE_TRACE=1` capture counted offline (PROVENANCE D13c, measurement
-  // M6) — and a trace that reported `cflags=0` for every op would answer the
+  // premise is carried as a standing condition (docs/architecture.md → "the
+  // two-handle window") whose CHECK is a `CC_FUSE_TRACE=1` capture counted
+  // offline — and a trace that reported `cflags=0` for every op would answer the
   // question with a confident zero instead of failing. A source-shape
   // assertion, because no deterministic fixture can reach a libfuse op body.
   test('T19b: the trace line carries the frame intent the op declared', async () => {
@@ -1184,12 +1167,10 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(src, /tr\(op, p, tier_name\(r\.tier\), r\.intent\);/,
       'INVARIANT: ROUTE forwards the ROUTE\'S OWN intent to tr — a literal there reports the '
       + 'same intent for every op');
-    // AND THE TWO OPS THAT ROUTE BOTH ENDS BY HAND. These called `route()`
-    // directly and traced a HAND-COPIED literal; the literals happened to
-    // equal the `to` route's flags, so the trace was right by coincidence and
-    // would have gone on reporting the old intent the moment either call
-    // changed. A confidently wrong number is one level worse than the blind
-    // instrument this field was added to fix.
+    // AND THE TWO OPS THAT ROUTE BOTH ENDS BY HAND. A hand-copied flag
+    // literal there would report the same intent whatever either call changed
+    // — a confidently wrong number, one level worse than a blind instrument.
+    // The invariant is `rt.intent`.
     for (const op of ['rename', 'link']) {
       assert.match(src, new RegExp(`tr\\("${op}", to, tier_name\\(rt\\.tier\\), rt\\.intent\\);`),
         `INVARIANT: pt_${op} traces the intent its own \`to\` route carries, not a copy of it`);
@@ -1209,8 +1190,8 @@ describe('the compiled policy driver', { skip }, () => {
   // PINS: `pt_release`'s reconcile frame carries CCU_FLAG_RELEASE_ONLY exactly
   // when the handle is NOT dirty, and carries nothing when it is.
   //
-  // A SOURCE-SHAPE ASSERTION, and the asymmetry is the same one PROVENANCE
-  // records for FOR_WRITE: no deterministic fixture can observe what the
+  // A SOURCE-SHAPE ASSERTION, and the asymmetry is the same one FOR_WRITE
+  // carries: no deterministic fixture can observe what the
   // libfuse daemon put on the wire, because the fixture cannot reach an op
   // body. The CONSUMER's half of this bit is driven for real in
   // tests/fuse-transport.test.mjs (T14/T15); this is the half that says the
@@ -1377,7 +1358,7 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(bodyOf('release'), /push_mirror_flags\(|push_mirror\(/, 'pt_release stopped pushing');
     // AND THE PUSH THAT close(2) ACTUALLY SEES. The kernel discards release's
     // return value, so a reconcile answered only there is a refusal the worker
-    // never learns about — criterion 10. `flush` is where close(2) reads from.
+    // never learns about. `flush` is where close(2) reads from.
     assert.match(bodyOf('flush'), /push_mirror_flags\(|push_mirror\(/,
       'the push is not in flush, so a refused reconcile cannot reach close(2)');
     // EVERY CLAIMING OP RELEASES ITS CLAIM WHEN IT FAILS, or the path stays
@@ -1387,16 +1368,22 @@ describe('the compiled policy driver', { skip }, () => {
     }
     assert.match(bodyOf('rename'), /abandon_claim\(from[\s\S]*abandon_claim\(to/,
       'pt_rename releases only one of the two claims it takes');
-    // WHAT THIS LOOP IS AND IS NOT. It is a PRESENCE grep: b16 proves what an
-    // abandon does, and the real-gate arms exercise one end to end without ever
-    // observing the release. So a future claiming op with a post-READY failure
-    // path that forgets its abandon is caught by nothing here except the name
-    // being absent from its body. No live gap — every claiming op's failure
-    // paths were re-enumerated at this tree — but a weakness of the record, and
-    // one that only bites daemon-side: cc's `#fetch` wrapper releases on any
-    // non-READY reply, so the whole FETCH-side class is backstopped
-    // behaviourally whatever union.c does. See PROVENANCE.md, "what is measured
-    // where".
+    // WHAT THIS LOOP IS AND IS NOT, because the residual is easy to overstate
+    // and easy to forget. `b16` proves what an abandon DOES. That every
+    // claiming op CALLS one is pinned by exactly two things: this presence grep
+    // over union.c, and real-gate arms that exercise an abandon end to end
+    // WITHOUT ever observing the release. So a future claiming op with a
+    // post-READY failure path that forgets its `abandon_claim` is caught by
+    // nothing except the name being absent from its body here, or the real gate
+    // happening to fail.
+    //
+    // THE RESIDUAL IS DAEMON-SIDE ONLY, and it covers exactly the case where
+    // the FETCH SUCCEEDED and the op then failed. cc's `#fetch` wrapper is a
+    // BEHAVIOURAL backstop for the whole FETCH-side class: any FETCH that does
+    // not answer READY releases the claim at cc, whatever the daemon's wiring
+    // does, so a route failure cannot leak the claim regardless. Which
+    // invariants are proven only by the real gate is tabulated in
+    // `harness/mutation/RATIONALE.md`, under the env-gated suites.
 
     // ── THE FLAG IS PINNED WHERE IT IS PRODUCED ─────────────────────────────
     //

@@ -12,9 +12,9 @@
 // <orchStoreRoot>/conventions/conductor.json (keys: `rules`, `disabled`).
 //
 // Every enabled convention costs tokens in every conductor session's system
-// prompt — keep the built-in set lean; project-specific detail belongs in
-// .conduct/tasks/*.md task plans and the wiki, not here. (Those are plan
-// DOCUMENTS; a "playbook" is now the enforced stage graph of src/playbooks.ts.)
+// prompt — keep the built-in set lean; project-specific detail belongs in the
+// conductor's own task plans and wiki, not here. (Those are plan DOCUMENTS; a
+// "playbook", by contrast, is the enforced stage graph of src/playbooks.ts.)
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -112,7 +112,7 @@ export const validateSlug = catalog.validateSlug;
 // enabled, so the only per-convention state worth persisting is the user's
 // explicit OFF-switches — which is exactly what the shared `disabled` deny-list
 // holds. It records seed, custom and plugin off-switches alike, so this scope
-// needs no second list and no `persist` override (card 2026-0123).
+// needs no second list and no `persist` override.
 //
 // Effective selection = base ∪ (conventions of currently-enabled plugins −
 // `disabled`). getCatalog() surfaces plugin conventions from ENABLED plugins
@@ -289,8 +289,8 @@ export async function defaultPlaybookConvention(): Promise<string> {
 
 // core + enabled convention bodies (catalog order) + footer.
 //
-// A DEGRADED CATALOG COMPOSES ANYWAY, AND SAYS SO IN THE SERVER LOG — card
-// 2026-0277. A plugin's conductor conventions are derived live from the
+// A DEGRADED CATALOG COMPOSES ANYWAY, AND SAYS SO IN THE SERVER LOG.
+// A plugin's conductor conventions are derived live from the
 // catalog, so while that plugin's project is unreachable its slug is absent
 // from the selection as well as from the catalog: compose() is never handed a
 // slug it cannot resolve, its unknown-slug 400 never fires, and the section is

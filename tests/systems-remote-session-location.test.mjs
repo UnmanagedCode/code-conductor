@@ -8,7 +8,7 @@
 // `spawn_instance({resume})` form (the one an MCP conductor uses, and the one
 // spawn_instance's own description advertises as recovering the project and
 // worktree automatically) refused `400 project required` for all of them — the
-// same refusal a typo'd UUID gets (card 2026-0292).
+// same refusal a typo'd UUID gets.
 //
 // THE SCOPE IS RESUME **AND** READ, deliberately wider than "resume". Two
 // consuming sites turn a hit into a TRANSCRIPT CWD, and both re-derived it from
@@ -146,8 +146,8 @@ describe('a session on a project on a system', () => {
   // PINS: a session on a remote project resolves, so a bare resume with NO
   // project lands at that session's own session root.
   // NOT claiming the REST and MCP arms have independent mechanisms — they share
-  // `_doCreateResolved`. The MCP arm is here because it is the form the card is
-  // about, and it shares this test's killer set rather than adding one.
+  // `_doCreateResolved`. The MCP arm is here because it is the form under test,
+  // and it shares this test's killer set rather than adding one.
   test('T1: a bare resume with no project recovers it, on both surfaces', async () => {
     const remote = await bindRemoteSystem();
     const tree = await seedRepo(path.join(remote.root, 'app'));
@@ -172,10 +172,10 @@ describe('a session on a project on a system', () => {
   });
 
   // ── T2 ──────────────────────────────────────────────────────────────
-  // PINS: a WIDER mirror root does not move the session. It used to — the cwd
-  // was the local image root plus the project's offset inside it, so the
-  // advertisement decided the answer. The cwd is now the project's own path,
-  // which no advertisement addresses, and the locator has one candidate.
+  // PINS: a WIDER mirror root does not move the session. A cwd of the local
+  // image root plus the project's offset inside it would let the advertisement
+  // decide the answer; the cwd is the project's own path, which no
+  // advertisement addresses, and the locator has one candidate.
   test('T2: a wider mirror root leaves the session at the project path, and it still resolves', async () => {
     const w = await wideSystem(path.join('nest', 'app'));
     assert.equal((await adoptProject('app', w.tree, { system: w.id })).ok, true);
@@ -249,11 +249,11 @@ describe('a session on a project on a system', () => {
   // events, GET /summary's staleness count is the real message count, and
   // POST /summary 200s where the pre-fix route returned a clean 404 — and where
   // a PROBE-ONLY widening would have 500'd, `flattenTranscript` throwing at the
-  // tree path with no `statusCode`. That 500 is the counterfactual this card's
+  // tree path with no `statusCode`. That 500 is the counterfactual the widening's
   // scope exists to avoid, never shipped behaviour. POST is exercised through the real
   // route with `CLAUDE_BIN` pointed at tests/fake-claude-summarize.mjs, the
-  // same device tests/session-summaries.test.mjs uses — an earlier draft of
-  // this file omitted the arm claiming it "spawns `claude`", which was FALSE
+  // same device tests/session-summaries.test.mjs uses — omitting the arm on the
+  // grounds that it "spawns `claude`" would be FALSE
   // and left one of the two sites §3.3 exists to fix undiscriminated.
   // NOT claiming the generated summary TEXT is good: the fake binary owns that,
   // and what is pinned here is the status and the message count the route read
@@ -280,9 +280,9 @@ describe('a session on a project on a system', () => {
     assert.equal(g.body.data.short.isStale, true);
     assert.equal(g.body.data.medium.isStale, false);
 
-    // POST: the site whose cwd used to come from getWorktree/getProject. It has
-    // to reach the transcript to count anything, so `messageCount === 2` is the
-    // discriminating assertion — the remote tree path yields a throw, not a 2.
+    // POST: the site whose cwd must not come from getWorktree/getProject. It
+    // has to reach the transcript to count anything, so `messageCount === 2` is
+    // the discriminating assertion — the remote tree path yields a throw, not a 2.
     const origBin = process.env.CLAUDE_BIN;
     process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
     try {
@@ -354,12 +354,10 @@ describe('a session on a project on a system', () => {
     assert.ok(t2.events.length >= 1, `expected >= 1 event, got ${t2.events.length}`);
 
     // (d) A ROW WHOSE PROVIDER ANSWERS THE HANDSHAKE AND THEN DIES ON ITS FIRST
-    // OPERATION, and this arm CHANGED SHAPE with the geometry. It used to refuse
-    // 502 at create, because composing the session root was the first thing that
-    // touched the box. Nothing touches it at create any more — there is no
-    // session root to compose and the mirror advertisement is capability-gated —
-    // so the create SUCCEEDS and the box's death surfaces at the first operation
-    // that needs it. The read still works either way, which is what this arm has
+    // OPERATION. NOTHING TOUCHES THE BOX AT CREATE — there is no session root
+    // to compose and the mirror advertisement is capability-gated — so the
+    // create SUCCEEDS rather than refusing 502, and the box's death surfaces at
+    // the first operation that needs it. The read still works either way, which is what this arm has
     // always really been about.
     const dead = await bindRemoteSystem({ id: 'deadbox' });
     const deadTree = await seedRepo(path.join(dead.root, 'gamma'));
@@ -455,8 +453,8 @@ describe('a session on a project on a system', () => {
 
     const hit = await findSessionLocation(s.sessionId);
     assert.equal(hit.cwd, s.cwd);
-    // And that cwd IS the project's registered path — the two used to differ
-    // (the session ran in a local image of the tree), and their agreeing is
+    // And that cwd IS the project's registered path — the two differ only where
+    // the session runs in a local image of the tree, so their agreeing is
     // criterion 8 read off the locator.
     assert.equal(hit.cwd, (await getProject('app')).path);
   });

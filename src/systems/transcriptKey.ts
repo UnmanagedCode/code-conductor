@@ -7,19 +7,16 @@
 // and `.` to `-`, so "alike" is wider than "equal" and a byte comparison misses
 // the interesting half.
 //
-// WHY THIS FILE REPLACED `sessionRoot.ts`. Under the FUSE-union geometry a
-// remote session's cwd is the project's real path ON ITS SYSTEM — there is no
-// cc-owned local session root any more, and nothing here has anything to do
-// with one. What survived the geometry is this guard's JOB; what changed is the
-// key it compares.
+// UNDER THE UNION GEOMETRY a remote session's cwd is the project's real path ON
+// ITS SYSTEM: there is no cc-owned local session root, so the key this guard
+// compares is a real path on a real machine.
 //
-// AND IT NOW COMPARES ACROSS EVERY SYSTEM, not remote-against-remote. That
-// widening is forced by the same change: while a remote cwd lived under cc's
-// store it was disjoint from every local project path by construction, so a
-// local place could never collide with a remote one. Now a local project at
-// `/srv/app` and a remote project at `/srv/app` on `box` produce the same
-// directory — and `~/.claude` is host-pinned, so it lands on the host's real
-// disk.
+// IT THEREFORE COMPARES ACROSS EVERY SYSTEM, not remote-against-remote. A cwd
+// under cc's own store would be disjoint from every local project path by
+// construction, and a local place could never collide with a remote one. As it
+// is, a local project at `/srv/app` and a remote project at `/srv/app` on `box`
+// produce the same directory — and `~/.claude` is host-pinned, so it lands on
+// the host's real disk.
 
 import { encodeCwd, normalizeSystemPath } from '../projects.ts';
 

@@ -19,7 +19,7 @@ import { renderPinsFile, type TierEntry } from './tierTable.ts';
 // `fuse_main` untouched and needs no source change to honour them (its
 // `pt_init` sets only `use_ino` and `kernel_cache`).
 //
-// The epic's reason: FUSE's attribute cache is per-inode, not per-caller, so
+// The reason: FUSE's attribute cache is per-inode, not per-caller, so
 // one path measurably answered 15 bytes to `stat` and 33 to `cat` across the
 // routing boundary. `allow_other` + `default_permissions` are mandatory from
 // the first mount — the daemon runs as root and serves callers of another uid.
@@ -87,7 +87,7 @@ export interface FuseIntent {
 // is captured from /proc/self/mountinfo AT MOUNT TIME and never re-resolved:
 // resolving it by mountpoint works only while the mount is there, so the same
 // helper silently no-ops when called after an unmount — which is exactly when
-// teardown calls it (S3 §A4 step 1).
+// teardown calls it.
 export interface FuseMountRecord extends FuseIntent {
   // `starting` — the bootstrap has started processes but the mount is not up
   // yet; `mounted` — the handshake is complete. cc's awaitHandshake waits for
@@ -142,8 +142,8 @@ export interface FusePlan {
   // without. It is under `rundir` — a SIBLING of `root`, tiered `hide` — so
   // nothing inside the chroot can name it THROUGH THE UNION. That is the whole
   // of the property and it is not structural containment: the bind-mounted
-  // /proc reaches the same socket at `/proc/<ccpid>/root/<rundir>/` today
-  // (card 2026-0394). See `control.ts`'s header.
+  // /proc reaches the same socket at `/proc/<ccpid>/root/<rundir>/` today.
+  // See `control.ts`'s header.
   controlSock: string;
   // THE PATH WHOSE RESOLUTION MARKS A THREAD GROUP AS THE CLI — the launcher
   // binary, absolute, in the spelling the kernel will ask the union about. The
@@ -199,9 +199,9 @@ export interface FusePlanInput {
   // `buildTierTable` call here would produce an equal table that could later
   // stop being equal.
   //
-  // It is also why the plan no longer takes `localRoots`, `claudeCommand` or a
-  // `mirrorRoot`: every one of those is an input to the table, and the table's
-  // one construction site owns them.
+  // That is also why the plan takes none of the table's own inputs — no
+  // `localRoots`, `claudeCommand` or `mirrorRoot`: every one of those is an
+  // input to the table, and the table's one construction site owns them.
   tiers: TierEntry[];
 }
 
@@ -251,7 +251,8 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   // check, so a DOUBLED SLASH or a `.`/`..` component bites at the LAST
   // component: `/srv//app` matches `/` and `/srv` and then fails on the cwd
   // itself. A TRAILING slash matches every component and breaks nothing at all.
-  // `b28` pins both halves behaviourally.
+  // `tests/fuse-union-policy.test.mjs`'s cwd-chain cases pin both halves
+  // behaviourally.
   //
   // REFUSED HERE AND IN THE DAEMON, NOT NORMALISED IN EITHER. cc owns this
   // input, so a non-normalised value is a cc defect; and resolving `..`
@@ -267,17 +268,16 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   // `split('/')`, whose empty final component is neither `.` nor `..`, and
   // `/srv/app/` contains no `//` — so without `endsWith` cc would ACCEPT a
   // trailing slash. The C predicate walks components with `strchr` and refuses
-  // an empty one at `end == c`, which already covers it. Both measured by
-  // mutation: this clause is killed by two tests, the C one by none.
+  // an empty one at `end == c`, which already covers it.
   const cwd = input.cwdInside;
   if (!cwd.startsWith('/') || (cwd !== '/' && (cwd.endsWith('/') || cwd.includes('//')
       || cwd.split('/').some(c => c === '.' || c === '..')))) {
     // THE GROUND OF REFUSAL IS PRIMARY AND UNIVERSAL; THE CONSEQUENCE IS NAMED
     // PER MECHANISM, AND THERE ARE THREE.
     //
-    // Four drafts of this sentence looked for one consequence true of the whole
-    // refused class. There is none, and the class has three distinct mechanisms
-    // under `policy_cwd_component`'s byte-for-byte comparison — so an umbrella
+    // There is no one consequence true of the whole refused class: it has three
+    // distinct mechanisms under `policy_cwd_component`'s byte-for-byte
+    // comparison — so an umbrella
     // clause is false for at least one member whichever way it is phrased. The
     // refusal therefore rests on cc owning the input, which covers every member,
     // and a mechanism line is appended only for the shape at hand.

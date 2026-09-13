@@ -82,8 +82,8 @@ export function procStartSync(pid: number): string | null {
   catch { return null; }
 }
 
-// IS THIS PID STILL RUNNING? Extracted because the answer is subtle enough to
-// have been wrong: `kill(pid, 0)` raises ESRCH when the process is gone and
+// IS THIS PID STILL RUNNING? `kill(pid, 0)` raises ESRCH when the process is
+// gone and
 // EPERM when it is alive but not ours to signal — and EPERM is REACHABLE here,
 // because a FUSE-wrapped worker is root until the bootstrap's setpriv runs and
 // the anchor and the daemon are root for their whole lives. A catch-all reads

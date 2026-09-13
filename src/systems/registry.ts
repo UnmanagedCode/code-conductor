@@ -72,7 +72,7 @@ export const LOCAL_PROVIDER_ENV = 'CC_LOCAL_SYSTEM_PROVIDER';
 // GATE-ONLY. It exists so the acceptance gate can run the whole application
 // against a provider that serves NAMED targets — a shape `placementOf` will
 // never produce for `local` in production, and therefore a shape no whole-suite
-// pass could otherwise reach (card 2026-0266).
+// pass could otherwise reach.
 //
 // A sibling of LOCAL_PROVIDER_ENV above, not a new category: it is inert without
 // it, and can only ever modify the already-test-only stand-in. The guard is

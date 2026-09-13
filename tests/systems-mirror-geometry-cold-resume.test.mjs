@@ -1,18 +1,16 @@
 // A COLD RESUME OF A REMOTE SESSION, AFTER THE FUSE-UNION GEOMETRY.
 //
-// This file used to own the candidate-set scan: a remote session's cwd was a
-// cc-owned local session root at `imageRoot + offset`, so an advertisement that
-// moved while the session was NOT running left its transcript at one of several
-// possible cwds, and a cold resume had to enumerate them, find the session, and
-// RELOCATE its transcript to the new one.
+// There is no candidate-set scan, and the reason is one line: a remote
+// session's cwd is the project's real path on its system, which does not move.
+// There is one candidate, it is fixed at registration, and the whole search
+// space is that one path. `mirrorOffsets` — an enumerator over cwds a session
+// could have been left at when its cc-owned local session root sat at
+// `imageRoot + offset`, and the "the candidate set is COMPLETE" argument that
+// licensed stopping at the first hit — does not exist, and nothing relocates a
+// transcript.
 //
-// All of that is gone, and the reason is one line: a remote session's cwd is now
-// the project's real path on its system, which does not move. There is one
-// candidate, it is fixed at registration, and the whole search space collapsed
-// to it. `mirrorOffsets` — the enumerator, and the "the candidate set is
-// COMPLETE" argument that licensed stopping at the first hit — went with it.
-//
-// What is left to pin is what replaced it: a cold resume finds the session at
+// What this file pins is the geometry that makes the scan unnecessary: a cold
+// resume finds the session at
 // the project's path and nothing has to move, INCLUDING across an orchestrator
 // restart, which is the path with nothing in memory to help it. The
 // session-fatal refusal that replaced the LIVE follow is pinned in

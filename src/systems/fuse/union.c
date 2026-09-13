@@ -1,11 +1,9 @@
 /*
  * union.c — the FUSE-union daemon cc mounts under a remote-backed worker.
  *
- * ONE POLICY, NOT A MEASUREMENT INSTRUMENT. This file is a fork of the frozen
- * S3 spike instrument `rig/fuse-union-s3.c`, which had three selectable routing
- * modes and eight knobs because its job was to compare them. Every knob is
- * gone; what is left is the single policy the epic specifies. PROVENANCE.md
- * carries the fork point and one row per intentional divergence.
+ * ONE POLICY, NOT A MEASUREMENT INSTRUMENT. This daemon has one routing
+ * policy, no selectable modes and no measurement knobs — anything here that
+ * looks like a knob is an invariant, not a tuning input.
  *
  * ── what it serves, and to whom ─────────────────────────────────────────────
  *
@@ -13,14 +11,14 @@
  * src/systems/fuse/tierTable.ts. Five classes reach this file; a sixth is
  * derived (policy.h).
  *
- * IT IS READ THROUGH ONE OF TWO VIEWS (policy.h's `enum view`, card 2026-0398).
+ * IT IS READ THROUGH ONE OF TWO VIEWS (policy.h's `enum view`).
  * `VIEW_CLI` is the table as written, and only the MARKED CLI resolves against
  * it. `VIEW_HOST` is everyone else's: the `project` pins are struck and the
  * ancestor table is not consulted, so an unmarked caller is served the
  * orchestrator's own filesystem wherever it has something and a traverse-only
  * overlay node at the cwd components it has not. The unmarked answer is
- * therefore the SAME AT EVERY `mirrorRoot`, which is the property the card
- * bought; the classes below describe `VIEW_CLI`.
+ * therefore the SAME AT EVERY `mirrorRoot`. The classes below describe
+ * `VIEW_CLI`.
  *
  *   host     the orchestrator's own filesystem, always, for marked and unmarked
  *            callers alike. The CLI's execution closure lives here: its binary,
@@ -38,8 +36,9 @@
  *   bind     a directory bootstrap.sh mounts the ORCHESTRATOR's own over, after
  *            the union is up. Served here as a read-only synthetic node purely
  *            so the bind target exists — /proc, /sys, /dev must never be tiers
- *            (S1 §7.1: a passthrough serving /proc/self/exe answers with the
- *            DAEMON's identity and breaks a bun single-file executable).
+ *            (a passthrough serving /proc/self/exe answers with the DAEMON's
+ *            identity and breaks a bun single-file executable, which finds its
+ *            embedded payload through /proc/self/exe).
  *   hide     ENOENT, and suppressed from the parent's readdir. The union's own
  *            scaffolding, which it must not serve through itself.
  *   fail     ENOENT on both sides FOR THE MARKED CLI, because the system's
@@ -61,10 +60,10 @@
  *            fixed attributes, both ways.
  *
  * AN UNMATCHED PATH IS `fail`, because T_FAIL is enum index 0 and tier_of
- * returns index 0 for a path no pin matches. The instrument's index 0 was
- * remote-first with a host fallback; that fallback is the "one path, two
- * answers" this architecture exists to remove, and deleting it is why the
- * event log below is the instrument the pin list is derived from.
+ * returns index 0 for a path no pin matches. THERE IS NO HOST FALLBACK: a
+ * remote-first index with a host fallback gives one path two answers, which is
+ * what this architecture exists to remove, and its absence is why the event log
+ * below is the instrument the pin list is derived from.
  *
  * THE `fail` → `host` SUBSTITUTION FOR AN UNMARKED CALLER IS NOT THAT FALLBACK
  * COMING BACK, and the difference is mechanical rather than a matter of degree:
@@ -106,11 +105,11 @@
  * routing boundary. policy.h's resolution cache is the caller-aware
  * replacement.
  *
- * ── carried from S1, unchanged ──────────────────────────────────────────────
+ * ── per-request credentials and the recursion guard ─────────────────────────
  *
- * Per-request setfsuid/setfsgid is mandatory, not a tuning knob: S1 §7.2
- * measured that without it the CLI's own Bash tool fails EACCES, because its
- * scratch directory gets created root-owned. Known limit, carried:
+ * Per-request setfsuid/setfsgid is mandatory, not a tuning knob: without it the
+ * CLI's own Bash tool fails EACCES, because its scratch directory gets created
+ * root-owned. Known limit:
  * supplementary groups are NOT switched (setgroups(2) is per-process, not
  * per-thread), so a caller whose access depends on one can be wrongly denied by
  * the daemon-side check. default_permissions means the kernel has already
@@ -121,18 +120,10 @@
  * caller in the daemon's own thread group must never be served through the
  * remote path, or the daemon blocks on a request only it can answer. Keyed on
  * one tgid, because ancestry — the only key that could describe "the CLI and
- * its children" — is unknowable exactly when it matters (S1 §6 Q2).
+ * its children" — is unknowable exactly when it matters.
  *
  * The trace and the event log record PATHS ONLY, never content, so a
  * credential path may appear in them and a credential never does.
- *
- * ── known limit, recorded rather than defended against ──────────────────────
- *
- * A readdir of a `project` directory lists the mirror's children only, so a
- * host pin NESTED inside a project prefix is reachable by name but absent from
- * its parent's listing. It cannot arise at the default mirror root (the
- * project's own remote path); it can at an advertised root of "/". The event
- * log is the instrument that would surface it.
  *
  * ── environment ─────────────────────────────────────────────────────────────
  *
@@ -186,9 +177,9 @@ static const char *mark_path = NULL;
 /* ── caller identity, for the trace ─────────────────────────────────────── */
 /*
  * pid -> (tgid, ppid, starttime, exe, cmdline), cached; a thread's tgid is
- * fixed for its life. comm is NOT cached and never will be: S1 §8.2 defect 2
- * cached it and every request from the CLI came back labelled comm=bash,
- * because the pid was first seen as the shell that later exec'd into the CLI.
+ * fixed for its life. comm is NOT cached and must not be: a pid is often first
+ * seen as the shell that later execs into the CLI, so a cached comm labels
+ * every later request from the CLI `comm=bash`.
  *
  * TGID AND STARTTIME COME FROM policy.h's READER, not from a second parse here:
  * the policy routes on them and the trace attributes on them, and two readers
@@ -232,8 +223,8 @@ static void read_exe(pid_t pid, char *out, size_t n)
  * What is NOT shared is what happens to the bytes: NULs become spaces here --
  * and so does EVERY other control character. A `bash -c` cmdline carries the
  * whole script, newlines included, and an embedded newline splits one trace row
- * into many: the first version of this instrument produced 1662 unparsable rows
- * out of ~3000 for exactly that reason, and the analysis silently dropped them.
+ * into many, leaving a consumer unable to recover the rest of the argv from the
+ * fragments.
  *
  * IT IS LOSSY AND THAT IS DELIBERATE HERE. The trace is line-counted
  * (tests/fuse-trace-count.mjs parses this format) and no consumer recovers argv
@@ -261,8 +252,8 @@ static void trace_cmdline(pid_t pid, char *out, size_t n)
 
 /*
  * Resolve TID -> (TGID, PPID, starttime, exe, cmdline). The entry is
- * REVALIDATED on every hit, unconditionally: the instrument made that a flag so
- * the cost could be measured, and the unvalidated arm was the unsound half. A
+ * REVALIDATED on every hit, unconditionally — a revalidation flag would only
+ * buy back the unsound arm. A
  * recycled pid otherwise returns its predecessor's tgid for the life of the
  * daemon, and exec(2) replaces the cmdline and the exe link while leaving pid,
  * tgid and start time untouched — so both the start-time compare and the
@@ -350,9 +341,10 @@ static int caller_is_self(void)
 	return policy_proc.tgid((pid_t)c->pid) == self_tgid;
 }
 
-/* THE MARKING EVENT, on every routed path. S1 §9.1 measured that this is NOT
- * the marked process's first op: it is the shell that later execs into the CLI,
- * and it does real work first. That window is a property of the launcher. */
+/* THE MARKING EVENT, on every routed path. The marked process is NOT marked at
+ * its first op: it is a shell that later execs into the CLI and does real work
+ * first — a property of the launcher. The mark must therefore be applied on
+ * every routed path, not once. */
 static void mark_maybe(const char *path)
 {
 	if (!mark_path || strcmp(path, mark_path) != 0)
@@ -368,8 +360,8 @@ static pthread_mutex_t trace_mu = PTHREAD_MUTEX_INITIALIZER;
 /*
  * `cflags` IS THE FRAME INTENT THE OP DECLARED — the same CCU_FLAG_* byte the
  * FETCH carried — and it is in the line because a trace that cannot separate a
- * READ open from a WRITE open cannot answer the two-handle question the epic
- * carries as a standing condition (PROVENANCE D13c, measurement M6). `0` where
+ * READ open from a WRITE open cannot answer the two-handle question, which is a
+ * standing condition (docs/architecture.md → "the two-handle window"). `0` where
  * the op sent no frame of its own, which is every `fh` branch below.
  */
 static void tr(const char *op, const char *path, const char *tier, unsigned cflags)
@@ -474,9 +466,9 @@ static int control_connect(void)
 		return -1;
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	/* The length check that remains, now against the FORMED ADDRESS rather
-	 * than against a path on disk — the limit the old `strlen(control_path)`
-	 * test asserted no longer governs anything. */
+	/* The length check is against the FORMED ADDRESS, not a path on disk:
+	 * `sun_path` bounds the address handed to connect(2), and
+	 * `strlen(control_path)` governs nothing. */
 	n = snprintf(sa.sun_path, sizeof(sa.sun_path), "/proc/self/fd/%d/%s", dirfd, base);
 	if (n < 0 || (size_t)n >= sizeof(sa.sun_path)) {
 		close(dirfd);
@@ -556,7 +548,7 @@ static ssize_t control_roundtrip(void *ctx, const unsigned char *req, size_t req
 	return (ssize_t)CCU_REPLY_LEN;
 }
 
-/* ── per-request credentials (verbatim from S1; see the header) ─────────── */
+/* ── per-request credentials (see the header) ───────────────────────────── */
 
 static inline void cred_enter(void)
 {
@@ -578,12 +570,10 @@ struct route {
 	int         fd;
 	const char *rp;
 	/* THE FRAME INTENT THIS ROUTE WAS GIVEN, carried rather than re-derived,
-	 * so `tr()` reports the byte the op actually declared. The two ops that
-	 * route both ends by hand (`rename`, `link`) used to trace a hand-copied
-	 * literal, which happened to be right and would have gone on reporting
-	 * the OLD intent the moment either call changed — a confidently wrong
-	 * number, which is one level worse than the blind instrument the cflags
-	 * field was added to fix.
+	 * so `tr()` reports the byte the op actually declared. A hand-copied
+	 * literal in the two ops that route both ends by hand (`rename`, `link`)
+	 * would go on reporting the SAME number whatever either call changed — a
+	 * confidently wrong number, which is one level worse than a blind one.
 	 *
 	 * NAMED `intent` AND NOT `cflags` for one mechanical reason: the ROUTE
 	 * macro's own parameter is called `cflags`, so `r.cflags` inside the
@@ -608,12 +598,11 @@ struct route {
  * TIER, and it is right that `host`, `hide` and `bind` resolve identically in
  * both views — but the view does not stay with the routed path. It is carried
  * into the dirhandle and used to classify CHILDREN, and into the floor, which
- * requires VIEW_HOST. Deriving it only inside the gate left an unmarked `ls` of
- * a HOST-PINNED directory classifying its children in VIEW_CLI (so an unpinned
- * child was hidden while `cat` on it returned the bytes — card 2026-0403's
- * defect class), and left the floor declining on a cwd-chain component a host
- * pin covers (so an unmarked spawn died in chdir() on a search-denied
- * orchestrator directory — card 2026-0398's own symptom).
+ * requires VIEW_HOST. Deriving it only inside the gate leaves an unmarked `ls`
+ * of a HOST-PINNED directory classifying its children in VIEW_CLI — an unpinned
+ * child hidden while `cat` on it returns the bytes — and leaves the floor
+ * declining on a cwd-chain component a host pin covers, which kills an unmarked
+ * spawn in chdir() on a search-denied orchestrator directory.
  *
  * LAZY, NOT UNCONDITIONAL, AND THE COST IS THE WHOLE REASON. Setting the view
  * in `route()` for every op would pay a /proc mark read PER OP at `host`, the
@@ -678,7 +667,7 @@ static void fd_tier_set(int fd, enum tier t, int writable, enum view v)
 /*
  * THE ONE DISPATCH. `fop` is the control frame this op owes cc before the
  * mirror may be touched (0 for an op that owes none); `for_create` routes a
- * path that does not exist yet by its parent, exactly where the instrument did.
+ * path that does not exist yet BY ITS PARENT.
  *
  * There is no `default:` arm and there is no host fallback. The switch below is
  * exhaustive over `enum tier`; anything that reaches past it — T_FAIL, and any
@@ -759,35 +748,34 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 			/* Liveness, not policy: the one answer that cannot
 			 * re-enter this daemon.
 			 *
-			 * UNREACHABLE SINCE CARD 2026-0398, AND KEPT ANYWAY.
+			 * A LIVENESS BACKSTOP, AND KEPT DELIBERATELY.
 			 * This daemon's own thread group is permanently
 			 * unmarked, so it resolves in VIEW_HOST — where the
 			 * `project` pins are struck and T_PROJECT cannot be
 			 * produced — and the route is T_HOST +
 			 * `unmarked-host-served` before this arm is reached.
-			 * Liveness therefore holds without this guard: the host
-			 * answer is precisely the one that cannot re-enter this
-			 * daemon. It stays because deleting a liveness guard on
-			 * the strength of a structural proof is not worth the
-			 * risk, and because it is still the correct answer if a
-			 * later edit reopens the route. */
+			 * Liveness therefore holds without this guard. IT STAYS
+			 * AS DEFENCE IN DEPTH: deleting a liveness guard on the
+			 * strength of a structural proof is not worth the risk,
+			 * and if a later edit ever reopens the route to
+			 * T_PROJECT for an unmarked caller, the host answer is
+			 * precisely the one that cannot re-enter this daemon. */
 			r->fd = policy_host_fd;
 			policy_event(EV_SERVED, op, path, "self-recursion", (pid_t)fuse_get_context()->pid);
 			return 0;
 		}
-		/* NO UNMARKED CALLER REACHES HERE, AND THAT IS STRUCTURAL
-		 * (card 2026-0398): T_PROJECT is not a tier `VIEW_HOST` can
-		 * produce, so an unmarked resolution cannot arrive at this arm.
-		 * `marked` is consequently 1 for every caller that does — the
-		 * variable is still read once above, for the substitution and
-		 * for the log row's identity columns.
+		/* NO UNMARKED CALLER REACHES HERE, AND THAT IS STRUCTURAL:
+		 * T_PROJECT is not a tier `VIEW_HOST` can produce, so an
+		 * unmarked resolution cannot arrive at this arm. `marked` is
+		 * consequently 1 for every caller that does — the variable is
+		 * still read once above, for the substitution and for the log
+		 * row's identity columns.
 		 *
-		 * THE CWD-CHAIN EXEMPTION THAT USED TO BE ASKED HERE IS GONE,
-		 * with its op allow-list, its T_CWD tier and the traversal bound
-		 * that route()'s ordering enforced. The chain is now answered in
-		 * `VIEW_HOST` by the orchestrator's own directory floored to
-		 * `--x`, or by the overlay node where it has none — neither of
-		 * which is a conditional grant this arm has to get right. */
+		 * THE CWD CHAIN IS ANSWERED IN `VIEW_HOST` — by the
+		 * orchestrator's own directory floored to `--x`, or by the
+		 * overlay node where it has none. NO CONDITIONAL GRANT REACHES
+		 * THIS ARM, so there is no op allow-list and no traversal bound
+		 * here to get right. */
 		rc = policy_project_route(op, path, (pid_t)fuse_get_context()->pid, fop, cflags);
 		if (rc)
 			return rc;
@@ -918,14 +906,12 @@ static int pt_readlink(const char *path, char *buf, size_t size)
 
 /* ── readdir ────────────────────────────────────────────────────────────── */
 /*
- * NO MERGE OF TWO CONTENT SOURCES. The instrument merged the remote's listing
- * with the host's because its default tier merged their contents; with the
- * fallback gone there is exactly one source per directory, and a `VIEW_CLI`
- * synthetic directory that also listed the host's would be the leak criterion 3
- * forbids.
+ * NO MERGE OF TWO CONTENT SOURCES. With no host fallback there is exactly one
+ * source per directory, and a `VIEW_CLI` synthetic directory that also listed
+ * the host's would be the leak criterion 3 forbids.
  *
  * `VIEW_HOST`'s SYNTHETIC ARM DOES READ THE ORCHESTRATOR'S DIRECTORY, AND IT IS
- * NOT THAT MERGE (card 2026-0398). An overlay node exists only where the
+ * NOT THAT MERGE. An overlay node exists only where the
  * orchestrator has NOTHING at the path, so in the normal case the opendir fails
  * ENOENT and the arm costs one syscall; it is there as the guard on the absence
  * probe's stale window — the orchestrator GAINS that directory between two ops —
@@ -1032,12 +1018,11 @@ static void synth_emit(void *ctx, const char *name, const char *full, enum tier 
  */
 #define MAX_PINNED_CHILDREN 64
 struct pinned_children {
-	/* NO `tier` COLUMN, DELIBERATELY. The collector used to carry the pin's
-	 * own tier here for the emit to branch on, and branching on the RAW pin
-	 * tier is exactly what dropped a project-pinned child resolving to the
-	 * overlay. `pinned_children_emit` resolves each name in the handle's view
-	 * instead, so a stored tier would be write-only AND a standing invitation
-	 * to read the wrong one. */
+	/* NO `tier` COLUMN, DELIBERATELY. Branching on the RAW pin tier drops a
+	 * project-pinned child that resolves to the overlay.
+	 * `pinned_children_emit` resolves each name in the handle's view instead,
+	 * so a stored tier would be write-only AND a standing invitation to read
+	 * the wrong one. */
 	char      name[MAX_PINNED_CHILDREN][NAME_MAX + 1];
 	char      full[MAX_PINNED_CHILDREN][PATH_MAX];
 	char      seen[MAX_PINNED_CHILDREN];
@@ -1135,14 +1120,14 @@ static void pinned_children_emit(struct pinned_children *pc, enum view v,
  * one tier — a `project` child, where the host is the wrong axis because a
  * project path's existence to the CLI is the MIRROR's question, by tier,
  * wherever the host happens to hold it, and the right channel is a control
- * frame a synthetic node must not send — and reaches nothing else. In particular a `host` pin child IS checked: without that the MARKED
- * CLI's `ls /etc` named `ETC_PINS` entries absent on this host while `cat`
- * answered -ENOENT, which is card 2026-0403's class on the one arm the rest of
- * this card did not touch.
+ * frame a synthetic node must not send — and reaches nothing else. In
+ * particular a `host` pin child IS checked: without that the marked CLI's
+ * `ls /etc` names `ETC_PINS` entries absent on this host while `cat` answers
+ * -ENOENT, which is one caller getting two answers for one path.
  *
  * STREAMED RATHER THAN COLLECTED, so the scaffold arm keeps no bound: routing it
- * through `pinned_children_of` would have subjected `ls /` at the narrow root to
- * MAX_PINNED_CHILDREN, which it has never been subject to.
+ * through `pinned_children_of` would subject `ls /` at a narrow root to
+ * MAX_PINNED_CHILDREN and silently drop names.
  */
 static void scaffold_emit(void *ctx, const char *name, const char *full, enum tier t)
 {
@@ -1159,13 +1144,13 @@ static void scaffold_emit(void *ctx, const char *name, const char *full, enum ti
  * overlay node) so the visibility rule and the floor cannot drift between them.
  * Returns 1 when the filler buffer is full and the caller must stop.
  *
- * `policy_dirent_visible` REPLACED AN INLINE, CALLER-INSENSITIVE TIER TEST, and
- * card 2026-0403 is what it fixes: the old test read `T_HIDE || T_FAIL` and
- * suppressed both for everyone, but `fail -> host` has served `fail` to an
- * unmarked caller unconditionally since 2026-09-08. Measured at a real mount: an
- * unmarked `ls /tmp` emitted nothing while `cat /tmp/x` returned its bytes.
- * T_HIDE stays invisible to everyone — it is what keeps the mirror and cc's
- * control socket unreachable.
+ * `policy_dirent_visible` IS CALLER-SENSITIVE AND OWNS THE WHOLE RULE, because
+ * `fail -> host` serves `fail` to an unmarked caller unconditionally: a name
+ * that view can open is a name it must see. A caller-INSENSITIVE filter reading
+ * `T_HIDE || T_FAIL` and suppressing both for everyone emits nothing from an
+ * unmarked `ls /tmp` while `cat /tmp/x` returns its bytes. T_HIDE stays
+ * invisible to everyone — it is what keeps the mirror and cc's control socket
+ * unreachable.
  */
 static int readdir_child(struct dirhandle *h, void *buf, fuse_fill_dir_t filler,
 			 struct dirent *de, struct pinned_children *pc)
@@ -1218,8 +1203,8 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		 * asks `policy_table_child_exists` with the flag SET, which
 		 * carves out `T_PROJECT` and nothing else. A `host` pin child
 		 * absent on the orchestrator is NOT named here, and that is the
-		 * point: naming it left the MARKED CLI's `ls /etc` disagreeing
-		 * with `cat`. What the flag buys is the one tier where the host
+		 * point: naming it would leave the marked CLI's `ls /etc`
+		 * disagreeing with `cat`. What the flag buys is the one tier where the host
 		 * is the wrong axis — a project path's existence to the CLI is
 		 * the MIRROR's question, by tier — and this node cannot ask it,
 		 * because the right channel is a control frame a synthetic node
@@ -1234,9 +1219,9 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		 * through the checked path, hostd or no hostd. On an overlay
 		 * node that is usually empty: the orchestrator has nothing at
 		 * the parent, so it has nothing at any child either, and the
-		 * only survivors are fixed nodes. Emitting them unchecked put an
-		 * `exclude`d `node_modules` into an unmarked listing while every
-		 * op on it answered -ENOENT.
+		 * only survivors are fixed nodes. Emitting them unchecked puts
+		 * an `exclude`d `node_modules` into an unmarked listing while
+		 * every op on it answers -ENOENT.
 		 *
 		 * THE HOST STREAM IS THE ABSENCE PROBE'S STALE WINDOW, CLOSED:
 		 * an overlay node exists only where the orchestrator had nothing
@@ -1262,23 +1247,24 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	}
 
 	/*
-	 * PINNED CHILDREN OF A REAL DIRECTORY ARE EMITTED TOO, and this is the
-	 * half a round-2 fix removed. cc materialises ONLY `project` content
+	 * PINNED CHILDREN OF A REAL DIRECTORY ARE EMITTED TOO, AND THEY MUST BE.
+	 * cc materialises ONLY `project` content
 	 * into the mirror (control.ts `#servable`) — correctly, since a host pin
 	 * is served from `policy_host_fd` and a mirror copy of it would be a second copy
 	 * of the orchestrator's file inside the run directory, never read. But
 	 * the mirror is what this loop reads, so a `host` or `bind` child of a
 	 * project directory had no dirent at all while `stat` and `open` on it
-	 * kept succeeding: `ls /` omitting `/etc` while `cat /etc/hosts` works is
-	 * the same one-caller-two-answers defect as listing a `fail` name, just
-	 * inverted. At `mirrorRoot: "/"` that is every pinned path there is.
+	 * would otherwise keep succeeding: `ls /` omitting `/etc` while
+	 * `cat /etc/hosts` works is the same one-caller-two-answers defect as
+	 * listing a `fail` name, just inverted. At `mirrorRoot: "/"` that is every
+	 * pinned path there is.
 	 *
 	 * The emit rule is policy_dirent_visible's, asked once for both arms —
 	 * and it is CALLER-SENSITIVE, so "host, project and bind are named; hide
 	 * and fail are not" describes `VIEW_CLI` ALONE. For a `VIEW_HOST` handle a
 	 * `fail`-pinned child of a real host directory IS named, because
 	 * `fail -> host` serves it and a name that view can open is a name it must
-	 * see — which is card 2026-0403's fix, not an oversight. `hide` is the one
+	 * see — deliberately, not an oversight. `hide` is the one
 	 * rule both views share. Collected FIRST so
 	 * the dirent loop can mark the ones already present, and the remainder
 	 * emitted after — one small array, no hash set, because a directory's
@@ -1319,7 +1305,8 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
  * A FAILED RECONCILE FAILS THE OP. The mirror is then ahead of the source and
  * the caller is told so; making that divergence STICKY — refusing every later
  * write to the path until a re-fetch resyncs it — is a separate mechanism and
- * is S3's (docs/architecture.md → "A failed push is loud and sticky"). What
+ * is out of scope here (docs/architecture.md → "A failed push is loud and
+ * sticky"). What
  * this discharges is the weaker, load-bearing half: a project-tier mutation
  * never reports success having landed nowhere.
  */
@@ -1333,7 +1320,7 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
  * the worker's intent.
  *
  * THE RETURN VALUE IS THE OP'S. A reconcile that could not land must not leave
- * the caller thinking it did (epic criterion 10), so every caller returns this.
+ * the caller thinking it did, so every caller returns this.
  */
 static int push_mirror_flags(const char *op, const char *path, uint8_t flags)
 {
@@ -1370,9 +1357,9 @@ static int push_mirror(const char *op, const char *path, int removed)
  *   link    a hard link is an ALIAS, and a reconcile copies. Landing it as a
  *           second independent file would silently break the aliasing the
  *           caller asked for, which is worse than refusing it.
- *   chown   the system's uid/gid space is not the orchestrator's, and choosing
- *           a mapping is a decision S3 owns. No RemoteSource method carries
- *           ownership at all.
+ *   chown   the system's uid/gid space is not the orchestrator's, and no
+ *           RemoteSource method carries ownership at all, so there is no
+ *           mapping to apply.
  *
  * THE ERRNO IS policy.h's, and it is -EOPNOTSUPP: the truth being told is that
  * this filesystem cannot REPRESENT the operation, and -EPERM would send the
@@ -1405,8 +1392,9 @@ static void fd_mark_dirty(uint64_t fh)
  * EROFS ON EVERY SYNTHETIC AND BIND NODE, BEFORE ANY FD IS CHOSEN, AND EROFS
  * RATHER THAN EACCES. The node is a read-only scaffold cc derived from the pin
  * list; EACCES would tell the caller a permissions fix exists, and it does not.
- * The instrument's create-lands-on-the-remote-if-the-parent-exists-there arm is
- * exactly the shape this must not fall through to.
+ * THERE IS NO ARM THAT LANDS A CREATE ON THE REMOTE BY THE PARENT'S TIER: a
+ * mutation on a synthetic or bind node refuses EROFS before any fd is chosen,
+ * full stop.
  */
 
 static int pt_mkdir(const char *path, mode_t mode)
@@ -1472,12 +1460,12 @@ static int pt_symlink(const char *target, const char *path)
 }
 
 /*
- * CROSS-TIER RENAME IS -EXDEV, AND THAT IS AN ARCHITECTURE FINDING, NOT A
- * SHORTCUT. renameat2 cannot move a file between two backing stores. S1 §5.3
- * recorded the CLI doing a .claude.json.tmp.<pid>.<rand> write-and-rename in
- * $HOME, which is why the pin is /home/node and not ~/.claude: a pin boundary
- * between a temp file and its rename target produces EXDEV. `mv` masks it by
- * falling back to copy+unlink; a rename(2) caller sees it.
+ * CROSS-TIER RENAME IS -EXDEV, AND THAT IS AN ARCHITECTURE FACT, NOT A
+ * SHORTCUT. renameat2 cannot move a file between two backing stores, and the
+ * CLI does a .claude.json.tmp.<pid>.<rand> write-and-rename in $HOME — so $HOME
+ * IS PINNED WHOLE, not just ~/.claude, to keep a temp file and its rename
+ * target on one side of every pin boundary. `mv` masks an EXDEV by falling back
+ * to copy+unlink; a rename(2) caller sees it.
  */
 static int pt_rename(const char *from, const char *to, unsigned int flags)
 {
@@ -1504,7 +1492,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	 * and the to end would create an empty one. Landing it would need a
 	 * recursive delete driven by a frame, removing source subtrees the worker
 	 * never enumerated. Bash `mv` runs on the system and still works; a
-	 * subtree move through the union is S3's if anyone wants it.
+	 * subtree move through the union is not implemented.
 	 */
 	if (rf.tier == T_PROJECT) {
 		struct stat fst;
@@ -1527,9 +1515,13 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	if (rt.tier != T_PROJECT) return 0;
 	/* TWO RECONCILES, and the FROM end is a removal — declared, because an
 	 * absent mirror entry there is exactly what cc must not read as its own
-	 * stale copy. A failure of the second leaves the source holding neither
-	 * end; that is recorded in PROVENANCE D13 rather than hidden, and S3
-	 * owns making the divergence sticky. */
+	 * stale copy.
+	 *
+	 * SO A RENAME IS NOT SOURCE-SIDE ATOMIC. A failure of the second leaves
+	 * the source holding NEITHER end — the old name already unlinked, the new
+	 * one never created. That is a named, unhidden limit, not a state the
+	 * source can be restored from here; making the divergence sticky is out
+	 * of scope (docs/architecture.md → "A failed push is loud and sticky"). */
 	if ((rc = push_mirror("rename", from, 1)) != 0) return rc;
 	return push_mirror("rename", to, 0);
 
@@ -1734,10 +1726,10 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 	 * mirror, so that is the filesystem whose free space it is actually
 	 * consuming.
 	 *
-	 * AN UNMARKED CALLER IS ANSWERED FROM THE HOST, ALWAYS. Card 2026-0398
-	 * gave it an overlay node at the cwd, which is a T_SYNTH route — and this
-	 * body would have answered it with `fstatvfs(remote_fd)`, reaching into
-	 * the mirror for a caller whose whole invariant is that it cannot.
+	 * AN UNMARKED CALLER IS ANSWERED FROM THE HOST, ALWAYS. An unmarked route
+	 * is never T_PROJECT — an overlay node at the cwd is a T_SYNTH route — so
+	 * an `fstatvfs(remote_fd)` on its behalf would reach into the mirror for a
+	 * caller whose whole invariant is that it cannot.
 	 *
 	 * NO BYTES CROSS EITHER WAY, and that conclusion is unconditional: statvfs
 	 * reports a filesystem's geometry and never a file's contents. WHETHER THE
@@ -1760,7 +1752,7 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 }
 
 /*
- * THE PUSH LIVES IN `flush`, NOT IN `release`, AND THAT IS EPIC CRITERION 10.
+ * THE PUSH LIVES IN `flush`, NOT IN `release`.
  *
  * The kernel DISCARDS `release`'s return value — a reconcile that refused there
  * would be logged and nowhere else, and `close()` would return 0 to a worker
@@ -1780,8 +1772,8 @@ static int pt_flush(const char *path, struct fuse_file_info *fi)
 	int fd = (int)fi->fh;
 	int rc;
 
-	/* The dup/close first, unchanged: it is what reports a write error the
-	 * kernel deferred, and it must be answered whatever the tier. */
+	/* The dup/close comes FIRST: it is what reports a write error the kernel
+	 * deferred, and it must be answered whatever the tier. */
 	int probe = dup(fd);
 	if (probe == -1) return -errno;
 	if (close(probe) == -1) return -errno;
@@ -1804,8 +1796,8 @@ static int pt_flush(const char *path, struct fuse_file_info *fi)
  * before it closes, so cc copies the mirror's copy back to the source.
  *
  * READY MEANS CC HAS TAKEN OWNERSHIP OF THE PUSH, NOT THAT THE PUSH LANDED.
- * The awaiting half — a PostToolUse that blocks until it has, and poisons the
- * session if it has not — is 2026-0356's, deliberately (plan 2026-0355 §14).
+ * The awaiting half — a PostToolUse that blocks until the push has landed, and
+ * poisons the session if it has not — is deliberately out of scope here.
  *
  * A file written through two handles pushes twice. The push is a full-content
  * copy, so that is idempotent; noted rather than defended against.
@@ -1819,10 +1811,12 @@ static int pt_release(const char *path, struct fuse_file_info *fi)
 	 * whether or not anything is dirty — a `flush` that already pushed left
 	 * the claim standing deliberately, and nothing else would ever drop it.
 	 *
-	 * AND IT NO LONGER RE-UPLOADS WHAT `flush` ALREADY LANDED. Against a
-	 * local directory the second copy was cheap; against a real transport it
-	 * is a second whole-file upload per written file, which is not a
-	 * magnitude question (PROVENANCE D13d).
+	 * AND IT MUST NOT RE-UPLOAD WHAT `flush` ALREADY LANDED: that is a second
+	 * whole-file upload per written file over the real transport, which is not
+	 * a magnitude question — so a claimed but non-dirty handle sends
+	 * CCU_FLAG_RELEASE_ONLY instead of a reconciling frame. The bit is what
+	 * makes the two distinguishable ON THE WIRE: without it the releasing
+	 * frame is byte-identical to a real reconcile.
 	 *
 	 * THE KILLED-PROCESS BACKSTOP IS PRESERVED BY THE CONDITION ITSELF, not
 	 * by a second test bolted beside it. A handle whose `flush` never ran —
@@ -2042,8 +2036,7 @@ int main(int argc, char *argv[])
 	 * answers 0 for every path when this is NULL, so nothing would be floored,
 	 * no overlay node would exist, and the bootstrap would die at its `cd`.
 	 * A DEFAULT WOULD BE WORSE THAN THE REFUSAL: it would silently leave the
-	 * project root unenterable and regress card 2026-0373 while looking like
-	 * it worked.
+	 * project root unenterable while the mount looks healthy.
 	 */
 	if (!cwd_path) {
 		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CWD is required; "
@@ -2081,7 +2074,7 @@ int main(int argc, char *argv[])
 
 	pins_load(pf);
 	/* The mountpoint lies inside BOTH roots, so an unguarded union recurses
-	 * forever the first time anything walks the tree. S1 §7.5. */
+	 * forever the first time anything walks the tree — hence the `hide` pin. */
 	if (mp && pin_add(T_HIDE, mp) != 0) {
 		fprintf(stderr, "cc-union: REFUSED — %s\n", policy_err);
 		return 1;

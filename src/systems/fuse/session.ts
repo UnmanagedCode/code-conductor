@@ -15,7 +15,7 @@
 // WHY `wait(2)` IS NEVER CALLED, so it is not optimised back in: it blocks on
 // the whole thread group, a thread stuck in FUSE I/O never leaves the kernel,
 // and an orphan reparented to pid 1 cannot be waited on at all (ECHILD) — which
-// is the shape a production supervisor is actually in (S3 §A3 W-ORPHAN). cc is
+// is the shape a production supervisor is actually in. cc is
 // never the daemon's parent in any case: the daemon is started by the bootstrap
 // and reparents to pid 1 when the bootstrap's pid execs on. So `REAPED` is not
 // a state cc can produce, and a single-threaded zombie is reported as
@@ -88,9 +88,9 @@ export interface TeardownReport {
   abort: AbortOutcome;
   minor: string | null;
   residualMounts: string[];
-  // fusectl entries with no record of ours. REPORTED, NEVER ACTED ON: S3 §A5
-  // measured stale minors that freed nothing, survived abort and were inert, so
-  // a count of fusectl entries is not a count of live daemons.
+  // fusectl entries with no record of ours. REPORTED, NEVER ACTED ON: stale
+  // minors free nothing, survive abort and are inert, so a count of fusectl
+  // entries is not a count of live daemons.
   strayConnections: number;
   wedged: boolean;
   removedRunDir: boolean;
@@ -229,11 +229,10 @@ function decodeCmdline(s: string): EventField {
 // SUGGESTION for a path the CLI's own denial had asked for. Nothing said so; the
 // row simply was not there — which defeats the one thing this log is for.
 //
-// This departs from plan §4a's "one row per distinct path" deliberately (owner,
-// recorded on card 2026-0382). Matching the daemon's key is also what makes the
-// two artifacts comparable at all — so the key gained the TGID here in the same
-// commit the daemon's did (card 2026-0389), or the two would silently stop
-// agreeing about what one row is.
+// This departs from "one row per distinct path" deliberately. Matching the
+// daemon's key is also what makes the two artifacts comparable at all — so this
+// key carries the TGID exactly as the daemon's does, and the two must change
+// together or they silently stop agreeing about what one row is.
 //
 // BEST-EFFORT THROUGHOUT. `runTeardown` never rejects, and a store the harvest
 // cannot write is not a reason to abandon a mount.
@@ -307,10 +306,10 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
   return rows;
 }
 
-// CAPPED, NEVER COUNTED, and the cap is the whole shape of the sentence. The
-// failure this replaces was a real gate report of `unpinned-fail-closed: 60`
-// where the 60 were ONE missing library — a count named nothing a maintainer
-// could act on. So: up to 20 ROWS per kind inline, then how many more and where
+// CAPPED, NEVER COUNTED, and the cap is the whole shape of the sentence: a bare
+// count names nothing a maintainer can act on — the rows under one
+// `unpinned-fail-closed: 60` can be ONE missing library, sixty times. So: up to
+// 20 ROWS per kind inline, then how many more and where
 // the full list is.
 //
 // ROWS AND NOT PATHS, since the harvest key gained the reason: a path carrying
@@ -332,8 +331,8 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
   if (denials.length) {
     const shown = denials.slice(0, EVENT_LINE_CAP);
     const more = denials.length - shown.length;
-    // WHO ASKED, ON THE DENIAL LINE — which is the whole of what card 2026-0389
-    // bought here. `comm[pid]` and not the cmdline: an argv is unbounded, the
+    // WHO ASKED, ON THE DENIAL LINE — the whole of what this line is for.
+    // `comm[pid]` and not the cmdline: an argv is unbounded, the
     // 20-row cap exists to bound this sentence, and the full argv is one `grep`
     // away in the store file the sentence already names. A recorded absence
     // prints its STATUS (`gone[41231]`), never a plausible-looking name.
@@ -394,11 +393,11 @@ async function readJson<T>(file: string): Promise<T | null> {
   catch { return null; }
 }
 
-// Deliberately does NOT create the parent directory. It used to, and that made
-// the wedge write able to RESURRECT a run directory a concurrent clean pass had
-// just reclaimed — an orphan record for a session that no longer exists. The
-// only other caller, prepare(), has already created the directory. Absence is
-// now an ENOENT the caller decides about, rather than a silent mkdir.
+// Deliberately does NOT create the parent directory: the wedge write must not
+// be able to RESURRECT a run directory a concurrent clean pass has just
+// reclaimed — that would leave an orphan record for a session that no longer
+// exists. The only other caller, prepare(), has already created the directory;
+// absence is an ENOENT the caller decides about, not a silent mkdir.
 export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   const tmp = `${file}.tmp.${process.pid}`;
   await fsp.writeFile(tmp, JSON.stringify(value, null, 2));
@@ -559,9 +558,9 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        BOTH have processes behind them: the bootstrap died after starting
   //        the anchor or the daemon, or it is still mid-handshake — which is
   //        reachable in production every time `_awaitFuseMount` times out and
-  //        tears the launch down. This path used to signal nobody and then
-  //        delete the run directory, which destroyed the only handle on
-  //        whatever was running.
+  //        tears the launch down. Without the marker scan this path would
+  //        signal nobody and then delete the run directory, destroying the
+  //        only handle on whatever was running.
   //
   //        The handle that survives having no record is the marker the
   //        bootstrap's own `execve` put in the environment of everything it
@@ -581,13 +580,13 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
       }
     }
     // KEPT, not discarded, and RE-VERIFIED rather than trusted. Step 7 re-scans
-    // when there IS a record; on this path it has nothing to compare against
-    // and used to substitute an empty row set — which made `members` vacuous
-    // exactly where the marker reclaim is the only thing that acted. A marker
-    // process that SURVIVED its SIGKILL (`killed: false` — the shape of a
-    // bootstrap wedged in `D` inside a hung mount syscall, which SIGKILL cannot
-    // touch) then left no trace in the verdict at all, and the machine deleted
-    // the run directory over it.
+    // when there IS a record; on this path it has nothing to compare against,
+    // so a substituted empty row set would make `members` vacuous exactly where
+    // the marker reclaim is the only thing that acted. A marker process that
+    // SURVIVED its SIGKILL (`killed: false` — the shape of a bootstrap wedged
+    // in `D` inside a hung mount syscall, which SIGKILL cannot touch) would
+    // leave no trace in the verdict at all, and the machine would delete the
+    // run directory over it.
     //
     // The rows are filtered by a fresh liveness check rather than by the
     // reclaim's return value, so the verdict rests on an observation. One
@@ -794,7 +793,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     try { input.emit?.({ kind: 'system', subtype: 'stderr', data: { line } }); } catch { /* the session may already be gone */ }
     try { (input.log ?? console).warn(line); } catch { /* the operator log is not a reason to fail a teardown */ }
     // The existence check is an optimisation, not the guarantee: writeJsonAtomic
-    // no longer creates the parent, so a concurrent clean pass's `rm -rf`
+    // does not create the parent, so a concurrent clean pass's `rm -rf`
     // landing between the two simply makes the write ENOENT rather than
     // resurrecting the directory. The window is closed by the mechanism, not
     // narrowed by the check.
@@ -868,10 +867,10 @@ export class FuseSession {
   #control: ControlServer | null = null;
   readonly #source: RemoteSource;
 
-  // `source` IS REQUIRED, and that is the point: a caller that forgets it now
-  // fails to typecheck, where the old default silently mounted a local
-  // directory as the remote — the worst outcome this file can produce, because
-  // every read succeeds and every one of them is about the wrong machine.
+  // `source` IS REQUIRED, and that is the point: a default would silently mount
+  // a local directory as the remote — the worst outcome this file can produce,
+  // because every read succeeds and every one of them is about the wrong
+  // machine. A forgotten source fails to typecheck instead.
   constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source: RemoteSource } & Sinks) {
     this.plan = opts.plan;
     this.#ccBootId = opts.ccBootId;
@@ -938,12 +937,12 @@ export class FuseSession {
     // kill the subprocess and call launch() again on the same Instance, so this
     // runs once per lifecycle, not once per session.
     //
-    // Two things therefore have to be reset here, and the first was the whole
-    // of a leak: the teardown latch, which otherwise made the SECOND kill() a
-    // silent no-op — no unmounts, no abort, no signals, and a root daemon plus
-    // a private mount surviving until the next orchestrator restart. And the
-    // previous lifecycle's record, or awaitHandshake would return it and cc
-    // would tear down a mount that no longer exists while the new one runs.
+    // Two things have to be reset here: the teardown latch, without which the
+    // SECOND kill() is a silent no-op — no unmounts, no abort, no signals, and
+    // a root daemon plus a private mount surviving until the next orchestrator
+    // restart — and the previous lifecycle's record, or awaitHandshake would
+    // return it and cc would tear down a mount that no longer exists while the
+    // new one runs.
     const stale = await readJson<FuseMountRecord>(p.recordPath);
     if (stale?.wedged) {
       // Mounting a second session over the handle to a wedged first one loses

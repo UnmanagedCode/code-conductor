@@ -18,8 +18,9 @@
 //     the exec image of everything it starts. This is the only handle left
 //     when a record is gone or was never written.
 // There is no match on comm, on cmdline, or on any name or pattern anywhere:
-// `sleep infinity` is about as generic a needle as exists on a Linux box, and
-// a pattern match here is the mechanism that once killed this devcontainer.
+// a generic needle like `sleep infinity` is exactly what a pattern kill reaches
+// beyond this run directory — up to the host's own init — which is why there
+// is none.
 //
 // WHY TWO UID PASSES. `/proc/<pid>/ns/*` and `/proc/<pid>/environ` are both
 // governed by `ptrace_may_access`, which on a host without `CAP_SYS_PTRACE`

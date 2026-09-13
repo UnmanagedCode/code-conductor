@@ -1,11 +1,10 @@
 // A MIRROR ADVERTISEMENT THAT MOVES UNDER A LIVE SESSION IS SESSION-FATAL.
 //
-// The machinery this file used to pin — wipe the local image root, re-pull at
-// the new geometry, move the session's cwd, its path map and its transcript to
-// it — is DELETED rather than ported. Under the FUSE-union geometry there is no
-// local image to move: a session's cwd is the project's real path on its
-// system, which does not move, and what an advertisement changes is the
-// boundary of the union's remote tier.
+// There is no follow machinery: nothing wipes a local image root, re-pulls at
+// the new geometry, or moves the session's cwd, its path map or its transcript.
+// Under the FUSE-union geometry there is no local image to move — a session's
+// cwd is the project's real path on its system, which does not move, and what
+// an advertisement changes is the boundary of the union's remote tier.
 //
 // So a session cannot follow, and the honest answer is a named refusal on the
 // next relaunch: continuing at a geometry it did not start under is the silent
@@ -209,12 +208,11 @@ describe('a mirror advertisement that moves under a live session', () => {
   //
   // WHAT IT ASSERTS, and the boundary is deliberate: that a `fail` line really
   // rendered (a cc-side artifact fact), and that THE MOUNT COMES UP. NOTHING
-  // about what the daemon then does with that pin. Phase A's `fail` entries have
-  // no `route()` case and take the frozen `default:` arm — a real, recorded
-  // behaviour window that H5 closes (src/systems/fuse/PROVENANCE.md D1) — so an
-  // expectation about routing here would outlive the change that should kill it.
-  // This matters MORE because Phase B rewrites that arm: without this, H5 lands
-  // on unmeasured ground.
+  // about what the daemon then does with that pin. An expectation about routing
+  // here would outlive the change that should kill it, so the boundary is held
+  // at the artifact and the mount: what `route()` does with a `fail` entry is
+  // pinned by `tests/fuse-union-policy.test.mjs`, against the daemon's own
+  // source.
   //
   // GEOMETRY: mirror root `<box>/nest`, project `<box>/nest/app`, exclude
   // `<box>/nest/other` — inside the root (so it is active, not inert) and

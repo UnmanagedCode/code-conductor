@@ -3,8 +3,8 @@
 // A re-advertised mirror geometry is session-fatal, and the refusal that says
 // so (`501 MIRROR_ADVERTISEMENT_CHANGED`, src/instances.ts) rests today on
 // tests/systems-mirror-geometry-follow.test.mjs — the ONLY file in `npm test`
-// that mounts for real. Open card 2026-0370 records a 2-in-5 contention flake
-// there whose tell is a varying arm pair: `gate:systems` runs two whole-suite
+// that mounts for real. A 2-in-5 contention flake is known there whose tell is
+// a varying arm pair: `gate:systems` runs two whole-suite
 // rows concurrently, both mount, and they contend. THE FAILURE LANDS UPSTREAM
 // OF THE GEOMETRY ASSERTION — the arm dies in its fixture before it ever
 // reaches the refusal — and a 2-in-5 arm is not evidence for a gate criterion.
@@ -13,11 +13,11 @@
 // `assertFuseAvailable`, `prepare()` and `spawn()`, and `attachFuse` is gated
 // on `!inst._launcher.inProcess` — so `bootServer()`'s in-process launcher
 // exercises the whole comparison with no daemon, no sudo, no `/dev/fuse` and no
-// contention with 2026-0370.
+// real-mount contention.
 //
 // THE MOUNTING ARMS STAY as the integration coverage. A green pair here beside
-// a flaking arm there is also the diagnostic that 2026-0370 is contention and
-// not the refusal. 2026-0370 IS NOT FIXED HERE.
+// a flaking arm there is also the diagnostic that that arm's red is contention,
+// not the refusal. THE CONTENTION IS NOT FIXED HERE.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';

@@ -203,20 +203,17 @@ export function readCapabilities(v: unknown): Capabilities {
 // ── Frames ───────────────────────────────────────────────────────────
 
 export interface HelloClientFrame { type: 'hello'; protocol: number; client: string }
-// NO `system` DESCRIPTOR. The hello used to carry one — `os`, `pathSep`,
-// `shell`, `home` — with `shell` REQUIRED and refusal-enforced. `shell` was the
-// only field cc ever acted on (it opened the long-lived shell with it) and card
-// 2026-0312 removed that shell, taking the last reader with it; the other three
-// had ZERO readers before that card, and the claims that cc "reports the rest"
-// were false when they were written.
+// NO `system` DESCRIPTOR. The hello carries none — no `os`, `pathSep`, `shell`,
+// `home` — and nothing reads any of them: the long-lived shell that would have
+// consumed `shell` does not exist, because cc runs one `exec` per command.
 //
 // THIS RECORDS "NOTHING READS IT TODAY", NOT "cc will never need `os`/`pathSep`/
 // `home`". There is no compatibility cost to a future consumer re-adding the
 // field it needs. AN UNKNOWN FIELD ON A KNOWN FRAME IS IGNORED BY CONTRACT
 // (§2) — a separate rule from the unknown-capability-key and unknown-frame-type
-// ones, and the one this deletion actually rests on: every provider written
-// before this card still sends a `system` object, and each must connect
-// unchanged rather than be refused for a field cc no longer reads.
+// ones, and the one the descriptor's absence actually rests on: a provider that
+// still sends a `system` object must connect unchanged rather than be refused
+// for a field cc does not read.
 export interface HelloProviderFrame {
   type: 'hello';
   protocol: number;
@@ -253,9 +250,8 @@ export interface CloseFrame { type: 'close'; id: string }
 // cc sends it when a redirected shell command settles on cc's OWN framing
 // sentinel, which is the exact end of the command's output. The command's exit
 // may never be reported at all — a `cmd &` job inherits its stdout pipe and
-// holds it open, so the provider's stream-close never fires (card 2026-0318 §1)
-// — and killing at that point would reap a background job that a LOCAL Bash
-// call leaves running.
+// holds it open, so the provider's stream-close never fires — and killing at
+// that point would reap a background job that a LOCAL Bash call leaves running.
 export interface DetachFrame { type: 'detach'; id: string }
 export interface ReadFileFrame {
   type: 'readFile'; id: string; remoteId?: string; path: string; offset?: number; length?: number;

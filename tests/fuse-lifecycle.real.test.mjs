@@ -14,10 +14,9 @@
 // mount in /proc/1/mounts and no orphaned daemon?
 //
 // EVERY ARM CAPTURES A `BEFORE` SNAPSHOT AND ASSERTS A DELTA, so what the run
-// leaked is distinguished from what it inherited. This host carries inherited
-// FUSE residue from the spikes (S3 §A5: minors 56 and 59, inert, freeing
-// nothing), and an absolute assertion would either fail on it or hide a leak
-// under it.
+// leaked is distinguished from what it inherited. A host can carry inherited
+// FUSE residue — stale minors, inert, freeing nothing — and an absolute
+// assertion would either fail on it or hide a leak under it.
 //
 // PID DISCIPLINE. Every signal in this file targets a numeric pid read out of
 // the session's OWN mount.json, re-verified against /proc/<pid>/stat field 22
@@ -149,10 +148,9 @@ const ancestorsOf = (p) => {
 describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENABLED }, () => {
   let ctx, baseUrl, instances, home, box, runRoot, fakeRemote, prevFakeRemote;
   // Reported, not asserted on: the wall time of a spawn and of one turn, inside
-  // the chroot and outside it. S3's "Not measured" section names the cost of
-  // attr_timeout=0/entry_timeout=0 as the more important of its two unmeasured
-  // costs, and the union serves every page of the CLI binary with no kernel
-  // cache. RECORD IT, DO NOT TUNE IT — if it is unusable that is the report,
+  // the chroot and outside it. The cost of attr_timeout=0/entry_timeout=0 is
+  // unmeasured and is the one that matters: the union serves every page of the
+  // CLI binary with no kernel cache. RECORD IT, DO NOT TUNE IT — if it is unusable that is the report,
   // not a reason to reach for kernel_cache.
   const timings = { chroot: [], control: [] };
 
@@ -168,34 +166,33 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     ctx = await bootServer({ realProcess: true, scenarioPath: SCENARIO });
     ({ baseUrl, instances } = ctx);
     ({ home } = await freshProjectsRoot());
-    // ── CARD 2026-0387: THE WHOLE GATE RUNS AT A LONG STORE ROOT ────────────
+    // ── THE WHOLE GATE RUNS AT A LONG STORE ROOT ────────────────────────────
     //
-    // The control socket used to be addressed by its real path, so the store
-    // root's depth was a spawn-time cliff: past Linux's 107-byte `sun_path`,
-    // `bind(2)` answered a bare `EINVAL`. It is now addressed through a
-    // directory fd, and every arm below is the proof — spawn, mount, serve,
-    // tear down, sweep — rather than one dedicated arm that would need a
-    // second fake-remote scaffold to duplicate.
+    // Addressed by its real path, the control socket would make the store
+    // root's depth a spawn-time cliff: past Linux's 107-byte `sun_path`,
+    // `bind(2)` answers a bare `EINVAL`. It is addressed through a directory
+    // fd instead, and every arm below is the proof — spawn, mount, serve, tear
+    // down, sweep — rather than one dedicated arm that would need a second
+    // fake-remote scaffold to duplicate.
     //
     // CONSTRUCTED, NEVER REASONED ABOUT. The assertion is on the store root
     // ALONE, so no accounting of what cc adds below it can quietly go slack.
     process.env.PROJECTS_ROOT = await padPathTo(process.env.PROJECTS_ROOT, SUN_PATH_MAX + 1);
     assert.ok(Buffer.byteLength(orchStoreRoot()) > SUN_PATH_MAX,
-      `the gate must run at a store root longer than sun_path itself — this is card 2026-0387's bar; got ${Buffer.byteLength(orchStoreRoot())} bytes at ${orchStoreRoot()}`);
+      `the gate must run at a store root longer than sun_path itself; got ${Buffer.byteLength(orchStoreRoot())} bytes at ${orchStoreRoot()}`);
     runRoot = fuseRunRoot();
 
     // The fake remote is DELIBERATELY NARROW: one project tree and nothing
-    // else. The frozen daemon's `default` tier is remote-first (union.c:940),
-    // so a wide fake remote would shadow host paths that S1 does not pin —
-    // measured in S3 §B2, where a `create` at tier=default landed on the remote
-    // and was absent from the host.
+    // else. A wide fake remote would shadow host paths the tier table does not
+    // pin — measured: a `create` at an unpinned path landed on the remote and
+    // was absent from the host.
     box = await fs.realpath(await mkdtemp('cc-fuse-box-'));
     await seedRepo(path.join(box, 'app'));
     await fs.writeFile(path.join(box, 'app', 'remote-marker.txt'), 'HOST-SIDE-COPY\n');
 
     // THE FAKE REMOTE, AND ITS BYTES DIFFER FROM THE HOST'S AT THE SAME PATH.
-    // That is the whole reason the override exists: S1's bind-mount stand-in
-    // made the two identical, and criteria 3 and 4 are only checkable when a
+    // That is the whole reason the override exists: a bind-mount stand-in
+    // makes the two identical, and criteria 3 and 4 are only checkable when a
     // reader can tell which side answered. The tree MIRRORS the host layout, so
     // `<fakeRemote>/<projectPath>` is the project's own path on "the system".
     fakeRemote = await fs.realpath(await mkdtemp('cc-fuse-remote-'));
@@ -238,8 +235,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
     // ── PROJECT-TIER PATHS THE HOST HAS NOTHING AT ──────────────────────────
     //
-    // Card 2026-0388: an unmarked caller is served the HOST wherever the host
-    // has an entry, whatever the tier. `before()` deliberately seeds a host tree
+    // An unmarked caller is served the HOST wherever the host has an entry,
+    // whatever the tier. `before()` deliberately seeds a host tree
     // at each project's OWN absolute spelling — that is how R2 proves "never a
     // host fallback" for a MARKED caller — so every `-ENOENT` assertion below
     // has to move onto a path the host has nothing at, or the host tree answers
@@ -286,21 +283,20 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // ── A THIRD SYSTEM, ADVERTISING THE WIDE ROOT, AND A PROJECT THE HOST HAS
     //    NOTHING AT ─────────────────────────────────────────────────────────
     //
-    // `mirrorRoot: '/'` is the configuration card 2026-0388 exists for: `project
-    // /` swallows every unpinned intermediate directory, the synthetic scaffold
-    // collapses, and before the host-existence substitution the unmarked chroot
-    // process died resolving /bin.
+    // `mirrorRoot: '/'` is the configuration the wide-root pin exists for:
+    // `project /` swallows every unpinned intermediate directory and the
+    // synthetic scaffold collapses, which without the host-existence
+    // substitution kills the unmarked chroot process resolving /bin.
     //
     // THE PROJECT PATH MUST BE ABSENT FROM THE HOST, or every -ENOENT and every
     // overlay-node assertion in R14 is answered by a host tree instead of by
-    // policy (card 2026-0398 renamed the node; the fixture requirement is the
-    // same one).
+    // policy.
     // Only a WIDE root can have one: `_assertRemoteMountable` lstats the mirror
     // root through this fixture's host-local provider, so a DEFAULT-root project
     // must exist on the host and its cwd chain is host-served end to end.
     //
     // TWO host-absent links, not one, so R14 can decide whether the chain ABOVE
-    // the cwd leaf needs traversal at all — the card's open question.
+    // the cwd leaf needs traversal at all, which is still open.
     await seedRepo(path.join(box, 'wide', 'appw'));                 // host: for the adopt probe only
     await seedRepo(path.join(fakeRemote, box, 'wide', 'appw'));     // the system's own copy
     await fs.writeFile(path.join(fakeRemote, box, 'wide', 'appw', 'remote-marker.txt'),
@@ -529,8 +525,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // fallback is the only thing that clears it.
   //
   // WHAT THIS ARM DOES **NOT** CONSTRUCT, stated so it is not read as more than
-  // it is: a FUSE-level deadlock (S3 §A3's W-D1/W-D2). Under S2's geometry
-  // there is no route to one left to construct. A remote-tier op is answered
+  // it is: a FUSE-level deadlock. Under this geometry there is no route to one
+  // to construct. A remote-tier op is answered
   // from `<rundir>/mirror`, a SIBLING of the mountpoint, whose contents cc
   // materialises over the control socket — so no path the daemon serves is
   // backed by the union itself. And cc's handler runs OUTSIDE the namespace,
@@ -539,8 +535,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // precondition for a caller in the daemon's own thread group, not as the
   // thing standing between this arm and a deadlock. So what is pinned here is
   // the WEDGE class — a busy mount, bounded, reported, then swept — and the
-  // deadlock class is pinned by the deterministic suite's fake driver and by
-  // S3's own measurement of the abort, not here.
+  // deadlock class is pinned by the deterministic suite's fake driver, not
+  // here.
   test('arm 5 — a live unrecorded namespace member is a bounded, reported wedge the sweep then clears', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
@@ -562,8 +558,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         // stdio detached, or `sudo` waits on the backgrounded process's
         // inherited stdout for the whole 300 s.
         // `/usr` inside the chroot is a SYNTHETIC node, 0555 and traversable —
-        // and under the fail-closed tier an unpinned `/srv` no longer exists at
-        // all, which is what this arm used before S2.
+        // and under the fail-closed tier an unpinned `/srv` does not exist at
+        // all, so it cannot be the holder's directory.
         'cd "$1" && { sleep 300 </dev/null >/dev/null 2>&1 & echo $!; }', 'sh', path.join(record.root, 'usr')]);
       holderPid = Number(started.stdout.trim());
       holderStart = startOf(holderPid);
@@ -668,9 +664,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assert.deepEqual(runDirsAfter, runDirsBefore,
       `the refused spawn created ${JSON.stringify(runDirsAfter.filter(d => !runDirsBefore.includes(d)))}`);
   });
-  // ══ S2's ARMS ═════════════════════════════════════════════════════════════
+  // ══ THE MOUNT'S OWN ARMS ══════════════════════════════════════════════════
   //
-  // R1-R6 (plan 2026-0355 §11.3). These need a real mount, a real chroot and a
+  // R1-R6. These need a real mount, a real chroot and a
   // real second process in the namespace, so they cannot be deterministic. The
   // policy split does not retire them: it moved what CAN be proven without a
   // mount into `tests/fuse-union-policy.test.mjs`, and what is left here is
@@ -767,7 +763,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   //                                               host's copy at the same
   //                                               spelling
   //   an unmarked caller where the HOST HAS one → the HOST's bytes, never the
-  //                                               system's (card 2026-0388)
+  //                                               system's
   //   an unmarked caller where it has NONE      → -ENOENT, with the row
   //   a MARKED caller at that same path         → the system's bytes, which is
   //                                               the control saying the file
@@ -775,11 +771,10 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   //                                               POLICY rather than absence
   //   either caller at a host pin               → the HOST's bytes, alike.
   //
-  // THE UNMARKED HOST READ IS A DELIBERATE INVERSION OF THIS ARM'S OLD SHAPE.
-  // `before()` writes HOST-SIDE-COPY at the project's own absolute spelling on
-  // purpose, so under the 2026-09-09 ruling this is the epic plan's "a host
-  // collision is divergence, not a leak" — pinned here as intended behaviour
-  // rather than left implicit.
+  // THE UNMARKED HOST READ IS DELIBERATE. `before()` writes HOST-SIDE-COPY at
+  // the project's own absolute spelling on purpose: a host collision is
+  // DIVERGENCE, not a leak — pinned here as intended behaviour rather than left
+  // implicit.
   test('R2 — a project path answers the system to a marked caller, and the host to an unmarked one wherever the host has an entry', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
@@ -810,11 +805,10 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // `remote-only.txt` exists in the fake remote and nowhere on the host, so
       // this is the same tier, the same caller and the opposite answer — which
       // is what keeps the answer from being read as a property of this path.
-      // SINCE CARD 2026-0398 THE MECHANISM UNDER IT CHANGED WITHOUT THE ANSWER
-      // CHANGING: host-entry existence is no longer a discriminator the daemon
-      // tests for. The path re-resolves in `VIEW_HOST`, is served the host, and
-      // this -ENOENT is the ORCHESTRATOR'S OWN rather than a policy denial —
-      // which is what the log assertion below now says.
+      // THE MECHANISM UNDER IT: host-entry existence is not a discriminator
+      // the daemon tests for. The path re-resolves in `VIEW_HOST`, is served
+      // the host, and this -ENOENT is the ORCHESTRATOR'S OWN rather than a
+      // policy denial — which is what the log assertion below says.
       const remoteOnly = inside(record, path.join(box, 'app', 'remote-only.txt'));
       const denied = await inNs(record.anchorPid, 'read l < "$1" || exit 7; echo "$l"', remoteOnly);
       assert.equal(denied.ok, false, `an unmarked caller was served at a host-absent path: ${denied.stdout}`);
@@ -845,12 +839,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const events = await eventsOf(inst.id);
       assert.ok(events.some(r => r[0] === 'served' && r[3] === 'unmarked-host-served'
         && r[2] === path.join(box, 'app', 'remote-marker.txt')),
-        `no served/unmarked-host-served row for the host-shadowed project file — since card `
-        + `2026-0398 a project-tier path re-resolves in VIEW_HOST and lands on the SAME reason `
+        `no served/unmarked-host-served row for the host-shadowed project file — a `
+        + `project-tier path re-resolves in VIEW_HOST and lands on the SAME reason `
         + `as any other fail -> host, rather than on one of its own: `
         + JSON.stringify(events));
-      // AND THE HOST-ABSENT ONE IS NO LONGER A POLICY DENIAL AT ALL (card
-      // 2026-0398). It re-resolves in `VIEW_HOST`, is served the host, and the
+      // AND THE HOST-ABSENT ONE IS NOT A POLICY DENIAL AT ALL. It re-resolves
+      // in `VIEW_HOST`, is served the host, and the
       // ENOENT the caller sees is the ORCHESTRATOR'S OWN — not a refusal. The
       // read above already proved the bytes are not the remote's; what is
       // asserted here is that the daemon says which rule answered.
@@ -858,7 +852,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         && r[2] === path.join(box, 'app', 'remote-only.txt')),
         `no served/unmarked-host-served row for the host-absent project file: ${JSON.stringify(events)}`);
       assert.deepEqual(events.filter(r => r[3] === 'unmarked-project-denied'), [],
-        `an unmarked caller reached policy_project_route — since card 2026-0398 the project `
+        `an unmarked caller reached policy_project_route — the project `
         + `tier is not in its view at all, so that denial is structurally unreachable: `
         + JSON.stringify(events));
     } finally {
@@ -874,7 +868,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // the kernel refused would kill every launch, and the named contingency was
   // to render the three as `host` pins of empty directories instead.
   //
-  // AND, SINCE CARD 2026-0404, THE CALLER SPLIT AT ONE REAL PATH: the MARKED
+  // AND THE CALLER SPLIT AT ONE REAL PATH: the MARKED
   // CLI meets the synthetic scaffold at `/usr` — fixed attributes, EROFS on a
   // mutation — while an UNMARKED caller meets the orchestrator's own directory
   // at that same spelling. `pt_getattr` is out of the unit driver's reach, so a
@@ -891,14 +885,11 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       }
       // ── THE SCAFFOLD IS THE MARKED CALLER'S ANSWER ALONE ─────────────────
       //
-      // REWRITTEN BY CARD 2026-0404, AND THE CHANGE IS STATED RATHER THAN MADE
-      // SILENTLY. This used to be ONE stat, made by an UNMARKED shell, asserting
-      // `555 0 0 0`. The assertion is from `56a525a0` and PREDATES card
-      // 2026-0398: under criterion 4 clause (2) an unmarked caller is served the
-      // orchestrator, and D25 enumerates this very path — `/`, `/usr`, `/bin`,
-      // `/etc`, `/home`, `/root` — among those whose unmarked answer changed, so
-      // it could not pass after that card. The INVARIANT survives with its
-      // CALLER MOVED: the scaffold is asserted to the MARKED CLI, and the
+      // STATED RATHER THAN MADE SILENTLY. Under criterion 4 clause (2) an
+      // UNMARKED caller is served the orchestrator's own directory at this very
+      // path — `/`, `/usr`, `/bin`, `/etc`, `/home`, `/root` are all of them —
+      // so a `555 0 0 0` synthetic expectation made by an unmarked shell cannot
+      // hold. The INVARIANT is asserted to the MARKED CLI instead, and the
       // unmarked answer is asserted BESIDE it rather than dropped.
       //
       // PINNED HERE AND NOWHERE ELSE: the caller split at ONE real path. The
@@ -978,13 +969,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // beside it: unpinned, so fail-closed -ENOENT rather than EROFS. The two
       // together say the synthetic tree is a scaffold and not a writable one.
       //
-      // MARKED, AND CARD 2026-0382 IS WHY. This probe used to be an unmarked
-      // root shell running `mkdir`, and `fail → host` for an unmarked caller
-      // turned it into a real `mkdir /usr/nope` ON THE ORCHESTRATOR'S HOST —
-      // measured, and the directory was there afterwards. `fail`-closed is now
-      // the MARKED CLI's answer alone, so this is the caller that has to make
-      // the assertion; R13 pins the unmarked side, where being served the host
-      // is the decision rather than a leak.
+      // MARKED. `fail`-closed is the MARKED CLI's answer alone, so this is the
+      // caller that has to make the assertion: an unmarked root shell running
+      // `mkdir` here would be a real `mkdir /usr/nope` ON THE ORCHESTRATOR'S
+      // HOST — measured, and the directory was there afterwards. R13 pins the
+      // unmarked side, where being served the host is the decision rather than
+      // a leak.
       //
       // IT HAS TO BE A SHELL REDIRECTION for the same reason the project-write
       // control below does: `mkdir` is an external binary and therefore its own
@@ -1041,8 +1031,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   });
 
   // ── R4 ───────────────────────────────────────────────────────────────────
-  // PINS the acceptance the spike used and the loop plan §13 K1 iterates
-  // against: after a full turn the event log DENIES nothing the CLI NEEDED.
+  // PINS: after a full turn the event log DENIES nothing the CLI NEEDED.
   //
   // "Needed" is made falsifiable rather than left to judgement: no DENIAL may
   // name a path the worker went on to fail over — the turn completed — and no
@@ -1100,7 +1089,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // chroot as a whole — the worker runs as cc's own uid and the architecture
   // bind-mounts the orchestrator's real /proc, so
   // `/proc/<ccpid>/root/<rundir>/mirror` is another spelling of the same
-  // directory and it resolves (measured; card 2026-0394 owns that route).
+  // directory and it resolves (measured).
   test('R5 — the run directory is unreachable through the union from inside the chroot, and dies with the session', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
@@ -1343,17 +1332,15 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   });
 
   // ── R8 ───────────────────────────────────────────────────────────────────
-  // THE ACCEPTANCE GATE FOR 2026-0373: a spawn-time chdir from an UNMARKED
-  // thread group resolves the project ROOT, and inside it only what the HOST
-  // has an entry at (card 2026-0388).
+  // A SPAWN-TIME CHDIR FROM AN UNMARKED THREAD GROUP resolves the project
+  // ROOT, and inside it only what the HOST has an entry at.
   //
-  // FIVE OF THIS FILE'S SUB-ARMS INVERTED WITH THE 2026-09-09 RULING and this
-  // is four of them. `before()` seeds a host tree at the project's own absolute
-  // spelling on purpose — it is how R2 proves "never a host fallback" for a
-  // MARKED caller — so every `-ENOENT` assertion moved onto `remote-only*`,
-  // which exists on the system and nowhere on the host, and each flipped
-  // assertion became an explicit pin of the substitution. Both directions are
-  // asserted in every sub-arm, which is what keeps them non-vacuous.
+  // `before()` seeds a host tree at the project's own absolute spelling on
+  // purpose — it is how R2 proves "never a host fallback" for a MARKED caller —
+  // so every `-ENOENT` assertion here sits on `remote-only*`, which exists on
+  // the system and nowhere on the host, and each is an explicit pin of the
+  // substitution. Both directions are asserted in every sub-arm, which is what
+  // keeps them non-vacuous.
   //
   // THE PROBE REPRODUCES THE DEFECT'S OWN MECHANISM rather than a shell's `cd`:
   // `node -e` + `spawnSync(..., { cwd })` is libuv's chdir-in-the-FORKED-CHILD,
@@ -1390,9 +1377,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const proj = path.join(box, 'app');
     const SUB = 'cwd-sub';
     // THE HOST-ABSENT PAIR, seeded in `before()`: a project-tier directory and
-    // a project-tier file the host has nothing at. Since the 2026-09-09 ruling
-    // these are the ONLY paths a `-ENOENT` sub-arm can be stated at — at the
-    // project's own spelling the host tree answers.
+    // a project-tier file the host has nothing at. These are the ONLY paths a
+    // `-ENOENT` sub-arm can be stated at — at the project's own spelling the
+    // host tree answers.
     const RSUB = 'remote-only-sub';
     const RFILE = 'remote-only.txt';
     // IN THE FAKE REMOTE, so it genuinely exists on "the system": a refusal at
@@ -1405,7 +1392,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     await fs.mkdir(path.join(box, 'app', SUB), { recursive: true });
     // (e) reads the daemon's OWN output, through the PRODUCT'S OWN TRACE
     // SWITCH. `resolveTraceEnabled()` keys exactly on '1' and is read by
-    // `buildFusePlan` IN THIS PROCESS at spawn time (instances.ts:4965), so
+    // `buildFusePlan` IN THIS PROCESS at spawn time
+    // (`InstanceManager._doCreateResolved`), so
     // the switch is set before `spawnWorker()` and restored in the `finally`.
     const prevTrace = process.env.CC_FUSE_TRACE;
     process.env.CC_FUSE_TRACE = '1';
@@ -1431,15 +1419,15 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // (b) A PROJECT-TIER DIRECTORY THAT IS NOT ON THE CWD CHAIN AND THAT THE
       // HOST HAS NOTHING AT STAYS DENIED. The exemption widened to the cwd's own
-      // directory COMPONENTS (card 2026-0382), and `<proj>/remote-only-sub` is a
-      // CHILD of the cwd rather than an ancestor of it — so the widening does not
-      // reach it, and the host has no entry to substitute either.
+      // directory COMPONENTS, and `<proj>/remote-only-sub` is a CHILD of the
+      // cwd rather than an ancestor of it — so the admission does not reach it,
+      // and the host has no entry to substitute either.
       assert.equal(res.b.err, 'ENOENT', `a spawn inside the project tree survived: ${JSON.stringify(res.b)}`);
       // …AND THE HOST HALF, WHICH IS THE SAME MECHANISM FROM THE OTHER SIDE:
       // `<proj>/cwd-sub` exists on the host, so the chdir SUCCEEDS and it is the
       // host's directory that answered. Both halves in one arm is what keeps the
-      // answer from being read as a property of one path. Since card 2026-0398
-      // both halves are the same rule — the path is served the host either way,
+      // answer from being read as a property of one path. Both halves are the
+      // same rule — the path is served the host either way,
       // and what differs is only whether the orchestrator has anything there.
       assert.equal(res.bh.err, null,
         `the chdir failed where the host HAS the directory: ${JSON.stringify(res.bh)}`);
@@ -1481,8 +1469,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // a shell's exit code: the routed tier is in the trace, and the root is
       // NOT in the event log while the two paths under it are.
       // THE PLAN'S OWN PATH, not one this arm chose: `buildFusePlan` puts the
-      // trace at `<rundir>/trace.log` (plan.ts:233) and `wrapLaunch` hands
-      // exactly that to the worker as `CC_FUSE_TRACE_LOG` (wrap.ts:88). Read
+      // trace at `<rundir>/trace.log` (`plan.tracePath`) and `wrapLaunch` hands
+      // exactly that to the worker as `CC_FUSE_TRACE_LOG`. Read
       // HERE, inside the `try` — the `finally`'s `remove` reclaims the rundir
       // and takes the trace with it, which is also why this arm leaves no
       // temp directory of its own behind.
@@ -1493,10 +1481,10 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // distinguished rather than collapsed — but only REACHABLE causes are
       // named. THE PRODUCT TURNS THE TRACE ON and this arm asks it to, over a
       // chain of four explicit links: `CC_FUSE_TRACE=1` →
-      // `resolveTraceEnabled()` (plan.ts:144) → `plan.tracePath` =
-      // `<rundir>/trace.log` (plan.ts:233) → `wrapLaunch` emitting
-      // `CC_FUSE_TRACE_LOG` (wrap.ts:88) → bootstrap.sh exporting
-      // `CC_UNION_TRACE` from it (bootstrap.sh:146).
+      // `resolveTraceEnabled()` → `plan.tracePath` = `<rundir>/trace.log`
+      // (both in `src/systems/fuse/plan.ts`) → `wrapLaunch` emitting
+      // `CC_FUSE_TRACE_LOG` (`src/systems/fuse/wrap.ts`) → bootstrap.sh
+      // exporting `CC_UNION_TRACE` from it (its `CC_UNION_TRACE` assignment).
       //
       // AN AMBIENT `CC_UNION_TRACE` IS NOT A CHANNEL, and must not become one
       // again: bootstrap.sh's `else` arm unsets it exactly so that `sudo -E`,
@@ -1538,7 +1526,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         + `substitution did not fire, or route() assigned another tier (${rows.length} rows traced): `
         + rows.filter(l => l.includes(proj)).slice(-8).join(' | '));
       const events = await eventsOf(inst.id);
-      // NO PROJECT-TIER DENIAL ANYWHERE (card 2026-0398): an unmarked caller
+      // NO PROJECT-TIER DENIAL ANYWHERE: an unmarked caller
       // resolves in `VIEW_HOST`, where the `project` pins are struck, so
       // `policy_project_route` is unreachable and its reason is never written.
       // The two remote-only paths under the root are served the HOST instead and
@@ -1550,17 +1538,17 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         assert.ok(events.some(r => r[0] === 'served' && r[2] === served && r[3] === 'unmarked-host-served'),
           `no served/unmarked-host-served for ${served}: ${JSON.stringify(events)}`);
       }
-      // (f) AND THE ROW SAYS WHO ASKED (card 2026-0389). This is the ONLY arm
+      // (f) AND THE ROW SAYS WHO ASKED. This is the ONLY arm
       // anywhere with a real /proc behind the identity columns: every other
       // layer injects the reader, so "the enrichment compiles" and "the
       // enrichment attributes a real process" are different claims and this is
       // the second one. The probe runs `node` inside the worker's namespace, so
       // its thread group is NOT the bootstrap's — what is asserted is that the
       // row names a LIVE, READABLE process, not a sentinel.
-      // ATTRIBUTED ON THE SERVED ROWS, because card 2026-0398 left no unmarked
-      // project denial to attribute. The claim is unchanged — a row names a
-      // LIVE, READABLE process rather than a sentinel — and the rows it reads
-      // come from the same probe in the same namespace.
+      // ATTRIBUTED ON THE SERVED ROWS: there is no unmarked project denial to
+      // attribute. The claim is the same — a row names a LIVE, READABLE process
+      // rather than a sentinel — and the rows it reads come from the same probe
+      // in the same namespace.
       const denials = events.filter(r => r[3] === 'unmarked-host-served'
         && r[2].startsWith(`${proj}/`));
       assert.ok(denials.length > 0, `no project-path row to attribute: ${JSON.stringify(events)}`);
@@ -1628,18 +1616,17 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     'console.log(JSON.stringify({root:run(process.argv[1]),sub:run(process.argv[2])}));',
   ].join('');
 
-  // ── R15 (card 2026-0398) ───────────────────────────────────────────────────
+  // ── R15 ────────────────────────────────────────────────────────────────────
   //
   // THE WIDENING AT THE DEFAULT NARROW ROOT, WHICH IS THE ONE THING THE UNIT
   // FIXTURE CANNOT REACH. `b38`–`b48` prove the RESOLUTION; this proves that a
   // real `ls` and a real `mkdir` through a real mount see the consequence.
   //
-  // THE SITE IS A HOST DIRECTORY THAT IS AN ANCESTOR OF A PIN — synthetic
-  // before this card, and therefore `0555` root:root with a listing containing
-  // only the pin names below it and `EROFS` on every mutation. After it the
-  // ancestor table is not consulted in `VIEW_HOST`, so the path falls to `fail`
-  // and `fail` means host: the orchestrator's own directory, its own names, its
-  // own write surface.
+  // THE SITE IS A HOST DIRECTORY THAT IS AN ANCESTOR OF A PIN. The ancestor
+  // table is not consulted in `VIEW_HOST`, so the path falls to `fail` and
+  // `fail` means host: the orchestrator's own directory, its own names, its own
+  // write surface — not a synthetic `0555` root:root node listing only the pin
+  // names below it and answering `EROFS` on every mutation.
   //
   // BOTH HALVES, because either alone is weak. A listing that gained a name
   // could still be a read-only node; a `mkdir` that succeeded could still be
@@ -1647,7 +1634,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // write — asserting `mkdir` against a directory nobody may write to would pass
   // for the wrong reason.
   //
-  // AND, SINCE CARD 2026-0404, THE TRAVERSAL FLOOR AND ITS SCOPE AT THIS ROOT.
+  // AND THE TRAVERSAL FLOOR AND ITS SCOPE AT THIS ROOT.
   // `<box>` is on the CLI's cwd chain, so the mode it reports is the host's with
   // `0111` OR'd in; a sibling directory that is NOT on the chain reports its
   // real mode. Both are asserted, because the first alone would pass under an
@@ -1656,7 +1643,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const before = snapshot(runRoot);
     // AN ANCESTOR OF A PIN, AND ASSERTED TO BE ONE. `<box>/app` is the project,
     // so `<box>` is a strict ancestor of a `project` pin and carries no pin of
-    // its own — exactly the class that used to be a synthetic node.
+    // its own — exactly the class a synthetic node would cover.
     const anchorDir = box;
     const loose = `cc-r15-unpinned-${process.pid}.txt`;
     await fs.writeFile(path.join(anchorDir, loose), 'ORCHESTRATOR-SIDE\n');
@@ -1686,20 +1673,17 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // (a) THE MODE AND OWNER ARE THE ORCHESTRATOR'S OWN, read with `fs.stat`
       // from cc's own process and never a literal. `0555 0 0` is the synthetic
-      // node this used to be, and the uid/gid halves are still what kill it.
+      // node's signature, and the uid/gid halves are what kill it.
       //
-      // WITH THE TRAVERSAL FLOOR'S `0111` OR'd IN — CORRECTED BY CARD 2026-0404,
-      // AND SAID OUT LOUD RATHER THAN RELAXED QUIETLY. `<box>` is a component of
-      // the CLI's cwd (`<box>/app`), so `policy_cwd_component` holds,
-      // `policy_floor_applies` is true in `VIEW_HOST`, and
-      // `policy_floor_traversal` ORs `0111` onto the reported mode — criterion 4
-      // clause (3)'s "a traversal floor so every directory it is handed can be
-      // entered", verbatim. The floor-BLIND expectation this replaces and R14's
-      // floor-AWARE one AT THIS SAME PATH landed in ONE commit (`2d1ad17f`, card
-      // 2026-0398), so the file made two contradictory statements about `<box>`;
-      // this is the arm being brought onto the rule its own card landed. What
-      // keeps that honest is the scope control immediately below, not this
-      // equality.
+      // WITH THE TRAVERSAL FLOOR'S `0111` OR'd IN, AND SAID OUT LOUD RATHER
+      // THAN RELAXED QUIETLY. `<box>` is a component of the CLI's cwd
+      // (`<box>/app`), so `policy_cwd_component` holds, `policy_floor_applies`
+      // is true in `VIEW_HOST`, and `policy_floor_traversal` ORs `0111` onto
+      // the reported mode — criterion 4 clause (3)'s "a traversal floor so
+      // every directory it is handed can be entered", verbatim. What keeps this
+      // honest is the scope control immediately below, not this equality: a
+      // floor-BLIND expectation at this same path would contradict R14's
+      // floor-AWARE one.
       const hostDir = await fs.stat(anchorDir);
       // AND THE ON-CHAIN FIXTURE IS `0700`-SHAPED, asserted for the same reason
       // the off-chain one below is. `mkdtemp` gives `<box>` `0700` today, but it
@@ -1711,7 +1695,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(st.stdout.trim(),
         `${((hostDir.mode & 0o7777) | 0o111).toString(8)} ${hostDir.uid} ${hostDir.gid}`,
         `an ancestor-of-a-pin ON-CHAIN directory did not report the orchestrator's own `
-        + `attributes with the floor applied — '555 0 0' is the synthetic node this card `
+        + `attributes with the floor applied — '555 0 0' alone would be the synthetic node `
         + `removed: ${st.stdout} ${st.stderr}`);
 
       // AND THE FLOOR IS SCOPED TO THE CHAIN, AT THE DEFAULT NARROW ROOT. A host
@@ -1739,18 +1723,18 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         + `${offStat.stdout} ${offStat.stderr}`);
 
       // (b) THE LISTING IS THE ORCHESTRATOR'S OWN, INCLUDING AN UNPINNED NAME.
-      // The unpinned file is the 2026-0403 half: before the dirent predicate
-      // became caller-aware it was invisible to `ls` while `cat` on it worked.
+      // The unpinned file is the `ls`/`cat` half: a dirent predicate that is
+      // not caller-aware makes it invisible to `ls` while `cat` on it works.
       const ls = await unmarked('exec /bin/ls -a "$1"', at);
       assert.equal(ls.ok, true, `an unmarked caller could not list it: ${ls.stderr}`);
       const names = ls.stdout.split('\n').map(x => x.trim()).filter(Boolean);
       assert.ok(names.includes(loose),
-        `the UNPINNED file is missing from the listing — card 2026-0403, the ls/cat `
+        `the UNPINNED file is missing from the listing — the ls/cat `
         + `disagreement: ${JSON.stringify(names)}`);
       assert.ok(names.includes('app'),
         `the project directory is missing from the listing: ${JSON.stringify(names)}`);
-      // AND `cat` AGREES WITH `ls`, which is the whole of what 2026-0403 is
-      // about: a name a caller can open is a name it must see.
+      // AND `cat` AGREES WITH `ls`: a name a caller can open is a name it must
+      // see.
       const cat = await unmarked('exec /bin/cat "$1"', inside(record, path.join(anchorDir, loose)));
       assert.match(cat.stdout, /ORCHESTRATOR-SIDE/,
         `the unpinned file is listed but not readable: ${cat.stdout} ${cat.stderr}`);
@@ -1760,8 +1744,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const made = `cc-r15-mkdir-${process.pid}`;
       const mk = await unmarked('exec /bin/mkdir "$1"', inside(record, path.join(anchorDir, made)));
       assert.equal(mk.ok, true,
-        `mkdir inside an ancestor-of-a-pin directory failed — EROFS here is the synthetic `
-        + `node this card removed: ${mk.stdout} ${mk.stderr}`);
+        `mkdir inside an ancestor-of-a-pin directory failed — EROFS here would be the `
+        + `synthetic node answering: ${mk.stdout} ${mk.stderr}`);
       // SEEN FROM cc's OWN PROCESS, not from the shell's exit code: only the
       // former says the directory really landed on the orchestrator's disk.
       assert.ok((await fs.stat(path.join(anchorDir, made))).isDirectory(),
@@ -1782,10 +1766,10 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const before = snapshot(runRoot);
     const proj = path.join(box, 'app');
     // ITS OWN SUBDIRECTORY NAME, CREATED IN THE FAKE REMOTE ONLY. R8 runs
-    // earlier in this file and leaves a HOST copy of `cwd-sub` behind, and since
-    // the 2026-09-09 ruling an unmarked caller is served the host wherever the
-    // host has an entry — so half one would chdir successfully and the arm would
-    // measure nothing. The host-absence is asserted, not assumed.
+    // earlier in this file and leaves a HOST copy of `cwd-sub` behind, and an
+    // unmarked caller is served the host wherever the host has an entry — so
+    // half one would chdir successfully and the arm would measure nothing. The
+    // host-absence is asserted, not assumed.
     const SUB = 'cwd-sub-r9';
     await fs.mkdir(path.join(fakeRemote, proj, SUB), { recursive: true });
     assert.equal(await fs.stat(path.join(proj, SUB)).then(() => true, () => false), false,
@@ -1824,13 +1808,6 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // ── R10 ──────────────────────────────────────────────────────────────────
   // MODE PRESERVATION AT THE REAL MOUNT, through the syscall sequence an
   // atomic edit actually makes.
-  //
-  // THE NUMBERING, stated precisely because the short version is ambiguous.
-  // Plan 2026-0356 §8.7 gives this arm's CONTENT the label R9. The label R9 in
-  // this file is already taken — by the merged card 2026-0373's cwd/mark arm,
-  // which is different work that happens to have landed on that number first.
-  // So: R10 here is the plan's R9 by content, and R11 here is the plan's R10
-  // and R11 merged, because they are one state (see R11's own header).
   //
   // WHY IT WORKS THROUGH A RENAME AND NOT ONLY THROUGH A WRITE: `pt_rename`
   // routes the DESTINATION with FOR_CREATE|FOR_WRITE, so cc FETCHes the 0755
@@ -1997,22 +1974,16 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   });
 
   // ── R12 ──────────────────────────────────────────────────────────────────
-  // THE PRE-MARK WINDOW IS HOST-AND-SYNTHETIC ONLY, and that is what closes
-  // S2 §9.1's straddle hazard in production.
-  //
-  // THE LABEL. Plan 2026-0382 §Step 6 calls this arm's CONTENT R10 and the next
-  // one R11; both labels are already taken in this file by different work that
-  // landed on them first (the atomic-rename mode arm and the divergence arm).
-  // So R12 here is the plan's R10 and R13 is the plan's R11, by the same
-  // convention R10's own header records for its collision with R9.
+  // THE PRE-MARK WINDOW IS HOST-AND-SYNTHETIC ONLY, which is what stops one
+  // path answering one way to a thread group's pre-mark ops and another way to
+  // its post-mark ones.
   //
   // WHAT IT PINS: the CLI's thread group makes NO union op before the marking
   // event whose tier is `project`, `fail`, `hide` or `cwd`. `bootstrap.sh`
   // fires the mark as the first statement of the chroot'd script, so the window
-  // is bounded by dash's startup — measured at 65 pre-mark ops over 16 distinct
-  // paths, identical across two independent runs, every one `host` or `synth`,
-  // and 12 of them touched again post-mark with none resolving `project`,
-  // `fail` or `hide`.
+  // is bounded by dash's startup — every op in it `host` or `synth`, and the
+  // ones touched again post-mark resolving neither `project`, `fail` nor
+  // `hide`.
   //
   // THAT ORDERING CARRIES A CORRECTNESS PROPERTY AND IS PROTECTED BY A COMMENT.
   // `tests/fuse-lifecycle.test.mjs`'s `2c` pins the statement order in the
@@ -2066,15 +2037,14 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const offside = pre.filter(l => !ALLOWED.has(tierOf(l)));
       assert.deepEqual(offside.map(l => l.split('\t').slice(0, 3).join(' ')), [],
         'A PRE-MARK OP RESOLVED A CALLER-SENSITIVE TIER. The CLI\'s thread group reached '
-        + '`project`, `fail`, `hide` or `cwd` BEFORE the marking event, which is S2 §9.1\'s '
-        + 'straddle hazard reopened: the same path would answer one way to the pre-mark ops '
-        + 'and another to the post-mark ones, from one caller. The likely cause is a statement '
-        + 'inserted above `[ -e "$5" ]` in bootstrap.sh\'s chroot script, or the `cd` moved '
-        + `above it. Baseline: 65 pre-mark ops over 16 distinct paths, all host or synth. `
-        + `This run: ${pre.length} pre-mark, ${post.length} post-mark.`);
+        + '`project`, `fail`, `hide` or `cwd` BEFORE the marking event: the same path would '
+        + 'answer one way to the pre-mark ops and another to the post-mark ones, from one '
+        + 'caller. The likely cause is a statement inserted above `[ -e "$5" ]` in '
+        + 'bootstrap.sh\'s chroot script, or the `cd` moved '
+        + `above it. This run: ${pre.length} pre-mark, ${post.length} post-mark.`);
       const paths = new Set(pre.map(l => l.split('\t')[1]));
-      console.log(`fuse gate [R12] pre-mark ops ${pre.length} over ${paths.size} distinct paths `
-        + `(baseline 65 / 16); post-mark ${post.length}; tiers `
+      console.log(`fuse gate [R12] pre-mark ops ${pre.length} over ${paths.size} distinct paths; `
+        + `post-mark ${post.length}; tiers `
         + JSON.stringify([...new Set(pre.map(tierOf))].sort()));
     } finally {
       try {
@@ -2089,8 +2059,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
   // ── R13 ──────────────────────────────────────────────────────────────────
   // AN UNMARKED CALLER READS THE HOST WHEREVER THE HOST HAS AN ENTRY, AND NEVER
-  // THE REMOTE. Card 2026-0382's behavioural change plus card 2026-0388's
-  // widening of it, at the mount.
+  // THE REMOTE — at the mount.
   //
   // This arm runs against project `appx`, whose system ADVERTISES AN EXCLUDE —
   // the only way a prefix becomes `fail` by an explicit pin rather than by
@@ -2108,8 +2077,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // (f) IS PINNED BECAUSE IT IS A DECISION AND NOT AN ACCIDENT, AND IT WAS
   // MEASURED HERE RATHER THAN DERIVED. `host` is a passthrough, so `fail →
   // host` gives an unmarked caller the host's WRITE side too — and the host's
-  // own permissions at the caller's uid become the ONLY gate, where before this
-  // card every unpinned path answered -ENOENT to everyone.
+  // own permissions at the caller's uid become the ONLY gate, rather than the
+  // blanket -ENOENT an unpinned path would otherwise answer to everyone.
   //
   // Both ends of that were measured on this host. As ROOT: R3's own probe — an
   // unmarked root shell — created `/usr/nope` on the orchestrator for real, and
@@ -2127,8 +2096,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // (b) and (f) die; gate the T_FAIL substitution on host existence ⇒ (f) dies;
   // emit `deny` for a substitution ⇒ (e) dies.
   //
-  // THE HOST-EXISTENCE TEST AT T_PROJECT IS GONE (card 2026-0398) AND THE
-  // BEHAVIOUR IT USED TO GATE IS NOW UNCONDITIONAL: a project-tier path
+  // THE HOST-EXISTENCE TEST AT T_PROJECT IS GONE AND THE BEHAVIOUR IT WOULD
+  // GATE IS UNCONDITIONAL: a project-tier path
   // re-resolves in `VIEW_HOST`, so `<proj>/remote-only.txt` routes to T_HOST,
   // the orchestrator has nothing there, and the caller gets the HOST's own
   // -ENOENT with a `served`/`unmarked-host-served` row and NO
@@ -2182,7 +2151,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         `the run directory became reachable to an unmarked caller: ${c.stdout} ${c.stderr}`);
 
       // (d) `project` IS SUBSTITUTED WHERE THE HOST HAS AN ENTRY, AND ONLY
-      // THERE — the 2026-09-09 ruling, at the mount, in both directions.
+      // THERE — at the mount, in both directions.
       // `before()` seeds HOST-SIDE-COPY at the project's own spelling, so the
       // first half reads the HOST's copy and never the system's; `remote-only.txt`
       // exists on the system and nowhere on the host, so the second half is the
@@ -2220,8 +2189,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         + `divergence is unobservable to a maintainer: ${JSON.stringify(events)}`);
       assert.ok(rowFor(path.join(proj, 'remote-only.txt'))
         .some(r => r[0] === 'served' && r[3] === 'unmarked-host-served'),
-        `(d)'s host-absent half produced no served/unmarked-host-served row — since card `
-        + `2026-0398 it is served the host and gets the orchestrator's own ENOENT, not a policy `
+        `(d)'s host-absent half produced no served/unmarked-host-served row — it is served `
+        + `the host and gets the orchestrator's own ENOENT, not a policy `
         + `denial: ${JSON.stringify(events)}`);
 
       // (f) THE WRITE SIDE, MEASURED AT THE ORCHESTRATOR'S OWN FILESYSTEM.
@@ -2264,7 +2233,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
 
   // ── R14 ──────────────────────────────────────────────────────────────────
-  // THE WIDE `mirrorRoot`. THIS IS A GATE OF CARD 2026-0388, NOT AN EXTRA.
+  // THE WIDE `mirrorRoot`. THIS IS A GATE, NOT AN EXTRA.
   //
   // Every other arm in this file runs `mirrorRoot` = the project path. There was
   // no wide-root arm at all, and the wide root lived only in deterministic tests
@@ -2304,8 +2273,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // rather than trusted from the walk's depth constant. Every strict
       // ancestor of a non-project pin that is itself `project` tier here must
       // exist as a DIRECTORY in the mirror source, or a MARKED caller cannot
-      // traverse to the pin — which is how the first cut of this arm died, at
-      // `/usr`, with the CLI never reaching exec. Named, not mysterious.
+      // traverse to the pin. Without it the arm dies at `/usr`, with the CLI
+      // never reaching exec. Named, not mysterious.
       const missing = [];
       for (const row of pins.split('\n')) {
         if (!row || row.startsWith('#')) continue;
@@ -2370,17 +2339,16 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // DEFAULT-root project must exist on the host and its whole chain is
       // host-served end to end.
       //
-      // `0555`, NOT THE `0111` OF THE DELETED T_CWD NODE (card 2026-0398). The
-      // traverse-only mode existed because that node sat over a PROJECT path
-      // where a listing could name remote content; with the remote struck from
-      // an unmarked caller's view the listing is EMPTIED BY THE EMIT'S OWN
-      // EXISTENCE CHECK — `policy_table_child_exists` drops every table name the
-      // orchestrator does not have, and it has nothing under a path it has
-      // nothing at — which is what the `ls` below asserts: it now SUCCEEDS and
-      // names nothing, where
-      // before the kernel refused it on the mode. Both facts are pinned: an
-      // empty listing that failed would be indistinguishable from a leak that
-      // the shell happened to swallow.
+      // `0555`, NOT A TRAVERSE-ONLY `0111`. A traverse-only mode would exist
+      // only for a node sitting over a PROJECT path where a listing could name
+      // remote content; with the remote struck from an unmarked caller's view
+      // the listing is EMPTIED BY THE EMIT'S OWN EXISTENCE CHECK —
+      // `policy_table_child_exists` drops every table name the orchestrator
+      // does not have, and it has nothing under a path it has nothing at —
+      // which is what the `ls` below asserts: it SUCCEEDS and names nothing,
+      // where a traverse-only mode would have the kernel refuse it. Both facts
+      // are pinned: an empty listing that failed would be indistinguishable
+      // from a leak the shell happened to swallow.
       const cwdStat = await unmarked('exec /usr/bin/stat -c "%a %u %g" "$1"', inside(record, proj));
       assert.equal(cwdStat.stdout.trim(), '555 0 0',
         `the project root is not the overlay node: ${cwdStat.stdout} ${cwdStat.stderr}`);
@@ -2389,8 +2357,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(cwdLs.stdout.trim(), '',
         `a child name reached an unmarked caller through the overlay node: ${cwdLs.stdout}`);
 
-      // (6) THE CHAIN, AT THE MOUNT — and there is no traversal BOUND any more
-      // (card 2026-0398). Every link is answered by one of exactly two things:
+      // (6) THE CHAIN, AT THE MOUNT — and there is no traversal BOUND. Every
+      // link is answered by one of exactly two things:
       // the orchestrator's own directory where it has one, or the overlay node
       // where it has none. `<box>` is the first — it reports the HOST
       // directory's own mode, read with `fs.stat` from cc's own process and
@@ -2420,7 +2388,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(wideStat.stdout.trim(), '555 0 0',
         `<box>/wide is not the overlay node: ${wideStat.stdout} ${wideStat.stderr}`);
 
-      // ── (7) CAPTURE #2 (card 2026-0388, Part 4) ─────────────────────────
+      // ── (7) CAPTURE #2 ──────────────────────────────────────────────────
       //
       // Folded into this arm rather than run separately: one spawn, both jobs,
       // and the numbers land in the gate's own output where the next reader
@@ -2430,14 +2398,14 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // over-read: RUN_FUSE_LIFECYCLE runs a FAKE CLI, so this answers only for
       // the BOOTSTRAP AND SPAWN POPULATION. The real CLI's own subprocesses
       // (hooks, the shell snapshot, the wrapper around a rewritten Bash command)
-      // are visible only under RUN_FUSE_APP3, which is not run here — that half
-      // of the population is recorded OPEN, not assumed either way.
+      // are visible only under a real-docker gate, which is not run here —
+      // that half of the population is recorded OPEN, not assumed either way.
       const events = await eventsOf(inst.id);
       const idOf = (r) => `pid=${r[4]} tgid=${r[5]} comm=${r[6]} cmdline=${r[7]}`;
 
-      // `cwd-traversal-served` IS RETIRED (card 2026-0398): there is no grant to
-      // record, so the question this capture once decided — WHICH LINK did a
-      // given process need — is answered by the mode instead, at (5) and (6),
+      // `cwd-traversal-served` IS RETIRED: there is no grant to record, so the
+      // question — WHICH LINK did a given process need — is answered by the
+      // mode instead, at (5) and (6),
       // and by the absence of any denial below. What is asserted here is that
       // the reason is really gone from the daemon's output, which is the mount's
       // half of the source-derived reason set in fuse-union-policy.test.mjs.

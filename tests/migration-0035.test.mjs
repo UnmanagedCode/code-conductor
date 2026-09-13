@@ -29,14 +29,14 @@ describe('migration 0035: normalize stored systemPaths', () => {
   test('normalises trailing slashes and dot segments, keeping every other field', async () => {
     await seed('a', { system: 'box', remoteId: 'r1', systemPath: '/srv/app/', workspace: 'w' });
     await seed('b', { system: 'box', systemPath: '/srv/./app2' });
-    await seed('c', { system: 'box', systemPath: '/srv/x/../app3' });
+    await seed('c', { system: 'box', systemPath: '/srv/x/../proj' });
 
     const r = await run({ root, log: () => {} });
     assert.equal(r.applied, true);
     assert.equal(r.summary.normalized, 3);
     assert.equal((await read('a')).systemPath, '/srv/app');
     assert.equal((await read('b')).systemPath, '/srv/app2');
-    assert.equal((await read('c')).systemPath, '/srv/app3');
+    assert.equal((await read('c')).systemPath, '/srv/proj');
     // Nothing else moved.
     assert.equal((await read('a')).remoteId, 'r1');
     assert.equal((await read('a')).workspace, 'w');

@@ -21,8 +21,8 @@
  *                 host-absence probe below is driven against a tree the
  *                 fixture built rather than against the box's own filesystem.
  *
- * WHAT IS DELIBERATELY NOT PROVABLE HERE, stated so a later SURVIVED is read
- * against a known boundary rather than argued about (plan 2026-0355 §7.1):
+ * WHAT IS DELIBERATELY NOT PROVABLE HERE, stated so the boundary of the unit
+ * proof is known rather than argued about:
  *
  *   tier resolution   that pt_getattr/pt_opendir CALL resolve_class(), and that
  *                     `mount --bind` succeeds onto a synthetic node
@@ -57,9 +57,9 @@
 
 /* ── the two views ──────────────────────────────────────────────────────── */
 /*
- * ONE RULE, TWO VIEWS, AND NO GEOMETRY IN EITHER (card 2026-0398). `VIEW_CLI` is
- * what the MARKED CLI resolves against: the whole tier table, unchanged by that
- * card. `VIEW_HOST` is what EVERYONE ELSE resolves against, and it is the rule
+ * ONE RULE, TWO VIEWS, AND NO GEOMETRY IN EITHER. `VIEW_CLI` is what the MARKED
+ * CLI resolves against: the whole tier table.
+ * `VIEW_HOST` is what EVERYONE ELSE resolves against, and it is the rule
  * in one sentence — the union subtracts nothing from the orchestrator's own
  * filesystem and adds only what the chroot cannot run without. Mechanically that
  * is two subtractions from the table and no third:
@@ -71,7 +71,7 @@
  *      send a control frame or read the mirror.
  *   2. THE ANCESTOR TABLE IS NOT CONSULTED (resolve_class), because a synthetic
  *      read-only node standing in for a directory the orchestrator HAS is a
- *      subtraction — epic criterion 4 calls it "a violation, not a rounding".
+ *      subtraction — "a violation, not a rounding".
  *      Such a path falls to `fail`, and `fail` means host.
  *
  * The one thing this view ADDS is the OVERLAY: a traverse-only node at a
@@ -84,8 +84,7 @@
  * collision at that spelling is the exception, and it is divergence rather than
  * a leak.
  *
- * WHY THE UNMARKED ANSWERS DO NOT VARY WITH THE GEOMETRY, which is the property
- * that makes 2026-0398's bug unreachable rather than merely fixed: with the
+ * WHY THE UNMARKED ANSWERS DO NOT VARY WITH THE GEOMETRY: with the
  * `project` entries struck, the pin list an unmarked caller resolves against does
  * not mention `mirrorRoot` at all, and the cwd chain does not vary with it
  * either, because `mirrorRoot` is always an ancestor-or-equal of `systemPath`,
@@ -99,10 +98,10 @@ enum view { VIEW_CLI = 0, VIEW_HOST };
  * T_FAIL IS INDEX 0, AND THAT ONE TOKEN IS THE POLICY.
  *
  * `tier_of` returns index 0 for a path no pin matches, so index 0 is the answer
- * for everything cc did not name. The spike instrument this file forked from
- * put T_DEFAULT there — remote-first with a host fallback — and that fallback
- * is the "one path, two answers" the epic exists to remove. Fail-closed by
- * construction: an unpinned path is served from neither side TO THE MARKED CLI.
+ * for everything cc did not name. THERE IS NO FALLBACK: an unpinned path is
+ * served from neither side TO THE MARKED CLI. A remote-first index with a host
+ * fallback would give one path two answers, which this architecture exists to
+ * remove. Fail-closed by construction.
  *
  * IT IS ALSO A CALLER-SENSITIVE CLASS. For an UNMARKED caller
  * `policy_caller_tier` substitutes T_HOST, because `fail` is a statement about
@@ -217,7 +216,8 @@ static inline const struct pin *pin_exact(const char *path)
  * a file and without the process exiting. Returns 0 on success (including a
  * line that carried no pin), -1 with `policy_err` set.
  *
- * DESTRUCTIVE: it NUL-terminates the kind in place, as the rig's loop did.
+ * DESTRUCTIVE: it NUL-terminates the kind in place, so the caller's buffer is
+ * modified.
  */
 static inline int pins_parse_line(char *line)
 {
@@ -405,24 +405,21 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
 }
 
 /*
- * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555 — AND THE ARGUMENT THAT KEPT THEM
- * APART IS DISSOLVED RATHER THAN OVERRULED. Until card 2026-0398 the cwd node
- * was 0111, traverse-only, because it sat over a PROJECT path where a listing
- * could name remote content; 0555 there would have handed an unmarked caller
- * "the content of these remote directories", which the 2026-09-08 amendment
- * forbade. With the remote struck from `VIEW_HOST` the overlay node's listing is
- * EMPTY, BUT NOT FOR THE REASON FIRST WRITTEN DOWN, AND THE CORRECTION MATTERS
- * BECAUSE THE FALSE VERSION WOULD LET A READER DELETE THE CHECK THAT MAKES IT
+ * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555. The overlay node sits in
+ * `VIEW_HOST`, where the remote tier is struck, so its listing names nothing
+ * remote — and a traverse-only 0111 node is not needed to keep it that way.
+ *
+ * THE EMPTINESS COMES FROM THE EMIT, AND THE DISTINCTION IS LOAD-BEARING
+ * BECAUSE THE FALSE REASON WOULD LET A READER DELETE THE CHECK THAT MAKES IT
  * TRUE. It is NOT that "`policy_synth_children` finds no pin or ancestor under a
  * path the orchestrator does not have" — that function scans the PIN TABLE,
  * which knows nothing about what the orchestrator holds, and an `exclude` or a
  * deeper pin under the project puts names there readily. The emptiness comes
  * from the EMIT: `policy_table_child_exists` drops every table name the
  * orchestrator does not have, and it has nothing under a path it has nothing
- * at. What survives is fixed nodes, which name nothing remote either. So the
- * node's listing names nothing remote, and the reason for the split is gone. `policy_mutation_check`'s -EROFS still applies
- * and is still right: the orchestrator has nothing at this path, so constraint 1
- * owes nothing there.
+ * at. What survives is fixed nodes, which name nothing remote either.
+ * `policy_mutation_check`'s -EROFS still applies and is still right: the
+ * orchestrator has nothing at this path, so constraint 1 owes nothing there.
  *
  * THE INODE COMES FROM THE VIEW'S OWN RANGE. `policy_cwd_ino` has a sub-range
  * disjoint from the ancestor and exact-pin ranges precisely because the chain
@@ -471,7 +468,7 @@ static inline unsigned long long policy_bind_ino(const char *path)
 /*
  * CAN THIS VIEW OPEN THIS CHILD? THE DIRENT STREAM'S WHOLE RULE, in one place so
  * both of `pt_readdir`'s arms and the pinned-children collector ask the same
- * question — card 2026-0403 was two instances of the same defect, one per arm.
+ * question: a per-arm copy of this rule is a per-arm copy of the same defect.
  *
  *   T_HIDE  invisible to EVERYONE. It is what keeps the mirror and cc's control
  *           socket unreachable, and it is the reason constraint 2 reads
@@ -480,9 +477,8 @@ static inline unsigned long long policy_bind_ino(const char *path)
  *   T_FAIL  invisible to the CLI, whose every op at such a name answers -ENOENT;
  *           VISIBLE to everyone else, because `fail -> host` serves it
  *           unconditionally. The old caller-insensitive filter took the CLI's
- *           answer for both, so an unmarked `ls /tmp` emitted nothing while
- *           `cat /tmp/x` returned its bytes — measured at a real mount, card
- *           2026-0398 step 0.
+ *           answer for both, which emits nothing from an unmarked `ls /tmp`
+ *           while `cat /tmp/x` returns its bytes.
  *
  * Everything else — host, bind, synth, and project to the CLI that may have it —
  * is a name that view can open, so it is a name that view must see.
@@ -501,9 +497,8 @@ static inline int policy_dirent_visible(const char *child, enum view v)
 /*
  * AND THE OTHER HALF: IS THERE ANYTHING THERE? `policy_dirent_visible` answers
  * "may this view SEE this name"; it does not answer "is there anything to
- * open". Conflating the two put three separate `ls`/`cat` disagreements into
- * card 2026-0398's first round, one per emit site, and this is the predicate
- * that separates them.
+ * open". Conflating the two produces an `ls`/`cat` disagreement at EVERY emit
+ * site, and this is the predicate that separates them.
  *
  * THE RULE IS ONE SENTENCE: a FIXED NODE exists by construction, and everything
  * else exists exactly where the orchestrator has it. What makes it view-shaped
@@ -532,18 +527,17 @@ static inline int policy_dirent_visible(const char *child, enum view v)
  *       host happens to hold it — and the right channel is a control frame,
  *       which a synthetic node must not send. Taken on trust, deliberately.
  *
- *       DO NOT REST THIS ON "the orchestrator has nothing at `systemPath`",
- *       which an earlier draft did. That is deployment- and geometry-
+ *       DO NOT REST THIS ON "the orchestrator has nothing at `systemPath`".
+ *       That is deployment- and geometry-
  *       conditional — `_assertRemoteMountable` lstats the mirror root through
  *       the SYSTEM's provider, which is the remote in production and host-local
  *       only in the gate fixture — so the DROP it predicts is a wide-root
  *       phenomenon, while the axis argument above holds at every geometry.
  *  (ii) for a `host` pin child of THAT SAME NODE the host IS the right axis and
  *       the probe costs one `fstatat` with no control frame — so the carve-out
- *       does not reach it. Leaving (ii) unchecked left the marked CLI's
+ *       does not reach it. Leaving (ii) unchecked leaves the marked CLI's
  *       `ls /etc` naming `ETC_PINS` entries absent on this host while `cat`
- *       answered -ENOENT: the third instance of card 2026-0403's class, and the
- *       reason that card could not close as absorbed while it stood.
+ *       answers -ENOENT — the same one-caller-two-answers defect.
  *
  * THE FLAG IS INERT IN `VIEW_HOST` — that view cannot produce T_PROJECT at all —
  * and `b49` asserts that rather than assuming it, so a later widening of the
@@ -805,13 +799,12 @@ static inline int policy_real_cmdline(pid_t pid, char *out, size_t n)
 /* ── the CLAUDE mark ────────────────────────────────────────────────────── */
 /*
  * A THREAD GROUP is marked the first time it resolves the CLI's own binary.
- * Two measurements from S1 fix the key and the validation, and neither is a
- * tuning knob any more — the spike's flags are gone and both behaviours are
- * unconditional:
+ * Two behaviours are unconditional, and neither is a tuning knob:
  *
- *   THE KEY IS THE TGID, NOT THE CALLING TID. in_header.pid is the TID (S1 §6
- *   Q1: 983 of 14 677 ops had pid != tgid), so a mark recorded against a TID
- *   would be invisible to every other thread of the same process.
+ *   THE KEY IS THE TGID, NOT THE CALLING TID. in_header.pid is the TID, and a
+ *   nontrivial share of a live session's ops arrive with pid != tgid, so a mark
+ *   recorded against a TID would be invisible to every other thread of the same
+ *   process.
  *
  *   FIELD 22 IS RE-READ ON EVERY CHECK. A marked TGID that exits can have its
  *   pid recycled and FUSE gets no process-exit notification, so the successor
@@ -932,8 +925,8 @@ static inline int policy_is_marked_tid(pid_t tid)
  *
  * FETCH NEVER CONSULTS IT — an open always reaches cc, so no cached routing
  * decision can stand in for the materialisation an open needs. What that buys
- * is that S3's per-open revalidate inherits a contract with no cache in front
- * of it, rather than a one-second-stale one.
+ * is that a per-open revalidate inherits a contract with no cache in front of
+ * it, rather than a one-second-stale one.
  */
 #define CACHE_SLOTS  1024
 #define CACHE_TTL_MS 1000
@@ -1104,12 +1097,12 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
                                    * left to carry — without it every written
                                    * file uploads TWICE, once at `flush` and
                                    * once at `release`, because the releasing
-                                   * frame is also a reconciling one
-                                   * (PROVENANCE D13d). `policy_abandon_claim`
+                                   * frame is also a reconciling one.
+                                   * `policy_abandon_claim`
                                    * below: the op failed BEFORE mutating, so
                                    * the mirror still holds cc's own unmodified
                                    * cache copy and there is nothing to carry
-                                   * either (PROVENANCE D16).
+                                   * either.
                                    *
                                    * A DEDICATED BIT, NOT A FLAG COMBINATION:
                                    * one bit, one meaning, on one op, which is
@@ -1225,21 +1218,18 @@ static inline int ccu_call(uint8_t op, uint8_t flags, const char *path)
 
 /* ── the policy event log ───────────────────────────────────────────────── */
 /*
- * THE INSTRUMENT THE PIN LIST IS DERIVED FROM, and the thing whose `deny` rows
- * must be empty by the end. Every fail-closed path, every REFUSED reply, every
+ * THE LOG THE PIN LIST IS DERIVED FROM, and the thing whose `deny` rows must be
+ * empty after a full turn. Every fail-closed path, every REFUSED reply, every
  * unmarked denial AND every op this daemon served some way OTHER than the way
- * the tier table said, deduplicated on (path, reason, tgid) so a demand-paged
- * 215 MB binary cannot bury the one line that matters. PATHS ONLY, never content: a
+ * the tier table said, deduplicated on (path, reason, tgid) so a high-volume run
+ * cannot bury the one line that matters. PATHS ONLY, never content: a
  * credential path may appear in it and a credential never does.
  *
- * IT IS NOT A REFUSAL LOG, AND CALLING IT ONE WAS A FALSE CLAIM RATHER THAN A
- * naming preference. `self-recursion` returns 0 with `host_fd` — the op
+ * IT IS NOT A REFUSAL LOG. `self-recursion` returns 0 with `host_fd` — the op
  * SUCCEEDS — and `pinned-children-truncated` drops a name from a readdir that
- * also succeeds, so two non-denials already sat in a file called
- * `refusals.log`. Every reader's filter then had to enumerate reason strings by
- * hand to exclude them, which is the hand-maintained enumeration this epic
- * keeps being bitten by. THE KIND IS THE FIRST COLUMN so a filter derives from
- * it instead.
+ * also succeeds, so a refusal-only name would force every reader's filter to
+ * enumerate reason strings BY HAND to exclude the non-denials. THE KIND IS THE
+ * FIRST COLUMN so a filter derives from it instead.
  *
  * EXACTLY TWO KINDS, and the boundary is "did the caller get an error":
  *   EV_DENY    the op was refused — the caller has a negative errno.
@@ -1261,10 +1251,10 @@ static inline const char *ev_kind_name(enum ev_kind k)
 /*
  * ONE ESCAPER FOR EVERY FIELD THAT CAN CARRY AN ARBITRARY BYTE — the path, the
  * comm and the cmdline. The row is TAB-SEPARATED and NEWLINE-TERMINATED, so a
- * field holding either destroys it: the instrument this daemon was forked from
- * produced 1662 unparsable rows out of ~3000 because `/proc/<pid>/cmdline` is
- * NUL-separated and a `bash -c` argv carries the whole script, newlines
- * included, and the analysis silently dropped them. The path is escaped by the
+ * field holding either destroys it: `/proc/<pid>/cmdline` is NUL-separated and
+ * a `bash -c` argv carries the whole script, newlines included, so ONE
+ * unescaped field splits one row into many and a consumer cannot recover the
+ * rest. The path is escaped by the
  * same function rather than by a second rule — a path may contain a tab today.
  *
  *   \\ → \\\\          the escape character itself, HANDLED FIRST: escaping the
@@ -1373,7 +1363,7 @@ static inline int event_dup(const char *key)
 
 /*
  * THE DEDUPE KEY IS (path, reason, tgid), AND THE TGID IS IN IT BECAUSE
- * ATTRIBUTION IS THE POINT OF THE ROW (card 2026-0389).
+ * ATTRIBUTION IS THE POINT OF THE ROW.
  *
  * Without it the key is (path, reason) and the FIRST caller to reach a path
  * wins the row while every later one is silently dropped — so the identity
@@ -1393,7 +1383,7 @@ static inline int event_dup(const char *key)
  * checked AT THE CALL SITES, where it is decidable from the source.
  *
  * `tid` IS THE CALLING THREAD — union.c hands every site
- * `fuse_get_context()->pid`, which S1 measured to be a TID. BOTH ids are
+ * `fuse_get_context()->pid`, which is a TID in practice. BOTH ids are
  * logged, because neither substitutes for the other: the TID is what the trace
  * keys on, and the TGID is what the mark, the resolution cache and this key are
  * on. `comm` and `cmdline` are read from the THREAD GROUP, matching
@@ -1452,24 +1442,21 @@ static inline void policy_event(enum ev_kind kind, const char *op,
  * answering ABSENT for a file the source may since have gained.
  *
  * Lives here rather than in union.c because it composes only the primitives
- * above — a tier test, the cache and the transport — so it is drivable from a
- * unit fixture. It was previously in the op bodies and had no behavioural
- * coverage at all.
+ * above — a tier test, the cache and the transport — so the unit fixture drives
+ * it. A behaviour that lives in an op body has no such fixture.
  *
  * IT CARRIES CCU_FLAG_RELEASE_ONLY, AND THAT BIT IS THE WHOLE OF WHAT AN
  * ABANDON MEANS: release the claim, reconcile NOTHING. The op failed before
  * mutating, so the mirror still holds cc's own unmodified cache copy and there
  * is nothing to carry.
  *
- * A BARE ZERO WAS A REAL DEFECT, not a tidiness question, and it is recorded
- * because the two frames are otherwise identical on the wire. `pt_release`
- * sends a flagless DIRTY for a handle that WROTE and never flushed — the
- * killed-process backstop — so cc read an abandon as exactly that: it pushed
- * the mirror's unmodified copy and, if the push failed, recorded a `diverged`
- * fault whose sentence asserts a write that never happened and kept the claim
- * for the session, freezing cc's cache on a file the worker never touched. The
- * pre-fault behaviour self-healed on the next FETCH; the fault removed that.
- * cc cannot separate the two by inspection — same op, same flags, same
+ * A BARE DIRTY WITHOUT THE BIT WOULD BE INDISTINGUISHABLE ON THE WIRE from
+ * `pt_release`'s releasing frame for a handle that WROTE and never flushed —
+ * the killed-process backstop — and cc would read an abandon as exactly that:
+ * it would push the mirror's unmodified copy and, if the push failed, record a
+ * `diverged` fault whose sentence asserts a write that never happened, keeping
+ * the claim for the session and freezing cc's cache on a file the worker never
+ * touched. cc cannot separate the two by inspection — same op, same flags, same
  * `createdHere` — so the DAEMON DECLARES WHICH IT IS, which is what the
  * op-scoped flags byte exists for.
  *
@@ -1495,17 +1482,16 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
  * THE HOST ROOT, AS AN O_PATH fd. ONE VARIABLE FOR ONE fd, and the placement is
  * the point: the host-existence probe below and union.c's T_HOST arm must open
  * the SAME descriptor through the SAME relativiser, or the probe can answer for
- * a path the arm would not serve. `union.c` used to declare its own `host_fd`
- * and its own `rel()`; two spellings for one thing is exactly the drift that
- * file's comments warn about, so both live here — where the unit fixture can
- * also drive them, the way it drives `policy_proc`, `policy_clock` and
- * `ccu_xport`.
+ * a path the arm would not serve — so BOTH live here, and neither is declared a
+ * second time in union.c: two spellings for one thing is exactly the drift that
+ * file's comments warn about. Here the unit fixture can also drive them, the way
+ * it drives `policy_proc`, `policy_clock` and `ccu_xport`.
  *
  * NEGATIVE UNTIL `main()` OPENS IT, and `policy_host_absent` answers 1 on a
  * negative fd — "no host at all", which is the axis the unit fixture uses to
- * drive "the orchestrator has nothing". The polarity is stated here because the
- * DELETED `policy_host_has` answered 0 in the same situation, and a reader
- * carrying that direction across would invert every overlay decision.
+ * drive "the orchestrator has nothing". THE POLARITY IS STATED BECAUSE IT IS
+ * THE OPPOSITE OF WHAT A `host_has`-SHAPED READER EXPECTS: carrying a has-style
+ * direction across would invert every overlay decision.
  */
 static int policy_host_fd = -1;
 
@@ -1524,10 +1510,10 @@ static inline const char *policy_rel(const char *path)
  * SAME fd AND THE SAME relativiser THE T_HOST ARM WOULD OPEN — which is what
  * makes a second spelling structurally impossible rather than merely absent.
  *
- * DEFINITE ABSENCE ONLY, AND THAT IS THE INVERSE POLARITY OF THE DELETED
- * `policy_host_has` — which is why that function is gone rather than reused at a
- * new call site. Reusing it would have picked the wrong failure direction
- * SILENTLY, and this probe's failure direction is the whole of its risk.
+ * DEFINITE ABSENCE ONLY. A has-shaped probe reused at a new call site picks the
+ * wrong failure direction SILENTLY, and this probe's failure direction is the
+ * whole of its risk — which is why the only reader of absence is this one
+ * function.
  *
  * AT_SYMLINK_NOFOLLOW, matching pt_getattr's own T_HOST arm: a dangling host
  * symlink IS a host entry, so it is not an absence and no node is synthesized
@@ -1535,8 +1521,7 @@ static inline const char *policy_rel(const char *path)
  *
  * PROBED AS ROOT — no cred_enter/cred_leave — so the CLASSIFICATION does not
  * vary with the caller's uid; permission is still enforced by the host op that
- * follows. EACCES is therefore unreachable here, exactly as it was for the
- * deleted probe.
+ * follows, and EACCES is therefore unreachable here.
  *
  * A NEGATIVE fd ANSWERS 1 — "no host at all", the axis the unit fixture drives
  * by leaving the seam unset.
@@ -1551,14 +1536,13 @@ static inline const char *policy_rel(const char *path)
  *   Falling ABSENT on an unknown error would place a 0555 traverse-only node
  *   over a directory the orchestrator may really have, hiding it and its write
  *   surface — violating constraints 1 and 2 SILENTLY, with an unmarked caller
- *   quietly unable to see or write a host directory that exists. That is the
- *   exact failure class card 2026-0398 took a day to diagnose.
+ *   quietly unable to see or write a host directory that exists — which is the
+ *   failure class the ABSENT direction produces silently.
  *
  *   Falling NOT ABSENT lets the path fall to `fail -> host`, where the host
  *   answers for itself. If the orchestrator genuinely has nothing there, `chdir`
  *   fails with the host's own errno and an event row names the path — violating
- *   constraint 4 at that ONE path, LOUDLY and diagnosably, and degrading to
- *   exactly this path's behaviour before the card.
+ *   constraint 4 at that ONE path, LOUDLY and diagnosably.
  *
  * Loud and reversible beats silent and hiding.
  */
@@ -1589,7 +1573,7 @@ static inline int policy_host_absent(const char *path)
  * 0700 directory advertises a traversal its CONTENTS then refuse — `stat /root`
  * says traversable, `stat /root/secret` says EACCES, because the daemon's own op
  * runs under cred_enter against the real mode. It cannot be closed. `cred_enter`
- * is mandatory (S1 §7.2 measured the CLI's Bash tool failing outright without
+ * is mandatory (the CLI's Bash tool fails outright without
  * it), and permitting the walk REQUIRES reporting `x`. The floor grants PATH
  * RESOLUTION ONLY, NEVER ACCESS: everything under such a directory stays refused
  * by the real filesystem, and the chain itself works because the next component
@@ -1655,8 +1639,7 @@ static inline int policy_floor_mask(const char *path, int mask, enum view v)
  *              ancestor-of-a-pin directory falls to `fail` there — and `fail`
  *              means host. Without this member nothing would ever ask, and an
  *              unmarked caller would keep meeting a 0555 scaffold node over a
- *              directory the orchestrator HAS: "a violation, not a rounding"
- *              (epic criterion 4). Added by the conductor ruling of 2026-09-11.
+ *              directory the orchestrator HAS: "a violation, not a rounding".
  *   T_FAIL     substituted to host UNCONDITIONALLY, and it may also become the
  *              OVERLAY node on the cwd chain.
  *
@@ -1689,16 +1672,16 @@ static inline int policy_tier_is_caller_sensitive(enum tier t)
 /*
  * AN UNMARKED CALLER RESOLVES IN `VIEW_HOST`, FULL STOP — that is the whole of
  * this function, and the two `if`s below are that sentence plus the `fail`
- * rule. The 2026-09-09 "host-entry existence is the discriminator" ruling and
- * the 2026-09-08 "an unmarked caller at the project path gets neither read nor
- * write" one are both PRESERVED and both now fall out of the view rather than
- * being tested for: the remote tier is not in the view, so the geometry cannot
- * be consulted, and where the orchestrator has an entry the host serves it.
+ * rule. BOTH STANDING RULES — an unmarked caller gets neither read nor write at
+ * the project path, and host-entry existence is the discriminator — FALL OUT OF
+ * THE VIEW rather than being tested for: the remote tier is not in the view, so
+ * the geometry cannot be consulted, and where the orchestrator has an entry the
+ * host serves it.
  *
  * `op` AND `tid` STAY OUT OF THE DECISION, and keeping them out is a property to
  * preserve: an op-sensitive map would give `pt_rename`'s and `pt_link`'s two
- * routed paths different answers and manufacture an EXDEV that S2 §8 already
- * measured as a footgun (`mv` masks it, `rename(2)` does not). `tid` is NOT a
+ * routed paths different answers and manufacture an EXDEV, which is a footgun
+ * (`mv` masks it, `rename(2)` does not). `tid` is NOT a
  * second mark check — the caller already resolved that into `marked`, and
  * re-deriving it here would give one function two answers for one caller.
  *
@@ -1714,8 +1697,7 @@ static inline int policy_tier_is_caller_sensitive(enum tier t)
  * `hide` is what keeps the mirror and cc's control socket unreachable, and
  * route()'s T_HIDE arm answers -ENOENT before anything else, so the tier is
  * carried through here unchanged rather than substituted. `b41` builds the
- * overlap deliberately and asserts all four — the three-member claim this
- * paragraph replaces was never met by a geometry that could contradict it.
+ * overlap deliberately and asserts all four answers.
  *
  * TWO REASONS, NOT ONE, and the `fail` row keeps its own: it feeds `suggestPin`,
  * which the substituted-project row correctly must not.
@@ -1755,21 +1737,20 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
  * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
  * before it execs — so the caller is a new, unmarked thread group, and a denial
  * or an unsearchable directory kills the process before its own image runs.
- * Every child the CLI spawns at its own cwd died of this (card 2026-0373), and
- * under a `mirrorRoot` that is a strict ancestor of `systemPath` every one of
- * them died again at an intervening component (card 2026-0398).
+ * Without the chain every child the CLI spawns at its own cwd dies that way —
+ * and under a `mirrorRoot` that is a strict ancestor of `systemPath`, at an
+ * INTERVENING component rather than at the project root.
  *
- * WHY IT IS THE WHOLE CHAIN AND NOT THE PROJECT ROOT ALONE (owner amendment,
- * 2026-09-08: "I'm fine with allowing the read of the full traversed cwd of the
- * remote. Just the directories. Not the files or the content of these remote
- * directories."). A chdir walks EVERY component.
+ * WHY IT IS THE WHOLE CHAIN AND NOT THE PROJECT ROOT ALONE: a chdir walks EVERY
+ * component, so a floored directory or an overlay node must exist at each of
+ * them. THE GRANT IS THE DIRECTORIES AND THEIR TRAVERSABILITY ONLY — never the
+ * files, and never the content of these remote directories.
  *
- * THE EXEMPTION THAT USED TO LIVE HERE IS GONE, AND WITH IT `T_CWD`, the op
- * allow-list and the 0111 node (card 2026-0398). There is no conditional grant
- * any more: an unmarked caller simply resolves in `VIEW_HOST`, where the chain
- * is answered by the host itself or by the overlay. What survives is this
- * section's three subjects — the injected cwd, the component predicate and the
- * chain's inode sub-range — each with a new role and none with a new rule.
+ * THERE IS NO CONDITIONAL GRANT HERE — no `T_CWD` tier, no op allow-list, no
+ * 0111 node. An unmarked caller resolves in `VIEW_HOST`, where the chain is
+ * answered by the host itself (floored) or by the overlay node. This section
+ * owns three subjects: the injected cwd, the component predicate and the
+ * chain's inode sub-range.
  */
 
 /* THE CWD, INJECTED ONCE, COMPARED PER OP. Same shape as `mark_path`: one
@@ -1784,7 +1765,7 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
  *
  * NULL IS FAIL-CLOSED AND union.c REFUSES TO MOUNT ON IT: with no cwd the chain
  * is empty, so nothing is floored and no overlay node exists — every spawn dies
- * in chdir() exactly as it did before 2026-0373, while the mount looks healthy.
+ * in chdir() while the mount looks healthy.
  * `main()` refuses, alongside CC_UNION_MARK_PATH and CC_UNION_CONTROL and for
  * the same class of reason — one input enables the project tier at all, this one
  * enables entry to it. */
@@ -1798,16 +1779,16 @@ static const char *cwd_path = NULL;
  * rule `withinPosix` (src/systems/mirror.ts) keeps by going through
  * `path.posix.relative` rather than a string prefix, so that `/app-backup` is
  * not inside `/app`. The trap is identical here in the other direction — for a
- * cwd of `/root/app3` the candidate `/root/app` IS a string prefix, and a bare
+ * cwd of `/root/srv2` the candidate `/root/srv` IS a string prefix, and a bare
  * strncmp would put a directory on the chain that is not on it at all — which
  * would floor it, or hang an overlay node off it. C has no
  * path.posix.relative, so this is that rule.
  *
  * BOTH DIRECTIONS OF THE SIBLING TRAP ARE REJECTED, BY DIFFERENT MECHANICS, and
- * a case that exercises one proves half the guard: `path = /root/app` against
- * `cwd = /root/app3` is rejected by `cwd_path[9] == '3'`; `path = /root/app3`
- * against `cwd = /root/app` is rejected by `strncmp` itself, which meets
- * `cwd`'s '\0' against '3'. `b22` drives both.
+ * a case that exercises one proves half the guard: `path = /root/srv` against
+ * `cwd = /root/srv2` is rejected by `cwd_path[9] == '2'`; `path = /root/srv2`
+ * against `cwd = /root/srv` is rejected by `strncmp` itself, which meets
+ * `cwd`'s '\0' against '2'. `b22` drives both.
  */
 static inline int policy_cwd_component(const char *path)
 {
@@ -1829,28 +1810,28 @@ static inline int policy_cwd_component(const char *path)
  * IN THE CHAIN — which is ordered, bounded by PATH_MAX, and derived rather than
  * tabulated.
  *
- * NOT `policy_bind_ino`, AND THAT IS THE MOST LIKELY WAY THIS WIDENING GOES
- * QUIETLY WRONG. `policy_bind_ino` scans for an EXACT pin and returns ONE
- * shared fallback for anything unpinned — its own comment states the assumption
- * it loses here ("Neither is in the ancestor set (both carry an exact pin)").
- * A widened chain covers intermediate components that have NO exact pin, so
- * every one of them would report the same st_ino.
+ * NOT `policy_bind_ino`, AND THAT IS THE MOST LIKELY WAY THIS GOES QUIETLY
+ * WRONG. It scans for an EXACT pin and returns ONE shared fallback for anything
+ * unpinned — its own comment states the assumption it loses here ("Neither is
+ * in the ancestor set (both carry an exact pin)") — while the chain covers
+ * intermediate components with NO exact pin, so every one of them would report
+ * the same st_ino. `policy_cwd_ino`'s own disjoint sub-range is what keeps them
+ * apart.
  *
  * WHAT OBSERVES IT, because the justification has to be something that fires:
  *   1. `use_ino = 1` is this daemon's OWN stated invariant (pt_init: "A union
  *      must not invent st_ino… synthetic nodes supply their own from the
  *      ancestor table, in a range no real filesystem here hands out"). Distinct
  *      nodes get distinct inodes is a contract this file already makes.
- *   2. `test -ef` compares (st_dev, st_ino) and needs only two `stat` calls and
- *      no readdir — measured — so it is REACHABLE under this ruling. Under a
- *      collision `[ /root -ef /root/app3 ]` would answer TRUE, which is false.
+ *   2. `test -ef` compares (st_dev, st_ino) in two `stat` calls and no readdir,
+ *      so it is REACHABLE at a chain component. Under a collision
+ *      `[ /root -ef /root/srv2 ]` would answer TRUE, which is false.
  *
- * NOT `getcwd`, and that correction is recorded so nobody re-derives the wrong
- * reason: measured on glibc 2.41, `getcwd(2)` answers from the dentry cache and
- * emits no getdents at all, and `chdir(2)` compares no inodes — so glibc's
- * userspace (dev, ino) fallback is never reached. (If `getcwd(2)` ever DID fail
- * it would need to readdir each parent, which this ruling denies; no inode
- * scheme fixes that, and it is an accepted limit of a traverse-only node.)
+ * NOT `getcwd`: on glibc, `getcwd(2)` answers from the dentry cache and emits no
+ * getdents at all, and `chdir(2)` compares no inodes — so glibc's userspace
+ * (dev, ino) fallback is never reached. (If `getcwd(2)` ever DID fail it would
+ * need to readdir each parent, which a traverse-only node denies; no inode
+ * scheme fixes that, and it is an accepted limit.)
  *
  * DISJOINT FROM BOTH NEIGHBOURING RANGES, and the `npins` term is what makes
  * the second half true: ancestors take SYNTH_INO_BASE + idx (idx < MAX_ANC),
@@ -1884,13 +1865,12 @@ static inline unsigned long long policy_cwd_ino(const char *path)
  * the failure is legible.
  *
  * A DOUBLED SLASH — OR A `.`/`..` COMPONENT — IS THE CASE THAT BITES, and it
- * bites at the LAST component: `cwd = /root//app3` matches `/` and `/root` and
+ * bites at the LAST component: `cwd = /root//srv2` matches `/` and `/root` and
  * then fails on the cwd ITSELF, so a chdir walks the whole chain and dies at
  * its destination. A TRAILING slash, by contrast, still matches everything —
  * the boundary test reads it as the separator it wants — so that half of the
  * predicate buys no behavioural rescue and is here purely because a
- * non-normalised input is a cc defect. `b28` asserts both, and asserted the
- * trailing-slash claim down from the stronger one first stated here.
+ * non-normalised input is a cc defect. `b28` asserts both.
  */
 static inline int policy_cwd_normalised(const char *p)
 {
@@ -1901,8 +1881,8 @@ static inline int policy_cwd_normalised(const char *p)
 	if (p[1] == '\0')
 		return 1;                       /* "/" is normalised */
 	/* A TRAILING SLASH — AND THIS CLAUSE IS REDUNDANT *HERE*, DELIBERATELY
-	 * KEPT, AND LOAD-BEARING ONE LAYER UP. Measured by mutation: deleting it
-	 * leaves the whole suite green, because a trailing slash always leaves an
+	 * KEPT, AND LOAD-BEARING ONE LAYER UP. Deleting it leaves the whole suite
+	 * green, because a trailing slash always leaves an
 	 * EMPTY FINAL COMPONENT and the loop below refuses that at `end == c`.
 	 * It stays because it names the shape a reader is looking for, and it is
 	 * one comparison.
@@ -1912,9 +1892,9 @@ static inline int policy_cwd_normalised(const char *p)
 	 * `endsWith('/') || includes('//') || split('/').some(c => c === '.' ||
 	 * c === '..')` — and for `/srv/app/` the split's empty final component is
 	 * neither `.` nor `..` and there is no `//`, so dropping `endsWith` there
-	 * makes cc ACCEPT a trailing slash. The prover measured that mutant killed
-	 * by two tests. Same idea, opposite status, because the two predicates
-	 * enumerate components differently. */
+	 * makes cc ACCEPT a trailing slash — and THAT deletion is caught. Same
+	 * idea, opposite status, because the two predicates enumerate components
+	 * differently. */
 	if (p[strlen(p) - 1] == '/')
 		return 0;
 	for (c = p; *c; ) {
@@ -1939,7 +1919,7 @@ static inline int policy_cwd_normalised(const char *p)
  * CRITERION 6, AND THE ORDER IS THE POLICY.
  *
  * Takes the CALLING THREAD's id — union.c hands it `fuse_get_context()->pid`,
- * which S1 measured to be a TID — and answers 0 (serve the path from the
+ * measured to be a TID — and answers 0 (serve the path from the
  * mirror) or a negative errno. It reaches libfuse through nothing, so the whole
  * of it is drivable from a unit fixture with a fake /proc, a fake clock and a
  * fake transport.
@@ -1950,13 +1930,12 @@ static inline int policy_cwd_normalised(const char *p)
  *     key load-bearing: an unmarked caller reaches the lookup, and only the
  *     tgid stops it matching a marked caller's warmed entry. FETCH skips it —
  *     an open always revalidates.
- *  2. THE MARK — RETAINED AS DEFENCE IN DEPTH, AND NO LONGER THE LIVE
- *     MECHANISM. Since card 2026-0398 an UNMARKED caller cannot reach here at
- *     all: it resolves in `VIEW_HOST`, where `tier_of` skips every `project`
+ *  2. THE MARK — RETAINED AS DEFENCE IN DEPTH. An UNMARKED caller cannot reach
+ *     here: it resolves in `VIEW_HOST`, where `tier_of` skips every `project`
  *     pin, so no unmarked resolution can produce T_PROJECT and route() cannot
- *     dispatch one to this function. The invariant it used to enforce — an
- *     unmarked caller never receives remote file content — is now a property of
- *     the VIEW, which is structural.
+ *     dispatch one to this function. The invariant — an unmarked caller never
+ *     receives remote file content — is a property of the VIEW, which is
+ *     structural.
  *
  *     IT STAYS ANYWAY, AND DELIBERATELY. This is a liveness guard on the only
  *     path that sends a control frame; deleting it on the strength of a

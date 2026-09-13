@@ -156,8 +156,8 @@ const liveBoth = () => ({
 
 describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   // PINS: unmounts are issued deepest-first, and every one of them is issued
-  // BEFORE the abort. Both halves matter — a set assertion would pass on the
-  // ordering that made S2's own abort a no-op.
+  // BEFORE the abort. Both halves matter — a set assertion would pass on an
+  // ordering that makes the abort a no-op.
   test('unmounts deepest-first, and all of them before the abort', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
@@ -326,8 +326,8 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     assert.deepEqual(d2.calls, []);
   });
 
-  // PINS: S3 §A5 — a count of fusectl entries is not a count of live daemons.
-  // Stale minors are COUNTED and never aborted.
+  // PINS: a count of fusectl entries is not a count of live daemons. Stale
+  // minors are COUNTED and never aborted.
   test('a fusectl minor with no record of ours is counted, never aborted', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
@@ -413,7 +413,8 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
 
   // PINS: a record whose bootstrap never finished mounting still names the pids
   // it had already started, and teardown acts on them. This is the shape a
-  // failed launch leaves, and the one that used to signal nothing at all.
+  // failed launch leaves, and the one a teardown keyed on a finished mount
+  // signals nothing at all for.
   test('a stage:starting record is still torn down', async () => {
     const { rundir, record } = await seedRun({ stage: 'starting', minor: '', mountedAt: 0 });
     const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: [] });
@@ -454,7 +455,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     sourceOverrideRoot: '', tracePath: '',
   };
   const wrapped = () => wrapLaunch(
-    { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/node', PATH: '/opt/bin:/usr/bin' } },
+    { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/wk', PATH: '/opt/bin:/usr/bin' } },
     { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
   );
 
@@ -462,11 +463,11 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   //
   // A20t below drives `buildFusePlan` — the CONSUMER of the operator's switch —
   // and is green against every mutant of what follows, because the defect this
-  // pins lives in what `wrapLaunch` EMITS. That produce-vs-consume gap is the
-  // shape that cost S2 its worst bug.
+  // pins lives in what `wrapLaunch` EMITS. A produce-vs-consume gap is exactly
+  // where a defect hides from the consumer's own tests.
   //
-  // THE DEFECT: `CC_FUSE_TRACE` used to name BOTH cc's on/off switch and the
-  // worker-side path. `instances.ts` builds the worker env as
+  // THE DEFECT IT RULES OUT: `CC_FUSE_TRACE` naming BOTH cc's on/off switch and
+  // the worker-side path. `instances.ts` builds the worker env as
   // `{...process.env}` and the spread at the top of `wrapLaunch`'s object runs
   // FIRST, so an orchestrator started with `CC_FUSE_TRACE=0` — the natural way
   // to turn a thing off — put `"0"` into the path slot, the bootstrap's
@@ -478,7 +479,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // the emitted variable on anything in `spec.env`; renaming one end only.
   test('the worker-side trace path is emitted only when the plan has one, and an inherited one is STRIPPED', () => {
     const inherited = {
-      HOME: '/home/node', PATH: '/opt/bin',
+      HOME: '/home/wk', PATH: '/opt/bin',
       // Every spelling an operator might have in their own environment. Each
       // is a value the OLD non-emptiness test on the bootstrap side accepted.
       CC_FUSE_TRACE: '0', CC_FUSE_TRACE_LOG: '/somewhere/stale.log',
@@ -597,7 +598,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // whole host-pin design rests on those paths keeping their spelling.
   test('preserves the caller environment and carries the plan in CC_FUSE_*', () => {
     const w = wrapped();
-    assert.equal(w.env.HOME, '/home/node');
+    assert.equal(w.env.HOME, '/home/wk');
     assert.equal(w.env.CC_FUSE_ROOT, plan.root);
     assert.equal(w.env.CC_FUSE_PINS, plan.pinsPath);
     assert.equal(w.env.CC_FUSE_BIN, '/store/bin/union-abc');
@@ -632,24 +633,23 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
 });
 
 describe('the tier table', () => {
-  // `localRoots` are DECLARATIONS now (S2 §4.2): each carries the bit the hook
-  // reads. Every one is still host-pinned for the daemon whatever the bit says,
+  // `localRoots` are DECLARATIONS: each carries the bit the hook reads. Every one is still host-pinned for the daemon whatever the bit says,
   // which is what the first test below asserts.
   const input = {
     localRoots: [
       { prefix: '/store/attachments/app', access: 'allow', why: 'uploads' },
       { prefix: '/store/session-tmp/inst-1', access: 'allow', why: 'own tmp' },
-      { prefix: '/home/node/.claude/plans', access: 'allow', why: 'plan mode writes here' },
-      { prefix: '/home/node/.claude', access: 'deny', why: 'the CLI\'s own state' },
-      { prefix: '/home/node/.claude/projects', access: 'deny', why: 'every session\'s transcripts' },
+      { prefix: '/home/wk/.claude/plans', access: 'allow', why: 'plan mode writes here' },
+      { prefix: '/home/wk/.claude', access: 'deny', why: 'the CLI\'s own state' },
+      { prefix: '/home/wk/.claude/projects', access: 'deny', why: 'every session\'s transcripts' },
       { prefix: '/opt/plugins/p1', access: 'allow', why: 'a plugin root' },
     ],
     claudeCommand: '/usr/local/share/npm-global/bin/claude',
     execPath: '/usr/local/bin/node',
-    selfProjectDir: '/workspaces/cc-projects/code-conductor',
-    projectsRoot: '/workspaces/cc-projects',
-    homeDir: '/home/node',
-    runDir: '/workspaces/cc-projects/.code-conductor/systems/fuse/run/inst-1',
+    selfProjectDir: '/home/wk/cc',
+    projectsRoot: '/home/wk/cc-projects',
+    homeDir: '/home/wk',
+    runDir: '/home/wk/cc-projects/.cc-store/systems/fuse/run/inst-1',
     systemPath: '/srv/app',
     mirrorRoot: '/srv/app',
     exclude: [],
@@ -663,9 +663,9 @@ describe('the tier table', () => {
   test('node, the projects root and every localRoot are host-pinned', () => {
     const t = buildTierTable(input);
     assert.equal(tierOf(t, '/usr/local/bin/node'), 'host');
-    assert.equal(tierOf(t, '/workspaces/cc-projects'), 'host');
-    assert.equal(tierOf(t, '/workspaces/cc-projects/code-conductor'), 'host');
-    assert.equal(tierOf(t, '/home/node'), 'host');
+    assert.equal(tierOf(t, '/home/wk/cc-projects'), 'host');
+    assert.equal(tierOf(t, '/home/wk/cc'), 'host');
+    assert.equal(tierOf(t, '/home/wk'), 'host');
     for (const r of input.localRoots) assert.equal(tierOf(t, r.prefix), 'host', r.prefix);
   });
 
@@ -686,7 +686,7 @@ describe('the tier table', () => {
 
   // ── THE STRICT-ANCESTOR GEOMETRY, WHICH NOTHING BUILT BEFORE ─────────────
   //
-  // PINS the CONFIGURATION half of card 2026-0398's bug: under a `mirrorRoot`
+  // PINS the CONFIGURATION half of the bug: under a `mirrorRoot`
   // that is a STRICT ANCESTOR of `systemPath`, `buildTierTable` emits TWO
   // `project` entries, and the shallower one covers every directory between
   // them by prefix — which is what made the orchestrator's own `/srv` resolve
@@ -719,16 +719,14 @@ describe('the tier table', () => {
     assert.deepEqual(t.filter(e => e.tier === 'project').map(e => e.prefix), ['/', '/srv/app']);
   });
 
-  // ── A11/A12: the epic's "two mechanisms, never one list" ──────────────────
+  // ── A11/A12: "two mechanisms, never one list" ─────────────────────────────
   //
-  // DELIBERATELY INVERTED FROM S1, which asserted `tierOf(t, b) === undefined`.
-  // S1 kept BIND_MOUNTS out of the table because the frozen daemon had no kind
-  // for them; S2 has to tell the daemon those three paths exist as directories,
-  // because `bootstrap.sh` binds OVER them and a `mount --bind` onto a target
-  // the daemon answers -ENOENT for kills the launch (S2 §4.3, §13 K4). The
-  // never-merge rule is unchanged and is now asserted as what it always was —
-  // a claim about DERIVATION, not about absence: each kind comes from exactly
-  // one source and no input to one moves the other.
+  // BIND_MOUNTS ARE IN THE TABLE, not absent from it: the daemon has to be told
+  // those three paths exist as directories, because `bootstrap.sh` binds OVER
+  // them and a `mount --bind` onto a target the daemon answers -ENOENT for
+  // kills the launch. The never-merge rule is therefore asserted as a claim
+  // about DERIVATION, not about absence: each kind comes from exactly one
+  // source and no input to one moves the other.
   //
   // PINS: `bind` is derived only from the constant; `fail` only from the
   // advertisement's excludes.
@@ -787,9 +785,9 @@ describe('the tier table', () => {
   // PINS: a prefix appearing twice keeps its FIRST decision, so the table's
   // meaning cannot depend on construction order.
   test('a duplicate prefix keeps its first tier', () => {
-    const t = buildTierTable({ ...input, localRoots: [...input.localRoots, { prefix: '/home/node', access: 'allow', why: 'a second spelling of the home pin' }] });
-    assert.deepEqual(t.filter(e => e.prefix === '/home/node').length, 1);
-    assert.equal(tierOf(t, '/home/node'), 'host');
+    const t = buildTierTable({ ...input, localRoots: [...input.localRoots, { prefix: '/home/wk', access: 'allow', why: 'a second spelling of the home pin' }] });
+    assert.deepEqual(t.filter(e => e.prefix === '/home/wk').length, 1);
+    assert.equal(tierOf(t, '/home/wk'), 'host');
   });
 
   // PINS: the interpreter chain bootstrap.sh execs INSIDE the union as root,
@@ -857,11 +855,11 @@ describe('the tier table', () => {
 //
 // Each of these is a value cc renders or hands to a frozen daemon, where the
 // consequence of a drift is invisible from every other assertion in the suite.
-// ── FROM A LOGGED DENIAL TO A PIN ENTRY (card 2026-0382, step 4) ────────────
+// ── FROM A LOGGED DENIAL TO A PIN ENTRY ────────────────────────────────────
 //
 // The daemon's event log is the instrument the pin list is DERIVED from, and
-// `runTeardown` used to `rm -rf` it with the run directory. These pin the
-// harvest, the suggestion and the wording.
+// `runTeardown` `rm -rf`s it with the run directory — so it has to be harvested
+// first. These pin the harvest, the suggestion and the wording.
 describe('the policy event harvest', () => {
   let prev, storeRoot;
   before(async () => {
@@ -987,8 +985,8 @@ describe('the policy event harvest', () => {
   // suggestion for a path the CLI's own denial had asked for**. Nothing said so;
   // the row simply was not there.
   //
-  // This deliberately departs from plan §4a's "one row per distinct path" —
-  // recorded on the card — because the log exists so a pin suggestion reaches a
+  // This departs from "one row per distinct path" deliberately, because the
+  // log exists so a pin suggestion reaches a
   // human, and a path-keyed row can silently be the wrong one of the two.
   //
   // DIES UNDER: keying the harvest on the path alone (either row order);
@@ -1040,9 +1038,9 @@ describe('the policy event harvest', () => {
   });
 
   // PINS: THE OTHER HALF OF THE SAME KEY — the TGID — with the reason and the
-  // path held FIXED, so only the caller distinguishes the two rows. The daemon
-  // gained this half in the same commit (card 2026-0389) and the harvest had to
-  // follow: at `(path, reason)` the first caller to reach a path wins the row
+  // path held FIXED, so only the caller distinguishes the two rows. The
+  // daemon's key carries this half and the harvest has to follow: at
+  // `(path, reason)` the first caller to reach a path wins the row
   // and every later one is silently dropped, which would make the identity
   // columns answer "who asked?" with "whoever happened to be first".
   // DIES UNDER: dropping the tgid from the parse key (the second caller's row
@@ -1071,8 +1069,7 @@ describe('the policy event harvest', () => {
   // valid UTF-8: a latin-1 filename or a binary argument puts a lone high byte
   // in it. Reading it as `utf8` replaces that byte with U+FFFD before
   // `pathRaw`/`comm.raw`/`cmdline.raw` are formed, so the store — the artifact
-  // that outlives the session and that card 2026-0388's captures are taken
-  // from — carries corrupted evidence.
+  // that outlives the session — carries corrupted evidence.
   // DIES UNDER: reading the session log as `utf8`; writing the store body as a
   // string (`appendFile` re-encodes latin1 code units as two UTF-8 bytes).
   test('the harvest carries a non-UTF-8 byte into the store unchanged', async () => {
@@ -1169,7 +1166,7 @@ describe('the policy event harvest', () => {
   });
 
   // PINS: THE DENIAL SENTENCE NAMES THE ACTING PROCESS as `comm[pid]`, which is
-  // the whole of what card 2026-0389 bought on this surface — `deny getattr
+  // the whole of the sentence's point — `deny getattr
   // /bin unpinned-fail-closed` could not tell the bootstrap shell dying at
   // `exec` from a hook subprocess poking around. The PID is the calling thread's,
   // which is what the trace can be joined on.
@@ -1245,9 +1242,9 @@ describe('the policy event harvest', () => {
   });
 
   // PINS: `_awaitFuseMount` reads the event log BEFORE `fuse.teardown()`, which
-  // deletes it — the case the owner named. A spawn that died of a missing pin
-  // used to carry stderr alone, and stderr says "cannot open shared object file"
-  // without saying which array to add the object to.
+  // deletes it. Without that read a spawn that died of a missing pin carries
+  // stderr alone, and stderr says "cannot open shared object file" without
+  // saying which array to add the object to.
   // DIES UNDER: moving the read after the teardown; dropping the interpolation.
   test('a failed mount names the refused paths and the array to add them to', async () => {
     const rundir = await mkdtemp('cc-fuse-awaitmount-');
@@ -1312,12 +1309,12 @@ describe('the policy event harvest', () => {
 });
 
 describe('the mount literals', () => {
-  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a fork of
-  // the frozen spike instrument and diverges from it by design, one PROVENANCE.md
-  // ledger row at a time; editing it without regenerating the pin in the same
-  // commit is the undisclosed drift this catches. Needs no compiler, so it runs
-  // everywhere — and it iterates the pin file's ROWS, so it covers `policy.h`
-  // the moment Phase B adds a second line.
+  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. Editing a build source
+  // without regenerating the pin in the same commit is the undisclosed drift
+  // this catches. Needs no compiler, so it runs everywhere — and it iterates
+  // the pin file's ROWS rather than naming one source, so it covers every
+  // source the pin file names: `union.c` and `policy.h` today, and any source
+  // a later row adds.
   test('A16: union.c.sha256 matches the source it pins', async () => {
     const { createHash } = await import('node:crypto');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
@@ -1342,12 +1339,11 @@ describe('the mount literals', () => {
   // libfuse, a real socket and a real mount), so each refusal is pinned from
   // the source, beside A16 and for A16's reason.
   //
-  // `CC_UNION_CWD` CAME IN WITH 2026-0382 AND THE ABSENCE OF A DEFAULT IS THE
-  // POINT. Since card 2026-0398 the chain is the whole domain of the floor and
-  // of the overlay, so a missing cwd means no floor, no overlay node, and every
-  // unmarked chdir dead at its destination — regressing card 2026-0373 while
-  // looking exactly like a working mount. A default would be worse than the
-  // refusal.
+  // `CC_UNION_CWD` HAS NO DEFAULT, AND THAT ABSENCE IS THE POINT. The chain is
+  // the whole domain of the floor and of the overlay, so a missing cwd means no
+  // floor, no overlay node, and every unmarked chdir dead at its destination —
+  // while looking exactly like a working mount. A default would be worse than
+  // the refusal.
   test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd', async () => {
     const { readFile } = await import('node:fs/promises');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
@@ -1377,10 +1373,10 @@ describe('the mount literals', () => {
   // 2c — THE BOOTSTRAP'S MARK ORDERING, PINNED AT THE LAYER THAT ENFORCES IT.
   //
   // THE INVARIANT: the CLI's thread group makes NO union op before the marking
-  // event except its own interpreter load. That is what keeps S2 §9.1's
-  // straddle hazard closed in production — measured at 65 pre-mark ops over 16
-  // distinct paths, every one of them `host` or `synth`, zero resolving
-  // `project`, `fail` or `hide`.
+  // event except its own interpreter load. That is what stops one path
+  // answering one way to a thread group's pre-mark ops and another way to its
+  // post-mark ones — measured, every pre-mark op `host` or `synth` and none
+  // resolving `project`, `fail` or `hide`.
   //
   // THE ENFORCING LAYER FOR A SHELL SCRIPT'S STATEMENT ORDER IS THE SCRIPT
   // TEXT, so this is a source-text test and needs no sudo and no mount. It runs
@@ -1454,8 +1450,7 @@ describe('the mount literals', () => {
   // correction: "outside the chroot" is true unconditionally, "no spelling
   // inside it" only of paths resolved through the mount. The bind-mounted
   // /proc supplies another spelling — `/proc/<ccpid>/root/<rundir>/mirror` —
-  // which resolves today (card 2026-0394). See the comment on the pins-file
-  // assertion below.
+  // which resolves today. See the comment on the pins-file assertion below.
   test('A18: the mirror is under rundir, not under root, and rundir is hidden', async () => {
     const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
     const plan = buildFusePlan({
@@ -1470,7 +1465,7 @@ describe('the mount literals', () => {
     // And nothing inside the chroot can name it THROUGH THE UNION — which is
     // exactly what this asserts and all it asserts: the pins file's only
     // mention of the run directory is the `hide` rule itself. It says nothing
-    // about the bind-mounted /proc, which reaches it (card 2026-0394).
+    // about the bind-mounted /proc, which reaches it.
     const named = plan.pinsText.split('\n').filter(l => !l.startsWith('#') && l.includes(plan.rundir));
     assert.deepEqual(named, [`hide\t${plan.rundir}`]);
   });
@@ -1702,7 +1697,7 @@ describe('the configuration-time containment refusal', () => {
   // THE CONSUMER IS ONLY HALF THE SWITCH, and this arm cannot see the other:
   // it drives `buildFusePlan`, so it is green whatever `wrapLaunch` and
   // bootstrap.sh do with the answer. The producer end — where an inherited
-  // value used to survive an untraced launch — is pinned in the `wrapLaunch`
+  // value can survive an untraced launch — is pinned in the `wrapLaunch`
   // describe above.
   //
   // Mutation it must die under: making `tracePath` unconditional; inverting the
@@ -1762,8 +1757,8 @@ describe('the configuration-time containment refusal', () => {
     // directory holding the projects root DO stay `project` — that is not the
     // hazard: a LIST materialises one level of entries and never descends.)
     //
-    // COMPONENT-BOUNDARY containment, not `startsWith`: `/workspaces/cc-projectsX`
-    // is not inside `/workspaces/cc-projects`. And the ITERATION COUNT is
+    // COMPONENT-BOUNDARY containment, not `startsWith`: `/home/wk/cc-projectsX`
+    // is not inside `/home/wk/cc-projects`. And the ITERATION COUNT is
     // asserted, so a future repointing cannot silently empty this loop again —
     // which is exactly how it was empty when it landed.
     const inside = (p, root) => p === root || p.startsWith(root + path.sep);
@@ -1777,7 +1772,7 @@ describe('the configuration-time containment refusal', () => {
     assert.equal(at('/'), 'project', 'the widest advertised mirror root is remote-tier');
   });
 
-  // ── CARD 2026-0387: THE STORE ROOT'S DEPTH IS NOT A CONFIGURATION ERROR ──
+  // ── THE STORE ROOT'S DEPTH IS NOT A CONFIGURATION ERROR ─────────────────
 
   // T1 — PINS: no configuration-time length refusal governs the real socket
   // path any more. The second assertion is the NON-VACUITY CONTROL: without it
@@ -1864,7 +1859,7 @@ describe('the configuration-time containment refusal', () => {
 // mount scaffolding down UNCONDITIONALLY.
 //
 // Measured as a real leak (a listening `Server@…/control.sock` surviving a
-// whole test file), and shipped in `127e4643` with no test — this is that debt.
+// whole test file); the leak shipped untested, and this is that debt.
 // Prototype-only stand-ins, following `tests/instance-liveness.test.mjs`: the
 // question is which branch each caller takes, and a booted server would add a
 // launch path without adding an assertion.
@@ -1995,9 +1990,10 @@ describe('the clean verdict comes from namespace membership, not the recorded se
   });
 
   // PINS B2: the intent-only path — a bootstrap that died, or is still
-  // mid-handshake — has processes behind it, and used to signal NOBODY and then
-  // delete the directory. The handle that survives having no record is the
-  // marker the bootstrap's own execve put in their environments.
+  // mid-handshake — has processes behind it, so a teardown reading only the
+  // record signals NOBODY and then deletes the directory. The handle when there
+  // is no record is the marker the bootstrap's own execve put in their
+  // environments.
   test('an intent-only run directory reclaims its processes by marker', async () => {
     const { rundir } = await seedRun({}, { intentOnly: true });
     const BOOTSTRAP = 6001, ANCHOR2 = 6002;
@@ -2143,14 +2139,14 @@ describe('FuseSession lifecycle', () => {
   });
 
   // PINS THAT prepare() AND teardown() MAY NOT INTERLEAVE, and what the
-  // interleaving used to cost was not a socket. `_mutating` covers
-  // rewind/fork/prune only and the instance is in `byId` before `launch()`
-  // runs, so a `kill()` can reach `teardown()` while `launch()` is inside
-  // `prepare()`. A teardown that latched during prepare's
-  // `await ControlServer.listen()` left prepare to assign `#control`
-  // afterwards — latched WITH A LIVE SERVER — and the final teardown then
-  // early-returned on the latch, so the state machine never ran and the mount,
-  // the root daemon and the run directory survived the session.
+  // interleaving costs is not a socket. `_mutating` covers rewind/fork/prune
+  // only and the instance is in `byId` before `launch()` runs, so a `kill()`
+  // can reach `teardown()` while `launch()` is inside `prepare()`. A teardown
+  // that latches during prepare's `await ControlServer.listen()` leaves prepare
+  // to assign `#control` afterwards — latched WITH A LIVE SERVER — and the
+  // final teardown then early-returns on the latch, so the state machine never
+  // runs and the mount, the root daemon and the run directory survive the
+  // session.
   test('a teardown that races a prepare does not swallow the next teardown', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const d = fakeDriver();
@@ -2254,7 +2250,7 @@ describe('FuseSession lifecycle', () => {
     });
   });
 
-  // T5 — CARD 2026-0387. PINS: `#prepare()` refuses a run directory ANOTHER
+  // T5. PINS: `#prepare()` refuses a run directory ANOTHER
   // instance owns, and the predicate is OWNERSHIP rather than EXISTENCE.
   //
   // Both arms are needed and neither is the other's restatement. Without the
@@ -2413,7 +2409,7 @@ describe('the record-independent orphan backstop', () => {
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
   });
 
-  // T4 — CARD 2026-0387. PINS THE SECOND SET: `liveIds` reaching
+  // T4. PINS THE SECOND SET: `liveIds` reaching
   // `reclaimOrphanProcesses` as WHOLE ids, read off `/proc/<pid>/environ`'s
   // `CC_FUSE_INSTANCE_ID` — never through a directory name. BOTH DIRECTIONS:
   // the skip alone is also what a backstop that never fires produces, so the
@@ -2803,16 +2799,16 @@ describe('the boot sweep', () => {
   // PINS: a LIVE session's directory is not touched. The sweep runs at boot
   // where there are none, but the parameter exists and a sweep that ignored it
   // would tear down a running worker.
-  // T3 — CARD 2026-0387. PINS the readdir loop's `keep.has(name)` keying,
+  // T3. PINS the readdir loop's `keep.has(name)` keying,
   // where `keep` is derived through `fuseRunDirName`.
   //
-  // FULL UUIDS, AND THAT IS THE WHOLE POINT. The fixture this replaces used
-  // the 6-character `'live-1'`, under which the truncated name and the whole
-  // id are the SAME STRING — so it was green against the prefix shape and is
-  // green against the identity, and killed neither a truncation mutant nor a
-  // mutant deleting the `fuseRunDirName` derivation. With a real uuid a
-  // truncated `keep` entry no longer matches the directory on disk and the
-  // live session is torn down under itself.
+  // FULL UUIDS, AND THAT IS THE WHOLE POINT. Under a 6-character id like
+  // `'live-1'` the truncated name and the whole id are the SAME STRING, so such
+  // a fixture is green against the prefix shape and against the identity alike,
+  // and kills neither a truncation mutant nor a mutant deleting the
+  // `fuseRunDirName` derivation. With a real uuid a truncated `keep` entry no
+  // longer matches the directory on disk and the live session is torn down
+  // under itself.
   //
   // TWO ENTRIES, because "skipped" alone passes against a sweep that does
   // nothing at all: B is the control that proves the pass ran.

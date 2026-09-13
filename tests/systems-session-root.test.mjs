@@ -1,13 +1,13 @@
 // CRITERION 8, BY EVIDENCE: THERE IS NO SESSION ROOT.
 //
-// This file used to own the allow-list walk — ~30 cases over what a remote
-// session's cc-owned local session root contained: which config files were
-// pulled, the entry cap, the byte caps, the listing fence, the manifest
-// sidecar, `rankConfigSurface`'s pinned/capped split, the `find` argv that
-// enumerated it. Every one of those subjects is gone, because the union serves
-// the project's own tree and no walk decides what a worker may see.
+// There is no allow-list walk over what a remote session's cc-owned local
+// session root contains, and no such root for one to fill: no pulled config
+// files, no entry cap, no byte caps, no listing fence, no manifest sidecar, no
+// `rankConfigSurface` pinned/capped split, no `find` argv enumerating it. The
+// union serves the project's own tree, and no walk decides what a worker may
+// see.
 //
-// WHAT SURVIVES IS THE ABSENCE ITSELF, and it has to be asserted rather than
+// THE ABSENCE ITSELF IS THE CLAIM, and it has to be asserted rather than
 // assumed: "we deleted the code" is not evidence that nothing composes a root.
 // Two independent claims, because either alone can be satisfied by accident:
 //
@@ -76,8 +76,8 @@ describe('criterion 8: a remote session composes no session root', () => {
     const rec = path.join(await mkdtemp('cc-wire-'), 'frames.jsonl');
     const box = await fs.realpath(await mkdtemp('cc-remote-'));
     const tree = await seedRepo(path.join(box, 'app'));
-    // The config surface the walk used to pull, all of it present on the system
-    // so its absence locally is a fact about cc rather than about the fixture.
+    // The config surface a walk would pull, all of it present on the system so
+    // its absence locally is a fact about cc rather than about the fixture.
     await fs.mkdir(path.join(tree, '.claude', 'skills', 'deploy'), { recursive: true });
     await fs.writeFile(path.join(tree, '.claude', 'settings.json'), '{}\n');
     await fs.writeFile(path.join(tree, '.claude', 'skills', 'deploy', 'SKILL.md'), '# deploy\n');

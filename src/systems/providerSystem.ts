@@ -57,7 +57,7 @@ export const EXEC_TIMEOUT_SLACK_MS = 5_000;
 //
 // A liveness fence, not a performance budget: it has to sit above the slowest
 // legitimate operation cc issues so it can never turn a slow answer into a
-// wrong one. MEASURED (card 2026-0299 §2): the slowest unbounded operation is a
+// wrong one. MEASURED: the slowest unbounded operation is a
 // `git worktree add` checking out a 100k-file repo, ~3.7 s; `git worktree
 // remove --force` and an `rm -rf` of the same tree are ~1.2 s and ~0.9 s, and
 // every other unbounded operation measured under half a second. 60 s is 16x
@@ -277,7 +277,7 @@ export class ProviderSystem implements System, ShellHost {
       let settled = false;
       // ONE SCAN PER STREAM, and the AND of the two is what settles the call —
       // cc's framing writes a closing sentinel to stdout and to stderr, and
-      // ProviderShell's parse needs BOTH (measured, card 2026-0318 §5.2:
+      // ProviderShell's parse needs BOTH (measured:
       // stdout at 87 ms, stderr at 88 ms). Absent unless the caller named a
       // marker, which only the redirected shell does.
       const scan = opts.completeMarker === undefined ? null : {
@@ -317,14 +317,13 @@ export class ProviderSystem implements System, ShellHost {
       // THE COMMAND'S OUTPUT IS OVER, on both streams, and that is the whole of
       // what cc needs — the `exit` frame may never come at all, because a
       // backgrounded job holds the command's stdout pipe open and a provider
-      // that reports exit at stream-close therefore never reports it
-      // (card 2026-0318 §1).
+      // that reports exit at stream-close therefore never reports it.
       //
       // `detach` and NOT `close`: the operation is finished, the background job
       // is not, and killing it here would diverge from what a local Bash call
       // leaves behind. Without the frame the provider keeps the exec open with
       // its own timer armed, and when that fires it reaps the survivor WHERE IT
-      // HAS GROUP REACH — measured, card 2026-0318 §3: gone under
+      // HAS GROUP REACH — measured: gone under
       // `processGroupSignal`, alive without it. So the frame also closes a
       // divergence between the two shipped capability configurations, rather
       // than only sparing a job the timer would otherwise always have killed.
@@ -360,12 +359,12 @@ export class ProviderSystem implements System, ShellHost {
       // IT STAYS even though a redirected command now settles on its own
       // sentinel: a command that produces NO sentinel at all — the shell died,
       // the provider wedged — is a different failure mode, not a redundant
-      // guard (card 2026-0318 §4).
+      // guard.
       //
       // The bound is REPORTED, not just enforced: it is longer than the
       // deadline the provider was given, so a caller that named the provider's
       // deadline in its own message told the worker it had waited a time it had
-      // not (card 2026-0318 §5.3).
+      // not.
       const abandonAfterMs = opts.timeoutMs === undefined
         ? this.#defaultOpTimeoutMs
         : opts.timeoutMs + EXEC_TIMEOUT_SLACK_MS;
@@ -795,7 +794,8 @@ export class ProviderSystem implements System, ShellHost {
 // THE RULES ARE THE PARSER'S OWN, and it applies all three rather than a prefix
 // of them, because A SETTLE THE PARSER THEN REJECTS IS WORSE THAN NO SETTLE AT
 // ALL: `#runOneShot` would throw `ESHELLGONE` on a command that succeeded, which
-// is this card's own defect class reintroduced at the seam that removed it.
+// reintroduces the settle-then-reject defect class at the very seam that
+// removes it.
 //   * the marker only counts at the START of a line — a command that echoes it
 //     mid-line is output, not a boundary;
 //   * only once that line has ENDED, because the tail decides what it is;
@@ -803,7 +803,7 @@ export class ProviderSystem implements System, ShellHost {
 //     `parseFramedStderr` and `FramedStreamFilter` also call, over the same
 //     pattern constant `parseFramedStdout` reads for its capture groups, so the
 //     four readers of the rule cannot drift apart
-//     (src/systems/shellFraming.ts, card 2026-0318 §5.2).
+//     (src/systems/shellFraming.ts).
 // A line that fails the tail is a forgery, so scanning CONTINUES past it exactly
 // as the parser's own loop does; stopping there would hide a real frame arriving
 // behind it.

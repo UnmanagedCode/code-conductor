@@ -10,8 +10,8 @@
 // unix socket, same frames, same mirror — so a delta is the source's and
 // nothing else's:
 //
-//   --arm localdir   `localDirSource(<tmpdir>)`. THE CONTROL: S1's and S2's
-//                    cost, and what every previous figure in this epic was.
+//   --arm localdir   `localDirSource(<tmpdir>)`. THE CONTROL: the cost with no
+//                    provider and no transport in the path.
 //   --arm reference  `systemSource` over a ProviderSystem on the reference
 //                    provider — the whole NDJSON → base64 → 64 KiB chunking
 //                    path, deterministic and in-repo, which isolates the
@@ -21,9 +21,21 @@
 //                    claim — with `--release-only {on,off}`. `off` is the
 //                    BEFORE picture (a flags-0 release frame) and is a
 //                    BENCH-ONLY switch, never a product knob.
-//   --arm docker     the real `cc-box` handle. Needs the container up; its
+//   --arm docker     a REAL docker remote, measured and not asserted. Needs
+//                    that container up. Its
 //                    fixtures are built ON THE BOX through the same handle,
 //                    because there is no shared filesystem to build them on.
+//                    IT TAKES TWO REQUIRED INPUTS and refuses loudly without
+//                    them, because a machine-specific default baked in here is
+//                    a number whose configuration is unstated:
+//                      --provider-argv  (or CC_FUSE_BENCH_PROVIDER_ARGV) — the
+//                        argv of the System provider to launch, space-separated,
+//                        e.g. `node /path/to/launcher.mjs --kind docker`.
+//                      --remote         (or CC_FUSE_BENCH_REMOTE) — the remote
+//                        handle name to bind on that provider, i.e. the
+//                        container.
+//                    `--box-root` (default /root/cc-bench) is where fixtures
+//                    are built on the box.
 //
 // MEDIAN AND p90, NEVER A MEAN: one GC pause skews a mean and says nothing
 // about the distribution a worker actually meets.
@@ -74,14 +86,21 @@ function stats(ms) {
 }
 
 // The source under measurement, plus whatever has to be torn down with it.
-const DOCKER_LAUNCH = ['/usr/local/bin/node',
-  '/workspaces/cc-projects/code-system/src/launcher/main.mjs', '--kind', 'docker'];
-const DOCKER_REMOTE = opt('--remote', 'cc-box');
+// NO MACHINE DEFAULTS on the docker arm: both inputs are required and refused
+// by name when unset, so the arm cannot silently measure someone else's box.
+const DOCKER_LAUNCH = (opt('--provider-argv', process.env.CC_FUSE_BENCH_PROVIDER_ARGV ?? '') || '').split(' ').filter(Boolean);
+const DOCKER_REMOTE = opt('--remote', process.env.CC_FUSE_BENCH_REMOTE ?? '');
 const DOCKER_ROOT = opt('--box-root', '/root/cc-bench');
 
 async function makeArm(arm, root, log) {
   if (arm === 'localdir') return { source: localDirSource(root), dispose: () => {} };
   if (arm === 'docker') {
+    if (!DOCKER_LAUNCH.length) {
+      throw new Error('--arm docker needs --provider-argv (or CC_FUSE_BENCH_PROVIDER_ARGV): the argv of the System provider to launch, space-separated. There is no default — a baked-in launcher path measures one machine and says so nowhere.');
+    }
+    if (!DOCKER_REMOTE) {
+      throw new Error('--arm docker needs --remote (or CC_FUSE_BENCH_REMOTE): the remote handle name to bind on that provider. There is no default — a baked-in container name measures one machine and says so nowhere.');
+    }
     const owner = new ProviderSystem({ id: 'docker', launch: { argv: DOCKER_LAUNCH } });
     const sys = owner.bindRemote(DOCKER_REMOTE);
     await owner.connect();

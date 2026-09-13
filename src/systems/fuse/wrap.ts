@@ -95,9 +95,9 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
       ctx.bootstrap ?? BOOTSTRAP,
       // The CLI's own argv, passed POSITIONALLY and consumed as `"$@"`. Safe
       // for an argument containing a newline or a space: this is an execve argv
-      // array from end to end and `"$@"` never re-splits it. (The S3 defect
-      // that argued for env-passing was a TRACE parsing /proc/<pid>/cmdline,
-      // not an argument being split in flight.)
+      // array from end to end and `"$@"` never re-splits it. (What an argument
+      // containing a newline DOES break is a TRACE parsing
+      // /proc/<pid>/cmdline, which is a reader's problem, not this argv's.)
       spec.command, ...spec.args,
     ],
     // The CLI's real cwd is `CC_FUSE_CWD`, which the bootstrap `cd`s to INSIDE

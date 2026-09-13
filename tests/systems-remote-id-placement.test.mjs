@@ -6,7 +6,7 @@
 // pins that at the record and at each surface that reads or writes it.
 //
 // The fixture keeps two targets behind ONE registered system, which is the
-// shape the whole card exists for: ten containers, one docker provider, one row
+// shape this file exists for: ten containers, one docker provider, one row
 // in Settings.
 //
 // Both targets are rooted at the SAME sandbox, deliberately. Root scoping is
@@ -167,10 +167,10 @@ describe('remoteId in the project record', () => {
 
   // PINS A CONSEQUENCE OF THE FUSE GEOMETRY, and it is a NARROWING: the same
   // absolute path on two targets of one system is still two different trees,
-  // and adopting both used to be legal. It no longer is, because the CLI's
-  // working directory is now that path on both — so the two would name ONE
-  // transcript directory and their sessions would interleave in it, with
-  // findSessionLocation unable to tell them apart.
+  // and adopting both is REFUSED, because the CLI's working directory is that
+  // path on both — so the two would name ONE transcript directory and their
+  // sessions would interleave in it, with findSessionLocation unable to tell
+  // them apart.
   //
   // The refusal is the honest answer rather than the harm; the reason names the
   // holder so the operator can pick another path on one of the two targets.

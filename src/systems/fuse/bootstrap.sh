@@ -117,13 +117,12 @@ setsid sleep infinity </dev/null >/dev/null 2>&1 &
 ANCHOR_PID=$!
 write_record starting
 
-# ── 3. (was the S1 stand-in bind mount.) There is nothing to place behind the
-#       mirror any more: cc materialises every remote path into it over the
-#       control channel, and a bind here would be a second mechanism.
+# ── 3. NOTHING IS BIND-MOUNTED BEHIND THE MIRROR. cc materialises every remote
+#       path into it over the control channel, and a bind here would be a
+#       second mechanism for the same job.
 
-# ── 4. the daemon. Root, and it stays root: S1 §7.2 measured that a
-#       non-root daemon breaks the CLI's own Bash tool with EACCES on
-#       /tmp/claude-1000. `allow_other,default_permissions` plus per-request
+# ── 4. the daemon. Root, and it stays root: a non-root daemon breaks the CLI's
+#       own Bash tool with EACCES on its per-uid tmp root. `allow_other,default_permissions` plus per-request
 #       setfsuid/setfsgid is what lets one daemon serve callers of another uid.
 #       CC_UNION_TRACE MUST BE ABSENT, NOT EMPTY, when tracing is off, and it
 #       cannot ride as a command prefix like the others for that reason: the
@@ -182,8 +181,8 @@ fi
 
 # ── 6. CAPTURE THE CONNECTION MINOR NOW, while the mount exists. Resolving it
 #       from mountinfo BY MOUNTPOINT is only possible here: the same lookup run
-#       during teardown — after the unmount — is a silent no-op, which is the
-#       defect that made S2's own abort path do nothing (S3 §A4 step 1).
+#       during teardown — after the unmount — is a silent no-op, which makes an
+#       abort path that resolves it there do nothing at all.
 MINOR=$(awk -v p="$CC_FUSE_ROOT" '$5 == p { print $3; exit }' /proc/self/mountinfo)
 MINOR=${MINOR#*:}
 [ -n "$MINOR" ] || die "could not capture the connection minor for $CC_FUSE_ROOT"
@@ -198,20 +197,20 @@ MOUNTED_AT=$(date +%s%3N)
 write_record mounted
 
 # ── 8. fusectl at a PRIVATE path, not /sys/fs/fuse/connections. A read-only
-#       /sys can be mounted over (S3 §A1 rung 2) — this declines to, because
+#       /sys can be mounted over — this declines to, because
 #       step 9 binds /sys into the chroot and fusectl at its conventional path
 #       would hand the worker both a tell that its root is FUSE and an abort
 #       surface against its own filesystem. $CC_FUSE_FUSECTL is OUTSIDE
 #       $CC_FUSE_ROOT, so the union serves no spelling of it to a caller inside
 #       the chroot, and cc reaches it through nsenter. (NOT "invisible inside
 #       the chroot": the bind-mounted /proc gives it another spelling at
-#       /proc/<ccpid>/root/$CC_FUSE_FUSECTL — card 2026-0394.)
+#       /proc/<ccpid>/root/$CC_FUSE_FUSECTL.)
 mount -t fusectl none "$CC_FUSE_FUSECTL" || die "could not mount fusectl at $CC_FUSE_FUSECTL"
 
 # ── 9. real bind mounts OVER the union, after it is up and NEVER as tiers. A
 #       passthrough serving /proc/self/* answers with the DAEMON's identity and
 #       breaks /proc/self/exe, which is how a bun single-file executable finds
-#       its embedded payload (S1 §7.1, measured). The three targets are the
+#       its embedded payload. The three targets are the
 #       `bind` tier: the union serves each as a read-only synthetic directory
 #       purely so this bind has something to land on.
 mount --bind /proc "$CC_FUSE_ROOT/proc" || die "could not bind /proc into the chroot"
@@ -237,7 +236,7 @@ exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '
 	# the project tree, unmarked — and the launch dies "cwd does not exist
 	# inside the chroot" before the CLI is ever reached. Waiting for the
 	# loader to read the binary incidentally is one op too late, and it also
-	# leaves the pre-mark window S1 §9.1 measured wide open.
+	# leaves the pre-mark window wide open.
 	#
 	# A plain existence test: the daemon marks on RESOLUTION, so a stat is
 	# the whole event. `|| :` because the mark path is host-pinned and an

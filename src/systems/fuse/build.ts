@@ -6,9 +6,8 @@
 //
 // CONTENT-ADDRESSED on BOTH sources + the compiler flags, so editing either
 // rebuilds and a stale binary is impossible. That is what makes editing the
-// daemon safe rather than a deployment problem — `union.c` is a FORK of the
-// frozen S3 instrument and diverges from it by design now (see PROVENANCE.md's
-// ledger), so the address moves with every row added there.
+// daemon safe rather than a deployment problem: the address moves with every
+// edit to either source.
 //
 // `policy.h` IS IN THE ADDRESS, and that is not a completeness gesture: it is
 // a header, so nothing else observes an edit to it. Hash `union.c` alone and
@@ -27,7 +26,7 @@ import { FUSE_UNAVAILABLE } from './preflight.ts';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export const UNION_SOURCE = path.join(HERE, 'union.c');
-// The policy half — no libfuse, `#include`d by union.c. See PROVENANCE.md.
+// The policy half — no libfuse, `#include`d by union.c.
 export const POLICY_SOURCE = path.join(HERE, 'policy.h');
 
 const CFLAGS = ['-Wall', '-Wextra', '-O2'];
