@@ -33,13 +33,13 @@ const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 // A session on a REMOTE system hooks three tools more. `Glob` and `Grep` are
 // here as the SECOND guard described below.
 //
-// `Read` IS HOOKED AGAIN, and not for the reason it used to be: its bytes no
-// longer have to be fetched before the CLI opens the file — the union puts them
-// there — but a Read aimed at a path the union does not serve to this session
-// must meet cc's refusal rather than an -ENOENT it would read as "the file is
-// absent" (src/systems/fuse/tierTable.ts → classifyForTool). It is hooked to
-// REFUSE, never to gate, which is why the broker exempts it from the ask card
-// (REDIRECT_UNGATED_TOOLS, src/hookBroker.ts).
+// `Read` IS HOOKED, AND NOT TO GATE: the union puts a served path's bytes
+// there, so no fetch is needed — but a Read aimed at a path the union does not
+// serve to this session must meet cc's refusal rather than an -ENOENT a model
+// reads as "the file is absent" (src/systems/fuse/tierTable.ts →
+// classifyForTool). It is hooked to REFUSE, never to gate, which is why the
+// broker exempts it from the ask card (REDIRECT_UNGATED_TOOLS,
+// src/hookBroker.ts).
 //
 // EXPORTED so a test can assert that every FILE_TOOLS key is in it: a fifth
 // file tool must fail that assertion rather than silently escape the boundary.
@@ -104,22 +104,17 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   if (redirect) out.permissions = { deny: REDIRECT_DENIED_TOOLS };
   // THE CLI'S DYNAMIC GIT INSTRUCTIONS, off for a redirected session.
   //
-  // The original reason no longer holds: the CLI's cwd was a cc-owned session
-  // root, so the guidance described the wrong repository. Under the chroot the
-  // cwd IS the project's tree, with its real `.git`.
-  //
-  // IT STAYS OFF, on a different reason. The CLI shells out to run that git
-  // itself, unmarked and outside cc's remote-forwarded Bash tool — and an
-  // unmarked caller never reaches the REMOTE working tree at all: since card
-  // 2026-0398 it resolves in `VIEW_HOST` (src/systems/fuse/policy.h), where the
-  // `project` pins are struck, so it is served the ORCHESTRATOR's own file where
-  // the orchestrator has one and `-ENOENT` where it has none. Neither is the
+  // IT STAYS OFF. The CLI shells out to run that git itself, unmarked and
+  // outside cc's remote-forwarded Bash tool — and an unmarked caller never
+  // reaches the REMOTE working tree at all: it resolves in `VIEW_HOST`
+  // (src/systems/fuse/policy.h), where the `project` pins are struck, so it is
+  // served the ORCHESTRATOR's own file where the orchestrator has one and
+  // `-ENOENT` where it has none. Neither is the
   // tree this session is working in, so the answer is wrong either way — and in
-  // the shadowed case it is wrong about a DIFFERENT REPOSITORY, which is the
-  // same defect this option was first turned off for. Guidance derived from that
-  // is worse than none. The cwd chain (cards 2026-0373, 2026-0382, 2026-0398)
-  // changes only WHERE that spawn dies: it now starts, chdir's into the project
-  // root, and dies at its first read of a remote file instead of at its chdir.
+  // the shadowed case it is wrong about a DIFFERENT REPOSITORY. Guidance
+  // derived from that is worse than none. The cwd chain changes only WHERE that
+  // spawn dies: it starts, chdir's into the project root, and dies at its first
+  // read of a remote file rather than at its chdir.
   //
   // Chosen over CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: 2.1.250 reads that var as
   // `e !== undefined ? !e : settings.includeGitInstructions ?? true`, so "0"

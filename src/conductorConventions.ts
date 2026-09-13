@@ -12,9 +12,9 @@
 // <orchStoreRoot>/conventions/conductor.json (keys: `rules`, `disabled`).
 //
 // Every enabled convention costs tokens in every conductor session's system
-// prompt — keep the built-in set lean; project-specific detail belongs in
-// .conduct/tasks/*.md task plans and the wiki, not here. (Those are plan
-// DOCUMENTS; a "playbook" is now the enforced stage graph of src/playbooks.ts.)
+// prompt — keep the built-in set lean; project-specific detail belongs in the
+// conductor's own task plans and wiki, not here. (Those are plan DOCUMENTS; a
+// "playbook", by contrast, is the enforced stage graph of src/playbooks.ts.)
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

@@ -22,10 +22,10 @@ import type { SystemErrorCode } from './protocol.ts';
 // DELIBERATELY ABSENT, each for a reason that would otherwise be re-litigated:
 //   `utimes` — setting a source file's mtime to the mirror's would misreport
 //     when the source changed, which build tools on the box depend on.
-//   `chown`  — the system's uid space is not the orchestrator's
-//     (src/systems/fuse/PROVENANCE.md D13b).
+//   `chown`  — the system's uid space is not the orchestrator's, and no
+//     RemoteSource method carries ownership.
 //   `rename` — a cross-tier rename is EXDEV and a project-tier directory
-//     rename refuses (D13e), so nothing can ask for one.
+//     rename refuses, so nothing can ask for one.
 //   a RANGED write, or a ranged read past `readFileBytes`'s `length` — the
 //     union's mirror must hold a whole file to serve arbitrary offsets, so a
 //     ranged transfer buys nothing.
@@ -179,8 +179,7 @@ export interface ExecResult {
   //
   // It exists because the number a worker is told has to be the wait it actually
   // served. `timedOut` alone cannot say it: the same flag also carries a timeout
-  // the PROVIDER reported, which fired at the caller's own deadline instead
-  // (card 2026-0318 §5.3).
+  // the PROVIDER reported, which fired at the caller's own deadline instead.
   abandonedAfterMs?: number;
 }
 
@@ -218,16 +217,16 @@ export function typeBitsFor(kind: SystemEntryKind): number {
 }
 
 // WHOLE MILLISECONDS FROM INTEGER NANOSECONDS, and BOTH implementations reach
-// it — which is the point, because they were converging by luck and missing.
+// it — that is the point: rounding each side in its own arithmetic disagrees on
+// a half-millisecond boundary, because a float cannot hold
+// `seconds.nanoseconds` exactly.
 //
 // The two sides start from different representations: a local `bigint` stat has
 // exact nanoseconds, and the wire has `find -printf '%T@'`'s
 // `seconds.nanoseconds` decimal string. Rounding each in its own arithmetic
 // disagrees on a half-millisecond boundary: `Number("1788783387.216499885")`
 // cannot hold that value, so `× 1000` lands just under `.5` where
-// `secs*1000 + ns/1e6` lands just over. MEASURED at 18 disagreements in 400k
-// random nanosecond values (~5e-5) — a flake, in a repo that tracks flakes,
-// underneath two documents claiming the two agree EXACTLY.
+// `secs*1000 + ns/1e6` lands just over.
 //
 // Integer in, integer out. `nanos / 1e6` is exact for every integer `nanos`
 // below 1e9 (both operands are exactly representable and so is the quotient's
@@ -250,7 +249,7 @@ export function msFromFindStamp(stamp: string): number | null {
 // `stat` FOLLOWS symlinks (matching fs.stat) and therefore cannot report a
 // symlink at all — it answers about the target, or `null` for a broken link.
 // The union's remote tier must: `RemoteStat`'s domain is file, dir, symlink and
-// absent (src/systems/fuse/PROVENANCE.md D13), and a symlink shaped into the
+// absent (src/systems/fuse/remoteSource.ts), and a symlink shaped into the
 // mirror as a file answers wrongly about what it is.
 export interface SystemLstat extends SystemStat {
   // The link's target for `kind === 'symlink'`, null for every other kind.

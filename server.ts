@@ -60,7 +60,7 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   //    server leaves its dead closure installed for the next importer; nothing
   //    resets them globally, only each test's own `finally`.
   //  - `instances.setClaudePluginDirsResolver` below is the instance-scoped
-  //    shape and the target end state (card 2026-0167).
+  //    shape and the target end state.
   //
   // Consolidating the four into one `setHostProviders({…})` object was
   // considered and DECLINED: it is the same process-wide module-global state

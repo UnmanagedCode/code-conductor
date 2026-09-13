@@ -65,7 +65,7 @@ export function isExcluded(systemAbs: string, exclude: readonly string[]): strin
   return null;
 }
 
-// ── card 2026-0259 §2.4: what cc will and will not believe ───────────
+// ── what cc will and will not believe ────────────────────────────────
 
 function invalid(systemId: string, detail: string): Error {
   // 502 for the reason REMOTE_NOT_FOUND is: the far side ANSWERED, and answered
@@ -153,7 +153,7 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
   const mirrorRoot = advertisement.mirrorRoot;
 
   // Containment, not an offset: what the project needs from the advertised
-  // root is that the root CONTAINS it, and where inside no longer matters.
+  // root is that the root CONTAINS it; where inside does not matter.
   if (withinPosix(systemPath, mirrorRoot) === null) {
     throw httpError(501,
       `project '${project}' is at '${systemPath}' on system '${systemId}', but that system advertises `
@@ -167,8 +167,8 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
     // An exclude that COVERS OR EQUALS the project is fatal for a session on
     // it: no file in the project could be read or written at all. An exclude
     // strictly INSIDE the project is legal and stays active — it withholds that
-    // subtree from the union's remote tier. What ENFORCES that per path is
-    // S2's — the tier table is the artifact, the hook consumer arrives with it
+    // subtree from the union's remote tier. What ENFORCES that per path is the
+    // tier table — the hook consumer arrives with it
     // (docs/architecture.md → what `fileBridge` carried).
     if (withinPosix(systemPath, e) !== null) {
       throw httpError(501,

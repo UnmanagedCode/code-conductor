@@ -84,7 +84,7 @@ export interface HookRedirector {
 // Scoped to redirected sessions: with no redirector attached the gate below
 // tests no tool name at all. The exemption is this list and nothing else — a
 // tool hooked later gates unless it is added here, rather than falling through
-// a hole (card 2026-0339).
+// a hole.
 const REDIRECT_UNGATED_TOOLS = new Set(['Read']);
 
 interface PendingCallback {

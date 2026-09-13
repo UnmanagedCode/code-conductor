@@ -197,7 +197,7 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
   // falsehood this stops: `isGitRepo` read the `{code:124, stdout:''}` a
   // provider deadline produces as git ANSWERING, so the project list reported
   // `isGitRepo: false` with `systemUnreachable: null` — the positive claim
-  // "not a git repo" about a box cc never got an answer from (card 2026-0299).
+  // "not a git repo" about a box cc never got an answer from.
   // 504, and its own code: the repair is fix the provider, not fix the path.
   if (r.timedOut) {
     throw httpError(504, `git ${sub} did not answer on system '${system.id}' in ${cwd} `
@@ -231,7 +231,6 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     // ENAMETOOLONG` from an over-long cwd, `spawn E2BIG` from an over-long
     // argv. What is unchanged locally is the CLASSIFIED case — a missing cwd
     // or a non-executable git still returns here, diagnostic in `stderr`.
-    // (card 2026-0308 §1.1 for the measurements, §G10 for the scoping)
     if (!r.transportFailure && classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
       return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
     }
@@ -380,10 +379,9 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   // `bash` a path that exists only on THIS machine — an exit-127 wearing the
   // shape of a broken hook at best, and at worst whatever file happens to sit at
   // that spelling on the system running instead. Shipping the body across would
-  // need a cc-owned place to put a file on the system. The session-root
-  // machinery that was once going to provide one is DELETED, not pending — a
+  // need a cc-owned place to put a file on the system, and there is none — a
   // worker reads the project's tree through the union at its real path — so
-  // this refusal is the standing answer rather than a stopgap. It
+  // this refusal is the standing answer, not a stopgap. It
   // is reported rather than silently skipped, because a hook that quietly does
   // nothing is the same defect restated. An IN-TREE hook is unaffected — it is
   // already on the system.
@@ -847,8 +845,7 @@ export async function removeWorktree(
   // dropWorktreeStoreEntry swallows its own `fs.rm` failure, so a failing local
   // store write still strands the registration, silently and with nothing
   // raised. Pre-existing, a different mechanism, and unchanged here — the
-  // ordering buys the GIT steps and nothing further. (card 2026-0308 §G2, §G10
-  // — §G2 required this at five sites, §G10 replaced that with one owner here.)
+  // ordering buys the GIT steps and nothing further.
   await dropWorktreeStoreEntry(projectName, meta.worktreeName);
   // Branch deletion is best-effort — if the rebase-back already
   // fast-forwarded the base onto the worktree branch then `-d` will
@@ -871,7 +868,6 @@ export async function removeWorktree(
   // and the far side may have deleted it — the same uncertainty
   // mergeWorktreeIntoParent reports as `mayHaveCompleted`. So the branch clause
   // is hedged, and it is still the actionable half: go look.
-  // (card 2026-0308 §4.3 for preserving the fields, §G10 for the hedges)
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
   try {
     await runGit(system, parentPath, delArgs);

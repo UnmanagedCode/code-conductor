@@ -5,8 +5,8 @@
 // That leaves an orphaned tree on every install that ever spawned a remote
 // worker, and it is NOT safe to delete. A session root was the CLI's working
 // directory: a worker could write into it, and a push that failed left the local
-// copy holding content the system does not have — `fileBridge`'s sticky
-// divergence. Those bytes exist nowhere else. So this MOVES THE TREE ASIDE and
+// copy holding content the system does not have. Those bytes exist nowhere
+// else. So this MOVES THE TREE ASIDE and
 // says where it went, rather than reclaiming the space.
 //
 // IDEMPOTENT BECAUSE THE RENAME CONSUMES ITS OWN SOURCE: the probe is the LIVE
@@ -46,11 +46,10 @@ export async function run({ root, log = console.log }) {
     // idempotence — that comes from the rename consuming its own source, so a
     // second run finds no `sessions/` and no-ops whatever this name is.
     //
-    // WAIVED, DELIBERATELY, AND NOT TO BE RE-REPORTED: fixing this name to a
-    // constant survives mutation, because the collision it would cause needs
-    // two boots retiring the same system inside one millisecond. That is not a
-    // reachable state, and a test for it would pin the clock rather than the
-    // behaviour.
+    // THE `Date.now()` NAME IS DELIBERATE, and a constant would be no worse in
+    // practice: the collision one would cause needs two boots retiring the same
+    // system inside one millisecond. That is not a reachable state, and a test
+    // for it would pin the clock rather than the behaviour.
     const to = path.join(systemsDir, id, `${RETIRED}-${Date.now()}`);
     try {
       await fs.rename(from, to);

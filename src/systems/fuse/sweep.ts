@@ -78,8 +78,8 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
       if (!report.wedged && report.eventPaths.length) {
         log.warn(`cc-fuse sweep: ${name} — ${report.notes.filter(n => n.startsWith('cc-fuse: ')).join(' | ')}`);
       }
-      // Reported, NEVER acted on: S3 §A5 measured stale minors (56, 59) that
-      // freed nothing, survived abort and were inert. A count of fusectl
+      // Reported, NEVER acted on: stale minors free nothing, survive abort and
+      // are inert. A count of fusectl
       // entries is not a count of live daemons, so aborting an unrecorded one
       // would be aborting somebody else's filesystem on a guess.
       if (report.strayConnections > 0) {

@@ -54,25 +54,18 @@ const PROJECT_HEADING = '# Project conventions';
 //     time a command prints a path. Told, a worker did the task and remarked on
 //     nothing; untold, it took a system path from a stack trace, tried to read
 //     it, and spent a call recovering.
-//   * The second is a CORRECTION, and its SUBJECT CHANGED with the FUSE-union
-//     geometry. Two earlier wordings were wrong in opposite directions — one
-//     sent the model to `Read /app/greeting.py` when the CLI read on cc's
-//     machine, the other told it to read at a LOCAL path and NEVER at the
-//     system path. Both described a world with two spellings of one file.
-//     There is one now: the CLI runs chrooted at `${system.path}`, so a
-//     prohibition on using that path would forbid the only path that works.
-//     The sentence says the two are the same path, which is the fact a worker
-//     acts on — and it makes no claim about where such a path can APPEAR,
-//     because that is the claim both earlier wordings got wrong.
-// A THIRD SENTENCE WAS DELETED BY CARD 2026-0312 AND NOTHING REPLACED IT — a
-// per-session saving, recorded so it is not re-added by someone rediscovering
-// the problem it solved. It said shell state is PER AGENT, and it existed for an
-// ASYMMETRY: `export` persisted across an agent's own commands while a local
-// session persisted nothing, which invited the false generalisation that a
-// dispatched subagent inherited that state. That card deleted the long-lived
-// shell, so the asymmetry does not exist: nothing an agent's command sets
-// reaches ANY later command, its own included, exactly as locally. The
-// sentence's subject is gone.
+//   * The second says the CLI's file tools and the shell see the SAME path:
+//     the CLI runs chrooted at `${system.path}`, so a prohibition on using that
+//     path would forbid the only path that works. There is one spelling of one
+//     file, which is the fact a worker acts on — and the sentence makes no
+//     claim about where such a path can APPEAR, which is the claim a wrong
+//     wording gets wrong.
+//
+// NOTHING IS ADDED ABOUT SHELL STATE, AND A "SHELL STATE IS PER AGENT" SENTENCE
+// MUST NOT BE RE-ADDED: it has no subject. Nothing an agent's command sets
+// reaches ANY later command, its own included — there is no long-lived shell —
+// exactly as locally. Such a sentence would be a per-session cost with no
+// behaviour behind it.
 //
 // SPECIFICALLY NOT ADDED IN ITS PLACE: anything about each command starting at
 // the project root. That fact IS delivered — by cc's own notice on the one
@@ -150,7 +143,7 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 // or a note) the heading is omitted too and the document is marker + workspace.
 // Also returns the project catalog's `degraded` flag, off the read the block
 // composition already makes — because degradedness is a property OF THIS
-// DOCUMENT and its consequences differ per caller (card 2026-0282). The create
+// DOCUMENT and its consequences differ per caller. The create
 // path takes this shape and warns the operator; the regeneration path takes the
 // plain `composeProjectConventionsDoc` below and stays silent, because it
 // reaches this composition once per project per sweep and a project whose

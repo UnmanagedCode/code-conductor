@@ -1,6 +1,5 @@
-// THE tier/deny artifact. One table, handed to the daemon as its pins file in
-// S1 and to the hook's deny surface in S2 — the epic requires them to be one
-// artifact or they drift.
+// THE tier/deny artifact. ONE table, handed to the daemon as its pins file and
+// to the hook's deny surface — two renderings of one array, or they drift.
 //
 // A tier is a longest-prefix rule over absolute paths:
 //   host    → served from the orchestrator's own filesystem
@@ -10,25 +9,25 @@
 //   fail    → served from neither, because the provider excluded it
 //
 // Each entry also carries `toolAccess`, which is what the HOOK does with a file
-// tool aimed at it (`classifyForTool` below). That is the epic's criterion 15:
-// the daemon's pins file and the hook's deny table are ONE artifact, rendered
-// and read from the same array, so they cannot drift.
+// tool aimed at it (`classifyForTool` below): the daemon's pins file and the
+// hook's deny table are ONE artifact, rendered and read from the same array, so
+// they cannot drift.
 //
 // THE LOAD-BEARING INVARIANT: a host-pinned path keeps its EXACT spelling
 // inside the chroot. That is what lets spawnEnv's HOME and CLAUDE_CODE_TMPDIR,
 // the inline --settings / --mcp-config JSON and every --plugin-dir argument
 // ride through the wrap unmodified.
 //
-// ── WHAT THE LIST HAS TO COVER SINCE CARD 2026-0382, AND WHAT IT NO LONGER DOES
+// ── WHAT THE LIST HAS TO COVER, AND WHAT IT DOES NOT
 //
 // THE LIST DOES NOT SHRINK — IT STOPS GROWING. `fail → host` for an unmarked
 // caller (`policy_caller_tier`, policy.h) means the arrays below have to cover
 // **the CLI's own execution closure and nothing else**: its NEEDED set, its
-// dlopen closure, its settings, its temp paths. They no longer have to grow
-// when somebody installs a new tool on the host, which is what every past
-// addition here was — a new shell, a new binary, a new library that some
-// UNMARKED subprocess reached for. Nothing below is deleted, and the reason is
-// the next paragraph.
+// dlopen closure, its settings, its temp paths. They do not have to grow when
+// somebody installs a new tool on the host — a new shell, a new binary, a new
+// library some UNMARKED subprocess reaches for is served the host at an
+// unpinned path. Nothing below is deleted, and the reason is the next
+// paragraph.
 //
 // EVERY ENTRY STAYS, BECAUSE "DEAD" IS CONFIGURATION-DEPENDENT. A pin is dead
 // only if every path it covers is read exclusively by an unmarked caller — and
@@ -41,9 +40,9 @@
 // would be `project` tier — i.e. the REMOTE's shell, not the orchestrator's
 // one the chroot is built around. The pin is a longer prefix than `project /`,
 // which is the only thing keeping it host-served FOR THE MARKED CLI. (What is
-// NOT the reason, and has not been since card 2026-0388: it is not that an
-// UNMARKED caller loses anything here. Since card 2026-0398 an unmarked caller
-// resolves in `VIEW_HOST`, where every `project` pin is struck — so it is served
+// NOT the reason: it is not that an UNMARKED caller loses anything here. An
+// unmarked caller resolves in `VIEW_HOST`, where every `project` pin is
+// struck — so it is served
 // the orchestrator's own `/bin/sh` at a wide root with or without these pins,
 // and at every other geometry identically. The pins are for the CLI.) Measured
 // by building the real table both ways.
@@ -116,11 +115,12 @@ export type ToolDenyClass = 'excluded' | 'outside-mirror-root' | 'bind-mount' | 
 // be silently served from the host. /proc CANNOT be a tier — a passthrough
 // serving /proc/self/* answers with the DAEMON's identity and breaks
 // /proc/self/exe, which is how a bun single-file executable finds its embedded
-// payload (S1 §7.1, measured).
+// payload.
 export const BIND_MOUNTS = ['/proc', '/sys', '/dev'] as const;
 
-// Identity, name resolution, TLS trust and managed settings. The array below
-// IS the artifact and the single source.
+// Identity, name resolution, TLS trust and managed settings: the host-side
+// files a CLI run needs to resolve names, trust TLS and read managed settings.
+// The array below IS the artifact and the single source.
 // ld.so.cache indexes THIS host's libraries; served from the
 // remote it would name objects that do not exist here. ld.so.preload and
 // /etc/claude-code are pinned on the hazard rather than on a measurement: a
@@ -134,8 +134,8 @@ const ETC_PINS = [
   '/etc/claude-code',
 ];
 
-// The six NEEDED objects (S1 §5.1) plus glibc's dlopen closure, which is in
-// neither `ldd` nor the brief and was found only by running the thing. A host
+// The loader's NEEDED objects plus glibc's dlopen closure — not all of it
+// visible in `ldd` output, and only found by running the real CLI. A host
 // libc that dlopens the REMOTE's NSS or gconv modules is a version mismatch
 // waiting to happen.
 //
@@ -217,10 +217,9 @@ const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...realpathsOf(LOADER_OBJECT
 
 // THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
 // as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
-// setpriv ...'`. Unpinned, those paths take the remote-first `default:` arm
-// (union.c:940), so which side answers depends on the remote's contents. Nearly
-// unreachable with S1's narrow fixture and load-bearing the moment S2 widens
-// `mirrorRoot` to `/`.
+// setpriv ...'`. Unpinned, those paths resolve in the remote tier, so which
+// side answers depends on the remote's contents — load-bearing the moment a
+// provider advertises `mirrorRoot: '/'`.
 //
 // Both spellings of each, because which one exists is a distribution choice and
 // a pin that matches nothing costs nothing. `chroot` itself is NOT here: it runs
@@ -243,17 +242,11 @@ export interface TierTableInput {
   //
   // `process.execPath` and the repo are host-pinned because the redirected Bash
   // tool is rewritten to `node <repo>/src/systems/bashForwarder.ts …` — a REAL
-  // subprocess, which must run host bytes. What the pin buys differs by stage:
-  //   * S1 (`route=path`, frozen daemon): DETERMINISM, not availability. An
-  //     unpinned path takes the `default:` arm, which is remote-first
-  //     (union.c:940) with a host fallback (:948) — so it works, but which side
-  //     answers depends on the fake remote's contents rather than on cc's
-  //     configuration. The pin moves it to the unconditional host arm (:893).
-  //   * S2/S3: REACHABILITY. Once the `fail` tier replaces `default` and
-  //     `mirrorRoot: "/"` puts both paths inside the remote tier's boundary,
-  //     the pin is the only thing keeping them reachable at all — T_PROJECT has
-  //     no host side by design (:903-909), so a caller there gets the remote's
-  //     copy (:914) or -ENOENT (:912).
+  // subprocess, which must run host bytes. The pin is what makes them REACHABLE
+  // at all: under `mirrorRoot: "/"` both paths fall inside the remote tier's
+  // boundary, and `T_PROJECT` has no host fallback by design, so an unpinned
+  // caller there gets the remote's copy or -ENOENT (`policy_project_route`,
+  // policy.h).
   claudeCommand: string;
   execPath: string;
   // The repo cc itself runs from — separate because it is not guaranteed to be
@@ -261,11 +254,10 @@ export interface TierTableInput {
   selfProjectDir: string;
   // ONE prefix, covering three things at once: the cc repo, `orchStoreRoot()`
   // (which is `projectsRoot()/.code-conductor` by construction) and the
-  // `--plugin-dir` targets. This is the handover §3 entry, pinned so a remote
-  // box cannot shadow a host-owned plugin. `fuseRunDir` still needs its
-  // narrower `hide`, and wins on it: `tier_of` (union.c:236-257) skips any pin
-  // no longer than the best match so far, so a longer prefix always beats a
-  // shorter one whatever the file order.
+  // `--plugin-dir` targets. Pinned so a remote box cannot shadow a host-owned
+  // plugin. `fuseRunDir` still needs its narrower `hide`, and wins on it:
+  // `tier_of` (union.c) skips any pin no longer than the best match so far, so
+  // a longer prefix always beats a shorter one whatever the file order.
   projectsRoot: string;
   homeDir: string;
   // This session's scaffolding — hidden, so the union never serves its own
@@ -283,7 +275,7 @@ export interface TierTableInput {
   // THE PROVIDER'S `exclude` LIST (MirrorScope.exclude), and the SECOND
   // mechanism — never merged with BIND_MOUNTS above. Each entry inside the
   // mirror root renders `fail`: served from neither side, and refused at the
-  // file-tool seam too, which is the epic's "fails both surfaces". An exclude
+  // file-tool seam too — it fails BOTH surfaces. An exclude
   // OUTSIDE the mirror root is inert by criterion 4 and renders nothing —
   // `resolveMirrorScope` has already reported it on the session's stream.
   exclude: readonly string[];

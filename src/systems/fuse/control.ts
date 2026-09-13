@@ -16,7 +16,7 @@
 // containment. The worker runs as cc's own uid and the architecture
 // bind-mounts the orchestrator's real /proc, so
 // `/proc/<ccpid>/root/<rundir>/control.sock` names and reaches this socket
-// from inside the chroot today (measured; card 2026-0394 owns that route).
+// from inside the chroot today (measured).
 
 import net from 'node:net';
 import path from 'node:path';
@@ -163,7 +163,7 @@ export function sunPathAddress(dirfd: number, name: string): string {
     // in the address at all. Reaching the limit means cc chose a basename of
     // ~80 characters or an 80-digit fd number, both cc DEFECTS, so the repair
     // belongs at the caller that chose the basename, not at the operator.
-    throw httpError(501, `FUSE_CONTROL_SOCK_PATH_TOO_LONG: the address this session would hand bind()/connect() is ${len} bytes and the limit is ${SUN_PATH_MAX} (Linux's sockaddr_un is char sun_path[108], one byte of it the terminating NUL). The address is ${addr}. It is formed from a directory fd, so the store root's depth is NOT a factor and moving the store somewhere shorter would change nothing; the length is cc's own socket basename plus the fd number. This is a cc DEFECT and the repair belongs at the caller that chose the basename. Card 2026-0387 owns the mechanism.`, { code: 'FUSE_CONTROL_SOCK_PATH_TOO_LONG' });
+    throw httpError(501, `FUSE_CONTROL_SOCK_PATH_TOO_LONG: the address this session would hand bind()/connect() is ${len} bytes and the limit is ${SUN_PATH_MAX} (Linux's sockaddr_un is char sun_path[108], one byte of it the terminating NUL). The address is ${addr}. It is formed from a directory fd, so the store root's depth is NOT a factor and moving the store somewhere shorter would change nothing; the length is cc's own socket basename plus the fd number. This is a cc DEFECT and the repair belongs at the caller that chose the basename.`, { code: 'FUSE_CONTROL_SOCK_PATH_TOO_LONG' });
   }
   return addr;
 }
@@ -243,7 +243,8 @@ export class ControlServer {
   // distinguishes "created here, not pushed yet" from "deleted on the source" —
   // the mirror alone cannot tell them apart. Self-healing: an entry whose
   // mirror file has since gone is dropped rather than trusted.
-  // THE CLAIM RECORD, and it is the whole of the intent-declaration fix.
+  // THE CLAIM RECORD — the record of what the worker did, distinct from what
+  // cc's own cache management did.
   //
   // The mirror is BOTH a cache cc creates, truncates, re-shapes and removes at
   // will AND the statement of what the worker did — two roles in direct
@@ -281,10 +282,10 @@ export class ControlServer {
   //      SUBORDINATE to item 1 rather than independent of it: the abandon
   //      produces a DIRTY, and that DIRTY's own outcome decides. It carries
   //      `CCU_FLAG_RELEASE_ONLY` precisely so it lands in item 1's
-  //      release-outright case and can never reach 1a — a bare zero was
-  //      indistinguishable from a killed handle's release, so an abandon whose
-  //      push failed used to keep the claim and poison a file the worker never
-  //      wrote (`policy_abandon_claim`, `policy.h`; T13c).
+  //      release-outright case and can never reach 1a — a bare zero is
+  //      wire-identical to a killed handle's release, so an abandon whose push
+  //      failed would keep the claim and poison a file the worker never wrote
+  //      (`policy_abandon_claim`, `policy.h`; T13c).
   //   3. this server being dropped. `FuseSession.teardown()` closes it, sets
   //      `#control = null`, and `runTeardown` then `rm -rf`s the run directory
   //      including the mirror, so the map and the files it protects die
@@ -330,16 +331,16 @@ export class ControlServer {
   // CLEARED BY EXACTLY ONE THING — a SUCCESSFUL push of the same path, which is
   // the moment the diverged sentence becomes false (see `#dirty`). Nothing else
   // clears one, and an `over-cap` fault is cleared by nothing at all. The
-  // original rationale for "cleared by nothing" was that cc cannot resync
-  // without destroying the bytes the worker wrote — true of every path except
-  // that one, where the bytes are what LANDED.
+  // reason for "cleared by nothing" is that cc cannot resync without destroying
+  // the bytes the worker wrote — true of every path except that one, where the
+  // bytes are what LANDED.
   #faults = new Map<string, Fault>();
 
   // Set once `close()` starts. A handler that has already been dequeued must
   // not act on a mirror that is about to be removed: teardown deletes the run
   // directory, and a DIRTY running across that would see an absent mirror
-  // entry. It cannot mean a deletion any more (that is declared now), but it
-  // would still fail the op for the wrong reason, and a LIST would unmirror
+  // entry. It cannot mean a deletion — a removal is declared on the frame — but
+  // it would still fail the op for the wrong reason, and a LIST would unmirror
   // paths under a directory that is being deleted anyway.
   #closing = false;
 
@@ -419,10 +420,10 @@ export class ControlServer {
     // ORDER MATTERS, and it is: refuse, DRAIN, then destroy.
     //
     // `#closing` makes every frame not yet started answer REFUSED/EIO at once,
-    // so a daemon thread blocked on a reply gets a real errno and leaves FUSE —
-    // which is what destroying the sockets first used to achieve, except that
-    // it also reset the connection under handlers that were mid-flight, so
-    // their replies never reached the worker. Draining before the destroy means
+    // so a daemon thread blocked on a reply gets a real errno and leaves FUSE;
+    // destroying the sockets first would reset the connection under handlers
+    // that are mid-flight, so their replies would never reach the worker.
+    // Draining before the destroy means
     // an op that was already running is ANSWERED, and the caller that is about
     // to `rm -rf` the run directory waits for it.
     this.#closing = true;
@@ -535,8 +536,9 @@ export class ControlServer {
 
   async #list(p: string, dest: string): Promise<Buffer> {
     const kids = await this.#opts.source.list(p);
-    // A SINGLE FAILED readdir USED TO UNMIRROR THE WHOLE DIRECTORY, and every
-    // pending writable release under it then removed its own source file.
+    // A FAILED readdir MUST NOT UNMIRROR THE WHOLE DIRECTORY: every pending
+    // writable release under it would then remove its own source file. Fail the
+    // LIST instead.
     if (isSourceError(kids)) return this.#sourceFailed('LIST', p, kids.error);
     if (kids === null) {
       if (this.#claimHeld(p)) return encodeReply(CCU_STATUS.READY, 0);
@@ -566,14 +568,14 @@ export class ControlServer {
     return encodeReply(CCU_STATUS.READY, 0);
   }
 
-  // COPIES WHEN THE SOURCE HAS MOVED, and not otherwise. Every open used to
-  // transfer the whole file: `#shape` could skip re-truncating a stub whose
-  // size and ms-floored mtime matched, but the copy after it ran regardless.
-  // Against a local directory that is a `copyFile`; across a wire it is the
-  // whole file, per open, for the life of the session.
+  // COPIES WHEN THE SOURCE HAS MOVED, and not otherwise. Without the
+  // fingerprint every open transfers the whole file — `#shape` alone skips
+  // re-truncating a stub whose size and ms-floored mtime match, but the copy
+  // after it runs regardless; against a local directory that is a `copyFile`,
+  // across a wire it is the whole file, per open, for the life of the session.
   //
-  // WHAT THAT DOES NOT COVER, stated here because the sentence used to claim
-  // more: it is freshness against the SOURCE, not isolation from this session.
+  // WHAT THAT DOES NOT COVER: it is freshness against the SOURCE, not isolation
+  // from this session.
   // A CLAIMED path is skipped entirely — a second handle on a path a writer is
   // mid-write on shares the mirror inode and sees the in-progress bytes, which
   // is ordinary POSIX and a deliberate, narrow consequence of the claim.
@@ -583,14 +585,13 @@ export class ControlServer {
   // being a cache for it until the matching DIRTY.
   //
   // A CLAIM SURVIVES ONLY A `READY`, AND THAT IS ENFORCED HERE RATHER THAN ON
-  // EVERY FAILURE PATH. The first cut recorded the claim before any outcome was
-  // known and released it on none of its failures, so any op whose own FETCH
-  // failed left one behind — and a leaked claim is worse than a disabled cache:
-  // STAT answers ABSENT from it, LIST skips shaping the child, a read-only
-  // open short-circuits READY and then fails ENOENT, and a read sends no DIRTY,
-  // so nothing ever releases it. A file the source gained later became
-  // invisible for the rest of the session. One wrapper, so a failure path
-  // added later cannot forget.
+  // EVERY FAILURE PATH — recording the claim before the outcome is known would
+  // leave one behind on any op whose own FETCH failed, and a leaked claim is
+  // worse than a disabled cache: STAT answers ABSENT from it, LIST skips
+  // shaping the child, a read-only open short-circuits READY and then fails
+  // ENOENT, and a read sends no DIRTY, so nothing ever releases it and a file
+  // the source gains later stays invisible for the rest of the session. One
+  // wrapper, so a failure path added later cannot forget.
   async #fetch(p: string, dest: string, forCreate: boolean, forWrite: boolean): Promise<Buffer> {
     // THE FAULT GATE, AHEAD OF THE CLAIM SHORT-CIRCUIT AND OF EVERY SOURCE
     // CALL. A diverged path refuses a WRITE open and lets a READ through — the
@@ -709,7 +710,8 @@ export class ControlServer {
   }
 
   // READY MEANS CC HAS TAKEN OWNERSHIP OF THE PUSH, NOT THAT THE PUSH LANDED
-  // — the awaiting half is 2026-0356's. What READY does mean here is that the
+  // — the awaiting half (a PostToolUse that blocks until the push lands) does
+  // not exist here. What READY does mean is that the
   // copy completed, so a failure is still reported rather than swallowed, and
   // the daemon answers it to the worker's `close(2)` through `flush`.
   //

@@ -39,8 +39,8 @@ function errCode(e: unknown): string | undefined {
 //
 // The tmp name must be
 // unique per call: pid separates processes, the counter separates concurrent
-// calls within one process (board 2026-0156 — a shared name let the winner's
-// rename delete the loser's still-in-flight source file). The `unlink` below is
+// calls within one process (a shared name lets the winner's rename delete the
+// loser's still-in-flight source file). The `unlink` below is
 // required *because* the name is unique, and is only safe for that same reason.
 // Concurrent writers to one target are last-write-wins, not merged or locked.
 let atomicWriteSeq = 0;
