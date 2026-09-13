@@ -26,11 +26,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, referenceLaunch } from './remoteSystem.mjs';
-import { adoptProject, projectsRoot, projectStoreDir } from '../src/projects.ts';
+import { adoptProject, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
 import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args) {
@@ -71,16 +70,20 @@ describe('a remote project refuses what it cannot do, by name', () => {
 
   // ── Failure state: at session start ──────────────────────────────────
 
-  // PINS: a worker on a remote project runs in a cc-owned SESSION ROOT under
-  // the store, never in the project's own directory — that path is on another
-  // machine, and the CLI would silently create it here and work in it.
-  test('spawning a worker on a remote project runs it in a local session root', async () => {
+  // PINS CRITERION 8: a worker on a remote project runs at the project's REAL
+  // PATH ON ITS SYSTEM, and the store holds no session root at all. A cc-owned
+  // session root under the store is the second spelling of the project's tree —
+  // the thing this whole change exists to remove.
+  test('spawning a worker on a remote project runs it at the path on the system', async () => {
     await adoptRemote();
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
-    assert.equal(inst.cwd, sessionRootPath(remote.id, 'app', null));
-    assert.notEqual(inst.cwd, path.join(remote.root, 'app'), 'not the tree on the system');
+    assert.equal(inst.cwd, path.join(remote.root, 'app'), "the CLI's cwd is the tree on the system");
+    // The store's session-root geometry is GONE, not merely unused: a directory
+    // here would mean something still composes one.
+    assert.equal(await exists(path.join(orchStoreRoot(), 'systems', remote.id, 'sessions')), false,
+      'a session root was composed under the store');
     assert.equal(await exists(path.join(projectsRoot(), 'app')), false,
       'and no local directory was conjured under the projects root');
   });

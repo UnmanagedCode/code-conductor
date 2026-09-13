@@ -25,7 +25,6 @@ import {
   MANAGED_SYSTEMS, MANAGED_SYSTEM_IDS, disposeSystemHandle, probeSystemLaunch,
   type SystemRecord,
 } from './systems/registry.ts';
-import { assertSessionRootsPlaceable } from './systems/sessionRoot.ts';
 
 // The on-disk settings document, typed loosely: every leaf is `unknown` because
 // the file is app-owned but pre-dates this module's conversion and can hold
@@ -498,11 +497,10 @@ function validateLaunch(v: unknown): string[] | null {
 // with the provider's own error text, rather than saved and discovered broken
 // by the first project put on it.
 //
-// The placement check runs alongside it because both are properties of "can
-// this system host work?", and both are only actionable while the user is
-// looking at this form.
+// There is no placement check beside it any more: it asserted that cc could
+// create this system's session-root directory under the store, and the
+// FUSE-union geometry has no session roots to place.
 async function verifySystemLaunch(id: string, argv: string[]): Promise<void> {
-  await assertSessionRootsPlaceable(id);
   try {
     await probeSystemLaunch(argv);
   } catch (e) {

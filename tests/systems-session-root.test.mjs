@@ -1,728 +1,43 @@
-// The local session root: what lands in one, and where its prefix rule draws
-// the boundary.
+// CRITERION 8, BY EVIDENCE: THERE IS NO SESSION ROOT.
 //
-// A session root is the Claude CLI's cwd for a worker on a remote project. It
-// is NOT a copy of the tree — what is pulled ahead of time is exactly the
-// config surface the CLI reads implicitly and can never be hooked (§3.2's
-// allow-list), one way from the system; everything else the worker touches
-// arrives through a hooked tool and materialises in the root.
+// There is no allow-list walk over what a remote session's cc-owned local
+// session root contains, and no such root for one to fill: no pulled config
+// files, no entry cap, no byte caps, no listing fence, no manifest sidecar, no
+// `rankConfigSurface` pinned/capped split, no `find` argv enumerating it. The
+// union serves the project's own tree, and no walk decides what a worker may
+// see.
 //
-// The fixture keeps the two sides distinguishable: the system's tree carries
-// ONLY-ON-SYSTEM.txt, so a composer that accidentally read cc's own disk would
-// produce a root that fails these assertions rather than one that happens to
-// look right.
+// THE ABSENCE ITSELF IS THE CLAIM, and it has to be asserted rather than
+// assumed: "we deleted the code" is not evidence that nothing composes a root.
+// Two independent claims, because either alone can be satisfied by accident:
+//
+//   1. NOTHING IS ON DISK — no `<store>/systems/<id>/sessions` tree, no
+//      manifest sidecar, after a real remote spawn.
+//   2. NOTHING IS ON THE WIRE — a recording provider sees ZERO `find` frames.
+//      This is the same wire-level proof systems-mirror-fallback uses for
+//      `describeRemote`, and it is the stronger of the two: a root composed
+//      somewhere unexpected would still have to enumerate the system to fill
+//      itself, and the walk's `find` is how it did that.
+//
+// The recorder is the honest instrument here for the same reason it is there:
+// a filesystem assertion can only look where the test thought to look, and the
+// wire shows everything cc actually asked the system for.
 
-import { test, beforeEach, afterEach } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import {
-  assertTreeUnchanged, bindRemoteSystem, flakyLaunch, snapshotTree,
-} from './remoteSystem.mjs';
-import { liveSystemProto } from './systemHandle.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { addSystem, updateSystem } from '../src/appSettings.ts';
-import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
-import {
-  SESSION_ROOT_FILE_CAP_BYTES,
-  SessionPathMap,
-  composeSessionRoot,
-  composedRootWasDiscarded,
-  rankConfigSurface,
-  sessionRootPath,
-  sessionRootsDir,
-} from '../src/systems/sessionRoot.ts';
-
-let home, remote;
-beforeEach(async () => {
-  ({ home } = await freshProjectsRoot());
-  remote = await bindRemoteSystem();
-});
-afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
-
-// A project tree ON THE SYSTEM, with the whole allow-list populated plus a
-// generous amount of content that must NOT be pulled.
-async function seedTree(root) {
-  const w = async (rel, body) => {
-    await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
-    await fs.writeFile(path.join(root, rel), body);
-  };
-  await w('CLAUDE.md', '@CONVENTIONS.md\nproject notes\n');
-  await w('CONVENTIONS.md', '<!-- cc:conventions -->\nrules\n');
-  await w('.claude/settings.json', '{"a":1}');
-  await w('.claude/settings.local.json', '{"b":2}');
-  await w('.claude/skills/deploy/SKILL.md', 'deploy skill');
-  await w('.claude/commands/ship.md', 'ship command');
-  await w('.claude/agents/reviewer.md', 'reviewer agent');
-  // NOT in the allow-list — the tree itself, and a .claude entry outside it.
-  await w('ONLY-ON-SYSTEM.txt', 'system side');
-  await w('src/index.js', 'console.log(1)\n');
-  await w('.claude/history.jsonl', '{"nope":true}');
-  return root;
-}
-
-async function compose({ worktree = null, systemPath } = {}) {
-  return composeSessionRoot({
-    system: await systemById(remote.id, null, 'test'),
-    systemId: remote.id,
-    systemPath: systemPath ?? remote.root,
-    project: 'app',
-    worktree,
-  });
-}
-
-const listTree = async (dir) => {
-  const out = [];
-  const walk = async (rel) => {
-    for (const e of await fs.readdir(path.join(dir, rel), { withFileTypes: true })) {
-      const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) await walk(r); else out.push(r);
-    }
-  };
-  await walk('');
-  return out.sort();
-};
-
-// PINS: the composed root holds exactly §3.2's allow-list — no tree content, no
-// unlisted `.claude` entry — so nothing outside the config surface is mirrored.
-test('composing a session root pulls exactly the allow-list', async () => {
-  await seedTree(remote.root);
-  const { root, skipped } = await compose();
-
-  assert.deepEqual(skipped, []);
-  assert.deepEqual(await listTree(root), [
-    '.claude/agents/reviewer.md',
-    '.claude/commands/ship.md',
-    '.claude/settings.json',
-    '.claude/settings.local.json',
-    '.claude/skills/deploy/SKILL.md',
-    'CLAUDE.md',
-    'CONVENTIONS.md',
-  ]);
-  assert.equal(await fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md'), 'utf8'), 'deploy skill');
-  assert.equal(await fs.readFile(path.join(root, 'CONVENTIONS.md'), 'utf8'), '<!-- cc:conventions -->\nrules\n');
-});
-
-// PINS: the session root's CLAUDE.md carries the @CONVENTIONS.md import even
-// when the system's copy has none — the import is what delivers the conventions
-// into the prompt, and nothing on the system is required to have arranged it.
-//
-// AND PINS, on the same tree, that `listAllowed`'s no-imports early return still
-// RANKS what it hands back — this is the common case, the path nearly every real
-// project takes, and the only one of the three returns that an ordinary fixture
-// reaches. `pulled` follows the composed listing, so the ranked order IS the
-// observable: the four ALLOW_FILES in allow-list order, then the three recursive
-// dirs by path.
-//
-// WHAT GIVES THAT ASSERTION ITS TEETH is measured, not assumed: `find` does not
-// emit those three in path order. On this host (bfs 4.1.1, breadth-first) the
-// same argv yields `.claude/commands`, `.claude/agents`, `.claude/skills`;
-// GNU findutils walks starting points depth-first in argv order and yields
-// `skills, commands, agents`. Both differ from the asserted `agents, commands,
-// skills`, so a return that handed back `find`'s listing unranked fails here.
-//
-// NOT CLAIMING the two consequences of the ranking — that `pinned` is exempt
-// from the entry cap and takes the byte budget first. Those need fixtures that
-// cross a cap and are pinned by the flood and byte-budget tests below, on the
-// import-carrying path. This asserts only that the ORDER is cc's on this path.
-//
-// NOT CLAIMING, either, that this would still discriminate on a `find` that
-// happened to emit records in path order. It would go vacuous there, never red.
-test('a system CLAUDE.md with no import gets one prepended locally, keeping every byte', async () => {
-  await seedTree(remote.root);
-  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), 'user content\nmore\n');
-  const { root, pulled } = await compose();
-  assert.equal(await fs.readFile(path.join(root, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\nuser content\nmore\n');
-  // And the SYSTEM's copy is untouched — the pull is one way.
-  assert.equal(await fs.readFile(path.join(remote.root, 'CLAUDE.md'), 'utf8'), 'user content\nmore\n');
-  assert.deepEqual(pulled, [
-    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
-    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
-  ]);
-});
-
-// PINS: the OTHER early return — a project with no CLAUDE.md at all — ranks what
-// it hands back too. A separate test rather than a second assertion above,
-// because the two returns need different trees and no one fixture reaches both.
-// The bare `@CONVENTIONS.md` stub is the on-path witness: `ensureLocalImport`
-// writes it only when CLAUDE.md was not pulled, so a compose that took any other
-// branch would not produce it.
-//
-// NOT CLAIMING anything the test above does not already claim about the ranking;
-// its discriminating power and its limits are identical, and stated there.
-test('a project with no CLAUDE.md still gets a ranked listing', async () => {
-  await seedTree(remote.root);
-  await fs.rm(path.join(remote.root, 'CLAUDE.md'));
-
-  const { root, pulled, skipped } = await compose();
-
-  assert.deepEqual(skipped, []);
-  assert.equal(await fs.readFile(path.join(root, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
-  assert.deepEqual(pulled, [
-    'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
-    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
-  ]);
-});
-
-// PINS: one level of `@`-import named in CLAUDE.md is pulled, so a project that
-// splits its instructions across files still delivers them.
-test('one level of @-import named in CLAUDE.md is pulled', async () => {
-  await seedTree(remote.root);
-  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), '@CONVENTIONS.md\n@docs/STYLE.md\n');
-  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
-  await fs.writeFile(path.join(remote.root, 'docs/STYLE.md'), 'two spaces\n');
-  await fs.writeFile(path.join(remote.root, 'docs/DEEP.md'), 'never pulled\n');
-
-  const { root } = await compose();
-  assert.equal(await fs.readFile(path.join(root, 'docs/STYLE.md'), 'utf8'), 'two spaces\n');
-  await assert.rejects(fs.readFile(path.join(root, 'docs/DEEP.md')));
-});
-
-// PINS: an oversized allow-list entry is SKIPPED and named, never truncated and
-// never fatal — a huge committed skill must not stop a session from starting.
-test('an entry over the per-file cap is skipped and named, and the spawn still composes', async () => {
-  await seedTree(remote.root);
-  const big = path.join(remote.root, '.claude/skills/deploy/BIG.md');
-  await fs.writeFile(big, 'x'.repeat(SESSION_ROOT_FILE_CAP_BYTES + 1));
-  const { root, skipped } = await compose();
-
-  assert.deepEqual(skipped.map(s => s.path), ['.claude/skills/deploy/BIG.md']);
-  assert.match(skipped[0].reason, /cap/);
-  // The rest of the allow-list still landed.
-  assert.equal(await fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md'), 'utf8'), 'deploy skill');
-  await assert.rejects(fs.readFile(path.join(root, '.claude/skills/deploy/BIG.md')));
-});
-
-// ── The ENTRY cap, which bounds the listing POSITIONS the pull considers ──
-//
-// The two caps above sum BYTES, so neither ever fires for a tree of many tiny
-// files. This one bounds HOW MANY entries are considered at all, and — like
-// them and unlike the fence below — it SAYS what it dropped: not one name per
-// entry as they do, but the first entry, the total and a per-target rollup.
-
-// The entry cap written out rather than imported: a test that reads the number
-// out of the module under test asserts only that it equals itself.
-//
-// COUPLING, STATED WHERE IT EXISTS rather than across the whole section. The
-// BOUNDARY test and the FLOOD test are sized to CROSS the cap, so they are
-// coupled to its value: raise it and they turn RED, which is intended rather
-// than a defect — a threshold test is a claim about WHERE the threshold is.
-// The rest are not coupled and must not be read as though they were: the
-// ranking test has no fixture at all, the byte-budget test is sized against the
-// 4 MiB TOTAL cap rather than this one, and the duplicate-import test's
-// repetitions collapse to a single entry at any value of it.
-//
-// What NONE of them does is take the number FROM the code — a different
-// property from surviving a change to it, and the only one claimed for all.
-const ENTRY_CAP = 2000;
-
-// `n` tiny files under `rel`, zero-padded so lexicographic order is numeric
-// order. The ranking sorts by path, so a fixture whose order depended on readdir
-// would make every assertion below a property of the filesystem instead.
-async function bulk(root, rel, n) {
-  const dir = path.join(root, rel);
-  await fs.mkdir(dir, { recursive: true });
-  for (let i = 0; i < n; i += 64) {
-    await Promise.all(Array.from({ length: Math.min(64, n - i) }, (_, k) => (
-      fs.writeFile(path.join(dir, `f${String(i + k).padStart(6, '0')}.md`), 'x')
-    )));
-  }
-}
-
-// PINS: the ranking is CC'S OWN and applies to whatever order the listing
-// arrived in — the four ALLOW_FILES pinned in allow-list order, then the
-// `@`-imports sorted by path, then the three recursive dirs sorted by path.
-// This is the only test that can distinguish that from `find`'s argv order,
-// because cc's own callers can never produce a listing in any other order: the
-// `docs/B.md`-before-`docs/STYLE.md` assertion is what separates a sorted
-// imports half from one left in the order `findManifest` returned.
-//
-// NOT CLAIMING anything about either cap, or about the entry cap — this test
-// never reaches a pull.
-test("the config-surface ranking is cc's, not find's", async () => {
-  const listed = (rel) => ({ rel, abs: `/p/${rel}`, size: 1, mtimeMs: 0 });
-  // Every ALLOW_FILE last and back-to-front, and the two skills the wrong way
-  // round: the order `find` produces, inverted.
-  const reversed = [
-    '.claude/skills/zz.md', '.claude/skills/aa.md', '.claude/commands/m.md', '.claude/agents/q.md',
-    '.claude/settings.local.json', '.claude/settings.json', 'CONVENTIONS.md', 'CLAUDE.md',
-  ].map(listed);
-  // A fixed permutation, so this asserts a property of the ranking rather than
-  // of whatever a random draw happened to produce on one run.
-  const shuffled = [3, 6, 0, 5, 2, 7, 1, 4].map(i => reversed[i]);
-  // Out of path order too, which is the order CLAUDE.md's `@` lines would give.
-  const imports = ['docs/STYLE.md', 'docs/B.md'].map(listed);
-
-  const PINNED = ['CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json'];
-  const CAPPED = [
-    'docs/B.md', 'docs/STYLE.md',
-    '.claude/agents/q.md', '.claude/commands/m.md', '.claude/skills/aa.md', '.claude/skills/zz.md',
-  ];
-  for (const [name, targets] of [['reversed', reversed], ['shuffled', shuffled]]) {
-    const ranked = rankConfigSurface(targets, imports);
-    assert.deepEqual(ranked.pinned.map(e => e.rel), PINNED, `pinned, from a ${name} listing`);
-    assert.deepEqual(ranked.capped.map(e => e.rel), CAPPED, `capped, from a ${name} listing`);
-  }
-  // The caller's array is not reordered under it.
-  assert.deepEqual(imports.map(e => e.rel), ['docs/STYLE.md', 'docs/B.md']);
-});
-
-// PINS: the cap fires at exactly one entry OVER it and not at exactly the cap
-// (differential — the two composes differ by a single file); WHICH entry the
-// ranking leaves last; and that the delete sweep removes the local copy of an
-// entry that has fallen past the cap, so no stale file answers a Read the system
-// says is not there.
-//
-// NOT CLAIMING that the dropped entry is bulk. It is deliberately a real
-// `SKILL.md` — what the ranking's tail actually costs is a legitimate sibling
-// that sorts after a flood in the same directory.
-test("the entry cap's boundary, and the local copy of an entry that falls past it", async () => {
-  await seedTree(remote.root);
-  // seedTree already puts one entry under each of the three recursive dirs, so
-  // this many bulk files leave the capped listing at EXACTLY the cap.
-  await bulk(remote.root, '.claude/skills/bulk', ENTRY_CAP - 3);
-
-  const first = await compose();
-  assert.deepEqual(first.skipped, [], 'at exactly the cap nothing is dropped');
-  assert.equal(
-    await fs.readFile(path.join(first.root, '.claude/skills/deploy/SKILL.md'), 'utf8'), 'deploy skill',
-  );
-
-  // ONE more entry. `bulk/` sorts before `deploy/`, so the entry this pushes off
-  // the end is the SKILL.md that was pulled a moment ago.
-  await fs.writeFile(path.join(remote.root, '.claude/skills/bulk/f999999.md'), 'x');
-
-  const { root, skipped } = await compose();
-  assert.equal(skipped.length, 1, `one summarised skip; got ${JSON.stringify(skipped)}`);
-  assert.equal(skipped[0].path, '.claude/skills/deploy/SKILL.md');
-  assert.equal(
-    skipped[0].reason,
-    'the 2000-entry session-root cap was already reached, so 1 further entry was not pulled '
-    + '(.claude/skills 1)',
-  );
-  await assert.rejects(
-    fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md')),
-    'the local copy of an entry that fell past the cap is swept, not left behind',
-  );
-});
-
-// PINS: the argued outcome of the ranking — the four ALLOW_FILES and every
-// `@`-import survive a flood large enough to cut all three recursive dirs; the
-// overflow is ONE skip however many entries it covers; and the rollup names
-// every target it drew from plus the first entry not pulled.
-//
-// NOT CLAIMING that skills, commands or agents are protected from each other.
-// They are not: `.claude/agents` sorts first, so a flood there starves the other
-// two, and the assertions that `ship.md` and `SKILL.md` are GONE are the point.
-test('a flood that fills the cap still leaves the four allow-list files and the @-imports', async () => {
-  await seedTree(remote.root);
-  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), '@CONVENTIONS.md\n@docs/STYLE.md\n');
-  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
-  await fs.writeFile(path.join(remote.root, 'docs/STYLE.md'), 'two spaces\n');
-  // The worst case for the recursive dirs: `agents` sorts before both others.
-  await bulk(remote.root, '.claude/agents/bulk', ENTRY_CAP + 10);
-
-  const { root, skipped } = await compose();
-
-  for (const rel of [
-    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
-    'docs/STYLE.md',
-  ]) {
-    assert.ok(
-      await fs.readFile(path.join(root, rel)).then(() => true, () => false),
-      `${rel} must survive a flood that fills the cap`,
-    );
-  }
-  await assert.rejects(fs.readFile(path.join(root, '.claude/commands/ship.md')));
-  await assert.rejects(fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md')));
-
-  assert.equal(skipped.length, 1, `one summarised skip; got ${skipped.length}`);
-  assert.equal(skipped[0].path, '.claude/agents/bulk/f001999.md');
-  assert.match(
-    skipped[0].reason,
-    /so 14 further entries were not pulled \(\.claude\/agents 12, \.claude\/commands 1, \.claude\/skills 1\)/,
-  );
-});
-
-// PINS: a duplicated `@`-import is ONE entry, not one listing position per
-// line — so the cap counts distinct entries and the summary skip cannot name a
-// file that is sitting on disk. Pre-fix, `findManifest` walked the same absolute
-// path once per `@` line and `extra` deduped only against the TARGETS pass, so
-// 2,001 copies of one import filled the cap and the skip reported
-// `docs/STYLE.md` as not pulled while it was on disk and in `pulled[]` — the red
-// this test was written against named exactly that file.
-//
-// NOT CLAIMING that the targets pass can produce a duplicate — its seven targets
-// are disjoint by construction, so the dedupe is scoped to the imports pass,
-// which is the only one whose targets a project controls.
-//
-// NOT CLAIMING anything about a duplicate that is not a duplicate REL: two
-// different files are two entries however alike their contents.
-test('a duplicated @-import is one entry, not one listing position per line', async () => {
-  await seedTree(remote.root);
-  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
-  await fs.writeFile(path.join(remote.root, 'docs/STYLE.md'), 'two spaces\n');
-  // One line MORE than the cap admits, every one naming the same file: enough
-  // listing positions to overrun the cap, one distinct entry behind them.
-  await fs.writeFile(
-    path.join(remote.root, 'CLAUDE.md'),
-    `@CONVENTIONS.md\n${'@docs/STYLE.md\n'.repeat(ENTRY_CAP + 1)}`,
-  );
-
-  const { root, pulled, skipped } = await compose();
-
-  assert.deepEqual(skipped, [], 'one distinct import cannot overrun a 2000-entry cap');
-  assert.equal(await fs.readFile(path.join(root, 'docs/STYLE.md'), 'utf8'), 'two spaces\n');
-  assert.deepEqual(
-    pulled.filter(r => r === 'docs/STYLE.md'), ['docs/STYLE.md'],
-    'pulled once, not once per @ line — the duplicate cost a round trip and byte budget too',
-  );
-  // And the entries the duplicates would have starved are all still admitted.
-  for (const rel of [
-    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
-  ]) {
-    assert.ok(
-      await fs.readFile(path.join(root, rel)).then(() => true, () => false),
-      `${rel} was not starved by the duplicates`,
-    );
-  }
-});
-
-// THE CONTROL for the test above: a tree with no duplicate import composes
-// exactly as it did before the dedupe existed — every entry present, each pulled
-// exactly once, nothing skipped. The dedupe collapses REPEATS of one rel and
-// nothing else.
-//
-// NOT CLAIMING byte-identity by re-running the old code, which would mean
-// reverting source; the claim is the shape — `pulled` is the nine allow-list and
-// import entries, once each, in the ranked order.
-test('two distinct @-imports are still two entries, each pulled once', async () => {
-  await seedTree(remote.root);
-  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
-  await fs.writeFile(path.join(remote.root, 'docs/A.md'), 'a\n');
-  await fs.writeFile(path.join(remote.root, 'docs/B.md'), 'b\n');
-  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), '@CONVENTIONS.md\n@docs/B.md\n@docs/A.md\n');
-
-  const { pulled, skipped } = await compose();
-
-  assert.deepEqual(skipped, []);
-  assert.deepEqual(pulled, [
-    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
-    'docs/A.md', 'docs/B.md',
-    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
-  ]);
-});
-
-// PINS: the pinned files LEAD the listing, so they meet the total-bytes cap
-// first. Composed the other way round, the capped entries take the whole 4 MiB
-// budget, CLAUDE.md and CONVENTIONS.md are both skipped by it, and
-// ensureLocalImport then writes a 16-byte CLAUDE.md importing a CONVENTIONS.md
-// that is not there — a config surface that looks present and delivers nothing.
-//
-// NOT CLAIMING that the pinned entries are EXEMPT from the byte cap. They are
-// not, deliberately; the claim is only that they meet it FIRST.
-//
-// EVERY FILE IS SIZED AT EXACTLY THE PER-FILE CAP so the budget residue left
-// after the last one that fits is smaller than a single pinned file BY
-// CONSTRUCTION — a fixture that relied on arithmetic over seedTree's byte counts
-// would stop discriminating if any of those moved.
-//
-// GREEN ON ARRIVAL, and honestly so: `find` walks its starting points in argv
-// order, which already puts the four ALLOW_FILES first, so this passed before
-// the ranking existed. It is a CONTRAST — it pins the property the ranking must
-// not lose while replacing that accidental order with a deliberate one — and its
-// non-vacuity is the mutation prover's to establish, not this file's.
-test('the pinned files get the byte budget before the capped ones do', async () => {
-  await seedTree(remote.root);
-  const cap = SESSION_ROOT_FILE_CAP_BYTES;
-  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), `@CONVENTIONS.md\n${'p'.repeat(cap - 16)}`);
-  await fs.writeFile(path.join(remote.root, 'CONVENTIONS.md'), 'r'.repeat(cap));
-  await fs.mkdir(path.join(remote.root, '.claude/skills/bulk'), { recursive: true });
-  // 17 × the per-file cap is more than the 4 MiB total budget on its own.
-  for (let i = 0; i < 17; i += 1) {
-    await fs.writeFile(path.join(remote.root, `.claude/skills/bulk/f${i}.md`), 'b'.repeat(cap));
-  }
-
-  const { root, skipped } = await compose();
-
-  assert.equal((await fs.stat(path.join(root, 'CONVENTIONS.md'))).size, cap, 'CONVENTIONS.md survived');
-  assert.equal(
-    (await fs.stat(path.join(root, 'CLAUDE.md'))).size, cap,
-    'CLAUDE.md is the pulled file, not the 16-byte ensureLocalImport stub',
-  );
-  assert.deepEqual(
-    skipped.filter(s => s.path === 'CLAUDE.md' || s.path === 'CONVENTIONS.md'), [],
-    'neither pinned file was refused by the byte cap',
-  );
-});
-
-// ── The LISTING fence, which is not one of the caps above ────────────
-//
-// The two caps bound PULLED CONTENT and skip a NAMED entry. The fence bounds
-// the `find` output the walk is read out of, and past it the compose REFUSES —
-// a listing cut at an arbitrary byte cannot say which entries it did not see.
-
-// The fence written out rather than imported: a test that reads the number out
-// of the module under test asserts only that it equals itself.
-const LISTING_FENCE = 8 * 1024 * 1024;
-
-// A tree whose LISTING outruns `targetBytes`, sized by record bytes rather than
-// by file count — `%s\t%T@\t%p\0` is 25 bytes plus the path (`%T@` is 21
-// characters, `%s` is 1 for an empty file), so long paths bust the fence in
-// ~14,600 files instead of ~96,000. Two 180-character directory components plus
-// a 180-character name keep the longest path inside macOS's PATH_MAX of 1024
-// and every component inside NAME_MAX of 255.
-// The writes go out in batches rather than one at a time. The NAMES are a pure
-// function of the running count, so the file set and the listing it produces are
-// what the sequential form produced — only the wall clock moves, which matters
-// because more than one test now stands this fixture up.
-async function floodSkills(root, targetBytes) {
-  const dir = path.join(root, '.claude/skills', 'a'.repeat(180), 'a'.repeat(180));
-  await fs.mkdir(dir, { recursive: true });
-  let bytes = 0;
-  let files = 0;
-  while (bytes < targetBytes * 1.05) {
-    const batch = [];
-    while (batch.length < 64 && bytes < targetBytes * 1.05) {
-      const abs = path.join(dir, 'b'.repeat(172) + String(files).padStart(8, '0'));
-      batch.push(abs);
-      bytes += 25 + Buffer.byteLength(abs);
-      files += 1;
-    }
-    await Promise.all(batch.map(abs => fs.writeFile(abs, '')));
-  }
-  return { files, bytes };
-}
-
-// PINS: the `findManifest` exec this fixture reaches — the allow-list targets
-// pass — carries `maxBufferBytes` at 8 MiB, and a real tree whose listing
-// crosses it makes the compose REFUSE with a 502 rather than compose a root
-// from the prefix of a listing.
-//
-// NOT claiming that the `@`-imports pass is observed here: this fixture throws
-// at the targets pass, so the second pass never runs. What makes the fence
-// universal is structural rather than asserted — ONE exec site serves both
-// passes, so "fenced on one pass but not the other" is not expressible.
-//
-// NOT claiming, either, that the project is too large to work on: Bash still
-// reaches every file in the tree, though the file tools do not (an advertised
-// exclude denies them, src/systems/toolRedirect.ts). Nothing here bears on the
-// two content caps, which keep skipping and naming.
-test('the config-surface listing is FENCED: a tree that outruns it refuses the compose', async () => {
-  await seedTree(remote.root);
-  await floodSkills(remote.root, LISTING_FENCE);
-
-  // The LIVE handle's prototype (tests/systemHandle.mjs): under the provider
-  // configuration the seam in use is ProviderSystem, and a spy on the wrong
-  // class would report zero calls. This arm OBSERVES only — the exec passes
-  // through unchanged, so what fires is the production constant.
-  const sysProto = liveSystemProto(await systemById(remote.id, null, 'test'));
-  const origExec = sysProto.exec;
-  const limits = [];
-  try {
-    sysProto.exec = function (spec, opts) {
-      if (spec.argv?.[0] === 'find') limits.push(opts.maxBufferBytes);
-      return origExec.call(this, spec, opts);
-    };
-    await assert.rejects(() => compose(), (e) => {
-      assert.equal(e.statusCode, 502);
-      assert.match(e.message, /will not compose a session root from a partial listing/);
-      assert.ok(e.message.includes(String(LISTING_FENCE)),
-        `the refusal must name the fence; got: ${e.message}`);
-      return true;
-    });
-  } finally { sysProto.exec = origExec; }
-
-  assert.deepEqual([...new Set(limits)], [LISTING_FENCE],
-    `every findManifest exec this compose reached must carry the fence; saw ${JSON.stringify(limits)}`);
-});
-
-// PINS: the overflow is READ BEFORE THE RECORDS ARE — an overflowed listing
-// refuses as an overflow, never as the far side having sent a malformed record.
-//
-// NOT claiming: anything about the fence's VALUE (the ceiling is shrunk at the
-// seam here, exactly as tests/worktrees.test.mjs shrinks runGit's), nor that the
-// straddling record is always unparseable — at 8 MiB it usually parses, which is
-// the whole reason the check cannot live after the loop.
-test('an overflowed listing refuses as an overflow, not as a malformed record', async () => {
-  await seedTree(remote.root);
-
-  // 12 bytes is deterministic, not lucky: with all seven targets present `find`
-  // writes nothing to stderr, and the collector's byte count is shared across
-  // both streams, so the retained 12 bytes are the head of the first stdout
-  // record. `%T@` is 21 characters, so 12 bytes cannot reach that record's
-  // second tab and its tail can never parse.
-  const sysProto = liveSystemProto(await systemById(remote.id, null, 'test'));
-  const origExec = sysProto.exec;
-  try {
-    sysProto.exec = function (spec, opts) {
-      return origExec.call(this, spec, spec.argv?.[0] === 'find' ? { ...opts, maxBufferBytes: 12 } : opts);
-    };
-    await assert.rejects(() => compose(), (e) => {
-      assert.equal(e.statusCode, 502);
-      assert.ok(!/unparseable find record/.test(e.message),
-        `cc's own fence must not be reported as the far side's malformed output; got: ${e.message}`);
-      assert.match(e.message, /will not compose a session root from a partial listing/);
-      return true;
-    });
-  } finally { sysProto.exec = origExec; }
-});
-
-// PINS: an entry deleted on the system disappears from the root on the next
-// compose. A stale local copy is a boundary leak — Read would answer from a
-// file Bash says does not exist.
-test('re-composing drops an allow-list entry that has gone from the system', async () => {
-  await seedTree(remote.root);
-  const { root } = await compose();
-  assert.ok(await fs.readFile(path.join(root, '.claude/commands/ship.md'), 'utf8'));
-
-  await fs.rm(path.join(remote.root, '.claude/commands/ship.md'));
-  await compose();
-  await assert.rejects(fs.readFile(path.join(root, '.claude/commands/ship.md')));
-});
-
-// PINS: the root is keyed per (system, project, worktree), so two systems each
-// hosting a project at the same path cannot collide on one local directory.
-test('session roots are keyed per system, project and worktree', async () => {
-  const a = sessionRootPath('prod-box', 'app', null);
-  const b = sessionRootPath('other-box', 'app', null);
-  const c = sessionRootPath('prod-box', 'app', 'feature');
-  assert.notEqual(a, b);
-  assert.notEqual(a, c);
-  assert.ok(a.startsWith(sessionRootsDir('prod-box') + path.sep));
-  assert.ok(c.startsWith(sessionRootsDir('prod-box') + path.sep));
-});
-
-// PINS: THE PREFIX RULE. A path under the session root maps to the system; a
-// path anywhere else — an attachment under the store, `~/.claude`, `/tmp` — does
-// not. Mapping one of those would send a local read to the wrong machine.
-test('the prefix rule maps only what lies under the session root', async () => {
-  const map = new SessionPathMap('/store/systems/box/sessions/app', '/srv/app');
-
-  assert.equal(map.toSystem('/store/systems/box/sessions/app/src/index.js'), '/srv/app/src/index.js');
-  assert.equal(map.toSystem('/store/systems/box/sessions/app'), '/srv/app');
-  assert.equal(map.toLocal('/srv/app/src/index.js'), '/store/systems/box/sessions/app/src/index.js');
-
-  // Outside, including the prefix-SHARING sibling that a string startsWith
-  // would wrongly claim.
-  assert.equal(map.toSystem('/store/systems/box/sessions/app-backup/x'), null);
-  assert.equal(map.toSystem('/store/projects/app/attachments/note.txt'), null);
-  assert.equal(map.toSystem('/home/u/.claude/plans/p.md'), null);
-  assert.equal(map.toSystem('/tmp/scratch.txt'), null);
-  assert.equal(map.toLocal('/srv/app-backup/x'), null);
-  assert.equal(map.toLocal('/etc/passwd'), null);
-});
-
-// PINS: the composer refuses a relative session-root path rather than composing
-// one against wherever cc happens to be running.
-test('composing refuses a relative systemPath', async () => {
-  await assert.rejects(() => compose({ systemPath: 'relative/app' }), /absolute/);
-});
-
-// ── The target the root was pulled FROM ──────────────────────────────
-//
-// The path template does not change when one system serves many targets: it
-// keys on the project name, which is globally unique, so there is no collision
-// to fix. What there IS to fix is INVALIDATION — a root pulled from one target
-// and then re-used for another is silent, and it is the worst shape available.
-// The worker reads `CLAUDE.md`, `CONVENTIONS.md` and the sparse content cache
-// from the OLD target, edits them, and the write-back pushes the result to the
-// NEW one, clobbering it with bytes from a different machine. Both sides stay
-// internally consistent and the model has no way to see it.
-
-// Two targets over one sandbox, so the SAME tree is reachable from both: the
-// question here is whether the root is invalidated on a target change, and a
-// tree only one of them could read would answer that by accident.
-async function twoTargets() {
-  const sandbox = await fs.realpath(await mkdtemp('cc-sr-'));
-  const rec = await bindRemoteSystem({
-    id: 'boxes', flags: ['--remote', `a=${sandbox}`, '--remote', `b=${sandbox}`],
-  });
-  await seedTree(sandbox);
-  return { sandbox, id: rec.id };
-}
-
-const composeOn = async (id, remoteId, systemPath) => composeSessionRoot({
-  system: await systemById(id, remoteId, 'test'),
-  systemId: id,
-  systemPath,
-  project: 'app',
-  worktree: null,
-});
-
-const manifestOf = async (id) => JSON.parse(
-  await fs.readFile(`${sessionRootPath(id, 'app', null)}.manifest.json`, 'utf8'),
-);
-
-// PINS: the manifest records WHICH TARGET the root was pulled from.
-test('the session-root manifest records the target it was pulled from', async () => {
-  const { sandbox, id } = await twoTargets();
-  await composeOn(id, 'a', sandbox);
-  assert.equal((await manifestOf(id)).remoteId, 'a');
-});
-
-// PINS: re-composing against the SAME target keeps the root — including the
-// sparse content cache a hooked Read populated, which is the whole reason the
-// root is worth keeping.
-test('re-composing on the same target keeps the root and its cached content', async () => {
-  const { sandbox, id } = await twoTargets();
-  const { root } = await composeOn(id, 'a', sandbox);
-  const cached = path.join(root, 'src/index.js');
-  await fs.mkdir(path.dirname(cached), { recursive: true });
-  await fs.writeFile(cached, 'cached from a\n');
-
-  await composeOn(id, 'a', sandbox);
-  assert.equal(await fs.readFile(cached, 'utf8'), 'cached from a\n');
-});
-
-// PINS: re-composing against a DIFFERENT target removes the whole root and
-// re-pulls. Diffing against a manifest that describes another machine is what
-// leaves the old target's bytes under the new target's paths.
-test('re-composing on a different target wipes the root and re-pulls', async () => {
-  const { sandbox, id } = await twoTargets();
-  const { root } = await composeOn(id, 'a', sandbox);
-  const cached = path.join(root, 'src/index.js');
-  await fs.mkdir(path.dirname(cached), { recursive: true });
-  await fs.writeFile(cached, 'cached from a\n');
-
-  await composeOn(id, 'b', sandbox);
-  await assert.rejects(fs.readFile(cached), "the old target's cached content is gone");
-  assert.equal((await manifestOf(id)).remoteId, 'b');
-  // And the config surface really was pulled again, not merely left behind.
-  assert.equal(await fs.readFile(path.join(root, 'CONVENTIONS.md'), 'utf8'), '<!-- cc:conventions -->\nrules\n');
-});
-
-// PINS: a manifest written before the field existed, against a handle bound to
-// no target, is a MATCH — both normalise to null. Reading absence as a mismatch
-// would wipe and re-pull every existing session root once.
-test('a manifest with no remoteId matches an unbound handle', async () => {
-  await seedTree(remote.root);
-  const { root } = await compose();
-  const cached = path.join(root, 'src/index.js');
-  await fs.mkdir(path.dirname(cached), { recursive: true });
-  await fs.writeFile(cached, 'still here\n');
-  // Exactly the shape a pre-remoteId manifest has.
-  const mf = `${sessionRootPath(remote.id, 'app', null)}.manifest.json`;
-  const { entries } = JSON.parse(await fs.readFile(mf, 'utf8'));
-  await fs.writeFile(mf, JSON.stringify({ entries }));
-
-  await compose();
-  assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
-});
-
-// ── THE MIRROR the root is the image OF (card 2026-0259) ─────────────
-//
-// After P7 the session root is the local image of the provider's advertised
-// MIRROR ROOT, not of the project tree, and the CLI's cwd moves to the
-// project's place inside it. What must NOT move is the allow-list walk: it
-// stays anchored at the project over its seven fixed targets, because a walk
-// re-anchored at a filesystem root was measured at 46 MB of `find` output and
-// half a gigabyte of orchestrator heap — and pruning the pseudo-filesystems
-// does not rescue it.
-
-const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
+import { adoptProject, orchStoreRoot } from '../src/projects.ts';
+import { addSystem } from '../src/appSettings.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const RECORDER = path.join(HERE, 'fixtures', 'recordingProvider.mjs');
+const SCENARIO = path.join(HERE, 'fixtures', 'scenario-no-turn.json');
 
 async function wire(file) {
   let raw = '';
@@ -730,531 +45,111 @@ async function wire(file) {
   return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
-// Every `find` argv cc put on the wire during one composition.
-const findArgvs = async (rec) => (await wire(rec))
-  .filter(f => f.type === 'exec' && Array.isArray(f.argv) && f.argv[0] === 'find')
-  .map(f => f.argv);
+const exists = (p) => fs.stat(p).then(() => true, () => false);
 
-// A recording provider under its own system id, with whatever mirror flags.
-async function recordingSystem(id, flags) {
-  const rec = path.join(await mkdtemp('cc-wire-'), `${id}.jsonl`);
-  await addSystem({ id, label: id, launch: ['node', RECORDER, '--record', rec, ...flags] });
-  return { rec, sys: await systemById(id, null, 'test') };
+// Every entry under the store, recursively, so an assertion cannot miss a root
+// composed at a path this file did not predict.
+async function walk(root, prefix = '') {
+  let entries;
+  try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return []; }
+  const out = [];
+  for (const e of entries) {
+    const rel = prefix ? `${prefix}/${e.name}` : e.name;
+    out.push(rel);
+    if (e.isDirectory()) out.push(...await walk(path.join(root, e.name), rel));
+  }
+  return out;
 }
 
-// PINS THE MEASURED DECISION, DIFFERENTIALLY: widening the mirror to `/` does
-// not change the manifest walk by one byte. Both argvs are produced in this
-// same run and compared TO EACH OTHER — D-P7-10 form 1 — so no constant
-// transcribed from the implementation could satisfy it.
-//
-// NOT CLAIMING: that the walk is cheap. The numbers behind the decision are
-// evidence in the design, not an assertion here.
-test('the find argv is identical whether the mirror is the project or the whole filesystem', async () => {
-  await seedTree(remote.root);
-  const narrow = await recordingSystem('narrow', []);
-  const wide = await recordingSystem('wide', ['--mirror', '/']);
+describe('criterion 8: a remote session composes no session root', () => {
+  let ctx, baseUrl, instances, home, n = 0;
 
-  await composeSessionRoot({
-    system: narrow.sys, systemId: 'narrow', systemPath: remote.root, project: 'app',
-  });
-  const wideComposed = await composeSessionRoot({
-    system: wide.sys, systemId: 'wide', systemPath: remote.root, project: 'app',
-  });
+  before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
+  after(async () => { if (ctx) await ctx.close(); });
+  beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+  afterEach(async () => { await instances.shutdown(); disposeSystemHandles(); await rmrf(home); });
 
-  // The two configurations really are different, or the comparison is vacuous.
-  assert.equal(wideComposed.mirror.mirrorRoot, '/');
-  assert.notEqual(wideComposed.cwd, wideComposed.root);
+  // A remote project on a RECORDING provider, spawned for real through the REST
+  // surface — the same path a user takes.
+  async function spawnRemote() {
+    const id = `box${++n}`;
+    const rec = path.join(await mkdtemp('cc-wire-'), 'frames.jsonl');
+    const box = await fs.realpath(await mkdtemp('cc-remote-'));
+    const tree = await seedRepo(path.join(box, 'app'));
+    // The config surface a walk would pull, all of it present on the system so
+    // its absence locally is a fact about cc rather than about the fixture.
+    await fs.mkdir(path.join(tree, '.claude', 'skills', 'deploy'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.claude', 'settings.json'), '{}\n');
+    await fs.writeFile(path.join(tree, '.claude', 'skills', 'deploy', 'SKILL.md'), '# deploy\n');
+    await fs.writeFile(path.join(tree, 'CLAUDE.md'), '@CONVENTIONS.md\n');
 
-  const a = await findArgvs(narrow.rec);
-  const b = await findArgvs(wide.rec);
-  assert.ok(a.length > 0, 'the narrow composition really walked');
-  assert.deepEqual(b, a, 'the walk is invariant to mirror width');
-});
-
-// PINS: the pulled config surface lands under the CLI's cwd — the project's
-// place inside the image — not at the image root, and the CLAUDE.md that
-// carries the `@CONVENTIONS.md` import is the one at that cwd.
-//
-// NOT CLAIMING: anything about the empty ancestor directories above the cwd.
-// An ancestor CLAUDE.md on the system is deliberately not pulled.
-test('a wider mirror puts the pulled config under the cwd, not the image root', async () => {
-  await seedTree(remote.root);
-  const parent = path.dirname(remote.root);
-  const { sys } = await recordingSystem('wider', ['--mirror', parent]);
-  const composed = await composeSessionRoot({
-    system: sys, systemId: 'wider', systemPath: remote.root, project: 'app',
-  });
-
-  assert.equal(composed.mirror.offset, path.basename(remote.root));
-  assert.equal(composed.cwd, path.join(composed.root, path.basename(remote.root)));
-  assert.equal(await fs.readFile(path.join(composed.cwd, 'CONVENTIONS.md'), 'utf8'),
-    '<!-- cc:conventions -->\nrules\n');
-  assert.match(await fs.readFile(path.join(composed.cwd, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
-  await assert.rejects(fs.readFile(path.join(composed.root, 'CONVENTIONS.md')),
-    'and nothing was written at the image root');
-});
-
-// The paths `find` was pointed AT — the operands before the expression starts.
-// Separated from the prune operands, which name the same kind of thing in a
-// different role.
-const findTargets = (argv) => {
-  const end = argv.findIndex(a => a === '(' || a === '-type');
-  return argv.slice(1, end === -1 ? argv.length : end);
-};
-
-// PINS CRITERION 7 at target granularity: an advertised exclude covering one of
-// the seven walked targets drops it from what `find` is pointed at, and nothing
-// under it is pulled.
-//
-// PINS, rather than disclaims, the within-a-walked-directory case: it is
-// covered by its own test above ('an exclude beneath a walked target is neither
-// enumerated nor pulled'), which this one is the coarse-grained half of.
-//
-// NOT CLAIMING: that the walk's targets are ever anything but the seven fixed
-// allow-list entries. They are built from ALLOW_FILES/ALLOW_DIRS relative to
-// the project, so `/proc` and `/dev` cannot become targets by widening a mirror
-// root however wide it goes — asserted differentially two tests up.
-test('an exclude covering an allow-list target drops it from the walk', async () => {
-  await seedTree(remote.root);
-  const skills = path.join(remote.root, '.claude/skills');
-  const { rec, sys } = await recordingSystem('trimmed', [
-    '--mirror', path.dirname(remote.root), '--exclude', skills,
-  ]);
-  const composed = await composeSessionRoot({
-    system: sys, systemId: 'trimmed', systemPath: remote.root, project: 'app',
-  });
-
-  const [argv] = await findArgvs(rec);
-  assert.ok(argv, 'a walk happened');
-  const targets = findTargets(argv);
-  assert.ok(!targets.includes(skills), `the excluded target is gone from ${JSON.stringify(targets)}`);
-  assert.ok(targets.includes(path.join(remote.root, 'CLAUDE.md')), 'the rest are still there');
-  await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/deploy/SKILL.md')),
-    'and nothing under it was pulled');
-});
-
-// PINS: the manifest records the MIRROR ROOT beside the target, and a mismatch
-// resets the root for the same reason a target change does — the old layout
-// describes a different address space, so `cwd` sits somewhere else inside it.
-//
-// NOT CLAIMING: that a session already running picks up the new geometry; the
-// instance's cwd is fixed at create.
-test('a mirrorRoot change in the manifest wipes the root; an unchanged one keeps it', async () => {
-  await seedTree(remote.root);
-  const parent = path.dirname(remote.root);
-  await recordingSystem('shift', ['--mirror', parent]);
-
-  const first = await composeSessionRoot({
-    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
-  });
-  const mf = `${sessionRootPath('shift', 'app', null)}.manifest.json`;
-  assert.equal(JSON.parse(await fs.readFile(mf, 'utf8')).mirrorRoot, parent);
-
-  const cached = path.join(first.cwd, 'src/index.js');
-  await fs.mkdir(path.dirname(cached), { recursive: true });
-  await fs.writeFile(cached, 'cached under the old geometry\n');
-
-  // Same advertisement: kept.
-  await composeSessionRoot({
-    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
-  });
-  assert.equal(await fs.readFile(cached, 'utf8'), 'cached under the old geometry\n');
-
-  // A narrower advertisement: the whole root goes.
-  await updateSystem('shift', { launch: ['node', RECORDER, '--record', path.join(await mkdtemp('cc-wire-'), 'b.jsonl')] });
-  const after = await composeSessionRoot({
-    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
-  });
-  await assert.rejects(fs.readFile(cached), 'the old geometry\'s content is gone');
-  assert.equal(after.cwd, after.root);
-  assert.equal(await fs.readFile(path.join(after.root, 'CONVENTIONS.md'), 'utf8'),
-    '<!-- cc:conventions -->\nrules\n');
-});
-
-// PINS: a manifest written before `mirrorRoot` existed, against a placement
-// that advertises nothing, is a MATCH — not a wipe. Reading absence as a
-// mismatch would cost every existing session root one pointless full re-pull.
-//
-// NOT CLAIMING: anything about a legacy manifest against an ADVERTISED mirror;
-// that is a genuine mismatch and wipes, which the test above covers.
-test('a manifest with no mirrorRoot matches an unadvertised placement', async () => {
-  await seedTree(remote.root);
-  const { root } = await compose();
-  const cached = path.join(root, 'src/index.js');
-  await fs.mkdir(path.dirname(cached), { recursive: true });
-  await fs.writeFile(cached, 'still here\n');
-  const mf = `${sessionRootPath(remote.id, 'app', null)}.manifest.json`;
-  const { entries } = JSON.parse(await fs.readFile(mf, 'utf8'));
-  await fs.writeFile(mf, JSON.stringify({ entries }));
-
-  await compose();
-  assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
-});
-
-// PINS: an advertisement cc cannot use refuses the COMPOSITION by name, at
-// spawn — not the project's resolution. Nothing else about the project is
-// touched, because git, status, diff and every project_* tool run at the
-// project path and never consult the mirror.
-//
-// NOT CLAIMING: which HTTP status a route surfaces, or that the project listing
-// stays green — tests/systems-listing-degrade.test.mjs owns the listing.
-test('a mirror root that does not contain the project refuses the composition', async () => {
-  await seedTree(remote.root);
-  const elsewhere = await fs.realpath(await mkdtemp('cc-elsewhere-'));
-  await recordingSystem('wrongroot', ['--mirror', elsewhere]);
-  await assert.rejects(
-    async () => composeSessionRoot({
-      system: await systemById('wrongroot', null, 'test'),
-      systemId: 'wrongroot', systemPath: remote.root, project: 'app',
-    }),
-    (e) => e.code === 'MIRROR_ROOT_EXCLUDES_PROJECT' && e.statusCode === 501,
-  );
-});
-
-// ── THE EXCLUDE BYPASS CLASS (card 2026-0259, review round 1) ────────
-//
-// Filtering the walk's TARGETS is not filtering the walk. Two ways past it were
-// measured on a live provider, and they are the same defect at two granularities:
-// an exclude that names something the seven fixed targets do not name is not a
-// target, so it never met the target filter, and the pull loop that turns a
-// record into bytes on disk had no gate of its own.
-//
-// Both halves are asserted for each: NOT ENUMERATED (absent from the manifest,
-// which is the enumeration record and is written to disk beside the root) and
-// NOT ON DISK. A fix that gated only the pull would still fail the first.
-
-const readManifestJson = async (systemId, project) =>
-  JSON.parse(await fs.readFile(`${sessionRootPath(systemId, project, null)}.manifest.json`, 'utf8'));
-
-// PINS INSTANCE 2: an exclude covering a subpath BENEATH one of the seven
-// walked targets withholds that subpath — it is absent from the manifest and
-// absent from disk — while its siblings under the same target are still pulled.
-// The excluded target's parent stays in the walk, so this cannot be satisfied
-// by dropping the target.
-//
-// NOT CLAIMING: that the far side's `find` process physically declined to
-// stat the file. The prune operands are asserted structurally below; what is
-// measured here is that nothing about the excluded path survives into cc.
-test('an exclude beneath a walked target is neither enumerated nor pulled', async () => {
-  await seedTree(remote.root);
-  const secret = path.join(remote.root, '.claude/skills/secret');
-  await fs.mkdir(secret, { recursive: true });
-  await fs.writeFile(path.join(secret, 'sk.md'), 'SECRET-SKILL-BYTES');
-
-  const { sys } = await recordingSystem('deep', [
-    '--mirror', path.dirname(remote.root), '--exclude', secret,
-  ]);
-  const composed = await composeSessionRoot({
-    system: sys, systemId: 'deep', systemPath: remote.root, project: 'app',
-  });
-
-  const entries = Object.keys((await readManifestJson('deep', 'app')).entries);
-  assert.ok(entries.includes('.claude/skills/deploy/SKILL.md'),
-    `the sibling under the same walked target is still pulled: ${JSON.stringify(entries)}`);
-  assert.ok(!entries.includes('.claude/skills/secret/sk.md'),
-    `the excluded subpath was ENUMERATED into the manifest: ${JSON.stringify(entries)}`);
-  await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/secret/sk.md')),
-    'and its bytes are not on disk');
-});
-
-// PINS INSTANCE 1: the second `find` pass, over the `@`-imports named by the
-// pulled CLAUDE.md, is bound by the same exclude list as the first — an
-// imported file under an exclude is neither enumerated nor pulled, while an
-// imported file that is not excluded still is.
-//
-// NOT CLAIMING: anything about how imports are PARSED; the unexcluded import
-// arriving is what shows the pass ran at all.
-test('an exclude covering an @-imported file binds the second walk too', async () => {
-  await seedTree(remote.root);
-  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
-  await fs.writeFile(path.join(remote.root, 'docs/shared.md'), 'SECRET-IMPORT-BYTES');
-  await fs.writeFile(path.join(remote.root, 'docs/open.md'), 'PUBLIC-IMPORT-BYTES');
-  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'),
-    '@CONVENTIONS.md\n@docs/shared.md\n@docs/open.md\n');
-
-  const { sys } = await recordingSystem('imports', [
-    '--mirror', path.dirname(remote.root), '--exclude', path.join(remote.root, 'docs/shared.md'),
-  ]);
-  const composed = await composeSessionRoot({
-    system: sys, systemId: 'imports', systemPath: remote.root, project: 'app',
-  });
-
-  const entries = Object.keys((await readManifestJson('imports', 'app')).entries);
-  assert.ok(entries.includes('docs/open.md'),
-    `the unexcluded import still arrives, so the second pass ran: ${JSON.stringify(entries)}`);
-  assert.ok(!entries.includes('docs/shared.md'),
-    `the excluded import was ENUMERATED into the manifest: ${JSON.stringify(entries)}`);
-  await assert.rejects(fs.readFile(path.join(composed.cwd, 'docs/shared.md')),
-    'and its bytes are not on disk');
-});
-
-// PINS: an exclude that could match something under a walked target is carried
-// into the `find` itself as a prune operand, so the far side never descends
-// into it — enumeration leaks names, sizes and mtimes even when the bytes are
-// withheld. Both spellings are present: the entry itself and everything under
-// it. Excludes that cannot intersect the project are NOT sent, so the argv
-// stays bounded by the tree rather than by the advertisement's length.
-//
-// NOT CLAIMING: that `find` honours the operands — that is the far side's
-// behaviour, and the per-record gate behind it is what makes cc's answer
-// correct either way. The two tests above measure the outcome.
-test('an exclude inside the project is pruned at the find; one outside it is not sent', async () => {
-  await seedTree(remote.root);
-  const secret = path.join(remote.root, '.claude/skills/secret');
-  const { rec, sys } = await recordingSystem('pruned', [
-    '--mirror', '/', '--exclude', secret, '--exclude', '/proc',
-  ]);
-  await composeSessionRoot({
-    system: sys, systemId: 'pruned', systemPath: remote.root, project: 'app',
-  });
-
-  const [argv] = await findArgvs(rec);
-  assert.ok(argv.includes('-prune'), `no prune in ${JSON.stringify(argv)}`);
-  // The prune operands, read out of the expression rather than off the whole
-  // argv — the excluded path also appears as a dropped TARGET in other shapes.
-  const pruned = argv.slice(argv.indexOf('('), argv.indexOf('-prune'));
-  assert.ok(pruned.includes(secret), `the entry itself is a prune operand: ${JSON.stringify(pruned)}`);
-  assert.ok(pruned.includes(`${secret}/*`), 'and so is everything under it');
-  assert.ok(!argv.includes('/proc') && !argv.includes('/proc/*'),
-    `an exclude that cannot intersect the project is not sent: ${JSON.stringify(argv)}`);
-  assert.ok(argv.includes(path.join(remote.root, '.claude/skills')),
-    'the parent target stays in the walk, so this is not the target filter');
-});
-
-// ── GATE 3 ON ITS OWN: a far side that does not honour `-prune` ──────
-//
-// The three gates in findManifest are narrowest-first, and against a real
-// `find` the outer two do all the visible work: prune stops the record on the
-// far side, so the per-record gate never sees one and dropping it changes
-// nothing observable. That makes the backstop's own behaviour untested — and it
-// is the gate that closes the class, because it is the one point every listing
-// flows through.
-//
-// The only way to exercise it is a far side that ignores the operands cc sent,
-// which is exactly the case it was written for. `--ignore-prune` strips the
-// clause out of the argv before running it.
-const MIRROR_FIXTURE = path.join(
-  path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'mirrorFixtureProvider.mjs');
-
-// PINS: when the far side enumerates an excluded path anyway, cc drops the
-// record — it reaches neither the manifest nor the disk — and it is proven that
-// the record REALLY ARRIVED, by decoding the `find` output cc received off the
-// wire. Without that last part the test would pass just as well against a far
-// side that quietly honoured prune after all.
-//
-// NOT CLAIMING: that any real `find` behaves this way, or that prune is
-// unnecessary. Prune is what keeps names, sizes and mtimes off the wire in the
-// first place; this pins what cc does when it did not work.
-test('a find that ignores -prune still cannot get an excluded path into the root', async () => {
-  await seedTree(remote.root);
-  const w = async (rel, body) => {
-    await fs.mkdir(path.dirname(path.join(remote.root, rel)), { recursive: true });
-    await fs.writeFile(path.join(remote.root, rel), body);
-  };
-  await w('.claude/skills/secret/sk.md', 'SECRET-SKILL-BYTES');
-  await w('.claude/skills/public/ok.md', 'PUBLIC-SKILL-BYTES');
-
-  const excluded = path.posix.join(remote.root, '.claude', 'skills', 'secret');
-  const frames = path.join(await mkdtemp('cc-noprune-'), 'frames.jsonl');
-  await addSystem({
-    id: 'noprune',
-    label: 'noprune',
-    launch: ['node', MIRROR_FIXTURE, '--advertise-mirror', remote.root,
-      '--advertise-exclude', excluded, '--ignore-prune', '--frame-log', frames],
-  });
-  const { root } = await composeSessionRoot({
-    system: await systemById('noprune', null, 'test'),
-    systemId: 'noprune',
-    systemPath: remote.root,
-    project: 'p',
-    worktree: null,
-  });
-
-  // THE RECORD REALLY ARRIVED. The walk's output comes back as `stdout` frames,
-  // which the fixture logs after every mutation it makes — so this is the find
-  // output cc RECEIVED, not what the fixture intended to send.
-  const logged = (await fs.readFile(frames, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
-  const findOutput = Buffer.concat(
-    logged.filter(f => f.type === 'stdout' && typeof f.dataB64 === 'string')
-      .map(f => Buffer.from(f.dataB64, 'base64')),
-  ).toString('utf8');
-  assert.ok(findOutput.includes('.claude/skills/secret/sk.md'),
-    'the far side enumerated the excluded path — otherwise this test proves nothing');
-  assert.ok(findOutput.includes('.claude/skills/public/ok.md'),
-    'and the walk ran normally alongside it');
-
-  // AND CC DROPPED IT. Both halves: never enumerated into cc's own record of
-  // the root, and never written.
-  const manifest = JSON.parse(await fs.readFile(`${root}.manifest.json`, 'utf8'));
-  assert.equal(manifest.entries['.claude/skills/secret/sk.md'], undefined,
-    'the excluded record is absent from the manifest');
-  assert.ok(manifest.entries['.claude/skills/public/ok.md'], 'its unexcluded sibling is present');
-  await assert.rejects(fs.readFile(path.join(root, '.claude/skills/secret/sk.md')),
-    'and no bytes reached the session root');
-  assert.equal(
-    await fs.readFile(path.join(root, '.claude/skills/public/ok.md'), 'utf8'),
-    'PUBLIC-SKILL-BYTES',
-  );
-  // Sharper than "not on disk": the bytes were never even FETCHED. Every
-  // readFile payload that crossed back carries the sibling and none the secret,
-  // so the drop happened before the pull rather than after it.
-  const fetched = Buffer.concat(
-    logged.filter(f => f.type === 'data' && typeof f.dataB64 === 'string')
-      .map(f => Buffer.from(f.dataB64, 'base64')),
-  ).toString('utf8');
-  assert.ok(fetched.includes('PUBLIC-SKILL-BYTES'), 'the sibling was fetched');
-  assert.ok(!fetched.includes('SECRET-SKILL-BYTES'), 'the excluded file was never fetched');
-});
-
-// ── A COMPOSE THAT FAILS AFTER THE TARGET CHECK DISCARDED THE ROOT ───
-//
-// The target check runs BEFORE the root exists, and a mismatch removes the root
-// AND its manifest before the walk runs. So a failure past that point is not
-// just "the compose refused": there is no last-good root behind it, which is
-// the fact a caller that would otherwise warn and carry on has to know.
-// `composedRootWasDiscarded` is how it is told.
-//
-// KEYED ON THE CHECK, NOT ON THE FAILURE. The three arms below are three
-// different ways the walk can fail, and the control test pairs each with the
-// same failure behind a check that HELD. What differs across that pair is the
-// check alone, which is why the mark can be set where it is.
-//
-// THE MISMATCH ROUTE is a handle bound to remote `a` against a root whose
-// manifest has been removed — `readManifest` documents the manifest as a cache
-// whose loss costs a re-pull and nothing else, so its absence is a supported
-// state rather than a broken fixture. It keeps every arm on ONE target, so the
-// marked case and its control differ in nothing but the check.
-
-// A system serving target `a` over its own seeded sandbox, composed once so the
-// root and the manifest naming `a` — the last-good pair each arm starts from —
-// really exist.
-async function lastGoodRootOnA(id) {
-  const sandbox = await fs.realpath(await mkdtemp('cc-sr-discard-'));
-  await seedTree(sandbox);
-  const flags = ['--remote', `a=${sandbox}`];
-  await bindRemoteSystem({ id, flags });
-  await composeOn(id, 'a', sandbox);
-  return { sandbox, flags };
-}
-
-// What makes the NEXT compose's target check not hold: an absent manifest reads
-// as `remoteId: null`, which no longer agrees with a handle bound to `a`.
-const dropManifest = (id) => fs.rm(`${sessionRootPath(id, 'app', null)}.manifest.json`, { force: true });
-
-// PINS: a walk that fails after the target check did not hold marks the error,
-// and what it leaves behind is a root with no config surface in it and no
-// manifest beside it. The failure is the REAL production fence firing on a real
-// flooded tree, not an injected one.
-//
-// NOT CLAIMING anything about the fence's value or its message: it asserts on
-// neither the number nor the text, which card 2026-0267 owns. It is NOT
-// independent of that value either — the flood is sized to cross the fence as it
-// stands, so raising the fence stops this fixture failing and the flood has to
-// be resized with it.
-test('a walk that fails after the target check did not hold marks the error and leaves no manifest', async () => {
-  const id = 'discarded-fence';
-  const { sandbox } = await lastGoodRootOnA(id);
-  await floodSkills(sandbox, LISTING_FENCE);
-  await dropManifest(id);
-
-  await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
-    assert.equal(composedRootWasDiscarded(e), true, `the failure was not marked: ${e.message}`);
-    return true;
-  });
-
-  // Derived from the store path, not from anything the compose handed back:
-  // the compose threw, so it handed back nothing to read a path out of.
-  const root = sessionRootPath(id, 'app', null);
-  assert.deepEqual(await listTree(root), [], 'no config surface is left at the root');
-  await assert.rejects(fs.readFile(`${root}.manifest.json`), 'and no manifest beside it');
-});
-
-// PINS: the mark is set by the target check, so it does not depend on HOW the
-// walk failed — a command the far side refuses to start and a transport that
-// dies after really forwarding it are both marked.
-//
-// NOT CLAIMING that these are the only ways to fail. A `readFile` failure
-// during the pull, after the reset, reaches the same state and throws a raw
-// `Error` with no `statusCode`; it is not pinned here precisely because the
-// mark cannot tell these apart.
-test('the mark does not depend on how the walk failed', async () => {
-  for (const [id, cfg] of [
-    ['discarded-refused', { errorFrame: 'find' }],
-    ['discarded-death', { dieOn: 'find' }],
-  ]) {
-    const { sandbox, flags } = await lastGoodRootOnA(id);
-    // updateSystem disposes the live handle, so the system really was up for
-    // the compose above and really is failing from here on.
-    await updateSystem(id, { launch: flakyLaunch({ ...cfg, flags }) });
-    await dropManifest(id);
-
-    await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
-      assert.equal(composedRootWasDiscarded(e), true,
-        `${JSON.stringify(cfg)} left the failure unmarked: ${e.message}`);
-      return true;
-    });
+    await addSystem({ id, label: id, launch: ['node', RECORDER, '--record', rec] });
+    assert.equal((await adoptProject('app', tree, { system: id })).ok, true);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle');
+    return { id, rec, tree, inst };
   }
-});
 
-// PINS: the REMOVAL the target check performs is inside the marked region — a
-// reset that itself fails is marked like any other failure past the check, and
-// so refuses rather than warning. Without it the compose escapes unmarked and
-// the relaunch carries on over the rejected target's own bytes.
-//
-// Reached with a DIRECTORY where the manifest FILE belongs, so the unlink that
-// removes the manifest fails: deterministic, and independent of the uid the
-// suite runs as, which a chmod-based fault is not.
-//
-// NOT CLAIMING the other half of a failed reset — a fault on the session root's
-// own removal, which would throw before anything was deleted. This fixture
-// cannot reach it, and it is not pinned here.
-test('a reset that itself fails is marked too', async () => {
-  const id = 'discarded-reset';
-  const { sandbox } = await lastGoodRootOnA(id);
-  const mf = `${sessionRootPath(id, 'app', null)}.manifest.json`;
-  await fs.rm(mf, { force: true });
-  // readManifest reads this as an absent manifest, so the check does not hold
-  // and the reset runs; the reset's unlink then refuses it.
-  await fs.mkdir(mf);
+  // PINS CLAIM 1: nothing on disk. Asserted over a full walk of the store rather
+  // than at one predicted path, and with the CLI's cwd checked against the tree
+  // so a root composed somewhere else could not be what the session is using.
+  test('the store holds no session root and no manifest after a remote spawn', async () => {
+    const s = await spawnRemote();
 
-  await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
-    assert.equal(composedRootWasDiscarded(e), true,
-      `the reset's own failure was not marked: ${e.message}`);
-    return true;
+    assert.equal(s.inst.cwd, s.tree, "the CLI's cwd is not the project's path on its system");
+    assert.equal(await exists(path.join(orchStoreRoot(), 'systems', s.id, 'sessions')), false);
+
+    const under = await walk(orchStoreRoot());
+    assert.deepEqual(under.filter(p => p.includes('sessions')), [],
+      `something composed a session root: ${JSON.stringify(under.filter(p => p.includes('sessions')))}`);
+    assert.deepEqual(under.filter(p => p.endsWith('.manifest.json')), [],
+      'a manifest sidecar was written');
   });
-});
 
-// CONTROL. PINS: the same three failures behind a target check that HELD are
-// NOT marked, and the prior root and its manifest survive each of them
-// byte-identical. This is what stops the fix becoming "refuse on every compose
-// failure" — a system that is briefly unreachable must keep resuming on its
-// last good root, which is card 2026-0267's deliberate warn-and-continue.
-//
-// NOT CLAIMING that the compose succeeds: all three still throw. The claim is
-// about what is left behind and how it is marked, not about whether it refused.
-test('the same failures with the target check HOLDING are not marked, and the prior root survives', async () => {
-  for (const [id, cfg] of [
-    ['held-fence', null],
-    ['held-refused', { errorFrame: 'find' }],
-    ['held-death', { dieOn: 'find' }],
-  ]) {
-    const { sandbox, flags } = await lastGoodRootOnA(id);
-    if (cfg) await updateSystem(id, { launch: flakyLaunch({ ...cfg, flags }) });
-    else await floodSkills(sandbox, LISTING_FENCE);
+  // PINS CLAIM 2, and it is the stronger one: ZERO `find` frames on the wire.
+  // The allow-list walk enumerated the system's config surface with `find`
+  // before pulling it; a root composed anywhere would still have to ask.
+  //
+  // The control is in the same assertion set: the recorder DID see traffic, so
+  // an empty `find` list is a fact about what cc asked for rather than about a
+  // provider that was never launched.
+  test('a remote spawn sends no find frame — the allow-list walk is gone', async () => {
+    const s = await spawnRemote();
+    const frames = await wire(s.rec);
 
-    const root = sessionRootPath(id, 'app', null);
-    const before = await snapshotTree(root);
-    assert.ok(before.has('CLAUDE.md'), `${id}: there is a last-good root to survive`);
+    assert.ok(frames.length > 0, 'the recorder saw no traffic at all — the control failed');
+    const finds = frames.filter(f => f.type === 'exec'
+      && Array.isArray(f.argv) && f.argv[0] === 'find');
+    assert.deepEqual(finds, [], `the walk still runs: ${JSON.stringify(finds)}`);
 
-    // No dropManifest: the manifest the compose above wrote still names `a`.
-    await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
-      assert.equal(composedRootWasDiscarded(e), false,
-        `${id}: a failure behind a holding check was marked: ${e.message}`);
-      return true;
-    });
+    // AND WHAT IS STILL READ IS ONLY WHAT SHOULD BE. The walk pulled the whole
+    // config surface; what is left on this wire under `.claude/` is the two
+    // REFUSAL SCANS — `disableAllHooks` and the unenforceable-Bash-rules scan —
+    // which read the project's own settings pair THROUGH THE SYSTEM HANDLE
+    // because there is no local copy to stat any more (the C7 correction). Two
+    // scans over two files is four reads, and no `skills/**` at all: a walk
+    // would have taken the skill files too.
+    const reads = frames.filter(f => f.type === 'readFile' || f.type === 'readFileBytes');
+    const underClaude = reads.filter(f => String(f.path).includes('/.claude/'));
+    assert.deepEqual([...new Set(underClaude.map(f => path.basename(String(f.path))))].sort(),
+      ['settings.json', 'settings.local.json'],
+      `something beyond the refusal scans is reading the config surface: ${JSON.stringify(underClaude)}`);
+    assert.deepEqual(reads.filter(f => String(f.path).includes('/skills/')), [],
+      'the skill files were pulled — that is the allow-list walk');
+  });
 
-    assertTreeUnchanged(assert, before, await snapshotTree(root), `${id}: the prior root`);
-    assert.equal(JSON.parse(await fs.readFile(`${root}.manifest.json`, 'utf8')).remoteId, 'a',
-      `${id}: and its manifest still names the target it was pulled from`);
-  }
+  // PINS: the project's own config surface is NOT copied anywhere local, and the
+  // file the walk would have skipped is simply part of the tree. The absence of
+  // a local copy is what makes "one spelling per path" true.
+  test('the config surface stays on the system, with no local copy of it', async () => {
+    const s = await spawnRemote();
+    for (const rel of ['CLAUDE.md', '.claude/settings.json', '.claude/skills/deploy/SKILL.md']) {
+      assert.ok(await exists(path.join(s.tree, rel)), `${rel} is missing from the fixture`);
+    }
+    const under = await walk(orchStoreRoot());
+    assert.deepEqual(under.filter(p => p.endsWith('CLAUDE.md') || p.endsWith('SKILL.md')), [],
+      'the config surface was copied into the store');
+  });
 });

@@ -16,24 +16,65 @@
 //                   (src/systems/bashForwarder.ts). Nothing outlives a command,
 //                   so no command's state reaches any later one and there is
 //                   nothing to keep one agent's commands apart from another's.
-//   Read/Write/    — PULL-THEN-PUSH through src/systems/fileBridge.ts, at the
-//   Edit/Notebook    path the CLI is about to open. Never rewritten.
+//   Read/Write/    — HOOKED, AND FOR ONE REASON ONLY: to REFUSE a path the
+//   Edit/Notebook    union does not serve to this session. The CLI runs inside
+//                    a chroot onto the union, so at an allowed path it opens
+//                    the system's own bytes at the system's own path — nothing
+//                    to translate, fetch or write back, and no second spelling
+//                    for a path to have. What the hook adds is the sentence a
+//                    worker reads instead of an -ENOENT: the decision comes
+//                    from the shared tier table (classifyForTool,
+//                    src/systems/fuse/tierTable.ts) and NEVER from probing the
+//                    filesystem.
 //   Glob/Grep     — removed from the tool registry by the injected settings
-//                   (src/settings.ts), because a result cannot be substituted.
-// A file tool aimed anywhere else is refused unless the path is one cc KNOWS is
-// local (an attachment under the store, a plan under `~/.claude`).
+//                   (src/settings.ts) AND refused here by name. A marked CLI's
+//                   `Grep` spawns an UNMARKED `rg`, which the union routes as a
+//                   stranger — so it would search the wrong side and return
+//                   silently wrong results rather than failing.
+//
+// WHAT "EVERY TOOL" MEANS ABOVE, and the one carve-out, because the invariant
+// otherwise claims a completeness the code does not have.
+//
+// The set is closed against a MEASUREMENT, not against the CLI's documentation.
+// The measurement is DATA, not a number quoted here:
+// tests/fixtures/cli-tool-registry.measured.json carries the argv, the
+// `--settings` JSON and the full tool lists verbatim, and
+// tests/systems-cli-contract.real.test.mjs pins it under RUN_CLI_CONTRACT=1.
+// Its result: the tools that can observe or mutate the tree are exactly `Bash`
+// and the four in FILE_TOOLS — no `LS`, no `Glob`, no `Grep`, no `MultiEdit`,
+// no `NotebookRead`.
+//
+// WHAT MAKES THAT ARGV THE RIGHT ONE: the argv is read off
+// `Instance._spawnArgv` of a REAL redirected worker rather than reconstructed,
+// so it includes `--permission-prompt-tool stdio` and cc's own `--settings`.
+// `stdio` CHANGES THE PROFILE — it un-strips the interactive tools, 30 with it
+// against 27 without — so a probe run on the four format flags alone measures a
+// different session than cc ships and cannot answer this question at all. The
+// deny-off control is in the same fixture: removing `permissions.deny` as the
+// only variable leaves the list identical, so `Glob`/`Grep` are absent by
+// PROFILE and not by cc's denial.
+//
+// SO `LS` IS A DELIBERATE CARVE-OUT, not an oversight: it is named in
+// src/settings.ts's list of ungated read tools, it is in neither FILE_TOOLS nor
+// REDIRECT_PRE_TOOL_MATCHER, and `preToolUse` falls THROUGH to allow for it. On
+// the measured CLI that fall-through is unreachable because the tool does not
+// exist. IF IT RETURNS, it is a boundary hole and not a cosmetic one: an `LS` of
+// an excluded path answers a bare -ENOENT — exactly what the refusal wording
+// below exists to stop a worker reading as "absent" — and a listing additionally
+// discloses the shape of a subtree whose `Read` is refused. The gated case above
+// goes red when that happens; the fix is to add it to FILE_TOOLS with its
+// MEASURED argument name, which is not in the fixture and must not be guessed.
 //
 // This module is composition and policy only. The shell framing lives in
-// src/systems/providerShell.ts, the file transfer in src/systems/fileBridge.ts,
-// and the prefix rule in src/systems/sessionRoot.ts.
+// src/systems/providerShell.ts, and the deny surface below.
 
 import path from 'node:path';
-import { FileBridge } from './fileBridge.ts';
-import { excludedRefusal, type MirrorScope } from './mirror.ts';
 import { SystemError } from './protocol.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
-import { SessionPathMap } from './sessionRoot.ts';
 import type { System } from './system.ts';
+import { classifyForTool, type TierEntry } from './fuse/tierTable.ts';
+import { refusalFor, refusesTool } from './fuse/faultRefusals.ts';
+import type { Fault } from './fuse/control.ts';
 
 // A System cc can run one command on. Every non-local system is one
 // (registry.ts resolves a non-local id to a ProviderSystem); the type says so
@@ -45,7 +86,7 @@ import type { System } from './system.ts';
 // interface, so a bare System (LocalSystem) is correctly refused while every
 // provider-backed one is accepted. Re-basing it on `exec` — which `System` does
 // have — would make every local project look redirectable
-// (card 2026-0312 §2 D-a). src/instances.ts reads this to refuse
+// src/instances.ts reads this to refuse
 // 501 WORKER_SESSIONS_NEED_A_SHELL.
 export type RedirectableSystem = System & ShellHost;
 
@@ -95,14 +136,18 @@ export interface ForwardSink {
 export const FILE_TOOLS: Record<string, string> = {
   Read: 'file_path', Write: 'file_path', Edit: 'file_path', NotebookEdit: 'notebook_path',
 };
-const READ_ONLY_FILE_TOOLS = new Set(['Read']);
 
-// Refused by name, whatever the injected settings did. `permissions.deny`
-// already asks the CLI to remove these (src/settings.ts) and measurably does on
-// the profiles where they exist at all — but that is undocumented surface, and
-// the invariant it protects is the one the whole feature rests on. If either
-// tool ever reaches this hook, it is answering about cc's session root rather
-// than the system, and a refusal naming the alternative is the honest reply.
+// STILL REFUSED BY NAME under the chroot, and this is not a leftover.
+// `permissions.deny` already asks the CLI to remove these (src/settings.ts) and
+// measurably does on the profiles where they exist at all — but that is
+// undocumented surface, and the invariant it protects is the one the whole
+// feature rests on.
+//
+// A marked CLI's `Grep` spawns an UNMARKED `rg`, which the union routes by the
+// caller rule as a stranger — so it would search the wrong side and return
+// silently wrong results rather than failing. Re-enabling them needs mark
+// inheritance, which is measured CLOSED: cc's plumbing IS the worker's process
+// subtree, so no ancestry cut separates them.
 const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
 
 // THE OUTPUT FENCE for one redirected command, and the reason the redirected
@@ -121,61 +166,54 @@ const FORWARDER = path.join(path.dirname(new URL(import.meta.url).pathname), 'ba
 export interface SessionRedirectOptions {
   system: RedirectableSystem;
   systemId: string;
-  // The project's — or worktree's — root ON the system. The shell's cwd, the
-  // needle the Bash annotation looks for, and the tree the out-of-boundary
-  // refusal names.
-  //
-  // IT IS NOT THE FAR END OF THE PREFIX RULE. That is the mirror root below,
-  // which is the same path only when the provider advertises nothing. The two
-  // were one field until P7, and widening it would silently have started every
-  // command at the mirror root and matched the annotation against essentially
-  // all output.
+  // The project's — or worktree's — root ON the system, which under the chroot
+  // is also the CLI's own working directory. The shell's cwd, and the tree the
+  // out-of-boundary refusal names.
   systemPath: string;
-  // The LOCAL IMAGE of the mirror root. The CLI's cwd is `sessionRoot +
-  // mirror.offset`, which this derives rather than takes, so the two cannot
-  // disagree.
-  sessionRoot: string;
-  // How much of the system this session mirrors, and what it must not carry
-  // (src/systems/mirror.ts). `noMirror(systemPath)` is the no-advertisement
-  // scope and the only spelling of it.
-  mirror: MirrorScope;
   forwarderUrl: string;
-  // Absolute LOCAL prefixes that are legitimately not the system's business. A
-  // file tool aimed outside both these and the session root is refused.
-  //
-  // EACH ONE IS A SPECIFIC DIRECTORY, and the caller owes that. This list is a
-  // read AND write grant on the orchestrator's own filesystem, so a broad entry
-  // is a broad grant: `orchStoreRoot()` was one, and it handed a worker cc's
-  // whole store — app settings, the convention store, every other project's
-  // metadata, every session sidecar, and other sessions' task output. The
-  // caller's own comment (src/instances.ts, attachRedirect) names what each
-  // entry is for; this module only tests containment.
-  localRoots: string[];
   emit: (ev: unknown) => void;
+  // THE tier/deny artifact for this session — the SAME array the FUSE plan
+  // renders its pins file from (src/instances.ts builds it once). Identity, not
+  // equality: see FusePlanInput.tiers.
+  tiers: readonly TierEntry[];
+  // The advertisement's own two fields, which the refusals name.
+  exclude: readonly string[];
+  mirrorRoot: string;
   shellCommandTimeoutMs?: number;
   maxOutputBytes?: number;
+  // THE PER-PATH FAULT SURFACE, read from the session's control server
+  // (src/systems/fuse/control.ts). Optional because a redirected session
+  // without a union mount — the in-process launcher's — has no control server
+  // at all, and there is then no fault to report.
+  faultAt?: (p: string) => Fault | null;
+  settle?: (p: string) => Promise<void>;
 }
 
 export class SessionRedirect {
-  map: SessionPathMap;
   readonly systemId: string;
-  // The PROJECT, on both sides — distinct from the map, which holds the mirror.
-  // Every sentence a worker reads about "this project's tree" names these.
+  // The project's path on its system — which, under the chroot, is ALSO the
+  // CLI's own working directory. There is no second spelling any more.
   readonly systemPath: string;
-  projectRoot: string;
+
+  // PUBLIC, and deliberately: criterion 15 is an IDENTITY claim — the array the
+  // hook decides from is the same object the pins file was rendered from — and
+  // an identity claim that cannot be read cannot be asserted.
+  readonly tiers: readonly TierEntry[];
 
   readonly #system: RedirectableSystem;
-  readonly #bridge: FileBridge;
+  readonly #exclude: readonly string[];
+  readonly #mirrorRoot: string;
   readonly #forwarderUrl: string;
-  readonly #localRoots: string[];
   readonly #emit: (ev: unknown) => void;
   readonly #shellCommandTimeoutMs: number | undefined;
   readonly #maxOutputBytes: number;
+  readonly #faultAt: ((p: string) => Fault | null) | undefined;
+  readonly #settle: ((p: string) => Promise<void>) | undefined;
 
   // ONE for the whole session, built on first use. It holds configuration only —
   // the project root, the fence, the ceiling — because no command's state
   // reaches any later command, so there is nothing left for a per-agent one to
-  // keep apart (card 2026-0312 §3a).
+  // keep apart.
   #shell: ProviderShell | null = null;
 
   // WHAT `close()` PULLS. There is no shell process to close any more, so
@@ -183,8 +221,7 @@ export class SessionRedirect {
   // and every command combines it with its caller's own signal. Without it a
   // command survives its session and runs to completion on someone else's
   // machine with nobody left to read the result — measured, and reachable in
-  // production before this card on any provider without `persistentShell`
-  // (card 2026-0312 §3c F-3).
+  // production on any provider without `persistentShell`.
   //
   // REPLACED ON EVERY close(), NOT ABORTED ONCE, and this is load-bearing:
   // `close()` is NOT terminal for a redirect. Instance exit and DELETE never
@@ -196,38 +233,18 @@ export class SessionRedirect {
   #abort = new AbortController();
 
   constructor(opts: SessionRedirectOptions) {
-    this.map = new SessionPathMap(opts.sessionRoot, opts.mirror.mirrorRoot, opts.mirror.exclude);
     this.systemId = opts.systemId;
     this.systemPath = opts.systemPath;
-    this.projectRoot = path.join(opts.sessionRoot, opts.mirror.offset);
     this.#system = opts.system;
-    this.#bridge = new FileBridge(opts.system, this.map);
+    this.tiers = opts.tiers;
+    this.#exclude = opts.exclude;
+    this.#mirrorRoot = opts.mirrorRoot;
     this.#forwarderUrl = opts.forwarderUrl;
-    this.#localRoots = opts.localRoots;
     this.#emit = opts.emit;
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
     this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  }
-
-  // THE ONE WAY a live session's geometry changes. Called by
-  // Instance._refreshSessionRoot when the composed cwd has moved, and only
-  // there — between launch()'s compose and spawn(), so no CLI is running and
-  // there is nothing to rebuild underneath. That is why 2026-0259's "rebuilding
-  // a redirect under a running CLI is not possible" is true and does not apply:
-  // its warn-don't-refuse is superseded by a third answer, not overturned into a
-  // refusal (card 2026-0279).
-  //
-  // The image ROOT does not move (sessionRootPath keys on project/worktree
-  // only); what moves is the mirror root the prefix rule maps against and the
-  // offset the project sits at inside the image. `exclude` comes from the same
-  // advertisement as the root, because two sources for one scope is how a
-  // boundary gets decided two different ways. The far-side shells are NOT
-  // touched: they run at `systemPath`, which did not move.
-  retarget(root: string, mirror: MirrorScope): void {
-    const next = new SessionPathMap(root, mirror.mirrorRoot, mirror.exclude);
-    this.#bridge.retarget(next, this.map);
-    this.map = next;
-    this.projectRoot = path.join(root, mirror.offset);
+    this.#faultAt = opts.faultAt;
+    this.#settle = opts.settle;
   }
 
   // ── PreToolUse ─────────────────────────────────────────────────────
@@ -244,24 +261,63 @@ export class SessionRedirect {
       };
     }
     if (toolName === 'Bash') return this.#redirectBash(toolInput);
+    // ONE BRANCH, and no pull, no push, no path map and no mirror probe behind
+    // it. A file has ONE spelling whichever tool names it, so the only question
+    // left is whether the union serves that path to this session — which the
+    // tier table answers, in memory.
     const key = FILE_TOOLS[toolName];
-    if (key === undefined) return { decision: 'allow' };
-    return this.#redirectFile(toolName, key, toolInput);
+    if (key !== undefined) return this.#classifyFile(toolName, key, toolInput);
+    return { decision: 'allow' };
+  }
+
+  #classifyFile(toolName: string, key: string, toolInput: Record<string, unknown>): RedirectDecision {
+    const p = toolInput[key];
+    // REFUSED, not passed through. The CLI was measured resolving every file
+    // path to an absolute one before the hook fires, so this is unreachable
+    // today — but a relative path cannot be classified at all: the tier table is
+    // a longest-prefix rule over ABSOLUTE paths, so a relative one would match
+    // nothing and be refused as "outside the mirror root", which is a sentence
+    // about the wrong thing. cc does not get to guess which machine a relative
+    // path means, and the invariant should not rest on an undocumented CLI
+    // behaviour staying put.
+    if (typeof p !== 'string' || !path.isAbsolute(p)) {
+      return {
+        decision: 'deny',
+        reason: `cc: ${toolName} needs an absolute path on a project hosted on system `
+          + `'${this.systemId}' — ${JSON.stringify(p)} could name a file on either machine. `
+          + `Use a path under ${this.systemPath}.`,
+      };
+    }
+    const verdict = classifyForTool(this.tiers, {
+      exclude: this.#exclude, mirrorRoot: this.#mirrorRoot,
+      systemId: this.systemId, systemPath: this.systemPath,
+    }, p);
+    if (verdict.decision === 'deny') return { decision: 'deny', reason: verdict.reason };
+    // THE FAULT SURFACE IS SECOND, AND THAT ORDERING IS A RULING, NOT A STYLE
+    // CHOICE. The tier gate is the owner's most important property; a surface
+    // consulted ahead of it is a bypass route by construction, whatever it
+    // returns today. It costs nothing here: a fault only exists for a path
+    // written through the union, which is project tier, which the gate allows.
+    //
+    // NOTE THE RETURN TYPE. These denials carry no `class`, because
+    // `ToolDenyClass` stays FOUR — this local shape absorbs them, and a reader
+    // counting the tier wordings still counts four.
+    const fault = this.#faultAt?.(p);
+    if (fault && refusesTool(fault, toolName)) {
+      return { decision: 'deny', reason: refusalFor(fault, p, this.systemId) };
+    }
+    return { decision: 'allow' };
   }
 
   #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
-    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and cc needs it for nothing. It
-    // once became cc's deadline, which killed the command at the same instant the
-    // CLI DETACHED the forwarder and handed the agent a pointer to it (card
-    // 2026-0305 §4); it then became a wait bound on the shell's queue, and card
-    // 2026-0312 removed the queue.
+    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and cc needs it for nothing.
     //
     // AT THE TOOL TIMEOUT THE CLI DETACHES, IT DOES NOT KILL, and hands the
     // agent a background task — measured at CLI 2.1.258, for a rewritten
     // forwarder command and for the same command left un-rewritten alike, and
-    // whether its output was flowing or silent (card 2026-0310 §1.2). The
+    // whether its output was flowing or silent. The
     // command keeps running, bounded by cc's ceiling, which is why that ceiling
     // sits above the documented max rather than at it. What the CLI DOES kill
     // the forwarder for — an interrupt, or a background task the worker stops —
@@ -277,124 +333,35 @@ export class SessionRedirect {
     return { decision: 'allow', updatedInput: { ...toolInput, command: argv.join(' ') } };
   }
 
-  async #redirectFile(toolName: string, key: string, toolInput: Record<string, unknown>): Promise<RedirectDecision> {
-    const p = toolInput[key];
-    // REFUSED, not passed through. The CLI was measured resolving every file
-    // path to an absolute one before the hook fires, so this is unreachable
-    // today — but allowing it made the two halves disagree: PreToolUse skipped
-    // the pull while postToolUse would still have resolved and PUSHED the path,
-    // so an Edit could reach the system from a base that was never fetched. cc
-    // does not get to guess which machine a relative path means, and the
-    // invariant should not rest on an undocumented CLI behaviour staying put.
-    if (typeof p !== 'string' || !path.isAbsolute(p)) {
-      return {
-        decision: 'deny',
-        reason: `cc: ${toolName} needs an absolute path on a project hosted on system `
-          + `'${this.systemId}' — ${JSON.stringify(p)} could name a file on either machine. `
-          + `Use a path under ${this.projectRoot}.`,
-      };
-    }
-
-    const verdict = this.map.classify(p);
-    if (verdict.kind === 'outside') {
-      // ORDER IS LOAD-BEARING, and a wide mirror is what makes it so. With
-      // `mirrorRoot: '/'` every absolute path has a local counterpart, so
-      // #outsideReason's translating clause would happily hand an attachment or
-      // a `~/.claude` plan file a system path. #isKnownLocal first is what stops
-      // that, and reordering these two lines is a boundary leak.
-      if (this.#isKnownLocal(p)) return { decision: 'allow' };
-      return { decision: 'deny', reason: this.#outsideReason(p) };
-    }
-    if (verdict.kind === 'excluded') {
-      return { decision: 'deny', reason: excludedRefusal(verdict.systemPath, this.systemId, verdict.excludedBy) };
-    }
-
-    const writing = !READ_ONLY_FILE_TOOLS.has(toolName);
-    // Checked BEFORE the pull, because a pull resyncs the local copy and would
-    // clear the very divergence this refusal exists to report.
-    if (writing) {
-      const diverged = this.#bridge.dirtyReason(p);
-      if (diverged) {
-        return { decision: 'deny', reason: `${diverged}. Read the file again to resync it from ${this.systemId}, then re-apply the change.` };
-      }
-    }
-
-    try {
-      const r = await this.#bridge.pull(p);
-      if (r.kind === 'refused') return { decision: 'deny', reason: `cc cannot carry this file across the boundary to system '${this.systemId}': ${r.reason}` };
-      return { decision: 'allow' };
-    } catch (e) {
-      // R9: mid-session the system can go away. A hooked tool DENIES naming the
-      // system rather than letting the CLI answer from whatever is on cc's disk.
-      return { decision: 'deny', reason: `cc could not reach system '${this.systemId}' to fetch ${p}: ${errMsg(e)}` };
-    }
-  }
-
-  #isKnownLocal(p: string): boolean {
-    return this.#localRoots.some(root => within(p, root));
-  }
-
-  // The base sentence names the PROJECT's tree, which is what a worker
-  // overwhelmingly wants. When the path it was handed does have a local
-  // counterpart — always true under a wide mirror, and true of any in-project
-  // system path even without one — the refusal TRANSLATES rather than merely
-  // declining, which delivers the recovery one tool call earlier.
-  //
-  // Deliberately UNGATED on mirror width (D-P7-9): one wording, always
-  // exercised, beats two of which the load-bearing one is the rare branch.
-  #outsideReason(p: string): string {
-    const base = `'${p}' is not a path this session can use. This project's tree is at `
-      + `${this.systemPath} on system '${this.systemId}'; its files are read and edited at their `
-      + `paths under ${this.projectRoot}. Use Bash for anything else on the system — a file written `
-      + `anywhere else would land on the orchestrator's machine, where no command here can see it.`;
-    const local = this.map.toLocal(p);
-    if (local === null) return base;
-    return `${base} '${p}' is a path on '${this.systemId}': this session reaches that same file at `
-      + `${local} — use that path.`;
-  }
-
   // ── PostToolUse ────────────────────────────────────────────────────
 
   // Returns the note to attach to the tool result, or null. A note is the ONLY
   // channel available: a tool result cannot be substituted, only annotated, so
   // cc can say where a write landed but can never rewrite a `/app` path inside
   // a command's output into its local counterpart.
-  async postToolUse(toolName: string, toolInput: Record<string, unknown>, toolResponse: unknown): Promise<string | null> {
-    if (toolName === 'Bash') return this.#annotateBash(toolResponse);
+  // WHAT IT REPORTS: a reconcile that failed AFTER the tool already returned
+  // success. The union writes through, so there is nothing to push here — but
+  // the push cc issues from the daemon's `flush` can refuse, and
+  // `additionalContext` is the only channel that can put that in front of the
+  // worker IN BAND rather than in a log (hookBroker.ts already emits it).
+  //
+  // `Read` is deliberately outside the matcher (REDIRECT_POST_TOOL_MATCHER,
+  // src/settings.ts): a read-only open pushes nothing, so it can report
+  // nothing.
+  async postToolUse(toolName: string, toolInput: Record<string, unknown>, _toolResponse: unknown): Promise<string | null> {
     const key = FILE_TOOLS[toolName];
-    if (key === undefined || READ_ONLY_FILE_TOOLS.has(toolName)) return null;
+    if (key === undefined) return null;
     const p = toolInput[key];
-    // The ABSOLUTE check matches #redirectFile's refusal exactly, so the two
-    // halves cannot disagree about which paths they handle: `toSystem` would
-    // resolve a relative path against the session root and push a file
-    // PreToolUse never pulled.
     if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
-    if (this.map.classify(p).kind !== 'mapped') return null;
-    try {
-      await this.#bridge.push(p);
-      return `Saved to ${this.map.toSystem(p)} on system '${this.systemId}'.`;
-    } catch (e) {
-      // HARD AND LOUD, never best-effort. The operator gets an error event and
-      // the worker gets the divergence in band; the path is already marked, so
-      // the next write to it is refused.
-      const why = errMsg(e);
-      this.#emit({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${why}` } });
-      return `WRITE-BACK FAILED — ${why}. The local copy and system '${this.systemId}' now differ, and further writes to this path are refused until you Read it again.`;
-    }
-  }
-
-  // R2's targeted annotation: attached ONLY when the output actually contains
-  // the PROJECT's path on the system, which is the moment the two coordinate
-  // systems become visible to the worker and the only moment a note earns its
-  // cost. Never the MIRROR root: under `mirrorRoot: '/'` that needle matches
-  // essentially every command's output, and an annotation on every Bash call is
-  // not a targeted one.
-  #annotateBash(toolResponse: unknown): string | null {
-    const r = toolResponse as { stdout?: unknown; stderr?: unknown } | null;
-    const text = `${typeof r?.stdout === 'string' ? r.stdout : ''}${typeof r?.stderr === 'string' ? r.stderr : ''}`;
-    if (!text.includes(this.systemPath)) return null;
-    return `Paths under ${this.systemPath} in that output are on system '${this.systemId}', where the command ran. `
-      + `The same files are read and edited here under ${this.projectRoot}.`;
+    // THE AWAIT IS THE CRITERION. The push is issued from the daemon's `flush`
+    // and answered to `close(2)`, so by the time a tool returns the outcome is
+    // usually known — but a `release` backstop, or a frame still queued behind
+    // another for the same path, can land after it. `settle` awaits the path's
+    // in-flight entry so the note below reports a settled state rather than a
+    // racing one.
+    await this.#settle?.(p);
+    const fault = this.#faultAt?.(p);
+    return fault ? refusalFor(fault, p, this.systemId) : null;
   }
 
   // ── The forwarded command ──────────────────────────────────────────
@@ -410,7 +377,7 @@ export class SessionRedirect {
   // carrying frames for both. The per-command nonce defends something else
   // (forgery within one stream) and is not what makes this safe.
   //
-  // WHAT BOUNDS cc's HEAP WITH N IN FLIGHT (card 2026-0312 §G-4): the output
+  // WHAT BOUNDS cc's HEAP WITH N IN FLIGHT: the output
   // fence below is PER COMMAND, so the exposure is `N × maxOutputBytes`. N is
   // whatever the CLI's own Bash concurrency is — realistically 1-10, since the
   // model issues Bash calls one turn at a time and a wide fan-out is a handful
@@ -543,27 +510,6 @@ export class SessionRedirect {
       + `on system '${this.systemId}', because each command runs in its own shell.`;
   }
 
-  // ── @mention pre-hydration ─────────────────────────────────────────
-
-  // The CLI expands an `@path` mention itself, with no hook — measured — so a
-  // file that is not already in the session root is simply absent from the
-  // turn. cc owns the one site the prompt is written from, so it pulls the
-  // named files first.
-  //
-  // BEST EFFORT BY DESIGN: a mention that names nothing on the system, or one
-  // cc cannot fetch, must not stop the prompt. The CLI's own "file not found"
-  // for the mention is a better answer than a refused turn.
-  async hydrateMentions(text: string): Promise<void> {
-    for (const spec of parseMentions(text)) {
-      // Against the CLI's OWN cwd — a mention is written relative to where the
-      // worker is, which is the project's directory inside the image, not the
-      // image root.
-      const local = path.resolve(this.projectRoot, spec);
-      if (this.map.classify(local).kind !== 'mapped') continue;
-      try { await this.#bridge.pull(local); } catch { /* the CLI reports the miss */ }
-    }
-  }
-
   // ── Lifecycle ──────────────────────────────────────────────────────
 
   // Stop everything this session has running ON THE SYSTEM, not merely abandon
@@ -578,17 +524,6 @@ export class SessionRedirect {
   }
 }
 
-// `@` followed by a path-ish token. Deliberately narrow: an email address or a
-// decorator is not a mention, and pulling for one costs a round trip and can
-// only ever miss.
-function parseMentions(text: string): string[] {
-  const out: string[] = [];
-  for (const m of text.matchAll(/(?:^|\s)@([^\s@]+)/g)) {
-    const spec = m[1].replace(/[.,;:)\]]+$/, '');
-    if (spec && !spec.startsWith('/') && !spec.startsWith('~')) out.push(spec);
-  }
-  return out;
-}
 
 // POSIX single-quoting: everything inside is literal, and the only character
 // that has to be escaped is the quote itself. The rewritten command is run by
@@ -598,10 +533,6 @@ function shQuote(s: string): string {
   return `'${s.split("'").join(`'\\''`)}'`;
 }
 
-function within(inner: string, outer: string): boolean {
-  const rel = path.relative(outer, inner);
-  return rel === '' || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`));
-}
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

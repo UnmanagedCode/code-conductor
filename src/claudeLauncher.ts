@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { LaunchWrap } from './systems/fuse/wrap.ts';
 
 // The single seam through which an Instance launches its `claude` subprocess.
 // `launch({command,args,cwd,env})` returns a ChildProcess-like handle:
@@ -9,8 +10,24 @@ import { spawn } from 'node:child_process';
 // while tests inject an in-process implementation that runs the fake-claude
 // scenario engine on the event loop (no OS process — see tests/inProcessLauncher.mjs).
 export class RealClaudeLauncher {
-  launch({ command, args, cwd, env }: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }): ReturnType<typeof spawn> {
-    return spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  // THE PRODUCTION LAUNCHER SPAWNS AN OS PROCESS, which is what makes a mount
+  // namespace possible at all. Read by Instance create to decide whether a
+  // remote-backed session gets a union — see `inProcess` on LauncherLike.
+  readonly inProcess = false;
+
+  // `wrap` is THE documented seam for launching the CLI somewhere other than
+  // this machine's root filesystem: a pure transform of {command,args,cwd,env}
+  // applied immediately before spawn (src/systems/fuse/wrap.ts wraps the launch
+  // in `sudo -n unshare --mount` + the mount bootstrap). It is applied only
+  // here — the in-process launcher tests inject runs the CLI inside cc's own
+  // process, where there is no subprocess to put in a namespace.
+  //
+  // The stdio triple is load-bearing and stays: spawn() builds readline over
+  // proc.stdout/stderr and _sendRaw needs proc.stdin.writable, so every link of
+  // a wrapped chain has to exec rather than supervise.
+  launch({ command, args, cwd, env, wrap }: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; wrap?: LaunchWrap }): ReturnType<typeof spawn> {
+    const s = wrap ? wrap({ command, args, cwd, env }) : { command, args, cwd, env };
+    return spawn(s.command, s.args, { cwd: s.cwd, env: s.env, stdio: ['pipe', 'pipe', 'pipe'] });
   }
 }
 

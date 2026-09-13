@@ -24,6 +24,8 @@
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { encodeCwd } from '../src/projects.ts';
 import { allow, fixture, hookServer, runClaude, settingsJSON, t, toolRegistry } from './cliContractCase.mjs';
 
 // PINS: `PreToolUse` `updatedInput` still replaces the tool input, and the
@@ -89,13 +91,19 @@ t('PostToolUse still carries tool_response, and additionalContext still reaches 
 // else — and a tool result cannot be substituted, so there is no way to make
 // either honest on a remote project.
 //
-// MEASURED (2.1.250): today they are absent from the headless profile whether
-// or not `permissions.deny` names them, and `ToolSearch` cannot surface them
-// either. So cc's denial currently removes nothing, and this test is asserting
-// the property rather than the denial's effect — which is the point. If a CLI
-// upgrade puts them back and the denial does not hold, this fails, and the
-// second guard in src/systems/toolRedirect.ts is what keeps the boundary
-// consistent until it is fixed.
+// MEASURED (2.1.250): today they are absent from the headless profile, and
+// `ToolSearch` cannot surface them either. So cc's denial currently removes
+// nothing, and this test is asserting the property rather than the denial's
+// effect — which is the point. If a CLI upgrade puts them back and the denial
+// does not hold, this fails, and the second guard in
+// src/systems/toolRedirect.ts is what keeps the boundary consistent until it is
+// fixed.
+//
+// THIS CASE RUNS *WITH* `deny`, so on its own it cannot tell the profile's
+// absence from the denial's effect, and must not be worded as though it did:
+// it does not measure deny-independence. The DENY-OFF control lives
+// in the case below, which is the same probe with `permissions` omitted; read
+// the two together.
 //
 // The registry list is read from the session's own `system`/`init` frame, so
 // nothing here depends on what a model chose to reach for.
@@ -110,6 +118,50 @@ t('a cc-shaped session can reach neither Glob nor Grep', async () => {
     }
     assert.ok(!tools.includes('Glob'), `Glob is absent (got ${tools.join(',')})`);
     assert.ok(!tools.includes('Grep'), `Grep is absent (got ${tools.join(',')})`);
+  } finally { await hooks.close(); await clean(); }
+});
+
+// PINS THE CARVE-OUT src/systems/toolRedirect.ts RECORDS, and the deny-off
+// control the case above lacks. ONE run, two claims, because both are read off
+// the same `system`/`init` frame.
+//
+// CLAIM 1 — `LS` IS NOT IN THE REGISTRY. `SessionRedirect.preToolUse` falls
+// THROUGH to allow for any tool outside FILE_TOOLS, and `LS` observes the tree:
+// were it served, an `LS` of an excluded path would answer a bare -ENOENT —
+// exactly what the refusal wording exists to stop a worker reading as "absent" —
+// and a listing would additionally disclose the shape of a subtree whose `Read`
+// is refused. That fall-through is unreachable only while the tool does not
+// exist, which is a fact about the CLI and therefore belongs here rather than in
+// a comment. If this goes red, the carve-out has become seam work: add `LS` to
+// FILE_TOOLS with its MEASURED argument name (do not guess one).
+//
+// CLAIM 2 — THE PROFILE, NOT THE DENIAL, is what removes `Glob`/`Grep`. This
+// probe passes NO `permissions.deny` at all, so their absence here is the
+// profile's own. Together with the with-deny case above that is the both-ways
+// measurement; alone, neither case is.
+//
+// NOT CLAIMING that the four FILE_TOOLS names are the whole of the CLI's
+// file-tool surface for all time — only that they are present and that these
+// three are not. A fifth file tool DECLARED in cc is caught elsewhere, by the
+// FILE_TOOLS enumeration in tests/systems-redirect-hooks.test.mjs (A15); a
+// fifth appearing in the CLI without cc declaring it is caught by nothing, and
+// that is what the absent-list above narrows rather than closes.
+t('a cc-shaped session serves no LS, and no Glob/Grep even with no deny', async () => {
+  const { dir, clean } = await fixture();
+  const hooks = await hookServer(() => allow());
+  try {
+    // No `deny` key: `settingsJSON` omits the whole `permissions` block, which
+    // is what makes claim 2 a control rather than a repeat.
+    const settings = settingsJSON(hooks.url, { pre: ['Edit', 'Write', 'NotebookEdit', 'Bash', 'Read'] });
+    assert.ok(!JSON.parse(settings).permissions, 'the control must carry no permissions block');
+    const tools = await toolRegistry(dir, settings);
+    // Not vacuous: every tool the seam actually classifies is present.
+    for (const present of ['Bash', 'Read', 'Write', 'Edit', 'NotebookEdit']) {
+      assert.ok(tools.includes(present), `${present} is in the registry (got ${tools.join(',')})`);
+    }
+    for (const absent of ['LS', 'Glob', 'Grep', 'MultiEdit', 'NotebookRead']) {
+      assert.ok(!tools.includes(absent), `${absent} is absent (got ${tools.join(',')})`);
+    }
   } finally { await hooks.close(); await clean(); }
 });
 
@@ -133,9 +185,9 @@ t('a Bash pattern deny is still enforced under bypassPermissions', async () => {
 // non-empty string `agent_id`, and the main agent's does not carry the field at
 // all.
 //
-// CC NO LONGER CONSUMES IT (card 2026-0312 deleted the per-agent shell it keyed,
-// because no command's state reaches any later command for a subagent's to
-// re-base). This stays as a CLI-CONTRACT FACT, established by a real-binary run:
+// CC DOES NOT CONSUME IT: no command's state reaches any later command, so
+// there is nothing for a subagent's id to key. This stays as a CLI-CONTRACT
+// FACT, established by a real-binary run:
 // the shape is a real thing about the CLI, it is the natural channel for any
 // future per-agent behaviour, and re-establishing it later would cost another
 // real-binary session. Nothing in `src/` reads it, so a regression here changes
@@ -187,4 +239,129 @@ t('a subagent PreToolUse payload carries agent_id and the main agent does not', 
     assert.ok(bash.slice(1).some(e => typeof e.agent_id === 'string' && e.agent_id.length > 0),
       'and a later call — the dispatched subagent\'s — carries one');
   } finally { await hooks.close(); await clean(); }
+});
+
+// THE PREMISE THE TRANSCRIPT-COLLISION GUARD RESTS ON, asserted against the
+// installed binary rather than against cc's own function.
+//
+// cc refuses to register two places whose working directories `encodeCwd` alike
+// — `_` and `.` both collapsing to `-` — because the CLI would then name ONE
+// `~/.claude/projects/<...>` directory for both and their sessions would
+// interleave in it. `src/projects.ts`'s `encodeCwd` is tested only against
+// itself, which proves nothing about the CLI: if the binary preserved `.`, the
+// guard would be over-refusing genuine non-collisions, and that is a lockout.
+//
+// BOTH DIRECTIONS, because either alone is satisfiable by accident: two cwds
+// differing only in `_` vs `.` land in ONE directory, and a genuinely distinct
+// pair lands in TWO.
+//
+// Asserted as a DELTA against `~/.claude/projects` — the CLI writes to the real
+// HOME, and this host has transcripts from every other run — so what the probe
+// created is distinguished from what it inherited, and only what it created is
+// cleaned up.
+t('two cwds differing only in `_` vs `.` share ONE transcript directory', async () => {
+  const { dir, clean } = await fixture();
+  const settings = path.join(dir, 'settings.json');
+  await fs.writeFile(settings, '{}');
+  const projects = path.join(os.homedir(), '.claude', 'projects');
+  const exists = (d) => fs.stat(path.join(projects, d)).then(() => true, () => false);
+
+  // Three real cwds. The first two differ ONLY in the character under test.
+  const cwds = {};
+  for (const name of ['a_b', 'a.b', 'zz']) {
+    cwds[name] = path.join(dir, name);
+    await fs.mkdir(cwds[name], { recursive: true });
+  }
+
+  // SELECTION FOR DELETION CARRIES POSITIVE IDENTITY, NEVER "whatever is new".
+  // This writes into the REAL ~/.claude/projects, which holds this host's
+  // transcripts from every other session — and the probe window is three
+  // model-backed CLI runs, minutes long, during which a concurrent `claude`
+  // anywhere on the box creates its own directory. A delta-based cleanup would
+  // recursively delete that live directory, possibly mid-write. So only the two
+  // names this probe COMPUTES are ever removable, and only if they were absent
+  // beforehand — a pre-existing directory of the same name is somebody else's.
+  const mine = [...new Set(['a_b', 'zz'].map(n => encodeCwd(cwds[n])))];
+  const preExisting = new Set();
+  for (const d of mine) if (await exists(d)) preExisting.add(d);
+
+  let measured = false;
+  try {
+    // PER-CWD, AROUND EACH INVOCATION, so a concurrent creation elsewhere on the
+    // box cannot perturb the count into a flake: what each run produced is
+    // observed at its own two names rather than inferred from a whole-directory
+    // delta.
+    // `a.b` RUNS FIRST, and the order is the attribution: it is the cwd whose
+    // `.` is under test, so it must be the run that CREATES the shared name.
+    // Run second it would only ever find `a_b`'s directory already there, and
+    // "the name existed afterwards" would say nothing about which run made it.
+    const produced = {};
+    for (const name of ['a.b', 'a_b', 'zz']) {
+      const want = encodeCwd(cwds[name]);
+      const had = await exists(want);
+      await runClaude(cwds[name], settings, 'Reply with the single word OK.');
+      produced[name] = { want, had, now: await exists(want) };
+    }
+
+    // THE MEASUREMENT, printed rather than merely asserted: the convention is
+    // the finding, and a green tick does not show it.
+    for (const name of ['a.b', 'a_b', 'zz']) {
+      const p = produced[name];
+      console.log(`cli-contract: cwd ${cwds[name]}`);
+      console.log(`cli-contract:   cc encodeCwd → ${p.want}`);
+      console.log(`cli-contract:   CLI produced → ${p.now ? p.want : '(nothing at that name)'}`
+        + `${p.had ? ' [name pre-existed; not attributable]' : ''}`);
+    }
+    console.log(`cli-contract: distinct directory names for 3 cwds: ${mine.length} (${mine.join(', ')})`);
+
+    measured = true;
+    // cc's own function first, so a premise that moved on THIS side is named as
+    // that rather than blamed on the binary.
+    assert.equal(encodeCwd(cwds['a_b']), encodeCwd(cwds['a.b']),
+      "cc's own encodeCwd no longer collapses `_` and `.` alike — the premise moved on cc's side");
+
+    // DIRECTION 1, ATTRIBUTED TO THE `a.b` RUN: the cwd containing `.` CREATED
+    // the collapsed name. If the binary preserved `.`, this directory would not
+    // have appeared and cc's guard would be over-refusing genuine
+    // non-collisions — a lockout, and the guard would be wrong, not this.
+    assert.equal(mine.length, 2, `three cwds, two of which encode alike, name ${mine.length} directories`);
+    assert.equal(produced['a.b'].had, false, 'the shared name pre-existed — this run cannot be attributed');
+    assert.ok(produced['a.b'].now, `the \`.\` cwd wrote nothing at the collapsed name ${produced['a.b'].want}`);
+
+    // THE FALSIFIER, spelled the way a `.`-preserving CLI would spell it: the
+    // same collapse with `.` exempted. Its absence is what rules out "the CLI
+    // kept the dot and cc merely looked in the wrong place".
+    const dotPreserved = cwds['a.b'].replace(/[^A-Za-z0-9.-]/g, '-');
+    assert.notEqual(dotPreserved, produced['a.b'].want, 'the falsifier is not distinguishable');
+    assert.equal(await exists(dotPreserved), false,
+      `a directory preserving the literal \`.\` exists (${dotPreserved}) — the CLI does not collapse it`);
+
+    // …AND THE PAIR REALLY SHARES IT: `a_b` ran second and found the name
+    // already there, which is the collision cc refuses.
+    assert.equal(produced['a_b'].had, true, 'the second cwd of the pair got its own directory');
+    assert.ok(produced['a_b'].now);
+
+    // DIRECTION 2: the distinct cwd got its OWN, previously absent, directory —
+    // so "2" is one shared plus one separate rather than two arbitrary names,
+    // and the collapse is not simply mapping everything together.
+    assert.equal(produced['zz'].had, false);
+    assert.ok(produced['zz'].now, `no separate directory for zz at ${produced['zz'].want}`);
+    assert.notEqual(encodeCwd(cwds['zz']), encodeCwd(cwds['a_b']));
+  } finally {
+    // Exactly the names this probe computed, minus any that already existed.
+    const left = [];
+    for (const d of mine) {
+      if (preExisting.has(d)) continue;          // somebody else's, from before
+      if (!await exists(d)) continue;
+      if (measured) await fs.rm(path.join(projects, d), { recursive: true, force: true });
+      else left.push(path.join(projects, d));
+    }
+    if (left.length) {
+      // A MID-RUN FAILURE REPORTS RATHER THAN FORCE-CLEANS: the run broke before
+      // the measurement was complete, so what these directories hold is exactly
+      // what is no longer known.
+      console.log(`cli-contract: LEFT BEHIND, not removed (the run failed before it measured): ${left.join(', ')}`);
+    }
+    await clean();
+  }
 });

@@ -739,8 +739,9 @@ export function buildTools(): Tool[] {
         + 'nothing is discarded for you. Also refuses SYSTEM_NO_REMOTES (the system\'s provider does '
         + 'not serve named targets) and REMOTE_NOT_FOUND (it does, but not this one), both BEFORE '
         + 'anything is written. Refuses a project on `local`, which is one machine. '
-        + 'A permitted change discards the project\'s local session root, so the next spawn re-pulls '
-        + 'its config surface from the new target.',
+        + 'A permitted change removes nothing local: a worker reads the project\'s tree through the '
+        + 'union mount at its real path on the system, so there is no cc-owned copy of the old target '
+        + 'to go stale.',
       inputSchema: {
         type: 'object',
         properties: {

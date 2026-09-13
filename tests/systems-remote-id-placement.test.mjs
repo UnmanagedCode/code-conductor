@@ -6,7 +6,7 @@
 // pins that at the record and at each surface that reads or writes it.
 //
 // The fixture keeps two targets behind ONE registered system, which is the
-// shape the whole card exists for: ten containers, one docker provider, one row
+// shape this file exists for: ten containers, one docker provider, one row
 // in Settings.
 //
 // Both targets are rooted at the SAME sandbox, deliberately. Root scoping is
@@ -149,24 +149,40 @@ describe('remoteId in the project record', () => {
     assert.equal(ranB.stdout.trim(), 'b');
   });
 
-  // PINS: adopt's duplicate test compares the FULL triple. The same absolute
-  // path on two targets of one system is two trees, so adopting both is legal;
-  // adopting one twice is not.
-  test('adopt refuses a duplicate only on the whole (system, remoteId, path) triple', async () => {
+  // PINS: adopt's duplicate test compares the FULL triple — a path already
+  // adopted on THIS target is TARGET_ALREADY_MANAGED, and that is a different
+  // refusal from the transcript one below, with a different reason.
+  test('adopt refuses the same path on the same target as TARGET_ALREADY_MANAGED', async () => {
     const shared = await seedRepo(path.join(sandbox, 'shared'));
 
     const first = await adoptProject('one', shared, { system: remote.id, remoteId: 'a' });
     assert.equal(first.ok, true);
     assert.equal(first.remoteId, 'a');
 
-    const otherTarget = await adoptProject('two', shared, { system: remote.id, remoteId: 'b' });
-    assert.equal(otherTarget.ok, true, 'the same path on another target is another tree');
-    assert.equal(otherTarget.remoteId, 'b');
-
     const same = await adoptProject('three', shared, { system: remote.id, remoteId: 'a' });
     assert.equal(same.ok, false);
     assert.equal(same.code, 'TARGET_ALREADY_MANAGED');
     assert.match(same.reason, /'one'/);
+  });
+
+  // PINS A CONSEQUENCE OF THE FUSE GEOMETRY, and it is a NARROWING: the same
+  // absolute path on two targets of one system is still two different trees,
+  // and adopting both is REFUSED, because the CLI's working directory is that
+  // path on both — so the two would name ONE transcript directory and their
+  // sessions would interleave in it, with findSessionLocation unable to tell
+  // them apart.
+  //
+  // The refusal is the honest answer rather than the harm; the reason names the
+  // holder so the operator can pick another path on one of the two targets.
+  test('adopt refuses the same path on ANOTHER target, on the transcript directory', async () => {
+    const shared = await seedRepo(path.join(sandbox, 'shared'));
+    assert.equal((await adoptProject('one', shared, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    const otherTarget = await adoptProject('two', shared, { system: remote.id, remoteId: 'b' });
+    assert.equal(otherTarget.ok, false, 'two places at one path share one transcript directory');
+    assert.equal(otherTarget.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(otherTarget.reason, /'one'/, 'the refusal names the holder');
+    assert.match(otherTarget.reason, /transcript directory/);
   });
 
   // PINS: the mechanism the "a worktree can only re-derive to the target it was

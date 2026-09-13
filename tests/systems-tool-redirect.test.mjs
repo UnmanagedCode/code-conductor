@@ -25,8 +25,8 @@ import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { addSystem } from '../src/appSettings.ts';
-import { noMirror } from '../src/systems/mirror.ts';
-import { SessionRedirect } from '../src/systems/toolRedirect.ts';
+import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
+import { redirectTierOptions } from './tierFixture.mjs';
 
 const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
 
@@ -44,10 +44,8 @@ async function build({ flags = [], shellCommandTimeoutMs, maxOutputBytes } = {})
     system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
-    sessionRoot: root,
-    mirror: noMirror(remote.root),
+    ...redirectTierOptions({ systemPath: remote.root }),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [path.join(home, 'local-ok')],
     emit: (ev) => events.push(ev),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
     ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
@@ -79,21 +77,19 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
   assert.equal(d.updatedInput.description, 'x');
 });
 
-// INVERTED on card 2026-0312 §2 D-b: this used to pin that a positive tool
-// `timeout` rode out as `--timeout <ms>` on the forwarder's argv. NOTHING of the
-// tool's own timeout travels any more, and cc needs it for nothing: its only
-// consumer was the wait bound on a queue that no longer exists, and at the tool
-// timeout the CLI DETACHES the forwarder rather than killing it (card 2026-0305
-// §3), so the command keeps running under cc's own ceiling. A kill, when one
-// comes, closes the socket — cc's cancellation channel, which needs no number.
+// NOTHING of the tool's own timeout travels on the forwarder's argv, and cc
+// needs it for nothing: at the tool timeout the CLI DETACHES the forwarder
+// rather than killing it, so the command keeps running under cc's own ceiling.
+// A kill, when one comes, closes the socket — cc's cancellation channel, which
+// needs no number.
 //
 // THE ARGV IS WHERE THIS IS OBSERVABLE AT ALL, which is this test's reason to
 // exist: re-adding the flag would change no far-side behaviour cc can see, so
 // only the argv can catch it coming back.
 //
-// EVERY SHAPE THAT USED TO PRODUCE A FLAG is asserted here, not just one: the
-// guard that dropped the others (`Number.isFinite(timeout) && timeout > 0`) went
-// with the flag, so a partial restoration would put `--timeout Infinity` on a
+// EVERY SHAPE THAT COULD PRODUCE A FLAG is asserted here, not just one: there
+// is no `Number.isFinite(timeout) && timeout > 0` guard to drop the others, so
+// a partial restoration would put `--timeout Infinity` on a
 // real argv.
 test('neither a tool timeout nor an agent id rides out on the argv', async () => {
   const argvFor = async (input) =>
@@ -130,11 +126,11 @@ test('a forwarded command runs on the system and not on cc', async () => {
   assert.notEqual(miss.code, 0);
 });
 
-// INVERTED on card 2026-0312 — THE PARITY THIS CARD EXISTS FOR, at the layer a
-// worker actually meets it. This used to assert that `cd` AND `export` carried
-// between an agent's commands. Neither does: every command runs in its own
-// shell, which is what a local session already does (measured on CLI 2.1.258 —
-// a local Bash call persists nothing and the harness announces the cwd reset).
+// THE PARITY, at the layer a worker actually meets it: neither `cd` nor
+// `export` carries between two redirected commands, because every command runs
+// in its own shell — which is what a local session already does (measured on
+// CLI 2.1.258 — a local Bash call persists nothing and the harness announces
+// the cwd reset).
 test('nothing carries between two redirected commands — every one starts at the project root', async () => {
   await fs.mkdir(onSystem('sub'), { recursive: true });
   await bash('cd sub');
@@ -182,11 +178,9 @@ test('a forwarded command streams its output before it finishes', async () => {
   assert.equal(r.code, 0);
 });
 
-// T7 — INVERTED on card 2026-0312, and the ORDER inverts with the content. The
-// R5 notice said a shell had been RESTARTED and went out FIRST, ahead of output
-// that might be wrong because the exports were gone. There is no restart; what a
-// worker now needs to be told is that its `cd` was discarded, and that cannot be
-// known until the command has ended — so the notice arrives LAST.
+// T7 — THE NOTICE ARRIVES LAST, and the ORDER is part of the content: what a
+// worker needs to be told is that its `cd` was discarded, and that cannot be
+// known until the command has ended.
 //
 // NOT CLAIMING that the CLI's own wording matches cc's. The CLI prints its own
 // line when ITS shell's cwd moves; cc's string is its own and is pinned here.
@@ -253,15 +247,13 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 // else. The unrelated concurrent command completes normally, and the cancelled
 // one does not run to completion on the system.
 //
-// RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
-// waiting for its TURN on a shell, and there is no turn any more. WHAT IT PINS
-// IS THE EFFECT, not a call stopped short: instrumented, this test's
-// cancellation throws at the re-check AFTER `exec` returns, and the reference
-// provider is measured to have SPAWNED the `touch` and killed it before it ran
-// (card 2026-0328 §1, §5).
+// WHAT IT PINS IS THE EFFECT, not a call stopped short: instrumented, this
+// test's cancellation throws at the re-check AFTER `exec` returns, and the
+// reference provider is measured to have SPAWNED the `touch` and killed it
+// before it ran.
 //
 // THE WRITE THEREFORE SITS BEHIND A DELAY THE COMMAND MUST SURVIVE, and the
-// witness is read past it (card 2026-0331 §1b, §1e, §2):
+// witness is read past it:
 //   - Its absence below is the kill landing inside a 400 ms budget stated in the
 //     command text, rather than outrunning the ~10 ms a bare `touch` takes to
 //     start and run. That ~10 ms was the entire margin of the no-delay form, and
@@ -287,8 +279,7 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 //     What stays pinned is that the kill HAPPENS (the no-relay mutant dies six
 //     ways) and that its latency is BOUNDED — ~400 ms here, 280 ms / 1500 ms at
 //     the siblings above — so an unboundedly slow kill is still caught. A real
-//     kill-latency SLO would be a new requirement carrying its own number
-//     (card 2026-0331 §G-9, §G-10).
+//     kill-latency SLO would be a new requirement carrying its own number.
 test('a cancelled call does not run to completion, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
@@ -314,11 +305,11 @@ test('a cancelled call does not run to completion, and a concurrent one is untou
 // ITS BOUNDARY TWIN is `interrupting one call stops it inside the container and
 // leaves a concurrent call alone` in tests/systems-docker-boundary.real.test.mjs
 // — the same shape, witnessed from inside the container instead of on cc's own
-// filesystem. Card 2026-0312 re-based THIS file and missed that one, which then
-// sat red unnoticed because that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and
-// is in neither gated command (card 2026-0327). Change one, change both.
+// filesystem. That suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and is in
+// neither gated command, so a change made here alone sits red there unnoticed.
+// Change one, change both.
 //
-// NOT the same claim as the RE-FRAMED test above, and the difference is what
+// NOT the same claim as the EFFECT test above, and the difference is what
 // each test puts between ISSUING the call and CANCELLING it. That one puts
 // nothing there — it aborts on the next statement, so it never establishes that
 // the command started. This one interposes a delay, and its boundary twin goes
@@ -351,11 +342,10 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // value cannot tell "was not run" from "was run and its result discarded":
 // `ProviderShell`'s pre-crossing check and its post-exec re-check throw the SAME
 // `cancelled()`, so the caller sees one indistinguishable failure whether the
-// call was stopped before it crossed or crossed and had its result thrown away
-// (card 2026-0327). B's write sits behind a delay it must survive for the reason
-// the RE-FRAMED test above carries in full: read immediately, its absence is a
-// ~10 ms race, and an effect landing before the kill would be correct anyway
-// (card 2026-0331 §1b, §1e, §2).
+// call was stopped before it crossed or crossed and had its result thrown away.
+// B's write sits behind a delay it must survive for the reason the EFFECT test
+// above carries in full: read immediately, its absence is a ~10 ms race, and an
+// effect landing before the kill would be correct anyway.
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
@@ -402,90 +392,35 @@ test('a forwarded command reports the real exit code', async () => {
   assert.equal((await bash("bash -c 'exit 7'")).code, 7);
 });
 
-// PINS: a Read under the session root pulls the system's bytes to the local
-// path FIRST, so the CLI's own local read answers about the system's file.
-test('Read under the session root pulls before the tool runs', async () => {
-  await fs.writeFile(onSystem('greeting.py'), 'print("from the system")\n');
-  const d = await pre('Read', { file_path: inSession('greeting.py') });
-  assert.equal(d.decision, 'allow');
-  assert.equal(d.updatedInput, undefined, 'the path is NOT rewritten — the CLI reads locally');
-  assert.equal(await fs.readFile(inSession('greeting.py'), 'utf8'), 'print("from the system")\n');
-});
 
-// PINS: pull-before-EDIT, which is what makes the mixed Bash-write / Edit case
-// safe — a worker that `sed -i`s through Bash and then Edits the same file is
-// the normal case.
-test('Edit pulls the file again, so a Bash write earlier in the turn is not clobbered', async () => {
-  await fs.writeFile(onSystem('mixed.txt'), 'original\n');
-  await pre('Read', { file_path: inSession('mixed.txt') });
-  await bash("printf 'changed by bash\\n' > mixed.txt");
 
-  await pre('Edit', { file_path: inSession('mixed.txt'), old_string: 'a', new_string: 'b' });
-  assert.equal(await fs.readFile(inSession('mixed.txt'), 'utf8'), 'changed by bash\n');
-});
 
-// PINS: PostToolUse pushes the local result back to the system, and says so.
-test('PostToolUse pushes an edit back to the system and states where it landed', async () => {
-  await fs.writeFile(onSystem('app.js'), 'const a = 1\n');
-  await pre('Edit', { file_path: inSession('app.js'), old_string: '1', new_string: '2' });
-  await fs.writeFile(inSession('app.js'), 'const a = 2\n');
 
-  const note = await post('Edit', { file_path: inSession('app.js') }, { filePath: inSession('app.js') });
-  assert.equal(await fs.readFile(onSystem('app.js'), 'utf8'), 'const a = 2\n');
-  assert.match(note, new RegExp(onSystem('app.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(note, new RegExp(remote.id));
-});
 
-// PINS: a failed push is a HARD, LOUD failure — it names the divergence on the
-// spot and REFUSES the next write to that path, so a worker can never come away
-// believing an edit reached the system when it did not.
-test('a failed push names the divergence and denies the next write to that path', async () => {
-  await fs.mkdir(onSystem('d'), { recursive: true });
-  await fs.writeFile(onSystem('d/f.txt'), 'system copy\n');
-  await pre('Edit', { file_path: inSession('d/f.txt'), old_string: 'a', new_string: 'b' });
-  await fs.writeFile(inSession('d/f.txt'), 'local edit\n');
-  // Break the push: the parent directory becomes a file on the system.
-  await fs.rm(onSystem('d'), { recursive: true });
-  await fs.writeFile(onSystem('d'), 'not a directory\n');
-
-  const note = await post('Edit', { file_path: inSession('d/f.txt') }, {});
-  assert.match(note, /did not reach/);
-  assert.ok(events.some(e => e.kind === 'system' && JSON.stringify(e).includes('did not reach')),
-    'the failure is surfaced to the operator, not only to the model');
-
-  const denied = await pre('Edit', { file_path: inSession('d/f.txt'), old_string: 'x', new_string: 'y' });
-  assert.equal(denied.decision, 'deny');
-  assert.match(denied.reason, /did not reach/);
-});
-
-// PINS: THE BOUNDARY. A local path with no counterpart on the system and no
-// business being local is REFUSED, not quietly written to cc's disk where Bash
-// can never see it.
-test('a file tool aimed outside the session root is refused by name', async () => {
-  for (const p of [path.join(os.tmpdir(), 'cc-redirect-scratch.txt'), '/etc/hosts', onSystem('greeting.py')]) {
-    const d = await pre('Write', { file_path: p, content: 'x' });
-    assert.equal(d.decision, 'deny', p);
-    assert.match(d.reason, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  }
-});
-
-// PINS: the prefix rule's other half — a path cc KNOWS is local (an attachment
-// under the store, a plan under ~/.claude) passes through untouched. Refusing
-// those would break attachments on a remote project.
-test('a known-local path passes through untouched', async () => {
-  const local = path.join(home, 'local-ok', 'note.txt');
-  await fs.mkdir(path.dirname(local), { recursive: true });
-  await fs.writeFile(local, 'attachment\n');
-  const d = await pre('Read', { file_path: local });
-  assert.equal(d.decision, 'allow');
-  assert.equal(d.updatedInput, undefined);
-});
 
 // PINS THE SECOND GUARD on the one non-negotiable invariant: if Glob or Grep
 // ever reaches the hook — the injected `permissions.deny` having failed, or the
 // CLI's tool profile having changed — it is REFUSED by name, not allowed to
 // answer about cc's session root. A search answering about the wrong machine is
 // exactly the leak that makes a worker distrust every other tool result.
+// PINS: a file tool aimed INSIDE the project is allowed with nothing added and
+// nothing rewritten — the union serves it, so there is no pull, no push and no
+// translation. These tools are hooked to REFUSE the paths the union does not
+// serve (tests/systems-file-tool-refusals.test.mjs); this is the other half,
+// and without it a hook that denied everything would pass that file.
+//
+// ENUMERATED FROM THE EXPORTED MAP rather than transcribed, so a fifth file
+// tool is covered here the moment it is declared.
+test('file tools pass through untouched inside the project', async () => {
+  await build();
+  for (const [tool, key] of Object.entries(FILE_TOOLS)) {
+    const d = await redirect.preToolUse(tool, { [key]: path.join(remote.root, 'src/app.js') });
+    assert.deepEqual(d, { decision: 'allow' }, tool);
+    // And no note on the way back: there is no write-back to report.
+    assert.equal(await redirect.postToolUse(tool, { [key]: path.join(remote.root, 'src/app.js') }, {}), null, tool);
+  }
+});
+
 test('Glob and Grep are refused by name if they ever reach the hook', async () => {
   for (const tool of ['Glob', 'Grep']) {
     const d = await pre(tool, { pattern: '**/*.js' });
@@ -495,88 +430,19 @@ test('Glob and Grep are refused by name if they ever reach the hook', async () =
   }
 });
 
-// PINS S6: a file tool whose path is not absolute is REFUSED rather than let
-// through. The CLI was measured resolving to absolute before the hook fires, so
-// this is unreachable today — but letting it through meant PreToolUse skipped
-// the pull while PostToolUse would still have pushed, and the invariant should
-// not depend on an undocumented CLI behaviour staying put.
-test('a relative file path is refused rather than passed through unpulled', async () => {
-  for (const tool of ['Read', 'Write', 'Edit']) {
-    const d = await pre(tool, { file_path: 'relative/path.txt' });
-    assert.equal(d.decision, 'deny', `${tool} let a relative path through`);
-    assert.match(d.reason, /absolute/);
-  }
-  const nb = await pre('NotebookEdit', { notebook_path: './nb.ipynb' });
-  assert.equal(nb.decision, 'deny');
-});
 
-// PINS: and nothing is pushed for one either, so the two halves cannot
-// disagree about which paths they handle.
-test('a relative path is never pushed back', async () => {
-  await fs.writeFile(path.join(root, 'rel.txt'), 'local only\n');
-  assert.equal(await post('Edit', { file_path: 'rel.txt' }, {}), null);
-  await assert.rejects(fs.stat(onSystem('rel.txt')), 'nothing was written to the system');
-});
 
-// PINS T2: the push half's ABSOLUTE check, against its own window rather than
-// against a containment test that happens to fire first.
-//
-// The case above is stopped one guard later: `toSystem` resolves a relative path
-// against the test process's cwd, which lies outside the session root, so
-// containment answers null for a reason that has nothing to do with the guard.
-// The two halves can genuinely disagree — a cwd INSIDE the session root gives a
-// relative path a real system mapping — and that is the shape a push must still
-// refuse, because PreToolUse refused the same path and so never pulled it.
-//
-// Driven by making the session root the process's OWN cwd, which is the only way
-// to reach the disagreement without a global chdir. `package.json` is read, never
-// written: with the guard gone it is the repo's file that would land on the
-// system, which is exactly the harm.
-test('a relative path that DOES map into the session root is still not pushed', async () => {
-  const here = new SessionRedirect({
-    system: await systemById(remote.id, null, 'test'),
-    systemId: remote.id,
-    systemPath: remote.root,
-    sessionRoot: process.cwd(),
-    mirror: noMirror(remote.root),
-    forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [],
-    emit: () => {},
-  });
-  try {
-    // The premise: relative here really does map onto the system.
-    assert.ok(here.map.toSystem(path.resolve('package.json')) !== null,
-      'the fixture reaches the disagreement — an absolute spelling of this path maps');
 
-    assert.equal(await here.postToolUse('Write', { file_path: 'package.json' }, {}), null,
-      'a relative path is refused by the push half itself');
-    await assert.rejects(fs.stat(onSystem('package.json')), 'the repo file never reached the system');
-  } finally { await here.close(); }
-});
 
-// PINS: R2's annotation is TARGETED — it fires only when the output actually
-// shows a system path, so the model is not fed a note on every command.
-test('a Bash result is annotated only when it actually shows a system path', async () => {
-  const shown = await post('Bash', {}, { stdout: `cwd is ${remote.root}\n`, stderr: '' });
-  assert.ok(shown && shown.includes(remote.id));
-
-  assert.equal(await post('Bash', {}, { stdout: 'all tests passed\n', stderr: '' }), null);
-});
-
-// T3 — A LIVE PRE-EXISTING DEFECT, FOUND WHILE PLANNING THIS CARD AND FIXED ON
-// IT. `SessionRedirect.close()` did not reap an in-flight command in the
-// one-shot mode — the mode card 2026-0312 makes the only mode. It closed
-// SHELLS, and in one-shot mode there is no shell, so nothing reached the
+// T3 — `SessionRedirect.close()` REAPS AN IN-FLIGHT COMMAND in one-shot mode,
+// which is the only mode. A close that reached SHELLS alone would reach
+// nothing, because in one-shot mode there is no shell between it and the
 // running `exec`.
 //
-// MEASURED IN BOTH MODES BEFORE THE STRIP, identical rig, with a witness file
-// that only appears if the command completes: the persistent mode gave
-// `code=1` and the command did NOT complete; the fallback gave `code=0` WITH
-// THE COMMAND'S OUTPUT, having run to completion on the far side 1.2s after
-// the session was torn down. Reachable in production TODAY on any provider that
-// did not advertise `persistentShell` — this card does not introduce it, it
-// PROMOTES a fallback-only defect to the only behaviour, so shipping the strip
-// without the fix ships a regression in effect.
+// MEASURED, identical rig, with a witness file that only appears if the command
+// completes: closing a shell gave `code=1` and the command did NOT complete;
+// reaching no shell gave `code=0` WITH THE COMMAND'S OUTPUT, having run to
+// completion on the far side 1.2s after the session was torn down.
 //
 // THE WITNESS IS THE FAR SIDE'S OWN FILESYSTEM. cc's bookkeeping cannot tell
 // teardown from forgetting: `close()` drops its handle either way, so any
@@ -611,7 +477,7 @@ test('close() reaps a command that is still in flight', async () => {
   await redirect.close();
 });
 
-// S1 — PINS THAT `runForwarded` DETACHES WHAT IT ATTACHED. It relays two abort
+// PINS THAT `runForwarded` DETACHES WHAT IT ATTACHED. It relays two abort
 // sources into a per-call controller, and the `removeEventListener` loop in its
 // `finally` is what keeps the SESSION-lived controller from accumulating one
 // listener per command the session has ever run. That leak was measured before
@@ -684,22 +550,13 @@ test('a redirect keeps working after close(), because a rewind calls it too', as
   assert.equal(after.stdout.trim(), 'after', 'the next command runs normally, not ECANCELLED');
 });
 
-// PINS: `@mention` pre-hydration pulls the named file into the session root
-// BEFORE the prompt reaches the CLI — the CLI expands a mention with no hook,
-// so a file that is not already local is simply absent from the turn.
-test('@mention pre-hydration pulls the named files before the prompt is sent', async () => {
-  await fs.mkdir(onSystem('docs'), { recursive: true });
-  await fs.writeFile(onSystem('docs/spec.md'), '# the spec\n');
-  await redirect.hydrateMentions('please read @docs/spec.md and @nope/missing.md then stop');
-  assert.equal(await fs.readFile(inSession('docs/spec.md'), 'utf8'), '# the spec\n');
-});
 
-// ── A WIDE MIRROR: the two things it would silently break (card 2026-0259) ──
+// ── A WIDE MIRROR: the two things it would silently break ──────────────────
 //
-// Before P7 one field — the map's far end — was three things at once: the
-// mapping anchor, the shell's cwd, and the needle the Bash annotation looks
-// for. Widening it to a mirror root would have repurposed all three. These pin
-// the two that are outright defects.
+// One field — the map's far end — must not be three things at once: the mapping
+// anchor, the shell's cwd, and the needle the Bash annotation looks for.
+// Widening it to a mirror root repurposes all three. These pin the two that are
+// outright defects.
 
 // A redirect whose mirror is the whole filesystem, with the project still where
 // it was. The provider is recorded so an assertion can be made on the frame cc
@@ -713,36 +570,15 @@ async function wideRedirect() {
     system: await systemById('widebox', null, 'test'),
     systemId: 'widebox',
     systemPath: remote.root,
-    sessionRoot: image,
     // `/` is the widest mirror there is, and the one every one of these
     // assertions is degenerate without.
-    mirror: { mirrorRoot: '/', exclude: [], offset: remote.root.replace(/^\//, '') },
+    ...redirectTierOptions({ systemPath: remote.root, mirrorRoot: '/' }),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [],
     emit: () => {},
   });
   return { wide, rec, image };
 }
 
-// PINS 8b: the Bash annotation's needle is the PROJECT's path, not the mirror
-// root. Under `mirrorRoot: '/'` the mirror root is a substring of essentially
-// every path any command prints, so a needle taken from the map would attach
-// R2's deliberately targeted note to every single Bash call.
-//
-// NOT CLAIMING: that the annotation's wording is right — the existing test
-// above owns that.
-test('a wide mirror does not turn the targeted Bash annotation into an every-command one', async () => {
-  const { wide } = await wideRedirect();
-  try {
-    // Output full of `/` and naming no project path: silent.
-    assert.equal(await wide.postToolUse('Bash', {}, { stdout: '/usr/bin/env\n/etc/hosts\n', stderr: '' }), null);
-    assert.equal(await wide.postToolUse('Bash', {}, { stdout: '/\n', stderr: '' }), null);
-    // Output naming the project path: exactly one note, naming the project.
-    const note = await wide.postToolUse('Bash', {}, { stdout: `cwd is ${remote.root}\n`, stderr: '' });
-    assert.ok(note && note.includes(remote.root), note);
-    assert.ok(!note.includes('Paths under / in'), 'and it names the project, not the mirror root');
-  } finally { await wide.close(); }
-});
 
 // PINS 8c: EVERY COMMAND runs from the PROJECT root under a wide mirror, not
 // from the mirror root. Asserted on the `exec` frame's `cwd` ON THE WIRE — a
@@ -769,21 +605,3 @@ test('a wide mirror still runs every command at the project root', async () => {
   } finally { await wide.close(); }
 });
 
-// PINS 8d: an `@mention` is resolved against the CLI's OWN cwd — the project's
-// directory inside the image — not against the image root. Under a wide mirror
-// those are different directories, and resolving against the wrong one pulls a
-// file nobody named.
-//
-// NOT CLAIMING: that the CLI expands the mention the same way; that is measured
-// CLI behaviour the hydration exists to serve.
-test('a mention resolves against the CLI cwd, not the image root', async () => {
-  const { wide, image } = await wideRedirect();
-  try {
-    await fs.writeFile(path.join(remote.root, 'NOTES.md'), 'project notes\n');
-    await wide.hydrateMentions('please read @NOTES.md');
-    assert.equal(await fs.readFile(path.join(image, remote.root.replace(/^\//, ''), 'NOTES.md'), 'utf8'),
-      'project notes\n', 'it landed at the project\'s place inside the image');
-    await assert.rejects(fs.readFile(path.join(image, 'NOTES.md')),
-      'and not at the image root, which is a different directory entirely');
-  } finally { await wide.close(); }
-});

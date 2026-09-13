@@ -31,11 +31,32 @@
 //                              only for the case where the answer must survive
 //                              a restart and change with it
 //   --advertise-exclude <abs>  an advertised exclude entry (repeatable)
+//   --exclude-file <path>      advertised excludes, one absolute path per line,
+//                              read ONCE at startup for the same reason
+//                              --mirror-file is: the list must be able to
+//                              change with a RESTART and not within a
+//                              generation
 //   --extra-field              add a field cc has never heard of to the
 //                              `remoteDescriptor` answer
 //   --frame-log <path>         append every frame this fixture writes, so a
 //                              test can assert what actually went ON THE WIRE
 //                              rather than trusting the fixture to have sent it
+//   --probe-log <path>         append one line per LIVENESS PROBE received —
+//                              an `exec` whose argv is exactly `['true']`.
+//                              `--frame-log` records what the fixture WRITES,
+//                              so it cannot count an incoming frame, and every
+//                              other exec in a spawn is a derivation carrying
+//                              `env LC_ALL=C …`: the shape is what identifies
+//                              the probe, so counting it counts the probe and
+//                              not the traffic beside it
+//   --dead-file <path>         while that file EXISTS, answer every `exec` with
+//                              an id-addressed ENOREMOTE instead of running it
+//                              — the provider is UP and its handshake is the
+//                              same generation, but the machine behind it has
+//                              gone. Checked PER FRAME, never at startup, which
+//                              is the whole point: it is the state cc's
+//                              handshake-keyed memoisation cannot see, and the
+//                              only way to produce it without a container
 //   --ignore-prune             strip the `( -path … ) -prune -o` clause out of
 //                              any `exec` argv before running it, emulating a
 //                              far side whose `find` does not honour the
@@ -46,7 +67,7 @@
 //
 // Every other flag goes to the real provider unchanged.
 
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { NdjsonDecoder, SystemError, encodeFrame } from '../../src/systems/protocol.ts';
 import { ReferenceProvider, parseProviderArgs } from '../../src/systems/referenceProvider.ts';
 
@@ -77,11 +98,24 @@ const mirrorFile = takeValue('--mirror-file');
 const pidFile = takeValue('--pid-file');
 const frameLog = takeValue('--frame-log');
 const ignorePrune = takeFlag('--ignore-prune');
+const deadFile = takeValue('--dead-file');
+const probeLog = takeValue('--probe-log');
 const exclude = takeAll('--advertise-exclude');
+const excludeFile = takeValue('--exclude-file');
 let mirrorRoot = takeValue('--advertise-mirror');
 
 if (mirrorRoot === null && mirrorFile !== null) {
   try { mirrorRoot = readFileSync(mirrorFile, 'utf8').trim() || null; } catch { /* advertise nothing */ }
+}
+// READ ONCE, for the same reason `--mirror-file` is: cc memoises the
+// advertisement per connection generation, so a list that changed within one
+// would model something that cannot happen. One entry per line.
+if (excludeFile !== null) {
+  try {
+    for (const line of readFileSync(excludeFile, 'utf8').split('\n')) {
+      if (line.trim() !== '') exclude.push(line.trim());
+    }
+  } catch { /* advertise no excludes */ }
 }
 if (pidFile) writeFileSync(pidFile, String(process.pid));
 
@@ -132,6 +166,18 @@ process.stdin.on('data', (chunk) => {
     return;
   }
   for (const f of frames) {
+    // BEFORE the dead-file arm, so a probe is counted whether it is answered
+    // or refused — a count that only saw successes could not tell a refused
+    // probe from one that was never made.
+    if (probeLog && f.type === 'exec' && Array.isArray(f.argv)
+        && f.argv.length === 1 && f.argv[0] === 'true') {
+      appendFileSync(probeLog, 'probe\n');
+    }
+    if (deadFile && f.type === 'exec' && existsSync(deadFile)) {
+      write({ type: 'error', id: f.id, code: 'ENOREMOTE',
+        message: 'the target is not running' });
+      continue;
+    }
     if (ignorePrune && f.type === 'exec' && Array.isArray(f.argv)) {
       f.argv = withoutPruneClause(f.argv);
     }

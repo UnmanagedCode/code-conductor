@@ -28,7 +28,6 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { addSystem, updateSystem, removeSystem, getSystem, getSystems } from '../src/appSettings.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { disposeSystemHandles, systemById, LOCAL_SYSTEM_ID } from '../src/systems/registry.ts';
-import { sessionRootsDir } from '../src/systems/sessionRoot.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', 'referenceProvider.ts');
@@ -191,50 +190,3 @@ describe('a registry row that can reach its system', () => {
   });
 });
 
-describe('the session-root placement check', () => {
-  let home;
-  beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
-  afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
-
-  // PINS: registration is refused when an ancestor of where this system's local
-  // session directories would live is a git repository.
-  test('a store inside a git repo refuses the registration, naming the repo', async () => {
-    // The store lives under the projects root; make the projects root a repo.
-    const root = process.env.PROJECTS_ROOT;
-    await fs.mkdir(path.join(root, '.git'), { recursive: true });
-    await assert.rejects(
-      () => addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() }),
-      (e) => e.statusCode === 400 && e.message.includes(root) && /git repository/.test(e.message),
-    );
-    assert.equal(getSystem('refbox'), null, 'and the row is not saved');
-  });
-
-  // PINS: the check tests EXISTENCE of `.git`, not its kind — inside a git
-  // worktree `.git` is a file, and the CLI's upward probe stops at it just the
-  // same.
-  test('a `.git` FILE (a worktree checkout) refuses too', async () => {
-    const root = process.env.PROJECTS_ROOT;
-    await fs.mkdir(root, { recursive: true });
-    await fs.writeFile(path.join(root, '.git'), 'gitdir: /elsewhere/.git/worktrees/w\n');
-    await assert.rejects(
-      () => addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() }),
-      (e) => e.statusCode === 400 && /git repository/.test(e.message),
-    );
-  });
-
-  // PINS: the check is scoped to the session-roots path — a repo that is NOT an
-  // ancestor of it (a project inside the projects root, which is the normal
-  // case) does not refuse.
-  test('a git repo that is not an ancestor does not refuse', async () => {
-    await fs.mkdir(path.join(process.env.PROJECTS_ROOT, 'someproject', '.git'), { recursive: true });
-    const rec = await addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() });
-    assert.equal(rec.id, 'refbox');
-  });
-
-  // PINS: the path the check defends is the one a session root would use.
-  test('session roots are keyed per system under cc\'s own store', () => {
-    assert.equal(sessionRootsDir('prod-box'), path.join(orchStoreRoot(), 'systems', 'prod-box', 'sessions'));
-    assert.notEqual(sessionRootsDir('a'), sessionRootsDir('b'),
-      'two systems hosting a project at the same path cannot collide on one local directory');
-  });
-});

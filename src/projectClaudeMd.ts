@@ -54,24 +54,18 @@ const PROJECT_HEADING = '# Project conventions';
 //     time a command prints a path. Told, a worker did the task and remarked on
 //     nothing; untold, it took a system path from a stack trace, tried to read
 //     it, and spent a call recovering.
-//   * The second is a CORRECTION, twice over. An earlier wording said system
-//     paths "are the system's copies of what you see locally" and sent the model
-//     straight to `Read /app/greeting.py` — which cannot work, because the CLI
-//     reads on cc's machine. It has to say files are read and edited at their
-//     LOCAL paths. A later wording then said a system path "appears only in
-//     command output", which is FALSE: cc's own PostToolUse note puts one on a
-//     tool result ("Saved to /app/… on system '<id>'."). The prohibition is what
-//     carries the behaviour, so it says NEVER OPEN one — true wherever the path
-//     came from — rather than making a claim about where such paths can appear.
-// A THIRD SENTENCE WAS DELETED BY CARD 2026-0312 AND NOTHING REPLACED IT — a
-// per-session saving, recorded so it is not re-added by someone rediscovering
-// the problem it solved. It said shell state is PER AGENT, and it existed for an
-// ASYMMETRY: `export` persisted across an agent's own commands while a local
-// session persisted nothing, which invited the false generalisation that a
-// dispatched subagent inherited that state. That card deleted the long-lived
-// shell, so the asymmetry does not exist: nothing an agent's command sets
-// reaches ANY later command, its own included, exactly as locally. The
-// sentence's subject is gone.
+//   * The second says the CLI's file tools and the shell see the SAME path:
+//     the CLI runs chrooted at `${system.path}`, so a prohibition on using that
+//     path would forbid the only path that works. There is one spelling of one
+//     file, which is the fact a worker acts on — and the sentence makes no
+//     claim about where such a path can APPEAR, which is the claim a wrong
+//     wording gets wrong.
+//
+// NOTHING IS ADDED ABOUT SHELL STATE, AND A "SHELL STATE IS PER AGENT" SENTENCE
+// MUST NOT BE RE-ADDED: it has no subject. Nothing an agent's command sets
+// reaches ANY later command, its own included — there is no long-lived shell —
+// exactly as locally. Such a sentence would be a per-session cost with no
+// behaviour behind it.
 //
 // SPECIFICALLY NOT ADDED IN ITS PLACE: anything about each command starting at
 // the project root. That fact IS delivered — by cc's own notice on the one
@@ -81,15 +75,15 @@ const PROJECT_HEADING = '# Project conventions';
 // sentence every session pays for.
 //
 // Nothing more. `Glob`/`Grep` being gone is volunteered by the tool registry; a
-// write outside the session root is named by its own refusal; a failed
+// write outside the project tree is named by its own refusal; a failed
 // write-back is named by the note on the tool result. Each of those is
 // delivered at the point of use by a channel the worker cannot miss, so
 // repeating it here would be a per-session cost for no change in behaviour.
 function systemDisclosure(system: { id: string; path: string }): string {
   return `# System\n\n`
     + `This project's tree is at \`${system.path}\` on system \`${system.id}\`, where \`Bash\` commands run. `
-    + `Read, write and edit files at their paths under this session's working directory — `
-    + `never at their \`${system.path}\` paths, which name the same files seen from the system.\n`;
+    + `That is also this session's working directory, so every tool names a file by the same path — `
+    + `there is no second, local spelling of it.\n`;
 }
 
 // The disclosure argument for a project being CREATED on a system, from the two
@@ -149,7 +143,7 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 // or a note) the heading is omitted too and the document is marker + workspace.
 // Also returns the project catalog's `degraded` flag, off the read the block
 // composition already makes — because degradedness is a property OF THIS
-// DOCUMENT and its consequences differ per caller (card 2026-0282). The create
+// DOCUMENT and its consequences differ per caller. The create
 // path takes this shape and warns the operator; the regeneration path takes the
 // plain `composeProjectConventionsDoc` below and stays silent, because it
 // reaches this composition once per project per sweep and a project whose

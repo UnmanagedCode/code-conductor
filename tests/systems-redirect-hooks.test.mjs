@@ -1,10 +1,10 @@
 // The hook plumbing redirection needs: what the injected settings ask the CLI
 // for, and what the broker answers.
 //
-// Two things are new here and both are load-bearing. The broker used to speak
-// only allow/deny on PreToolUse; it now also carries `updatedInput` (the Bash
-// rewrite) and answers PostToolUse with `additionalContext` (the write-back
-// note). And the ask card must render the command the WORKER asked for, not the
+// Two things here are load-bearing beyond allow/deny on PreToolUse. The broker
+// also carries `updatedInput` (the Bash rewrite) and answers PostToolUse with
+// `additionalContext` (the write-back note). And the ask card must render the
+// command the WORKER asked for, not the
 // forwarder invocation it was rewritten into — under redirection every Bash
 // call looks alike to the permission layer, so a card built from the post-hook
 // input would show every command as the same opaque line.
@@ -13,6 +13,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HookBroker } from '../src/hookBroker.ts';
 import { buildSettingsJSON } from '../src/settings.ts';
+import { FILE_TOOLS, SessionRedirect } from '../src/systems/toolRedirect.ts';
+import { InstanceManager } from '../src/instances.ts';
+import { redirectTierOptions } from './tierFixture.mjs';
 
 function fakeRes() {
   const res = {
@@ -54,13 +57,25 @@ test('a non-redirected session gets the settings it always got', () => {
   assert.equal(s.permissions, undefined);
 });
 
-// PINS: a redirected session hooks Read as well (its bytes have to be fetched
-// before the CLI opens the file), hooks PostToolUse (the write-back), and
-// REMOVES Glob and Grep — a tool result cannot be substituted, so a search that
-// answered from the session root would be answering about the wrong machine.
-test('a redirected session hooks Read and PostToolUse and removes Glob/Grep', () => {
+// PINS: a redirected session HOOKS Read, still registers PostToolUse (no
+// consumer today; a write-back needs the seam), and REMOVES Glob and Grep,
+// because a marked CLI's Grep spawns an unmarked `rg` that would search the
+// wrong side and return silently wrong results.
+//
+// READ IS HOOKED TO REFUSE, NOT TO PULL (criterion 11): the union puts a served
+// path's bytes there, so no PreToolUse pull is needed — but a Read aimed at a
+// path the union does not serve to this session has to meet cc's refusal rather
+// than an -ENOENT the model reads as "the file is absent". Hooked, and still
+// NOT gated — A14 below.
+//
+// A15: EVERY FILE_TOOLS KEY IS IN THE MATCHER, enumerated from the exported map
+// rather than transcribed, so a fifth file tool declared without being hooked
+// fails here instead of silently escaping the boundary.
+test('a redirected session hooks every file tool, keeps PostToolUse, and removes Glob/Grep', () => {
   const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h', redirect: true }));
-  assert.match(s.hooks.PreToolUse[0].matcher, /\bRead\b/);
+  for (const tool of Object.keys(FILE_TOOLS)) {
+    assert.match(s.hooks.PreToolUse[0].matcher, new RegExp(`\\b${tool}\\b`), `${tool} is not hooked`);
+  }
   assert.match(s.hooks.PreToolUse[0].matcher, /\bBash\b/);
   assert.equal(s.hooks.PostToolUse[0].hooks[0].url, 'http://h');
   assert.deepEqual(s.permissions.deny, ['Glob', 'Grep']);
@@ -68,13 +83,18 @@ test('a redirected session hooks Read and PostToolUse and removes Glob/Grep', ()
   // headless tool profile is undocumented surface the denial alone rests on.
   assert.match(s.hooks.PreToolUse[0].matcher, /\bGlob\b/);
   assert.match(s.hooks.PreToolUse[0].matcher, /\bGrep\b/);
+  // A LOCAL session is untouched by all of it — the matcher it gets names no
+  // file tool cc added, so nothing here can leak into an ordinary session.
+  const local = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h' }));
+  assert.doesNotMatch(local.hooks.PreToolUse[0].matcher, /\bRead\b/);
 });
 
-// PINS S3: a redirected session asks the CLI NOT to inject its dynamic git
-// instructions. The CLI derives them from its own cwd, which for a redirected
-// session is cc's session root — a directory holding the project's config
-// surface and nothing else — so the guidance it produces describes the wrong
-// repository. Measured against 2.1.250, whose own logic is
+// PINS: a redirected session asks the CLI NOT to inject its dynamic git
+// instructions. The CLI shells out to run that git itself — unmarked, and
+// outside cc's remote-forwarded Bash tool — and the union's project tier has no
+// host side by design, so an unmarked caller there gets the remote's copy or
+// -ENOENT, never a usable working tree. Guidance derived from that is worse
+// than none. Measured against 2.1.250, whose own logic is
 // `settings.includeGitInstructions ?? true`.
 //
 // Chosen over the CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS env var deliberately:
@@ -90,6 +110,81 @@ test('a redirected session suppresses the CLI dynamic git instructions', () => {
 test('a local session keeps the CLI git instructions', () => {
   const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h' }));
   assert.equal(s.includeGitInstructions, undefined);
+});
+
+// PINS THE PORTLESS COUPLING, and it exists because a round-2 review reversed a
+// claim of mine that was FALSE.
+//
+// THE CLAIM THAT WAS WRONG: that a redirected session with no `serverPort`
+// degrades loudly, because `hookCallbackUrl` and `bashForwardUrl` share the
+// `if (!this.serverPort) return null` guard, so `forwarderUrl` would be `''`
+// and every forwarded command would fail visibly. They share a GUARD, not a
+// FAILURE. With no `hookCallbackUrl`, `buildSettingsJSON` registers NO
+// PreToolUse hook at all — so nothing ever consults the redirect, `Bash` is
+// never rewritten, `forwarderUrl` is never read, and the worker's raw command
+// runs LOCALLY with no refusal and no diagnostic. Silent execution against the
+// wrong machine: exactly the failure class src/systems/toolRedirect.ts's
+// invariant exists to prevent.
+//
+// UNREACHABLE IN PRODUCTION TODAY, by ordering: every create path is either
+// served by the listening server or, for the one that is not
+// (`restoreFromResumeManifest`), explicitly sequenced after `setServerPort`
+// (server.ts, with a comment stating the dependency). A comment states intent;
+// this states the coupling the intent rests on.
+//
+// SO WHAT IS PINNED IS THE BICONDITIONAL, not either guard: no hook URL ⟺ no
+// forwarder URL ⟺ no registered PreToolUse hook. THE MUTATION THIS MUST DIE
+// UNDER: giving `bashForwardUrl` (or `hookCallbackUrl`) a fallback while the
+// other stays null — under it the two disagree, and a session could rewrite
+// Bash with no hook to carry the rewrite, or register hooks pointing nowhere.
+// Both are silent-local by another road.
+test('with no server port, the hook URL and the forwarder URL degrade together', async () => {
+  const im = new InstanceManager();               // never given a port
+  const id = 'inst-portless';
+
+  const coupled = () => {
+    const hook = im.hookCallbackUrl(id);
+    const fwd = im.bashForwardUrl(id);
+    assert.equal(hook === null, fwd === null,
+      `the two URLs disagree about the port: hook=${hook} forwarder=${fwd}`);
+    return { hook, fwd };
+  };
+
+  // ── portless ──
+  const off = coupled();
+  assert.equal(off.hook, null);
+  assert.equal(off.fwd, null);
+  // …and the consequence: NO hook is registered, which is what makes the
+  // redirect unreachable rather than merely broken.
+  const sOff = JSON.parse(buildSettingsJSON({ hookCallbackUrl: off.hook ?? undefined, redirect: true }));
+  assert.deepEqual(sOff.hooks.PreToolUse, [], 'a PreToolUse hook was registered with no callback URL');
+  assert.equal(sOff.hooks.PostToolUse, undefined, 'a PostToolUse hook was registered with no callback URL');
+
+  // The redirect's own rewrite is NOT self-disabling — it still produces a
+  // `--url ''` argv — which is the evidence that the missing HOOK, and not a
+  // failing forwarder, is the whole failure. Asserted so nobody re-derives my
+  // wrong claim from the guard's existence.
+  const redirect = new SessionRedirect({
+    system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+    systemId: 'prod-box', systemPath: '/srv/app',
+    ...redirectTierOptions({ systemPath: '/srv/app' }),
+    forwarderUrl: off.fwd ?? '',
+    emit: () => {},
+  });
+  const d = await redirect.preToolUse('Bash', { command: 'echo hi' });
+  assert.equal(d.decision, 'allow');
+  assert.match(d.updatedInput.command, /--url ''/,
+    'the rewrite silently stopped happening, which would hide the real failure');
+
+  // ── THE CONTROL, and without it every assertion above passes for a manager
+  // whose URL builders are simply broken. ──
+  im.setServerPort(44279);
+  const on = coupled();
+  assert.notEqual(on.hook, null);
+  assert.notEqual(on.fwd, null);
+  const sOn = JSON.parse(buildSettingsJSON({ hookCallbackUrl: on.hook ?? undefined, redirect: true }));
+  assert.equal(sOn.hooks.PreToolUse.length, 1, 'the port is set and still no hook is registered');
+  assert.match(sOn.hooks.PreToolUse[0].hooks[0].url, /hook-callback$/);
 });
 
 // PINS: the rewrite reaches the CLI. Without `updatedInput` on the response the
@@ -145,18 +240,49 @@ test('the ask card carries the pre-rewrite input, and the allow still rewrites',
   assert.deepEqual(res.body.hookSpecificOutput.updatedInput, { command: "node fwd -- 'npm test'" });
 });
 
-// PINS: a Read is hooked for its bytes, not for permission. It must not start
-// prompting the user on a remote project when it never did on a local one.
-test('Read is redirected without becoming an ask-gated tool', async () => {
-  const { b, events } = broker({ mode: 'ask', redirect: {
+// A14 — PINS: `Read` IS HOOKED AND STILL NOT GATED, in ask mode. It is hooked
+// to refuse an unserved path (criterion 11), and a "no exemption" rule would
+// hold only for an UNHOOKED Read: without the exemption every read on a remote
+// project becomes a permission
+// card — a regression against a local session, where reads are deliberately not
+// gated (src/settings.ts → ASK_GATED_TOOL_MATCHER).
+//
+// THE EXEMPTION IS SCOPED AND NARROW, and both halves are asserted here, so
+// restoring it as a hole rather than as a list fails: a WRITE on the same
+// redirected session still gates, and the exemption's list is `Read` alone.
+test('a redirected Read is not gated in ask mode, while a Write still is', async () => {
+  const mk = () => broker({ mode: 'ask', redirect: {
     preToolUse: async () => ({ decision: 'allow' }),
     postToolUse: async () => null,
   } });
+
+  const read = mk();
+  const readRes = fakeRes();
+  read.b.handle(envelope({ tool_name: 'Read', tool_input: { file_path: '/x' } }), readRes);
+  await settled(readRes);
+  assert.equal(readRes.body.hookSpecificOutput.permissionDecision, 'allow');
+  assert.deepEqual(read.events, [], 'a read raised a permission card');
+
+  // THE CONTROL, and without it the assertion above passes for a broker that
+  // stopped gating altogether.
+  const write = mk();
+  const writeRes = fakeRes();
+  write.b.handle(envelope({ tool_name: 'Write', tool_input: { file_path: '/x' } }), writeRes);
+  for (let i = 0; i < 200 && write.events.length === 0; i++) await new Promise(r => setTimeout(r, 1));
+  assert.equal(write.events.length, 1, 'a write was allowed without asking');
+  assert.equal(writeRes.headersSent, false, 'the write was answered without a decision');
+});
+
+// PINS the other half of the scope: a LOCAL session's Read gates exactly as it
+// did, because the exemption keys on `redirected`. Without this a broker that
+// exempted Read unconditionally would pass the test above.
+test('a local session in ask mode still gates a Read', async () => {
+  const { b, events } = broker({ mode: 'ask' });
   const res = fakeRes();
   b.handle(envelope({ tool_name: 'Read', tool_input: { file_path: '/x' } }), res);
-  await settled(res);
-  assert.equal(res.body.hookSpecificOutput.permissionDecision, 'allow');
-  assert.equal(events.length, 0);
+  for (let i = 0; i < 200 && events.length === 0; i++) await new Promise(r => setTimeout(r, 1));
+  assert.equal(events.length, 1, 'the call was allowed without asking');
+  assert.equal(res.headersSent, false, 'the response was sent without a decision');
 });
 
 // PINS: PostToolUse answers with the note as `additionalContext` — the only
@@ -231,7 +357,7 @@ test('a local ask-mode gate is not narrowed by tool name', async () => {
 // PINS: the redirect exemption is a fixed list, not the complement of a gated
 // set. A tool that is hooked under redirect but named in no list GATES — so
 // widening the redirect matcher later cannot open a new auto-allow with nobody
-// deciding it (card 2026-0339).
+// deciding it.
 test('a redirected ask-mode session gates a tool that is in no list', async () => {
   const { b, events } = broker({ mode: 'ask', redirect: {
     preToolUse: async () => ({ decision: 'allow' }),

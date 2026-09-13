@@ -8,8 +8,8 @@
 // the list; the count is deliberately not restated here), so no fallback is a
 // flag nobody has run.
 //
-// WHAT IT PROVES FOR A THIRD-PARTY PROVIDER IS NARROWER, and card 2026-0313
-// measured how much: see docs/systems-protocol.md §10.
+// WHAT IT PROVES FOR A THIRD-PARTY PROVIDER IS NARROWER: see
+// docs/systems-protocol.md §10.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,6 +31,7 @@ import {
 const BOUND = conformanceRemoteId() === null ? {} : { remoteId: conformanceRemoteId() };
 const FLAG_TARGET = conformanceRemoteId() === null ? '' : `${conformanceRemoteId()}=`;
 import { rmrf } from './rmrf.mjs';
+import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
 
 // Every taxonomy code this file provokes for real. The last test checks the
 // union against the exported lists, so a new code cannot be added to the
@@ -83,8 +84,8 @@ for (const config of CAPABILITY_CONFIGS) {
 
   // ── Handshake and capability negotiation ─────────────────────────
 
-  // The descriptor assertions went with card 2026-0312: the hello carries no
-  // `system` object at all, and this suite's provider sends none — so every
+  // The hello carries no `system` object at all, and this suite's provider
+  // sends none — so every
   // operation below is also the positive half of "a hello with no descriptor
   // yields a System that works" (T8's other half is in
   // tests/systems-provider-supervision.test.mjs).
@@ -190,7 +191,7 @@ for (const config of CAPABILITY_CONFIGS) {
 
   // ── detach: end the operation without ending the command ─────────
   //
-  // MEASURED (card 2026-0318 §1, §3): a `cmd &` job inherits the command's
+  // MEASURED: a `cmd &` job inherits the command's
   // stdout pipe, so the provider's `'close'` — and with it the `exit` frame —
   // does not fire when the command exits. cc therefore settles a redirected
   // command on its OWN framing sentinel, and then has to tell the provider that
@@ -265,12 +266,11 @@ for (const config of CAPABILITY_CONFIGS) {
     }
   });
 
-  // THE PARITY PIN (card 2026-0318 §3). The two shipped configurations used to
-  // DISAGREE about whether a redirected background job survives its command:
-  // cc's abandon timer sent `close`, which reaps the survivor through the
-  // process group where it has one and cannot reach it where it does not. A
-  // sentinel-settle closes that divergence — the job survives in BOTH, which is
-  // what a LOCAL Bash call does (card 2026-0318 §1/Q3).
+  // THE PARITY PIN. A redirected background job survives its command in BOTH
+  // shipped capability configurations, which is what a LOCAL Bash call does.
+  // Without it the two DISAGREE: a `close`-based abandon reaps the survivor
+  // through the process group where it has one and cannot reach it where it
+  // does not. A sentinel-settle closes that divergence.
   //
   // NOTE ON ITS RED: the settle is what this asserts on, so before the fix the
   // run throws ETIMEDOUT and the aliveness assertion is never reached. That is
@@ -428,11 +428,25 @@ for (const config of CAPABILITY_CONFIGS) {
       await fs.writeFile(path.join(dir, 'a file with spaces'), 'x');
       await fs.symlink(path.join(dir, 'sub'), path.join(dir, 'lnk'));
       const entries = (await sys.readDir(dir)).sort((x, y) => x.name.localeCompare(y.name));
-      assert.deepEqual(entries, [
-        { name: 'a file with spaces', kind: 'file' },
-        { name: 'lnk', kind: 'symlink' },
-        { name: 'sub', kind: 'dir' },
-      ], 'a symlink is reported as one, matching fs.readdir(withFileTypes)');
+      assert.deepEqual(entries.map(({ name, kind, target }) => ({ name, kind, target })), [
+        { name: 'a file with spaces', kind: 'file', target: null },
+        { name: 'lnk', kind: 'symlink', target: path.join(dir, 'sub') },
+        { name: 'sub', kind: 'dir', target: null },
+      ], 'a symlink is reported as one WITH ITS TARGET, matching fs.readdir(withFileTypes) plus fs.readlink');
+      // ONE ROUND TRIP CARRIES THE WHOLE ENTRY. A listing that reported name
+      // and kind alone would cost 1 + N round trips to answer the same
+      // question, which across a wire is N latencies.
+      // The oracle derives ms the way the implementation does — from integer
+      // nanoseconds through `msFromNanos` — not by re-rounding
+      // `fs.Stats.mtimeMs`, which is the formula that fix removed and which
+      // disagrees with it on a half-millisecond boundary.
+      const real = await fs.lstat(path.join(dir, 'a file with spaces'), { bigint: true });
+      assert.deepEqual(entries[0], {
+        name: 'a file with spaces', kind: 'file', target: null,
+        size: Number(real.size), mode: (Number(real.mode) & 0o7777) | 0o100000,
+        mtimeMs: msFromNanos(Number(real.mtimeNs / 1000000000n), Number(real.mtimeNs % 1000000000n)),
+      });
+      assert.equal(entries[2].mode & 0o170000, 0o040000, 'a directory carries its type bits too');
       await assert.rejects(() => sys.readDir(path.join(dir, 'a file with spaces')),
         (e) => expectCode(e, 'ENOTDIR', 'readDir of a file'),
         'a file must not read as an empty directory');
@@ -441,15 +455,124 @@ for (const config of CAPABILITY_CONFIGS) {
     });
   });
 
-  test(`${tag} a filename containing a newline is an ERROR, never a silently dropped entry`, async () => {
+  test(`${tag} a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry`, async () => {
     await withSystem(config.flags, async (sys, root) => {
-      const dir = path.join(root, 'weird');
-      await fs.mkdir(dir);
-      await fs.writeFile(path.join(dir, 'plain'), 'x');
-      await fs.writeFile(path.join(dir, 'two\nlines'), 'x');
-      await assert.rejects(() => sys.readDir(dir),
-        (e) => expectCode(e, 'EUNKNOWN', 'a listing cc cannot parse'),
-        'a listing that quietly drops an entry is indistinguishable from one that does not have it');
+      // TWO DIRECTIONS, because the widened `-printf` is parsed by FIELD COUNT:
+      // a newline gives too few fields and a tab gives too many, and a guard
+      // that checked only one bound would let the other through as a
+      // MISATTRIBUTED entry — a name read as a mode, silently.
+      // THREE SHAPES, because the field count alone has a hole. A name whose
+      // LAST character is a newline emits a well-formed six-field record plus
+      // an EMPTY line, so the count check passes and the entry came back named
+      // `trailing` — COLLIDING with the real sibling of that name below. A
+      // silent mis-naming, not a dropped entry, in the exact class the rule
+      // exists for.
+      for (const bad of ['two\nlines', 'two\ttabs', 'trailing\n']) {
+        const dir = path.join(root, `weird-${Buffer.from(bad).toString('hex')}`);
+        await fs.mkdir(dir);
+        await fs.writeFile(path.join(dir, 'plain'), 'x');
+        // The sibling a trailing newline would be mistaken FOR. Its presence is
+        // what makes the mis-naming a collision rather than a curiosity.
+        await fs.writeFile(path.join(dir, bad.replace(/[\n\t]/g, '')), 'x');
+        await fs.writeFile(path.join(dir, bad), 'x');
+        await assert.rejects(() => sys.readDir(dir),
+          (e) => expectCode(e, 'EUNKNOWN', `a listing cc cannot parse (${JSON.stringify(bad)})`),
+          'a listing that quietly drops an entry is indistinguishable from one that does not have it');
+      }
+    });
+  });
+
+  // ── lstat, readlink, symlink, removeEntry: the union transport's four ────
+  test(`${tag} lstat reports a SYMLINK as one, with its target, where stat cannot`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const f = path.join(root, 'f');
+      await fs.writeFile(f, 'abcdef');
+      await fs.chmod(f, 0o640);
+      await fs.symlink('relative/target', path.join(root, 'link'));
+      await fs.symlink(path.join(root, 'gone'), path.join(root, 'broken'));
+
+      const real = await fs.lstat(f, { bigint: true });
+      assert.deepEqual(await sys.lstat(f), {
+        kind: 'file', size: 6, mode: 0o100640, target: null,
+        mtimeMs: msFromNanos(Number(real.mtimeNs / 1000000000n), Number(real.mtimeNs % 1000000000n)),
+      }, 'a FULL mode — permission bits from %m, type bits from the kind');
+
+      const link = await sys.lstat(path.join(root, 'link'));
+      assert.equal(link.kind, 'symlink', 'stat follows and would say "file"; lstat must not');
+      assert.equal(link.target, 'relative/target');
+      assert.equal(link.mode & 0o170000, 0o120000);
+      // A BROKEN LINK IS PRESENT, and that is the whole difference from `stat`,
+      // whose `-L` reports it absent.
+      assert.equal((await sys.lstat(path.join(root, 'broken'))).kind, 'symlink');
+      assert.equal(await sys.stat(path.join(root, 'broken')), null);
+
+      assert.equal((await sys.lstat(root)).kind, 'dir');
+      assert.equal(await sys.lstat(path.join(root, 'nope')), null, 'ABSENCE IS A VALUE');
+      assert.equal(await sys.lstat(path.join(f, 'x')), null,
+        'and a non-directory component is absence too — there is no entry there');
+    });
+  });
+
+  test(`${tag} readlink, symlink and removeEntry are derived and behave like fs`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const p = (rel) => path.join(root, rel);
+      await sys.symlink('first', p('sl'));
+      assert.equal(await sys.readlink(p('sl')), 'first');
+      // -f: REPLACES. Without it the second call is EEXIST and every re-link
+      // in the union's reconcile fails.
+      await sys.symlink('second', p('sl'));
+      assert.equal(await sys.readlink(p('sl')), 'second');
+      await fs.writeFile(p('plain'), 'x');
+      await sys.symlink('third', p('plain'));
+      assert.equal(await sys.readlink(p('plain')), 'third');
+      await fs.writeFile(p('notalink'), 'x');
+      await assert.rejects(() => sys.readlink(p('nope')),
+        (e) => expectCode(e, 'ENOENT', 'readlink of a missing path'));
+      // NOT A SYMLINK is a different answer from NOT THERE, and a caller that
+      // cannot tell them apart cannot tell either from the box hiccuping.
+      await assert.rejects(() => sys.readlink(p('notalink')),
+        (e) => expectCode(e, 'EINVAL', 'readlink of a path that is not a symlink'));
+
+      // removeEntry: ONE entry, never recursing, never following.
+      await fs.writeFile(p('victim'), 'x');
+      await sys.removeEntry(p('victim'));
+      assert.equal(await sys.lstat(p('victim')), null);
+      await fs.mkdir(p('target'));
+      await sys.symlink(p('target'), p('alias'));
+      await sys.removeEntry(p('alias'));
+      assert.equal(await sys.lstat(p('alias')), null);
+      assert.equal((await sys.lstat(p('target'))).kind, 'dir', 'the link went, the target stayed');
+      await sys.removeEntry(p('target'));
+      assert.equal(await sys.lstat(p('target')), null, 'an EMPTY directory goes');
+
+      await fs.mkdir(p('full'));
+      await fs.writeFile(p('full/kid'), 'x');
+      await assert.rejects(() => sys.removeEntry(p('full')),
+        (e) => expectCode(e, 'ENOTEMPTY', 'removeEntry of a non-empty directory'));
+      // ASSERTED AFTER THE REFUSAL: an `rm -rf` in disguise refuses nothing.
+      assert.deepEqual((await sys.readDir(p('full'))).map(e => e.name), ['kid']);
+
+      // AN ABSENT ENTRY IS THE DECLARED INTENT ALREADY MET — "hold nothing at
+      // p" — so this RESOLVES rather than raising ENOENT.
+      await sys.removeEntry(p('never-existed'));
+    });
+  });
+
+  test(`${tag} writeFileBytes carries a byte a UTF-8 round trip does not survive`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const p = path.join(root, 'bin');
+      const bytes = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x0a, 0x00, 0x80, 0xc3]);
+      await sys.writeFileBytes(p, bytes, { atomic: true, mode: 0o750 });
+      assert.deepEqual(await fs.readFile(p), bytes,
+        'the wire already carries base64 of raw bytes; only cc converting on the way in ever mangled them');
+      assert.deepEqual(await sys.readFileBytes(p), bytes);
+      assert.equal((await fs.stat(p)).mode & 0o7777, 0o750,
+        'and the mode rides the atomic write, so the rename does not reset it');
+      // The control that makes the claim above non-vacuous: the same bytes
+      // through the STRING write come back mangled, which is why the byte
+      // entry point exists at all.
+      await sys.writeFile(path.join(root, 'txt'), bytes.toString('utf8'));
+      assert.notDeepEqual(await fs.readFile(path.join(root, 'txt')), bytes);
     });
   });
 
@@ -569,10 +692,8 @@ test('a bound handle names its remote on exec, readFile and writeFile', async ()
   });
 });
 
-// RE-BASED on card 2026-0312, not deleted: this used to prove the §4 rule
-// through a `stdin` frame, which no longer exists. The RULE does — a follow-on
-// frame carries no `remoteId` and the `id` is its whole address — so it is
-// re-based on `signal`, one of the two follow-on frames that survive.
+// THE §4 RULE — a follow-on frame carries no `remoteId` and the `id` is its
+// whole address — proven on `signal`, one of the two follow-on frames.
 //
 // A LONG command plus a signal that lands on it: the signal frame names no
 // remote, and the only way it can reach the right child is through the id the
@@ -645,21 +766,98 @@ test('a provider that does not advertise remotes is never handed a remoteId', { 
   }
 });
 
+// THE ONE PLACE THE mtime FORMULA IS OBSERVED INDEPENDENTLY, and it exists
+// because routing everything through `msFromNanos` closed a flake by removing
+// the only such observation.
+//
+// Before that, three assertion sites computed their own oracle as
+// `Math.round(fs.Stats.mtimeMs)` — which disagreed with the implementation
+// about once in 5000, so they flaked. Routing them through `msFromNanos` fixed
+// the flake and made oracle and implementation MUTATE TOGETHER: after it, no
+// agreement assertion anywhere could see the formula change at all, and both
+// implementations route through the same function too. Two mutants — the
+// compound float `Math.round(secs*1000 + nanos/1e6)`, the exact formula this
+// repo documents as wrong, and `Math.round` → `Math.floor` — survived the whole
+// suite with zero test delta.
+//
+// SO THESE ARE LITERALS. Deriving the expectation from `msFromNanos` is what
+// made those invisible; an oracle that mutates with its subject is not one.
+// Each value is chosen for the mutant it separates, and the two are disjoint:
+//
+//   1788783387.216499885 → the compound float carries a half-millisecond
+//     across the boundary that the integer form does not (…217 vs …216). Kills
+//     the compound mutant; `floor` agrees here and is invisible to it.
+//   1788783387.216500000 → an exact .5, where round goes up and floor does not
+//     (…217 vs …216). Kills the floor mutant; the compound form agrees.
+//   5.999999600 → rounds up to a full 1000 ms, i.e. the carry into the next
+//     second, which needs no special case because `secs*1000 + 1000` IS it.
+//     Kills floor a second way, and pins the carry.
+test('msFromNanos is pinned to LITERALS, because every other observation of it mutates with it', () => {
+  assert.equal(msFromNanos(1788783387, 216499885), 1788783387216,
+    'the compound float `Math.round(secs*1000 + nanos/1e6)` answers …217 here');
+  assert.equal(msFromNanos(1788783387, 216500000), 1788783387217,
+    'an exact half-millisecond rounds UP; `Math.floor` answers …216');
+  assert.equal(msFromNanos(5, 999999600), 6000,
+    'a nanosecond value that rounds to a full second needs no carry; `Math.floor` answers 5999');
+  // The ordinary cases, so a mutant cannot pass by being right only at the edges.
+  assert.equal(msFromNanos(0, 0), 0);
+  assert.equal(msFromNanos(1, 1000000), 1001);
+  assert.equal(msFromNanos(1700000000, 500000000), 1700000000500);
+});
+
+// The string half of the same derivation: `find -printf '%T@'` is
+// `seconds.nanoseconds` with TEN fractional digits on GNU (nanoseconds × 10),
+// and it is parsed as two integers precisely so the float above never appears.
+// Literals again, and the first row is the compound mutant's own value written
+// as `find` would print it.
+test('msFromFindStamp parses two integers out of the stamp, never one float', () => {
+  assert.equal(msFromFindStamp('1788783387.2164998850'), 1788783387216);
+  assert.equal(msFromFindStamp('1788783387.2165000000'), 1788783387217);
+  assert.equal(msFromFindStamp('1700000000'), 1700000000000, 'a stamp with no fraction is whole seconds');
+  assert.equal(msFromFindStamp('1700000000.5'), 1700000000500, 'a short fraction is padded, not read as nanoseconds');
+  assert.equal(msFromFindStamp('not a stamp'), null, 'an unparseable stamp is null, never NaN flowing into a mirror');
+  assert.equal(msFromFindStamp(''), null);
+});
+
 test('parseFindLines refuses a malformed entry rather than skipping it', () => {
-  assert.deepEqual(parseFindLines('f\ta\nd\tb\n', '/d'), [
-    { name: 'a', kind: 'file' }, { name: 'b', kind: 'dir' },
+  // `%y\t%m\t%s\t%T@\t%l\t%f` — kind, perms, size, mtime, link target, NAME LAST.
+  assert.deepEqual(parseFindLines('f\t644\t3\t1700000000.5\t\ta\nd\t755\t4096\t1700000001\t\tb\n', '/d'), [
+    { name: 'a', kind: 'file', size: 3, mode: 0o100644, mtimeMs: 1700000000500, target: null },
+    { name: 'b', kind: 'dir', size: 4096, mode: 0o040755, mtimeMs: 1700000001000, target: null },
   ]);
-  assert.deepEqual(parseFindLines('p\tfifo\n', '/d'), [{ name: 'fifo', kind: 'other' }],
-    'an entry that is neither file, dir nor symlink is "other", not a parse failure');
-  assert.throws(() => parseFindLines('f\tone\nstray line\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  assert.deepEqual(parseFindLines('l\t777\t7\t1700000000\tsome/where\tlnk\n', '/d'),
+    [{ name: 'lnk', kind: 'symlink', size: 7, mode: 0o120777, mtimeMs: 1700000000000, target: 'some/where' }],
+    'the target rides the SAME record, so a listing costs one round trip and not 1 + N');
+  assert.deepEqual(parseFindLines('p\t644\t0\t1700000000\t\tfifo\n', '/d'),
+    [{ name: 'fifo', kind: 'other', size: 0, mode: 0o644, mtimeMs: 1700000000000, target: null }],
+    'an entry that is neither file, dir nor symlink is "other", not a parse failure — and carries no type bits');
+  // BOTH BOUNDS, because the guard is a field COUNT: a newline gives too few
+  // and a tab too many, and either would misattribute a name to another field.
+  assert.throws(() => parseFindLines('f\t644\t3\t1\t\tone\nstray line\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  assert.throws(() => parseFindLines('f\t644\t3\t1\t\ttwo\ttabs\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  // AND THE HOLE THE COUNT CANNOT SEE: a name ending in a newline emits a
+  // well-formed record plus an EMPTY line, so it parsed cleanly as the name
+  // WITHOUT the newline — colliding with the sibling of that name beside it.
+  // A silent mis-naming, which is worse than the dropped entry the rule was
+  // written against. Caught by the empty-line position instead.
+  assert.throws(() => parseFindLines('f\t644\t3\t1\t\ttrailing\n\nf\t644\t3\t1\t\ttrailing\n', '/d'),
+    (e) => e.code === 'EUNKNOWN');
+  // …and the control: exactly one trailing terminator is the ordinary case and
+  // must still parse, or every listing in the product refuses.
+  assert.equal(parseFindLines('f\t644\t3\t1\t\tonly\n', '/d').length, 1);
+  assert.equal(parseFindLines('', '/d').length, 0, 'an empty directory is not a parse failure');
+  // A field that is present but not a number is a parse failure too, not a NaN
+  // that flows into a mirror as a size or a mode.
+  assert.throws(() => parseFindLines('f\tzzz\t3\t1\t\ta\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  assert.throws(() => parseFindLines('f\t644\tbig\t1\t\ta\n', '/d'), (e) => e.code === 'EUNKNOWN');
 });
 
 // ── describeRemote: the mirror advertisement (§2.1) ──────────────────
 //
 // Outside the per-configuration loop: no configuration in CAPABILITY_CONFIGS
 // passes a mirror flag, and the frame's behaviour does not depend on the other
-// capabilities. (The count is deliberately not restated here — it moved from
-// three to two on card 2026-0312 and the harness owns it.)
+// capabilities. (The count is deliberately not restated here — the harness
+// owns it.)
 
 // PINS: the frame round-trips, and both halves of the advertisement survive it.
 //
@@ -710,7 +908,7 @@ test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async 
   } finally { sys.dispose(); await rmrf(dir); }
 });
 
-// PINS THE EXTENSION POINT a later card will rely on: a `remoteDescriptor`
+// PINS THE EXTENSION POINT a later change will rely on: a `remoteDescriptor`
 // carrying a field cc does not know about is accepted and the field ignored.
 // Pinned so a future reader cannot "tighten" it away — a provider→cc field is
 // inert on arrival, which is what makes growing this frame safe without a
@@ -757,7 +955,7 @@ test('a write above the protocol cap is refused before a byte reaches the wire',
   } finally { sys.dispose(); }
 });
 
-// ── The third-party contract (card 2026-0313) ────────────────────────
+// ── The third-party contract ─────────────────────────────────────────
 
 // PINS: `CC_CONFORMANCE_REMOTE_ID` binds every fixture handle to that target,
 // an explicit `{ remoteId: null }` still beats it, and the binding rides the

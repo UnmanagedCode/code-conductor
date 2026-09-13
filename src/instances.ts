@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, projectsRoot, selfProjectDir } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -13,6 +13,22 @@ import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subA
 // second spelling would silently grant or refuse the wrong directory.
 export function sessionTmpDir(instanceId: string): string {
   return path.join(orchStoreRoot(), 'session-tmp', instanceId);
+}
+
+// The pid a SYNCHRONOUS shutdown path may signal for one instance.
+//
+// `inst.pid` is the process cc spawned, which under the FUSE wrap is SUDO — a
+// forking, waiting parent that cannot forward SIGKILL. The pid that matters is
+// the inner one the bootstrap recorded, and it is returned ONLY while
+// /proc/<pid>/stat field 22 still matches what was recorded: a recycled pid
+// wears the number but is a stranger, and this is the last thing between the
+// number and a SIGKILL.
+function killablePid(inst: Instance): number | null {
+  const rec = inst._fuse?.record;
+  if (rec?.bootstrapPid && rec.bootstrapStart) {
+    return procStartSync(rec.bootstrapPid) === rec.bootstrapStart ? rec.bootstrapPid : null;
+  }
+  return inst.pid ?? null;
 }
 
 // Reclaim every session-tmp directory no live session owns.
@@ -42,7 +58,18 @@ import {
   trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
+import { BOOT_ID } from './bootId.ts';
+import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
+import { EVENT_LOG_NAME, buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
+import { buildTierTable, resolveOnPath, type LocalRoot } from './systems/fuse/tierTable.ts';
+import { FuseSession, describePolicyEvents, parsePolicyEvents } from './systems/fuse/session.ts';
+import { localDirSource } from './systems/fuse/remoteSource.ts';
+import { systemSource } from './systems/fuse/systemSource.ts';
+import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
+import { ensureUnionBinary } from './systems/fuse/build.ts';
+import { wrapLaunch, type LaunchWrap } from './systems/fuse/wrap.ts';
+import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
 import {
@@ -66,8 +93,6 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
-import { composeSessionRoot, composedRootWasDiscarded, type ComposedSessionRoot } from './systems/sessionRoot.ts';
-import { mirrorOffsets } from './systems/mirror.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation,
   relocateSessionTranscripts, TranscriptRelocationError } from './transcript.ts';
@@ -118,7 +143,24 @@ interface LaunchedProc {
 }
 
 interface LauncherLike {
-  launch(input: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }): LaunchedProc;
+  // WHETHER THIS LAUNCHER RUNS THE CLI INSIDE CC'S OWN PROCESS.
+  //
+  // It is the ONE exemption from the union, and it is structural rather than an
+  // operator's to set: there is no subprocess to put in a mount namespace, so a
+  // mandatory wrap would leave a mount handshake that can never arrive. Only
+  // the in-process launcher tests inject is exempt, and it cannot be selected
+  // in production.
+  //
+  // OPTIONAL, AND ABSENCE MEANS "spawns a process" — the fail-closed direction.
+  // A launcher that forgets to declare itself gets the union and, if it cannot
+  // mount, a named refusal; the alternative default would silently run a remote
+  // worker with no union under it.
+  readonly inProcess?: boolean;
+  // `wrap` is OPTIONAL on the seam, not on the production launcher: the
+  // in-process launcher tests inject runs the CLI inside cc's own process,
+  // where there is no subprocess to put in a mount namespace, so it ignores the
+  // field rather than implementing it.
+  launch(input: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; wrap?: LaunchWrap }): LaunchedProc;
 }
 
 // A held-open control_request (see Instance._controlRequest): the promise
@@ -523,14 +565,22 @@ export class Instance extends EventEmitter implements InstanceLike {
   claudePluginDirs: string[];
   // THE REDIRECTION, or null for a project on cc's own machine.
   //
-  // A worker on a remote system runs the CLI locally in a cc-owned session root
-  // and crosses the machine boundary tool by tool (src/systems/toolRedirect.ts).
+  // A worker on a remote system runs the CLI locally but INSIDE A CHROOT onto
+  // the union, at the project's own path there; what still crosses the machine
+  // boundary tool by tool is `Bash` (src/systems/toolRedirect.ts).
   // Its presence is what widens the injected hook surface, so it must be
   // attached before launch() — see attachRedirect.
   _redirect: SessionRedirect | null;
-  // What a relaunch needs to re-pull the session root, since launch() runs long
-  // after create() resolved the system handle.
+  // The FUSE-union chroot this session's CLI runs inside, or null. Attached
+  // beside the redirect and for the same reason: spawn() reads it to wrap the
+  // launch, and every teardown path reads it to unmount.
+  _fuse: FuseSession | null;
+  // What a relaunch needs — the system handle, the project's path on it — since
+  // launch() runs long after create() resolved them.
   _redirectPlacement: RedirectPlacement | null;
+  // The mirror advertisement this session was created under, or null for a
+  // local one. Compared on every relaunch; see attachRedirect and launch().
+  _mirrorScope: MirrorScope | null;
   worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
   temp: boolean;
   conducted: boolean;
@@ -570,8 +620,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // It lives on the Instance rather than in either controller precisely so the
   // hub's defer does not depend on listener registration order — the hub's
-  // listener is registered BEFORE the renew controller's, which is why the
-  // pre-card code consumed the wake on the ARMED turn_end, a turn early.
+  // listener is registered BEFORE the renew controller's, so code reading
+  // controller state instead consumes the wake on the ARMED turn_end, a turn
+  // early.
   _rotation: { reason: RotationMechanism; startedAt: number } | null;
   // TRUE for the whole renewal sequence: from `arm()` until the reseed prompt()
   // has actually been accepted. A SECOND flag rather than a wider `_rotation`,
@@ -613,7 +664,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Resolved by the CURRENT launch's terminal latch — 'exit' OR 'close',
   // whichever arrives first. kill() awaits THIS, never a raw 'exit': a child
   // whose spawn FAILED emits 'error' then 'close' and never exits at all
-  // (card 2026-0286 §1). Non-nullable so kill() needs no fallback branch.
+  // Non-nullable so kill() needs no fallback branch.
   _procEnded: Promise<void>;
   parser: Parser;
   ring: EventLog;
@@ -716,7 +767,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
     this._redirect = null;
+    this._fuse = null;
     this._redirectPlacement = null;
+    this._mirrorScope = null;
     // Absolute Claude Code plugin roots (each directly containing
     // `.claude-plugin/plugin.json`) contributed by enabled cc plugins whose
     // manifest declares `claudePlugin`. Resolved + validated once at create()
@@ -1665,7 +1718,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // callers are async and return errors to REST/MCP.
   // Bind this session's redirection policy. Called by the manager right after
   // construction, BEFORE launch(): spawn() reads `_redirect` to decide whether
-  // the injected settings hook Read and PostToolUse and remove Glob/Grep, and a
+  // the injected settings drop Read, keep the PostToolUse seam and remove Glob/Grep, and a
   // session launched without that surface would answer file tools from cc's own
   // disk.
   attachRedirect(redirect: SessionRedirect, placement: RedirectPlacement): void {
@@ -1673,203 +1726,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._redirectPlacement = placement;
   }
 
-  // Re-pull the session root's config surface. Runs on every (re)launch — the
-  // CLI reads CLAUDE.md, CONVENTIONS.md and `.claude/**` once at startup and
-  // fires no hook for any of it, so a resume that skipped this would run against
-  // whatever the system had at the last spawn. The manifest makes an unchanged
-  // surface one `find` and no transfers.
-  //
-  // A failure is SURFACED, not fatal: the config surface is not the session, and
-  // a system that is briefly unreachable should cost a warning rather than a
-  // worker that cannot start. Every tool call still refuses honestly.
-  //
-  // ONE EXCEPTION, and it is the case where there is nothing left to be honest
-  // WITH: when the compose failed after the target check discarded the prior
-  // root, the last-good root a warning would fall back on no longer exists, and
-  // the worker would start with none of its project's implicit config surface.
-  // That REFUSES. Keyed on the CHECK and never on the failure: with the check
-  // HOLDING, no failure reaches the manifest (the pull writes it last), so the
-  // root that survives is still this project's own target's and warning is the
-  // right answer there (card 2026-0273).
-  async _refreshSessionRoot(): Promise<void> {
-    const placement = this._redirectPlacement;
-    if (!placement) return;
-    let composed: ComposedSessionRoot;
-    try {
-      composed = await composeSessionRoot(placement);
-      for (const s of composed.skipped) {
-        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: session root skipped ${s.path} — ${s.reason}` } });
-      }
-      for (const note of composed.notes) {
-        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${note}` } });
-      }
-    } catch (e) {
-      this._emitUi({ kind: 'system', subtype: 'stderr', data: {
-        line: `systems: could not refresh the session root from '${placement.systemId}': ${(e as Error).message}`,
-      } });
-      // THE ONE REFRESH FAILURE THAT IS FATAL — and the line above still runs
-      // for it: the event stream is where an operator watching this session is
-      // looking, and the throw only reaches whoever called the relaunch.
-      //
-      // NO REMEDY CLAUSE, deliberately. This fires for failures that clear on
-      // their own (a dropped transport) and for failures that will refuse
-      // identically forever until something moves on the system (a listing past
-      // the fence, a command the far side will not start), and it cannot tell
-      // them apart — that is the whole point of keying on the check. Wording
-      // advice per failure kind would put the classification back. `Cause:`
-      // carries whatever guidance the underlying refusal already wrote.
-      if (composedRootWasDiscarded(e)) {
-        throw httpError(
-          502,
-          `cannot relaunch this session: composing its session root from '${placement.systemId}' failed `
-          + `after the target check had already discarded whatever earlier compose was there, so cc has no `
-          + `complete config surface for this project at ${this.cwd} and will not start a worker on a `
-          + `partial one. Cause: ${(e as Error).message}`,
-          { code: 'SESSION_ROOT_DISCARDED' },
-        );
-      }
-      return;
-    }
-    // THE GEOMETRY MOVED UNDER A LIVE SESSION, and cc FOLLOWS IT. `this.cwd`
-    // and the redirect's path map were both fixed at create, so a provider that
-    // changed its mirror advertisement between spawn and relaunch has just had
-    // the config surface re-pulled somewhere this session would not look.
-    // Measured, that leaves two states, and UNFOLLOWED neither is survivable:
-    // with the prior offset empty, this cwd still exists and holds no config
-    // surface; with it non-empty — WIDENING OR NARROWING ALIKE, the direction is
-    // not the discriminator — this cwd does not exist at all, and a relaunch
-    // that ignored the move would reach spawn with a deleted cwd and fail ENOENT
-    // against the CLI BINARY's own path. The line below is what stops both; the
-    // cwd states are still what the compose produces, the dead relaunch is not.
-    //
-    // OUTSIDE the try above, and that is load-bearing: that catch exists to make
-    // a compose failure a warning rather than a dead session, and a refusal to
-    // move must not be swallowed by it.
-    //
-    // Moving is possible HERE and nowhere else: this runs inside launch() before
-    // spawn(), so there is no CLI to rebuild a redirect underneath — which is
-    // what card 2026-0259 read as impossible. Its warn-don't-refuse is
-    // SUPERSEDED BY A THIRD ANSWER, not overturned into a refusal
-    // (card 2026-0279).
-    if (composed.cwd !== this.cwd) await this._followGeometry(placement.systemId, composed);
-  }
-
-  // Follow a mirror advertisement that moved: relocate this session's
-  // transcripts, move its cwd, and retarget its path map — IN THAT ORDER, so a
-  // relocation that cannot complete leaves the instance untouched and the
-  // relaunch refused rather than a worker started at either location.
-  //
-  // ONE REFUSAL, and it is not the compose's: card 2026-0273's
-  // SESSION_ROOT_DISCARDED fires when the compose FAILED past the target check.
-  // This fires when the compose SUCCEEDED and cc cannot carry the session to
-  // what it produced.
-  //
-  // `this.cwd`'s SECOND assignment site — the constructor is the first, and
-  // there are no others. Every reader of it is a live read at call time
-  // (summary, the transcript helpers, spawn's cwd, liveBackingIdsForCwd,
-  // tempSessionIdsForCwd, tempCleanupSnapshot), so none is desynchronised by
-  // this write: nothing in cc keys a structure on a cwd captured at insert time.
-  // The one transient is the await below: for the length of the rename the
-  // transcript is already at the new cwd while `this.cwd` still names the old
-  // one, so the two disagree for that window. The ordering is deliberate —
-  // relocating FIRST is what makes the refusal's "nothing was moved" true — and
-  // it is recorded here rather than argued away, so whoever adds a reader that
-  // can observe both at once knows the window is there to reason about.
-  private async _followGeometry(systemId: string, composed: ComposedSessionRoot): Promise<void> {
-    const from = this.cwd;
-    // The redirect and the placement are attached together (see attachRedirect's
-    // caller), so a placement without one is a cc bug, not a state to tolerate.
-    const redirect = this._redirect;
-    if (!redirect) throw new Error('cc: a remote placement reached _followGeometry with no redirect');
-    const ids = [...new Set([...this._segments, this.backingSessionId].filter((x): x is string => !!x))];
-    try {
-      await relocateSessionTranscripts({ from, to: composed.cwd, sessionIds: ids });
-    } catch (e) {
-      // THE CLAIM IS DERIVED, never asserted: what cc says about this session's
-      // history comes from what the rollback actually achieved, not from what
-      // the move intended.
-      //
-      // ONE CLASSIFICATION, AND IT IS COMPLETENESS — not cause, and not remedy.
-      // `stranded` and the errno together answer exactly one question: is the
-      // history still whole at `from`? That is what the three branches below
-      // vary on. They still say NOTHING about WHY the rename failed or what to
-      // do about it — the code cannot tell a blocker that clears itself from one
-      // that will refuse identically forever, and `Cause:` carries whatever
-      // guidance the underlying error already wrote. SESSION_ROOT_DISCARDED
-      // below writes no remedy either, but for a reason that does NOT transfer:
-      // it keys on the compose check and genuinely cannot classify its failures
-      // at all. The no-remedy rule is shared; the justification is not.
-      const failure = e instanceof TranscriptRelocationError ? e : null;
-      const stranded = failure?.stranded ?? [];
-      // THREE STATES, and the completeness claim is the only one that varies —
-      // no worker was started, `this.cwd` is untouched and the instance is still
-      // respawnable in all three, because the assignment below never ran.
-      //
-      // The ENOENT branch is REASONED, NOT MEASURED: a source deleted between
-      // the existence scan and its own rename throws without ever entering the
-      // rollback's `done` list, so `stranded` stays empty while a file really
-      // has gone. `_archiveTempSession`'s fire-and-forget subagent-dir `rm` and
-      // rewind's session-file `rm` are the reachable deleters. The scan-to-
-      // rename gap is microseconds and cannot be widened without perturbing the
-      // primitive, so this branch is unkillable by construction — the same class
-      // as the non-empty-`stranded` branch beside it, and it exists for the same
-      // reason: so the refusal cannot claim a completeness it did not verify.
-      const detail = stranded.length > 0
-        ? `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
-          + `${from} and ${composed.cwd}, and its working directory is unchanged at ${from}.`
-        : failure?.code === 'ENOENT'
-          ? `A source file disappeared while cc was moving it, so this session's history may no longer be `
-            + `complete at ${from}. Everything cc did move was put back, and its working directory is `
-            + `unchanged.`
-          : `Nothing was moved: this session's history is still complete at ${from} and its working `
-            + `directory is unchanged.`;
-      throw httpError(
-        502,
-        `cannot relaunch this session: '${systemId}' now mirrors this project at ${composed.cwd}, so cc `
-        + `must move this session there, and relocating its transcript out of ${from} failed. `
-        + detail
-        + ` Cause: ${(e as Error).message}`,
-        { code: 'SESSION_MOVE_FAILED' },
-      );
-    }
-    this.cwd = composed.cwd;
-    redirect.retarget(composed.root, composed.mirror);
-    // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM.
-    //  * Not that any OTHER session moved. The image root is shared per
-    //    (system, project, worktree), so a peer live session keeps its old
-    //    working directory — and this card's original defect — until its OWN
-    //    next relaunch. Convergence is per-relaunch, not instant, and the last
-    //    clause says so rather than leaving it to be inferred.
-    //  * Not that the far-side shell moved or was reset. It runs at the project
-    //    path, which did not move.
-    //  * Not that files the worker had pulled on demand survived: resetRoot
-    //    deleted the image root, and the bridge pulls before every op.
-    //  * Not that the advertisement is right. A session that follows a wrong
-    //    advertisement follows it CONSISTENTLY, so a path the far side no longer
-    //    serves fails there, with its reason.
-    //  * Not anything about paths OUTSIDE the project: the new geometry may
-    //    widen or narrow the addressable space, and a path reachable before may
-    //    now be refused.
-    //  * Not a claim about the real `claude` binary — what is pinned is where
-    //    every input it reads now is.
-    //  * Not that this session HAD a transcript. Both transcript clauses are
-    //    hedged ("any transcript it had", "whatever history it had") because a
-    //    worker killed before its first turn has none at either cwd, the
-    //    relocation is then a no-op, and `history_replayed` is never emitted —
-    //    measured. Asserting a transcript here would break the same rule the
-    //    paragraph below states about files.
-    //
-    // AND IT NAMES NO FILE. The allow-list is what a config surface CAN hold,
-    // not what this project has: enumerating it here would assert the existence
-    // of files nobody looked for.
-    this._emitUi({ kind: 'system', subtype: 'stderr', data: {
-      line: `systems: '${systemId}' now mirrors this project at ${composed.cwd}, so cc has MOVED this `
-        + `session there from ${from}: its config surface was re-pulled to the new location, any `
-        + `transcript it had moved with it, and its file tools now address the project through the `
-        + `new geometry. The worker restarts in the new directory and whatever history it had is `
-        + `replayed there. Any OTHER session still running on this project keeps its old working `
-        + `directory until its own next relaunch.`,
-    } });
+  // Same contract as attachRedirect: called by the manager right after
+  // construction, BEFORE launch(). launch() runs the preflight and the mount
+  // handshake around spawn(), and spawn() hands the session's wrap to the
+  // launcher.
+  attachFuse(fuse: FuseSession): void {
+    this._fuse = fuse;
   }
 
   async launch({ resume }: { resume?: string } = {}): Promise<void> {
@@ -1898,11 +1760,130 @@ export class Instance extends EventEmitter implements InstanceLike {
     // propagates deliberately: a role-less conductor is worse than a surfaced
     // error, and every caller is async and returns errors to REST/MCP.
     if (isConductorInstance(this)) await materializeCurrentConduct();
-    // The same point in the sequence, for the same reason: the config surface a
-    // remote project's session prompt is built from is pulled here, before the
-    // process that reads it starts.
-    await this._refreshSessionRoot();
+    // A RE-ADVERTISEMENT IS SESSION-FATAL, and reported by name. `launch()` is
+    // the only path every relaunch funnels through — rewind, respawn, resume
+    // after a restart — so it is where a provider that changed its mirror root
+    // or its excludes under a live session gets caught. Refusing is the whole
+    // response: retargeting would mean rebuilding a local image at the new
+    // geometry, and there is no local image.
+    const placement = this._redirectPlacement;
+    const pinned = this._mirrorScope;
+    if (placement && pinned) {
+      const { scope } = resolveMirrorScope({
+        systemId: placement.systemId, project: placement.project,
+        systemPath: placement.systemPath, advertisement: await placement.system.mirror(),
+      });
+      if (scope.mirrorRoot !== pinned.mirrorRoot
+        || scope.exclude.join('\u0000') !== pinned.exclude.join('\u0000')) {
+        throw Object.assign(
+          new Error(`system '${placement.systemId}' changed its mirror advertisement under this session: `
+            + `root '${pinned.mirrorRoot}' → '${scope.mirrorRoot}', excludes [${pinned.exclude.join(', ')}] `
+            + `→ [${scope.exclude.join(', ')}]. The session cannot continue at a geometry it did not start `
+            + `under; start a new one.`),
+          { statusCode: 501, code: 'MIRROR_ADVERTISEMENT_CHANGED', systemRefusal: true },
+        );
+      }
+    }
+
+    // IS THE BOX STILL THERE — asked NOW, not from a cache, and that is the
+    // whole of it. `systemById` refuses a provider that will not come up and a
+    // remote it does not serve, but `connect()`, `assertRemoteKnown()` and
+    // `mirror()` all memoise on the handshake OBJECT, so a container that
+    // stopped after that generation began is invisible until first use. For a
+    // union spawn "first use" is inside the worker's own chroot, where every
+    // project path answers -EIO and there is nothing to say why.
+    //
+    // BEFORE `assertFuseAvailable` and therefore before `prepare()`: nothing is
+    // created for a session that is about to be refused.
+    if (this._fuse && placement) {
+      await this._assertRemoteMountable(placement, pinned?.mirrorRoot ?? placement.systemPath);
+    }
+
+    // The FUSE preflight is the LAST thing before spawn and the first thing
+    // that can refuse: criterion 9 wants a host that cannot mount to refuse the
+    // spawn by name, and only a check on this side of spawn() reaches the
+    // caller as an HTTP/MCP error rather than as a dead subprocess.
+    if (this._fuse) {
+      await assertFuseAvailable({ ...realProbes, ensureBinary: ensureUnionBinary });
+      this._fuse.unionBinary = await ensureUnionBinary();
+      await this._fuse.prepare();
+    }
     this.spawn({ resume });
+    if (this._fuse) await this._awaitFuseMount();
+  }
+
+  // THE TWO WAYS A UNION SPAWN IS DOOMED BEFORE IT STARTS, and they are two
+  // codes because they are two repairs.
+  //
+  // Both are asked LIVE. `systemById` refuses a provider that will not come up
+  // and a remote it does not serve, but `connect()`, `assertRemoteKnown()` and
+  // `mirror()` all memoise on the handshake OBJECT — the connection GENERATION
+  // — so a container that stopped after that generation began is invisible to
+  // every one of them until first use. For an ordinary operation that is fine.
+  // For this one "first use" is inside the worker's own chroot, where every
+  // project path answers -EIO and there is nothing there to say why.
+  async _assertRemoteMountable(placement: RedirectPlacement, mirrorRoot: string): Promise<void> {
+    const target = placement.system.remoteId === null
+      ? `system '${placement.systemId}'`
+      // The REMOTE is the thing an operator starts, so a refusal naming only
+      // the system would point at the wrong repair.
+      : `remote '${placement.system.remoteId}' of system '${placement.systemId}'`;
+    const unreachable = (why: string): Error => Object.assign(
+      new Error(`cc will not start a worker for project '${placement.project}': its files are served from `
+        + `${target}, which did not answer a live check before the mount (${why}). A worker mounted onto an `
+        + `unreachable system reaches no project file at all. Start it and spawn again.`),
+      { statusCode: 502, code: 'FUSE_REMOTE_UNREACHABLE', systemRefusal: true },
+    );
+
+    try { await assertRemoteLive(placement.system, `project '${placement.project}'`); }
+    catch (e) { throw unreachable(e instanceof Error ? e.message : String(e)); }
+
+    // ONE `lstat`, and it is the transport's own first act — the mount is about
+    // to make it anyway. Its FAILURE is a liveness fault; its ANSWERING
+    // "nothing here" is a configuration one, which is why the two part here.
+    let st;
+    try { st = await placement.system.lstat(mirrorRoot); }
+    catch (e) { throw unreachable(`mirror root '${mirrorRoot}': ${e instanceof Error ? e.message : String(e)}`); }
+    if (st === null) {
+      throw Object.assign(
+        new Error(`cc will not start a worker for project '${placement.project}': ${target} advertises mirror `
+          + `root '${mirrorRoot}', and that path does not exist on it. Every file tool in the session would be `
+          + `refused as outside the mirror root. Fix the remote's mirror record, or the path on the machine.`),
+        { statusCode: 501, code: 'FUSE_MIRROR_ROOT_ABSENT', systemRefusal: true },
+      );
+    }
+  }
+
+  // The bootstrap's handshake. Absence past the deadline is fatal to the
+  // launch, and the two shapes get different messages because they have
+  // different repairs: a LIVE process that never wrote mount.json is a mount
+  // that did not come up, while a dead one has already put the bootstrap's own
+  // named refusal on stderr (captured as `system/stderr` events).
+  async _awaitFuseMount(): Promise<void> {
+    const fuse = this._fuse;
+    if (!fuse) return;
+    const rec = await fuse.awaitHandshake(() => this.proc !== null);
+    if (rec) return;
+    const stderr = this._stderr.trim();
+    // WHAT THE DAEMON REFUSED, READ BEFORE TEARDOWN — which deletes the run
+    // directory and the event log with it. A spawn that dies of a missing pin
+    // carries stderr alone, and stderr says "cannot open shared object file"
+    // without naming which list to add the object to; the event log names the
+    // refused paths and the array. Best-effort: a failed read must not replace the mount
+    // failure with a read failure.
+    let events = '';
+    try {
+      // `latin1`, because the event log is a BYTE file — see parsePolicyEvents.
+      const text = await fsp.readFile(path.join(fuse.plan.rundir, EVENT_LOG_NAME), 'latin1').catch(() => '');
+      events = describePolicyEvents(parsePolicyEvents(text)) ?? '';
+    } catch { /* the diagnostic is not a reason to change the failure */ }
+    // Tear the half-built session down before throwing, or its mount and its
+    // daemon outlive the launch that created them.
+    await fuse.teardown(() => { try { this.proc?.stdin?.end(); } catch { /* gone */ } }).catch(() => {});
+    throw httpError(500, this.proc
+      ? `FUSE_MOUNT_FAILED: the union did not mount for session ${this.id} within the handshake deadline${stderr ? `: ${stderr}` : ''}${events ? ` — ${events}` : ''}`
+      : `FUSE_MOUNT_FAILED: the mount bootstrap for session ${this.id} exited before mounting${stderr ? `: ${stderr}` : ''}${events ? ` — ${events}` : ''}`,
+      { code: 'FUSE_MOUNT_FAILED' });
   }
 
   // Await every durable lineage write kicked so far, and RETHROW the first
@@ -2148,22 +2129,25 @@ export class Instance extends EventEmitter implements InstanceLike {
     // per-session directory.
     //
     // A backgrounded Bash's tool result tells the worker, verbatim, to `Read`
-    // the task file it names under that root — a path on THIS machine. The
-    // redirect refuses any file path outside the session root and cc's known
-    // local roots, so without this the worker cannot read its own command's
-    // interim output, and the refusal's advice ("use Bash") is wrong because the
-    // file is not on the system at all.
+    // the task file it names under that root — a path on THIS machine.
     //
-    // Under the store, which is already a known local root — so the Read is
-    // allowed with no path special-casing. NOT inside the session root: that
-    // would make the task file a MAPPED path, and the pull would stat it on the
-    // system, find it absent, and delete the worker's own output.
+    // WHAT KEEPS THE PIN — and it is not a refusal: no file tool is hooked for
+    // a path outside the project's tree, so nothing here turns on one.
+    // `sessionTmpDir(id)` is in the `localRoots` array below,
+    // which seeds the union's HOST tier (tierTable.ts, `localRoots` → `add
+    // ('host', …)`). So this exact directory is served from the orchestrator's
+    // own filesystem inside the chroot, and the worker's task output means the
+    // same thing to the CLI and to cc. The per-uid default the CLI would
+    // otherwise use is not in that array.
     //
-    // Per session, and 0700. The CLI validates the override's ownership and
-    // mode; the PER-SESSION half is enforced by the redirect's own path policy,
-    // which grants this session `sessionTmpDir(this.id)` and nothing else under
-    // `session-tmp` — so another session's task output is refused rather than
-    // merely hidden behind a uuid the orchestrator hands workers anyway.
+    // I have NOT established what the union does with an unpinned path here,
+    // and this comment deliberately does not guess: the pin is load-bearing
+    // because it is what puts the path in the host tier, and that is the whole
+    // claim. Its FORMER justification — the redirect refused any file path
+    // outside the session root — died with the geometry.
+    //
+    // Per session, and 0700, so one session's task output is not another's; the
+    // CLI validates the override's ownership and mode.
     if (this._redirect) {
       const tmpRoot = sessionTmpDir(this.id);
       // Sync, because spawn() is: the same reason the debug-capture directory
@@ -2232,7 +2216,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._openDebugStreams(this._spawnArgv);
 
     this._spawnEnv = spawnEnv;
-    this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv });
+    // The FUSE wrap, when this session has one. `spawn()` is synchronous, so
+    // everything the wrap needs — the compiled union binary, the run directory,
+    // the pins file, intent.json — was resolved and written by launch() before
+    // it got here.
+    this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv, wrap: this._fuse?.wrap });
     this.pid = this.proc.pid ?? null;
 
     const outRl = readline.createInterface({ input: this.proc.stdout as NodeJS.ReadableStream, crlfDelay: Infinity });
@@ -2253,7 +2241,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // strands the instance with a live `proc` whose pid is undefined — and
     // `proc != null` is this codebase's liveness oracle (liveForSession /
     // isSessionLive), so every reaper then reads the corpse as alive
-    // (card 2026-0286 §2). The latch is one-shot: a healthy child emits both
+    // The latch is one-shot: a healthy child emits both
     // events, and _handleExit must run exactly once.
     const launched = this.proc;
     let ended = false;
@@ -2679,7 +2667,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A SUBSTITUTION-backend subprocess that crashed on its own (not a commanded
     // kill) is the silent-launch-failure case: the wrapper command died — or
     // NEVER STARTED, since the terminal latch also routes a failed spawn here
-    // (card 2026-0286 §2), in which case `stderr` is null and the reason rides on
+    // in which case `stderr` is null and the reason rides on
     // the preceding `spawn_error`. Surface it distinctly from the bare `exit`,
     // carrying the captured stderr where there is any. Plain claude exits and
     // clean/commanded wrapper exits are untouched.
@@ -2704,6 +2692,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // system. Each is a process on someone else's machine keyed to a session
     // that no longer exists, with nobody left to read its result.
     void this._redirect?.close();
+    // And the mount namespace this session's CLI ran inside. THIS is the
+    // `kill -9` path: the terminal latch fires on exit/close however the
+    // process died, and nothing else would unmount or stop the root-owned
+    // daemon, which is not a child of cc and would outlive the session.
+    void this._fuse?.teardown();
     this._closeDebugStreams();
     // `_suppressTempDelete` is set by the resume-restart path
     // (shutdownForResumeSync): there we SIGKILL temp subprocesses but must
@@ -2721,7 +2714,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // meaningful on an archived session.
   //
   // Reached by a session whose spawn FAILED as well as by a killed one
-  // (card 2026-0286 §1): there is no jsonl, so this marks a sessionId no file
+  // there is no jsonl, so this marks a sessionId no file
   // backs. Inert only because every reader stat-gates the file first (see
   // src/archivedSessions.ts's header + src/projects.ts's session-row build); a
   // reader that enumerates the set without that stat would surface a phantom
@@ -2876,13 +2869,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw new Error('prompt requires non-empty text or at least one valid attachment');
     }
 
-    // `@path` PRE-HYDRATION. The CLI expands a mention itself and fires no hook
-    // for it — measured — so on a remote project a mentioned file that is not
-    // already in the session root is simply absent from the turn. cc owns the
-    // one site a prompt is written from, so it fetches them here, before the
-    // text goes to stdin. Best effort: a mention that names nothing is the
-    // CLI's to report, not a reason to refuse the turn.
-    if (this._redirect) await this._redirect.hydrateMentions(safeText);
+    // NO `@path` PRE-HYDRATION: the CLI expands a mention itself and fires no
+    // hook for it — measured — and under the chroot the mention resolves
+    // through the union like any other path, so cc pre-pulling would fetch a
+    // path the union already serves.
     // A real prompt is a genuine turn boundary — any Skill invocation still
     // awaiting its content injection is stale (see parser.ts:attachSkillLoad).
     this.parser.expirePendingSkillLoads();
@@ -3286,7 +3276,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._interruptDeadline = setTimeout(() => {
       this._interruptDeadline = null;
       // Fired already ⇒ the request DID leave; an ACKed-but-not-honoured stop is
-      // a different defect with a different flag (card 2026-0207), not this one.
+      // a different defect with a different flag, not this one.
       if (!this._interruptArmed || this._interruptFired) return;
       if (this.status !== 'turn' || !this.proc) return;
       const blocks = [...this._quiescence.openBlocks.keys()];
@@ -3533,7 +3523,16 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
-    if (!this.proc) return;
+    if (!this.proc) {
+      // A SESSION CAN HOLD A PREPARED FuseSession WITH NO PROCESS. launch()
+      // creates the run directory and starts listening on the control socket
+      // BEFORE spawn(), because the daemon refuses to mount without a socket to
+      // connect to — so a launch that failed between the two leaves both, and
+      // `_handleExit` cannot reclaim them: it only runs for a process that
+      // existed. Idempotent, so the ordinary path is unaffected.
+      await this._fuse?.teardown().catch(() => {});
+      return;
+    }
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
     // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
@@ -3542,7 +3541,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The launch's terminal latch, NOT a fresh proc.once('exit'): a child whose
     // spawn failed never emits 'exit', and its 'close' has usually already been
     // delivered by the time anything gets around to reaping it — a listener
-    // registered here would never fire (card 2026-0286 §4).
+    // registered here would never fire.
     const ended = this._procEnded;
     const t1 = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch { /* ignore */ }
@@ -3550,6 +3549,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     const t2 = setTimeout(() => {
       try { proc.kill('SIGKILL'); } catch { /* ignore */ }
     }, graceMs + 3000);
+    // UNDER THE FUSE WRAP `proc` IS SUDO, NOT THE CLI. sudo forks and waits, and
+    // cannot forward SIGKILL, so the ladder above reaps the wrapper while the
+    // worker — and the root-owned daemon, which is not cc's child at all —
+    // would survive it. The recorded inner pid is signalled by the teardown
+    // state machine, which also unmounts; the ladder above stays as the
+    // backstop that guarantees `ended` resolves.
+    const teardown = this._fuse?.teardown(() => { try { proc.stdin?.end(); } catch { /* gone */ } });
+    if (teardown) await teardown.catch(() => {});
     // `finally`, NOT a second listener: the clear must not key on any event, or a
     // kill that settles via 'close' leaves a live SIGKILL timer holding the loop
     // open in the very path whose job is to let the process go.
@@ -3871,7 +3878,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A rewind/respawn rewrites the CLI's prefix, so a command still running on
     // the system belongs to a conversation the worker no longer has. Stop it —
     // and NOTE that the redirect keeps serving this session afterwards, which is
-    // why close() re-arms rather than staying torn down (card 2026-0312 §3c).
+    // why close() re-arms rather than staying torn down.
     void this._redirect?.close();
     // Per-turn cache-miss capture is owned by _setStatus (into-'turn' reset)
     // and the spawn() that always follows a wipe. But a rewind/respawn rewrites
@@ -3905,111 +3912,6 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 }
 
-// A COLD RESUME FOLLOWING A MIRROR ADVERTISEMENT THAT MOVED WHILE THIS SESSION
-// WAS NOT RUNNING — the create path's half of card 2026-0279.
-//
-// 0279 moves a session at RELAUNCH IN PLACE, where an Instance already exists
-// and its `cwd` is the thing that is wrong (`Instance._followGeometry`). Here
-// there is no instance: `cwd` comes from the compose in the caller and is
-// already right, and what is in the wrong place is the TRANSCRIPT — the CLI
-// keys its transcript directory off `getcwd()`. So this assigns nothing,
-// retargets nothing and rebuilds nothing. It moves files and reports whether it
-// did (card 2026-0287).
-//
-// THE PRIOR CWD IS DERIVED PER SESSION, NEVER FROM THE MANIFEST. The
-// `.manifest.json` sidecar is shared by every session on one
-// `(system, project, worktree)` and the first create after a move rewrites it,
-// so a manifest-derived prior cwd recovers the FIRST session on an image root
-// and leaves every later one permanently un-resumable — measured, two sessions
-// on one root restore 1 of 2 that way and 2 of 2 this way
-// (tests/systems-mirror-geometry-cold-resume.test.mjs). It is also why nothing
-// here reads the manifest at all, so deleting it changes no outcome.
-//
-// THE CANDIDATE SET IS COMPLETE, and the loop below may stop at its first hit
-// whatever order the candidates come in — because at most one candidate answers
-// the probe for one id. That is a CONDITIONAL state invariant, not a property of
-// the set: it rests on cc relocating a whole lineage out of a single source, and
-// on the 404 gate this whole function sits behind keeping the scan out of the
-// one violating state that would cost a live transcript. Both facts, both
-// halves and their limits are on `mirrorOffsets`; the gate arm in
-// tests/systems-mirror-geometry-cold-resume.test.mjs is what catches a widening
-// of the gate.
-//
-// THE GEOMETRY CLASS IS NOT A DISCRIMINATOR HERE, unlike on 0279's path: the
-// transcripts live under `claudeProjectsRoot()`, which `resetRoot` never
-// touches, so whether the prior cwd still exists makes no difference to what
-// this has to find or move.
-async function followGeometryOnResume({ systemId, systemPath, root, cwd, backingId, publicId }: {
-  systemId: string; systemPath: string; root: string; cwd: string;
-  backingId: string; publicId: string | null;
-}): Promise<boolean> {
-  let from: string | null = null;
-  for (const offset of mirrorOffsets(systemPath)) {
-    const candidate = path.join(root, offset);
-    // NO same-destination guard, and it is unreachable rather than omitted: the
-    // caller reached here BECAUSE `cwd` holds no resumable conversation for this
-    // id, and `cwd` is itself one of these candidates — so the hit can never be
-    // `cwd` and `from === to` cannot arise. (`relocateSessionTranscripts` omits
-    // the equivalent guard as unreachable too, but by ITS own argument about two
-    // composed cwds — not by this one, which is the gate.)
-    if (await hasResumableConversation({ cwd: candidate, sessionId: backingId })) { from = candidate; break; }
-  }
-  if (from === null) return false;
-  // THE WHOLE LINEAGE, not just the id the resume resolved to: a renewed
-  // session's history is spread across its segments, and moving only the
-  // current one leaves an older segment at the geometry the session no longer
-  // runs at. Same rule `_followGeometry` applies to `this._segments`.
-  const ids = publicId === null
-    ? [backingId]
-    : [...new Set([...(await segmentsFor(publicId)).map(s => s.id), backingId])];
-  try {
-    await relocateSessionTranscripts({ from, to: cwd, sessionIds: ids });
-  } catch (e) {
-    // THE COMPLETENESS CLAIM IS DERIVED, never asserted — the same three
-    // branches, for the same reason, as `_followGeometry`'s refusal: what cc
-    // says about this session's history comes from what the rollback achieved.
-    // What is UNCONDITIONAL is the other half: this runs before the Instance
-    // constructor, so no worker was started and no session was registered, and
-    // a caller's follow-up sees exactly the state it saw before the call.
-    const failure = e instanceof TranscriptRelocationError ? e : null;
-    const stranded = failure?.stranded ?? [];
-    const detail = stranded.length > 0
-      ? `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
-        + `${from} and ${cwd}.`
-      : failure?.code === 'ENOENT'
-        ? `A source file disappeared while cc was moving it, so this session's history may no longer be `
-          + `complete at ${from}. Everything cc did move was put back.`
-        : `Nothing was moved: this session's history is still complete at ${from}.`;
-    throw httpError(
-      502,
-      `cannot resume this session: '${systemId}' now mirrors this project at ${cwd}, so cc must move `
-      + `this session's transcript there from ${from}, and that failed. ${detail} No worker was started `
-      + `and no session was registered. Cause: ${(e as Error).message}`,
-      { code: 'SESSION_MOVE_FAILED' },
-    );
-  }
-  // WHAT THE `true` MEANS: this session is resumable at `cwd` — VERIFIED, not
-  // inferred from having called the relocation. `relocateSessionTranscripts`
-  // treats a source that is not there as success and writes nothing, so a
-  // transcript deleted between the probe above and its own existence re-check
-  // would otherwise have this claim a move it did not make, and the caller
-  // launch a worker with no conversation instead of refusing. Re-asking the
-  // caller's own question is what turns that into the caller's own 404, and it
-  // closes a CLASS rather than one race: any reason the relocation silently
-  // moves nothing now degrades honestly.
-  //
-  // UNKILLABLE BY CONSTRUCTION from outside this function — the same class as
-  // `_followGeometry`'s ENOENT wording branch, and for the same reason:
-  // reaching it needs a source deleted inside the microseconds between the
-  // probe hit and the rename's own scan, and that gap cannot be widened without
-  // perturbing the primitive.
-  //
-  // AND IT DOES NOT CLAIM THAT NOTHING MOVED. An older segment still present at
-  // `from` can have been relocated before the current one was found missing, so
-  // a `false` from here says only what the call tests: whether `cwd` now
-  // answers to this id.
-  return await hasResumableConversation({ cwd, sessionId: backingId });
-}
 
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
@@ -4739,52 +4641,59 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       cwd = worktreeMeta.worktreePath;
     }
 
-    // THE SESSION ROOT, and the point `cwd` stops meaning "the project's
-    // directory" for a remote project.
+    // A REMOTE PROJECT'S `cwd` IS ITS PATH ON ITS OWN SYSTEM, and that is the
+    // whole of criterion 8: one spelling per path, whichever tool names it.
     //
-    // Everything downstream of here reads `cwd` as the CLI's working directory:
-    // the resume pre-flight, the transcript path, the model recovery, the
-    // subprocess launch. On a remote project the project's directory is on
-    // another machine, so the CLI's cwd is a cc-owned local session root
-    // holding only the config surface the CLI reads implicitly. `systemCwd`
-    // keeps the other half — the tree the shell and the file bridge address.
+    // Under the FUSE-union chroot the CLI runs INSIDE the project's real tree,
+    // so `cwd` and the shell's cwd are the same string and there is no second
+    // coordinate system to keep.
     let redirectPlacement: RedirectPlacement | null = null;
-    let composedMirror: ComposedSessionRoot | null = null;
+    let mirrorScopeForSession: MirrorScope | null = null;
+    let mirrorInert: string[] = [];
     if (remote) {
-      const systemCwd = cwd;
       redirectPlacement = {
         system: proj.system as RedirectableSystem,
         systemId: proj.system.id,
-        systemPath: systemCwd,
+        systemPath: cwd,
         project,
         worktree: worktreeMeta?.worktreeName ?? null,
       };
-      // Composed BEFORE the refusal below, because the rules that refusal reads
-      // are the project's own `.claude/settings*.json` — which only exist
-      // locally once they have been pulled.
+      // THE MIRROR ADVERTISEMENT, resolved here because its answer may be
+      // "there should not be a session here at all". What it decides:
+      // `mirrorRoot` is the boundary of the union's REMOTE TIER, and `exclude`
+      // is what that tier must not serve.
       //
-      // launch() composes again, and that is not redundant to remove: this call
-      // is the only one on the CREATE path that can still refuse, and launch()
-      // is the only one that covers a relaunch (rewind, respawn, resume after a
-      // restart) which never comes back through here. The second pass is a
-      // manifest hit — one `find`, no transfers.
-      // `.cwd`, NOT `.root`: the CLI works in the project's place inside the
-      // image, which is the image root itself unless the provider advertises a
-      // mirror wider than the project.
-      composedMirror = await composeSessionRoot(redirectPlacement);
-      cwd = composedMirror.cwd;
+      // ONE round trip per connection generation (ProviderSystem memoises it),
+      // and NONE AT ALL for a provider that does not advertise the capability —
+      // whose absent-behaviour now means "the narrowest mirror root", the
+      // project's own path.
+      //
+      // THE MEMOISATION IS WHY THIS IS NOT ALSO THE LIVENESS CHECK. It answers
+      // from the connection generation, so a box that stopped after that
+      // generation began is invisible here. `_assertRemoteMountable` (launch())
+      // asks live, per spawn, and refuses by name.
+      const { scope: mirrorScope, inert: mirrorNotes } = resolveMirrorScope({
+        systemId: proj.system.id, project, systemPath: cwd,
+        advertisement: await proj.system.mirror(),
+      });
+      mirrorScopeForSession = mirrorScope;
+      mirrorInert = mirrorNotes;
+
+      // READ THROUGH THE PROJECT'S SYSTEM HANDLE. These are the project's own
+      // `.claude/settings*.json`, and they live on the system — there is no
+      // local copy to stat any more.
       const sources = bashRuleSources(cwd);
       // FIRST, because it is the bigger failure: `disableAllHooks` turns the
       // entire redirect off, and a session that ran with it would execute the
       // worker's own commands on THIS machine while reporting the system.
-      const hooksOff = await findDisabledHooks(sources);
+      const hooksOff = await findDisabledHooks(sources, proj.system);
       if (hooksOff.length > 0) {
         throw Object.assign(
           new Error(hooksDisabledRefusal(proj.system.id, hooksOff)),
           { statusCode: 501, code: 'REDIRECT_HOOKS_DISABLED' },
         );
       }
-      const unenforceable = await findUnenforceableBashRules(sources);
+      const unenforceable = await findUnenforceableBashRules(sources, proj.system);
       if (unenforceable.length > 0) {
         throw Object.assign(
           new Error(bashRulesRefusal(proj.system.id, unenforceable)),
@@ -4803,25 +4712,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // crash, repeatably. Bailing here means no phantom crashed Instance is
     // registered, so a follow-up respawn_instance also soft-refuses cleanly.
     if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
-      // BEFORE REFUSING, and on a remote project only. The gate above tested
-      // exactly one thing — that `cwd` holds no resumable conversation for this
-      // id — and a mirror advertisement that MOVED while this session was not
-      // running is one reason for that answer, alongside a bogus id and a
-      // session that has no conversation yet. So look for this session at the
-      // other cwds its geometry could have produced before refusing: that is
-      // what makes a cold resume — after an orchestrator restart, or of a
-      // session that is simply no longer running — survive a move the live
-      // relaunch path already survives (card 2026-0279 → card 2026-0287).
-      // Finding nothing leaves this refusal, and its message, exactly as they
-      // were.
-      const placement = redirectPlacement;
-      const composed = composedMirror;
-      const followed = placement !== null && composed !== null
-        && await followGeometryOnResume({
-          systemId: placement.systemId, systemPath: placement.systemPath,
-          root: composed.root, cwd, backingId: resume, publicId,
-        });
-      if (!followed) {
+      // NO GEOMETRY FOLLOW, and nothing to follow to. A remote session's cwd
+      // is the project's path on its system, fixed for the life of the
+      // registration — there is no geometry to follow, so a moved mirror
+      // advertisement is a refusal and nothing else.
+      {
         // `cwd` rides as a PROPERTY, not just interpolated into the message:
         // spawnInstance (src/mcp/handlers.ts) rebuilds the conductor-facing
         // reason from scratch rather than surfacing this message, because by here
@@ -4953,51 +4848,152 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Attached BEFORE launch(): spawn() reads it to widen the injected hook
     // surface, and the hook broker reads it on every tool call.
     if (redirectPlacement) {
-      // Set in the same block as the placement, twenty lines up. A hard throw
-      // rather than a cast: a redirect attached without the composed geometry
-      // would map every path against the wrong root, which is the silent
-      // wrong-machine failure this whole module exists to prevent.
-      if (composedMirror === null) throw new Error('cc: a remote placement reached attachRedirect with no composed session root');
-      const composed: ComposedSessionRoot = composedMirror;
+      // Diagnostics that are not refusals — an advertised exclude that sits
+      // outside the mirror root has no effect, and an operator who wrote it
+      // should hear so. They surface on the session's own stream because that
+      // is where the rest of this subsystem's non-fatal news goes.
+      for (const line of mirrorInert) {
+        inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${line}` } });
+      }
+      // PINNED FOR THE SESSION. The advertisement is read once, at create, and
+      // a relaunch re-reads it only to refuse when it MOVED — see launch(). A
+      // moved advertisement is a refusal, not a follow: a session whose remote
+      // tier silently changed shape mid-life is a worse outcome than a named
+      // refusal.
+      inst._mirrorScope = mirrorScopeForSession;
+      // THE HOST-LOCAL PREFIXES THIS SESSION MAY REACH, each declaring whether a
+      // FILE TOOL may name it. Every one is host-pinned for the daemon whatever
+      // the bit says — a local root served from the remote would answer about
+      // the wrong machine — so `access` decides the hook and nothing else, and
+      // THE ALLOW SET IS THIS ARRAY AND NOWHERE ELSE.
+      //
+      // Each `deny` is a path that holds OTHER sessions' data, and each `allow`
+      // is a path a real named tool call has to reach and that Bash — which
+      // execs on the system — cannot see, so a deny would make it unreachable
+      // through every channel at once.
+      const localRoots: LocalRoot[] = [
+        { prefix: attachmentsDir(project, worktreeMeta?.worktreeName ?? null), access: 'allow',
+          why: "this project's upload channel — Bash execs on the system and cannot see it" },
+        { prefix: sessionTmpDir(id), access: 'allow',
+          why: "this session's own tmp dir (CLAUDE_CODE_TMPDIR), per-session by construction" },
+        // Plan mode's `Write` lands under here (src/planFile.ts), so a deny
+        // breaks plan mode outright for every remote-backed worker. RESIDUAL,
+        // ACCEPTED AND RECORDED (docs/features.md): the directory accumulates
+        // other sessions' plan files and cannot be narrowed to "its own" ahead
+        // of the write, because the CLI chooses the filename. Longer than the
+        // `~/.claude` deny below, so longest-prefix lets it through.
+        { prefix: path.join(os.homedir(), '.claude', 'plans'), access: 'allow',
+          why: "plan mode writes its plan file here" },
+        { prefix: path.join(os.homedir(), '.claude'), access: 'deny',
+          why: "the CLI's own settings, credentials, todos and shell snapshots" },
+        // Every session on this machine's transcripts. A conductor that
+        // legitimately needs one has `get_transcript`, which is not a file tool.
+        { prefix: claudeProjectsRoot(), access: 'deny',
+          why: "every session on this machine's transcripts" },
+        // A plugin skill routinely instructs the model to Read a file under its
+        // own root (`references/*.md`) — that is the named tool call the rule
+        // asks for. These may live outside `projectsRoot`, so this is also the
+        // only entry that adds a host PIN the rest of the table lacks.
+        ...claudePluginDirs.map((prefix): LocalRoot => ({ prefix, access: 'allow',
+          why: 'an enabled plugin\'s own root — its skills instruct the model to read files under it' })),
+      ];
+      // ONE TIER TABLE, ONE CONSTRUCTION SITE, TWO CONSUMERS — the hook's deny
+      // surface and the daemon's pins file. Criterion 15 is an IDENTITY claim:
+      // the SAME array goes to both, so they cannot drift into two artifacts.
+      //
+      // Built unconditionally, including where `inProcess` means no chroot
+      // exists: the hook still has to answer, and a session with a redirect but
+      // no table would allow everything.
+      // Resolved ONCE. The narrowest mirror root is the project's own path (the
+      // no-advertisement case, `noMirror`), and spelling that fallback twice is
+      // how the table and the refusals that quote it would come to disagree.
+      const mirrorRoot = mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath;
+      const exclude = mirrorScopeForSession?.exclude ?? [];
+      // RESOLVED ONCE, ABSOLUTE, and used twice: as the CLI's host pin and as
+      // the daemon's marking event. `resolveClaudeBin()` returns a bare
+      // `claude` by default, and a bare name pins nothing and marks nothing.
+      const claudeCommand = resolveOnPath(resolveClaudeBin().command);
+      const tiers = buildTierTable({
+        localRoots,
+        claudeCommand,
+        execPath: process.execPath,
+        selfProjectDir: selfProjectDir(),
+        projectsRoot: projectsRoot(),
+        homeDir: os.homedir(),
+        runDir: fuseRunDir(id),
+        systemPath: redirectPlacement.systemPath,
+        mirrorRoot,
+        exclude,
+      });
       inst.attachRedirect(new SessionRedirect({
         system: redirectPlacement.system,
         systemId: redirectPlacement.systemId,
         systemPath: redirectPlacement.systemPath,
-        // The IMAGE root, which is what the prefix rule is anchored on;
-        // `inst.cwd` is the project's directory inside it and the redirect
-        // derives that itself from the offset.
-        sessionRoot: composed.root,
-        mirror: composed.mirror,
         forwarderUrl: this.bashForwardUrl(id) ?? '',
-        // The LOCAL paths a file tool may legitimately name on a remote
-        // project. Anything else outside the session root is refused, because a
-        // file written there lands on the orchestrator's machine where no
-        // command on the system can ever see it.
-        //
-        // SPECIFIC PATHS, NEVER THE STORE ROOT. Granting `orchStoreRoot()`
-        // granted a worker read AND write over cc's entire store: `settings.json`,
-        // `conventions/*.json`, every other project's `project.json` and pulled
-        // session roots, every session sidecar, `shell-env` bundles, plugin
-        // manifests, and other sessions' task output. Each entry below is one a
-        // session needs BY NAME:
-        //   * this project's (or worktree's) attachments dir — a local file the
-        //     user handed this session, referenced by absolute path in the prompt
-        //     (S24). Scoped to the owner, so one project's attachments are not
-        //     another's.
-        //   * this session's own tmp root — where its backgrounded commands'
-        //     task output lands (see spawn()). Per instance id, which is what
-        //     makes the guarantee stated there true rather than asserted.
-        //   * the CLI's own home (plans, user settings) and the transcript root.
-        //   * cc-managed Claude Code plugin roots (S22).
-        localRoots: [
-          attachmentsDir(project, worktreeMeta?.worktreeName ?? null),
-          sessionTmpDir(id),
-          path.join(os.homedir(), '.claude'),
-          claudeProjectsRoot(),
-          ...claudePluginDirs,
-        ],
+        tiers,
+        exclude,
+        mirrorRoot,
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+        // THE FAULT SURFACE, READ LAZILY THROUGH THE INSTANCE. The redirect is
+        // constructed here and the FuseSession a few lines below it, so a
+        // direct reference would capture `null`; and a session that is rewound
+        // gets a NEW control server under the SAME redirect, so a captured one
+        // would go stale. Both are why these are getters and not values.
+        faultAt: (p) => inst._fuse?.controlServer?.faultAt(p) ?? null,
+        settle: (p) => inst._fuse?.controlServer?.settle(p) ?? Promise.resolve(),
       }), redirectPlacement);
+      // The FUSE-union chroot, attached in the same block and gated on the same
+      // `remote` boolean, so a session cannot end up with one and not the other.
+      //
+      // MANDATORY FOR A REMOTE-BACKED WORKER, with one structural exemption.
+      // The CLI's cwd is now the project's path ON ITS SYSTEM, so without a
+      // union under it the worker would be working at a path that need not
+      // exist on this machine — correct only where the system shares cc's
+      // filesystem, which is not the case this epic exists for. A host that
+      // cannot mount refuses the spawn by name (criterion 9) rather than
+      // running somewhere wrong.
+      //
+      // The exemption is `inProcess`: a launcher that runs the CLI inside cc's
+      // own process has no subprocess to put in a namespace. See LauncherLike.
+      if (!inst._launcher.inProcess) {
+        // THE SOURCE OVERRIDE IS THE LIFECYCLE GATE'S INSTRUMENT, NOT A
+        // PRODUCTION KNOB: a session using it is not talking to its system at
+        // all. It exists because criteria 3 and 4 are only checkable when the
+        // remote's bytes DIFFER from the host's at the same path, and that gate
+        // must not need a container. Reported on the session's own stream,
+        // loudly, every launch — a silent stand-in for a remote is the worst
+        // outcome this whole subsystem has.
+        const sourceOverrideRoot = process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT || null;
+        if (sourceOverrideRoot) {
+          inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line:
+            `cc-fuse: CC_FUSE_SOURCE_OVERRIDE_ROOT=${sourceOverrideRoot} — this session's file tools are `
+            + `served from a LOCAL DIRECTORY, not from system '${redirectPlacement.systemId}'` } } as UiEvent);
+        }
+        inst.attachFuse(new FuseSession({
+          plan: buildFusePlan({
+            instanceId: id,
+            cwdInside: cwd,
+            sourceOverrideRoot,
+            markPath: claudeCommand,
+            // THE SAME ARRAY the redirect above holds, by reference.
+            tiers,
+          }),
+          // ONE SPELLING PER PATH, and it is the system's. `systemSource` takes
+          // no root: a path P from the daemon IS the path on the system, so
+          // there is no `root + P` arithmetic and no place for one to be wrong.
+          source: sourceOverrideRoot
+            ? localDirSource(sourceOverrideRoot)
+            : systemSource(redirectPlacement.system, {
+              // ONTO THE SESSION'S OWN STREAM. Every line here is a reason a
+              // control frame was REFUSED, which the worker sees as a bare
+              // -EIO; the session's stderr is where someone reading that will
+              // be. `FuseSession`'s own `log` sink is not wired at this site.
+              log: (line) => inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line } } as UiEvent),
+            }),
+          ccBootId: BOOT_ID,
+          emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+        }));
+      }
     }
 
     inst.on('event', (ev: UiEvent) => this.emit('event', { id, ev }));
@@ -5156,7 +5152,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 
   // Apply a CHANGED overage policy to sessions already marked under the old one.
-  // The policy is live authority, not just trip-time input (card 2026-0231): the
+  // The policy is live authority, not just trip-time input: the
   // moment it is no longer 'stop-resume', no session may carry a resumption mark.
   // Iterates byId, NOT _overageResume.timers: a session mid-verify (fireNow/_tick
   // delete their timers entry before awaiting fetchUsage) has no timer but is still
@@ -5258,7 +5254,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // `resumeRestart.ts`'s restored-deadline re-arm, is excluded from it and carries
   // its own root-scoping note there.
   //
-  // ROOT-SCOPED (card 2026-0212): the unit of stopping is the TREE, so
+  // ROOT-SCOPED: the unit of stopping is the TREE, so
   // membership is resolved from the tree's root, not from the session. A tree with
   // no Claude agent → e.g. {ollama} → unmonitored → EXEMPT (never auto-stopped,
   // queued, or armed). A tree with any Claude agent → {anthropic} → in-flow — which
@@ -5286,7 +5282,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // STOPPING is a TREE fact; TRIPPING is a per-session BACKEND fact. Do not unify
     // these two predicates — they answer different questions:
     //   - `_inUsageWindowFlow` (root-scoped) asks "is this session a member of a tree
-    //     the stop must halt?" — the tree is the unit of stopping (card 2026-0212);
+    //     the stop must halt?" — the tree is the unit of stopping;
     //   - HERE we ask "did the monitored account emit this 429?", which only the
     //     EMITTING session's own backend can answer. An ollama-backed worker talks to
     //     the ollama endpoint, so its `rate_limit_event` reports ollama's window — it
@@ -5325,7 +5321,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Route a single overage stop across all live instances. EVERY session it
   // touches gets `_directOverageStop` — nothing is sent to anything: the account is
   // throttled, so a message into it is exactly the burn the stop exists to prevent
-  // (card 2026-0203). A mid-turn session is soft-interrupted; an idle one has no
+  // A mid-turn session is soft-interrupted; an idle one has no
   // turn to interrupt and is instead severed, marked, and armed for resume on the
   // spot.
   _routeOverageStop({ resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
@@ -5333,7 +5329,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // usage-window domain (e.g. ollama-only): they consume no monitored account
     // window, so they are never stopped/marked. A Claude conductor's ollama-only
     // worker is NOT such a case — its root tree contains the conductor's `claude`,
-    // so it is stopped along with the conductor (card 2026-0212).
+    // so it is stopped along with the conductor.
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors are in control and which workers they protect.
     const inControlConductors = new Map<string, Instance>();  // conductor id → conductor instance
@@ -5361,7 +5357,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // workers are NOT: the conductor is not asked to halt them, so they are stopped
     // directly.
     //
-    // ONE branch (card 2026-0189): a `.conduct` orchestrator is never `conducted`,
+    // ONE branch: a `.conduct` orchestrator is never `conducted`,
     // so it is never a protected worker ⇒ `unarmed` is false for it ⇒ it takes
     // exactly the arming the old conductor branch gave it, and `if (!unarmed)
     // continue` skips the owner-marking that does not apply.
@@ -5401,7 +5397,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
   // The ONE stop path, for every session routing touches — mid-turn or idle.
   // NOTHING is sent here: the account is throttled, so a message into it is the
-  // burn the stop exists to prevent (card 2026-0203). For stop-resume, mark the
+  // burn the stop exists to prevent. For stop-resume, mark the
   // instance so its resume arms. `armResume` defaults to `resume` and splits off
   // only for a conductor's own worker, which is stopped un-armed.
   //
@@ -5452,8 +5448,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //     re-adds the parent from `callerInstanceId` on every call, so a severed
   //     worker whose turn starts again re-arms its conductor's wake at
   //     `onTurnStart`. Without severing here, the guard's own interrupt then wakes
-  //     that conductor with an `internal:true` stub — violating 2026-0203 from
-  //     inside 2026-0204.
+  //     that conductor with an `internal:true` stub — violating the
+  //     no-prompt-into-a-throttled-account rule from inside the turn-start
+  //     lockout guard.
   _severOverageWakes(inst: Instance): void {
     for (const callerId of this._idleHub.severForOverageStop(inst.id)) {
       const caller = this.byId.get(callerId);
@@ -5461,7 +5458,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  // Turn-start lockout guard (card 2026-0204). A turn that begins during an overage
+  // Turn-start lockout guard. A turn that begins during an overage
   // stop-resume lockout is stopped rather than run against the throttled account —
   // wired at the turn-START seam rather than per send site, because the observed
   // defect was workers re-invoked by a path the enumerated sites did not cover.
@@ -5590,7 +5587,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (!inst) {
       throw httpError(404, 'instance not found');
     }
-    if (inst.proc) await inst.kill({ graceMs: 500 });
+    // UNCONDITIONALLY, because `kill()` is now the one place that reclaims a
+    // session's mount scaffolding and it handles the no-process case itself: an
+    // instance removed after a failed launch still owns a run directory and a
+    // listening control socket, both created BEFORE spawn().
+    await inst.kill({ graceMs: 500 });
     // Independently of the kill: an instance can be removed with no live
     // process (it crashed, or it already exited), and a command it still has
     // running on the remote system would then outlive every reference to the
@@ -5617,7 +5618,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   async removeAllForProject(projectName: string): Promise<number> {
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
     await Promise.all(victims.map(async (i) => {
-      try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
+      // UNCONDITIONALLY, for the same reason remove() does: `kill()` is the
+      // one place that reclaims a session's mount scaffolding and it handles
+      // the no-process case itself. An instance whose launch failed between
+      // prepare() and spawn() still owns a run directory and a LISTENING
+      // control socket, and gating on `proc` leaves both for the orchestrator's
+      // lifetime.
+      try { await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
       try { await i._redirect?.close(); } catch { /* ignore */ }
       // Same reason as remove(): the directory holds this session's command
       // output and nothing else will reap it.
@@ -5679,8 +5686,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     for (const inst of this.byId.values()) {
       if (!inst.temp) continue;
       temps.push(inst);
-      if (inst.proc && inst.pid) {
-        try { process.kill(inst.pid, 'SIGKILL'); } catch { /* gone */ }
+      // `inst.pid` is SUDO's under the FUSE wrap, and sudo cannot forward
+      // SIGKILL — so the recorded inner pid is the one to signal, re-verified
+      // by starttime immediately before signalling. NEITHER sync shutdown path
+      // can run the mount teardown (it is async and this is called immediately
+      // before process.exit); the boot sweep — sweepFuseSessions() in
+      // server.ts — is what covers both.
+      const victim = killablePid(inst);
+      if (inst.proc && victim) {
+        try { process.kill(victim, 'SIGKILL'); } catch { /* gone */ }
       }
     }
 
@@ -5691,9 +5705,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     while (Date.now() < deadline) {
       let allDead = true;
       for (const inst of temps) {
-        if (!inst.pid) continue;
-        try { process.kill(inst.pid, 0); allDead = false; break; }
-        catch { /* ESRCH = gone */ }
+        const victim = killablePid(inst);
+        if (!victim) continue;
+        // ONLY ESRCH is death — see pidIsAlive. EPERM is reachable here,
+        // because a FUSE-wrapped worker is root until the bootstrap's setpriv
+        // runs, and reading it as death stops the wait on a live process.
+        if (pidIsAlive(victim)) { allDead = false; break; }
       }
       if (allDead) break;
       Atomics.wait(sab, 0, 0, 20);
@@ -5740,7 +5757,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // waits for all-idle), so the session JSONL is fully flushed.
       try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
-    // Bounded sync wait for processes to exit after stdin close.
+    // Bounded sync wait for processes to exit after stdin close. As in
+    // shutdownTempSync, the pid polled is the recorded inner one under the FUSE
+    // wrap, and this path CANNOT run the mount teardown — it is async and
+    // process.exit follows immediately. sweepFuseSessions() at the next boot is
+    // what unmounts and reaps the daemon.
     // 2 s gives the CLI enough time to handle the EOF and exit cleanly.
     // Atomics.wait is Node's only non-spinning sync sleep primitive.
     const sab = new Int32Array(new SharedArrayBuffer(4));
@@ -5748,9 +5769,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     while (Date.now() < deadline) {
       let allDead = true;
       for (const inst of live) {
-        if (!inst.pid) continue;
-        try { process.kill(inst.pid, 0); allDead = false; break; }
-        catch { /* ESRCH = gone */ }
+        const victim = killablePid(inst);
+        if (!victim) continue;
+        // ESRCH only — see pidIsAlive. EPERM is not death.
+        if (pidIsAlive(victim)) { allDead = false; break; }
       }
       if (allDead) break;
       Atomics.wait(sab, 0, 0, 20);
@@ -5796,9 +5818,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 }
 
-// Everything a relaunch needs to re-pull a remote project's session root, and
-// everything the redirection policy needs to address the system. Held on the
-// Instance because launch() runs long after create() resolved the handle.
+// Everything the redirection policy needs to address the system, and everything
+// a relaunch needs to re-check the mirror advertisement. Held on the Instance
+// because launch() runs long after create() resolved the handle.
 export interface RedirectPlacement {
   system: RedirectableSystem;
   systemId: string;

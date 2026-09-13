@@ -1,61 +1,35 @@
-// FOLLOWING A MIRROR ADVERTISEMENT THAT MOVED UNDER A LIVE SESSION.
+// A MIRROR ADVERTISEMENT THAT MOVES UNDER A LIVE SESSION IS SESSION-FATAL.
 //
-// `composeSessionRoot`'s target check compares the manifest's mirror root
-// against the live advertisement; card 2026-0273 owns the branch where the
-// compose that follows the check FAILS. This file owns the branch where it
-// SUCCEEDS: the image root is wiped and re-pulled at the new geometry, and the
-// relaunching session's cwd, path map and transcript are MOVED to it
-// (card 2026-0279).
+// There is no follow machinery: nothing wipes a local image root, re-pulls at
+// the new geometry, or moves the session's cwd, its path map or its transcript.
+// Under the FUSE-union geometry there is no local image to move — a session's
+// cwd is the project's real path on its system, which does not move, and what
+// an advertisement changes is the boundary of the union's remote tier.
 //
-// THE DISCRIMINATOR IS `offset_old === ''`, NOT THE DIRECTION. Two outcome
-// classes on a three-way geometry split:
-//   * class A1 — the prior offset was empty, so the old cwd survives the compose
-//     and holds no config surface;
-//   * class GONE — the prior offset was non-empty, so `pullSessionRoot` recreates
-//     only the NEW cwd and the old one does not exist. WIDENING AND NARROWING
-//     ARE IN THIS CLASS TOGETHER (T2 narrows, T3 widens).
-// A sideways advertisement is not a third direction: the legal mirror roots for
-// a fixed `systemPath` are its ancestor chain, and a non-containing root is
-// refused 501 MIRROR_ROOT_EXCLUDES_PROJECT before the target check ever runs.
+// So a session cannot follow, and the honest answer is a named refusal on the
+// next relaunch: continuing at a geometry it did not start under is the silent
+// wrong-machine outcome this subsystem exists to prevent.
 //
-// 2026-0259's warn-don't-refuse is SUPERSEDED BY A THIRD ANSWER, not overturned
-// into a refusal. Its premise — "rebuilding a redirect under a running CLI is
-// not possible" — is true and does not apply: `_refreshSessionRoot` runs inside
-// launch() with spawn() on the next line, so there is no CLI to rebuild under.
-//
-// TWO FIXTURE FACTS THESE TESTS DEPEND ON.
+// FIXTURE FACTS THESE TESTS DEPEND ON.
 //  1. `bootServer({realProcess:true})` DELETES FAKE_CLAUDE_SCENARIO unless
 //     `scenarioPath` is given, and fake-claude then exits 2 — so eventual
 //     `status` proves nothing about whether a child started. Every arm here
-//     passes `scenario-no-turn.json` and reads `pid` / `spawn_error` as the
-//     spawn-happened signal, with `status` secondary.
-//  2. RED-RUN CAVEAT: before the fix, the class-GONE arms reach `spawn()` with a
-//     deleted cwd and the child never starts — and `Instance.kill()` never
-//     resolves after a spawn failure (card 2026-0286), so `instances.shutdown()`
-//     hangs. Confirming those baselines needs the instance dropped
-//     (`instances.byId.clear()`) instead of shut down. After the fix no arm
-//     reaches a spawn failure, so the ordinary teardown below is correct.
-//
-// SAME-MACHINE TRAP, GUARDED TWO WAYS. The reference provider IS this machine,
-// so an assertion must be one a local shortcut cannot satisfy: every location
-// check resolves the cc-owned IMAGE ROOT through `sessionRootPath`, independent
-// of the instance, while the project tree lives under a temp prefix OUTSIDE
-// PROJECTS_ROOT; and every content check is for `SENTINEL-0279`, a byte string
-// written only into the project tree's CLAUDE.md on the system.
+//     passes `scenario-no-turn.json` and reads `pid` as the spawn signal.
+//  2. Only a NEW CONNECTION GENERATION can move the advertisement — cc memoises
+//     it on handshake identity, so a live session re-asks nothing until its
+//     provider restarts. `readvertise` below is what produces one.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { sessionRootPath } from '../src/systems/sessionRoot.ts';
-import { sessionFilePath } from '../src/projects.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'mirrorFixtureProvider.mjs');
@@ -86,7 +60,12 @@ describe('a mirror advertisement that moves under a live session', () => {
   //
   // `mirror` is the FIRST advertisement — empty string means "advertise
   // nothing", which composes the project-anchored geometry (offset '').
-  async function fixture({ sub, mirror }) {
+  //
+  // `exclude` is a list of paths RELATIVE TO THE BOX, advertised as excludes.
+  // It exists for the `fail`-pin arm at the end of this file: an exclude inside
+  // the mirror root is the ONLY thing that renders a `fail` line, and this is
+  // the only fixture in `npm test` that mounts for real.
+  async function fixture({ sub, mirror, exclude = [] }) {
     const id = `movable${++n}`;
     const project = `app${n}`;
     const box = await mkdtemp('cc-0279-');
@@ -100,7 +79,8 @@ describe('a mirror advertisement that moves under a live session', () => {
     await fs.writeFile(mirrorFile, mirror === '' ? '' : path.join(box, mirror));
     await addSystem({
       id, label: id,
-      launch: ['node', FIXTURE, '--mirror-file', mirrorFile, '--pid-file', pidFile],
+      launch: ['node', FIXTURE, '--mirror-file', mirrorFile, '--pid-file', pidFile,
+        ...exclude.flatMap((rel) => ['--advertise-exclude', path.join(box, rel)])],
     });
     assert.equal((await adoptProject(project, projPath, { system: id })).ok, true);
 
@@ -108,11 +88,7 @@ describe('a mirror advertisement that moves under a live session', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle');
-    // Resolved from the module, NOT from the instance: a cwd computed against
-    // the project instead of the image root would give a different answer here
-    // rather than agreeing by accident.
-    const imageRoot = await fs.realpath(sessionRootPath(id, project, null));
-    return { id, project, box, projPath, mirrorFile, pidFile, inst, imageRoot };
+    return { id, project, box, projPath, mirrorFile, pidFile, inst };
   }
 
   // End the provider's connection generation and start a new one that answers
@@ -164,333 +140,136 @@ describe('a mirror advertisement that moves under a live session', () => {
     return out;
   }
 
-  const exists = (p) => fs.stat(p).then(() => true, () => false);
-  const geometryLines = (lines) => (lines ?? []).filter(l => l.includes('now mirrors this project at'));
+  // ── the arms ────────────────────────────────────────────────────────
 
-  // Everything the three moving arms assert in common: the session really moved,
-  // its config surface is there, its transcript came with it, and a worker
-  // actually started.
-  async function assertMoved({ inst, r, oldCwd, newCwd, backingId }) {
-    assert.equal(r.res.status, 200, JSON.stringify(r.res.body));
-    assert.equal(inst.cwd, newCwd, 'the session did not move to the new geometry');
-    assert.match(await fs.readFile(path.join(newCwd, 'CLAUDE.md'), 'utf8'), new RegExp(SENTINEL),
-      'the config surface at the new cwd is not this project’s');
-    assert.equal(await exists(sessionFilePath(newCwd, backingId)), true, 'the transcript did not come with it');
-    assert.equal(await exists(sessionFilePath(oldCwd, backingId)), false, 'the transcript was copied, not moved');
-    assert.deepEqual(r.spawnErrors, [], `a child failed to spawn: ${r.spawnErrors.join(', ')}`);
-    assert.notEqual(inst.pid, null, 'no worker was started');
-    assert.equal(r.replayed, true, 'the conversation was not replayed into the new location');
-    assert.equal(geometryLines(r.lines).length, 1,
-      `expected exactly one geometry line, got ${JSON.stringify(r.lines)}`);
-  }
-
-  // PINS class A1 — a WIDENING from an empty offset, where the old cwd survives
-  // the compose holding no config surface. The session, its config surface and
-  // its whole transcript LINEAGE (both segments) arrive at the new geometry and a
-  // worker starts there.
-  //
-  // NOT CLAIMING that the real `claude` binary resumes the conversation — the
-  // fake engine stands in, and what is pinned is that every input the CLI reads
-  // is now at its cwd. NOT CLAIMING anything about the far-side shell (it runs at
-  // the project path, which did not move) or about peer sessions (T4).
-  test('a widening move carries the session, its config surface and its transcript to the new geometry', async () => {
+  // PINS: a moved advertisement REFUSES the relaunch, by name, and does not
+  // half-apply. The session keeps the cwd it started with — a session that
+  // continued at a changed remote-tier boundary would be addressing a different
+  // slice of the system than the one it was created against.
+  test('a widened advertisement makes the next relaunch refuse, by name', async () => {
     const f = await fixture({ sub: 'proj', mirror: '' });
-    const oldCwd = f.inst.cwd;
-    assert.equal(oldCwd, f.imageRoot, 'the first compose is the project-anchored one (offset "")');
-    const backingId = f.inst.backingSessionId;
-    // A SECOND SEGMENT, so the lineage — not just the current backing id — is
-    // what has to move. A renewed session really does reach two.
-    const older = '9746ee72-0000-4000-8000-00000000cccc';
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, older);
-    f.inst._segments = [older, backingId];
+    const before = f.inst.cwd;
+    assert.equal(before, f.projPath, "the session started at the project's own path");
 
+    // '.' joins to the box itself: the provider now advertises a root WIDER
+    // than the project. `readvertise` restarts it, which is the only way a live
+    // session ever sees a different answer.
     await readvertise(f, '.');
-    const r = await relaunch(f.inst);
 
-    const newCwd = path.join(f.imageRoot, 'proj');
-    await assertMoved({ inst: f.inst, r, oldCwd, newCwd, backingId });
-    assert.equal(await exists(sessionFilePath(newCwd, older)), true, 'the older segment was left behind');
-    assert.equal(await exists(sessionFilePath(oldCwd, older)), false, 'the older segment was copied, not moved');
-  });
-
-  // PINS class GONE by NARROWING: the old cwd no longer exists after the compose,
-  // and no worker is ever started in a directory that is gone. Before this card
-  // the relaunch reached `spawn` there and failed ENOENT against the CLI
-  // BINARY's own path — a worker that never started, blamed on node.
-  //
-  // NOT CLAIMING that card 2026-0286's kill hang is fixed: this test simply never
-  // reaches a spawn failure any more.
-  test('a narrowing move carries it too, and no worker is started in a directory that is gone', async () => {
-    const f = await fixture({ sub: 'proj', mirror: '.' });
-    const oldCwd = f.inst.cwd;
-    assert.equal(oldCwd, path.join(f.imageRoot, 'proj'), 'the first compose put the project one level in');
-    const backingId = f.inst.backingSessionId;
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
-
-    await readvertise(f, '');
-    const r = await relaunch(f.inst);
-
-    await assertMoved({ inst: f.inst, r, oldCwd, newCwd: f.imageRoot, backingId });
-    assert.equal(await exists(oldCwd), false, 'the old cwd really was gone (class GONE, not A1)');
-  });
-
-  // PINS that the DIRECTION is not the discriminator: this is a WIDENING whose
-  // old offset was non-empty, so it lands in class GONE alongside the narrowing
-  // above. The card's "widening leaves a config-less cwd, narrowing leaves none"
-  // framing holds only for a widening FROM AN EMPTY OFFSET.
-  //
-  // NOT CLAIMING that B2 (narrowing between two non-empty offsets) is separately
-  // covered — it takes the identical `offset_old !== ''` path this arm exercises.
-  test('the direction is not the discriminator: a widening whose old cwd is also gone', async () => {
-    const f = await fixture({ sub: path.join('nest', 'proj'), mirror: 'nest' });
-    const oldCwd = f.inst.cwd;
-    assert.equal(oldCwd, path.join(f.imageRoot, 'proj'));
-    const backingId = f.inst.backingSessionId;
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
-
-    await readvertise(f, '.');
-    const r = await relaunch(f.inst);
-
-    await assertMoved({ inst: f.inst, r, oldCwd, newCwd: path.join(f.imageRoot, 'nest', 'proj'), backingId });
-    assert.equal(await exists(oldCwd), false, 'a WIDENING left no old cwd behind');
-  });
-
-  // CONTROL. PINS that only the RELAUNCHING session moves: the image root is
-  // shared per (system, project, worktree), so a peer live session keeps its old
-  // working directory — and this card's original defect — until its OWN next
-  // relaunch, at which point both converge on one cwd. Convergence is
-  // per-relaunch, not instant, which is what the emitted line's last clause says.
-  //
-  // This is also the arm that stops the relocation becoming a directory rename:
-  // a whole-encoded-directory move would strand the peer to un-strand A.
-  //
-  // NOT CLAIMING that B is usable in the meantime — it is not, and that is the
-  // point.
-  test('only the relaunching session moves; a peer converges at its own relaunch', async () => {
-    const f = await fixture({ sub: 'proj', mirror: '' });
-    const oldCwd = f.inst.cwd;
-    const rb = await api(baseUrl, 'POST', '/api/instances', { project: f.project, mode: 'bypassPermissions' });
-    assert.equal(rb.status, 201, JSON.stringify(rb.body));
-    const b = instances.get(rb.body.id);
-    await waitFor(() => b.status === 'idle');
-    assert.equal(b.cwd, oldCwd, 'both sessions started at the same cwd');
-
-    const aId = f.inst.backingSessionId, bId = b.backingSessionId;
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, aId);
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, bId);
-
-    await readvertise(f, '.');
-    const newCwd = path.join(f.imageRoot, 'proj');
-    const a = await relaunch(f.inst);
-    await assertMoved({ inst: f.inst, r: a, oldCwd, newCwd, backingId: aId });
-
-    // THE PEER, left exactly where it was.
-    assert.equal(b.cwd, oldCwd, 'the peer was moved without relaunching');
-    assert.equal(await exists(sessionFilePath(oldCwd, bId)), true, 'the peer’s transcript was dragged along');
-    assert.equal(await exists(sessionFilePath(newCwd, bId)), false, 'the peer’s transcript was dragged along');
-    assert.equal(await exists(path.join(oldCwd, 'CLAUDE.md')), false,
-      'the peer is in this card’s original defect: a cwd with no config surface');
-
-    // …and converges at its own next relaunch.
-    const second = await relaunch(b);
-    await assertMoved({ inst: b, r: second, oldCwd, newCwd, backingId: bId });
-    assert.equal(f.inst.cwd, b.cwd, 'both sessions are at one cwd again');
-  });
-
-  // PINS that a relocation that CANNOT complete refuses the relaunch and leaves
-  // the instance untouched: no worker is started at either location, `this.cwd`
-  // is unchanged, and the transcript is still whole at the old cwd. The order —
-  // relocate, THEN assign cwd — is what makes that true.
-  //
-  // NOT CLAIMING which errno a real-world failure carries. A directory planted
-  // at the destination gives EISDIR (even when empty, so it never clears on a
-  // retry); the invariant is that a non-ENOENT failure refuses rather than
-  // half-moving.
-  test('a relocation that cannot complete refuses the relaunch and leaves the session untouched', async () => {
-    const f = await fixture({ sub: 'proj', mirror: '' });
-    const oldCwd = f.inst.cwd;
-    const backingId = f.inst.backingSessionId;
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
-
-    await readvertise(f, '.');
-    const newCwd = path.join(f.imageRoot, 'proj');
-    await fs.mkdir(sessionFilePath(newCwd, backingId), { recursive: true });
-
-    // On the LAUNCH call, because the express error handler serialises only
-    // `error` — the refusal CODE is on the thrown error, which is where card
-    // 2026-0273's own refusal test reads its own.
-    await f.inst.kill({ graceMs: 200 });
-    await assert.rejects(f.inst.launch({ resume: backingId }), (e) => {
-      assert.equal(e.statusCode, 502, e.message);
-      assert.equal(e.code, 'SESSION_MOVE_FAILED', e.message);
-      assert.match(e.message, /Nothing was moved/);
-      return true;
-    });
-    assert.equal(f.inst.proc, null, 'a worker was started despite the refusal');
-    assert.equal(f.inst.cwd, oldCwd, 'the cwd moved even though the relocation did not');
-    assert.equal(await exists(sessionFilePath(oldCwd, backingId)), true, 'the transcript did not survive the refusal');
-
-    // And it reaches the operator as a 502 rather than being swallowed by the
-    // compose's warn-don't-refuse catch, which this refusal sits outside.
-    const res = await api(baseUrl, 'POST', `/api/instances/${f.inst.id}/respawn`);
-    assert.equal(res.status, 502, JSON.stringify(res.body));
-    assert.match(res.body.error, /now mirrors this project at/);
-  });
-
-  // PINS THAT THE LINE IS TRUE FOR A SESSION THAT HAS NO TRANSCRIPT. A worker
-  // killed before its first turn — and every fresh spawn until one lands — has
-  // nothing at either cwd, `loadHistory` returns silently on ENOENT, and
-  // `history_replayed` is never emitted. The move still happens and is still
-  // announced, so the announcement must not assert a transcript nobody looked
-  // for: that is the same rule as the line's "AND IT NAMES NO FILE", one clause
-  // over.
-  //
-  // NOT CLAIMING that a transcript-less move is different in any other respect —
-  // it is the same code path, and the relocation is simply a no-op. NOT CLAIMING
-  // that the destination encoded directory stays absent here; the primitive test
-  // owns that.
-  test('a move announces truthfully for a session that has no transcript at all', async () => {
-    const f = await fixture({ sub: 'proj', mirror: '' });
-    const oldCwd = f.inst.cwd;
-    const backingId = f.inst.backingSessionId;
-    // Deliberately NO seedSessionJsonl: the fake engine writes no transcript, so
-    // this is the state a session is in until its first turn persists one.
-
-    await readvertise(f, '.');
     const r = await relaunch(f.inst, { awaitReplay: false });
-    const newCwd = path.join(f.imageRoot, 'proj');
-
-    // The move happened, and there was genuinely nothing to carry.
-    assert.equal(r.res.status, 200, JSON.stringify(r.res.body));
-    assert.equal(f.inst.cwd, newCwd, 'the session did not move');
-    assert.equal(await exists(sessionFilePath(oldCwd, backingId)), false);
-    assert.equal(await exists(sessionFilePath(newCwd, backingId)), false);
-    assert.equal(r.replayed, false, 'there was no history, so none can have been replayed');
-    assert.notEqual(f.inst.pid, null, 'no worker was started');
-    assert.deepEqual(r.spawnErrors, [], `a child failed to spawn: ${r.spawnErrors.join(', ')}`);
-
-    // And the line says so — it hedges the transcript and the replay rather than
-    // asserting both unconditionally.
-    const [line] = geometryLines(r.lines);
-    assert.ok(line, 'the move was not announced');
-    assert.match(line, /any transcript it had moved with it/, line);
-    assert.match(line, /whatever history it had is replayed/, line);
+    assert.equal(r.res.status, 501, JSON.stringify(r.res.body));
+    // The MESSAGE, not the code: the REST error shape carries `error` and drops
+    // `code` for this class, and the message is what an operator reads anyway.
+    // The manager entry point is asserted on the code below.
+    assert.match(r.res.body.error, /changed its mirror advertisement/);
+    assert.match(r.res.body.error, new RegExp(f.box.replace(/[.*+?^$()|[\]\\]/g, '\\$&')),
+      'the refusal names the geometry it moved to');
+    assert.equal(f.inst.cwd, before, 'the session moved anyway');
   });
 
-  // PINS THE COMPOSITION SEAM the unit tests leave open: that `_followGeometry`
-  // actually CALLS `SessionRedirect.retarget`, with the OLD map as `prev`, and
-  // that the bridge classifies under the new geometry afterwards. Each of those
-  // three is proven at its own unit seam and at no joint — measured: deleting
-  // the `retarget` call outright leaves every other arm in this file green,
-  // because nothing else here looks at a file tool after the move.
-  //
-  // Three observations, and the ORDER is load-bearing. The Write comes first
-  // because a successful Read pulls, and a pull resyncs the local copy and
-  // clears the very divergence the first assertion is about.
-  //   1. a Write at the NEW local path is still REFUSED — the marker was
-  //      re-keyed through the system path, so it guards the file it always
-  //      guarded. Un-retargeted, or retargeted with `next` passed as `prev`,
-  //      this path is clean and the Write is allowed.
-  //   2. a Read at the NEW local path materialises the SYSTEM's bytes — the
-  //      bridge's own map moved too. With only the redirect's map swapped, the
-  //      pull resolves to a path that does not exist, reports absence, and
-  //      leaves nothing on disk.
-  //   3. the OLD local path is NOT dirty — markers moved rather than being
-  //      copied, so nothing is left guarding a path the worker may legitimately
-  //      use again under the new, wider geometry.
-  //
-  // HOSTED HERE, in the real-subprocess file, deliberately: invariant 1 is about
-  // the PRODUCTION relaunch, and only this file drives respawn → launch() →
-  // _refreshSessionRoot → _followGeometry. The card 2026-0286 hazard that makes
-  // this file a bad host for a mutant which UNFOLLOWS the geometry (it spawns
-  // into a deleted cwd and wedges kill()) does not reach the mutants this arm
-  // targets — every one of them leaves the cwd move intact and spawns normally.
-  // A prover authoring a cwd-side mutant should still repoint it at the
-  // in-process tests/systems-mirror-geometry-move.test.mjs.
-  //
-  // NOT CLAIMING that the refusal's TEXT was rewritten for the new geometry. It
-  // is not: the reason string is built when the push fails and the re-key carries
-  // it verbatim, so it still names the pre-move local path. The system path it
-  // also names is correct and unchanged, and that is what this arm asserts on.
-  //
-  // NOT CLAIMING anything about the recorded file MODE: every hooked op pulls
-  // first and a pull re-records it, so that half of the carry is unobservable
-  // from here and is pinned as a contract in tests/systems-file-bridge.test.mjs.
-  // NOT CLAIMING that the far-side shell followed anything — it runs at the
-  // project path, which did not move.
-  test('a moved session addresses the project through the new geometry, and its refusals move with it', async () => {
+  // PINS: an UNCHANGED advertisement relaunches normally. The control that makes
+  // the refusal above about the change and not about relaunching at all.
+  test('a relaunch at an unchanged advertisement is not refused', async () => {
     const f = await fixture({ sub: 'proj', mirror: '' });
-    const oldCwd = f.inst.cwd;
-    const backingId = f.inst.backingSessionId;
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
-    const redirect = f.inst._redirect;
-    const onSystem = path.join(f.projPath, 'sub', 'data.txt');
-
-    // A bridged file NESTED one level down, so its push can be broken the
-    // established way — by turning its parent into a file on the system.
-    await fs.mkdir(path.dirname(onSystem), { recursive: true });
-    await fs.writeFile(onSystem, `${SENTINEL}\n`);
-
-    const oldLocal = path.join(oldCwd, 'sub', 'data.txt');
-    assert.equal((await redirect.preToolUse('Read', { file_path: oldLocal })).decision, 'allow');
-    await fs.writeFile(oldLocal, 'local edit\n');
-    await fs.rm(path.dirname(onSystem), { recursive: true });
-    await fs.writeFile(path.dirname(onSystem), 'not a directory\n');
-    assert.match(await redirect.postToolUse('Edit', { file_path: oldLocal }, {}), /WRITE-BACK FAILED/);
-    assert.equal((await redirect.preToolUse('Write', { file_path: oldLocal, content: 'x' })).decision, 'deny',
-      'the divergence marker never took, so the move has nothing to carry');
-
-    // Repair the system side, so the new geometry has a real file to address.
-    await fs.rm(path.dirname(onSystem));
-    await fs.mkdir(path.dirname(onSystem), { recursive: true });
-    await fs.writeFile(onSystem, `${SENTINEL}\n`);
-
-    await readvertise(f, '.');
-    const r = await relaunch(f.inst);
-    const newCwd = path.join(f.imageRoot, 'proj');
-    await assertMoved({ inst: f.inst, r, oldCwd, newCwd, backingId });
-
-    const newLocal = path.join(newCwd, 'sub', 'data.txt');
-    // (1) + the arg order: the refusal guards the file under its new local name.
-    const denied = await redirect.preToolUse('Write', { file_path: newLocal, content: 'x' });
-    assert.equal(denied.decision, 'deny', 'the refusal did not follow the path it guards');
-    // On the SYSTEM path, which is the half that did not move and the half the
-    // worker can still act on. NOT the local path: the reason STRING is composed
-    // at push time and carried verbatim by the re-key, so it still names the
-    // pre-move local path. Observed here, not asserted as desirable.
-    assert.ok(denied.reason.includes(onSystem), denied.reason);
-    // (3) and it is not still guarding the old one.
-    assert.equal((await redirect.preToolUse('Write', { file_path: oldLocal, content: 'x' })).decision, 'allow',
-      'a marker was left behind under a stale local key');
-    // (2) the bridge's own map moved: a Read at the new path fetches the
-    // system's bytes rather than reporting the file absent.
-    assert.equal((await redirect.preToolUse('Read', { file_path: newLocal })).decision, 'allow');
-    assert.equal(await fs.readFile(newLocal, 'utf8'), `${SENTINEL}\n`,
-      'the pull did not resolve the new local path to the system file');
-    // And that resync clears the divergence, at the new key.
-    assert.equal((await redirect.preToolUse('Write', { file_path: newLocal, content: 'x' })).decision, 'allow');
+    await readvertise(f, '');
+    const r = await relaunch(f.inst, { awaitReplay: false });
+    assert.equal(r.res.status, 200, JSON.stringify(r.res.body));
+    assert.equal(f.inst.cwd, f.projPath);
+    assert.notEqual(f.inst.pid, null, 'a worker really started');
   });
 
-  // CONTROL. PINS that the fix does not fire on every relaunch: with no provider
-  // restart the compose returns the same cwd, nothing is relocated, no line is
-  // emitted, and the worker comes back where it was.
+  // PINS: a NARROWED advertisement refuses too — the direction is not the
+  // discriminator, the change is.
+  test('a narrowed advertisement refuses on the same code', async () => {
+    // Created under the WIDE root, then narrowed back to the project itself.
+    const f = await fixture({ sub: 'a/proj', mirror: '.' });
+    await readvertise(f, '');
+    // AT THE MANAGER ENTRY POINT, which is what the REST route wraps and what
+    // every other relaunch caller (rewind, auto-resume, resume-after-restart)
+    // reaches directly — and where the refusal keeps its machine-readable code.
+    await f.inst.kill({ graceMs: 200 });
+    await assert.rejects(() => instances.respawn(f.inst.id),
+      (e) => e.code === 'MIRROR_ADVERTISEMENT_CHANGED' && e.statusCode === 501);
+    assert.equal(f.inst.cwd, f.projPath, 'the session moved anyway');
+  });
+
+  // ── the `fail` pin arm ──────────────────────────────────────────────
   //
-  // NOT CLAIMING that no OTHER line is emitted — skipped entries and inert-exclude
-  // notes share this stream and are their own tests.
-  test('a relaunch at an unchanged geometry moves nothing', async () => {
-    const f = await fixture({ sub: 'proj', mirror: '' });
-    const oldCwd = f.inst.cwd;
-    const backingId = f.inst.backingSessionId;
-    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
+  // PINS THAT THE DAEMON PARSES A `fail` PIN AT ALL, and it lands here because
+  // this is the ONLY fixture in `npm test` that mounts for real.
+  //
+  // WHY IT EXISTS: a mutation round removed `pins_load`'s `fail` arm on its own
+  // and the whole suite stayed GREEN — 3 pass, 0 fail. `bind` needs no help,
+  // because bind lines render on every mount; `fail` renders only when a
+  // provider advertises an exclude INSIDE its mirror root, and no arm above
+  // advertises one. So the arm cc added specifically to stop a deployment dying
+  // with `unknown kind 'fail'` was itself deletable with a green suite. Fixture
+  // GEOMETRY was the gap, not a missing assertion.
+  //
+  // WHAT IT ASSERTS, and the boundary is deliberate: that a `fail` line really
+  // rendered (a cc-side artifact fact), and that THE MOUNT COMES UP. NOTHING
+  // about what the daemon then does with that pin. An expectation about routing
+  // here would outlive the change that should kill it, so the boundary is held
+  // at the artifact and the mount: what `route()` does with a `fail` entry is
+  // pinned by `tests/fuse-union-policy.test.mjs`, against the daemon's own
+  // source.
+  //
+  // GEOMETRY: mirror root `<box>/nest`, project `<box>/nest/app`, exclude
+  // `<box>/nest/other` — inside the root (so it is active, not inert) and
+  // outside the project (so it is not MIRROR_EXCLUDE_COVERS_PROJECT).
+  test('a `fail` pin from an advertised exclude still mounts', async () => {
+    const f = await fixture({ sub: 'nest/app', mirror: 'nest', exclude: ['nest/other'] });
+    const excluded = path.join(f.box, 'nest', 'other');
 
-    const r = await relaunch(f.inst);
+    // The advertisement really carried it, and cc really kept it active —
+    // without this the arm could pass having rendered no `fail` line at all,
+    // which is the state that let the mutant survive.
+    assert.deepEqual(f.inst._mirrorScope.exclude, [excluded]);
+    const rules = f.inst._fuse.plan.pinsText.split('\n').filter((l) => l && !l.startsWith('#'));
+    assert.ok(rules.includes(`fail\t${excluded}`),
+      `no fail line was rendered, so the daemon never parsed one: ${rules.join(' | ')}`);
+    // …and bind lines are there too, so this arm covers both new kinds on one
+    // real mount rather than trading one for the other.
+    for (const b of ['/proc', '/sys', '/dev']) {
+      assert.ok(rules.includes(`bind\t${b}`), `${b} lost its bind line`);
+    }
 
-    assert.equal(r.res.status, 200, JSON.stringify(r.res.body));
-    assert.equal(f.inst.cwd, oldCwd, 'an unchanged geometry moved the session');
-    assert.deepEqual(geometryLines(r.lines), [], 'an unchanged relaunch spoke');
-    assert.equal(await exists(sessionFilePath(oldCwd, backingId)), true, 'the transcript was relocated for nothing');
-    assert.notEqual(f.inst.pid, null, 'no worker was started');
-    assert.deepEqual(r.spawnErrors, [], `a child failed to spawn: ${r.spawnErrors.join(', ')}`);
+    // THE CLAIM: the daemon accepted the file and the union came up. `fixture`
+    // has already asserted the 201 and waited for `idle`; the mount record is
+    // the direct evidence, and a parse refusal would have died before it.
+    assert.notEqual(f.inst.pid, null, 'no worker started');
+    assert.equal(f.inst._fuse.record?.stage, 'mounted',
+      'the union never reached the mounted handshake');
+
+    // AND WHAT THE EXCLUSION ACTUALLY WITHHOLDS, now that H5 has landed and
+    // this is no longer an expectation that would outlive the change.
+    //
+    // cc must not SHAPE an excluded child into the mirror. Its size, mode and
+    // mtime are exactly what the exclusion holds back, and a stub would put all
+    // three on this machine and the name into the parent's listing — `ls` would
+    // show it and `cat` would answer -ENOENT, one caller and two answers.
+    // Reached as a CHILD of a directory that IS served, which is the path the
+    // per-path refusal cannot cover.
+    await fs.mkdir(excluded, { recursive: true });
+    await fs.writeFile(path.join(excluded, 'secret.txt'), 'EXCLUDED-BYTES');
+    await fs.writeFile(path.join(f.box, 'nest', 'ordinary.txt'), 'fine');
+
+    const mirror = f.inst._fuse.plan.mirror;
+    // Drive the LIST through the control server the session is already running,
+    // at the mirror root — the same frame `opendir` sends.
+    const { encodeRequest, CCU_OP } = await import('../src/systems/fuse/control.ts');
+    const net = await import('node:net');
+    const sock = net.connect(f.inst._fuse.plan.controlSock);
+    await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });
+    try {
+      const reply = new Promise((r) => sock.once('data', r));
+      sock.write(encodeRequest(CCU_OP.LIST, 0, path.join(f.box, 'nest')));
+      await reply;
+    } finally { sock.destroy(); }
+
+    const names = await fs.readdir(path.join(mirror, f.box, 'nest'));
+    assert.ok(names.includes('ordinary.txt'), `the served sibling is missing: ${names.join(',')}`);
+    assert.ok(!names.includes('other'),
+      `the excluded name and its metadata reached the mirror: ${names.join(',')}`);
   });
 });

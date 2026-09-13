@@ -72,7 +72,7 @@ export const LOCAL_PROVIDER_ENV = 'CC_LOCAL_SYSTEM_PROVIDER';
 // GATE-ONLY. It exists so the acceptance gate can run the whole application
 // against a provider that serves NAMED targets — a shape `placementOf` will
 // never produce for `local` in production, and therefore a shape no whole-suite
-// pass could otherwise reach (card 2026-0266).
+// pass could otherwise reach.
 //
 // A sibling of LOCAL_PROVIDER_ENV above, not a new category: it is inert without
 // it, and can only ever modify the already-test-only stand-in. The guard is
@@ -300,6 +300,42 @@ export async function systemById(id: string, remoteId: string | null, subject: s
     }
   }
   return sys;
+}
+
+// A LIVE, NON-MEMOISED ROUND TRIP TO THE FAR SIDE, and the whole of criterion
+// 4's remaining gap.
+//
+// `systemById` already refuses a provider that will not come up and a remote it
+// does not serve — but `connect()`, `assertRemoteKnown()` and `mirror()` all
+// memoise on the handshake OBJECT, which is the connection GENERATION. A
+// container that stopped AFTER that generation began is invisible to all three
+// until first use. For an ordinary operation that is fine: the next call
+// discovers it and reports. For a FUSE-union spawn it is not — the worker is
+// mounted onto a system that is not there and discovers it inside its own
+// chroot, with every project path answering -EIO and nothing to say why.
+//
+// So this deliberately omits the `#probedAgainst === hs` short-circuit
+// `assertRemoteKnown` has. It is one `true` per spawn, which is the cheapest
+// question there is, against a mount that is about to make thousands.
+export async function assertRemoteLive(sys: System, subject: string): Promise<void> {
+  const r = await sys.exec({ argv: ['true'] }, { cwd: '/', stdin: 'ignore' });
+  // `exec` never rejects, so every failure arrives as a field on the result and
+  // the three are three different sentences.
+  if (r.transportFailure) {
+    throw systemRefusal(502, 'SYSTEM_UNREACHABLE',
+      `${subject} is on system '${sys.id}', which did not answer a live check: ${r.spawnError}`);
+  }
+  // Only for a BOUND handle: an unbound one has no remote to name, and a
+  // refusal reading "remote 'null'" points at nothing.
+  if (r.spawnErrorCode === 'ENOREMOTE' && sys.remoteId !== null) {
+    throw systemRefusal(502, 'REMOTE_NOT_FOUND',
+      `${subject} is on remote '${sys.remoteId}' of system '${sys.id}', which does not serve it: ${r.spawnError}`);
+  }
+  if (r.spawnError !== null || r.code !== 0) {
+    throw systemRefusal(502, 'SYSTEM_UNREACHABLE',
+      `${subject} is on system '${sys.id}', which could not run \`true\`: `
+      + `${r.spawnError ?? (r.stderr.trim() || `exit ${r.code}`)}`);
+  }
 }
 
 // The three ways cc can fail to reach a system, each with its OWN code because

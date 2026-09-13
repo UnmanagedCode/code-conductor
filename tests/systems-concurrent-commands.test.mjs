@@ -1,15 +1,10 @@
-// TWO COMMANDS OF ONE SESSION, AT THE SAME TIME. This file was
-// tests/systems-agent-shells.test.mjs and was about A SHELL PER AGENT: a worker
-// session used to run every command in ONE long-lived shell on the far side, so
-// a subagent's `cd` re-based the main agent's next command and a subagent
-// inherited the session's exports, and the fix was to key a shell per agent.
+// TWO COMMANDS OF ONE SESSION, AT THE SAME TIME.
 //
-// Card 2026-0312 deleted the long-lived shell outright — one `exec` per command
-// — which SUBSUMES that guarantee by construction and strictly strengthens it:
-// no command's state reaches ANY later command, including its own agent's, so
-// there is nothing left to keep apart. Fifteen of the eighteen tests retired
-// with the mechanism they measured, and the file was renamed rather than left
-// carrying a header about a shell that no longer exists.
+// THERE IS NO LONG-LIVED SHELL — one `exec` per command — so no command's state
+// reaches ANY later command, including its own agent's, and there is nothing
+// left to keep apart. A subagent's `cd` cannot re-base the main agent's next
+// command and a subagent inherits no exports, by construction rather than by
+// keying a shell per agent.
 //
 // WHAT IS LEFT IS THE PART THE STRIP MADE MATTER MORE, because nothing
 // serialises any more and concurrency therefore goes UP: two commands of one
@@ -29,8 +24,8 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
-import { noMirror } from '../src/systems/mirror.ts';
 import { SessionRedirect } from '../src/systems/toolRedirect.ts';
+import { redirectTierOptions } from './tierFixture.mjs';
 
 let home, remote, redirect, root;
 
@@ -45,10 +40,8 @@ async function build({ shellCommandTimeoutMs } = {}) {
     system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
-    sessionRoot: root,
-    mirror: noMirror(remote.root),
+    ...redirectTierOptions({ systemPath: remote.root }),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [],
     emit: () => {},
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
   });
@@ -81,8 +74,8 @@ const onSystem = (rel) => path.join(remote.root, rel);
 // none — so a spurious trip is a flaky red, which is strictly worse than the
 // fail-slow hang it exists to prevent. Measured standalone: 0.22 s quiet,
 // 0.81-1.10 s at 32-way starvation, 0.92-1.30 s at 72-way. Against 3 s that is
-// a 2.3x margin, where this suite's convention is ~75x and this branch already
-// carries a card about a 3.3x margin inverting under exactly this load; the
+// a 2.3x margin, where this suite's convention is ~75x and this branch has
+// already seen a 3.3x margin invert under exactly this load; the
 // gate runs the whole suite twice with provider processes alongside, so real
 // inflation beyond those standalone numbers is likely. 10 s gives ~7.7x at
 // 72-way and is still ~60x better than the 605 s hang. It costs nothing real:
@@ -136,7 +129,7 @@ test('interrupting one command leaves a concurrent one untouched', async () => {
   assert.equal(ok.stdout.trim(), 'SURVIVED');
 });
 
-// PINS THE PROPERTY THIS CARD MOST EXPOSES: two commands of one session
+// PINS THE PROPERTY ONE-SHOT EXECUTION MOST EXPOSES: two commands of one session
 // GENUINELY OVERLAP, and each result holds exactly its own output, in order.
 //
 // STRUCTURAL, not wall-clock. Neither command can finish unless the other was
@@ -145,10 +138,10 @@ test('interrupting one command leaves a concurrent one untouched', async () => {
 // fail on their bound. This test cannot pass with a queue.
 //
 // THE SECOND HALF IS THE ONE THE STRIP MADE MATTER MORE. 300 distinct lines from
-// each, concurrently, each result holding exactly its own in order: this used to
-// be satisfiable only because the two agents had separate shells and therefore
-// separate parsers. Now every command has its own by construction, and a shared
-// nonce, decoder or pending slot is what would break it.
+// each, concurrently, each result holding exactly its own in order: this is
+// satisfiable only when each command has its own shell and therefore its own
+// parser. Every command has one by construction, and a shared nonce, decoder or
+// pending slot is what would break it.
 //
 // NOT CLAIMING: any ordering between the two, only simultaneous progress.
 test('two commands of one session genuinely overlap, and neither sees the other\'s output', async () => {

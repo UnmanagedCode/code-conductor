@@ -1,16 +1,16 @@
 // The in-process `local` System: cc's own machine, reached with `node:fs` and
 // the shared detached process-group runner. It is the built-in every project
 // resolves to until a remote system is registered, and its whole job is to be
-// INDISTINGUISHABLE from the direct calls it replaced — each method below is
-// the code that used to sit at the call site, moved behind the interface.
+// INDISTINGUISHABLE from a direct call — each method below is the code a call
+// site would otherwise run, behind the interface.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { runGroupedCommand } from '../groupedCommand.ts';
 import type { MirrorAdvertisement } from './mirror.ts';
-import { requireAbsolute } from './system.ts';
+import { msFromNanos, requireAbsolute, typeBitsFor } from './system.ts';
 import type {
-  ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
+  ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
 
 export const LOCAL_SYSTEM_ID = 'local';
@@ -33,19 +33,19 @@ function errCode(e: unknown): string | undefined {
 }
 
 // Shared mkdir-parent → write tmp(.pid.seq) → rename. Exported (and re-exported
-// from src/projects.ts, where it used to live and where most callers import it)
+// from src/projects.ts, where most callers import it)
 // because cc's own STORE writes go through it too — the store is always local,
 // so its atomic write and this system's are the same operation, not two.
 //
 // The tmp name must be
 // unique per call: pid separates processes, the counter separates concurrent
-// calls within one process (board 2026-0156 — a shared name let the winner's
-// rename delete the loser's still-in-flight source file). The `unlink` below is
+// calls within one process (a shared name lets the winner's rename delete the
+// loser's still-in-flight source file). The `unlink` below is
 // required *because* the name is unique, and is only safe for that same reason.
 // Concurrent writers to one target are last-write-wins, not merged or locked.
 let atomicWriteSeq = 0;
 
-export async function writeFileAtomic(filePath: string, data: string, mode?: number): Promise<void> {
+export async function writeFileAtomic(filePath: string, data: string | Buffer, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
   try {
@@ -93,15 +93,26 @@ export class LocalSystem implements System {
   }
 
   async writeFile(filePath: string, data: string, opts: WriteFileOptions = {}): Promise<void> {
-    requireAbsolute('writeFile', 'path', filePath);
+    return this.#write('writeFile', filePath, data, opts);
+  }
+
+  // The SAME write with no string in the middle of it. Locally there is nothing
+  // to encode, so this is one implementation and two entry points rather than
+  // two implementations — the wire side is where the distinction bites.
+  async writeFileBytes(filePath: string, data: Buffer, opts: WriteFileOptions = {}): Promise<void> {
+    return this.#write('writeFileBytes', filePath, data, opts);
+  }
+
+  async #write(op: string, filePath: string, data: string | Buffer, opts: WriteFileOptions): Promise<void> {
+    requireAbsolute(op, 'path', filePath);
     if (opts.atomic && opts.exclusive) {
       // Nothing needs both, and the combination has no single honest meaning:
       // an atomic write ends in a rename, which overwrites by definition.
-      throw new Error('writeFile: atomic and exclusive are mutually exclusive');
+      throw new Error(`${op}: atomic and exclusive are mutually exclusive`);
     }
     if (opts.atomic) return writeFileAtomic(filePath, data, opts.mode);
     if (opts.exclusive) {
-      await fs.writeFile(filePath, data, { encoding: 'utf8', flag: 'wx' });
+      await fs.writeFile(filePath, data, { flag: 'wx' });
       if (opts.mode !== undefined) await fs.chmod(filePath, opts.mode & 0o7777);
       return;
     }
@@ -121,10 +132,98 @@ export class LocalSystem implements System {
     return { kind: kindOf(s), size: s.size, mode: s.mode, mtimeMs: s.mtimeMs };
   }
 
+  async lstat(p: string): Promise<SystemLstat | null> {
+    requireAbsolute('lstat', 'path', p);
+    // `bigint` FOR THE NANOSECONDS, and only for them: `fs.Stats.mtimeMs` is
+    // already a rounded double, so rounding it again cannot agree with the
+    // wire's own integer arithmetic (see msFromNanos).
+    let s: import('node:fs').BigIntStats;
+    try { s = await fs.lstat(p, { bigint: true }); }
+    catch (e) {
+      // ENOTDIR alongside ENOENT: a non-directory component means there is no
+      // entry here, which is the answer rather than a failure to get one — and
+      // the derivation cannot tell the two apart either (`find` reports both as
+      // a non-zero exit about the path it was given).
+      const c = errCode(e);
+      if (c === 'ENOENT' || c === 'ENOTDIR') return null;
+      throw e;
+    }
+    return { ...this.#lstatOf(s), target: s.isSymbolicLink() ? await fs.readlink(p) : null };
+  }
+
+  // WHAT A DERIVATION CAN REPORT IS WHAT THIS REPORTS, in both fields, so the
+  // two implementations are comparable EXACTLY rather than within a tolerance
+  // that would hide a real drift:
+  //
+  //   mode    — `find -printf '%m'` carries permission bits alone, so the type
+  //             bits come from the kind on both sides (see `typeBitsFor`).
+  //   mtimeMs — through `msFromNanos`, the SAME function the wire side uses,
+  //             from exact integer nanoseconds. Rounding each side in its own
+  //             arithmetic disagreed on a half-millisecond boundary about once
+  //             in 20k. (`stat` above is left at fs.stat's own sub-millisecond
+  //             value; its callers ask about a target, and its conformance row
+  //             already carries a tolerance.)
+  #lstatOf(s: {
+    size: bigint; mode: bigint; mtimeNs: bigint;
+    isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean;
+  }): SystemStat {
+    const kind = kindOf(s);
+    return {
+      kind,
+      size: Number(s.size),
+      mode: (Number(s.mode) & 0o7777) | typeBitsFor(kind),
+      mtimeMs: msFromNanos(Number(s.mtimeNs / 1_000_000_000n), Number(s.mtimeNs % 1_000_000_000n)),
+    };
+  }
+
   async readDir(p: string): Promise<SystemDirent[]> {
     requireAbsolute('readDir', 'path', p);
     const entries = await fs.readdir(p, { withFileTypes: true });
-    return entries.map(e => ({ name: e.name, kind: kindOf(e) }));
+    // ONE STAT PER CHILD, and that is not the cost the widening exists to
+    // avoid: locally these are syscalls on this machine, where the derivation's
+    // 1 + N would be 1 + N ROUND TRIPS across a wire. The interface carries the
+    // fields so the wire side can collapse them; this side just fills them in.
+    return Promise.all(entries.map(async (e) => {
+      const full = path.join(p, e.name);
+      const s = await fs.lstat(full, { bigint: true });
+      return {
+        name: e.name,
+        ...this.#lstatOf(s),
+        target: s.isSymbolicLink() ? await fs.readlink(full) : null,
+      };
+    }));
+  }
+
+  async readlink(p: string): Promise<string> {
+    requireAbsolute('readlink', 'path', p);
+    return fs.readlink(p);
+  }
+
+  async symlink(target: string, p: string): Promise<void> {
+    // `target` is the link's CONTENTS, read on the far side — a relative one is
+    // legal and cc does not resolve it, so only `p` is checked.
+    requireAbsolute('symlink', 'path', p);
+    // REPLACES, matching `ln -sfn`: the derivation unlinks an existing entry
+    // before linking, so this must too or the two disagree on every re-link.
+    try { await fs.unlink(p); } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+    await fs.symlink(target, p);
+  }
+
+  async removeEntry(p: string): Promise<void> {
+    requireAbsolute('removeEntry', 'path', p);
+    // `rm -d` in one call: unlink a file or symlink, rmdir an EMPTY directory,
+    // refuse ENOTEMPTY otherwise. An absent `p` RESOLVES — the declared intent
+    // is "hold nothing here", which is already true.
+    try { await fs.unlink(p); return; }
+    catch (e) {
+      const c = errCode(e);
+      if (c === 'ENOENT') return;
+      // EISDIR on Linux, EPERM on macOS — the two spellings of "that is a
+      // directory, use rmdir".
+      if (c !== 'EISDIR' && c !== 'EPERM') throw e;
+    }
+    try { await fs.rmdir(p); }
+    catch (e) { if (errCode(e) === 'ENOENT') return; throw e; }
   }
 
   async realpath(p: string): Promise<string> {
@@ -153,12 +252,12 @@ export class LocalSystem implements System {
   }
 
   // cc's OWN machine advertises nothing, unconditionally. A session on a local
-  // project is not redirected at all — there is no session root and no map to
+  // project is not redirected at all — there is no union mount and no tier table to
   // widen — so there is nothing here for an advertisement to mean.
   //
   // AND NOTHING CALLS IT, as a property of the ID rather than of this class:
-  // mirror()'s only consumer is composeSessionRoot (src/sessionRoot.ts), and
-  // both of its call sites sit behind a redirect placement gated on
+  // mirror()'s only consumer is the create path's resolveMirrorScope
+  // (src/instances.ts), which sits behind a redirect placement gated on
   // `id !== LOCAL_SYSTEM_ID` (src/instances.ts). So a `local` handle is never
   // asked for a mirror even when a provider is standing in for this class.
   async mirror(): Promise<MirrorAdvertisement> {

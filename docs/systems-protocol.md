@@ -108,10 +108,9 @@ broken, because that boundary is easy to assume wrongly in both directions.
 ### The POSIX assumption
 
 The target is a **competent POSIX environment with GNU coreutils**: `stat`,
-`find` with `-printf` (plus POSIX `-path`/`-prune`, which the session-root walk
-uses to skip an advertised exclude — not a new bar: `-printf` is the stricter
-requirement, and a target that has it has these), `mkdir`, `rm`, `unlink`,
-`realpath`, `chmod`, `base64`, `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
+`find` with `-printf` (including `%m`, `%s`, `%T@` and `%l`), `mkdir`, `rm`
+(including `rm -d`), `unlink`, `ln -sfn`, `readlink -v`, `realpath`, `chmod`,
+`base64`, `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
 provider contract to **three** operations: everything else on cc's own `System`
 interface (`src/systems/system.ts` — the members beyond `exec`, `readFile` and
 `readFileBytes`/`writeFile`) is DERIVED by cc over `exec`, listed in §7. The
@@ -191,14 +190,15 @@ a user-visible difference, **and a test that runs the fallback**.
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
-| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
+| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
-| `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
+| `rename` | **not in the protocol** | — | cc never renames on a system: a cross-tier rename is `EXDEV` and a project-tier directory rename refuses, so nothing can ask for one | — |
+| `symlink` | **not in the protocol — a DERIVATION** | — | cc does create symlinks on a system (the union's reconcile carries one), but over `exec` as `ln -sfn` (§7). Still not a frame and still not a capability: a provider implements nothing for it | — |
 
 ### 2.1 The mirror advertisement
 
-**How much of a target's filesystem cc's session root is the local image of,**
+**How much of a target's filesystem the union's remote tier serves,**
 and which prefixes cc must not carry across. One request/response pair, gated on
 `remoteDescriptors`, resolved **per target**:
 
@@ -260,13 +260,13 @@ Containment throughout is `path.posix.relative`, never a string prefix, so
 prefix for path arithmetic and is never opened, so a non-directory root fails at
 whatever operation touches it, carrying the far side's own reason.
 
-**What it changes locally.** The session root becomes the image of the mirror
-root and the CLI's cwd moves to the project's place inside it
-(`root + offset`, `offset = ""` when the two are equal). The **allow-list walk
-does not move**: it stays anchored at the project over its fixed targets
-whatever the mirror root is (`src/systems/sessionRoot.ts`). The `exec` frames a
-composition sends are identical for `mirrorRoot: "/"` and
-`mirrorRoot: <project>`, pinned differentially in
+**What it changes locally.** The advertised root becomes the boundary of the
+union's **remote tier** — the slice of the system served from the system rather
+than from the orchestrator (`src/systems/fuse/tierTable.ts`). The **CLI's cwd
+does not move**: it is the project's own path on the system whatever the mirror
+root is, which is why an advertisement that changes under a live session is
+refused rather than followed (`MIRROR_ADVERTISEMENT_CHANGED`). Pinned in
+`tests/systems-mirror-wide.test.mjs`; the absence of any local image in
 `tests/systems-session-root.test.mjs`.
 
 ## 3. Frames
@@ -376,7 +376,7 @@ Rules:
   that id — but leave the process, and anything it backgrounded, running.
   **`exec` ids only.** Keep reading the command's streams and discard what
   arrives: pausing them blocks a survivor still writing, and destroying them
-  kills it with SIGPIPE (both measured, card 2026-0318 §3), and either is a
+  kills it with SIGPIPE (both measured), and either is a
   divergence from what a local background job gets.
   - cc sends it when a **redirected shell command** settles on cc's own framing
     sentinel (below), which may be long before — or instead of — the command's
@@ -393,7 +393,7 @@ Rules:
   deliberately carry no timeout, because locally there is nothing to time out
   against). For a redirected shell command, whose `timeoutMs` is
   `DEFAULT_COMMAND_TIMEOUT_MS`, that sum is 610 000 ms — **measured at
-  610 083 ms** (card 2026-0318 §1). Read the sum from the constants rather than
+  610 083 ms**. Read the sum from the constants rather than
   the number: `timeoutMs` is per-command and `ORCH_SHELL_COMMAND_TIMEOUT_MS`
   moves it. Expiry sends `close`, which is the provider's instruction
   to kill the command, and reports `{code:124, timedOut:true}` with
@@ -442,7 +442,7 @@ and returns. The `exit` frame may arrive later, or never.
 **So cc does NOT require a provider to report `exit` promptly after the process
 exits — and this protocol deliberately does not ask for it.** Measured on the
 reference provider, both same-host and across a real container boundary, in
-both capability configurations (card 2026-0318 §1, §4, §G5):
+both capability configurations:
 
 - A provider that reports `exit` when the child's **streams close** never
   reports it for a command that backgrounded a job, because the job inherits the
@@ -522,9 +522,9 @@ expiry kills the command and reports `{code:124,timedOut:true}` exactly as any
 other bounded `exec` does — **except when the provider reports nothing**, where
 what fires is cc's own backstop at `timeoutMs + EXEC_TIMEOUT_SLACK_MS` and the
 failure carries `abandonedAfterMs` instead (§5's rules). It does **one** job — the longest a command may run.
-It used to do three, also capping how long a wedged shell stayed wedged and how
-long a queued command waited for its turn, and both of those went with the
-long-lived shell and the queue.
+It is not also a cap on how long a wedged shell stays wedged or how long a
+queued command waits for its turn: there is no long-lived shell and no queue
+for it to bound.
 
 The tool timeout a redirected `Bash` carries reaches cc **not at all**, and cc
 needs it for nothing. At the tool timeout the CLI **detaches** the forwarder and
@@ -577,6 +577,20 @@ cc  →  {"type":"end","id":"w4"}
   it an edited script comes back 0644 and silently stops being executable. cc's
   write-back path sends the mode it read at the matching `readFile`.
 
+**Both frames are WHOLE-FILE on cc's side, and both carry BYTES.** `data` frames
+have always been base64 of raw bytes; the distinction is entirely in cc's own
+`System` interface, and it is worth stating because it was got wrong once:
+
+| cc-side member | Carries | Cap |
+|---|---|---|
+| `readFile` | text — the bytes decoded UTF-8 | `MAX_FILE_BYTES` (32 MiB), `EFBIG` above it |
+| `readFileBytes` | bytes, verbatim; `length` bounds the read | same |
+| `writeFile` | text — encoded UTF-8 on the way in, so a NUL or a lone 0xFF does **not** survive it | same |
+| `writeFileBytes` | bytes, verbatim | same |
+
+cc never sends the read frame's `offset`, so every transfer it makes is the
+whole file and the 32 MiB cap is a real ceiling rather than a chunking hint.
+
 ## 7. Everything else, derived from `exec`
 
 These are **cc-side helpers, not provider surface** — a provider implements none
@@ -586,7 +600,11 @@ asked to run, and so the POSIX assumption is concrete.
 | Operation | Command cc runs |
 |---|---|
 | `stat` | `env LC_ALL=C stat -L -c '%f %s %.3Y' -- <path>` — `-L` follows symlinks (matching `fs.stat`), `%f` is the raw mode so the kind comes from the type bits rather than a locale-dependent word |
-| `readDir` | `env LC_ALL=C find <path>/. -mindepth 1 -maxdepth 1 -printf '%y\t%f\n'` — the trailing `/.` is what makes a **file** report `ENOTDIR` instead of an empty listing |
+| `lstat` | `env LC_ALL=C find <path> -maxdepth 0 -printf '%y\t%m\t%s\t%T@\t%l\n'` — `-P` is `find`'s default, so `%y` of a symlink is `l` and `%l` is its target. ONE round trip for kind, permission bits, size, ms-precision mtime and the target. `ENOENT` **and `ENOTDIR`** resolve to `null` |
+| `readDir` | `env LC_ALL=C find <path>/. -mindepth 1 -maxdepth 1 -printf '%y\t%m\t%s\t%T@\t%l\t%f\n'` — the same five fields plus the **name last**, so one `exec` lists a directory rather than 1 + N. The trailing `/.` is what makes a **file** report `ENOTDIR` instead of an empty listing |
+| `readlink` | `env LC_ALL=C readlink -v -- <path>` — `-v` is what makes a failure say why; without it `readlink` exits 1 in silence and every failure classifies `EUNKNOWN`. A path that is not a symlink is `EINVAL`, distinct from `ENOENT` for one that is not there |
+| `symlink` | `env LC_ALL=C ln -sfnT -- <target> <path>` — `-f` REPLACES an existing entry, `-n` stops an existing symlink-to-directory at `<path>` swallowing the new link inside it, and **`-T` stops a REAL directory doing the same**: without it, `ln -sfn -- t d` on a directory `d` exits 0 having created `d/t`, a success reported having landed somewhere else. A directory at `<path>` is `EISDIR` — translated by the derivation rather than by §8's classifier, because `ln`'s wording carries no `strerror()` tail to match |
+| `removeEntry` | `env LC_ALL=C rm -d -- <path>` — ONE entry, non-recursively: unlinks a file or symlink, `rmdir`s an EMPTY directory, refuses a non-empty one `ENOTEMPTY`. An absent `<path>` **resolves**: the declared intent is "hold nothing here" |
 | `realpath` | `env LC_ALL=C realpath -e -- <path>` — `-e` requires every component to exist, matching `fs.realpath` |
 | `mkdir` | `mkdir -- <path>`, or `mkdir -p -- <path>` when recursive |
 | `removeTree` | `rm -rf -- <path>` |
@@ -595,6 +613,13 @@ asked to run, and so the POSIX assumption is concrete.
 
 That is the whole list — it is what `System`'s derived members compile to, and a
 provider's `exec` is asked to run nothing else on cc's behalf.
+
+**`find -printf '%m'` is permission bits alone**, so `lstat` and `readDir`
+reconstruct the file-type bits from `%y` and report the SAME full `mode` that
+`stat`'s `%f` carries. A kind cc cannot name (`b`, `c`, `p`, `s` → `other`) has
+no bits to reconstruct and reports permission bits alone — on both
+implementations, so the two stay comparable. `%T@` is `seconds.nanoseconds`,
+rounded to whole milliseconds; `LocalSystem` rounds too, for the same reason.
 
 **No `exec` cc issues carries an `env` frame field** — a caller's command and
 cc's own plumbing alike. Every command therefore runs in **the provider's own
@@ -690,7 +715,8 @@ cannot read.
 
 A derived command that **ran and failed** is classified by matching its stderr
 against a small table of well-known `strerror()` strings (substring, under
-`LC_ALL=C`): `ENOENT`, `EACCES`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOSPC`.
+`LC_ALL=C`): `ENOENT`, `EACCES`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOSPC`,
+`ENOTEMPTY`, `EINVAL`.
 
 **An unmatched failure is `EUNKNOWN`, carrying the exit code and the raw stderr
 verbatim, and it is surfaced to the user.** cc never guesses silently at a
@@ -706,7 +732,7 @@ as "no such file" turns one fixable fault into a fleet of misses.
 | Situation | cc's behaviour |
 |---|---|
 | The provider will not launch, or dies | Every in-flight operation fails `ETRANSPORT` at once. `exec` still resolves (with a `spawnError`) rather than throwing — its callers all branch on the result. The result also carries **`transportFailure: true`**, which is the ONLY way to tell this from the far side answering "I could not start that command": a transport failure's `spawnError` embeds the provider's dying stderr tail, so it may name any errno at all and must never be classified by its text. `runGit` reads exactly that flag to decide between refusing by system and reporting a git answer. |
-| The next operation after a death | Relaunches and redoes the handshake. Supervision is **restart-on-demand**: nothing reconnects a channel nobody is using. This is for a provider that **died**; a connection cc **disposed** is terminal, and every later operation on it fails `ETRANSPORT` without relaunching (card 2026-0347). |
+| The next operation after a death | Relaunches and redoes the handshake. Supervision is **restart-on-demand**: nothing reconnects a channel nobody is using. This is for a provider that **died**; a connection cc **disposed** is terminal, and every later operation on it fails `ETRANSPORT` without relaunching. |
 | Repeated failures | Exponential backoff, 100 ms doubling to a 5 s ceiling. **Inside the window an operation is refused, not queued** — a caller told "unreachable" now beats one held open across a restart storm. |
 | A malformed frame | The connection is torn down and restarted like a death. |
 | cc tears the connection down (`dispose`, a protocol violation, a handshake timeout) | cc **closes the provider's stdin** and lets MUST 3 do the work, then **SIGKILLs** it if it has not exited within a bounded grace. A provider that ignores EOF is still terminated — but cc cannot reap what such a provider started, which is what MUST 3 exists to prevent. After `dispose` the connection is **not reusable**: a caller still holding the handle is refused, not reconnected. |
