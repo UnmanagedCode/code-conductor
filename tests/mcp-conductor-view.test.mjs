@@ -379,9 +379,6 @@ export async function describeSession({ sessionId }, { instances }) {
 export async function spawnInstance(args, { instances }) {
   return toConductorView(instances.create(args).summary());
 }
-export async function respawnInstance({ sessionId }, { instances }) {
-  return toConductorView(instances.respawn(sessionId).summary());
-}
 `;
 
 test('the projection gate actually fails on a bypass (vacuity guard)', () => {
