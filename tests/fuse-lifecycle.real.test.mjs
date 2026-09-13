@@ -2430,8 +2430,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // over-read: RUN_FUSE_LIFECYCLE runs a FAKE CLI, so this answers only for
       // the BOOTSTRAP AND SPAWN POPULATION. The real CLI's own subprocesses
       // (hooks, the shell snapshot, the wrapper around a rewritten Bash command)
-      // are visible only under RUN_FUSE_APP3, which is not run here — that half
-      // of the population is recorded OPEN, not assumed either way.
+      // are visible only under a real-docker gate, which is not run here —
+      // that half of the population is recorded OPEN, not assumed either way.
       const events = await eventsOf(inst.id);
       const idOf = (r) => `pid=${r[4]} tgid=${r[5]} comm=${r[6]} cmdline=${r[7]}`;
 

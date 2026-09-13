@@ -10,7 +10,7 @@
 // either of those: the right answer arrives whichever way it was reached.
 //
 // WHAT IT DOES NOT PROVE: latency (that is measured, not asserted —
-// tests/fuse-transport-bench.mjs) and a real container (the `app3` acceptance).
+// tests/fuse-transport-bench.mjs) and a real container.
 //
 // NOTHING HERE MOUNTS, AND THAT IS MAINTAINED RATHER THAN INHERITED. Two arms
 // used to: a spawn that SUCCEEDS attaches `_fuse`, runs the full preflight and

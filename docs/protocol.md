@@ -495,7 +495,7 @@ The plugin manifest schema, reverse proxy (`/plugins/<id>/*`), bridge protocol, 
 
 ## The FUSE-union daemon's policy event log
 
-A **file format with real readers**, which is why it is here and not only in [architecture.md](architecture.md): the real gate's `R4` filters it, `RUN_FUSE_APP3` tallies it, `runTeardown` harvests it, and an operator (or a Claude session) derives the pin list from it. `docs/architecture.md` → "The FUSE-union chroot" carries the *why*; this is the contract.
+A **file format with real readers**, which is why it is here and not only in [architecture.md](architecture.md): the real gate's `R4` filters it, `runTeardown` harvests it, and an operator (or a Claude session) derives the pin list from it. `docs/architecture.md` → "The FUSE-union chroot" carries the *why*; this is the contract.
 
 **Two artifacts, one row shape plus provenance.**
 
