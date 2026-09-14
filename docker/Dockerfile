@@ -8,7 +8,8 @@
 # EXCEPT that proxy build fails there; the base must provide Node >= 24
 # (cc's engines requirement). Second suite caveat: the docker-cli package
 # exists from trixie onward only, so on a pre-trixie base CC_WITH_DOCKER=1
-# takes the docker.io fallback arm below and costs ~255 MB instead of ~30 MB.
+# takes the docker.io fallback arm below: ~109 MB on node:24-bookworm
+# against ~11 MB for docker-cli on node:24-trixie.
 ARG BASE_IMAGE=node:24-trixie
 FROM ${BASE_IMAGE}
 
