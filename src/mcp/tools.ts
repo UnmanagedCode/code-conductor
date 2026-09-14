@@ -777,28 +777,31 @@ export function buildTools(): Tool[] {
     {
       name: 'adopt_project',
       description:
-        'Adopt an EXISTING repo that already lives on disk OUTSIDE the projects root as a project, by ' +
+        'Adopt an EXISTING directory that already lives on disk OUTSIDE the projects root as a project, by ' +
         'absolute path. Nothing is copied or moved: cc records a symlink and every project tool then works ' +
-        'on the repo in place. The target must be a git repository ROOT (not a subdirectory of one) and must ' +
-        'not already be managed. Afterwards the project\'s paths are the target\'s REAL path (symlinks ' +
-        'resolved), which is what list_projects reports. ' +
-        'WRITES INTO THE TARGET REPO: cc creates/overwrites `<target>/CONVENTIONS.md` (its own file, ' +
+        'on the directory in place. The target must not be a *subdirectory* of a git repository (adopt that ' +
+        "repo's root instead), and must not be a git directory with no work tree (a bare repo, or a repo's " +
+        'own `.git`). A plain non-git directory is fine — it becomes an ordinary non-git project. The target ' +
+        'must also not already be managed. Afterwards the project\'s paths are the target\'s REAL path ' +
+        '(symlinks resolved), which is what list_projects reports. ' +
+        'WRITES INTO THE TARGET: cc creates/overwrites `<target>/CONVENTIONS.md` (its own file, ' +
         'carrying the workspace + project conventions) and ensures `<target>/CLAUDE.md` has an ' +
         '`@CONVENTIONS.md` line, prepending it without touching existing content. Both land in the ' +
-        "target's working tree as changes to commit. " +
+        'target directory; in a git target they are changes to commit. ' +
         'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
-        'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_NOT_A_REPO, ' +
-        'SYSTEM_UNREACHABLE, INVALID_REMOTE_ID, PROJECT_EXISTS — not errors. ' +
+        'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_INSIDE_REPO, ' +
+        'TARGET_NO_WORK_TREE, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, INVALID_REMOTE_ID, ' +
+        'PROJECT_EXISTS — not errors. ' +
         'A path identifies a tree only together with its (system, remoteId), so the same path on two ' +
         'targets of one system is two adoptable trees. ' +
-        'Deleting an adopted project only unregisters it; the repo itself is never touched.',
+        'Deleting an adopted project only unregisters it; the directory itself is never touched.',
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the repo by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
-          path: { type: 'string', description: 'Absolute path to the existing git repository root to adopt — on `system` when one is given, else on cc\'s own machine.' },
-          system: { type: 'string', description: 'Adopt a repo living on this registered system. The path is then validated there, and cc records the placement instead of a symlink.' },
-          remoteId: { type: 'string', description: 'Which TARGET of `system` the repo is on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`.' },
+          name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the directory by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
+          path: { type: 'string', description: 'Absolute path to the existing directory to adopt (a git repo root, or any directory that is not inside one) — on `system` when one is given, else on cc\'s own machine.' },
+          system: { type: 'string', description: 'Adopt a tree living on this registered system. The path is then validated there, and cc records the placement instead of a symlink.' },
+          remoteId: { type: 'string', description: 'Which TARGET of `system` the tree is on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`.' },
         },
         required: ['name', 'path'],
       },

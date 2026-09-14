@@ -161,7 +161,7 @@ export function installSessionActions({
   // Deleting a project means three different things, and the confirmation is
   // the one moment the user can act on the difference:
   //   in-root  — cc owns the directory and removes it;
-  //   adopted  — the `.external` symlink is unlinked, the user's repo untouched;
+  //   adopted  — the `.external` symlink is unlinked, the user's directory untouched;
   //   remote   — the record is cleared, the tree on the system untouched.
   // The last two are UNREGISTER, and saying "rm -rf" for them would promise
   // something about a checkout cc does not own.

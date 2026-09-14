@@ -257,12 +257,32 @@ test('an ADOPTED repo with no commits carries both deviants and refuses a worktr
 test('an adopt_project refusal keeps its machine-readable code through the MCP envelope', async () => {
   // JSON, not textResult: a `code` cannot survive the text-only rendered-read
   // channel, and the conductor is told to act on this one.
-  const plain = path.join(home, 'not-a-repo');
-  await fs.mkdir(plain, { recursive: true });
-  const res = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'nope', path: plain }));
+  // `<home>/ext-repo` is outside the projects root (`<home>/project`) and does
+  // not contain it, so the subdirectory refusal is the one that fires.
+  const ext = await makeRealRepo(home, 'ext-repo');
+  const sub = path.join(ext, 'pkg');
+  await fs.mkdir(sub, { recursive: true });
+  const res = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'nope', path: sub }));
   assert.equal(res.ok, false);
-  assert.equal(res.code, 'TARGET_NOT_A_REPO', JSON.stringify(res));
+  assert.equal(res.code, 'TARGET_INSIDE_REPO', JSON.stringify(res));
   assert.ok(typeof res.reason === 'string' && res.reason.length > 0);
+});
+
+test('an adopted non-git directory reads as a measured non-repo on both MCP read surfaces', async () => {
+  // The state adopt now admits, at the surface a conductor actually reads —
+  // no REST test reaches these renderers.
+  const plain = path.join(home, 'plain-tree');
+  await fs.mkdir(plain, { recursive: true });
+  await fs.writeFile(path.join(plain, 'notes.txt'), 'hello\n');
+  const adopted = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'plain', path: plain }));
+  assert.equal(adopted.ok, true, JSON.stringify(adopted));
+
+  const status = text(await callTool(baseUrl, 'project_status', { project: 'plain' }));
+  assert.match(status, /^! not a git repo$/m, status);
+  assert.match(status, /^FILES /m, status);
+
+  const listed = projectBlock(text(await callTool(baseUrl, 'list_projects', {})), 'plain');
+  assert.match(listed, /! not a git repo/, listed);
 });
 
 test('list_projects sees projects created via REST', async () => {
