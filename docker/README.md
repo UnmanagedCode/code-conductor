@@ -36,8 +36,8 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_PROJECTS_DIR` | *(required)* | Absolute host projects root. Must exist, be outside the cc repo, and be writable by `CC_UID`/`CC_GID`. |
 | `CC_PORT` | `8787` | Host port (container side is fixed 8787). |
 | `CC_BIND` | `127.0.0.1` | Host IP the port publishes on. Loopback by default on purpose — widen deliberately. |
-| `CC_USER` | `node` | The **account** the container runs as (compose `user:`). The name form, not `uid:gid` — docker resolves a name through the image's passwd/group files and loads the account's supplementary groups; a bare uid with no account in the image drops them all and makes `sudo` fail with *you do not exist in the passwd database*. |
-| `CC_UID` / `CC_GID` | `1000` / `1000` | The ids `CC_USER` carries; set to the owner of `CC_PROJECTS_DIR`. The build reconciles the account onto them and **fails, naming the squatter**, if another account or group in the base image already holds one. |
+| `CC_USER` | `node` | The **account** the container runs as (compose `user:`). The name form, not `uid:gid` — docker resolves a name through the image's passwd/group files and loads the account's supplementary groups; a bare uid with no account in the image drops them all and makes `sudo` fail with *you do not exist in the passwd database*. Changing it needs a **rebuild** — docker resolves the name through the image's passwd at container creation, so `docker compose start` against an existing image fails with a raw `unable to find user`; `make up` always rebuilds. |
+| `CC_UID` / `CC_GID` | `1000` / `1000` | The ids `CC_USER` carries; set to the owner of `CC_PROJECTS_DIR`. The build moves `CC_USER` onto them, creating the account if absent, and fails naming the holder if another account holds `CC_UID` or another group holds `CC_GID` — except that a new account simply joins the group already holding `CC_GID`. |
 | `CC_HOME_DIR` | `<root>/.cc-home` | Container `$HOME` — credentials, transcripts, `.claude.json`, `.gitconfig`, npm cache. |
 | `CC_TZ` | `UTC` | Container timezone. |
 | `CC_BASE_IMAGE` | `node:24-trixie` | Docker base image (passed to the build as `BASE_IMAGE`). Must provide Node ≥ 24 (cc's engines requirement); the claude CLI installs via npm on whatever base is chosen. An older base is fine **except** with `CC_WITH_CLAUDE_CODE_PROXY=1` — the proxy's prebuilt binary is dynamically linked and needs GLIBC ≥ 2.39 (`node:24-bookworm` ships 2.36, trixie 2.41). Second suite caveat: `docker-cli` exists from trixie onward only, so on bookworm/bullseye `CC_WITH_DOCKER=1` falls back to `docker.io` and costs ~255 MB instead of ~30 MB. |
@@ -45,9 +45,10 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_DOCKER_GID` | `${CC_GID}` | Gid of the **host** docker socket, added to `CC_USER`'s groups when `CC_WITH_DOCKER=1`. See "Docker from inside the container". |
 | `CC_COMPOSE_EXTRA` | *(empty)* | Extra compose file(s) chained **last**, so they override the built-in chain. Space-separated and **unquoted** (make keeps quote characters literally); paths relative to `docker/`. **Makefile only.** |
 | `CLAUDE_BIN` | *(empty)* | Alternative claude binary inside the container. Empty (and whitespace-only) means the stock `claude` on `$PATH`. |
+| `CC_WITH_SUDO` | `1` | **On by default**, unlike every other `CC_WITH_*`. See below. |
 | `CC_WITH_DOCKER` / `CC_WITH_SYSTEMS` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CLAUDE_CODE_PROXY` | `0` | Build-time tooling flags — see below. `CC_WITH_DOCKER` and `CC_WITH_SYSTEMS` are **also** compose-chain triggers (they pull in `compose.docker.yaml` / `compose.systems.yaml`). `CC_WITH_OLLAMA`, `CC_WITH_CLAUDE_CODE_PROXY`, and `CC_WITH_TAILSCALE` also start their service detached at boot. |
 
-Make variables: `GPU`, `CC_MOUNT`, `DOCKER`, `DOCKER_COMPOSE`, `CC_REPO_TARGET` — `CC_MOUNT` and `CC_REPO_TARGET` may also be set in `.env` (the Makefile `-include`s it; the make command line still wins over `.env`). `DOCKER` (default `docker`) is used only for the `CC_BASE_IMAGE_FILE` pre-build, which compose cannot do.
+Make variables: `GPU`, `CC_MOUNT`, `DOCKER`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`, `CC_BASE_IMAGE_TAG`. The Makefile `-include`s `.env`, so **any** of them may be set there too; a make command-line assignment overrides `.env`, an exported environment variable does not. `DOCKER` (default `docker`) is used only for the `CC_BASE_IMAGE_FILE` pre-build, which compose cannot do.
 
 ## What lives where
 
@@ -118,22 +119,22 @@ Notes:
 
 ## Optional tooling
 
-Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars; **never installed at boot** — to add or remove a flag, set it in `.env` and rebuild (`make up` always builds). To also refresh the base image, run `docker compose -f compose.yaml build --pull` — **except** with `CC_BASE_IMAGE_FILE` set, where the base is a local tag and `--pull` fails; `make build`/`make up` rebuild that base Dockerfile every run, so refresh its own `FROM` with `docker build --pull -f $CC_BASE_IMAGE_FILE …` directly.
+Baked at build time behind `ARG`s via the `CC_WITH_*` env vars (all default OFF except `CC_WITH_SUDO`); **never installed at boot** — to add or remove a flag, set it in `.env` and rebuild (`make up` always builds). To also refresh the base image, run `docker compose -f compose.yaml build --pull` — **except** with `CC_BASE_IMAGE_FILE` set, where the base is a local tag and `--pull` fails; `make build`/`make up` rebuild that base Dockerfile every run, so refresh its own `FROM` with `docker build --pull -f $CC_BASE_IMAGE_FILE …` directly.
 
-Installed **unconditionally**, not behind a flag: `sudo` (~10 MB) plus `/etc/sudoers.d/cc-conductor`, a passwordless `SETENV` rule for `CC_USER` — cc's Systems feature probes for exactly that pair (`src/systems/fuse/preflight.ts`), and the build runs `visudo -c` so a malformed rule fails the build rather than the first spawn.
+`CC_WITH_SUDO` is the one flag defaulting **on** (~4 MB): `sudo` plus `/etc/sudoers.d/cc-conductor`, a passwordless `SETENV` rule for `CC_USER`, which is what cc's Systems feature probes for (`src/systems/fuse/preflight.ts`). With that default, the container user can `sudo` to root. `CC_WITH_SYSTEMS=1` needs it, and the build refuses the pair.
 
 | Flag | Size | Notes |
 |---|---|---|
-| `CC_WITH_DOCKER=1` | ~30 MB trixie+ · ~255 MB older | The docker **client** (`docker-cli` from trixie onward; `docker.io`, which carries the daemon too, on bookworm/bullseye where `docker-cli` does not exist) **and** the `/var/run/docker.sock` mount (the Makefile chains `compose.docker.yaml` from the same flag — one knob; raw compose must add `-f compose.docker.yaml` itself). Also exports `HOST_PROJECTS_DIR` into the container — see What lives where. |
-| `CC_WITH_SYSTEMS=1` | ~8 MB on `node:24-trixie` | The packages cc's Systems feature needs **and** the `compose.systems.yaml` runtime deltas, from one flag. ~250 MB on a base carrying no compiler toolchain. See "cc's Systems feature in the container". |
+| `CC_WITH_DOCKER=1` | ~11 MB on `node:24-trixie` · ~109 MB on `node:24-bookworm` | The docker client (`docker-cli` from trixie onward; `docker.io`, which carries the daemon too, on bookworm/bullseye where `docker-cli` does not exist) **and** the `/var/run/docker.sock` mount (the Makefile chains `compose.docker.yaml` from the same flag — one knob; raw compose must add `-f compose.docker.yaml` itself). Also exports `HOST_PROJECTS_DIR` into the container — see What lives where. |
+| `CC_WITH_SYSTEMS=1` | ~11 MB on `node:24-trixie` · ~82 MB on `debian:trixie-slim` | The packages cc's Systems feature needs **and** the `compose.systems.yaml` runtime deltas, from one flag. The second figure is the cost on a base carrying no compiler toolchain. See "cc's Systems feature in the container". |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. The entrypoint starts `tailscaled --tun userspace-networking` detached at boot (log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME); joining the tailnet needs a one-time `make login/tailscale` — see Auth. |
 | `CC_WITH_CLAUDE_CODE_PROXY=1` | ~30 MB | `claude-code-proxy`; the entrypoint starts `claude-code-proxy serve` detached at boot (claude runs through the proxy; wired via cc's backends — see Auth below). |
 | `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`, default HOME). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
-The Debian-package sizes are computed from trixie apt metadata — `Installed-Size` summed over the `Depends` closure, minus what `node:24-trixie` already carries. The upstream-installer sizes (cloudflared, tailscale, ollama, claude-code-proxy) are upstream estimates. Both are estimates, not measured image deltas.
+The Debian-package sizes are measured image deltas — `docker image inspect --format '{{.Size}}'` with and without the packages, on the base named in the row. The upstream-installer sizes (cloudflared, tailscale, ollama, claude-code-proxy) remain upstream estimates.
 
-The runtime deltas ride on four files, all default OFF:
+Three override files, none chained by default, plus an operator-supplied tail:
 
 - `compose.docker.yaml` — `/var/run/docker.sock` + `group_add: [${CC_DOCKER_GID}]`. Chained automatically by the Makefile when `CC_WITH_DOCKER=1`; raw compose adds `-f compose.docker.yaml` itself.
 - `compose.systems.yaml` — `/dev/fuse` + `SYS_ADMIN` + `apparmor=unconfined` (the runtime deltas cc's Systems feature needs to run — ⚙ Settings → Systems / placing a project on another machine). Chained automatically by the Makefile when `CC_WITH_SYSTEMS=1`; raw compose adds `-f compose.systems.yaml` itself.
@@ -144,13 +145,12 @@ Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f 
 
 ## Docker from inside the container
 
-`CC_WITH_DOCKER=1` installs the docker **client only** — no daemon runs in this container; it talks to the host's through the bind-mounted `/var/run/docker.sock`.
+No docker daemon **runs** in this container (the bookworm/bullseye fallback arm installs one but never starts it); `docker` talks to the host's daemon through the bind-mounted `/var/run/docker.sock`.
 
 The socket is group-owned and mode `0660` on the host, so `CC_USER` must carry that group. The gid is a host property, unknowable at build time — read it on the **host** and put it in `.env`:
 
 ```bash
-stat -c '%g' /var/run/docker.sock    # → e.g. 984
-# docker/.env:  CC_DOCKER_GID=984
+stat -c '%g' /var/run/docker.sock    # put the result in docker/.env as CC_DOCKER_GID
 ```
 
 `compose.docker.yaml` feeds it to `group_add`. Its default is a no-op (`CC_USER` already carries `CC_GID`); with the wrong value, every docker call inside the container fails with *permission denied while trying to connect to the Docker daemon socket*, and the entrypoint says so at boot.
@@ -166,7 +166,7 @@ Socket access is root-equivalent on the host either way; `CC_WITH_DOCKER=1` is t
 | Probe | Supplied by |
 |---|---|
 | `/dev/fuse` is a character device | `compose.systems.yaml`'s `devices:` — **runtime, no package** |
-| `sudo -n true` | `sudo` + `/etc/sudoers.d/cc-conductor` + an account for the uid (all unconditional) |
+| `sudo -n true` | `CC_WITH_SUDO` (default on) + an account for the uid |
 | `sudo -n -E` preserves the environment | the `SETENV:` tag on that rule |
 | `unshare`, `nsenter`, `setpriv` | `util-linux` |
 | `mount`, `umount` | `mount` (Debian splits these out of `util-linux`) |
@@ -200,12 +200,9 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 | `FATAL (cc-entrypoint): … is inside a git repository` | `CC_PROJECTS_DIR` sits inside a git tree (`.git` present at some ancestor — file or directory). Move it outside the repo; cc refuses such store placements. |
 | `FATAL (cc-entrypoint): the projects root … is not writable` | uid mismatch — `chown` the dir to `CC_UID:CC_GID` (find them: `stat -c '%u %g' <dir>`). |
 | `WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket` | The `compose.docker.yaml` override isn't in the `-f` list — the Makefile chains it automatically from `CC_WITH_DOCKER=1`; raw compose must add `-f compose.docker.yaml` itself. |
-| `WARNING (cc-entrypoint): … docker.sock is mounted but not writable` | `CC_DOCKER_GID` is unset or wrong — set it to `stat -c '%g' /var/run/docker.sock` on the host and re-up. |
-| `WARNING (cc-entrypoint): CC_WITH_SYSTEMS=1 but /dev/fuse is not a character device` | The `compose.systems.yaml` override isn't in the `-f` list — the Makefile chains it automatically from `CC_WITH_SYSTEMS=1`; raw compose must add `-f compose.systems.yaml` itself. |
-| `FUSE_UNAVAILABLE: … fusectl …` | The **host kernel** does not expose fusectl; no package fixes it. Run that System on a different host. |
+| `error gathering device information … "/dev/fuse"` at `make up`, or `FUSE_UNAVAILABLE: /dev/fuse is missing …` | The **host** has no `/dev/fuse` — `modprobe fuse` there. Nothing in the image or the `-f` chain can supply it. |
+| `FUSE_UNAVAILABLE: … fusectl …` | Host kernel; no package fixes it. `modprobe fuse` on the host where FUSE is a module, otherwise run that System elsewhere. |
 | `FUSE_UNAVAILABLE: …` naming any other binary or header | `CC_WITH_SYSTEMS=1` was not set for the **build** — an `-f compose.systems.yaml` alone gives the runtime deltas and an image with no FUSE packages. |
-| `FATAL (setup-user): cannot … uid/gid … already holds it` | `CC_UID`/`CC_GID` collide with an account or group already in the base image (the message names it). Pick different ids, or a base image where they are free. |
-| `*** CC_BASE_IMAGE and CC_BASE_IMAGE_FILE are both set` | Two base-image knobs; unset one in `docker/.env`. |
 | Port already in use | Change `CC_PORT` in `.env`. |
 | Health banner at boot | Same readiness codes as native boots (`src/health.ts`) — missing `claude` CLI or credentials. The server starts anyway. |
 | GPU absent for ollama | Install nvidia-container-toolkit on the host, or run ollama CPU-only. |
