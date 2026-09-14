@@ -10,10 +10,12 @@ DOCKER_COMPOSE ?= docker compose
 # build a bare Dockerfile that is not a service.
 DOCKER ?= docker
 
-# .env is compose's dotenv; make reads it too, so one flag (CC_WITH_DOCKER)
-# drives both the tooling build and the socket-mount chain. A command-line or
-# exported variable wins over the .env value (make's own definitions beat an
-# included file's).
+# .env is compose's dotenv; make reads it too, so one flag per feature
+# (CC_WITH_DOCKER, CC_WITH_SYSTEMS) drives both the tooling build and the
+# compose -f chain. Only a COMMAND-LINE assignment overrides a value set here
+# (make CC_WITH_SYSTEMS=1 up); an exported environment variable does NOT,
+# because a definition in an included makefile beats the environment. Every
+# make variable below is overridable from .env for the same reason.
 -include .env
 
 GPU ?= 0                # 1 → chain compose.gpu.yaml (host GPU for ollama; needs nvidia-container-toolkit)
