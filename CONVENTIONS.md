@@ -24,9 +24,17 @@ These instructions apply to every project code-conductor manages. They are regen
 - **Update `README.md` in the same turn — before committing — when a change warrants it:** a new/removed feature, a new command, a changed flag default, a new endpoint, a different setup step, a new known limitation. Skip for refactors, internal bug fixes, test-only changes, or anything that doesn't alter what's documented.
 - **Keep related docs in sync.** Within a file, changing one half means checking the other. Across a layered doc set, a change spanning layers updates every layer it touches — or keep the fact in one file and cross-link.
 - **Optimize reference docs for retrieval, not token economy.** An omitted fact costs the reader more than an included one — they re-derive it. Be complete on the facts a reader needs: short, fact-dense bullets and tables over dense paragraphs; one fact findable at a glance. Name exact paths, commands, flags, regexes, constants, and refusal codes; skip rationale unless the *why* is non-obvious.
-- **Reference code-defined values, don't restate them.** In a doc or comment, name the constant, schema, or code that owns a value, count, or list — "the supported modes", not "three modes". Where a reader must act on the value, state it anchored to its source.
-- **Cite names, not positions.** Never put a commit sha or a `path:line` in a doc or comment — anchor to what an edit or a rebase cannot move: a symbol, constant, test title, or bare file path. For a measurement, the conditions that reproduce it.
 - **Split a doc before its section sprawls.** When a subsystem fits no single host doc, or its section outgrows its host — larger than the rest of that file, or past a screenful — promote it to its own `docs/<subsystem>.md` and link it from the routing list.
+
+## Content that outlives its author
+
+These rules govern content written into a project's tracked files, and nothing else. Where a file's own name or header declares its purpose to be recording what a rule below excludes — a changelog, a decision record, a generated reference, a tool's anchor catalog — that rule does not apply to it. The exemption belongs to the file, never to a passage inside one.
+
+- **No development history.** Nothing narrating how the work reached its current shape: fork points, "previously" / "used to" / "this replaces", spike-stage references, divergence or decision ledgers, progress sections, dated observations. Where a constraint's reason is historical, state the constraint in the present tense.
+- **No pointer a reader of the repo cannot resolve.** Every reference must be followable from a clone alone — a private board or ticket id, a commit sha, a branch name, a path into another tool's private state are not. An issue reference in a project whose tracker is public is.
+- **No machine-specific content.** Nothing naming the machine, account or filesystem the work happened on: a personal or container-specific path, a hostname, a username, an email address, a sibling checkout on the author's disk. This reaches identifiers, filenames and env var names, not only prose.
+- **Never restate what the code states.** Not a value, a count, a list, nor the logic — name what owns it: "the supported modes", not "three modes"; a comment adds what its code cannot say, never a paraphrase of it. Where a reader must act on a value, state it anchored to its source.
+- **Cite names, not positions.** Never a `path:line` in a doc or comment — anchor to what an edit or a rebase cannot move: a symbol, constant, test title, or bare file path. For a measurement, the conditions that reproduce it. Before a symbol replaces a line number, verify it resolves and does what you say it does.
 
 ## System-prompt docs
 
