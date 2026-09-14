@@ -2,6 +2,8 @@
 # directory is the canonical invocation (it owns the -f override chaining);
 # raw compose from docker/ must pass an explicit -f list, e.g.
 #   docker compose -f compose.yaml -f compose.systems.yaml up -d --build
+# (that -f gives the RUNTIME half of CC_WITH_SYSTEMS=1 only; the flag must
+# still be set for the build half, which bakes the FUSE packages.)
 # Do NOT mix raw compose with a COMPOSE_FILE env var — a -f flag silently
 # overrides COMPOSE_FILE, and keeping both spellings is the confusion this
 # avoids.
@@ -14,7 +16,11 @@ services:
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: ${CC_BASE_IMAGE:-node:24-trixie}
+        USER_NAME: ${CC_USER:-node}
+        USER_UID:  ${CC_UID:-1000}
+        USER_GID:  ${CC_GID:-1000}
         WITH_DOCKER:     ${CC_WITH_DOCKER:-0}
+        WITH_SYSTEMS:    ${CC_WITH_SYSTEMS:-0}
         WITH_CLOUDFLARED: ${CC_WITH_CLOUDFLARED:-0}
         WITH_TAILSCALE:   ${CC_WITH_TAILSCALE:-0}
         WITH_OLLAMA:      ${CC_WITH_OLLAMA:-0}
@@ -22,7 +28,14 @@ services:
     image: code-conductor:local
     init: true                       # tini: signal delivery + zombie reaping
     restart: unless-stopped
-    user: "${CC_UID:-1000}:${CC_GID:-1000}"
+    # The NAME form, not "uid:gid": docker resolves a name through the image's
+    # passwd/group files and loads the account's SUPPLEMENTARY groups (which
+    # group_add in compose.docker.yaml extends). A bare uid:gid pair is passed
+    # to the runtime verbatim — no passwd lookup, no supplementary groups, and
+    # sudo dies with "you do not exist in the passwd database" when the uid has
+    # no account at all. CC_UID/CC_GID are reconciled onto this account at
+    # BUILD time (docker/setup-user.sh).
+    user: "${CC_USER:-node}"
     environment:
       HOST: 0.0.0.0                  # mandatory: server.ts defaults to 127.0.0.1
       PORT: "8787"
@@ -42,6 +55,7 @@ services:
       # Lets the entrypoint's docker-sock warning fire when a raw-compose user
       # sets the flag but forgets -f compose.docker.yaml.
       CC_WITH_DOCKER: ${CC_WITH_DOCKER:-0}
+      CC_WITH_SYSTEMS: ${CC_WITH_SYSTEMS:-0}
       # Always exported; meaningful with the docker socket mounted (CC_WITH_DOCKER=1).
       # Containers run from INSIDE this container resolve -v sources on the
       # HOST, so use this host path for their volume sources — not the
