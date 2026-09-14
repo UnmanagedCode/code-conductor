@@ -2021,6 +2021,28 @@ int main(int argc, char *argv[])
 				"is unreachable\n");
 		return 1;
 	}
+	/*
+	 * PRESENT IS NOT ENOUGH, AND AN EMPTY STRING IS THE CASE THAT PROVES IT:
+	 * `getenv` answers a non-NULL "" for a variable exported empty, so the NULL
+	 * test above passes it through and `mark_maybe`'s `strcmp(path, mark_path)`
+	 * then matches no routed path at all — the silent host-only mount the
+	 * refusal above exists to prevent, reached by the one spelling it cannot
+	 * see. (`CC_UNION_TRACE` is the same trap handled one layer up, by the
+	 * bootstrap `unset`ting it rather than exporting it empty.)
+	 *
+	 * `policy_cwd_normalised` is the right predicate on the mechanism, not
+	 * merely to hand: the path `mark_maybe` compares against is one the KERNEL
+	 * hands the daemon, always absolute and normalised, so a mark path in any
+	 * other spelling can never match either. It answers 0 for "" at its
+	 * `p[0] != '/'` line, so one guard covers empty, relative and malformed.
+	 */
+	if (!policy_cwd_normalised(mark_path)) {
+		fprintf(stderr, "cc-union: REFUSED — CC_UNION_MARK_PATH=%s is not a "
+				"normalised absolute path (no '//', no trailing '/', no "
+				"'.' or '..' component); no caller would ever be marked "
+				"and the project tier would be unreachable\n", mark_path);
+		return 1;
+	}
 	/* Same reasoning for the channel: a daemon that cannot reach cc can
 	 * materialise nothing, so every project path would answer -EIO. */
 	if (!control_path) {

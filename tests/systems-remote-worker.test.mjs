@@ -14,10 +14,11 @@
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
+import { promises as fs, accessSync, constants as fsc } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, waitFor, seedSessionJsonl } from './helpers.mjs';
+import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject, orchStoreRoot } from '../src/projects.ts';
@@ -160,6 +161,25 @@ describe('a worker session on a remote system', () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
     assert.equal(r.status, 501, JSON.stringify(r.body));
     assert.match(JSON.stringify(r.body), /BASH_RULES_NOT_ENFORCEABLE/);
+  });
+
+  // ARM B OF THE LAUNCHER-RESOLUTION PAIR, AND THE HALF THAT GIVES ARM A ITS
+  // MEANING (arm A lives in its own realProcess describe below). This server's
+  // launcher is the in-process one: it runs the CLI inside cc's own process, so
+  // there is no chroot, no marking event and nothing to pin — and the same
+  // unresolvable CLAUDE_BIN that refuses arm A must NOT refuse here. Without
+  // this, FUSE_LAUNCHER_UNRESOLVED could be a blanket refusal on every remote
+  // spawn and arm A would still pass.
+  test('an unresolvable CLAUDE_BIN does NOT refuse an in-process session', async () => {
+    const saved = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = 'cc-no-such-command-anywhere';
+    try {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = saved;
+    }
   });
 
   // PINS: the refusal is about the setting, not about remote projects. Hooks
@@ -733,5 +753,202 @@ describe('a worker session on a system serving many targets', () => {
     assert.equal(d.body.hookSpecificOutput.permissionDecision, 'allow',
       d.body.hookSpecificOutput.permissionDecisionReason);
     assert.equal(await fs.readFile(local, 'utf8'), 'from target b\n');
+  });
+});
+
+// ARM A OF THE LAUNCHER-RESOLUTION PAIR. Its own server, because the file's
+// default in-process boot is EXEMPT by design (see the arm-B control above) and
+// so cannot drive this path at all: only a launcher that spawns an OS process
+// gets a chroot, and only a chroot needs a marking event.
+//
+// Nothing is mounted here — the refusal fires in `_doCreateResolved`, above
+// `new Instance(…)` and long before any FUSE preflight — so this costs a
+// process-launcher boot and no sudo.
+// PATH stripped of `claude`, by the SAME predicate `resolveOnPath` uses, so the
+// empty-CLAUDE_BIN case below genuinely fails to resolve whether or not the
+// machine running the suite has the CLI installed. Filtering the entries that
+// hold one — rather than emptying PATH — keeps everything else on it reachable.
+function pathWithoutClaude() {
+  return (process.env.PATH ?? '').split(path.delimiter).filter((dir) => {
+    if (!dir) return false;
+    try { accessSync(path.join(dir, 'claude'), fsc.X_OK); return false; }
+    catch { return true; }
+  }).join(path.delimiter);
+}
+
+describe('a union-bound spawn whose launcher does not resolve', () => {
+  let ctx, baseUrl, instances, home, remote, tree;
+
+  before(async () => { ctx = await bootServer({ realProcess: true }); ({ baseUrl, instances } = ctx); });
+  after(async () => { await ctx.close(); });
+
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    remote = await bindRemoteSystem();
+    tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+  });
+
+  afterEach(async () => {
+    await ctx.instances.shutdown();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  const BAD = 'cc-no-such-command-anywhere';
+
+  const withBin = async (value, fn) => {
+    const saved = process.env.CLAUDE_BIN;
+    if (value === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = value;
+    try { return await fn(); } finally {
+      if (saved === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = saved;
+    }
+  };
+
+  // PINS: the absolute path of the CLI is the union's marking event and the
+  // CLI's only host pin, so a spawn that cannot resolve one is refused rather
+  // than mounted with a mark path nothing can ever match — the silent
+  // host-only filesystem the daemon's own refusal exists to prevent. Over HTTP
+  // the STATUS is the machine-readable half (the shared error handler sends the
+  // message alone), so the code itself is pinned on the thrown error below.
+  test('is refused 501, leaving no instance behind', async () => {
+    const before = instances.list().length;
+    await withBin(BAD, async () => {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 501, JSON.stringify(r.body));
+      // No session was registered: a refusal that left a phantom instance
+      // behind would be resumable into the very state it refused.
+      assert.equal(instances.list().length, before);
+    });
+  });
+
+  // PINS THE REFUSAL'S IDENTITY AND ITS DIAGNOSIS, at the layer that carries
+  // both. `code` is asserted as a FIELD rather than read out of the message:
+  // the message opens with the same token, so a body-wide match is satisfied by
+  // the prose and says nothing about what a caller branches on. And the message
+  // must name the VALUE that failed to resolve — a sentence that only mentions
+  // `CLAUDE_BIN` as the repair leaves an operator with no way to see what cc
+  // actually tried.
+  test('carries code FUSE_LAUNCHER_UNRESOLVED and names the value it tried', async () => {
+    await withBin(BAD, async () => {
+      await assert.rejects(
+        async () => instances.create({ project: 'app', mode: 'bypassPermissions' }),
+        (e) => {
+          assert.equal(e.code, 'FUSE_LAUNCHER_UNRESOLVED', `code field: ${e.code} — ${e.message}`);
+          assert.equal(e.statusCode, 501, e.message);
+          assert.match(e.message, new RegExp(`Tried '${BAD}'`), e.message);
+          assert.match(e.message, new RegExp(`CLAUDE_BIN is "${BAD}"`), e.message);
+          return true;
+        },
+      );
+    });
+  });
+
+  // PINS THE SPELLING DOCKER SHIPS, all the way into this refusal:
+  // `docker/compose.yaml` renders `CLAUDE_BIN: ""`, which resolves to the stock
+  // `claude` — so with no `claude` on PATH the union-bound spawn is refused
+  // here, and the message must render BOTH halves. They differ in this case
+  // (raw `""`, resolved `claude`) and that is exactly why neither may be
+  // printed in place of the other: the raw value alone says nothing about what
+  // was looked up, and the resolved spelling alone hides that the operator set
+  // the variable empty.
+  test('the empty CLAUDE_BIN docker ships is refused, naming the raw value AND the resolved spelling', async () => {
+    const savedPath = process.env.PATH;
+    process.env.PATH = pathWithoutClaude();
+    try {
+      await withBin('', async () => {
+        const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+        assert.equal(r.status, 501, JSON.stringify(r.body));
+        assert.match(r.body.error, /CLAUDE_BIN is ""/, r.body.error);
+        assert.match(r.body.error, /Tried 'claude'/, r.body.error);
+      });
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+    }
+  });
+});
+
+// THE PLACEMENT INVARIANT, which is the whole reason the refusal lives in
+// `_doCreateResolved`'s `if (remote)` block rather than beside the value it
+// guards: it runs ABOVE `new Instance(…)` and therefore above the resume
+// reclaim, so a REFUSED resume must leave the session's existing instance
+// exactly as it found it (docs/architecture.md → "Resume reclaims the instances
+// it supersedes"). The reclaim calls `remove()`, so a guard below it destroys a
+// session on the way out of a refusal — invisible to any test that only ever
+// refuses a FRESH spawn.
+//
+// THE LAUNCHER IS INJECTED rather than `realProcess: true` because the husk has
+// to EXIST first, and on a subprocess launcher a remote-project session gets a
+// FuseSession and a real mount — which the default suite cannot require. The
+// injected launcher runs the CLI in cc's own process throughout and carries the
+// one structural fact the refusal is gated on (`inProcess`) as its own state,
+// so the husk is spawned under the exemption and the resume is not.
+describe('a RESUME whose launcher does not resolve', () => {
+  let ctx, baseUrl, instances, launcher, home, claudeProjectsRoot, remote, tree;
+
+  before(async () => {
+    launcher = new InProcessClaudeLauncher();
+    ctx = await bootServer({ claudeLauncher: launcher });
+    ({ baseUrl, instances } = ctx);
+  });
+  after(async () => { await ctx.close(); });
+
+  beforeEach(async () => {
+    launcher.inProcess = true;
+    ({ home, claudeProjectsRoot } = await freshProjectsRoot());
+    remote = await bindRemoteSystem();
+    tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+  });
+
+  afterEach(async () => {
+    launcher.inProcess = true;
+    await ctx.instances.shutdown();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  test('leaves the superseded instance registered and answering to the session', async () => {
+    const created = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'app', temp: false, mode: 'bypassPermissions' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const husk = instances.get(created.body.id);
+    await waitFor(() => husk.status === 'idle' && husk.sessionId);
+    const sessionId = husk.sessionId;
+    // The fake engine writes no transcript, and the resume pre-flight wants
+    // one: seeded so the resume below is refused by the LAUNCHER guard and not
+    // by a missing conversation.
+    await seedSessionJsonl(claudeProjectsRoot, husk.cwd, husk.backingSessionId);
+    await husk.kill({ graceMs: 50 });
+    await waitFor(() => !husk.proc && (husk.status === 'exited' || husk.status === 'crashed'));
+    assert.equal(instances.get(husk.id), husk, 'premise: a non-temp exit is RETAINED in byId');
+
+    launcher.inProcess = false;
+    const saved = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = 'cc-no-such-command-anywhere';
+    try {
+      await assert.rejects(
+        async () => instances.create({ project: 'app', resume: sessionId, mode: 'bypassPermissions' }),
+        (e) => {
+          // Past _doCreate's 409 liveness guard — which this settled husk
+          // passes — and therefore past the point an early reclaim would fire.
+          assert.equal(e.code, 'FUSE_LAUNCHER_UNRESOLVED', `${e.statusCode}: ${e.message}`);
+          return true;
+        },
+      );
+    } finally {
+      launcher.inProcess = true;
+      if (saved === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = saved;
+    }
+
+    assert.equal(instances.get(husk.id), husk,
+      'the refused resume reclaimed the instance it was superseding — the sidebar row and every '
+      + 'timer, arm and connection remove() takes with it go with it');
+    assert.deepEqual(instances.idsForSession(sessionId), [husk.id],
+      'and it is still the session\'s one instance');
   });
 });

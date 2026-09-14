@@ -4679,6 +4679,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     let redirectPlacement: RedirectPlacement | null = null;
     let mirrorScopeForSession: MirrorScope | null = null;
     let mirrorInert: string[] = [];
+    // RESOLVED ONCE, ABSOLUTE, and used twice below: as the CLI's host pin and
+    // as the daemon's marking event. Resolved up here rather than beside its
+    // uses because the refusal it can produce has to run ABOVE `new Instance(…)`
+    // — see the guard at the end of the `remote` block.
+    let claudeCommand = '';
     if (remote) {
       redirectPlacement = {
         system: proj.system as RedirectableSystem,
@@ -4727,6 +4732,34 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         throw Object.assign(
           new Error(bashRulesRefusal(proj.system.id, unenforceable)),
           { statusCode: 501, code: 'BASH_RULES_NOT_ENFORCEABLE' },
+        );
+      }
+
+      // THE LAUNCHER'S ABSOLUTE PATH IS THE UNION'S MARKING EVENT and the CLI's
+      // only host pin, so an unresolvable one is not a degraded spawn: the
+      // daemon would mount, no thread group would ever be marked, and the
+      // session would read the HOST's filesystem while every result claimed the
+      // system. Refused here, in the block that already holds
+      // REDIRECT_HOOKS_DISABLED and BASH_RULES_NOT_ENFORCEABLE and ABOVE
+      // `new Instance(…)`, so it joins the refusals that run above the resume
+      // reclaim and leave a session's existing instance alone.
+      //
+      // The exemption is the same structural one `attachFuse` uses: an
+      // in-process launcher runs the CLI inside cc's own process, so there is
+      // no chroot and no marking event to arm.
+      claudeCommand = resolveOnPath(resolveClaudeBin().command);
+      if (!claudeCommand && !this._claudeLauncher.inProcess) {
+        const spelling = resolveClaudeBin().command;
+        const raw = process.env.CLAUDE_BIN === undefined
+          ? 'unset'
+          : JSON.stringify(process.env.CLAUDE_BIN);
+        throw Object.assign(
+          new Error(`FUSE_LAUNCHER_UNRESOLVED: cannot spawn a worker for project '${project}' on `
+            + `system '${proj.system.id}' — the claude CLI does not resolve to an absolute path. `
+            + `Tried '${spelling}' (CLAUDE_BIN is ${raw}). That path is the union's marking event `
+            + `and the CLI's only host pin, so a session started without one would mark no caller `
+            + `and pin no launcher. Install the claude CLI, or set CLAUDE_BIN to its absolute path.`),
+          { statusCode: 501, code: 'FUSE_LAUNCHER_UNRESOLVED' },
         );
       }
     }
@@ -4939,10 +4972,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // how the table and the refusals that quote it would come to disagree.
       const mirrorRoot = mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath;
       const exclude = mirrorScopeForSession?.exclude ?? [];
-      // RESOLVED ONCE, ABSOLUTE, and used twice: as the CLI's host pin and as
-      // the daemon's marking event. `resolveClaudeBin()` returns a bare
-      // `claude` by default, and a bare name pins nothing and marks nothing.
-      const claudeCommand = resolveOnPath(resolveClaudeBin().command);
+      // `claudeCommand` was resolved — and, off the in-process launcher,
+      // REFUSED if it came back empty — at the top of this `remote` block.
       const tiers = buildTierTable({
         localRoots,
         claudeCommand,
