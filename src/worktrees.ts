@@ -1524,8 +1524,9 @@ export async function getProjectCommits(
   // --topo-order, not git's default committer-date order: the frontend's lane
   // assignment (computeGraph, public/commits.js) requires that no parent precede
   // its child. A rebase stamps a whole branch with one committer second, the date
-  // sort key goes constant, and the emitted order degenerates — lanes then target
-  // already-rendered commits and never converge.
+  // sort key goes constant, and the emitted order degenerates — branch points
+  // then attach to the wrong rows, and lanes end abruptly where the rail gives
+  // up on a parent already drawn above (computeGraph's `seen` guard).
   const r = await runGit(proj.system, proj.path, [
     'log', '--topo-order', `--max-count=${cap + 1}`,
     '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',

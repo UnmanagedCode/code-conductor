@@ -93,3 +93,19 @@ test('a parent outside the window still trails off the bottom', () => {
   ]);
   assert.equal(rows[1].lanesAfter[0], 'C0');
 });
+
+// 7. The multi-parent half of the `seen` guard. A merge whose SECOND parent was
+//    already emitted must open no lane aimed at it — the first-parent clause
+//    cannot cover this, it is a different branch of the routing.
+//      B()  M(A,B)  A()   — B is drawn at index 0, above the merge that names it
+test('a merge whose non-first parent was already emitted opens no lane at it', () => {
+  const { rows, maxCols } = computeGraph([
+    { sha: 'B', parents: [] },
+    { sha: 'M', parents: ['A', 'B'] },
+    { sha: 'A', parents: [] },
+  ]);
+
+  assert.deepEqual(rows[1].lanesAfter, ['A'], 'no second lane is opened toward B');
+  assert.equal(maxCols, 1, 'and no phantom column is reserved for it');
+  assert.deepEqual(rows[2].lanesAfter, [null], 'the root terminates the one lane');
+});

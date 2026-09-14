@@ -28,9 +28,10 @@ const BAND_H = 32;        // fixed height of the SVG node band at the top of a r
 // in styles.css, adjust this single constant to re-centre the dot.
 const DOT_CY = 17;
 // Left inset of a full-width element (the ahead divider) needed to line its text
-// up with a .commit-row's text column, which starts after the row's padding-left,
-// the rail, and the row's flex gap. Both constants are `.commit-row`'s, in
-// styles.css — retune them together.
+// up with a .commit-row's text column, which starts after the rail. The two
+// terms are `.commit-row`'s own `padding: 8px 12px` and `gap: 8px` in
+// styles.css — retune them together (tests/commits-view.test.mjs pins both
+// properties there, since no DOM assertion can measure the alignment).
 const ROW_TEXT_INSET = 12 + 8;
 const MAX_LANES = 12;     // soft cap; extra lanes clamp to the last column (logged)
 
@@ -308,20 +309,27 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
     }));
   }
 
-  // How many of the shown commits are "ahead" of the base. The ahead set is a
-  // PREFIX of the list: `ahead` = reachable from HEAD but not from base, and
-  // that set is closed upward — a child of an ahead commit cannot be reachable
-  // from base without its parent being reachable too. With --topo-order the
-  // server never interleaves the two lines, so a count is enough and no
-  // per-commit flag is needed.
-  const effectiveAheadCount = Math.min(data.aheadCount ?? 0, data.commits.length);
+  // Each row's ahead/already-merged answer is the server's per-commit `ahead`
+  // flag, never its position: the ahead set is NOT a prefix of the window.
+  // Merging a moved-on base back into your branch interleaves already-merged
+  // commits among ahead ones (git orders unrelated lines by date even under
+  // --topo-order), so an index-based partition badges the wrong rows.
+  //
+  // The divider's label claims that everything BELOW it is already in the base,
+  // so it is drawn only where that is true of every row below — i.e. the ahead
+  // rows are a contiguous prefix, which is the ordinary case. Where they are
+  // not, the per-row badges carry the answer alone rather than the divider
+  // saying something false. `dividerAt` is -1 for "no divider".
+  const firstMerged = data.commits.findIndex(c => !c.ahead);
+  const dividerAt = (data.aheadOf && firstMerged > 0
+    && data.commits.slice(firstMerged).every(c => !c.ahead)) ? firstMerged : -1;
 
   for (let i = 0; i < data.commits.length; i++) {
     // Divider ABOVE the first already-merged row — it labels the section that
     // FOLLOWS it (border-top, ↓ glyph, left inset), so it is appended
     // immediately before that row. Inset its label past the rail so it lands on
     // the rows' text column (measured in a browser: rail + ROW_TEXT_INSET).
-    if (effectiveAheadCount > 0 && i === effectiveAheadCount) {
+    if (i === dividerAt) {
       const divider = document.createElement('div');
       divider.className = 'ahead-divider';
       divider.textContent = `↓ already in ${data.aheadOf}`;
@@ -329,7 +337,7 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
       listEl.appendChild(divider);
     }
     listEl.appendChild(renderRow(project, data.commits[i], onOpenCommit, {
-      ahead: i < effectiveAheadCount,
+      ahead: data.commits[i].ahead === true,
       layout: graphRows[i], maxCols,
     }));
   }

@@ -483,6 +483,9 @@ test('GET /commits orders commits topologically, not by date', async () => {
   const commits = r.body.commits;
   assert.equal(commits.length, 5);
   assert.equal(commits[0].subject, 'M', 'tip first');
+  // Non-vacuity: drop %P from the pretty format and every parents[] comes back
+  // empty, leaving the sweep below nothing to check.
+  assert.ok(commits.some(c => c.parents.length > 0), 'commits must carry their parents');
   const bad = topologyViolations(commits);
   assert.deepEqual(bad, [], `commits[] must be topologically ordered:\n  ${bad.join('\n  ')}`);
 });

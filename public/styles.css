@@ -2021,8 +2021,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .commit-row.ahead { border-left: 3px solid var(--tool); }
 /* Ahead/merged band divider. Binds to the section BELOW it: a top border and no
    bottom one, so the label and the rows it names read as one block. No
-   text-align, so the inline padding-left commits.js sets (the rail width) is
-   what insets the label into the rows' text column. */
+   text-align, so the inline padding-left commits.js sets (rail width +
+   ROW_TEXT_INSET) is what insets the label into the rows' text column. */
 .ahead-divider {
   padding: 4px 12px; font-size: 11px; color: var(--muted);
   background: var(--panel-2); border-top: 1px solid var(--border);

@@ -2,7 +2,9 @@
 //
 // Drives the exported renderCommitList(listEl, data, opts) directly against a
 // mounted list element — no network stub. Covers the ahead/already-merged
-// divider: where it sits, what it says, and that it is driven by aheadCount.
+// partition, which is driven by each commit's own `ahead` flag (the set is not
+// a prefix of the window — see getProjectCommits), and the divider that names
+// the band below it.
 //
 // Same happy-dom harness style as tests/costs-view.test.mjs.
 //
@@ -32,19 +34,44 @@ async function setup() {
   return listEl;
 }
 
-const A = 'a'.repeat(40), B = 'b'.repeat(40), C = 'c'.repeat(40);
+const sha = (c) => c.repeat(40);
 
-// a → b → c, c a root. Two ahead of main, one already merged.
-function payload(over = {}) {
+function commit(name, parents, ahead) {
+  return {
+    sha: sha(name[0]), shortSha: name[0].repeat(7), subject: name,
+    author: 'x', relativeDate: '1 hour ago', isoDate: '2026-01-01T00:00:00Z',
+    parents: parents.map(p => sha(p[0])), ahead,
+  };
+}
+
+// Two ahead, THREE already merged: with only one merged row the divider's
+// index would be indistinguishable from "the last row".
+function prefixPayload(over = {}) {
   return {
     project: 'demo', branch: 'feature', truncated: false, limit: 100,
     hasUncommitted: false, aheadCount: 2, aheadOf: 'main',
     commits: [
-      { sha: A, shortSha: 'aaaaaaa', subject: 'third', author: 'x', relativeDate: '1 hour ago', isoDate: '2026-01-03T00:00:00Z', parents: [B] },
-      { sha: B, shortSha: 'bbbbbbb', subject: 'second', author: 'x', relativeDate: '2 hours ago', isoDate: '2026-01-02T00:00:00Z', parents: [C] },
-      { sha: C, shortSha: 'ccccccc', subject: 'first', author: 'x', relativeDate: '3 hours ago', isoDate: '2026-01-01T00:00:00Z', parents: [] },
+      commit('a', ['b'], true), commit('b', ['c'], true),
+      commit('c', ['d'], false), commit('d', ['e'], false), commit('e', [], false),
     ],
     ...over,
+  };
+}
+
+// The real non-prefix topology from tests/project-commits.test.mjs: a branch
+// that merged its moved-on base back in. Already-merged `m2` sits ABOVE two
+// ahead commits.
+function nonPrefixPayload() {
+  return {
+    project: 'demo', branch: 'code-conductor/np', truncated: false, limit: 100,
+    hasUncommitted: false, aheadCount: 3, aheadOf: 'main',
+    commits: [
+      { ...commit('M', ['w2'], true), parents: [sha('w2'[0]), sha('m2'[0])] },
+      commit('m2', ['m1'], false),
+      commit('w2', ['w1'], true),
+      commit('w1', ['m1'], true),
+      commit('m1', [], false),
+    ],
   };
 }
 
@@ -52,10 +79,11 @@ test('ahead divider is inserted above the first already-merged row', async () =>
   const listEl = await setup();
   const { renderCommitList } = await import('../public/commits.js');
 
-  renderCommitList(listEl, payload(), { project: 'demo', onOpenCommit: () => {} });
+  renderCommitList(listEl, prefixPayload(), { project: 'demo', onOpenCommit: () => {} });
 
   const kids = [...listEl.children];
-  assert.equal(listEl.querySelectorAll('.ahead-divider').length, 1);
+  assert.equal(listEl.querySelectorAll('.ahead-divider').length, 1,
+    'exactly one divider, however many already-merged rows follow');
   assert.equal(kids[0].className, 'commit-row ahead');
   assert.equal(kids[1].className, 'commit-row ahead');
   assert.equal(kids[2].className, 'ahead-divider');
@@ -63,21 +91,80 @@ test('ahead divider is inserted above the first already-merged row', async () =>
     'the label must name the direction it binds in, not just the base');
   assert.equal(kids[3].className, 'commit-row', 'first already-merged row');
   assert.equal(kids[3].querySelector('.commit-sha').textContent, 'ccccccc');
+  assert.equal(kids[4].className, 'commit-row');
+  assert.equal(kids[5].className, 'commit-row', 'and the rows after it get no second divider');
+  assert.equal(kids.length, 6);
   // One lane over this linear history, so the label clears a 14px rail plus the
   // row's padding-left + flex gap — landing on the rows' text column.
   assert.equal(kids[2].style.paddingLeft, '34px', 'label is inset onto the text column');
+});
+
+test('ahead rows are classed by their own flag, not by their position', async () => {
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  renderCommitList(listEl, nonPrefixPayload(), { project: 'demo', onOpenCommit: () => {} });
+
+  const rows = [...listEl.querySelectorAll('.commit-row')];
+  assert.deepEqual(rows.map(r => r.className), [
+    'commit-row ahead',  // M
+    'commit-row',        // m2 — already in main, ABOVE two ahead commits
+    'commit-row ahead',  // w2
+    'commit-row ahead',  // w1
+    'commit-row',        // m1
+  ]);
+  // Any index-based partition would badge the first THREE rows here.
+  assert.equal(listEl.querySelectorAll('.commit-row.ahead').length, 3);
+});
+
+test('no divider is drawn when the ahead rows are not a contiguous prefix', async () => {
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  renderCommitList(listEl, nonPrefixPayload(), { project: 'demo', onOpenCommit: () => {} });
+
+  // The label claims everything BELOW it is already in the base. Here that is
+  // false of two rows, so the badges carry the answer alone.
+  assert.equal(listEl.querySelectorAll('.ahead-divider').length, 0);
 });
 
 test('no divider and no ahead classing when nothing is ahead', async () => {
   const listEl = await setup();
   const { renderCommitList } = await import('../public/commits.js');
 
-  renderCommitList(listEl, payload({ aheadCount: 0, aheadOf: null }),
-    { project: 'demo', onOpenCommit: () => {} });
+  const data = prefixPayload({ aheadCount: 0, aheadOf: null });
+  data.commits = data.commits.map(c => ({ ...c, ahead: false }));
+  renderCommitList(listEl, data, { project: 'demo', onOpenCommit: () => {} });
 
   assert.equal(listEl.querySelectorAll('.ahead-divider').length, 0);
   assert.equal(listEl.querySelectorAll('.commit-row.ahead').length, 0);
-  assert.equal(listEl.querySelectorAll('.commit-row').length, 3);
+  assert.equal(listEl.querySelectorAll('.commit-row').length, 5);
+});
+
+test('an empty history renders one working-tree row and the empty notice', async () => {
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  renderCommitList(listEl, prefixPayload({ commits: [], hasUncommitted: true }),
+    { project: 'demo', onOpenCommit: () => {} });
+
+  assert.equal(listEl.querySelectorAll('.commit-row.uncommitted').length, 1,
+    'the working-tree row is rendered exactly once');
+  assert.equal(listEl.querySelectorAll('.review-empty').length, 1);
+  assert.equal(listEl.children.length, 2);
+});
+
+test('tapping a row calls the injected onOpenCommit, not a module global', async () => {
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  const calls = [];
+  renderCommitList(listEl, prefixPayload(), {
+    project: 'demo', onOpenCommit: (project, c) => calls.push([project, c.subject]),
+  });
+  listEl.querySelector('.commit-row').click();
+
+  assert.deepEqual(calls, [['demo', 'a']]);
 });
 
 test('.ahead-divider binds to the section below it', async () => {
@@ -90,4 +177,15 @@ test('.ahead-divider binds to the section below it', async () => {
   assert.match(rule, /border-top:/);
   assert.doesNotMatch(rule, /border-bottom/);
   assert.doesNotMatch(rule, /text-align:\s*center/);
+});
+
+test('.commit-row keeps the box model ROW_TEXT_INSET is derived from', async () => {
+  // ROW_TEXT_INSET (public/commits.js) is padding-left + gap, read off this
+  // rule. Retuning either here silently breaks the divider's alignment, which
+  // no DOM assertion can measure — so pin the two properties it depends on.
+  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
+  const rule = css.match(/\n\.commit-row\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+  assert.ok(rule.length > 0, 'sanity: styles.css defines .commit-row');
+  assert.match(rule, /gap:\s*8px/);
+  assert.match(rule, /padding:\s*8px 12px/);
 });
