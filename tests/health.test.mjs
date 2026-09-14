@@ -203,3 +203,23 @@ test('formatReadiness — warning block includes header, codes, and hints', () =
   assert.match(out, /fix bin/);
   assert.match(out, /sign in/);
 });
+
+// --- the CLAUDE_BIN entrance, at a real caller ---
+
+test('an EMPTY CLAUDE_BIN reaches the probe as the stock claude, never as ""', async () => {
+  // `docker/compose.yaml` ships `CLAUDE_BIN: ${CLAUDE_BIN:-}`, which renders
+  // literally as `""` — so this is the spelling stock docker actually boots
+  // with. It used to reach `spawn('')`, and the probe then reported
+  // `claude_bin_missing` with an empty command in it.
+  //
+  // `found` is deliberately NOT asserted: whether a real `claude` is installed
+  // on the machine running this suite is not the claim. `probeBin` echoes
+  // `command` on every branch it can settle on (spawn throw, 'error', timeout,
+  // exit), so the command is deterministic either way.
+  const home = await mkTmp();
+  await seedClaudeDir(home, { credentials: true });
+  await withEnv({ CLAUDE_BIN: '', ANTHROPIC_API_KEY: undefined }, async () => {
+    const r = await checkClaudeReadiness({ home, timeoutMs: 2000 });
+    assert.equal(r.claudeBin.command, 'claude');
+  });
+});

@@ -1334,17 +1334,22 @@ describe('the mount literals', () => {
     }
   });
 
-  // A16b — PINS THE DAEMON'S THREE MOUNT PRECONDITIONS AT THE ONLY LAYER THAT
-  // ENFORCES THEM. `main()` is not reachable from the policy fixture (it needs
-  // libfuse, a real socket and a real mount), so each refusal is pinned from
-  // the source, beside A16 and for A16's reason.
+  // A16b — PINS THE DAEMON'S THREE MOUNT PRECONDITIONS FROM THE SOURCE, beside
+  // A16 and for A16's reason: `main()` is not reachable from the POLICY FIXTURE
+  // (it needs libfuse, a real socket and a real mount).
+  //
+  // THE GREP IS NOT THE ENFORCEMENT, and this file is no longer the only layer
+  // that can reach these refusals: `tests/fuse-daemon-preconditions.test.mjs`
+  // execs the REAL COMPILED DAEMON, which reaches every env refusal in `main()`
+  // — they all fire before `pthread_key_create`, `control_connect` and
+  // `fuse_main`. This test remains the one that runs without a toolchain.
   //
   // `CC_UNION_CWD` HAS NO DEFAULT, AND THAT ABSENCE IS THE POINT. The chain is
   // the whole domain of the floor and of the overlay, so a missing cwd means no
   // floor, no overlay node, and every unmarked chdir dead at its destination —
   // while looking exactly like a working mount. A default would be worse than
   // the refusal.
-  test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd', async () => {
+  test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd — and refuses a mark path or cwd it cannot match', async () => {
     const { readFile } = await import('node:fs/promises');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
     const src = await readFile(path.join(dir, 'union.c'), 'utf8');
@@ -1368,6 +1373,15 @@ describe('the mount literals', () => {
     // would read as a working mount that silently un-exempts the project root.
     assert.match(src, /cwd_path\s*= getenv\("CC_UNION_CWD"\);/,
       'CC_UNION_CWD is read with a default, or not read into cwd_path at all');
+    // AND THE MARK PATH THE SAME WAY, for the reason PRESENCE cannot cover:
+    // `getenv` answers a non-NULL "" for a variable exported empty, so the NULL
+    // test above passes it and `mark_maybe`'s strcmp then matches no routed
+    // path — the mount comes up and marks nobody. The daemon-preconditions file
+    // drives both halves through the real binary.
+    assert.match(src, /if \(!policy_cwd_normalised\(mark_path\)\) \{/,
+      'union.c no longer validates CC_UNION_MARK_PATH at mount time');
+    assert.match(src, /mark_path\s*= getenv\("CC_UNION_MARK_PATH"\);/,
+      'CC_UNION_MARK_PATH is read with a default, or not read into mark_path at all');
   });
 
   // 2c — THE BOOTSTRAP'S MARK ORDERING, PINNED AT THE LAYER THAT ENFORCES IT.

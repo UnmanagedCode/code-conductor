@@ -2,7 +2,9 @@
 // env injection, custom models (backend + required contextWindow), tier/role
 // bindings on the {backend, model} shape (validation gates + no-silent-revert),
 // the Claude-only familyOf (canonicalize no-op for non-Claude ids), the
-// {backend,model}-shaped session sidecar, and the Settings routes.
+// {backend,model}-shaped session sidecar, and the Settings routes — plus
+// `src/claudeLauncher.ts`'s launch-resolution primitives, of which
+// `resolveBackendLaunch` is one and `resolveClaudeBin` the other.
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +22,7 @@ import {
   familyOf, canonicalizeModel, isKnownClaudeModel, MANAGED_BACKENDS,
   MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
 } from '../src/modelVersions.ts';
-import { resolveBackendLaunch, backendEnv } from '../src/claudeLauncher.ts';
+import { resolveBackendLaunch, backendEnv, resolveClaudeBin } from '../src/claudeLauncher.ts';
 import {
   hasSessionBackend, getSessionBackend, markSessionBackend, unmarkSessionBackend, loadAll,
 } from '../src/sessionBackends.ts';
@@ -47,6 +49,43 @@ test('familyOf classifies Claude ids by name only; canonicalize is gated on BACK
   assert.equal(MANAGED_BACKENDS.find(b => b.id === 'claude').template, '');
   assert.equal(MANAGED_BACKENDS.find(b => b.id === 'ollama').template,
     'ollama launch claude --model {model} --yes --');
+});
+
+// ── resolveClaudeBin: the CLAUDE_BIN entrance ───────────────────────────────
+describe('resolveClaudeBin (CLAUDE_BIN → {command, prefixArgs})', () => {
+  // An EMPTY CLAUDE_BIN is a SHIPPED spelling, not a hypothetical:
+  // `docker/compose.yaml` carries `CLAUDE_BIN: ${CLAUDE_BIN:-}`, which renders
+  // literally as `""`. A default that fires only on `undefined` left `command`
+  // empty there, and every spawn — Instance.spawn, health.ts's boot probe,
+  // summarize.ts, claudeShellEnv.ts, all of which resolve through this one
+  // function — became `spawn('')`.
+  const withBin = (v, fn) => {
+    const saved = process.env.CLAUDE_BIN;
+    if (v === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = v;
+    try { fn(); } finally {
+      if (saved === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = saved;
+    }
+  };
+
+  test('unset, empty and whitespace-only all resolve to the stock claude', () => {
+    for (const v of [undefined, '', '   ']) {
+      withBin(v, () => {
+        assert.deepEqual(resolveClaudeBin(), { command: 'claude', prefixArgs: [] },
+          `CLAUDE_BIN=${JSON.stringify(v)} must resolve to the stock claude`);
+      });
+    }
+  });
+
+  // THE GUARD AGAINST OVER-CORRECTING: a `||` on the wrong side of the trim
+  // would swallow the two-token test-injection spelling every realProcess test
+  // launches through.
+  test('the two-token test-injection spelling still splits into command + prefixArgs', () => {
+    withBin('node /x/fake.mjs', () => {
+      assert.deepEqual(resolveClaudeBin(), { command: 'node', prefixArgs: ['/x/fake.mjs'] });
+    });
+  });
 });
 
 // ── resolveBackendLaunch: THE substitution point ────────────────────────────

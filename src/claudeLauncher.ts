@@ -47,7 +47,13 @@ export interface ClaudeBin {
 export function resolveClaudeBin(): ClaudeBin {
   // CLAUDE_BIN may be "node /path/to/script.mjs" so callers can swap in the
   // fake CLI used by tests; split on whitespace.
-  const raw = (process.env.CLAUDE_BIN ?? 'claude').trim();
+  //
+  // EMPTY DEFAULTS LIKE UNSET, and that is not a nicety: `docker/compose.yaml`
+  // ships `CLAUDE_BIN: ${CLAUDE_BIN:-}`, which renders literally as `""`, so a
+  // `??` defaulting only on `undefined` never fired on stock docker — every
+  // spawn and the boot probe got `command: ''` and an ENOENT with nothing named
+  // in it. `|| 'claude'` AFTER the trim so whitespace-only defaults too.
+  const raw = (process.env.CLAUDE_BIN ?? '').trim() || 'claude';
   const parts = raw.split(/\s+/);
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }

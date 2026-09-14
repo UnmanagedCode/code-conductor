@@ -162,6 +162,25 @@ describe('a worker session on a remote system', () => {
     assert.match(JSON.stringify(r.body), /BASH_RULES_NOT_ENFORCEABLE/);
   });
 
+  // ARM B OF THE LAUNCHER-RESOLUTION PAIR, AND THE HALF THAT GIVES ARM A ITS
+  // MEANING (arm A lives in its own realProcess describe below). This server's
+  // launcher is the in-process one: it runs the CLI inside cc's own process, so
+  // there is no chroot, no marking event and nothing to pin — and the same
+  // unresolvable CLAUDE_BIN that refuses arm A must NOT refuse here. Without
+  // this, FUSE_LAUNCHER_UNRESOLVED could be a blanket refusal on every remote
+  // spawn and arm A would still pass.
+  test('an unresolvable CLAUDE_BIN does NOT refuse an in-process session', async () => {
+    const saved = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = 'cc-no-such-command-anywhere';
+    try {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = saved;
+    }
+  });
+
   // PINS: the refusal is about the setting, not about remote projects. Hooks
   // that are ON must not block anything.
   test('settings that leave hooks on spawn normally', async () => {
@@ -733,5 +752,57 @@ describe('a worker session on a system serving many targets', () => {
     assert.equal(d.body.hookSpecificOutput.permissionDecision, 'allow',
       d.body.hookSpecificOutput.permissionDecisionReason);
     assert.equal(await fs.readFile(local, 'utf8'), 'from target b\n');
+  });
+});
+
+// ARM A OF THE LAUNCHER-RESOLUTION PAIR. Its own server, because the file's
+// default in-process boot is EXEMPT by design (see the arm-B control above) and
+// so cannot drive this path at all: only a launcher that spawns an OS process
+// gets a chroot, and only a chroot needs a marking event.
+//
+// Nothing is mounted here — the refusal fires in `_doCreateResolved`, above
+// `new Instance(…)` and long before any FUSE preflight — so this costs a
+// process-launcher boot and no sudo.
+describe('a union-bound spawn whose launcher does not resolve', () => {
+  let ctx, baseUrl, instances, home, remote, tree;
+
+  before(async () => { ctx = await bootServer({ realProcess: true }); ({ baseUrl, instances } = ctx); });
+  after(async () => { await ctx.close(); });
+
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    remote = await bindRemoteSystem();
+    tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+  });
+
+  afterEach(async () => {
+    await ctx.instances.shutdown();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  // PINS: the absolute path of the CLI is the union's marking event and the
+  // CLI's only host pin, so a spawn that cannot resolve one is refused BY NAME
+  // rather than mounted with a mark path nothing can ever match — which is the
+  // silent host-only filesystem the daemon's own refusal exists to prevent.
+  // The message names CLAUDE_BIN because that is the operator's repair.
+  test('is refused 501 FUSE_LAUNCHER_UNRESOLVED, leaving no instance behind', async () => {
+    const before = instances.list().length;
+    const saved = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = 'cc-no-such-command-anywhere';
+    try {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 501, JSON.stringify(r.body));
+      const why = JSON.stringify(r.body);
+      assert.match(why, /FUSE_LAUNCHER_UNRESOLVED/);
+      assert.match(why, /CLAUDE_BIN/);
+      // No session was registered: a refusal that left a phantom instance
+      // behind would be resumable into the very state it refused.
+      assert.equal(instances.list().length, before);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = saved;
+    }
   });
 });
