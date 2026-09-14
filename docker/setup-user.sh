@@ -23,11 +23,16 @@ case "$USER_NAME" in
   *) fail "CC_USER='$USER_NAME' is all digits; it must be an account NAME. Put the numeric id in CC_UID instead." ;;
 esac
 
-# uid/gid 0 would run the server, every spawned session and every FUSE mount
-# as real root, defeating the uid separation the entrypoint's writability
-# guards and the CC_PROJECTS_DIR ownership rule are built on.
-if [ "$USER_UID" = "0" ] || [ "$USER_GID" = "0" ]; then
-  fail "CC_UID/CC_GID = $USER_UID/$USER_GID would run the container as real root. Set them to the owner of CC_PROJECTS_DIR (stat -c '%u %g' <dir>)."
+case "$USER_UID$USER_GID" in
+  *[!0-9]*) fail "CC_UID/CC_GID must be numeric; got $USER_UID/$USER_GID." ;;
+esac
+# Both defeat the uid separation the entrypoint's writability guards and the
+# CC_PROJECTS_DIR ownership rule are built on.
+if [ "$USER_UID" = "0" ]; then
+  fail "CC_UID=0 would run the server, every spawned session and every FUSE mount as real root. Set CC_UID/CC_GID to the owner of CC_PROJECTS_DIR (stat -c '%u %g' <dir>)."
+fi
+if [ "$USER_GID" = "0" ]; then
+  fail "CC_GID=0 would give the container the root group, so everything it creates is group-root. Set CC_UID/CC_GID to the owner of CC_PROJECTS_DIR (stat -c '%u %g' <dir>)."
 fi
 
 # ── Facts ────────────────────────────────────────────────────────────────
@@ -75,7 +80,7 @@ fi
 # ── User ─────────────────────────────────────────────────────────────────
 if [ -n "$acct_uid" ]; then
   if [ "$acct_uid" != "$USER_UID" ] || [ "$acct_gid" != "$USER_GID" ]; then
-    warn "account '$USER_NAME' already exists in this base image with uid $acct_uid gid $acct_gid; renumbering it to $USER_UID:$USER_GID. It also receives the passwordless sudo rule below."
+    warn "account '$USER_NAME' already exists in this base image with uid $acct_uid gid $acct_gid; renumbering it to $USER_UID:$USER_GID."
     # -u re-chowns files under the home directory to the new uid; -g
     # propagates NOTHING, so they keep gid $acct_gid — dangling once the
     # group above has moved. Files owned elsewhere keep both old ids. Neither
@@ -92,6 +97,11 @@ fi
 # variables through `sudo -n -E`, which needs the SETENV tag. visudo -cf makes
 # a malformed rule fail the build instead of the first spawn.
 if [ "$WITH_SUDO" = "1" ]; then
+  # A uid below 1000 is a system account: it exists in the base image for
+  # something other than this, so say so before handing it passwordless root.
+  if [ -n "$acct_uid" ] && [ "$USER_UID" -lt 1000 ]; then
+    warn "'$USER_NAME' is a pre-existing system account (uid $USER_UID) and now has passwordless root."
+  fi
   sudoers=/etc/sudoers.d/cc-conductor
   printf '%s ALL=(ALL:ALL) NOPASSWD:SETENV: ALL\n' "$USER_NAME" > "$sudoers"
   chmod 0440 "$sudoers"
