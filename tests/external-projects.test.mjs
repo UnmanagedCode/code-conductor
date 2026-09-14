@@ -1,4 +1,4 @@
-// Out-of-root ("external") projects: a repo living anywhere on disk, adopted as
+// Out-of-root ("external") projects: a directory living anywhere on disk, adopted as
 // `<projectsRoot>/.external/<name>` → the target. Every assertion about the
 // target path compares against `await fs.realpath(target)`, never the literal
 // string — mkdtemp can hand back a path containing symlinks (it does on macOS),
@@ -99,6 +99,28 @@ test('adopt resolves the project to the target REALPATH, not the symlink path', 
   assert.ok(st.isSymbolicLink(), 'the record IS a symlink');
 });
 
+test('an adopt whose target traverses a symlink records the PHYSICAL path, not the link', async () => {
+  // The teeth the test above cannot have on a host whose temp root is
+  // symlink-free: there `realpath(target) === target`, so recording the raw
+  // target passes it. The link is built beside the target under `home`, so the
+  // traversal exists on every host rather than depending on a platform's /tmp.
+  const { repoPath, real } = await makeExternalRepo('physical-tree');
+  const linkPath = path.join(home, 'link-to-tree');
+  await fs.symlink(repoPath, linkPath);
+  assert.notEqual(linkPath, real, 'the fixture really does traverse a symlink');
+  assert.equal(await fs.realpath(linkPath), real);
+
+  const res = await adoptProject('vialink', linkPath);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.path, real, 'the adopt records the physical path');
+  assert.notEqual(res.path, linkPath);
+
+  // The two durable records agree with it — a raw-target mutant reaching either
+  // would strand every session, since the CLI encodes from getcwd().
+  assert.equal(await fs.readlink(externalLinkPath('vialink')), real);
+  assert.equal((await getProject('vialink')).path, real);
+});
+
 test('adopt_project adds no commit to the repo it adopts', async () => {
   // Only the path that MADE the repo commits into it. Adoption touches a
   // history that is the user's, so its CONVENTIONS.md delivery stays an
@@ -185,19 +207,23 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
   const { repoPath } = await makeExternalRepo();
   const inRoot = await makeInRootRepo('taken');
   const second = await makeExternalRepo('second');
-  // A non-repo directory, a subdirectory of a repo, and a plain file — all
-  // outside the projects root.
+  // A subdirectory of a repo, a bare repo, and a plain file — all outside the
+  // projects root. `plainDir` is adoptable, so it serves only as the target of
+  // the two INVALID_NAME rows, which refuse before the target is examined.
   const plainDir = path.join(home, 'not-a-repo');
   await fs.mkdir(plainDir, { recursive: true });
   const subDir = path.join(repoPath, 'src');
   await fs.mkdir(subDir, { recursive: true });
+  const bareDir = path.join(home, 'bare-repo.git');
+  await fs.mkdir(bareDir, { recursive: true });
+  await git(bareDir, 'init', '-q', '--bare');
   const aFile = path.join(home, 'a-file');
   await fs.writeFile(aFile, 'x');
   // An already-adopted target, for the second TARGET_ALREADY_MANAGED shape.
   assert.equal((await adoptProject('already', repoPath)).ok, true);
 
   const cases = [
-    // `.conduct` specifically: an adopted repo must never be able to shadow the
+    // `.conduct` specifically: an adopted project must never be able to shadow the
     // orchestrator's own project.
     { name: '.conduct', target: plainDir, code: 'INVALID_NAME' },
     { name: 'has/slash', target: plainDir, code: 'INVALID_NAME' },
@@ -207,8 +233,8 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
     { name: 'afile', target: aFile, code: 'TARGET_NOT_A_DIRECTORY' },
     { name: 'managed', target: inRoot, code: 'TARGET_ALREADY_MANAGED' },
     { name: 'dupe', target: repoPath, code: 'TARGET_ALREADY_MANAGED' },
-    { name: 'plain', target: plainDir, code: 'TARGET_NOT_A_REPO' },
-    { name: 'sub', target: subDir, code: 'TARGET_NOT_A_REPO' },
+    { name: 'sub', target: subDir, code: 'TARGET_INSIDE_REPO' },
+    { name: 'bare', target: bareDir, code: 'TARGET_NO_WORK_TREE' },
     // The name is held by an in-root project; the target itself is perfectly
     // adoptable, so only the name check can produce this.
     { name: 'taken', target: second.repoPath, code: 'PROJECT_EXISTS' },
@@ -232,6 +258,59 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
   assert.equal(ok.status, 201, JSON.stringify(ok.body));
   assert.equal(ok.body.ok, true);
   assert.equal(ok.body.path, second.real);
+});
+
+test('a plain non-git directory is adoptable and becomes an ordinary non-git project', async () => {
+  // Not being a repo is not a refusal: the rest of cc already models a non-git
+  // project, so adopt is no stricter than every surface downstream of it.
+  const plainDir = path.join(home, 'plain-tree');
+  await fs.mkdir(plainDir, { recursive: true });
+  await fs.writeFile(path.join(plainDir, 'notes.txt'), 'hello\n');
+  const real = await fs.realpath(plainDir);
+
+  const r = await api(baseUrl, 'POST', '/api/projects/external', { name: 'plain', path: plainDir });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.external, true);
+  // The realpath rule applies to a non-git target exactly as to a repo.
+  assert.equal(r.body.path, real);
+
+  // The record was actually written — `ok:true` alone would pass without it.
+  const link = externalLinkPath('plain');
+  assert.equal(await fs.readlink(link), real);
+
+  const list = await api(baseUrl, 'GET', '/api/projects');
+  assert.equal(list.status, 200);
+  const row = list.body.find(p => p.name === 'plain');
+  assert.ok(row, JSON.stringify(list.body));
+  // MEASURED not-a-repo, not could-not-look. Under strict equality `undefined`
+  // (the degraded shape systems-listing-degrade.test.mjs pins) fails this.
+  assert.equal(row.isGitRepo, false);
+  assert.equal(row.systemUnreachable, null);
+
+  // The user-visible consequence of the state, on the adopted placement.
+  await assert.rejects(() => createWorktree('plain'), /not a git repository/);
+});
+
+test("adopting a repo's own .git is refused, and writes nothing into it", async () => {
+  // The case the second probe exists for. `--show-toplevel` fails inside a
+  // `.git` exactly as it does in a plain directory, so without `--git-dir` this
+  // adopt would succeed and cc would write its conventions into an enclosing
+  // repository's internals.
+  const { repoPath } = await makeExternalRepo();
+  const gitDir = path.join(repoPath, '.git');
+
+  const res = await adoptProject('dotgit', gitDir);
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.code, 'TARGET_NO_WORK_TREE');
+
+  // The HAZARD, not the code string: a mutant that refuses but still delivers
+  // the conventions passes a code-only assertion and fails these.
+  await assert.rejects(() => fs.access(path.join(gitDir, 'CONVENTIONS.md')));
+  await assert.rejects(() => fs.access(path.join(gitDir, 'CLAUDE.md')));
+
+  await assert.rejects(() => fs.lstat(externalLinkPath('dotgit')), 'a refused adopt wrote no link');
+  await assert.rejects(() => fs.stat(projectStoreDir('dotgit')), 'and no store record');
 });
 
 test('TARGET_ALREADY_MANAGED fires on real containment in either direction, and on nothing else', async () => {
@@ -280,8 +359,8 @@ test('TARGET_ALREADY_MANAGED fires on real containment in either direction, and 
   assert.match(enclosing.reason, /contains the projects root/);
 
   // (5) the filesystem root contains everything, including the projects root.
-  //     Refused on containment, so it never reaches the git-root test — which
-  //     is the only thing that was stopping it when `/` slipped through.
+  //     Containment is the ONLY thing refusing it: `/` is neither inside a repo
+  //     nor a git dir, so the git probes below let it through.
   const fsRoot = await adoptProject('slash', '/');
   assert.equal(fsRoot.ok, false, `'/' must be refused on containment: ${JSON.stringify(fsRoot)}`);
   assert.equal(fsRoot.code, 'TARGET_ALREADY_MANAGED');

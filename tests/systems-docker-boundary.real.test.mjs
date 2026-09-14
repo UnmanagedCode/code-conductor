@@ -127,7 +127,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.ok(imagePath.startsWith('/'), `unexpected image PATH: ${imagePath}`);
     await docker('run', '-d', '--init', '--name', CTR,
       '-e', `PATH=${TARGET_ONLY_BIN}:${imagePath}`, IMAGE, 'tail', '-f', '/dev/null');
-    // `git` for the adopt's repo-root check, `procps` for the pgrep the MUST-3
+    // `git` for the fixture repo these tests seed, `procps` for the pgrep the MUST-3
     // assertion uses to watch the command from inside. Neither is in the slim
     // image, and both are about the FIXTURE, not about what a provider needs.
     await docker('exec', CTR, 'sh', '-lc',
@@ -497,7 +497,7 @@ describe('a worker whose session mirrors the whole container filesystem', { skip
   before(async () => {
     await docker('rm', '-f', WIDE_CTR).catch(() => {});
     await docker('run', '-d', '--init', '--name', WIDE_CTR, IMAGE, 'tail', '-f', '/dev/null');
-    // `git` only — the adopt's repo-root check needs it; nothing here watches
+    // `git` only — the fixture repo these tests seed needs it; nothing here watches
     // processes from inside.
     await docker('exec', WIDE_CTR, 'sh', '-lc',
       'apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null');

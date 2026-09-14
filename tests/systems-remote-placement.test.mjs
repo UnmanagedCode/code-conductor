@@ -319,15 +319,15 @@ describe('remote project placement', () => {
     assert.equal(local.code, 'TARGET_ALREADY_MANAGED');
   });
 
-  // PINS: validation runs ON THE SYSTEM — a non-repo there is refused, and a
-  // path that exists only locally is NOT found.
+  // PINS: validation runs ON THE SYSTEM — the record proves the plain tree
+  // there was the one measured, and a path that exists only locally is NOT
+  // found.
   test('adopt validates the target on the system, not locally', async () => {
     const notARepo = path.join(remote.root, 'plain');
     await fs.mkdir(notARepo, { recursive: true });
     const r = await adoptProject('plain', notARepo, { system: remote.id });
-    assert.equal(r.ok, false);
-    assert.equal(r.code, 'TARGET_NOT_A_REPO');
-    assert.equal(await readRecord('plain'), null, 'a refused adopt records nothing');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual(await readRecord('plain'), { system: remote.id, systemPath: notARepo });
 
     // A repo that exists on cc's own machine but not on the system must not be
     // adoptable onto the system: that is the wrong-machine read.
@@ -347,9 +347,28 @@ describe('remote project placement', () => {
     await fs.mkdir(sub, { recursive: true });
     const r = await adoptProject('sub', sub, { system: remote.id });
     assert.equal(r.ok, false);
-    assert.equal(r.code, 'TARGET_NOT_A_REPO');
+    assert.equal(r.code, 'TARGET_INSIDE_REPO');
     assert.match(r.reason, /toplevel/);
     assert.equal(await readRecord('sub'), null, 'a refused adopt records nothing');
+  });
+
+  // PINS: a system with no `git` binary adopts rather than 502s. Neither probe
+  // answers there — the provider emits a protocol `error` frame and runGit
+  // takes its classified-spawn-error branch — and it is only because
+  // classifySpawnError resolves ENOENT (rather than EUNKNOWN) that it RETURNS
+  // code 1 instead of throwing GIT_DID_NOT_RUN. The `rev-parse` regex matches
+  // BOTH probes and fires on every match, so this also proves the allow branch
+  // is reached with both of them unanswered.
+  test('a system with no git binary adopts a plain directory rather than refusing', async () => {
+    const tree = path.join(remote.root, 'nogit');
+    await fs.mkdir(tree, { recursive: true });
+    const { updateSystem } = await import('../src/appSettings.ts');
+    const { flakyLaunch } = await import('./remoteSystem.mjs');
+    await updateSystem(remote.id, { launch: flakyLaunch({ errorFrame: 'rev-parse', errorCode: 'ENOENT' }) });
+
+    const r = await adoptProject('nogit', tree, { system: remote.id });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual(await readRecord('nogit'), { system: remote.id, systemPath: tree });
   });
 
   // ── SITE 6: createWorktree's parent directory ────────────────────────

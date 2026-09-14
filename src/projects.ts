@@ -1340,7 +1340,7 @@ export type AdoptResult =
   | { ok: true; name: string; path: string; external: boolean; system: string; remoteId: string | null }
   | { ok: false; code: string; reason: string };
 
-// Adopt a repo that already exists OUTSIDE the projects root as the project
+// Adopt a directory that already exists OUTSIDE the projects root as the project
 // `name`, by writing a `.external/<name>` symlink to it. Shared by the REST and
 // MCP surfaces. Every refusal is RETURNED with a machine-readable `code`, never
 // thrown — same contract as syncWorktree / mergeWorktreeIntoParent.
@@ -1366,7 +1366,7 @@ export async function adoptProject(
     return { ok: false, code: 'INVALID_NAME', reason: 'project name must match ^[a-zA-Z0-9._-]+$.' };
   }
   // Dot-leading names are reserved for orchestrator-managed projects — this is
-  // what stops an adopted repo shadowing `.conduct`. (The create path enforces
+  // what stops an adopted project shadowing `.conduct`. (The create path enforces
   // the same rule in routes.ts; this one lives in the shared function so both
   // adopt surfaces are covered.)
   if (name.startsWith('.')) {
@@ -1466,20 +1466,66 @@ export async function adoptProject(
     }
   }
 
-  // A git repo ROOT, not merely somewhere inside one. isGitRepo() is
-  // deliberately not reused: it walks UP, so it answers "yes" for any
-  // subdirectory of a repo, and adopting a subdirectory would give worktree
-  // creation and every diff the wrong toplevel. Dynamic import for the same
-  // reason as createProject's — worktrees.ts statically imports this module.
-  const { runGit } = await import('./worktrees.ts');
+  // NOT A REPO IS NOT A REFUSAL — a plain directory is an adoptable non-git
+  // project, a state the rest of cc already models (projectStatus and
+  // computeGitFacts short-circuit on isGitRepo, getProjectCommits returns an
+  // empty history, createWorktree refuses by name).
+  //
+  // TWO PROBES, AND THE ORDER IS LOAD-BEARING. Each answers ONE question, and
+  // neither answers the other's:
+  //
+  //   --show-toplevel  "which work tree claims `real`?" It ANSWERS only when one
+  //                    does; its failure says no more than "none does" — equally
+  //                    true of a plain directory, of a git dir with no work
+  //                    tree, and of a system carrying no `git` binary at all.
+  //   --git-dir        "is there a git dir at or above `real`?" — asked ONLY on
+  //                    that failure, which is where it separates those three.
+  //
+  // Do not merge the probes and do not reorder them. Keeping the second inside
+  // the `else` holds the common repo-root path to one exec, and a system with no
+  // git fails BOTH and lands in the allow branch — the case this whole check
+  // exists to admit.
+  //
+  // REASON FROM THOSE TWO MEANINGS, never from a table of shapes and exit codes:
+  // which shape lands in which branch is git's business and it moves. A
+  // submodule's git dir, for one, ANSWERS `--show-toplevel` — with the work tree
+  // its back-reference names — so it refuses as TARGET_INSIDE_REPO and never
+  // reaches here.
+  //
+  // `isGitRepo()` walks UP, which is why it cannot answer the FIRST question —
+  // it says "yes" for any subdirectory of a repo. Reusing it here is still
+  // sound, and NOT because the walk finds nothing: from a `.git`, or inside a
+  // bare repo, it does find a git dir — that is how it answers true at all. It
+  // is sound because no work tree ANSWERED for `real`, or the branch above would
+  // have run, so the walk can only confirm a git dir and can never turn up a
+  // work tree this refusal would be wrong about.
+  //
+  // Dynamic import for the same reason as createProject's — worktrees.ts
+  // statically imports this module.
+  const { runGit, isGitRepo } = await import('./worktrees.ts');
   const top = await runGit(system, real, ['rev-parse', '--show-toplevel']);
-  if (top.code !== 0) {
-    return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository.` };
-  }
-  let topReal = top.stdout.trim();
-  try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
-  if (topReal !== real) {
-    return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository ROOT — its toplevel is '${topReal}'. Adopt that instead.` };
+  if (top.code === 0) {
+    let topReal = top.stdout.trim();
+    try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
+    if (topReal !== real) {
+      return {
+        ok: false, code: 'TARGET_INSIDE_REPO',
+        reason: `'${real}' is inside the git repository whose toplevel is '${topReal}' — adopt that instead.`,
+      };
+    }
+  } else if (await isGitRepo(system, real)) {
+    // A repository cc cannot host a project in. Adopting one writes
+    // CONVENTIONS.md and the @CONVENTIONS.md import INTO A REPOSITORY'S
+    // INTERNALS — and for a `.git` that repository is an ENCLOSING one the user
+    // never chose, which is the exact hazard the branch above refuses and the
+    // one `--show-toplevel` is blind to. A bare repo is the other half: it
+    // reports `isGitRepo: true`, promising a full git surface, while `git
+    // status` fails in it and project_status answers `dirtyUnknown` instead of a
+    // measurement. Half-working is worse than a named refusal.
+    return {
+      ok: false, code: 'TARGET_NO_WORK_TREE',
+      reason: `'${real}' is a git directory with no work tree (a bare repository, or a repo's own '.git') — adopt a work tree instead.`,
+    };
   }
 
   const held = await heldNameReason(name);
@@ -1523,7 +1569,7 @@ export async function adoptProject(
   return { ok: true, name, path: real, external: true, system: LOCAL_SYSTEM_ID, remoteId: null };
 }
 
-// Deliver the conventions into the adopted repo NOW — symmetric with
+// Deliver the conventions into the adopted tree NOW — symmetric with
 // createProject, which seeds both files at creation. Without this the first
 // write into the user's tree would happen silently at some later boot sweep
 // instead of inside the call they authorised. Non-fatal: the RECORD (the
