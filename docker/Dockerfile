@@ -20,13 +20,14 @@ RUN npm install -g @anthropic-ai/claude-code
 ARG USER_NAME=node
 ARG USER_UID=1000
 ARG USER_GID=1000
-# sudo is unconditional: cc's Systems feature needs `sudo -n -E`, and the
-# preflight probes in src/systems/fuse/preflight.ts are what turn a missing
-# rule into a named refusal instead of a dead worker.
-RUN apt-get update \
+# Declared here, not with the other WITH_* flags below, because setup-user.sh
+# writes the sudoers rule and must run after the package is in place. Defaults
+# ON: cc's Systems feature needs `sudo -n -E` (src/systems/fuse/preflight.ts).
+ARG WITH_SUDO=1
+RUN if [ "$WITH_SUDO" = "1" ]; then apt-get update \
       && apt-get install -y --no-install-recommends sudo \
-      && rm -rf /var/lib/apt/lists/*
-# Must follow sudo: the script runs visudo.
+      && rm -rf /var/lib/apt/lists/*; fi
+# The account reconcile runs either way; only the sudoers rule is gated.
 COPY setup-user.sh /tmp/setup-user.sh
 RUN sh /tmp/setup-user.sh && rm /tmp/setup-user.sh
 
@@ -61,7 +62,11 @@ ARG WITH_SYSTEMS=0
 # coreutils, mawk and sed are already on node:24-trixie (apt no-ops them) and
 # are named so a CC_BASE_IMAGE / CC_BASE_IMAGE_FILE override still yields an
 # image that satisfies preflight.
-RUN if [ "$WITH_SYSTEMS" = "1" ]; then apt-get update \
+RUN if [ "$WITH_SYSTEMS" = "1" ]; then \
+      if [ "$WITH_SUDO" != "1" ]; then \
+        echo "FATAL (Dockerfile): CC_WITH_SYSTEMS=1 needs CC_WITH_SUDO=1 — preflight refuses the spawn at \`sudo -n true\`, so these packages could never be used." >&2; exit 1; \
+      fi; \
+      apt-get update \
       && apt-get install -y --no-install-recommends \
          fuse3 libfuse3-dev pkg-config gcc libc6-dev util-linux mount coreutils mawk sed \
       && rm -rf /var/lib/apt/lists/*; fi
