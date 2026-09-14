@@ -2,8 +2,15 @@
 # CLI can talk to the host daemon. Chained automatically by the Makefile when
 # CC_WITH_DOCKER=1 (the same flag bakes the CLI tooling) — raw compose must
 # add -f compose.docker.yaml to the -f list itself.
+#
+# group_add carries the HOST socket's group into the container user's group
+# set — a host property, unknowable at build time, hence a runtime variable.
+# Find it with `stat -c '%g' /var/run/docker.sock` on the host; without it the
+# container user gets permission denied on the socket. The default is a no-op
+# (the user already carries CC_GID).
 services:
   conductor:
+    group_add: ["${CC_DOCKER_GID:-${CC_GID:-1000}}"]
     volumes:
       - type: bind
         source: /var/run/docker.sock

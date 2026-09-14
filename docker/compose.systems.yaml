@@ -1,6 +1,8 @@
 # Optional override: runtime deltas cc's Systems feature needs to run
 # (⚙ Settings → Systems / placing a project on another machine):
-# /dev/fuse, SYS_ADMIN, apparmor=unconfined. Enable via `make up-systems`.
+# /dev/fuse, SYS_ADMIN, apparmor=unconfined. Chained automatically by the
+# Makefile when CC_WITH_SYSTEMS=1 (the same flag bakes the FUSE packages) —
+# raw compose must add -f compose.systems.yaml to the -f list itself.
 services:
   conductor:
     devices: ["/dev/fuse:/dev/fuse"]

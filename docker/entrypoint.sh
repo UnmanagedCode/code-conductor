@@ -53,6 +53,14 @@ fi
 # without the socket mount.
 if [ "${CC_WITH_DOCKER:-0}" = "1" ] && [ ! -S /var/run/docker.sock ]; then
   echo "WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket in this container — add docker/compose.docker.yaml to the -f list (the Makefile chains it automatically; raw compose must add -f compose.docker.yaml itself)." >&2
+elif [ "${CC_WITH_DOCKER:-0}" = "1" ] && [ ! -w /var/run/docker.sock ]; then
+  echo "WARNING (cc-entrypoint): CC_WITH_DOCKER=1 and /var/run/docker.sock is mounted but not writable by uid $(id -u) — set CC_DOCKER_GID in docker/.env to the socket's host gid (stat -c '%g' /var/run/docker.sock on the host) and re-up." >&2
+fi
+
+# The FUSE packages alone are useless without the device passthrough; cc's
+# preflight would refuse the spawn on /dev/fuse (src/systems/fuse/preflight.ts).
+if [ "${CC_WITH_SYSTEMS:-0}" = "1" ] && [ ! -c /dev/fuse ]; then
+  echo "WARNING (cc-entrypoint): CC_WITH_SYSTEMS=1 but /dev/fuse is not a character device in this container — add docker/compose.systems.yaml to the -f list (the Makefile chains it automatically; raw compose must add -f compose.systems.yaml itself)." >&2
 fi
 
 # ── Detached services (flag-gated; they restart with the container) ──────
