@@ -36,8 +36,8 @@ afterEach(async () => {
 
 // ── Catalog + compose (unit) ─────────────────────────────────────────────────
 
-test('SEED_CONVENTIONS has 5 built-in conventions with metadata (no inline body)', () => {
-  assert.equal(SEED_CONVENTIONS.length, 5);
+test('SEED_CONVENTIONS has 6 built-in conventions with metadata (no inline body)', () => {
+  assert.equal(SEED_CONVENTIONS.length, 6);
   for (const m of SEED_CONVENTIONS) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.body, undefined);
@@ -46,7 +46,7 @@ test('SEED_CONVENTIONS has 5 built-in conventions with metadata (no inline body)
 
 test('getCatalog loads bodies from conventions/workspace/*.md, builtin:true', async () => {
   const cat = await getCatalog();
-  assert.equal(cat.length, 5);
+  assert.equal(cat.length, 6);
   for (const m of cat) {
     assert.equal(m.builtin, true);
     assert.ok(m.body && m.body.startsWith('## '), `${m.slug} has a heading body`);
@@ -59,6 +59,7 @@ test('composeWorkspace(all) = core + all convention bodies', async () => {
   assert.ok(doc.startsWith('# Workspace conventions'), 'core first');
   assert.match(doc, /## Git hygiene/);
   assert.match(doc, /## README maintenance/);
+  assert.match(doc, /## Content that outlives its author/);
   assert.match(doc, /## System-prompt docs/);
   assert.match(doc, /## Opening URLs/);
   assert.match(doc, /## Answering questions/);
@@ -94,7 +95,7 @@ test('setSelection with an unknown slug → 400', async () => {
 test('addCustomConvention appears in catalog; enabling it composes its body', async () => {
   await addCustomConvention({ slug: 'house-rule', name: 'House rule', description: 'd', body: '## House rule\n- be nice' });
   const cat = await getCatalog();
-  assert.equal(cat.length, 6);
+  assert.equal(cat.length, 7);
   assert.equal(cat.find(c => c.slug === 'house-rule').builtin, false);
   await setSelection(['house-rule']);
   assert.match(await composeCurrentWorkspace(), /## House rule/);
@@ -110,12 +111,12 @@ test('deleteCustomConvention drops the slug from the enabled selection', async (
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/conventions/workspace returns core + 5 built-in conventions + enabled', async () => {
+test('GET /api/settings/conventions/workspace returns core + 6 built-in conventions + enabled', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/conventions/workspace');
   assert.equal(r.status, 200);
   assert.ok(r.body.core && r.body.core.name);
-  assert.equal(r.body.conventions.length, 5);
-  assert.equal(r.body.enabled.length, 5);
+  assert.equal(r.body.conventions.length, 6);
+  assert.equal(r.body.enabled.length, 6);
   for (const m of r.body.conventions) assert.equal(m.builtin, true);
 });
 
