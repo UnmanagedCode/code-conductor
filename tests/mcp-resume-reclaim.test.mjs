@@ -301,7 +301,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
         },
       );
       assert.equal(instances.get(oldId), inst,
-        'the husk must survive a refused resume — pre-card it did, and the jsonl surviving '
+        'the husk must survive a refused resume — it did before the reclaim existed, and the jsonl surviving '
         + 'does not make losing the in-memory instance invisible: the sidebar row goes with it');
       assert.deepEqual(instances.idsForSession(sessionId), [oldId],
         'and it is still the session\'s one instance');
