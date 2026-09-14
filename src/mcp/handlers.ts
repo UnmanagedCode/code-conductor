@@ -30,7 +30,7 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
-  listDependentWorktrees, dependentsRefusal, resolveWorktreeName,
+  listDependentWorktrees, dependentsRefusal, resolveWorktreeName, resolveProjectCwd,
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
@@ -2369,21 +2369,6 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
     }
   }
   return { meta, bodies };
-}
-
-// Resolve { project, worktree? } to an absolute cwd, throwing with a
-// useful message if either is missing.
-// Every project_* tool resolves its cwd here, which makes it the one place they
-// pick up the System that cwd lives on — a worktree is on the same system as
-// its parent project by construction.
-async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string; system: System }> {
-  const proj = await getProject(projectName);
-  if (worktreeName) {
-    const wt = await getWorktree(projectName, worktreeName);
-    if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path, system: proj.system };
-  }
-  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path, system: proj.system };
 }
 
 // Read the top-level directory listing, hiding dotfiles by default.

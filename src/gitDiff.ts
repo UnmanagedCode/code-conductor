@@ -11,9 +11,7 @@
 // independently; the two stay separate deliberately — the overlap is two
 // header tests, and diffPaging.ts is dependency-free by design.
 
-import { runGit, getWorktree } from './worktrees.ts';
-import { getProject } from './projects.ts';
-import { resolveSystem } from './systems/registry.ts';
+import { runGit, resolveProjectCwd } from './worktrees.ts';
 import type { System } from './systems/system.ts';
 import { httpError } from './httpError.ts';
 
@@ -308,15 +306,15 @@ async function fileDiffForTarget(
 async function worktreeTarget(
   projectName: string, worktreeName: string, baseRef: string | undefined,
 ): Promise<{ target: DiffTarget; ref: string; name: string }> {
-  const meta = await getWorktree(projectName, worktreeName);
-  if (!meta) {
-    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
-  }
+  const { cwd, worktreeMeta, system } = await resolveProjectCwd(projectName, worktreeName);
+  // Non-null by construction: resolveProjectCwd throws its own 404 rather than
+  // returning a null meta for a worktree name it could not resolve.
+  const meta = worktreeMeta!;
   const ref = baseRef || meta.baseBranch;
   if (baseRef) assertValidBaseRef(ref);
   const target: DiffTarget = {
-    system: await resolveSystem(projectName),
-    cwd: meta.worktreePath,
+    system,
+    cwd,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
       '-c', 'core.quotePath=false',
@@ -328,7 +326,8 @@ async function worktreeTarget(
 }
 
 // Return structured summary diff data for a worktree relative to its base
-// branch. Validates ownership via getWorktree (throws 404 if not found).
+// branch. Validates ownership via resolveProjectCwd (throws 404 if the
+// worktree is not registered under that project).
 export async function getWorktreeDiff(
   projectName: string,
   worktreeName: string,
@@ -353,6 +352,15 @@ export async function getWorktreeFileDiff(
   const ctx = clampContext(contextLines);
   const file = await fileDiffForTarget(target, filePath, null, ctx);
   return { project: projectName, path: filePath, file };
+}
+
+// The repo a commit / uncommitted diff is taken in: the project's own tree, or
+// one of its worktrees when `worktree` names one. Both single-commit and
+// working-tree diffs are per-checkout questions, so naming the worktree is the
+// only way to ask them of a worktree whose tree is on a system.
+async function resolveRepo(projectName: string, worktree?: string | null): Promise<{ path: string; system: System }> {
+  const { cwd, system } = await resolveProjectCwd(projectName, worktree);
+  return { path: cwd, system };
 }
 
 // Fetch a commit's message + parent SHAs and decide whether it's a merge —
@@ -396,12 +404,12 @@ function assertValidSha(sha: string): void {
 export async function getCommitDiff(
   projectName: string,
   sha: string,
-  { contextLines = 3 }: { contextLines?: number } = {},
+  { contextLines = 3, worktree }: { contextLines?: number; worktree?: string | null } = {},
 ): Promise<{ project: string; sha: string; commitMessage: string | null; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
-  const proj = await getProject(projectName);
+  const repo = await resolveRepo(projectName, worktree);
   assertValidSha(sha);
-  const { commitMessage, isMerge } = await commitMeta(proj, sha);
-  const target = commitTarget(proj, sha, isMerge);
+  const { commitMessage, isMerge } = await commitMeta(repo, sha);
+  const target = commitTarget(repo, sha, isMerge);
   const { files, totalAdds, totalDels } = await summarizeTarget(target);
   return { project: projectName, sha, commitMessage, files, totalAdds, totalDels, totalFiles: files.length };
 }
@@ -411,12 +419,12 @@ export async function getCommitFileDiff(
   projectName: string,
   sha: string,
   filePath: string,
-  { contextLines = 3 }: { contextLines?: number } = {},
+  { contextLines = 3, worktree }: { contextLines?: number; worktree?: string | null } = {},
 ): Promise<{ project: string; path: string; file: DiffFileDetail }> {
-  const proj = await getProject(projectName);
+  const repo = await resolveRepo(projectName, worktree);
   assertValidSha(sha);
-  const { isMerge } = await commitMeta(proj, sha);
-  const target = commitTarget(proj, sha, isMerge);
+  const { isMerge } = await commitMeta(repo, sha);
+  const target = commitTarget(repo, sha, isMerge);
   const ctx = clampContext(contextLines);
   const file = await fileDiffForTarget(target, filePath, null, ctx);
   return { project: projectName, path: filePath, file };
@@ -441,11 +449,11 @@ function uncommittedTarget(proj: { path: string; system: System }): DiffTarget {
 // throwing — the frontend treats this as "no diff to show".
 export async function getProjectUncommittedDiff(
   projectName: string,
-  { contextLines = 3 }: { contextLines?: number } = {},
+  { contextLines = 3, worktree }: { contextLines?: number; worktree?: string | null } = {},
 ): Promise<{ project: string; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
-  const proj = await getProject(projectName);
-  const target = uncommittedTarget(proj);
-  const probe = await runGit(proj.system, proj.path, ['rev-parse', '--verify', 'HEAD']);
+  const repo = await resolveRepo(projectName, worktree);
+  const target = uncommittedTarget(repo);
+  const probe = await runGit(repo.system, repo.path, ['rev-parse', '--verify', 'HEAD']);
   if (probe.code !== 0) {
     return { project: projectName, files: [], totalAdds: 0, totalDels: 0, totalFiles: 0 };
   }
@@ -460,14 +468,14 @@ export async function getProjectUncommittedDiff(
 export async function getProjectUncommittedFileDiff(
   projectName: string,
   filePath: string,
-  { contextLines = 3 }: { contextLines?: number } = {},
+  { contextLines = 3, worktree }: { contextLines?: number; worktree?: string | null } = {},
 ): Promise<{ project: string; path: string; file: DiffFileDetail }> {
-  const proj = await getProject(projectName);
-  const probe = await runGit(proj.system, proj.path, ['rev-parse', '--verify', 'HEAD']);
+  const repo = await resolveRepo(projectName, worktree);
+  const probe = await runGit(repo.system, repo.path, ['rev-parse', '--verify', 'HEAD']);
   if (probe.code !== 0) {
     throw httpError(404, `path '${filePath}' is not part of this diff`);
   }
-  const target = uncommittedTarget(proj);
+  const target = uncommittedTarget(repo);
   const ctx = clampContext(contextLines);
   const file = await fileDiffForTarget(target, filePath, null, ctx);
   return { project: projectName, path: filePath, file };

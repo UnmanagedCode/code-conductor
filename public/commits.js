@@ -1,15 +1,26 @@
 // Commit history view — a scrollable list of a project's commits (current
 // branch / HEAD). Built on the shared installHashView scaffold: installCommits()
-// returns { open(project), close() }. Tapping a commit row delegates to
+// returns { open(project, worktree?), close() }. Naming a worktree reads THAT
+// checkout's history instead of the project's own tree — the only form that
+// reaches a worktree of a project on a system. Tapping a commit row delegates to
 // onOpenCommit(project, commit), which opens the shared diff renderer
-// (review.js) on top, showing just that commit's change.
+// (review.js) on top, showing just that commit's change; the row carries its own
+// `diffUrl`, so the worktree scoping travels with it.
 
 import { installHashView } from './hashView.js';
 
 let _project = null;
+let _worktree = null;
 let _onClose = null;
 
 function getEl(id) { return document.getElementById(id); }
+
+// The API prefix every commits request hangs off — the one place the
+// project-scoped and worktree-scoped spellings differ.
+export function commitsApiBase(project, worktree) {
+  const base = `/api/projects/${encodeURIComponent(project)}`;
+  return worktree ? `${base}/worktrees/${encodeURIComponent(worktree)}` : base;
+}
 
 // ── Branch/merge graph ──────────────────────────────────────────────────────
 // A git-log --graph–style multi-lane DAG rail drawn to the LEFT of each commit
@@ -213,7 +224,7 @@ function buildRail(layout, maxCols, { node = true, dotClass = '' } = {}) {
 
 // Synthetic "working tree" row for uncommitted changes. Visually distinct
 // from real commits: amber accent, no SHA, no date.
-function renderUncommittedRow(project, onOpenCommit, { headCol = null, maxCols = 0 } = {}) {
+function renderUncommittedRow(project, apiBase, onOpenCommit, { headCol = null, maxCols = 0 } = {}) {
   const row = document.createElement('button');
   row.type = 'button';
   row.className = 'commit-row uncommitted';
@@ -244,14 +255,14 @@ function renderUncommittedRow(project, onOpenCommit, { headCol = null, maxCols =
       sha: null,
       shortSha: null,
       subject: 'Working tree (uncommitted)',
-      diffUrl: `/api/projects/${encodeURIComponent(project)}/commits/uncommitted/diff`,
+      diffUrl: `${apiBase}/commits/uncommitted/diff`,
     };
     onOpenCommit?.(project, synthCommit);
   });
   return row;
 }
 
-function renderRow(project, commit, onOpenCommit, { ahead = false, layout = null, maxCols = 0 } = {}) {
+function renderRow(project, apiBase, commit, onOpenCommit, { ahead = false, layout = null, maxCols = 0 } = {}) {
   const row = document.createElement('button');
   row.type = 'button';
   row.className = ahead ? 'commit-row ahead' : 'commit-row';
@@ -278,19 +289,24 @@ function renderRow(project, commit, onOpenCommit, { ahead = false, layout = null
   meta.append(authorEl, dateEl);
 
   row.append(sha, subject, meta);
-  row.addEventListener('click', () => onOpenCommit?.(project, commit));
+  // The row hands out its own diff URL, as the working-tree row already does,
+  // so the caller never has to rebuild the (project, worktree) spelling.
+  const diffUrl = `${apiBase}/commits/${encodeURIComponent(commit.sha)}/diff`;
+  row.addEventListener('click', () => onOpenCommit?.(project, { ...commit, diffUrl }));
   return row;
 }
 
 // Render the commit list DOM into `listEl` from a /commits payload. Split out of
 // loadCommits (which owns the fetch and the title/stats lines) so divider
 // placement, ahead classing and the graph rail are drivable without a network
-// stub.
-export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
+// stub. `apiBase` is the prefix each row's `diffUrl` is built on; it defaults to
+// the project-scoped spelling.
+export function renderCommitList(listEl, data, { project, apiBase, onOpenCommit } = {}) {
+  const base = apiBase ?? commitsApiBase(project);
   listEl.innerHTML = '';
   if (!data.commits || data.commits.length === 0) {
     if (data.hasUncommitted) {
-      listEl.appendChild(renderUncommittedRow(project, onOpenCommit));
+      listEl.appendChild(renderUncommittedRow(project, base, onOpenCommit));
     }
     listEl.appendChild(Object.assign(document.createElement('div'), {
       className: 'review-empty', textContent: 'No commits',
@@ -304,7 +320,7 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
 
   // Uncommitted changes synthetic entry at the very top, connected into HEAD's lane.
   if (data.hasUncommitted) {
-    listEl.appendChild(renderUncommittedRow(project, onOpenCommit, {
+    listEl.appendChild(renderUncommittedRow(project, base, onOpenCommit, {
       headCol: graphRows[0]?.col ?? null, maxCols,
     }));
   }
@@ -338,7 +354,7 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
       if (railWidth) divider.style.paddingLeft = `${railWidth + ROW_TEXT_INSET}px`;
       listEl.appendChild(divider);
     }
-    listEl.appendChild(renderRow(project, data.commits[i], onOpenCommit, {
+    listEl.appendChild(renderRow(project, base, data.commits[i], onOpenCommit, {
       ahead: data.commits[i].ahead === true,
       layout: graphRows[i], maxCols,
     }));
@@ -348,12 +364,18 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
 async function loadCommits() {
   const project = _project;
   if (!project) return;
+  const worktree = _worktree;
+  const apiBase = commitsApiBase(project, worktree);
+  // The subject of the view, which is the WORKTREE when one was named — the
+  // response's `project` is the parent, so rendering it would silently retitle
+  // the view with something the user did not open.
+  const subject = worktree || project;
 
   const listEl = getEl('commits-list');
   const titleEl = getEl('commits-title');
   const statsEl = getEl('commits-stats');
 
-  titleEl.textContent = project;
+  titleEl.textContent = subject;
   statsEl.textContent = '';
   listEl.innerHTML = '';
   listEl.appendChild(Object.assign(document.createElement('div'), {
@@ -362,10 +384,7 @@ async function loadCommits() {
 
   let data;
   try {
-    const res = await fetch(
-      `/api/projects/${encodeURIComponent(project)}/commits`,
-      { cache: 'no-store' },
-    );
+    const res = await fetch(`${apiBase}/commits`, { cache: 'no-store' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `HTTP ${res.status}`);
@@ -379,9 +398,9 @@ async function loadCommits() {
     return;
   }
 
-  if (data.branch) titleEl.textContent = `${project} · ${data.branch}`;
+  if (data.branch) titleEl.textContent = `${subject} · ${data.branch}`;
 
-  renderCommitList(listEl, data, { project, onOpenCommit: api.onOpenCommit });
+  renderCommitList(listEl, data, { project, apiBase, onOpenCommit: api.onOpenCommit });
 
   // Stats line: commit count + ahead summary when applicable. statsEl is a
   // different element from listEl, so it can be written after the list.
@@ -395,7 +414,7 @@ async function loadCommits() {
   }
 }
 
-// Public handle. open/close are wired in installCommits; onOpenCommit is
+// Public handle. open(project, worktree?)/close are wired in installCommits; onOpenCommit is
 // assigned by the caller after install (and read here by loadCommits), so the
 // SAME object identity must be returned from installCommits.
 const api = { open: null, close: null, onOpenCommit: null };
@@ -416,8 +435,8 @@ export function installCommits({ onClose } = {}) {
     keepOpenHashes: ['#review'],
     canEscape: () => getEl('review-view')?.hidden,
     navigate: () => history.pushState(null, '', '#commits'),
-    onShow: (project) => { _project = project; loadCommits(); },
-    onTeardown: () => { _project = null; _onClose?.(); },
+    onShow: (project, worktree) => { _project = project; _worktree = worktree ?? null; loadCommits(); },
+    onTeardown: () => { _project = null; _worktree = null; _onClose?.(); },
   });
   api.open = open;
   api.close = close;

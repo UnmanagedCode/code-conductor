@@ -346,7 +346,7 @@ test('GET /commits for a worktree returns aheadCount vs base branch', async () =
   const headSha = headShaOut.trim();
   await git(parentPath, 'worktree', 'add', wtPath, '-b', wtBranch, headSha);
 
-  // Write the orchestrator metadata so findWorktreeMetaForPath can find it.
+  // Write the orchestrator metadata the worktree is registered by.
   const metaDir = path.join(
     projectsRoot, '.code-conductor', 'projects', 'myapp', 'worktrees', wtName,
   );
@@ -370,9 +370,11 @@ test('GET /commits for a worktree returns aheadCount vs base branch', async () =
   // Add a commit on the worktree branch — now it's 1 ahead of 'main'.
   await commitFile(wtPath, 'wt-feature.js', 'export const y = 2;\n', 'worktree commit');
 
-  // The worktree lives in projectsRoot so getProject(wtName) resolves it.
-  const r = await api(baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
+  const r = await api(baseUrl, 'GET',
+    `/api/projects/myapp/worktrees/${encodeURIComponent(wtName)}/commits`);
   assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.equal(r.body.project, 'myapp', 'the parent project names the response');
+  assert.equal(r.body.worktreeName, wtName, 'echoes the canonical worktree name');
   assert.equal(r.body.aheadCount, 1, 'one commit ahead of base branch');
   assert.equal(r.body.aheadOf, 'main', 'ahead of the parent branch (main)');
   assert.equal(r.body.hasUncommitted, false, 'clean worktree → hasUncommitted:false');
@@ -411,9 +413,66 @@ test('GET /commits for a worktree returns hasUncommitted:true when worktree is d
   // Make an unstaged change in the worktree — no commit.
   await fs.writeFile(path.join(wtPath, 'README.md'), '# modified in worktree\n');
 
-  const r = await api(baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
+  const r = await api(baseUrl, 'GET',
+    `/api/projects/myapp/worktrees/${encodeURIComponent(wtName)}/commits`);
   assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
   assert.equal(r.body.hasUncommitted, true, 'dirty worktree → hasUncommitted:true');
+});
+
+// PINS: the two worktree-scoped diff routes exist locally and resolve the named
+// worktree. The uncommitted half carries the per-checkout control: the dirty
+// file exists only in the worktree, so the parent-scoped route answers empty.
+// (The single-commit half cannot have that control — a worktree shares its
+// parent's object database, so `git show <sha>` answers from either tree. What
+// it pins instead is that the worktree name is RESOLVED, not ignored: an
+// unknown one is refused rather than silently falling back to the parent.)
+test('the worktree-scoped commit and uncommitted diff routes read that checkout', async () => {
+  const parentPath = await makeRealRepo('myapp');
+
+  const wtId = 'aa77bb';
+  const wtName = `myapp_worktree_${wtId}`;
+  const wtPath = path.join(projectsRoot, wtName);
+  const wtBranch = `code-conductor/${wtId}`;
+  const { stdout: headShaOut } = await git(parentPath, 'rev-parse', 'HEAD');
+  const headSha = headShaOut.trim();
+  await git(parentPath, 'worktree', 'add', wtPath, '-b', wtBranch, headSha);
+
+  const metaDir = path.join(
+    projectsRoot, '.code-conductor', 'projects', 'myapp', 'worktrees', wtName,
+  );
+  await fs.mkdir(metaDir, { recursive: true });
+  await fs.writeFile(path.join(metaDir, 'worktree.json'), JSON.stringify({
+    parentProject: 'myapp', parentPath, worktreeName: wtName, worktreePath: wtPath,
+    branch: wtBranch, baseBranch: 'main', baseSha: headSha,
+    createdAt: new Date().toISOString(),
+  }));
+
+  await git(wtPath, 'config', 'user.email', 'test@example.com');
+  await git(wtPath, 'config', 'user.name', 'test');
+  await git(wtPath, 'config', 'commit.gpgsign', 'false');
+  await commitFile(wtPath, 'only-here.js', 'export const y = 2;\n', 'worktree commit');
+  const { stdout: wtShaOut } = await git(wtPath, 'rev-parse', 'HEAD');
+  const wtSha = wtShaOut.trim();
+  await fs.writeFile(path.join(wtPath, 'README.md'), '# modified in worktree\n');
+
+  const base = `/api/projects/myapp/worktrees/${encodeURIComponent(wtName)}`;
+
+  const commitDiff = await api(baseUrl, 'GET', `${base}/commits/${wtSha}/diff`);
+  assert.equal(commitDiff.status, 200, JSON.stringify(commitDiff.body));
+  assert.equal(commitDiff.body.commitMessage, 'worktree commit');
+  assert.deepEqual(commitDiff.body.files.map(f => f.path), ['only-here.js']);
+
+  const dirty = await api(baseUrl, 'GET', `${base}/commits/uncommitted/diff`);
+  assert.equal(dirty.status, 200, JSON.stringify(dirty.body));
+  assert.deepEqual(dirty.body.files.map(f => f.path), ['README.md']);
+
+  const parentDirty = await api(baseUrl, 'GET', '/api/projects/myapp/commits/uncommitted/diff');
+  assert.deepEqual(parentDirty.body.files, [],
+    'control: the change exists only in the worktree checkout');
+
+  const unknown = await api(baseUrl, 'GET',
+    `/api/projects/myapp/worktrees/myapp_worktree_nope/commits/${wtSha}/diff`);
+  assert.equal(unknown.status, 404, 'control: the worktree name is resolved, not ignored');
 });
 
 // ── Topological ordering ────────────────────────────────────────────────────
@@ -561,7 +620,8 @@ async function makeNonPrefixWorktree() {
 test('each commit carries its own ahead flag, even when the ahead set is not a prefix', async () => {
   const wtName = await makeNonPrefixWorktree();
 
-  const r = await api(baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
+  const r = await api(baseUrl, 'GET',
+    `/api/projects/nonprefix/worktrees/${encodeURIComponent(wtName)}/commits`);
   assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
   const commits = r.body.commits;
   assert.equal(r.body.aheadOf, 'main');

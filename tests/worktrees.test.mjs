@@ -12,6 +12,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
   registeredWorktreeNames, removeAllWorktreesForProject, runGit, GIT_OUTPUT_LIMIT_BYTES,
+  resolveProjectCwd,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
 import { localSystem } from '../src/systems/registry.ts';
@@ -1182,4 +1183,50 @@ test('the project-delete cascade strands no registration when a branch delete co
 
   assert.deepEqual(await registeredWorktreeNames('demo'), [],
     'this cascade left nothing registered, before deleteProject runs');
+});
+
+// ── resolveProjectCwd — the one project-or-worktree resolver ────────────────
+// Shared by the project_* MCP tools, the REST diff surface and the REST commits
+// family, so what it answers is what all three run git in.
+
+// PINS: no worktree named ⇒ the project's own tree, and `worktreeMeta` is null —
+// the signal every caller reads to mean "this is the project root".
+test('resolveProjectCwd answers the project tree when no worktree is named', async () => {
+  const repoPath = await makeRealRepo('demo');
+
+  const r = await resolveProjectCwd('demo');
+  assert.equal(r.cwd, repoPath);
+  assert.equal(r.projectPath, repoPath);
+  assert.equal(r.worktreeMeta, null);
+  assert.equal(r.system.id, 'local');
+});
+
+// PINS: a worktree named ⇒ THAT checkout's path plus its record — and the bare
+// slug resolves to the same answer as the full dir name, because getWorktree
+// aliases and every route built on this resolver inherits that.
+test('resolveProjectCwd answers the worktree path, by dir name or bare slug', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'feature' });
+
+  const byDirName = await resolveProjectCwd('demo', wt.worktreeName);
+  assert.equal(byDirName.cwd, wt.worktreePath);
+  assert.notEqual(byDirName.cwd, repoPath, 'not the project tree');
+  assert.equal(byDirName.projectPath, repoPath, 'the parent tree is still reported');
+  assert.equal(byDirName.worktreeMeta?.worktreeName, wt.worktreeName);
+
+  const bySlug = await resolveProjectCwd('demo', 'feature');
+  assert.equal(bySlug.cwd, wt.worktreePath);
+  assert.equal(bySlug.worktreeMeta?.worktreeName, wt.worktreeName,
+    'the bare slug resolves to the canonical record');
+});
+
+// PINS: an unknown worktree is an addressing MISS carrying a 404 — REST renders
+// it as a 404 rather than a 500, and MCP reads the same message off `.message`.
+test('resolveProjectCwd refuses an unknown worktree with a 404', async () => {
+  await makeRealRepo('demo');
+
+  const err = await resolveProjectCwd('demo', 'nope').then(() => null, e => e);
+  assert.ok(err, 'an unknown worktree is refused, not resolved to the project tree');
+  assert.equal(err.statusCode, 404);
+  assert.equal(err.message, "worktree 'nope' not found under project 'demo'");
 });

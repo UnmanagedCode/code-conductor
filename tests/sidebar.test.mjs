@@ -992,3 +992,35 @@ test('the ahead/behind pill still renders alongside the no-commits pill', async 
   assert.ok(row.querySelector('.wt-unmerged'), 'the merge pill keeps its slot');
   assert.ok(row.querySelector('.no-commits-pill'), 'the new pill is strictly additive');
 });
+
+// PINS: the `≡` on a WORKTREE row names the pair (parent project + worktree),
+// exactly as the `±` beside it does, while the `≡` on a PROJECT row names the
+// project alone. The worktree row's own dir name is not a project name, so
+// passing it alone into the project slot is unresolvable for a project whose
+// tree is on a system.
+test('the commit-history button names the project, and on a worktree row the pair', async () => {
+  const { root, sidebar } = await setupSidebar();
+  const shown = [];
+  const reviewed = [];
+  sidebar.onShowCommits = (...args) => shown.push(args);
+  sidebar.onReviewWorktree = (...args) => reviewed.push(args);
+
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: true,
+    sessions: { count: 0, lastActivity: 0 },
+    worktrees: [{
+      worktreeName: 'demo_worktree_abc123', branch: 'code-conductor/abc123',
+      baseBranch: 'main', baseSha: 'deadbeef0000', parentProject: 'demo',
+      sessions: { count: 0, lastActivity: 0 },
+    }],
+  }]);
+  sidebar.setInstances([]);
+
+  root.querySelector('.worktree-row .commit-log').click();
+  root.querySelector('.worktree-row .wt-review').click();
+  assert.deepEqual(shown, [['demo', 'demo_worktree_abc123']]);
+  assert.deepEqual(reviewed, shown, 'the two buttons address the worktree identically');
+
+  root.querySelector(':scope > li > .project-row .commit-log').click();
+  assert.deepEqual(shown[1], ['demo'], 'a project row names the project alone');
+});

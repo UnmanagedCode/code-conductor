@@ -551,7 +551,7 @@ export class Sidebar {
       head = el('div', { class: 'worktree-row' });
       head.appendChild(el('button', {
         class: 'commit-log', title: 'commit history',
-        onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(wt.worktreeName); },
+        onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name, wt.worktreeName); },
       }, '≡'));
       const nameSpan = el('span', { class: 'worktree-name' });
       head.appendChild(nameSpan);
