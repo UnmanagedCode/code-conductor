@@ -528,7 +528,7 @@ export async function createWorktree(
   }
   const dirName = worktreeDirName(projectName, id);
   // See this file's header comment for why an external project's worktrees land
-  // under `.external/` rather than beside the target repo.
+  // under `.external/` rather than beside the target directory.
   //
   // THE THIRD BRANCH. A remote project's worktree goes ON THE SYSTEM, beside
   // its tree. Both local answers are paths under cc's own projects root, and

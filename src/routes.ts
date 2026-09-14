@@ -553,7 +553,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   //      delete + dir sweep for orphans),
   //   4. remove the project itself — `rm -rf` for an in-root project, but an
   //      ADOPTED project is only UNREGISTERED (its `.external/` symlink is
-  //      unlinked; the user's repo is never touched — see deleteProject).
+  //      unlinked; the user's directory is never touched — see deleteProject).
   // Step 3 must precede step 4: everything after getProject uses proj.NAME,
   // never proj.path, and unregistering first would turn listWorktrees into a
   // 404 and orphan both the worktree dirs and the registrations in the repo.

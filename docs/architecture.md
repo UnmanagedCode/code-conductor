@@ -566,14 +566,14 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │           ├── attachments/
 │           └── debug/<instance-id>/
 ├── .external/                              # adopted out-of-root projects (created on first adopt)
-│   ├── <project>                           # SYMLINK → the target repo, anywhere on disk. THE record; nothing else is persisted
+│   ├── <project>                           # SYMLINK → the target directory, anywhere on disk. THE record; nothing else is persisted
 │   └── <project>_worktree_<id>/            # real dir — an adopted project's worktrees live beside its record, not beside the target
 ├── <project>/                              # normal project — nothing of ours inside
 └── <project>_worktree_<id>/                # worktree dir — nothing of ours inside
 ```
 Only the SYMLINKS in `.external/` are listed as projects, which is what keeps the worktree dirs beside them out of the project list. A broken link (target unmounted/moved/deleted) is skipped, not fatal.
 
-Orchestrator state stays in the central store; the only cc-written file inside a project tree is every project's tracked, app-regenerated `CONVENTIONS.md` (`src/projectClaudeMd.ts`) — imported by its `CLAUDE.md` and committed with the project (its line-1 marker is the self-describing source of truth). That holds for an adopted repo too: it is written at adopt time and on every sweep, and lands as an uncommitted change in the user's own tree. Creation also makes the tree a git repo (`git init`) and commits what it scaffolded — that `.git/` is git's own, not cc-written state. Adoption commits nothing. No per-project `.gitignore` plumbing.
+Orchestrator state stays in the central store; the only cc-written file inside a project tree is every project's tracked, app-regenerated `CONVENTIONS.md` (`src/projectClaudeMd.ts`) — imported by its `CLAUDE.md` and committed with the project (its line-1 marker is the self-describing source of truth). That holds for an adopted target too, git repo or not: it is written at adopt time and on every sweep, landing in the user's own tree — as an uncommitted change where that tree is a repo. Creation also makes the tree a git repo (`git init`) and commits what it scaffolded — that `.git/` is git's own, not cc-written state. Adoption commits nothing. No per-project `.gitignore` plumbing.
 
 ## What `fileBridge` carried, and where it has to land again
 

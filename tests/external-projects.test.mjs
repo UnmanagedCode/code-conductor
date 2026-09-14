@@ -99,6 +99,28 @@ test('adopt resolves the project to the target REALPATH, not the symlink path', 
   assert.ok(st.isSymbolicLink(), 'the record IS a symlink');
 });
 
+test('an adopt whose target traverses a symlink records the PHYSICAL path, not the link', async () => {
+  // The teeth the test above cannot have on a host whose temp root is
+  // symlink-free: there `realpath(target) === target`, so recording the raw
+  // target passes it. The link is built beside the target under `home`, so the
+  // traversal exists on every host rather than depending on a platform's /tmp.
+  const { repoPath, real } = await makeExternalRepo('physical-tree');
+  const linkPath = path.join(home, 'link-to-tree');
+  await fs.symlink(repoPath, linkPath);
+  assert.notEqual(linkPath, real, 'the fixture really does traverse a symlink');
+  assert.equal(await fs.realpath(linkPath), real);
+
+  const res = await adoptProject('vialink', linkPath);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.path, real, 'the adopt records the physical path');
+  assert.notEqual(res.path, linkPath);
+
+  // The two durable records agree with it — a raw-target mutant reaching either
+  // would strand every session, since the CLI encodes from getcwd().
+  assert.equal(await fs.readlink(externalLinkPath('vialink')), real);
+  assert.equal((await getProject('vialink')).path, real);
+});
+
 test('adopt_project adds no commit to the repo it adopts', async () => {
   // Only the path that MADE the repo commits into it. Adoption touches a
   // history that is the user's, so its CONVENTIONS.md delivery stays an
@@ -201,7 +223,7 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
   assert.equal((await adoptProject('already', repoPath)).ok, true);
 
   const cases = [
-    // `.conduct` specifically: an adopted repo must never be able to shadow the
+    // `.conduct` specifically: an adopted project must never be able to shadow the
     // orchestrator's own project.
     { name: '.conduct', target: plainDir, code: 'INVALID_NAME' },
     { name: 'has/slash', target: plainDir, code: 'INVALID_NAME' },

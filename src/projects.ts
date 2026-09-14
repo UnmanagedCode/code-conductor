@@ -1366,7 +1366,7 @@ export async function adoptProject(
     return { ok: false, code: 'INVALID_NAME', reason: 'project name must match ^[a-zA-Z0-9._-]+$.' };
   }
   // Dot-leading names are reserved for orchestrator-managed projects — this is
-  // what stops an adopted repo shadowing `.conduct`. (The create path enforces
+  // what stops an adopted project shadowing `.conduct`. (The create path enforces
   // the same rule in routes.ts; this one lives in the shared function so both
   // adopt surfaces are covered.)
   if (name.startsWith('.')) {
@@ -1471,19 +1471,34 @@ export async function adoptProject(
   // computeGitFacts short-circuit on isGitRepo, getProjectCommits returns an
   // empty history, createWorktree refuses by name).
   //
-  // TWO PROBES, AND THE ORDER IS LOAD-BEARING. `--show-toplevel` answers only
-  // the enclosing-repo question, and it exits non-zero for three shapes it
-  // cannot tell apart: a directory outside any repo, a repository with no work
-  // tree, and a system with no `git` binary at all. So its failure is not yet an
-  // answer, and `--git-dir` separates them — reached ONLY on that branch, so the
-  // common repo-root path pays for one exec and not two, and a system with no
-  // git fails BOTH and lands in the allow branch, which is the case this whole
-  // check exists to admit. Do not merge the probes and do not reorder them.
+  // TWO PROBES, AND THE ORDER IS LOAD-BEARING. Each answers ONE question, and
+  // neither answers the other's:
+  //
+  //   --show-toplevel  "which work tree claims `real`?" It ANSWERS only when one
+  //                    does; its failure says no more than "none does" — equally
+  //                    true of a plain directory, of a git dir with no work
+  //                    tree, and of a system carrying no `git` binary at all.
+  //   --git-dir        "is there a git dir at or above `real`?" — asked ONLY on
+  //                    that failure, which is where it separates those three.
+  //
+  // Do not merge the probes and do not reorder them. Keeping the second inside
+  // the `else` holds the common repo-root path to one exec, and a system with no
+  // git fails BOTH and lands in the allow branch — the case this whole check
+  // exists to admit.
+  //
+  // REASON FROM THOSE TWO MEANINGS, never from a table of shapes and exit codes:
+  // which shape lands in which branch is git's business and it moves. A
+  // submodule's git dir, for one, ANSWERS `--show-toplevel` — with the work tree
+  // its back-reference names — so it refuses as TARGET_INSIDE_REPO and never
+  // reaches here.
   //
   // `isGitRepo()` walks UP, which is why it cannot answer the FIRST question —
-  // it says "yes" for any subdirectory of a repo. Here that is harmless, and the
-  // reuse is deliberate: the only way to reach it is that no work tree encloses
-  // `real`, so there is nothing above to walk into.
+  // it says "yes" for any subdirectory of a repo. Reusing it here is still
+  // sound, and NOT because the walk finds nothing: from a `.git`, or inside a
+  // bare repo, it does find a git dir — that is how it answers true at all. It
+  // is sound because no work tree ANSWERED for `real`, or the branch above would
+  // have run, so the walk can only confirm a git dir and can never turn up a
+  // work tree this refusal would be wrong about.
   //
   // Dynamic import for the same reason as createProject's — worktrees.ts
   // statically imports this module.
