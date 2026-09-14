@@ -276,6 +276,60 @@ function renderRow(project, commit, onOpenCommit, { ahead = false, layout = null
   return row;
 }
 
+// Render the commit list DOM into `listEl` from a /commits payload. Split out of
+// loadCommits (which owns the fetch and the title/stats lines) so divider
+// placement, ahead classing and the graph rail are drivable without a network
+// stub.
+export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
+  listEl.innerHTML = '';
+  if (!data.commits || data.commits.length === 0) {
+    if (data.hasUncommitted) {
+      listEl.appendChild(renderUncommittedRow(project, onOpenCommit));
+    }
+    listEl.appendChild(Object.assign(document.createElement('div'), {
+      className: 'review-empty', textContent: 'No commits',
+    }));
+    return;
+  }
+
+  // Compute the branch/merge graph once over the returned commits.
+  const { rows: graphRows, maxCols } = computeGraph(data.commits);
+  const railWidth = maxCols > 0 ? maxCols * LANE_W : 0;
+
+  // Uncommitted changes synthetic entry at the very top, connected into HEAD's lane.
+  if (data.hasUncommitted) {
+    listEl.appendChild(renderUncommittedRow(project, onOpenCommit, {
+      headCol: graphRows[0]?.col ?? null, maxCols,
+    }));
+  }
+
+  // How many of the shown commits are "ahead" of the base. The ahead set is a
+  // PREFIX of the list: `ahead` = reachable from HEAD but not from base, and
+  // that set is closed upward — a child of an ahead commit cannot be reachable
+  // from base without its parent being reachable too. With --topo-order the
+  // server never interleaves the two lines, so a count is enough and no
+  // per-commit flag is needed.
+  const effectiveAheadCount = Math.min(data.aheadCount ?? 0, data.commits.length);
+
+  for (let i = 0; i < data.commits.length; i++) {
+    // Divider ABOVE the first already-merged row — it labels the section that
+    // FOLLOWS it (border-top, ↓ glyph, left inset), so it is appended
+    // immediately before that row. Inset its label by the rail width so it
+    // stays aligned with the rows' text columns.
+    if (effectiveAheadCount > 0 && i === effectiveAheadCount) {
+      const divider = document.createElement('div');
+      divider.className = 'ahead-divider';
+      divider.textContent = `↓ already in ${data.aheadOf}`;
+      if (railWidth) divider.style.paddingLeft = `${railWidth + 12}px`;
+      listEl.appendChild(divider);
+    }
+    listEl.appendChild(renderRow(project, data.commits[i], onOpenCommit, {
+      ahead: i < effectiveAheadCount,
+      layout: graphRows[i], maxCols,
+    }));
+  }
+}
+
 async function loadCommits() {
   const project = _project;
   if (!project) return;
@@ -312,53 +366,17 @@ async function loadCommits() {
 
   if (data.branch) titleEl.textContent = `${project} · ${data.branch}`;
 
-  listEl.innerHTML = '';
-  if (!data.commits || data.commits.length === 0) {
-    if (data.hasUncommitted) {
-      listEl.appendChild(renderUncommittedRow(project, api.onOpenCommit));
+  renderCommitList(listEl, data, { project, onOpenCommit: api.onOpenCommit });
+
+  // Stats line: commit count + ahead summary when applicable. statsEl is a
+  // different element from listEl, so it can be written after the list.
+  if (data.commits && data.commits.length > 0) {
+    const parts = [`${data.commits.length} commit${data.commits.length === 1 ? '' : 's'}`];
+    if (data.truncated) parts.push(`(showing latest ${data.limit})`);
+    if (data.aheadCount > 0 && data.aheadOf) {
+      parts.push(`· ${data.aheadCount} ahead of ${data.aheadOf}`);
     }
-    listEl.appendChild(Object.assign(document.createElement('div'), {
-      className: 'review-empty', textContent: 'No commits',
-    }));
-    return;
-  }
-
-  // Stats line: commit count + ahead summary when applicable.
-  const parts = [`${data.commits.length} commit${data.commits.length === 1 ? '' : 's'}`];
-  if (data.truncated) parts.push(`(showing latest ${data.limit})`);
-  if (data.aheadCount > 0 && data.aheadOf) {
-    parts.push(`· ${data.aheadCount} ahead of ${data.aheadOf}`);
-  }
-  statsEl.textContent = parts.join(' ');
-
-  // Compute the branch/merge graph once over the returned commits.
-  const { rows: graphRows, maxCols } = computeGraph(data.commits);
-  const railWidth = maxCols > 0 ? maxCols * LANE_W : 0;
-
-  // Uncommitted changes synthetic entry at the very top, connected into HEAD's lane.
-  if (data.hasUncommitted) {
-    listEl.appendChild(renderUncommittedRow(project, api.onOpenCommit, {
-      headCol: graphRows[0]?.col ?? null, maxCols,
-    }));
-  }
-
-  // How many of the shown commits are "ahead" of the base.
-  const effectiveAheadCount = Math.min(data.aheadCount ?? 0, data.commits.length);
-
-  for (let i = 0; i < data.commits.length; i++) {
-    // Divider between ahead commits and already-merged commits. Inset its label
-    // by the rail width so it stays aligned with the rows' text columns.
-    if (effectiveAheadCount > 0 && i === effectiveAheadCount) {
-      const divider = document.createElement('div');
-      divider.className = 'ahead-divider';
-      divider.textContent = `in ${data.aheadOf}`;
-      if (railWidth) divider.style.paddingLeft = `${railWidth + 12}px`;
-      listEl.appendChild(divider);
-    }
-    listEl.appendChild(renderRow(project, data.commits[i], api.onOpenCommit, {
-      ahead: i < effectiveAheadCount,
-      layout: graphRows[i], maxCols,
-    }));
+    statsEl.textContent = parts.join(' ');
   }
 }
 
