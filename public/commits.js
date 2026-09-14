@@ -48,11 +48,17 @@ function laneColor(col) { return LANE_COLORS[col % LANE_COLORS.length]; }
 // lanesBefore/lanesAfter are arrays indexed by column whose value is the SHA that
 // lane routes toward (or null when free). Column indices are stable for the life
 // of a lane (freed slots are reused), so pass-through lanes stay vertically
-// aligned from row to row. Parents not present in the list (older than the cap /
-// unfetched) are simply never matched: their lane stays active and trails off the
-// bottom of the last row.
-function computeGraph(commits) {
+// aligned from row to row. Parents ABSENT from the list (older than the cap /
+// unfetched) are simply never matched: their lane stays active and trails off
+// the bottom of the last row — that trail-off is the honest "history continues"
+// signal, and applies only to parents absent from the list, never to one already
+// drawn above (see the `seen` guard below).
+//
+// The newest-first precondition is GUARANTEED by the caller: getProjectCommits
+// (src/worktrees.ts) passes --topo-order, so no parent precedes its child.
+export function computeGraph(commits) {
   const activeLanes = []; // column -> sha targeted, or null
+  const seen = new Set(); // every sha emitted above the current row
   const rows = [];
   let maxCols = 0;
   let clamped = false;
@@ -81,17 +87,25 @@ function computeGraph(commits) {
     // Free the extra converging lanes — they merge into `col`.
     for (const k of converging) if (k !== col) activeLanes[k] = null;
 
-    // Route parents out of `col`.
+    // Route parents out of `col`. A parent ALREADY emitted above this row can
+    // never be reached by continuing downward, so a lane aimed at it would run
+    // to the bottom of the list without converging — a phantom line. Terminate
+    // it here. A parent merely ABSENT from the list (older than the cap) is not
+    // in `seen`, so its lane still trails off the bottom, which is the honest
+    // "history continues" signal.
     if (parents.length === 0) {
       activeLanes[col] = null; // root: lane terminates
     } else {
-      activeLanes[col] = parents[0]; // first parent continues in the same column
+      // first parent continues in the same column
+      activeLanes[col] = seen.has(parents[0]) ? null : parents[0];
       for (let j = 1; j < parents.length; j++) {
         const pj = parents[j];
+        if (seen.has(pj)) continue;
         if (activeLanes.indexOf(pj) === -1) activeLanes[firstFreeColumn()] = pj;
         // else: a lane already targets pj — the merge converges into it later.
       }
     }
+    seen.add(sha);
 
     const lanesAfter = activeLanes.slice();
     rows.push({ sha, col, color: laneColor(col), lanesBefore, lanesAfter });
