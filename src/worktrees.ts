@@ -1413,9 +1413,15 @@ interface CommitRow {
   relativeDate: string;
   isoDate: string;
   parents: string[];
+  // Reachable from HEAD but not from `aheadOf` — i.e. this exact commit is part
+  // of what `aheadCount` counts. Always false when `aheadOf` is null (no base,
+  // so nothing is claimed about any commit). NOT derivable from the row's
+  // position: see the aheadSet comment in getProjectCommits.
+  ahead: boolean;
 }
 
-// Return the commit history of a project's current branch (HEAD), newest first.
+// Return the commit history of a project's current branch (HEAD), newest first, in
+// TOPOLOGICAL order (a parent never precedes any of its children).
 // Validates the project via getProject (throws 404 if not found). Caps the log
 // at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`) and sets `truncated` when more commits exist.
 // Returns { project, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
@@ -1424,8 +1430,9 @@ interface CommitRow {
 // frontend uses it to compute the branch/merge graph lanes.
 // hasUncommitted: true when `git status --porcelain` is non-empty, undefined
 // (with uncommittedUnknown:true) when that status did not answer.
-// aheadCount/aheadOf: how many leading commits are ahead of the base (upstream or
-// worktree base branch), or null when unknown/not applicable.
+// aheadCount/aheadOf: how many commits are ahead of the base (upstream or
+// worktree base branch), or null when unknown/not applicable; each commit's own
+// `ahead` says whether IT is one of them.
 export async function getProjectCommits(
   projectName: string,
   { limit = COMMITS_DEFAULT_LIMIT }: { limit?: number } = {},
@@ -1466,7 +1473,8 @@ export async function getProjectCommits(
     ? (statusR.stdout || '').split('\n').some(l => l.trim().length > 0)
     : undefined;
 
-  // Determine how many leading commits are "ahead" of the base.
+  // Determine how many commits are "ahead" of the base (not how many LEADING
+  // commits: the ahead set is not a contiguous prefix of the log — see below).
   // Try upstream tracking first (normal project with a configured remote).
   // Fall back to worktree base-branch metadata (orchestrator-managed worktrees).
   let aheadCount: number | null = null;
@@ -1486,10 +1494,55 @@ export async function getProjectCommits(
     }
   }
 
+  // WHICH commits are ahead, not just how many. The set is NOT a prefix of the
+  // log: --topo-order fixes only parents-after-children, and among commits that
+  // are neither ancestor nor descendant of one another git falls back to
+  // committer date — so merging a moved-on base back into your branch
+  // interleaves already-merged commits among ahead ones. The executable record
+  // of that shape is `makeNonPrefixWorktree` in tests/project-commits.test.mjs:
+  // it emits M, m2, w2, w1, m1 with {M, w2, w1} ahead — re-run it rather than
+  // trusting this sentence.
+  //
+  // Resolved from `aheadOf` itself, the ref the count above was measured
+  // against, so both answer about the same BASE. They also answer about the
+  // same TIP wherever HEAD is the ref the count was measured for: on the
+  // upstream path by construction (the count compares the checked-out branch to
+  // its own upstream), but on the worktree path the count is measured off the
+  // recorded branch ref while this set is measured off HEAD — so a detached
+  // HEAD inside a worktree can make the two disagree. That mismatch predates
+  // the per-commit flag and is left alone here; the flags are the more truthful
+  // half of it.
+  //
+  // aheadCount counts the WHOLE ahead set, which can exceed the window, so the
+  // flags count out to aheadCount only when `truncated` is false.
+  //
+  // No base (aheadOf === null) means nothing is claimed: every row false.
+  const aheadSet = new Set<string>();
+  if (aheadOf) {
+    const rl = await runGit(proj.system, proj.path, ['rev-list', 'HEAD', `^${aheadOf}`]);
+    if (rl.code === 0) {
+      for (const line of rl.stdout.split('\n')) {
+        const sha = line.trim();
+        if (sha) aheadSet.add(sha);
+      }
+    } else {
+      // The base answered for the count but not for the set; reporting one
+      // without the other would let the two disagree. Claim neither.
+      aheadCount = null;
+      aheadOf = null;
+    }
+  }
+
   // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI/%P are all single-line.
   // %P = parent SHAs (space-separated): empty for the root commit, ≥2 for a merge.
+  // --topo-order, not git's default committer-date order: the frontend's lane
+  // assignment (computeGraph, public/commits.js) requires that no parent precede
+  // its child. A rebase stamps a whole branch with one committer second, the date
+  // sort key goes constant, and the emitted order degenerates — branch points
+  // then attach to the wrong rows, and lanes end abruptly where the rail gives
+  // up on a parent already drawn above (computeGraph's `seen` guard).
   const r = await runGit(proj.system, proj.path, [
-    'log', `--max-count=${cap + 1}`,
+    'log', '--topo-order', `--max-count=${cap + 1}`,
     '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',
   ]);
   if (r.code !== 0) {
@@ -1516,7 +1569,7 @@ export async function getProjectCommits(
     return {
       sha: sha ?? '', shortSha: shortSha ?? '', subject: subject ?? '',
       author: author ?? '', relativeDate: relativeDate ?? '', isoDate: isoDate ?? '',
-      parents,
+      parents, ahead: aheadSet.has(sha ?? ''),
     };
   });
   const truncated = rows.length > cap;

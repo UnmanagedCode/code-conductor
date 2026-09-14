@@ -879,7 +879,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   });
 
   // Commit history (git log) for a project's current branch (HEAD), newest
-  // first. Accepts optional ?limit= (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`). Returns
+  // first and topologically ordered (see `getProjectCommits`). Accepts optional
+  // ?limit= (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`). Returns
   // { project, branch, commits, truncated, limit }.
   r.get('/projects/:name/commits', async (req, res, next) => {
     try {
