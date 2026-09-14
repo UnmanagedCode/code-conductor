@@ -58,7 +58,7 @@
 //     T2  kill() on an ALREADY-settled failure resolves — the early-out itself
 //     T7  the liveness oracles read false, so MCP kill_instance soft-refuses
 //         SESSION_NOT_LIVE instead of wedging
-//     T8  MCP respawn_instance is accepted instead of 409 'instance still running'
+//     T8  InstanceManager.respawn() is accepted instead of 409 'instance still running'
 //     T9  the real-subprocess arm agrees with the injected one
 //     T11 the resume manifest carries NO entry for a session that never ran
 //
@@ -78,7 +78,7 @@ import { PassThrough } from 'node:stream';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { killInstance, respawnInstance } from '../src/mcp/handlers.ts';
+import { killInstance } from '../src/mcp/handlers.ts';
 import { drainToManifest } from '../src/resumeRestart.ts';
 import { clearResumeManifest } from '../src/resumeManifest.ts';
 
@@ -310,19 +310,23 @@ describe('an instance whose spawn failed (injected launcher)', () => {
     assert.equal(instances.liveForSession(inst.sessionId), null, 'liveForSession');
     // Reclassified, not cured: getInst is LIVE-only and the instance is now
     // correctly not-live, so this is the documented strict-live contract acting
-    // on a worker that never started. Recovery is respawn_instance (T8).
+    // on a worker that never started. Recovery is a relaunch of the same
+    // instance — POST /api/instances/:id/respawn, i.e. instances.respawn() (T8).
     const r = await within(
       killInstance({ sessionId: inst.sessionId }, { instances }), 3000, 'T7 kill_instance');
     assert.equal(r.ok, false);
     assert.equal(r.code, 'SESSION_NOT_LIVE');
   });
 
-  test('T8 MCP respawn_instance is accepted, not 409 instance still running', async () => {
+  test('T8 instances.respawn() is accepted, not 409 instance still running', async () => {
+    // The invariant is respawn()'s own `if (inst.proc) throw 409` guard: a
+    // spawn-failed instance must be SETTLED enough that a relaunch is accepted.
+    // Called directly rather than through an MCP tool — the REST route
+    // (POST /api/instances/:id/respawn) and the UI button are its callers now.
     const inst = await failed();
     await within(waitFor(() => inst.proc === null), 3000, 'T8 settle');
-    const r = await within(
-      respawnInstance({ sessionId: inst.sessionId }, { instances }), 5000, 'T8 respawn');
-    assert.equal(r.ok, undefined, `a summary, not a refusal: ${JSON.stringify(r)}`);
+    const r = await within(instances.respawn(inst.id), 5000, 'T8 respawn');
+    assert.equal(r.id, inst.id, 'respawn() relaunches the SAME Instance object');
     assert.equal(r.sessionId, inst.sessionId);
   });
 

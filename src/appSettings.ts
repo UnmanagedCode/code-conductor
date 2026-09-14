@@ -1053,7 +1053,7 @@ export function resolveRoleEffort(role: string): EffortLevel {
 // auto-resume, and spawn_instance({resume}). Two other relaunch paths never reach
 // step 4 at all: the restart manifest passes the recorded `effort` explicitly (step
 // 1, so a session returns at the level it was running at), and Instance.launch({resume})
-// — respawn_instance, crash-respawn, rewind, prune — reuses the live `this.effort`
+// — POST /instances/:id/respawn, crash-respawn, rewind, prune — reuses the live `this.effort`
 // without re-entering _doCreate. Table of all of them: docs/models.md#default-effort.
 export function resolveSpawnEffort(input: { effort?: unknown; tier?: unknown; role?: unknown } = {}): EffortLevel {
   const { effort, tier, role } = input;

@@ -1071,9 +1071,9 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
     inst = await instances.create(createArgs);
   } catch (e) {
     // A resume id with no resumable conversation on disk (mistyped/bogus, or a
-    // marker-only crash stub) is soft-refused rather than surfaced as a raw
-    // spawn error — mirrors respawnInstance's SESSION_NOT_LIVE shape so the
-    // conductor gets an actionable hint instead of a crashed worker.
+    // marker-only crash stub) is soft-refused in this surface's `{ok:false, code}`
+    // shape rather than surfaced as a raw spawn error, so the conductor gets an
+    // actionable hint instead of a crashed worker.
     if (errCode(e) === 'SESSION_UNKNOWN') {
       // `args.resume` — the caller's own SPELLING, echoed back untouched: a
       // prefix the transport already resolved to the handle, or an exact id
@@ -1459,21 +1459,6 @@ export async function killInstance({ sessionId }: { sessionId: string }, { insta
   // Accepted under the strict-live contract.
   await instances!.remove(inst.id);
   return { sessionId };
-}
-
-// Respawn an exited/crashed instance. SPECIAL CASE: it targets a NON-live
-// instance, so it cannot use the LIVE-only getInst. Resolve the sessionId to
-// its in-byId instance regardless of proc; instances.respawn() 409s if it's
-// actually running. No in-byId match → SESSION_NOT_LIVE soft refusal.
-export async function respawnInstance({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
-  if (!instances) throw new Error('orchestrator has no InstanceManager');
-  const inst = instances.anyForSession(sessionId);
-  if (!inst) {
-    return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
-      reason: `no in-memory instance for session ${sessionId} — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
-  }
-  const respawned = await instances.respawn(inst.id);
-  return toConductorView(respawned.summary());
 }
 
 // ---------- mutating: plan approval ----------

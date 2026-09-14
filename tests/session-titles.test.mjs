@@ -304,10 +304,10 @@ test('resuming a crashed session recovers firstPrompt from disk instead of losin
   inst.proc.kill('SIGKILL');
   await waitFor(() => !inst.proc);
 
-  // Resume via the generic path (a UI "resume dead session" click, crash/
-  // anchor auto-resume, respawn_instance all go through create({resume})
-  // with a BRAND NEW Instance object — unlike the restart-manifest path,
-  // nothing else seeds firstPrompt for it).
+  // Resume via the generic path (a UI "resume dead session" click and
+  // crash/anchor auto-resume both go through create({resume}), which builds a
+  // BRAND NEW Instance object — unlike the restart-manifest path, nothing else
+  // seeds firstPrompt for it).
   const inst2 = await instances.create({ project: 'crash-resumed', resume: sid });
   assert.equal(inst2.firstPrompt, 'Foo bar', 'firstPrompt recovered from disk immediately on resume');
 

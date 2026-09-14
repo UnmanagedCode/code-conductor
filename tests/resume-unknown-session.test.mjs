@@ -93,7 +93,7 @@ test('spawn_instance({resume:<bogus>, project}) soft-refuses SESSION_UNKNOWN and
   const prevArgvDump = process.env.FAKE_CLAUDE_ARGV_DUMP;
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const { spawnInstance, respawnInstance } = await import('../src/mcp/handlers.ts');
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
 
     // A well-specified but mistyped resume id: project is supplied, so the
     // findSessionLocation "project required" net is bypassed — this is the
@@ -120,12 +120,15 @@ test('spawn_instance({resume:<bogus>, project}) soft-refuses SESSION_UNKNOWN and
     try { await fs.stat(argvDumpFile); } catch { spawned = false; }
     assert.equal(spawned, false, 'refused resume must not spawn a claude subprocess');
 
-    // Follow-up respawn on the same bogus id soft-refuses SESSION_NOT_LIVE
-    // (there is no in-memory instance to respawn, precisely because the spawn
-    // was refused before registration).
-    const rr = await respawnInstance({ sessionId: bogus }, { instances: ctx.instances });
-    assert.equal(rr.ok, false);
-    assert.equal(rr.code, 'SESSION_NOT_LIVE');
+    // The refusal is IDEMPOTENT: repeating the same call soft-refuses
+    // SESSION_UNKNOWN again rather than behaving differently the second time —
+    // precisely because the first was refused before registration, so there is
+    // no half-built instance for the retry to resolve through.
+    const again = await spawnInstance({ resume: bogus, project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });
+    assert.deepEqual(
+      { ok: again.ok, code: again.code, sessionId: again.sessionId },
+      { ok: false, code: 'SESSION_UNKNOWN', sessionId: bogus },
+    );
   } finally {
     if (prevArgvDump === undefined) delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     else process.env.FAKE_CLAUDE_ARGV_DUMP = prevArgvDump;
