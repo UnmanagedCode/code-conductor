@@ -2017,8 +2017,15 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .commit-row.uncommitted:hover { background: rgba(251,191,36,0.12); }
 .uncommitted-label { color: var(--amber); font-family: ui-monospace, monospace; font-size: 12px; flex-shrink: 0; }
 
-/* Ahead-of-base commits: teal left border to match SHA colour */
-.commit-row.ahead { border-left: 3px solid var(--tool); }
+/* Ahead-of-base commits: teal left border to match SHA colour, plus a faint
+   tint of the same hue. TWO channels, because a 3px strip in a hue the UI also
+   uses for hover and link accents is doing the whole job alone wherever the
+   ahead rows are interleaved — there renderCommitList draws no divider, so no
+   band backs the strip up. Same shape as .commit-row.uncommitted above; the
+   :hover pair is required, since .commit-row:hover has equal specificity and
+   would otherwise drop the tint back to the plain panel colour. */
+.commit-row.ahead { border-left: 3px solid var(--tool); background: rgba(122,213,211,0.06); }
+.commit-row.ahead:hover { background: rgba(122,213,211,0.12); }
 /* Ahead/merged band divider. Binds to the section BELOW it: a top border and no
    bottom one, so the label and the rows it names read as one block. No
    text-align, so the inline padding-left commits.js sets (rail width +

@@ -1473,7 +1473,8 @@ export async function getProjectCommits(
     ? (statusR.stdout || '').split('\n').some(l => l.trim().length > 0)
     : undefined;
 
-  // Determine how many leading commits are "ahead" of the base.
+  // Determine how many commits are "ahead" of the base (not how many LEADING
+  // commits: the ahead set is not a contiguous prefix of the log — see below).
   // Try upstream tracking first (normal project with a configured remote).
   // Fall back to worktree base-branch metadata (orchestrator-managed worktrees).
   let aheadCount: number | null = null;
@@ -1497,12 +1498,25 @@ export async function getProjectCommits(
   // log: --topo-order fixes only parents-after-children, and among commits that
   // are neither ancestor nor descendant of one another git falls back to
   // committer date — so merging a moved-on base back into your branch
-  // interleaves already-merged commits among ahead ones. Measured: a branch
-  // that merges `main` in emits M, m2, w2, w1, m1 with {M, w2, w1} ahead.
+  // interleaves already-merged commits among ahead ones. The executable record
+  // of that shape is `makeNonPrefixWorktree` in tests/project-commits.test.mjs:
+  // it emits M, m2, w2, w1, m1 with {M, w2, w1} ahead — re-run it rather than
+  // trusting this sentence.
   //
-  // Resolved from `aheadOf` itself — the ref the count above was measured
-  // against — so the flag and aheadCount can never answer about different
-  // bases. No base (aheadOf === null) means nothing is claimed: every row false.
+  // Resolved from `aheadOf` itself, the ref the count above was measured
+  // against, so both answer about the same BASE. They also answer about the
+  // same TIP wherever HEAD is the ref the count was measured for: on the
+  // upstream path by construction (the count compares the checked-out branch to
+  // its own upstream), but on the worktree path the count is measured off the
+  // recorded branch ref while this set is measured off HEAD — so a detached
+  // HEAD inside a worktree can make the two disagree. That mismatch predates
+  // the per-commit flag and is left alone here; the flags are the more truthful
+  // half of it.
+  //
+  // aheadCount counts the WHOLE ahead set, which can exceed the window, so the
+  // flags count out to aheadCount only when `truncated` is false.
+  //
+  // No base (aheadOf === null) means nothing is claimed: every row false.
   const aheadSet = new Set<string>();
   if (aheadOf) {
     const rl = await runGit(proj.system, proj.path, ['rev-list', 'HEAD', `^${aheadOf}`]);

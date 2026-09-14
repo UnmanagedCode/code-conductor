@@ -158,6 +158,20 @@ test('no divider when a base is named but no row is ahead', async () => {
   assert.equal(listEl.querySelectorAll('.commit-row.ahead').length, 0);
 });
 
+test('a window lying entirely inside the ahead range gets no divider', async () => {
+  // firstMerged === -1: a truncated window where every row is still ahead of
+  // the base. There is no already-merged section for a divider to label.
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  const data = prefixPayload({ aheadCount: 40, truncated: true });
+  data.commits = data.commits.map(c => ({ ...c, ahead: true }));
+  renderCommitList(listEl, data, { project: 'demo', onOpenCommit: () => {} });
+
+  assert.equal(listEl.querySelectorAll('.ahead-divider').length, 0);
+  assert.equal(listEl.querySelectorAll('.commit-row.ahead').length, 5, 'every row is badged');
+});
+
 test('no divider and no ahead classing when nothing is ahead', async () => {
   const listEl = await setup();
   const { renderCommitList } = await import('../public/commits.js');
@@ -195,6 +209,16 @@ test('tapping a row calls the injected onOpenCommit, not a module global', async
   listEl.querySelector('.commit-row').click();
 
   assert.deepEqual(calls, [['demo', 'a']]);
+});
+
+test('.commit-row.ahead carries a tint as well as a border', async () => {
+  // The interleaved case draws no divider, so the row's own styling carries the
+  // whole partition — one 3px strip in a hue the UI reuses is a single channel.
+  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
+  const rule = css.match(/\.commit-row\.ahead\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+  assert.ok(rule.length > 0, 'sanity: styles.css defines .commit-row.ahead');
+  assert.match(rule, /border-left:\s*3px solid var\(--tool\)/);
+  assert.match(rule, /background:/, 'the tint is the second channel');
 });
 
 test('.ahead-divider binds to the section below it', async () => {

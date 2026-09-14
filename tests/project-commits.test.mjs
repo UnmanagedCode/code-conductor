@@ -573,7 +573,9 @@ test('each commit carries its own ahead flag, even when the ahead set is not a p
     ['M', 'w2', 'w1', 'm2', 'm1'].map(s => `${s}:${flagOf.get(s)}`),
     ['M:true', 'w2:true', 'w1:true', 'm2:false', 'm1:false'],
   );
-  // The count and the flags answer about the SAME base, so they cannot disagree.
+  // aheadCount counts the whole ahead set, which can exceed the window — this
+  // equality is an untruncated-window claim, which is what this fixture is.
+  assert.equal(r.body.truncated, false);
   assert.equal(commits.filter(c => c.ahead).length, r.body.aheadCount);
 
   // Non-vacuity control: this fixture must actually emit a non-ahead commit

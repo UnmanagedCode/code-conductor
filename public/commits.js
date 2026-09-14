@@ -319,7 +319,9 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
   // so it is drawn only where that is true of every row below — i.e. the ahead
   // rows are a contiguous prefix, which is the ordinary case. Where they are
   // not, the per-row badges carry the answer alone rather than the divider
-  // saying something false. `dividerAt` is -1 for "no divider".
+  // saying something false. `dividerAt` is -1 for "no divider" — a value no
+  // row index can equal, so every not-drawn case is carried by this one
+  // sentinel rather than by each branch below.
   const firstMerged = data.commits.findIndex(c => !c.ahead);
   const dividerAt = (data.aheadOf && firstMerged > 0
     && data.commits.slice(firstMerged).every(c => !c.ahead)) ? firstMerged : -1;
