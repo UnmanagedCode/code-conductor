@@ -118,7 +118,7 @@ Notes:
 
 ## Optional tooling
 
-Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars; **never installed at boot** — to add or remove a flag, set it in `.env` and rebuild (`make up` always builds). To also refresh the base image, run `docker compose -f compose.yaml build --pull` — **except** with `CC_BASE_IMAGE_FILE` set, where the base is a local tag and `--pull` fails; refresh that base by rebuilding its own Dockerfile instead (`make build` does it).
+Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars; **never installed at boot** — to add or remove a flag, set it in `.env` and rebuild (`make up` always builds). To also refresh the base image, run `docker compose -f compose.yaml build --pull` — **except** with `CC_BASE_IMAGE_FILE` set, where the base is a local tag and `--pull` fails; `make build`/`make up` rebuild that base Dockerfile every run, so refresh its own `FROM` with `docker build --pull -f $CC_BASE_IMAGE_FILE …` directly.
 
 Installed **unconditionally**, not behind a flag: `sudo` (~10 MB) plus `/etc/sudoers.d/cc-conductor`, a passwordless `SETENV` rule for `CC_USER` — cc's Systems feature probes for exactly that pair (`src/systems/fuse/preflight.ts`), and the build runs `visudo -c` so a malformed rule fails the build rather than the first spawn.
 
