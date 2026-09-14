@@ -209,8 +209,9 @@ test('formatReadiness — warning block includes header, codes, and hints', () =
 test('an EMPTY CLAUDE_BIN reaches the probe as the stock claude, never as ""', async () => {
   // `docker/compose.yaml` ships `CLAUDE_BIN: ${CLAUDE_BIN:-}`, which renders
   // literally as `""` — so this is the spelling stock docker actually boots
-  // with. It used to reach `spawn('')`, and the probe then reported
-  // `claude_bin_missing` with an empty command in it.
+  // with, and the probe is where an operator first sees the consequence: an
+  // empty `command` spawns `''` and reports `claude_bin_missing` naming
+  // nothing at all.
   //
   // `found` is deliberately NOT asserted: whether a real `claude` is installed
   // on the machine running this suite is not the claim. `probeBin` echoes
