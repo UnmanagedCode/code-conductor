@@ -95,6 +95,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     description: 'Mutation-proves test-coverage claims during review: a prover runs real mutants and reports survivors as blocking findings.',
     repo: 'https://github.com/UnmanagedCode/code-mutant',
   },
+  {
+    id: 'code-system',
+    name: 'Code System',
+    description: 'Reach remote dev targets — containers, SSH hosts — via docker/ssh System providers, nothing installed on the target.',
+    repo: 'https://github.com/UnmanagedCode/code-system',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
