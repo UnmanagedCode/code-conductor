@@ -7,9 +7,9 @@
 // Two seq spaces meet here. Live `_seq` values are stamped at emit time and
 // are denser than replay output — NOT per-token (the ring coalesces a block's
 // thinking/text deltas into one slot, the same granularity replay produces),
-// but per-turn: the live ring retains `message_start` and `turn_end`, and the
-// CLI persists neither, so replay emits neither (src/transcript.ts) — so a
-// from-scratch replay cannot reproduce evicted events seq-for-seq. Instead the
+// but per-turn: the live ring retains kinds the CLI never persists and replay
+// therefore never emits (listed at RING_ONLY_KINDS below) — so a from-scratch
+// replay cannot reproduce evicted events seq-for-seq. Instead the
 // replayed "archive" gets its own dense seqs 0..H-1 (its array indices) and is
 // CUT at a content anchor so it never overlaps the retained ring:
 //
@@ -126,24 +126,48 @@ function buildFlatIndex(flat: SeqEvent[]): Map<string, number> {
   return index;
 }
 
-// Kinds the ring retains that replay never produces (module header above) —
-// they cannot appear in `flat`, so skipping them while looking for a
-// correlatable ring event can never duplicate content the echo-anchor
-// fallback would otherwise have covered.
-const RING_ONLY_KINDS = new Set(['message_start', 'turn_end', 'assistant_message']);
+// Kinds the ring retains that replay never produces — `replayPersistedLine`
+// (src/transcript.ts) is the only replay-side event constructor, and none of
+// these has a branch there. They cannot appear in `flat`, so skipping one while
+// hunting for a correlatable ring event can never serve archive content the
+// ring will serve again. Do NOT add a kind replay DOES emit (tool_use_start,
+// thinking_start/_redacted/_end, user_question, plan_request): skipping past
+// one steps over its archive twin and duplicates it.
+const RING_ONLY_KINDS = new Set([
+  'message_start', 'turn_end', 'assistant_message', 'tool_use_input_delta',
+  'raw', 'hook', 'control_response',
+  'permission_request', 'permission_resolved', 'overage_message_queued',
+]);
+
+// True when replay provably cannot have emitted a counterpart for `ev` — the
+// ONLY condition under which the head scan may step over an event.
+function neverPersisted(ev: UiEvent): boolean {
+  if (RING_ONLY_KINDS.has(ev.kind)) return true;
+  // `system` is replayed for exactly ONE subtype (replayPersistedLine's
+  // soft-interrupt branch); every other subtype is a live-transport annotation
+  // with no persisted line behind it. Pinned by the tripwire test in
+  // tests/archive-correlated-cut.test.mjs — if replay ever emits a second
+  // `system` subtype, that test fails and this carve-out must be narrowed.
+  return ev.kind === 'system' && ev.subtype !== 'soft_interrupted';
+}
 
 // Correlate the ring head's own content into the replayed archive: walk
-// `ring` from its start past any RING_ONLY_KINDS, then look the first
-// remaining event up in `flatIndex`. A hit means that archive index is
-// exactly the count of archive events strictly below the ring head's own
-// content — no overlap, no hole. A miss ABANDONS correlation outright
-// (returns -1) rather than trying a later ring event, which is what stops
-// this from ever serving archive content the ring will serve again.
+// `ring` from its start past every event replay could not have produced, then
+// look the first remaining event up in `flatIndex`. A hit means that archive
+// index is exactly the count of archive events strictly below the ring head's
+// own content — no overlap, no hole.
 function correlateRingHead(ring: SeqEvent[], flatIndex: Map<string, number>): number {
   for (const ev of ring) {
-    if (RING_ONLY_KINDS.has(ev.kind)) continue;
+    // SKIP: structurally absent from `flat`. Keep looking.
+    if (neverPersisted(ev)) continue;
+    // ABANDON: this event could have been persisted, so the archive may hold it
+    // below any cut we'd pick further down the ring. Both arms are genuine —
+    // a null key means we cannot name it, a missing key means it was never
+    // written. Neither may be skipped.
     const key = correlationKey(ev);
-    return key != null && flatIndex.has(key) ? flatIndex.get(key) as number : -1;
+    if (key == null) return -1;
+    const hit = flatIndex.get(key);
+    return hit == null ? -1 : hit;
   }
   return -1;
 }
