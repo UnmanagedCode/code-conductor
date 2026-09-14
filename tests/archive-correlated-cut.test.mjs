@@ -333,6 +333,75 @@ test('T22: a system[soft_interrupted] head abandons — replay emits that one su
   }
 });
 
+// A correlated hit at archive index 0. T15/T17/T20 all pin hits well above
+// zero (16/27/16), so none of them can see the difference between "no hit" and
+// "hit at index 0" — a falsy test in place of the null test reads both as -1.
+// Reachable whenever the jsonl's first event-bearing line is an assistant
+// message (a fork, a resume, a compaction continuation): flat[0] is then a
+// text_delta the ring head can name directly. Fixture puts the echo AFTER that
+// message so the fallback's answer (25) is far from the correlated one (0) and
+// the two are distinguishable on the cut as well as on the gap.
+//
+// PINS: a ring head whose correlation key matches flat[0] yields cut === 0 and
+// gap === false — index 0 is a hit, not a miss.
+test('T24: a correlated hit at archive index 0 is a hit, not a miss', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t24';
+    const [prompt, assistant] = textBlockLines();
+    await writeJsonl(cwd, SID, [
+      assistant,
+      prompt,
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
+    ]);
+    const ring = [{ kind: 'text_delta', msgId: 'm0', blockIdx: 0, text: 'block 0', _seq: 60 }];
+    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    assert.equal(arch.events.length, 27, 'fixture check: 12 blocks * 2 + echo + 1 block * 2');
+    assert.equal(arch.events[0].kind, 'text_delta', 'fixture check: flat[0] is the event the ring head names');
+    assert.equal(arch.events[0].blockIdx, 0, 'fixture check: flat[0] is block 0');
+    assert.equal(arch.events[24].kind, 'user_echo', 'fixture check: the only echo sits at 24, so the fallback would answer 25');
+    assert.equal(arch.cut, 0, 'index 0 is a genuine correlator hit — serve nothing below the ring head, do not fall back');
+    assert.equal(arch.gap, false, 'a correlated cut is an exact stitch — no gap, even at index 0');
+    assertNoDuplication(arch, ring, 'T24');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
+// The loop-exhaust exit. Every event in the ring is one replay never emits, so
+// the scan skips all of them and runs off the end without ever computing a key.
+// That must abandon to the echo fallback: the ring holds no content the archive
+// can be stitched to, so the exact seam is unknowable and the served page owes
+// the client a gap marker. Returning a cut here instead would withhold evicted
+// history with NO gap marker — this card's original symptom wearing a different
+// hat. The widened ten-member skip set makes an all-skipped ring MORE reachable
+// than before, not less.
+//
+// PINS: a ring consisting solely of never-persisted events abandons to the echo
+// fallback — both the fallback cut and gap === true.
+test('T25: a ring of only never-persisted events abandons to the echo fallback', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t25';
+    await writeJsonl(cwd, SID, textBlockLines());
+    // Spans the skip set and the system carve-out; not one of them can yield a
+    // correlatable key, so the loop exhausts.
+    const ring = [
+      { kind: 'message_start', msgId: 'mLive', _seq: 57 },
+      { kind: 'tool_use_input_delta', msgId: 'mLive', blockIdx: 2, toolUseId: 'tuLive', partialJson: '{"a"', _seq: 58 },
+      { kind: 'system', subtype: 'hook_pending', _seq: 59 },
+      { kind: 'overage_message_queued', _seq: 60 },
+    ];
+    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    assert.equal(arch.events.length, 25, 'fixture check: 1 echo + 12 blocks * 2');
+    assert.equal(arch.cut, 1, 'exhausting the scan falls back to the echo anchor (echo 0 + 1), not to a cut of its own');
+    assert.equal(arch.gap, true, 'nothing correlated, so the seam is unknowable — the page MUST be marked as gapped');
+    assertNoDuplication(arch, ring, 'T25');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
 // Tripwire for the carve-out's soundness condition. `neverPersisted` in
 // src/eventArchive.ts skips `system` at every subtype EXCEPT
 // `soft_interrupted`, on the premise that replay emits exactly that one. If a
@@ -344,8 +413,13 @@ test('T22: a system[soft_interrupted] head abandons — replay emits that one su
 // {soft_interrupted}.
 test('T23: tripwire — replay constructs `system` for exactly one subtype', async () => {
   const srcDir = new URL('../src/', import.meta.url);
-  const readBody = async (url, decl) => {
+  const readWhole = async (url) => {
     const src = await fs.readFile(new URL(url, srcDir), 'utf8');
+    assert.ok(src.length > 0, `extraction failed: ${url} is empty — the scan below would prove nothing`);
+    return src;
+  };
+  const readBody = async (url, decl) => {
+    const src = await readWhole(url);
     const start = src.indexOf(decl);
     assert.notEqual(start, -1, `extraction failed: ${decl} not found — the scan below would prove nothing`);
     // Top-level functions in this codebase close with `}` at column 0.
@@ -354,13 +428,22 @@ test('T23: tripwire — replay constructs `system` for exactly one subtype', asy
     return src.slice(start, end);
   };
 
-  // The replay path's only two event constructors: replayPersistedLine itself,
-  // and consolidateUserContent, the one helper it calls that builds events.
-  // Scoped to those function bodies on purpose — a whole-file scan of parser.ts
-  // would sweep up the LIVE parser's many `system` sites, which say nothing
-  // about what replay emits.
+  // src/transcript.ts is scanned WHOLE, not narrowed to replayPersistedLine's
+  // body: every function in that file is replay-side, so the scoping concern
+  // that narrows the parser.ts scan does not apply, and a `system` built by a
+  // helper elsewhere in the file — which a body-scoped scan would miss while
+  // replay genuinely emitted the new subtype — is caught here. src/parser.ts
+  // stays scoped to consolidateUserContent, the one replay-reachable event
+  // constructor it owns; whole-file there would sweep up the LIVE parser's many
+  // `system` sites, which say nothing about what replay emits.
+  //
+  // Residual limit, stated honestly: this catches a literal `kind: 'system'`
+  // inside these two scopes. A construction in a non-literal form (a subtype
+  // held in a variable, a kind spread in from an object) or in a third file
+  // reached from the replay path still escapes both regexes. The positive
+  // control below narrows that gap but does not close it.
   const bodies = [
-    await readBody('transcript.ts', 'export function replayPersistedLine('),
+    await readWhole('transcript.ts'),
     await readBody('parser.ts', 'export function consolidateUserContent('),
   ];
 
