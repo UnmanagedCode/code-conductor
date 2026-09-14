@@ -128,6 +128,36 @@ test('no divider is drawn when the ahead rows are not a contiguous prefix', asyn
   assert.equal(listEl.querySelectorAll('.ahead-divider').length, 0);
 });
 
+test('a single ahead commit still gets a divider', async () => {
+  // Boundary on the "is there anything above the divider" test: one ahead row
+  // is the commonest case of all.
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  const data = prefixPayload({ aheadCount: 1 });
+  data.commits = data.commits.map((c, i) => ({ ...c, ahead: i === 0 }));
+  renderCommitList(listEl, data, { project: 'demo', onOpenCommit: () => {} });
+
+  const kids = [...listEl.children];
+  assert.equal(listEl.querySelectorAll('.ahead-divider').length, 1);
+  assert.equal(kids[0].className, 'commit-row ahead');
+  assert.equal(kids[1].className, 'ahead-divider');
+});
+
+test('no divider when a base is named but no row is ahead', async () => {
+  // The other side of that boundary: a fully-merged branch names a base and
+  // counts zero ahead. A divider above row 0 would label the whole list.
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  const data = prefixPayload({ aheadCount: 0 });
+  data.commits = data.commits.map(c => ({ ...c, ahead: false }));
+  renderCommitList(listEl, data, { project: 'demo', onOpenCommit: () => {} });
+
+  assert.equal(listEl.querySelectorAll('.ahead-divider').length, 0);
+  assert.equal(listEl.querySelectorAll('.commit-row.ahead').length, 0);
+});
+
 test('no divider and no ahead classing when nothing is ahead', async () => {
   const listEl = await setup();
   const { renderCommitList } = await import('../public/commits.js');
