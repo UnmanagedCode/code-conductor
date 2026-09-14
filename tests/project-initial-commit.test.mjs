@@ -210,15 +210,26 @@ test('the identity fallback is per-field: a configured name keeps its author, an
   }
 });
 
-test('a global ignore rule cannot keep a scaffolded file out of the initial commit', async () => {
+test('a global ignore rule cannot keep any scaffolded file out of the initial commit', async () => {
   // `git add -A` HONOURS core.excludesFile, and keeping agent files out of
-  // history is a real habit — so a user whose global ignore lists CLAUDE.md
-  // would get a commit holding only CONVENTIONS.md, silently. What makes that
-  // worth closing rather than waiving is downstream: a worktree branched off
-  // that HEAD checks out no CLAUDE.md at all, so the `@CONVENTIONS.md` import
-  // chain is missing for every worker in the project.
+  // history is a real habit — so a user whose global ignore names one of these
+  // files would get a commit silently missing it. What makes that worth closing
+  // rather than waiving is downstream: a worktree branched off that HEAD checks
+  // out no CLAUDE.md at all, so the `@CONVENTIONS.md` import chain is missing
+  // for every worker in the project.
+  //
+  // THE IGNORE RULE NAMES **EVERY** SCAFFOLDED FILE, and that is the whole
+  // design of this fixture rather than an incidental choice. Ignoring only
+  // CLAUDE.md leaves `add -A` covering CONVENTIONS.md, which MASKS any omission
+  // in the forced floor for the second file: both a floor hard-coded to
+  // `['CLAUDE.md']` and a `scaffolded` array that forgets its
+  // `CONVENTIONS.md` push survive such a fixture (measured — they were the two
+  // mutation survivors this fixture exists to kill). With both names ignored,
+  // `add -A` contributes NOTHING and the floor is the only thing that can put
+  // either file in the commit, so the assertion below reads every entry of the
+  // floor list rather than just its first.
   const ignore = path.join(home, 'global-gitignore');
-  await fs.writeFile(ignore, 'CLAUDE.md\n');
+  await fs.writeFile(ignore, 'CLAUDE.md\nCONVENTIONS.md\n');
   gitConfig(`${DEV_IDENT}[core]\n\texcludesFile = ${ignore}\n`);
 
   const { path: p } = await createProject('c8', { conventionsDoc: '# conventions\n' });
@@ -227,17 +238,26 @@ test('a global ignore rule cannot keep a scaffolded file out of the initial comm
     .trim().split('\n').filter(Boolean).sort();
   assert.deepEqual(tracked, ['CLAUDE.md', 'CONVENTIONS.md'],
     'an ignore rule kept a file creation wrote out of the commit');
+  // The commit is the only place this can be read: with both names ignored,
+  // `git status` in the project stays clean either way.
+  assert.equal((await git(p, 'status', '--porcelain')).stdout, '');
 
-  // NON-VACUITY CONTROL: the ignore rule really is in force here, so the
-  // assertion above is about cc overriding it and not about a fixture that
-  // never bit. A hand-built repo in the same config cannot stage the same file.
+  // NON-VACUITY CONTROL, in a hand-built repo under the same config: BOTH
+  // patterns have to bite, per file and behaviourally. Without the per-file
+  // half, a fixture whose second pattern was a typo would still pass the
+  // behavioural half on the strength of the first.
   const control = path.join(home, 'control-repo');
   await fs.mkdir(control, { recursive: true });
   await git(control, 'init', '-q', '-b', 'main');
+  const ignored = (await git(control, 'check-ignore', '--no-index', 'CLAUDE.md', 'CONVENTIONS.md'))
+    .stdout.trim().split('\n').sort();
+  assert.deepEqual(ignored, ['CLAUDE.md', 'CONVENTIONS.md'],
+    'core.excludesFile does not hide both names — the fixture cannot fail the way it claims to');
   await fs.writeFile(path.join(control, 'CLAUDE.md'), 'x\n');
+  await fs.writeFile(path.join(control, 'CONVENTIONS.md'), 'y\n');
   await git(control, 'add', '-A');
   assert.equal((await git(control, 'ls-files')).stdout, '',
-    'core.excludesFile is not in effect — the fixture cannot fail the way it claims to');
+    '`add -A` staged a file the ignore rule should have hidden');
 });
 
 test('a failing commit leaves the project created, its files written, and its HEAD unborn', async () => {
