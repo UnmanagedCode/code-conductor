@@ -1415,7 +1415,8 @@ interface CommitRow {
   parents: string[];
 }
 
-// Return the commit history of a project's current branch (HEAD), newest first.
+// Return the commit history of a project's current branch (HEAD), newest first, in
+// TOPOLOGICAL order (a parent never precedes any of its children).
 // Validates the project via getProject (throws 404 if not found). Caps the log
 // at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`) and sets `truncated` when more commits exist.
 // Returns { project, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
@@ -1488,8 +1489,13 @@ export async function getProjectCommits(
 
   // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI/%P are all single-line.
   // %P = parent SHAs (space-separated): empty for the root commit, ≥2 for a merge.
+  // --topo-order, not git's default committer-date order: the frontend's lane
+  // assignment (computeGraph, public/commits.js) requires that no parent precede
+  // its child. A rebase stamps a whole branch with one committer second, the date
+  // sort key goes constant, and the emitted order degenerates — lanes then target
+  // already-rendered commits and never converge.
   const r = await runGit(proj.system, proj.path, [
-    'log', `--max-count=${cap + 1}`,
+    'log', '--topo-order', `--max-count=${cap + 1}`,
     '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',
   ]);
   if (r.code !== 0) {

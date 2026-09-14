@@ -19,14 +19,19 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-function git(cwd, ...args) {
+// One implementation; `git` is the env-free spelling of `gitEnv`. The fixture
+// below needs GIT_AUTHOR_DATE/GIT_COMMITTER_DATE per commit.
+function gitEnv(cwd, env, ...args) {
   return new Promise((resolve, reject) => {
-    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
-      if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); }
-      else resolve({ stdout, stderr });
-    });
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8', env: { ...process.env, ...env } },
+      (err, stdout, stderr) => {
+        if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); }
+        else resolve({ stdout, stderr });
+      });
   });
 }
+
+function git(cwd, ...args) { return gitEnv(cwd, {}, ...args); }
 
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
@@ -409,4 +414,92 @@ test('GET /commits for a worktree returns hasUncommitted:true when worktree is d
   const r = await api(baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
   assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
   assert.equal(r.body.hasUncommitted, true, 'dirty worktree → hasUncommitted:true');
+});
+
+// ── Topological ordering ────────────────────────────────────────────────────
+// The frontend's lane assignment (computeGraph, public/commits.js) requires
+// that a parent never precede its child in commits[]. git's DEFAULT ordering is
+// a committer-date priority queue and does not guarantee that; --topo-order
+// does. The fixture below is built so the default ordering demonstrably breaks
+// it — a LINEAR history cannot, because git's walk queue never holds two
+// candidates at once and the invariant would hold vacuously on broken code.
+
+function d(author, committer) {
+  return { GIT_AUTHOR_DATE: author, GIT_COMMITTER_DATE: committer };
+}
+
+// Topology: A ← B ← M(merge), A ← S1 ← S2 ← M. Committer dates are chosen so
+// the default walk pops M, B, then A (01-05, newer than S2's 01-03) — emitting
+// the root A ABOVE its own child S1. Author dates (what the view displays) are
+// pinned too, so the fixture never depends on the wall clock.
+async function makeTopoRepo(name) {
+  const repoPath = path.join(projectsRoot, name);
+  await fs.mkdir(repoPath, { recursive: true });
+  await git(repoPath, 'init', '-q', '-b', 'main');
+  await git(repoPath, 'config', 'user.email', 'test@example.com');
+  await git(repoPath, 'config', 'user.name', 'test');
+  await git(repoPath, 'config', 'commit.gpgsign', 'false');
+
+  const commit = async (file, message, dates) => {
+    await fs.writeFile(path.join(repoPath, file), `${message}\n`);
+    await git(repoPath, 'add', '.');
+    await gitEnv(repoPath, dates, 'commit', '-q', '-m', message);
+  };
+
+  await commit('a.txt', 'A', d('2026-01-01T00:00:00Z', '2026-01-05T00:00:00Z'));
+  const { stdout: aShaOut } = await git(repoPath, 'rev-parse', 'HEAD');
+  await commit('b.txt', 'B', d('2026-01-02T00:00:00Z', '2026-01-04T00:00:00Z'));
+  await git(repoPath, 'checkout', '-q', '-b', 'side', aShaOut.trim());
+  await commit('s1.txt', 'S1', d('2026-01-03T00:00:00Z', '2026-01-02T00:00:00Z'));
+  await commit('s2.txt', 'S2', d('2026-01-04T00:00:00Z', '2026-01-03T00:00:00Z'));
+  await git(repoPath, 'checkout', '-q', 'main');
+  await gitEnv(repoPath, d('2026-01-06T00:00:00Z', '2026-01-06T00:00:00Z'),
+    'merge', '--no-ff', '--no-edit', '-m', 'M', 'side');
+  return repoPath;
+}
+
+// Count (child index, parent index) pairs where the parent is at a LOWER index,
+// over a [{sha, parents}] list. Returns the offending pairs, formatted.
+function topologyViolations(commits) {
+  const idx = new Map(commits.map((c, i) => [c.sha, i]));
+  const bad = [];
+  for (let i = 0; i < commits.length; i++) {
+    for (const p of commits[i].parents) {
+      if (!idx.has(p)) continue; // outside the window — nothing to check
+      if (idx.get(p) <= i) {
+        bad.push(`parent ${p.slice(0, 7)} of ${commits[i].sha.slice(0, 7)} is at index `
+          + `${idx.get(p)}, must be > ${i}`);
+      }
+    }
+  }
+  return bad;
+}
+
+test('GET /commits orders commits topologically, not by date', async () => {
+  await makeTopoRepo('topo');
+
+  const r = await api(baseUrl, 'GET', '/api/projects/topo/commits');
+  assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  const commits = r.body.commits;
+  assert.equal(commits.length, 5);
+  assert.equal(commits[0].subject, 'M', 'tip first');
+  const bad = topologyViolations(commits);
+  assert.deepEqual(bad, [], `commits[] must be topologically ordered:\n  ${bad.join('\n  ')}`);
+});
+
+test("the fixture's default git ordering really does violate topology", async () => {
+  // Non-vacuity control for the test above: if a future git changes its default
+  // ordering, or this fixture is edited into a shape that no longer diverges,
+  // this goes red and names the reason instead of letting the ordering test
+  // pass for free.
+  const repoPath = await makeTopoRepo('topo-control');
+  const raw = (await git(repoPath, 'log', '--max-count=10', '--pretty=%H %P')).stdout;
+  const commits = raw.trim().split('\n').map((line) => {
+    const [sha, ...parents] = line.trim().split(/\s+/);
+    return { sha, parents };
+  });
+  assert.equal(commits.length, 5);
+  assert.ok(topologyViolations(commits).length > 0,
+    'fixture no longer diverges under git\'s default ordering — the ordering test '
+    + 'above would now pass vacuously');
 });
