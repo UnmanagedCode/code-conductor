@@ -944,6 +944,12 @@ export async function createProject(
   // this import line, so a caller that passes none still converges.
   const importLine = '@CONVENTIONS.md\n';
   const claudeMdPath = path.join(full, 'CLAUDE.md');
+  // Collected as the files are written, and handed to commitScaffold so the
+  // commit is guaranteed to hold them whatever the user's ignore rules say.
+  // Appended at each write site rather than declared as a list up front: a
+  // literal list is a second source of truth for what creation wrote, and it
+  // would go stale silently.
+  const scaffolded: string[] = ['CLAUDE.md'];
   try {
     await system.writeFile(claudeMdPath, importLine, { exclusive: true });
   } catch (e) {
@@ -951,8 +957,9 @@ export async function createProject(
   }
   if (conventionsDoc != null) {
     await system.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
+    scaffolded.push('CONVENTIONS.md');
   }
-  await commitScaffold(system, full, runGit);
+  await commitScaffold(system, full, runGit, scaffolded);
   return { name, path: full, system: system.id, remoteId: system.remoteId };
 }
 
@@ -984,14 +991,42 @@ const SCAFFOLD_COMMIT_MESSAGE =
 //
 // `runGit` is passed in rather than imported: worktrees.ts statically imports
 // this module, so createProject reaches it through a dynamic import and there is
-// no reason for a second one here.
+// no reason for a second one here. `scaffolded` is the project-relative path of
+// every file creation actually wrote.
 async function commitScaffold(
   system: System, full: string, runGit: typeof import('./worktrees.ts').runGit,
+  scaffolded: string[],
 ): Promise<void> {
   // The try must wrap the CALLS, not just their `code`: runGit throws
   // httpError(504 GIT_TIMED_OUT) / httpError(502 GIT_DID_NOT_RUN) before it
   // ever returns a result.
   try {
+    // COMMIT ONLY TO THE REPO CREATION JUST MADE, and establish that BEFORE
+    // anything is staged. An ambient `GIT_DIR` already sends the `git init`
+    // above to a foreign repo (a pre-existing dent, pinned by `createProject
+    // fails loudly when git init fails`), and without this check the staging
+    // below then writes a commit into somebody else's history: measured, the
+    // stray "Initial commit" lands on their branch carrying a tree that DELETES
+    // every file they had tracked. Misplacing a repo is recoverable; rewriting
+    // a user's branch is a different class of harm, so the identity of the
+    // target is a precondition rather than something to notice afterwards.
+    //
+    // Both halves matter and both come from one command: the git dir says WHICH
+    // repository the commit would land in, the top level says which working
+    // tree `add -A` would sweep. git resolves symlinks in both answers, so the
+    // comparison is against the realpath — `full` itself can differ by a
+    // symlinked ancestor and would then mismatch for no real reason.
+    const real = await system.realpath(full);
+    const where = await runGit(system, full, ['rev-parse', '--absolute-git-dir', '--show-toplevel']);
+    const [gitDir, topLevel] = where.stdout.trim().split('\n');
+    if (where.code !== 0 || gitDir !== path.join(real, '.git') || topLevel !== real) {
+      console.warn(`createProject: refusing the initial commit in ${full} — git resolves that `
+        + `directory to a different repository (git dir '${gitDir ?? ''}', work tree `
+        + `'${topLevel ?? ''}'), and committing there would write into history that is not this `
+        + 'project\'s; the project was created and its HEAD is unborn, so its first worktree needs '
+        + 'a commit first');
+      return;
+    }
     // PER FIELD, and probed rather than defaulted: git has no "use this only if
     // unset" config precedence — `-c` always wins — so the only way to leave a
     // configured identity alone is to ask first. This is the user's repo and
@@ -1005,6 +1040,14 @@ async function commitScaffold(
     if (email.code !== 0 || !email.stdout.trim()) {
       idArgs.push('-c', `user.email=${SCAFFOLD_AUTHOR_EMAIL}`);
     }
+    // `add -A` with NO PATHSPEC keeps the commit forwards-compatible with
+    // whatever a future scaffold writes — but it HONOURS the user's
+    // `core.excludesFile`, so on its own a global ignore listing `CLAUDE.md`
+    // (a real habit) would silently drop it, and a worktree branched off that
+    // HEAD would check out no CLAUDE.md and lose the `@CONVENTIONS.md` import
+    // chain for every worker. Hence the second, forced add of exactly the paths
+    // creation wrote: `-A` decides the SCOPE, `-f` guarantees the FLOOR.
+    //
     // `-c` PAIRS IN THE ARGV, never a persisted config and never an env frame:
     // the fallback is this one command's and must outlive nothing. (A frame
     // `env` REPLACES the far side's environment — see providerSystem.ts — and
@@ -1012,16 +1055,19 @@ async function commitScaffold(
     // leading `-c` in a runGit argv, and runGit's `sub` extraction already skips
     // them, so a refusal still names `commit`.)
     //
-    // `add -A` with NO PATHSPEC, deliberately: the commit tracks what creation
-    // actually wrote, so it neither goes stale when the scaffold set changes nor
-    // fails on a CONVENTIONS.md the caller never passed. No `--no-verify` and no
-    // gpgsign override either — a user's hooks and signing key are theirs, and a
-    // failure from one degrades below exactly like any other.
-    const add = await runGit(system, full, ['add', '-A']);
-    const r = add.code === 0
-      ? await runGit(system, full, [...idArgs, 'commit', '-q', '-m', SCAFFOLD_COMMIT_MESSAGE])
-      : add;
-    if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim());
+    // No `--no-verify` and no gpgsign override: a user's hooks and signing key
+    // are theirs, and a failure from one degrades below like any other.
+    const steps: string[][] = [
+      ['add', '-A'],
+      ['add', '-f', '--', ...scaffolded],
+      [...idArgs, 'commit', '-q', '-m', SCAFFOLD_COMMIT_MESSAGE],
+    ];
+    for (const argv of steps) {
+      const r = await runGit(system, full, argv);
+      // Rethrown into this function's own catch, so every failure — a non-zero
+      // git and a runGit throw alike — leaves by one route and warns once.
+      if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim());
+    }
   } catch (e) {
     console.warn(`createProject: initial commit failed in ${full} — the project was created and its `
       + 'HEAD is unborn, so its first worktree needs a commit first: ' + errMsg(e));

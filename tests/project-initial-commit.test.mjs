@@ -191,6 +191,36 @@ test('the identity fallback is per-field: a configured name keeps its author, an
   }
 });
 
+test('a global ignore rule cannot keep a scaffolded file out of the initial commit', async () => {
+  // `git add -A` HONOURS core.excludesFile, and keeping agent files out of
+  // history is a real habit — so a user whose global ignore lists CLAUDE.md
+  // would get a commit holding only CONVENTIONS.md, silently. What makes that
+  // worth closing rather than waiving is downstream: a worktree branched off
+  // that HEAD checks out no CLAUDE.md at all, so the `@CONVENTIONS.md` import
+  // chain is missing for every worker in the project.
+  const ignore = path.join(home, 'global-gitignore');
+  await fs.writeFile(ignore, 'CLAUDE.md\n');
+  gitConfig(`${DEV_IDENT}[core]\n\texcludesFile = ${ignore}\n`);
+
+  const { path: p } = await createProject('c8', { conventionsDoc: '# conventions\n' });
+
+  const tracked = (await git(p, 'ls-tree', '-r', '--name-only', 'HEAD')).stdout
+    .trim().split('\n').filter(Boolean).sort();
+  assert.deepEqual(tracked, ['CLAUDE.md', 'CONVENTIONS.md'],
+    'an ignore rule kept a file creation wrote out of the commit');
+
+  // NON-VACUITY CONTROL: the ignore rule really is in force here, so the
+  // assertion above is about cc overriding it and not about a fixture that
+  // never bit. A hand-built repo in the same config cannot stage the same file.
+  const control = path.join(home, 'control-repo');
+  await fs.mkdir(control, { recursive: true });
+  await git(control, 'init', '-q', '-b', 'main');
+  await fs.writeFile(path.join(control, 'CLAUDE.md'), 'x\n');
+  await git(control, 'add', '-A');
+  assert.equal((await git(control, 'ls-files')).stdout, '',
+    'core.excludesFile is not in effect — the fixture cannot fail the way it claims to');
+});
+
 test('a failing commit leaves the project created, its files written, and its HEAD unborn', async () => {
   // A pre-commit hook that always fails, via config alone: no template dir, no
   // copy into the repo, and it reaches the git on EITHER side of the provider
