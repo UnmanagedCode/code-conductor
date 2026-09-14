@@ -751,9 +751,7 @@ export function buildTools(): Tool[] {
       description:
         'Create a new empty project under ~/project/<name>, or at `systemPath` on a registered `system`. '
         + 'Seeds CLAUDE.md with @CONVENTIONS.md and ' +
-        'writes that CONVENTIONS.md, carrying the workspace-wide conventions. The new dir is initialized ' +
-        'as a git repo with NO commit yet, so its HEAD is unborn: the first worker must be spawned '
-        + 'WITHOUT a worktree (worktrees branch off HEAD) until something is committed. ' +
+        'writes that CONVENTIONS.md, carrying the workspace-wide conventions. ' +
         'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
         'discover available slugs. Each carries a fragment (composed into CONVENTIONS.md) and/or a one-time ' +
         'scaffold directive: a picked convention flagged hasScaffold:true composes a setup directive that is ' +

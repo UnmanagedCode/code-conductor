@@ -99,6 +99,22 @@ test('adopt resolves the project to the target REALPATH, not the symlink path', 
   assert.ok(st.isSymbolicLink(), 'the record IS a symlink');
 });
 
+test('adopt_project adds no commit to the repo it adopts', async () => {
+  // Only the path that MADE the repo commits into it. Adoption touches a
+  // history that is the user's, so its CONVENTIONS.md delivery stays an
+  // uncommitted change in their tree — the documented limitation, unchanged.
+  const { repoPath } = await makeExternalRepo();
+  const before = (await git(repoPath, 'rev-list', '--count', 'HEAD')).stdout.trim();
+  assert.equal(before, '1', 'fixture should start with exactly one commit');
+
+  const res = await adoptProject('ext', repoPath);
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  assert.equal((await git(repoPath, 'rev-list', '--count', 'HEAD')).stdout.trim(), '1');
+  assert.match((await git(repoPath, 'status', '--porcelain')).stdout, /^\?\? CONVENTIONS\.md$/m,
+    'the delivered conventions file must still be uncommitted');
+});
+
 // ---------- 7.2 the same property from the resume angle ----------
 
 test('a session under encodeCwd(realpath) is located; one under encodeCwd(linkPath) is not', async () => {

@@ -77,14 +77,29 @@ test('POST /api/projects inits a git repo', async () => {
   assert.ok(stat.isDirectory());
 });
 
-test('createProject roots the repo at the project dir, with no commits', async () => {
+test('POST /api/projects leaves the project with no unborn HEAD', async () => {
+  // The flag a caller reads to decide whether a worktree is possible is already
+  // clear at creation — on the REST surface, not just through the module.
+  const created = await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+  assert.equal(created.status, 201);
+
+  const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'demo');
+  assert.ok(row, 'created project is missing from the listing');
+  assert.equal(row.isGitRepo, true);
+  assert.equal(row.unbornHead, false);
+});
+
+test('createProject roots the repo at the project dir, and commits the scaffold', async () => {
   const { path: p } = await createProject('u1');
   // Exactly `.git`, not an absolute path to an ancestor repo: the init target
   // is the new project dir itself.
   const gitDir = await git(p, 'rev-parse', '--git-dir');
   assert.equal(gitDir.stdout.trim(), '.git');
-  // Creation makes no commit — the first commit stays the worker's.
-  await assert.rejects(() => git(p, 'rev-parse', '--verify', 'HEAD'));
+  // Creation ends with a real commit, so the project is worktree-ready without
+  // a human commit first. What that commit CONTAINS, and what happens when it
+  // cannot be made, are pinned in tests/project-initial-commit.test.mjs.
+  const head = await git(p, 'rev-parse', '--verify', 'HEAD');
+  assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
 });
 
 test('createProject fails loudly when git init fails', async (t) => {

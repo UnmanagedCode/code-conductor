@@ -10,7 +10,6 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
@@ -205,24 +204,11 @@ test('spawn_instance({resume:<bogus>}) with NO project still throws the existing
 
 // --- The stranded-worktree leak (card 2026-0358, fix 3) ---
 
-function git(cwd, ...args) {
-  return new Promise((resolve, reject) => {
-    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout) => {
-      if (err) reject(err); else resolve(stdout);
-    });
-  });
-}
-
-// `POST /api/projects` git-inits but never commits, and `git worktree add`
-// needs a branch HEAD — so a project with no commit could not grow a worktree
-// at all, and "the count did not change" would be true for the wrong reason.
-async function commitProject(projectPath) {
-  await git(projectPath, 'config', 'user.email', 'test@example.com');
-  await git(projectPath, 'config', 'user.name', 'test');
-  await git(projectPath, 'config', 'commit.gpgsign', 'false');
-  await git(projectPath, 'add', '-A');
-  await git(projectPath, 'commit', '-q', '-m', 'initial');
-}
+// `git worktree add` needs a branch HEAD, so the premise spawns below depend on
+// the project having a commit — otherwise "the count did not change" would be
+// true for the wrong reason. `POST /api/projects` commits its own scaffold, so
+// there is nothing for these tests to set up: the premise guards in each one are
+// what keep that dependency honest if it ever stops holding.
 
 test('a resume never creates a worktree, even when the caller asks for one', async () => {
   // INVARIANT: `resume` + `worktree:true` is refused BEFORE createWorktree()
@@ -233,7 +219,6 @@ test('a resume never creates a worktree, even when the caller asks for one', asy
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    await commitProject(path.join(ctx.projectsRoot, 'demo'));
     const { spawnInstance } = await import('../src/mcp/handlers.ts');
 
     // PREMISE GUARD: this project really can grow a worktree, so the
@@ -307,7 +292,6 @@ test('a resume into a worktree the session did not run in is refused; its OWN wo
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    await commitProject(path.join(ctx.projectsRoot, 'demo'));
     const { spawnInstance } = await import('../src/mcp/handlers.ts');
 
     // A session that really ran in worktree `own`.
