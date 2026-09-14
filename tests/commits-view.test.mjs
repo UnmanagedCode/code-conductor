@@ -63,7 +63,9 @@ test('ahead divider is inserted above the first already-merged row', async () =>
     'the label must name the direction it binds in, not just the base');
   assert.equal(kids[3].className, 'commit-row', 'first already-merged row');
   assert.equal(kids[3].querySelector('.commit-sha').textContent, 'ccccccc');
-  assert.ok(kids[2].style.paddingLeft.endsWith('px'), 'label is inset past the rail');
+  // One lane over this linear history, so the label clears a 14px rail plus the
+  // row's padding-left + flex gap — landing on the rows' text column.
+  assert.equal(kids[2].style.paddingLeft, '34px', 'label is inset onto the text column');
 });
 
 test('no divider and no ahead classing when nothing is ahead', async () => {

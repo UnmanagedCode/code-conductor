@@ -27,6 +27,11 @@ const BAND_H = 32;        // fixed height of the SVG node band at the top of a r
 // ~½ of the 12px-monospace line box. If you retune the row/sha padding or font
 // in styles.css, adjust this single constant to re-centre the dot.
 const DOT_CY = 17;
+// Left inset of a full-width element (the ahead divider) needed to line its text
+// up with a .commit-row's text column, which starts after the row's padding-left,
+// the rail, and the row's flex gap. Both constants are `.commit-row`'s, in
+// styles.css — retune them together.
+const ROW_TEXT_INSET = 12 + 8;
 const MAX_LANES = 12;     // soft cap; extra lanes clamp to the last column (logged)
 
 // Lane palette — bright hues that read well on the dark --panel-1/--panel-2
@@ -314,13 +319,13 @@ export function renderCommitList(listEl, data, { project, onOpenCommit } = {}) {
   for (let i = 0; i < data.commits.length; i++) {
     // Divider ABOVE the first already-merged row — it labels the section that
     // FOLLOWS it (border-top, ↓ glyph, left inset), so it is appended
-    // immediately before that row. Inset its label by the rail width so it
-    // stays aligned with the rows' text columns.
+    // immediately before that row. Inset its label past the rail so it lands on
+    // the rows' text column (measured in a browser: rail + ROW_TEXT_INSET).
     if (effectiveAheadCount > 0 && i === effectiveAheadCount) {
       const divider = document.createElement('div');
       divider.className = 'ahead-divider';
       divider.textContent = `↓ already in ${data.aheadOf}`;
-      if (railWidth) divider.style.paddingLeft = `${railWidth + 12}px`;
+      if (railWidth) divider.style.paddingLeft = `${railWidth + ROW_TEXT_INSET}px`;
       listEl.appendChild(divider);
     }
     listEl.appendChild(renderRow(project, data.commits[i], onOpenCommit, {
