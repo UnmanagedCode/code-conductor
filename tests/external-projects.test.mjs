@@ -208,8 +208,8 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
   const inRoot = await makeInRootRepo('taken');
   const second = await makeExternalRepo('second');
   // A subdirectory of a repo, a bare repo, and a plain file — all outside the
-  // projects root. `plainDir` is adoptable now, and is here only as the target
-  // of the two INVALID_NAME rows, which refuse before the target is examined.
+  // projects root. `plainDir` is adoptable, so it serves only as the target of
+  // the two INVALID_NAME rows, which refuse before the target is examined.
   const plainDir = path.join(home, 'not-a-repo');
   await fs.mkdir(plainDir, { recursive: true });
   const subDir = path.join(repoPath, 'src');
@@ -359,8 +359,8 @@ test('TARGET_ALREADY_MANAGED fires on real containment in either direction, and 
   assert.match(enclosing.reason, /contains the projects root/);
 
   // (5) the filesystem root contains everything, including the projects root.
-  //     Containment is now the ONLY thing refusing it: `/` is neither inside a
-  //     repo nor a git dir, so the git probes below would let it through.
+  //     Containment is the ONLY thing refusing it: `/` is neither inside a repo
+  //     nor a git dir, so the git probes below let it through.
   const fsRoot = await adoptProject('slash', '/');
   assert.equal(fsRoot.ok, false, `'/' must be refused on containment: ${JSON.stringify(fsRoot)}`);
   assert.equal(fsRoot.code, 'TARGET_ALREADY_MANAGED');

@@ -269,8 +269,9 @@ test('an adopt_project refusal keeps its machine-readable code through the MCP e
 });
 
 test('an adopted non-git directory reads as a measured non-repo on both MCP read surfaces', async () => {
-  // The state adopt now admits, at the surface a conductor actually reads —
-  // no REST test reaches these renderers.
+  // A plain directory adopts to an ordinary non-git project. This is that state
+  // at the surface a conductor actually reads — no REST test reaches these
+  // renderers.
   const plain = path.join(home, 'plain-tree');
   await fs.mkdir(plain, { recursive: true });
   await fs.writeFile(path.join(plain, 'notes.txt'), 'hello\n');

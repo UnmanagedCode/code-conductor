@@ -799,7 +799,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the directory by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
-          path: { type: 'string', description: 'Absolute path to the existing directory to adopt — a git repo root, or a directory that is neither inside a repo nor itself a git directory (a bare repo, or a `.git`) — on `system` when one is given, else on cc\'s own machine.' },
+          path: { type: 'string', description: 'Absolute path to the existing directory to adopt — on `system` when one is given, else on cc\'s own machine.' },
           system: { type: 'string', description: 'Adopt a tree living on this registered system. The path is then validated there, and cc records the placement instead of a symlink.' },
           remoteId: { type: 'string', description: 'Which TARGET of `system` the tree is on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`.' },
         },
