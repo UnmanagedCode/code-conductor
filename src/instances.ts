@@ -340,7 +340,7 @@ export function isDeadStatus(status: unknown): boolean {
 // An instance with a process attached, or inside a window where one is coming
 // back (a prune's kill→relaunch under rotationPending, a respawn/rewind under
 // `_relaunching`). The single PER-INSTANCE form of "is this worker live";
-// isSessionLive and the resume reclaim in _doCreate are its only readers, so
+// isSessionLive and the resume reclaim in _doCreateResolved are its only readers, so
 // neither can drift from the other — and that is load-bearing, because the
 // reclaim's safety rests on the guard being false only when every instance it
 // can then reach is settled.
@@ -4239,7 +4239,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // `.some()` over EVERY answering instance, not anyForSession's first match:
   // an exited instance the registry still holds must never SHADOW a live one.
   // First-match made this answer false while a process was running — the state
-  // `_doCreate`'s reclaim now prevents, but which a long-running orchestrator
+  // the resume reclaim now prevents, but which a long-running orchestrator
   // may already hold, and which this must survive either way. It is also what
   // makes the reclaim safe to run behind this guard: false here means every
   // answering instance is settled.
@@ -4470,29 +4470,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       this._resumingPublicIds.add(publicId);
     }
     try {
-      // Past the guard above, isSessionLive(publicId) is false, so NO instance
-      // answering to this session is live or coming up — every one of them is a
-      // superseded husk of the session we are about to resume. Retire them before
-      // _doCreateResolved registers the new instance: leaving one in byId makes
-      // anyForSession resolve the husk instead of the live worker, and strands its
-      // auto-resume deadline (which holds the GLOBAL overage lockout), idle-wake
-      // edges, renew arm, redirect connection and tmp root, none of which anything
-      // else reclaims. remove() is the one teardown that does all of that, and its
-      // kill() early-outs on an already-settled instance, so it terminates nothing.
-      // Inside the `_resumingPublicIds` claim, which is what makes an await here
-      // sound. src/routes.ts's detachInstancesForSession does the same thing for
-      // the same reason; this is that rule applied at the chokepoint.
-      if (publicId) {
-        for (const staleId of this.idsForSession(publicId)) {
-          try { await this.remove(staleId); }
-          catch (e) {
-            // 404 = the temp-exit status listener deleted it from byId while we
-            // awaited. That path is a strict subset of this one and leaves the same
-            // post-condition, so a lost race is a success. Anything else is real.
-            if ((e as { statusCode?: number }).statusCode !== 404) throw e;
-          }
-        }
-      }
+      // The reclaim of superseded instances for this session lives at the END of
+      // _doCreateResolved, not here: it must run past every validation and refusal
+      // path, so a resume that is about to be REFUSED leaves the session's existing
+      // instance alone. The claim taken above is held across it either way.
       return await this._doCreateResolved({ ...opts, resume }, publicId);
     } finally {
       if (publicId) this._resumingPublicIds.delete(publicId);
@@ -5131,6 +5112,44 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
 
+    // ---- the resume reclaim ----
+    // LAST THING BEFORE REGISTRATION, and that placement is the point. Everything
+    // above that can refuse — project/mode/thinking/effort validation, the backend
+    // and worktree resolution, the mirror-geometry and hook/bash-rule checks, the
+    // resume pre-flight — has already run, and none of it is rolled back. Reclaiming
+    // any earlier means a REFUSED resume destroys the session's existing in-memory
+    // instance on its way out (measured: `create({resume, thinking:'garbage'})` over
+    // a settled husk left the session with zero instances). The span from `new
+    // Instance(…)` to here is pure listener wiring — no await, no throw — so nothing
+    // between the reclaim and `byId.set` can fail either.
+    //
+    // WHAT IT DOES: past _doCreate's guard, isSessionLive(publicId) was false, so
+    // every in-memory instance answering to this session is a superseded husk of the
+    // session we are resuming. Retire each before the new one registers: leaving one
+    // in byId makes anyForSession resolve the husk instead of the live worker, and
+    // strands its auto-resume deadline (which holds the GLOBAL overage lockout),
+    // idle-wake edges, renew arm, redirect connection and tmp root — none of which
+    // anything else reclaims. remove() is the one teardown that does all of that.
+    // Runs inside the `_resumingPublicIds` claim _doCreate holds, which is what
+    // makes an await here sound. src/routes.ts's detachInstancesForSession applies
+    // the same rule at the REST layer; this is it at the chokepoint.
+    if (publicId) {
+      for (const staleId of this.idsForSession(publicId)) {
+        try { await this.remove(staleId); }
+        catch (e) {
+          // 404 = something else DELETED it from byId while we awaited (the
+          // temp-exit status listener, or a concurrent remove). That reaches the
+          // same post-condition, so a lost race is a success. Anything else is real.
+          // The other actor that can land in this gap — one REVIVING the husk — is
+          // not absorbed here and must not be: a revived husk is still present, so
+          // it never surfaces as 404. It is refused at its entry point instead
+          // (InstanceManager.respawn's claim check), with the residual case named
+          // in docs/architecture.md → Instance lifecycle.
+          if ((e as { statusCode?: number }).statusCode !== 404) throw e;
+        }
+      }
+    }
+
     this.byId.set(id, inst);
     if (autoApprovePlan) inst.autoApprovePlan = true;
     // An explicit create-time value WINS over the persisted Settings default:
@@ -5606,6 +5625,22 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     if (inst.proc) {
       throw httpError(409, 'instance still running');
+    }
+    // A resume is RETIRING this session's in-memory instances right now (the
+    // reclaim at the end of _doCreateResolved). Reviving one in place races that
+    // teardown both ways: the reclaim's kill() terminates the process this call is
+    // about to attach while the click reports success, or this call wins and leaves
+    // a live CLI on an Instance already dropped from byId — unaddressable by
+    // kill_instance for the rest of its life, on the same jsonl as the new worker.
+    // Refusing is correct rather than merely safe: the resume is bringing the very
+    // same session back, so the caller's intent is already being served.
+    //
+    // SYNCHRONOUS, with no await between it and `_relaunching = true` below — that
+    // is what makes the pair airtight. This closes the order "resume first, respawn
+    // during its reclaim"; the reverse order is closed by `_relaunching` itself,
+    // which _doCreate's isSessionLive guard reads (see isLiveOrComingUp).
+    if (inst.sessionId && this._resumingPublicIds.has(inst.sessionId)) {
+      throw httpError(409, `session ${inst.sessionId} is being resumed — retry once that settles`);
     }
     // A manual respawn supersedes any pending auto-resume for this session.
     this._cancelAutoResume(inst.id);

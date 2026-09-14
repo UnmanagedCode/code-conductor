@@ -264,6 +264,105 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
       + 'relaunched husk would keep its original owner and never wake this conductor');
   });
 
+  // ────────── F2: a REFUSED resume must reclaim nothing at all ──────────
+  //
+  // The reclaim sits at the very end of _doCreateResolved, immediately before
+  // byId.set. Everything that can refuse runs above it and none of it is rolled
+  // back, so a reclaim placed any earlier destroys the session's existing
+  // instance on the way out of a refusal.
+
+  for (const [label, bad] of [
+    ['thinking', { thinking: 'garbage' }],
+    ['backend', { backend: 'no-such-backend-row' }],
+  ]) {
+    test(`F2 a resume refused on ${label} — after the liveness guard — leaves the husk registered`, async () => {
+      const { project, sessionId, oldId, inst } = await settledHusk();
+      await assert.rejects(
+        async () => instances.create({ project, resume: sessionId, ...bad }),
+        (e) => {
+          // Any refusal raised inside _doCreateResolved will do; what matters is
+          // that it lands AFTER _doCreate's 409 guard (which this resume passes)
+          // and therefore after the point an early reclaim would have fired.
+          assert.ok(e.statusCode >= 400 && e.statusCode !== 409,
+            `expected a post-guard refusal, got ${e.statusCode}: ${e.message}`);
+          return true;
+        },
+      );
+      assert.equal(instances.get(oldId), inst,
+        'the husk must survive a refused resume — pre-card it did, and the jsonl surviving '
+        + 'does not make losing the in-memory instance invisible: the sidebar row goes with it');
+      assert.deepEqual(instances.idsForSession(sessionId), [oldId],
+        'and it is still the session\'s one instance');
+    });
+  }
+
+  test('F2 control: the husk a refused resume left behind is still resumable', async () => {
+    // Non-vacuity for the two above: they assert the husk is PRESENT, this asserts
+    // it was left in a usable state rather than half-torn-down.
+    const { project, sessionId, oldId } = await settledHusk();
+    await assert.rejects(
+      async () => instances.create({ project, resume: sessionId, thinking: 'garbage' }),
+      (e) => e.statusCode === 400,
+    );
+    const fresh = await instances.create({ project, resume: sessionId });
+    await waitFor(() => fresh.status === 'idle');
+    assert.deepEqual(instances.idsForSession(sessionId), [fresh.id],
+      'the retry reclaims the husk it spared, so the post-condition still holds');
+    assert.equal(instances.get(oldId), undefined);
+  });
+
+  // ────────── F1: respawn() and the reclaim cannot interleave ──────────
+
+  test('F1 a respawn arriving INSIDE the reclaim window is refused 409', async () => {
+    // The measured interleaving: `await this.remove(staleId)` is a real event-loop
+    // window (a FUSE husk's kill() early-out still awaits _fuse.teardown()), and
+    // InstanceManager.respawn — POST /api/instances/:id/respawn, the UI Respawn
+    // button — used to guard only `if (inst.proc)`, which a settled husk passes.
+    const { project, sessionId, oldId } = await settledHusk();
+    const orig = instances.remove;
+    let outcome = 'never attempted';
+    instances.remove = async function (id) {
+      if (id === oldId && outcome === 'never attempted') {
+        // Exactly the window: the reclaim has committed to removing this husk and
+        // has not finished tearing it down.
+        outcome = await instances.respawn(id).then(() => 'succeeded', e => e);
+      }
+      return orig.call(this, id);
+    };
+    try {
+      const fresh = await instances.create({ project, resume: sessionId });
+      await waitFor(() => fresh.status === 'idle');
+      assert.notEqual(outcome, 'never attempted', 'premise: the reclaim ran and we got into its window');
+      assert.equal(outcome?.statusCode, 409,
+        `the in-window respawn must be refused, got: ${outcome?.message ?? outcome}`);
+      assert.match(outcome.message, /being resumed/);
+      assert.deepEqual(instances.idsForSession(sessionId), [fresh.id],
+        'and the reclaim still completed: no revived husk left beside the new worker');
+    } finally { instances.remove = orig; }
+  });
+
+  test('F1 the reverse order: a resume during an in-flight respawn is refused 409', async () => {
+    // respawn() sets `_relaunching = true` with NO await between it and the
+    // `if (inst.proc)` check, so the widened isSessionLive guard sees the relaunch
+    // and refuses before the reclaim can be reached at all. This is the half that
+    // needs no new guard — it pins that the synchronous prefix stays synchronous.
+    const { project, sessionId, oldId } = await settledHusk();
+    const relaunch = instances.respawn(oldId);           // NOT awaited
+    try {
+      assert.equal(instances.get(oldId).relaunching, true,
+        'premise: respawn marked the relaunch window before yielding');
+      await assert.rejects(
+        async () => instances.create({ project, resume: sessionId }),
+        (e) => { assert.equal(e.statusCode, 409, e.stack); return true; },
+      );
+    } finally {
+      const revived = await relaunch;
+      assert.equal(revived.id, oldId, 'the respawn itself still succeeded — it was never the loser');
+    }
+    assert.deepEqual(instances.idsForSession(sessionId), [oldId],
+      'and nothing was reclaimed: the refused resume never reached the reclaim');
+  });
+
   // ───────────────────── R-RACE: a lost race is a success ─────────────────
 
   test('P3 the reclaim treats a concurrently-removed instance as success', async () => {
