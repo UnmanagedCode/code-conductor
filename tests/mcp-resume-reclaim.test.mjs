@@ -9,13 +9,25 @@
 // answered FALSE while a process was running, which is the liveness authority
 // the playbook gate reads and surfaces as `live:` in `playbook_state`.
 //
-// Three changes are under test here, and they are one mechanism:
-//   (ii)  isSessionLive is a `.some()` over EVERY instance answering to the
-//         session, via the shared per-instance predicate `isLiveOrComingUp`.
-//   (iii) _doCreate's resume guard reads isSessionLive (subsuming the old
-//         liveForSession + _resumingPublicIds pair, and adding the
-//         prune/rewind/respawn relaunch windows) and then, past that guard,
-//         retires every remaining instance for the session via remove().
+// The mechanism under test, in the order it runs — one mechanism, five parts:
+//   (1) isLiveOrComingUp(inst): the ONE per-instance "live, or a process is
+//       coming back" predicate (proc attached, rotationPending, _relaunching),
+//       shared so the oracle and the reclaim cannot drift apart.
+//   (2) isSessionLive: `.some()` over EVERY instance answering to the session,
+//       never anyForSession's first match, so a corpse cannot shadow a live one.
+//   (3) _doCreate's resume guard reads isSessionLive — subsuming the old
+//       liveForSession + _resumingPublicIds pair and adding the
+//       prune/rewind/respawn relaunch windows — then takes the claim.
+//   (4) THE RECLAIM ITSELF RUNS AT THE END OF _doCreateResolved, immediately
+//       before byId.set and past EVERY validation and refusal — deliberately
+//       NOT beside the guard in (3). Nothing above it is rolled back, so a
+//       reclaim placed at the guard let a REFUSED resume destroy the session's
+//       existing instance on its way out. That placement is what the F2 tests
+//       exist to prove; do not "simplify" the two back together.
+//   (5) InstanceManager.respawn refuses 409 while (3)'s claim is held, so a
+//       revival cannot land inside the reclaim's await window. The reverse
+//       order needs no guard: respawn sets _relaunching in its synchronous
+//       prefix, which (2) reads. The F1 tests pin both orders.
 //
 // The `.some()` is LOAD-BEARING for the reclaim's safety, not cosmetic: the
 // reclaim calls remove(), which calls kill(), so it is only sound because the
