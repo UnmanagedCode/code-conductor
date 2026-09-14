@@ -6,10 +6,13 @@
 // documented at tests/projects.test.mjs's `createProject fails loudly when git
 // init fails`, and NOT what this file is about. What the scaffold commit adds is
 // blast radius: against a VALID `GIT_DIR`, `git add -A` + `git commit` would
-// write a commit titled "Initial commit" into that foreign repo, sweeping up
-// whatever its working tree happened to hold — including work the user had not
-// committed yet. Misplacing a repo is recoverable; publishing someone's
-// in-progress work into a commit is not the same class of thing.
+// write a commit titled "Initial commit" onto that foreign repo's branch.
+// Measured, the harm is not that it captures the user's work but that it
+// DISCARDS it: `add -A` runs with the work tree defaulted to the new project
+// dir, so the resulting tree holds only the scaffold and DELETES every file the
+// foreign repo had tracked — afterwards their own files read as untracked
+// against the new HEAD. Misplacing a repo is recoverable; rewriting someone's
+// branch out from under them is not the same class of thing.
 //
 // WHY THIS IS ITS OWN FILE, AND WHY IT IS GATE-PROOF. The forcing is an
 // environment variable, and `ProviderConnection` spawns the provider child with
@@ -120,10 +123,14 @@ test('creation refuses to commit when git resolves the project dir to a foreign 
   assert.match(FOREIGN_STATUS, /^ M tracked\.txt$/m, 'the fixture must really have dirty work');
   assert.match(FOREIGN_STATUS, /^\?\? untracked\.txt$/m);
 
-  // And the project itself is left in the state a caller can already read:
-  // no commit of its own. (Its `.git` is the dent's doing — git init went to
-  // GIT_DIR — which is exactly why the commit had to be refused.)
+  // And the project itself is left in the state a caller can already read: no
+  // commit of its own. It has no `.git` either — measured: under an ambient
+  // GIT_DIR, `git init` initialises THAT repo and creates nothing in the new
+  // directory at all. That is the dent, and exactly why the commit had to be
+  // refused rather than aimed somewhere else.
   await assert.rejects(() => git(p, 'rev-parse', '--verify', 'HEAD'));
+  await assert.rejects(() => fs.stat(path.join(p, '.git')),
+    'the project has a .git of its own — the dent this test assumes is not in effect');
 
   // Reported, not silent — and reported as the refusal it is, so an operator is
   // not sent looking for a broken hook.

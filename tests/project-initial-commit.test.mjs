@@ -84,6 +84,25 @@ async function idents(repo) {
   return { an, ae, cn, ce };
 }
 
+// Collect everything cc warned while `fn` ran. Restores the real console.warn
+// unconditionally, so a throwing body cannot leave the rest of the file muted.
+// The warning TEXT is load-bearing here: refusing the commit and attempting one
+// that then fails both end at "created, HEAD unborn", so the end state alone
+// cannot say which path was taken.
+async function withWarnings(fn) {
+  const warnings = [];
+  const orig = console.warn;
+  console.warn = (...a) => { warnings.push(a.map(String).join(' ')); };
+  try {
+    return { result: await fn(), warnings };
+  } finally {
+    console.warn = orig;
+  }
+}
+
+const REFUSED = /different repository/;
+const FAILED = /initial commit failed/;
+
 let ctx, instances, home;
 
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ instances } = ctx); });
@@ -230,17 +249,11 @@ test('a failing commit leaves the project created, its files written, and its HE
   await fs.writeFile(path.join(hooks, 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   gitConfig(`${DEV_IDENT}[core]\n\thooksPath = ${hooks}\n`);
 
-  const warnings = [];
-  const origWarn = console.warn;
-  console.warn = (...a) => { warnings.push(a.map(String).join(' ')); };
-  let p;
-  try {
-    // Creation SUCCEEDS: everything it owns is already on disk and correct, so
-    // a 500 here would surface a failure over a project that fully exists.
-    ({ path: p } = await createProject('c6', { conventionsDoc: '# conventions\n' }));
-  } finally {
-    console.warn = origWarn;
-  }
+  // Creation SUCCEEDS: everything it owns is already on disk and correct, so a
+  // 500 here would surface a failure over a project that fully exists.
+  const { result, warnings } = await withWarnings(() =>
+    createProject('c6', { conventionsDoc: '# conventions\n' }));
+  const p = result.path;
   assert.equal(await fs.readFile(path.join(p, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
   assert.equal(await fs.readFile(path.join(p, 'CONVENTIONS.md'), 'utf8'), '# conventions\n');
 
@@ -249,9 +262,85 @@ test('a failing commit leaves the project created, its files written, and its HE
   await assert.rejects(() => git(p, 'rev-parse', '--verify', 'HEAD'));
   assert.equal(await hasUnbornHead(localSystem(), p), true);
 
-  // Degraded, not silent.
-  assert.ok(warnings.some(w => /initial commit failed/.test(w)),
+  // Degraded, not silent — and reported as the ATTEMPT that failed, not as the
+  // foreign-repo refusal, which is the other route to this same end state.
+  assert.ok(warnings.some(w => FAILED.test(w)),
     `expected an "initial commit failed" warning, got: ${JSON.stringify(warnings)}`);
+  assert.ok(!warnings.some(w => REFUSED.test(w)),
+    `cc blamed a foreign repo for a refusing hook: ${JSON.stringify(warnings)}`);
+});
+
+test('a repo whose work tree points away from the project is refused before anything is staged', async () => {
+  // THE OTHER HALF OF THE GUARD, ON ITS OWN. The `GIT_DIR` fixture
+  // (tests/project-initial-commit-foreign-repo.test.mjs) trips BOTH of the
+  // guard's comparisons at once, so it cannot tell which one did the work. This
+  // fixture leaves the git dir correct and moves only the work tree, so the
+  // top-level comparison is the sole thing that can refuse.
+  //
+  // FORCED THROUGH CONFIG ALONE, which is why this needs no module-scope
+  // environment and no skip: `git init` copies a `config` out of
+  // `init.templateDir` into the new repo, so the template installs a
+  // REPO-LOCAL `core.worktree` — and repo-local is the scope git honours.
+  // Measured on git 2.55 here, which is what picked this route over the
+  // env one:
+  //   * `core.worktree` in the GLOBAL config is ignored for a normally
+  //     discovered repo, so the global route is not a hazard at all.
+  //   * `GIT_WORK_TREE` without `GIT_DIR` is refused outright ("not allowed
+  //     without specifying GIT_DIR"), which fails `git init` rc 128 and so
+  //     never reaches the commit — it is the existing 500, not this guard.
+  //   * the reachable env shape is `GIT_DIR=.git` + `GIT_WORK_TREE=<foreign>`,
+  //     and it produces EXACTLY the rev-parse answers this fixture produces
+  //     (own `.git`, foreign top level), so pinning one pins the clause.
+  // And the hazard is live: in this state `git add -A` was measured staging the
+  // foreign tree's files into the project's own index (`add 'tracked.txt'`,
+  // `add 'untracked.txt'`).
+  const foreign = path.join(home, 'someones-tree');
+  await fs.mkdir(foreign, { recursive: true });
+  await fs.writeFile(path.join(foreign, 'tracked.txt'), 'committed\n');
+  await fs.writeFile(path.join(foreign, 'untracked.txt'), 'not ready yet\n');
+  const template = path.join(home, 'git-template');
+  await fs.mkdir(template, { recursive: true });
+  await fs.writeFile(path.join(template, 'config'), `[core]\n\tworktree = ${foreign}\n`);
+  gitConfig(`${DEV_IDENT}[init]\n\ttemplateDir = ${template}\n`);
+
+  const { result, warnings } = await withWarnings(() =>
+    createProject('c9', { conventionsDoc: '# conventions\n' }));
+  const p = result.path;
+
+  // CONTROL, and the whole reason this test isolates the clause: the GIT-DIR
+  // half of the guard is SATISFIED here — the repo really is the project's own
+  // — so it cannot be what refused. Only the top-level comparison is left.
+  const real = await fs.realpath(p);
+  const [gitDir, topLevel] = (await git(p, 'rev-parse', '--absolute-git-dir', '--show-toplevel'))
+    .stdout.trim().split('\n');
+  assert.equal(gitDir, path.join(real, '.git'),
+    'the git-dir half must PASS in this fixture, or the test is not isolating the other one');
+  assert.equal(topLevel, await fs.realpath(foreign), 'the work-tree redirect is not in effect');
+  assert.notEqual(topLevel, real);
+
+  // NOTHING WAS STAGED. This is the invariant the clause exists for: without
+  // it, `add -A` runs against the foreign tree and the project's index ends up
+  // holding somebody else's files.
+  assert.equal((await git(p, 'ls-files')).stdout, '',
+    'the project index holds entries — staging ran against the redirected work tree');
+
+  // Creation still succeeded, wrote what it owns, and left HEAD unborn.
+  assert.equal(await fs.readFile(path.join(p, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
+  assert.equal(await fs.readFile(path.join(p, 'CONVENTIONS.md'), 'utf8'), '# conventions\n');
+  await assert.rejects(() => git(p, 'rev-parse', '--verify', 'HEAD'));
+
+  // Reported as the refusal, NOT as an attempt that failed. Without this the
+  // assertions above would also hold for a guard that let staging run and then
+  // tripped over the forced add (measured: it fails `pathspec 'CLAUDE.md' did
+  // not match any files`) — same unborn HEAD, but the index already polluted.
+  assert.ok(warnings.some(w => REFUSED.test(w)),
+    `expected a work-tree refusal warning, got: ${JSON.stringify(warnings)}`);
+  assert.ok(!warnings.some(w => FAILED.test(w)),
+    `cc staged first and refused afterwards: ${JSON.stringify(warnings)}`);
+
+  // The foreign tree itself is untouched.
+  assert.equal(await fs.readFile(path.join(foreign, 'tracked.txt'), 'utf8'), 'committed\n');
+  assert.equal(await fs.readFile(path.join(foreign, 'untracked.txt'), 'utf8'), 'not ready yet\n');
 });
 
 test('a freshly created project takes a worktree immediately, branched off the scaffold commit', async () => {
