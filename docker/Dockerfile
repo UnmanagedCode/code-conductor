@@ -6,13 +6,29 @@
 # requires GLIBC 2.39; trixie ships 2.41, bookworm only 2.36. Override via
 # the BASE_IMAGE build arg (CC_BASE_IMAGE in .env) — an older base is fine
 # EXCEPT that proxy build fails there; the base must provide Node >= 24
-# (cc's engines requirement).
+# (cc's engines requirement). Second suite caveat: the docker-cli package
+# exists from trixie onward only, so on a pre-trixie base CC_WITH_DOCKER=1
+# takes the docker.io fallback arm below and costs ~255 MB instead of ~30 MB.
 ARG BASE_IMAGE=node:24-trixie
 FROM ${BASE_IMAGE}
 
 # The claude CLI is needed at session-spawn time; install it into the image so
 # containers don't have to.
 RUN npm install -g @anthropic-ai/claude-code
+
+# ── The account the container runs as (compose's `user:`) ────────────────
+ARG USER_NAME=node
+ARG USER_UID=1000
+ARG USER_GID=1000
+# sudo is unconditional: cc's Systems feature needs `sudo -n -E`, and the
+# preflight probes in src/systems/fuse/preflight.ts are what turn a missing
+# rule into a named refusal instead of a dead worker.
+RUN apt-get update \
+      && apt-get install -y --no-install-recommends sudo \
+      && rm -rf /var/lib/apt/lists/*
+# Must follow sudo: the script runs visudo.
+COPY setup-user.sh /tmp/setup-user.sh
+RUN sh /tmp/setup-user.sh && rm /tmp/setup-user.sh
 
 # WORKDIR is the PROJECTS ROOT, not the cc checkout, so `docker exec` /
 # `docker compose exec` land in the projects dir by default. The entrypoint
@@ -25,8 +41,29 @@ WORKDIR /workspaces/projects
 # at container startup; change the flags and rebuild (--build --pull).
 
 ARG WITH_DOCKER=0
+# docker-cli (client only, no daemon) exists from Debian trixie onward. On
+# bookworm/bullseye there is no such package and the client ships inside
+# docker.io — which on trixie only *Recommends* docker-cli, so the fallback
+# arm must NOT use --no-install-recommends or it installs a daemon and no
+# client. The arm is chosen by package AVAILABILITY, not by install failure:
+# a transient apt error must fail the build, not silently select the daemon.
 RUN if [ "$WITH_DOCKER" = "1" ]; then apt-get update \
-      && apt-get install -y --no-install-recommends docker.io \
+      && if apt-cache show docker-cli 2>/dev/null | grep -q '^Package: docker-cli'; then \
+           apt-get install -y --no-install-recommends docker-cli; \
+         else \
+           apt-get install -y docker.io; \
+         fi \
+      && rm -rf /var/lib/apt/lists/*; fi
+
+ARG WITH_SYSTEMS=0
+# The package set cc's Systems feature needs; src/systems/fuse/preflight.ts is
+# the authority for what must be present. gcc, libc6-dev, util-linux, mount,
+# coreutils, mawk and sed are already on node:24-trixie (apt no-ops them) and
+# are named so a CC_BASE_IMAGE / CC_BASE_IMAGE_FILE override still yields an
+# image that satisfies preflight.
+RUN if [ "$WITH_SYSTEMS" = "1" ]; then apt-get update \
+      && apt-get install -y --no-install-recommends \
+         fuse3 libfuse3-dev pkg-config gcc libc6-dev util-linux mount coreutils mawk sed \
       && rm -rf /var/lib/apt/lists/*; fi
 
 ARG WITH_CLOUDFLARED=0
