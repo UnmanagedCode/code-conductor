@@ -113,6 +113,13 @@ describe('commit history for a worktree on a system', () => {
     assert.equal(r.body.commitMessage, 'worktree commit');
     assert.deepEqual(r.body.files.map(f => f.path), ['feature.js']);
     assert.equal(r.body.files[0].status, 'added');
+
+    // The discriminator, since the target cannot be one: an unknown worktree is
+    // refused, so the name reaching this route is RESOLVED, not ignored.
+    const unknown = await api(baseUrl, 'GET',
+      `/api/projects/app/worktrees/app_worktree_nope/commits/${sha}/diff`);
+    assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+    assert.equal(unknown.body.error, "worktree 'app_worktree_nope' not found under project 'app'");
   });
 
   // PINS: the "Working tree" row of that list resolves on the system too.

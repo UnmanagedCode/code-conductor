@@ -1,10 +1,18 @@
-// Render test for the #commits list (public/commits.js).
+// Render test for the #commits view (public/commits.js).
 //
 // Drives the exported renderCommitList(listEl, data, opts) directly against a
 // mounted list element — no network stub. Covers the ahead/already-merged
 // partition, which is driven by each commit's own `ahead` flag (the set is not
 // a prefix of the window — see getProjectCommits), and the divider that names
-// the band below it.
+// the band below it. The tests at the foot drive the INSTALLED view instead —
+// installCommits + open(project, worktree?) against a fetch stub — so the
+// whole chain from open() to the request URL is pinned, not just the renderer.
+//
+// COVERAGE LIMIT: `public/app.js` is outside this harness's reach — no test
+// imports it, so the wiring there from `sidebar.onShowCommits` into
+// `commits.open(project, worktree)` is unpinned. Both halves it joins ARE
+// pinned: the sidebar button's arguments in tests/sidebar.test.mjs, and open()'s
+// handling of them here. Closing it needs an app.js harness, which no suite has.
 //
 // Same happy-dom harness style as tests/costs-view.test.mjs.
 //
@@ -73,6 +81,37 @@ function nonPrefixPayload() {
       commit('m1', [], false),
     ],
   };
+}
+
+// The whole view, not just the list renderer: the DOM installHashView and
+// loadCommits touch, plus a fetch stub that records what was actually asked for.
+async function setupView() {
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.Element = window.Element;
+  globalThis.Node = window.Node;
+  globalThis.history = window.history;
+  window.document.body.innerHTML = `
+    <div id="main"></div>
+    <section id="commits-view" hidden>
+      <button id="commits-back"></button>
+      <div id="commits-title"></div>
+      <div id="commits-stats"></div>
+      <div id="commits-list"></div>
+    </section>
+    <section id="review-view" hidden></section>`;
+
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return { ok: true, json: async () => ({
+      project: 'demo', branch: 'code-conductor/feature', truncated: false, limit: 100,
+      hasUncommitted: false, aheadCount: 0, aheadOf: null, commits: [],
+    }) };
+  };
+  return { window, requested };
 }
 
 test('ahead divider is inserted above the first already-merged row', async () => {
@@ -288,5 +327,59 @@ test('without an apiBase the rows fall back to the project-scoped spelling', asy
   assert.deepEqual(opened, [
     '/api/projects/de%20mo/commits/uncommitted/diff',
     `/api/projects/de%20mo/commits/${sha('a')}/diff`,
+  ]);
+});
+
+// PINS: the seam between `commits.open(project, worktree)` and the request —
+// the pair must survive installHashView's dispatch into `onShow` AND
+// loadCommits' base construction. Asserting BOTH arms is what gives it teeth:
+// a chain that drops the worktree anywhere along it collapses the two arms onto
+// the same project-scoped URL, which is the parent's history shown under a
+// worktree's name.
+test('open(project, worktree) fetches the worktree-scoped list, open(project) the project one', async () => {
+  const { requested } = await setupView();
+  const { installCommits } = await import('../public/commits.js');
+  const commits = installCommits({});
+
+  commits.open('demo', 'demo_worktree_feature');
+  await new Promise(r => setTimeout(r, 0));
+  commits.close();
+
+  commits.open('demo');
+  await new Promise(r => setTimeout(r, 0));
+  commits.close();
+
+  assert.deepEqual(requested, [
+    '/api/projects/demo/worktrees/demo_worktree_feature/commits',
+    '/api/projects/demo/commits',
+  ]);
+});
+
+// PINS: the rows of a worktree-opened view build their diff URLs on the base the
+// view was opened with — the request URL alone would not catch a view that
+// fetched the worktree list and then handed out parent-scoped row URLs.
+test('a worktree-opened view hands its rows worktree-scoped diff URLs', async () => {
+  const { requested } = await setupView();
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return { ok: true, json: async () => prefixPayload({ hasUncommitted: true }) };
+  };
+  const { installCommits } = await import('../public/commits.js');
+  const commits = installCommits({});
+  const opened = [];
+  commits.onOpenCommit = (project, c) => opened.push([project, c.diffUrl]);
+
+  commits.open('demo', 'demo_worktree_feature');
+  await new Promise(r => setTimeout(r, 0));
+
+  const listEl = document.getElementById('commits-list');
+  listEl.querySelector('.commit-row.uncommitted').click();
+  listEl.querySelectorAll('.commit-row:not(.uncommitted)')[0].click();
+  commits.close();
+
+  const base = '/api/projects/demo/worktrees/demo_worktree_feature';
+  assert.deepEqual(opened, [
+    ['demo', `${base}/commits/uncommitted/diff`],
+    ['demo', `${base}/commits/${sha('a')}/diff`],
   ]);
 });
