@@ -118,6 +118,71 @@ test('P2 _doCreate refuses a resume over that same duplicate and the reclaim kil
     'and the corpse is still there too — a refused create reclaims nothing at all');
 });
 
+test('P4 the guard\'s 409 names WHICH window refused — all three branches, distinctly', async () => {
+  // The guard builds its message from a three-way ternary: a live instance names
+  // its id, a held `_resumingPublicIds` claim says a resume is in flight, and a
+  // relaunch window says a relaunch is. The third branch exists so those last two
+  // cannot be conflated — they send the reader to DIFFERENT remedies (wait for the
+  // other resumer to settle, vs. wait out a prune/rewind/respawn on this instance).
+  // Swapping them is invisible to every other test here, so each branch is pinned
+  // on both polarities: the wording it must have AND the wordings it must not.
+  //
+  // The throw sits BEFORE _doCreate's `try`, so its `finally` never runs on this
+  // path and a claim planted here survives the call — which is what lets the
+  // claim-only case be built at all.
+  const msgOf = async (im, sid) => {
+    const e = await im._doCreate({ resume: sid, project: 'nope' }).then(
+      () => assert.fail('expected the guard to refuse'), (err) => err);
+    assert.equal(e.statusCode, 409, `expected a 409 from the guard, got: ${e.stack}`);
+    return e.message;
+  };
+
+  // (a) CLAIM ONLY — no instance in byId at all, so isSessionLive is true purely
+  //     from the claim and liveForSession is null.
+  {
+    const im = new InstanceManager();
+    const sid = 'sid-claim-only';
+    im._resumingPublicIds.add(sid);
+    assert.equal(im.liveForSession(sid), null, 'premise: nothing proc-attached — not the live branch');
+    assert.deepEqual(im.idsForSession(sid), [], 'premise: no instance at all — not the relaunch branch');
+    const msg = await msgOf(im, sid);
+    assert.match(msg, /a resume is already in flight/,
+      'a claim-only refusal must say a RESUME holds the session — the remedy is to wait for that resume');
+    assert.doesNotMatch(msg, /a relaunch is in flight/,
+      'and must not report a relaunch: that sends the reader to the wrong instance entirely');
+  }
+
+  // (b) RELAUNCH WINDOW ONLY — registered, proc null, no claim held.
+  {
+    const im = new InstanceManager();
+    const sid = 'sid-relaunch-only';
+    const inst = stubInstance({ id: 'i-relaunch', sessionId: sid, proc: null });
+    inst._relaunching = true;
+    im.byId.set(inst.id, inst);
+    assert.equal(im.liveForSession(sid), null, 'premise: proc null — not the live branch');
+    assert.equal(im._resumingPublicIds.has(sid), false, 'premise: no claim — not the resume branch');
+    const msg = await msgOf(im, sid);
+    assert.match(msg, /a relaunch is in flight/,
+      'a relaunch-window refusal must say RELAUNCH — the remedy is to wait out the prune/rewind/respawn');
+    assert.doesNotMatch(msg, /a resume is already in flight/,
+      'and must not report a resume: there is no other resumer to wait for');
+  }
+
+  // (c) LIVE — names the instance's own id, and neither in-flight wording. Pinned
+  //     against an id that shares no substring with either message, so this cannot
+  //     pass on a coincidence the way a stub named `live` matching /live/ would.
+  {
+    const im = new InstanceManager();
+    const sid = 'sid-live-branch';
+    im.byId.set('9f3c71aa-dead-beef', stubInstance({ id: '9f3c71aa-dead-beef', sessionId: sid, proc: {} }));
+    const msg = await msgOf(im, sid);
+    assert.match(msg, /\(9f3c71aa…\)/,
+      'a live refusal must name the instance holding the session, truncated to 8 chars');
+    assert.doesNotMatch(msg, /in flight/,
+      'and must report neither in-flight wording: nothing is coming up, something already is up');
+  }
+});
+
 // ───────────────────── the reclaim, against a real server ──────────────────
 
 describe('resuming a session retires the in-memory instances it supersedes', () => {
@@ -353,22 +418,48 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
     } finally { instances.remove = orig; }
   });
 
-  test('F1 the reverse order: a resume during an in-flight respawn is refused 409', async () => {
+  test('F1 the reverse order: a resume inside respawn\'s relaunch WINDOW — proc still null — is refused 409', async () => {
     // respawn() sets `_relaunching = true` with NO await between it and the
     // `if (inst.proc)` check, so the widened isSessionLive guard sees the relaunch
     // and refuses before the reclaim can be reached at all. This is the half that
     // needs no new guard — it pins that the synchronous prefix stays synchronous.
+    //
+    // launch() IS GATED, and that is what makes the test measure its own name.
+    // launch() is what attaches the new proc; ungated, the relaunch can win the
+    // race and the 409 then arrives via isSessionLive's `proc != null` disjunct
+    // instead — so mutants that drop the RELAUNCH disjunct (or revert the guard to
+    // liveForSession) left the ungated form green, passing for a mechanism it was
+    // not exercising. Holding launch() keeps proc null across the whole check, so
+    // a 409 here can only come from `_relaunching`.
     const { project, sessionId, oldId } = await settledHusk();
+    const inst = instances.get(oldId);
+    const realLaunch = inst.launch.bind(inst);
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    inst.launch = async (opts) => { await gate; return realLaunch(opts); };
+
     const relaunch = instances.respawn(oldId);           // NOT awaited
     try {
-      assert.equal(instances.get(oldId).relaunching, true,
+      assert.equal(inst.relaunching, true,
         'premise: respawn marked the relaunch window before yielding');
+      assert.equal(inst.proc, null,
+        'premise: and with NO proc attached — the proc disjunct is unavailable, so a 409 below '
+        + 'can only be the relaunch window');
+      assert.equal(instances.liveForSession(sessionId), null,
+        'premise, from the other side: nothing proc-attached answers to this session');
       await assert.rejects(
         async () => instances.create({ project, resume: sessionId }),
-        (e) => { assert.equal(e.statusCode, 409, e.stack); return true; },
+        (e) => {
+          assert.equal(e.statusCode, 409, e.stack);
+          assert.match(e.message, /a relaunch is in flight/,
+            'and the refusal names the RELAUNCH window — the disjunct actually under test');
+          return true;
+        },
       );
     } finally {
+      release();
       const revived = await relaunch;
+      delete inst.launch;
       assert.equal(revived.id, oldId, 'the respawn itself still succeeded — it was never the loser');
     }
     assert.deepEqual(instances.idsForSession(sessionId), [oldId],
