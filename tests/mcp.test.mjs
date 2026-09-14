@@ -1310,6 +1310,22 @@ test('list_projects flags a repo with no commits and stays silent on a normal on
     'a repo with commits must render exactly as before');
 });
 
+test('create_project leaves no no-commits-yet flag on the new project', async () => {
+  // The tool's own description used to teach a workaround for an unborn HEAD
+  // (spawn the first worker WITHOUT a worktree). Creation commits now, so the
+  // conductor's very next move can be a worktree.
+  const made = unwrap(await callTool(baseUrl, 'create_project', { name: 'made' }));
+  assert.equal(made.name, 'made');
+  // An unborn repo in the SAME render, so the absence below cannot be satisfied
+  // by a renderer that stopped emitting the flag at all.
+  await makeUnbornRepo(projectsRoot, 'fresh');
+
+  const list = text(await callTool(baseUrl, 'list_projects', {}));
+  assert.ok(!/! no commits yet/.test(projectBlock(list, 'made')),
+    `a created project must not need a first commit: ${projectBlock(list, 'made')}`);
+  assert.match(projectBlock(list, 'fresh'), /! no commits yet/);
+});
+
 test('list_projects never reports a non-repo project as having an unborn HEAD', async () => {
   // hasUnbornHead() cannot tell "no repo" from "no commits" — `rev-parse
   // --verify --quiet HEAD` exits non-zero for both — so the isGitRepo guard in

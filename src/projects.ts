@@ -952,7 +952,80 @@ export async function createProject(
   if (conventionsDoc != null) {
     await system.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
   }
+  await commitScaffold(system, full, runGit);
   return { name, path: full, system: system.id, remoteId: system.remoteId };
+}
+
+// The identity a scaffold commit falls back to when the repo has none of its
+// own. The email is under RFC 2606's reserved `.invalid` TLD, so it is
+// unroutable by construction and can never be mistaken for a real mailbox.
+// Not exported: tests assert the literals a user reads in `git log`, which an
+// imported constant would not pin.
+const SCAFFOLD_AUTHOR_NAME = 'code-conductor';
+const SCAFFOLD_AUTHOR_EMAIL = 'code-conductor@invalid';
+
+// Subject reads correctly in `git log --oneline`; the body names the tool so an
+// unfamiliar author in the history is self-explaining. It does NOT enumerate the
+// files — `git show` already does, and a list would go stale the moment the
+// scaffold set changes.
+const SCAFFOLD_COMMIT_MESSAGE =
+  'Initial commit\n\nScaffolded by code-conductor when the project was created.\n';
+
+// Close creation with a commit of exactly what creation wrote, so a brand-new
+// project is worktree-ready immediately (worktrees branch off HEAD, and
+// createWorktree refuses an unborn one).
+//
+// NON-FATAL BY DESIGN. By the time this runs the directory, the store record,
+// the repo and every seed file exist and are correct, so throwing would surface
+// a 500 over a project that is already fully on disk — the half-created state
+// this ordering exists to avoid. The observable for "no commit" already exists
+// and needs no second channel: `unbornHead` on the project listings.
+// `deliverAdoptedConventions` warns-and-continues for the same reason.
+//
+// `runGit` is passed in rather than imported: worktrees.ts statically imports
+// this module, so createProject reaches it through a dynamic import and there is
+// no reason for a second one here.
+async function commitScaffold(
+  system: System, full: string, runGit: typeof import('./worktrees.ts').runGit,
+): Promise<void> {
+  // The try must wrap the CALLS, not just their `code`: runGit throws
+  // httpError(504 GIT_TIMED_OUT) / httpError(502 GIT_DID_NOT_RUN) before it
+  // ever returns a result.
+  try {
+    // PER FIELD, and probed rather than defaulted: git has no "use this only if
+    // unset" config precedence — `-c` always wins — so the only way to leave a
+    // configured identity alone is to ask first. This is the user's repo and
+    // their history; overriding a name they set would be gratuitous.
+    const idArgs: string[] = [];
+    const name = await runGit(system, full, ['config', '--get', 'user.name']);
+    if (name.code !== 0 || !name.stdout.trim()) {
+      idArgs.push('-c', `user.name=${SCAFFOLD_AUTHOR_NAME}`);
+    }
+    const email = await runGit(system, full, ['config', '--get', 'user.email']);
+    if (email.code !== 0 || !email.stdout.trim()) {
+      idArgs.push('-c', `user.email=${SCAFFOLD_AUTHOR_EMAIL}`);
+    }
+    // `-c` PAIRS IN THE ARGV, never a persisted config and never an env frame:
+    // the fallback is this one command's and must outlive nothing. (A frame
+    // `env` REPLACES the far side's environment — see providerSystem.ts — and
+    // runGit takes no env parameter anyway. src/gitDiff.ts is the precedent for
+    // leading `-c` in a runGit argv, and runGit's `sub` extraction already skips
+    // them, so a refusal still names `commit`.)
+    //
+    // `add -A` with NO PATHSPEC, deliberately: the commit tracks what creation
+    // actually wrote, so it neither goes stale when the scaffold set changes nor
+    // fails on a CONVENTIONS.md the caller never passed. No `--no-verify` and no
+    // gpgsign override either — a user's hooks and signing key are theirs, and a
+    // failure from one degrades below exactly like any other.
+    const add = await runGit(system, full, ['add', '-A']);
+    const r = add.code === 0
+      ? await runGit(system, full, [...idArgs, 'commit', '-q', '-m', SCAFFOLD_COMMIT_MESSAGE])
+      : add;
+    if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim());
+  } catch (e) {
+    console.warn(`createProject: initial commit failed in ${full} — the project was created and its `
+      + 'HEAD is unborn, so its first worktree needs a commit first: ' + errMsg(e));
+  }
 }
 
 // The (system, remoteId, systemPath) triple a creation path was given, or null

@@ -304,8 +304,11 @@ test('an IN-ROOT project reaches its tree only through the System, from create t
   }, { tree });
   assert.match(await fsp.readFile(path.join(tree, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
 
-  // Give it a commit so the git surface has something to report. Test-side
-  // setup, so it runs outside any watch.
+  // A second commit, carrying the README.md `projectRead` reads below.
+  // createProject already made the first one (its scaffold), so the count this
+  // file's git surface reports is two. Test-side setup, so it runs outside any
+  // watch — and the identity config is still needed, the run-wide pinned
+  // gitconfig having none.
   await fsp.writeFile(path.join(tree, 'README.md'), '# in-root\n');
   await git(tree, 'config', 'user.email', 'test@example.com');
   await git(tree, 'config', 'user.name', 'test');
@@ -329,7 +332,7 @@ test('an IN-ROOT project reaches its tree only through the System, from create t
   }, { tree, expectSystemOps: false });
   await drive('getProjectCommits (in-root)', async () => {
     const r = await mods.worktrees.getProjectCommits(name);
-    assert.equal(r.commits.length, 1);
+    assert.equal(r.commits.length, 2);
   }, { tree });
   await drive('projectRead (in-root)', async () => {
     const r = await mods.handlers.projectRead({ project: name, relativePath: 'README.md' });
