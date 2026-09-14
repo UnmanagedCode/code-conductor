@@ -503,3 +503,91 @@ test("the fixture's default git ordering really does violate topology", async ()
     'fixture no longer diverges under git\'s default ordering — the ordering test '
     + 'above would now pass vacuously');
 });
+
+// ── Per-commit ahead flag ───────────────────────────────────────────────────
+// The ahead set is NOT a prefix of the window. --topo-order guarantees only
+// that a parent follows its children; among commits that are neither ancestor
+// nor descendant of one another git falls back to committer date, and ahead vs
+// already-merged commits across a merge boundary are exactly that. Merging a
+// moved-on base branch back into your own branch produces it.
+//
+//   m1 ← m2 (main)          M merges main into the worktree branch, so the
+//    ↑         ↖            emitted order is M, m2, w2, w1, m1 and the ahead
+//   w1 ← w2 ← M (branch)    set {M, w2, w1} lands at indices 0, 2, 3.
+async function makeNonPrefixWorktree() {
+  const parentPath = path.join(projectsRoot, 'nonprefix');
+  await fs.mkdir(parentPath, { recursive: true });
+  await git(parentPath, 'init', '-q', '-b', 'main');
+  await git(parentPath, 'config', 'user.email', 'test@example.com');
+  await git(parentPath, 'config', 'user.name', 'test');
+  await git(parentPath, 'config', 'commit.gpgsign', 'false');
+  const commit = async (cwd, msg, day) => {
+    await fs.writeFile(path.join(cwd, `${msg}.txt`), `${msg}\n`);
+    await git(cwd, 'add', '.');
+    await gitEnv(cwd, d(`2026-01-0${day}T00:00:00Z`, `2026-01-0${day}T00:00:00Z`),
+      'commit', '-q', '-m', msg);
+  };
+
+  await commit(parentPath, 'm1', 1);
+  const wtName = 'nonprefix_worktree_np';
+  const wtPath = path.join(projectsRoot, wtName);
+  const wtBranch = 'code-conductor/np';
+  const { stdout: baseShaOut } = await git(parentPath, 'rev-parse', 'HEAD');
+  await git(parentPath, 'worktree', 'add', '-q', wtPath, '-b', wtBranch, baseShaOut.trim());
+
+  await commit(wtPath, 'w1', 2);
+  await commit(wtPath, 'w2', 3);
+  // m2 is committed AFTER w2, so git's date tie-break inside --topo-order pops
+  // it before the branch's own line — which is what breaks contiguity.
+  await commit(parentPath, 'm2', 4);
+  await gitEnv(wtPath, d('2026-01-05T00:00:00Z', '2026-01-05T00:00:00Z'),
+    'merge', '--no-ff', '--no-edit', '-m', 'M', 'main');
+
+  const metaDir = path.join(
+    projectsRoot, '.code-conductor', 'projects', 'nonprefix', 'worktrees', wtName,
+  );
+  await fs.mkdir(metaDir, { recursive: true });
+  await fs.writeFile(path.join(metaDir, 'worktree.json'), JSON.stringify({
+    parentProject: 'nonprefix', parentPath, worktreeName: wtName, worktreePath: wtPath,
+    branch: wtBranch, baseBranch: 'main', baseSha: baseShaOut.trim(),
+    createdAt: new Date().toISOString(),
+  }));
+  return wtName;
+}
+
+test('each commit carries its own ahead flag, even when the ahead set is not a prefix', async () => {
+  const wtName = await makeNonPrefixWorktree();
+
+  const r = await api(baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
+  assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  const commits = r.body.commits;
+  assert.equal(r.body.aheadOf, 'main');
+  assert.equal(r.body.aheadCount, 3, 'M, w2, w1 are ahead of main');
+
+  // The invariant, stated per commit and independent of emission order.
+  const flagOf = new Map(commits.map(c => [c.subject, c.ahead]));
+  assert.deepEqual(
+    ['M', 'w2', 'w1', 'm2', 'm1'].map(s => `${s}:${flagOf.get(s)}`),
+    ['M:true', 'w2:true', 'w1:true', 'm2:false', 'm1:false'],
+  );
+  // The count and the flags answer about the SAME base, so they cannot disagree.
+  assert.equal(commits.filter(c => c.ahead).length, r.body.aheadCount);
+
+  // Non-vacuity control: this fixture must actually emit a non-ahead commit
+  // ABOVE an ahead one, or it would prove nothing an index-based partition
+  // wouldn't also satisfy.
+  const flags = commits.map(c => c.ahead);
+  assert.ok(flags.indexOf(false) < flags.lastIndexOf(true),
+    `fixture is no longer non-prefix: ${JSON.stringify(commits.map(c => `${c.subject}:${c.ahead}`))}`);
+});
+
+test('commits carry ahead:false throughout when there is no base to compare against', async () => {
+  // A plain project with no upstream and no worktree metadata: aheadOf is null,
+  // so nothing is claimed to be ahead of anything.
+  await makeRealRepo('nobase');
+  const r = await api(baseUrl, 'GET', '/api/projects/nobase/commits');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.aheadOf, null);
+  assert.equal(r.body.aheadCount, null);
+  assert.deepEqual(r.body.commits.map(c => c.ahead), [false]);
+});
