@@ -13,9 +13,8 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { httpError } from './httpError.ts';
 import {
-  projectsRoot, getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot, listProjects,
+  projectsRoot, getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot,
   EXTERNAL_DIRNAME,
-  type ProjectInfo,
 } from './projects.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import {
@@ -695,6 +694,26 @@ export async function getWorktree(projectName: string, worktreeName: string): Pr
   const all = await listWorktrees(projectName);
   const name = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName));
   return all.find(w => w.worktreeName === name) ?? null;
+}
+
+// Resolve { project, worktree? } to an absolute cwd, throwing with a
+// useful message if either is missing.
+// THE ONE project-or-worktree resolver: every `project_*` MCP tool, the REST
+// diff surface and the REST commits family resolve their cwd here, which makes
+// it the single place they pick up the System that cwd lives on — a worktree is
+// on the same system as its parent project by construction, and for a project
+// on a system the worktree's tree is the ONLY thing that can name it (nothing
+// under cc's projects root carries that name).
+export async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string; system: System }> {
+  const proj = await getProject(projectName);
+  if (worktreeName) {
+    const wt = await getWorktree(projectName, worktreeName);
+    // 404, not a bare Error: on REST this is an addressing miss like any other
+    // unknown name, and MCP reads `.message` either way.
+    if (!wt) throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
+    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path, system: proj.system };
+  }
+  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path, system: proj.system };
 }
 
 // Every worktree that descends from this one — the whole subtree, DEEPEST FIRST.
@@ -1383,26 +1402,6 @@ async function dropWorktreeStoreEntry(projectName: string, worktreeName: string)
 
 // Default / maximum number of commits returned by getProjectCommits.
 const COMMITS_DEFAULT_LIMIT = 100;
-
-// Scan the metadata store for a worktree whose worktreePath matches
-// the given absolute path. Returns the metadata object or null.
-// Metadata lives at: projectStoreDir(project)/worktrees/<worktreeName>/worktree.json
-// so we list subdirectories under the per-project 'worktrees/' dir.
-async function findWorktreeMetaForPath(targetPath: string): Promise<WorktreeMeta | null> {
-  let projects: ProjectInfo[];
-  try { projects = await listProjects(); } catch { return null; }
-  for (const proj of projects) {
-    const wtListDir = path.join(projectStoreDir(proj.name), 'worktrees');
-    let entries: import('node:fs').Dirent[];
-    try { entries = await fs.readdir(wtListDir, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const meta = await readMeta(proj.name, entry.name);
-      if (meta?.worktreePath === targetPath) return meta;
-    }
-  }
-  return null;
-}
 const COMMITS_MAX_LIMIT = 500;
 
 interface CommitRow {
@@ -1422,9 +1421,11 @@ interface CommitRow {
 
 // Return the commit history of a project's current branch (HEAD), newest first, in
 // TOPOLOGICAL order (a parent never precedes any of its children).
-// Validates the project via getProject (throws 404 if not found). Caps the log
-// at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`) and sets `truncated` when more commits exist.
-// Returns { project, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
+// `worktree` names one of the project's worktrees to read instead of the project's
+// own tree; resolveProjectCwd validates both (404 for an unknown project or worktree).
+// Caps the log at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`)
+// and sets `truncated` when more commits exist.
+// Returns { project, worktreeName?, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
 // where each commit is { sha, shortSha, subject, author, relativeDate, isoDate, parents },
 // and `parents` is the array of parent SHAs (empty for the root, ≥2 for a merge) — the
 // frontend uses it to compute the branch/merge graph lanes.
@@ -1435,9 +1436,13 @@ interface CommitRow {
 // `ahead` says whether IT is one of them.
 export async function getProjectCommits(
   projectName: string,
-  { limit = COMMITS_DEFAULT_LIMIT }: { limit?: number } = {},
+  { limit = COMMITS_DEFAULT_LIMIT, worktree }: { limit?: number; worktree?: string | null } = {},
 ): Promise<{
   project: string;
+  // The canonical dir name of the worktree that was read, echoed only when one
+  // was named — as getWorktreeDiff already does, so a caller's bare-slug
+  // spelling never comes back as the answer.
+  worktreeName?: string;
   branch: string | null;
   commits: CommitRow[];
   truncated: boolean;
@@ -1451,16 +1456,19 @@ export async function getProjectCommits(
   aheadCount: number | null;
   aheadOf: string | null;
 }> {
-  const proj = await getProject(projectName);
+  const { cwd, worktreeMeta, system } = await resolveProjectCwd(projectName, worktree);
+  // Spread into every return so the echo cannot drift between the early exits
+  // and the answer.
+  const named = worktreeMeta ? { worktreeName: worktreeMeta.worktreeName } : {};
   const n = Number(limit);
   const cap = Math.max(1, Math.min(COMMITS_MAX_LIMIT, Number.isFinite(n) ? Math.floor(n) : COMMITS_DEFAULT_LIMIT));
-  if (!(await isGitRepo(proj.system, proj.path))) {
+  if (!(await isGitRepo(system, cwd))) {
     return {
-      project: projectName, branch: null, commits: [], truncated: false, limit: cap,
+      project: projectName, ...named, branch: null, commits: [], truncated: false, limit: cap,
       hasUncommitted: false, aheadCount: null, aheadOf: null,
     };
   }
-  const head = await runGit(proj.system, proj.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const head = await runGit(system, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = head.code === 0 ? (head.stdout.trim() || null) : null;
 
   // Detect uncommitted changes (staged or unstaged). A status that did NOT
@@ -1468,7 +1476,7 @@ export async function getProjectCommits(
   // changes" is a positive claim about the tree, and the realistic trigger is
   // runGit's own output fence firing on a pathological working tree — precisely
   // the tree least safe to describe as clean.
-  const statusR = await runGit(proj.system, proj.path, ['status', '--porcelain']);
+  const statusR = await runGit(system, cwd, ['status', '--porcelain']);
   const hasUncommitted = statusR.code === 0
     ? (statusR.stdout || '').split('\n').some(l => l.trim().length > 0)
     : undefined;
@@ -1479,14 +1487,13 @@ export async function getProjectCommits(
   // Fall back to worktree base-branch metadata (orchestrator-managed worktrees).
   let aheadCount: number | null = null;
   let aheadOf: string | null = null;
-  const upstreamStatus = await getProjectUpstreamStatus(proj.system, proj.path);
+  const upstreamStatus = await getProjectUpstreamStatus(system, cwd);
   if (upstreamStatus.ahead !== null) {
     aheadCount = upstreamStatus.ahead;
     aheadOf = upstreamStatus.upstream;
   } else {
-    const worktreeMeta = await findWorktreeMetaForPath(proj.path);
     if (worktreeMeta) {
-      const mergeStatus = await getWorktreeMergeStatus(proj.system, worktreeMeta);
+      const mergeStatus = await getWorktreeMergeStatus(system, worktreeMeta);
       if (mergeStatus.ahead !== null) {
         aheadCount = mergeStatus.ahead;
         aheadOf = worktreeMeta.baseBranch;
@@ -1519,7 +1526,7 @@ export async function getProjectCommits(
   // No base (aheadOf === null) means nothing is claimed: every row false.
   const aheadSet = new Set<string>();
   if (aheadOf) {
-    const rl = await runGit(proj.system, proj.path, ['rev-list', 'HEAD', `^${aheadOf}`]);
+    const rl = await runGit(system, cwd, ['rev-list', 'HEAD', `^${aheadOf}`]);
     if (rl.code === 0) {
       for (const line of rl.stdout.split('\n')) {
         const sha = line.trim();
@@ -1541,7 +1548,7 @@ export async function getProjectCommits(
   // sort key goes constant, and the emitted order degenerates — branch points
   // then attach to the wrong rows, and lanes end abruptly where the rail gives
   // up on a parent already drawn above (computeGraph's `seen` guard).
-  const r = await runGit(proj.system, proj.path, [
+  const r = await runGit(system, cwd, [
     'log', '--topo-order', `--max-count=${cap + 1}`,
     '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',
   ]);
@@ -1553,12 +1560,12 @@ export async function getProjectCommits(
     //
     // The discriminator is asked ONLY on this failure path, so the normal case
     // pays nothing for it.
-    if (!(await hasUnbornHead(proj.system, proj.path))) {
+    if (!(await hasUnbornHead(system, cwd))) {
       throw httpError(502, `could not read the commit history of '${projectName}' on system `
-        + `'${proj.system.id}': git log exited ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim()}` : ''}`);
+        + `'${system.id}': git log exited ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim()}` : ''}`);
     }
     return {
-      project: projectName, branch, commits: [], truncated: false, limit: cap,
+      project: projectName, ...named, branch, commits: [], truncated: false, limit: cap,
       hasUncommitted, ...(hasUncommitted === undefined ? { uncommittedUnknown: true as const } : {}),
       aheadCount, aheadOf,
     };
@@ -1575,7 +1582,7 @@ export async function getProjectCommits(
   const truncated = rows.length > cap;
   const commits = truncated ? rows.slice(0, cap) : rows;
   return {
-    project: projectName, branch, commits, truncated, limit: cap,
+    project: projectName, ...named, branch, commits, truncated, limit: cap,
     hasUncommitted, ...(hasUncommitted === undefined ? { uncommittedUnknown: true as const } : {}),
     aheadCount, aheadOf,
   };

@@ -571,22 +571,22 @@ const commits = installCommits({ onClose: () => {
   const inst = state.instances.find(i => i.id === state.activeId);
   writeSessionAnchor(inst?.sessionId || null);
 } });
-sidebar.onShowCommits = (project) => {
+sidebar.onShowCommits = (project, worktree) => {
   closeSidebarOnMobile();
   // commits opens via pushState (no hashchange — unlike review's hash
   // assignment), so the plugin view must be closed explicitly or the two
   // full-page sections stack. Open commits FIRST so the hash already reads
   // '#commits' by the time close() fires the switcher's re-sync — otherwise
   // sync() reads the still-stale '#plugin/...' hash and re-selects the plugin.
-  commits.open(project);
+  commits.open(project, worktree);
   pluginView.close();
 };
+// Every row hands out its own diffUrl (commits.js), so the (project, worktree)
+// spelling has exactly one home.
 commits.onOpenCommit = (project, c) => {
-  const url = c.diffUrl
-    ?? `/api/projects/${encodeURIComponent(project)}/commits/${encodeURIComponent(c.sha)}/diff`;
   review.open({
     title: c.sha ? `${c.shortSha} ${c.subject}` : c.subject,
-    url,
+    url: c.diffUrl,
   });
 };
 

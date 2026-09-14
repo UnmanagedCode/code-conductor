@@ -243,3 +243,50 @@ test('.commit-row keeps the box model ROW_TEXT_INSET is derived from', async () 
   assert.match(rule, /gap:\s*8px/);
   assert.match(rule, /padding:\s*8px 12px/);
 });
+
+// ── Worktree-scoped addressing ──────────────────────────────────────────────
+
+// PINS: every row's diff URL is built on the SAME base the list was fetched
+// from, so opening a commit (or the working tree) of a worktree stays on the
+// worktree-scoped spelling — the parent-scoped one cannot reach a worktree
+// whose tree is on a system.
+test('rows hand out diff URLs on the base the list was fetched from', async () => {
+  const listEl = await setup();
+  const { renderCommitList, commitsApiBase } = await import('../public/commits.js');
+
+  const apiBase = commitsApiBase('demo', 'demo_worktree_feature');
+  assert.equal(apiBase, '/api/projects/demo/worktrees/demo_worktree_feature');
+
+  const opened = [];
+  renderCommitList(listEl, prefixPayload({ hasUncommitted: true }), {
+    project: 'demo', apiBase, onOpenCommit: (project, c) => opened.push([project, c.diffUrl]),
+  });
+
+  listEl.querySelector('.commit-row.uncommitted').click();
+  listEl.querySelectorAll('.commit-row:not(.uncommitted)')[0].click();
+
+  assert.deepEqual(opened, [
+    ['demo', `${apiBase}/commits/uncommitted/diff`],
+    ['demo', `${apiBase}/commits/${sha('a')}/diff`],
+  ]);
+});
+
+// PINS: the default is the project-scoped spelling — a caller that names no
+// worktree gets the same URLs it always did.
+test('without an apiBase the rows fall back to the project-scoped spelling', async () => {
+  const listEl = await setup();
+  const { renderCommitList } = await import('../public/commits.js');
+
+  const opened = [];
+  renderCommitList(listEl, prefixPayload({ hasUncommitted: true }), {
+    project: 'de mo', onOpenCommit: (project, c) => opened.push(c.diffUrl),
+  });
+
+  listEl.querySelector('.commit-row.uncommitted').click();
+  listEl.querySelectorAll('.commit-row:not(.uncommitted)')[0].click();
+
+  assert.deepEqual(opened, [
+    '/api/projects/de%20mo/commits/uncommitted/diff',
+    `/api/projects/de%20mo/commits/${sha('a')}/diff`,
+  ]);
+});

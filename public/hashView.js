@@ -62,11 +62,13 @@ export function installHashView({
     onTeardown?.();
   }
 
-  function open(arg) {
+  // Rest args, not one: a view whose subject is a PAIR (commits: project +
+  // optional worktree) passes both through to onShow.
+  function open(...args) {
     if (guard && !guard()) return;
     navigate();
     show();
-    onShow?.(arg);
+    onShow?.(...args);
   }
 
   function close() {

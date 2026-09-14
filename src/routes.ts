@@ -921,6 +921,47 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     } catch (e) { next(e); }
   });
 
+  // The same three commit surfaces, addressed at one of the project's
+  // worktrees. Query params and response shapes are the project-scoped routes'
+  // above, with `:name` naming the PARENT project; the canonical worktree dir
+  // name is echoed back. A worktree unknown under that project is a 404.
+  // This is the only addressing form that reaches a worktree of a project on a
+  // system: its tree is beside the parent's ON that system, so no project name
+  // resolves to it.
+  r.get('/projects/:name/worktrees/:wt/commits', async (req, res, next) => {
+    try {
+      const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+      const result = await getProjectCommits(req.params.name, { limit, worktree: req.params.wt });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Registered before the :sha route so the literal "uncommitted" isn't
+  // treated as a SHA param — as the project-scoped pair already is.
+  r.get('/projects/:name/worktrees/:wt/commits/uncommitted/diff', async (req, res, next) => {
+    try {
+      const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
+      const filePath = typeof req.query.path === 'string' && req.query.path ? req.query.path : null;
+      const worktree = req.params.wt;
+      const result = filePath
+        ? await getProjectUncommittedFileDiff(req.params.name, filePath, { contextLines, worktree })
+        : await getProjectUncommittedDiff(req.params.name, { contextLines, worktree });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  r.get('/projects/:name/worktrees/:wt/commits/:sha/diff', async (req, res, next) => {
+    try {
+      const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
+      const filePath = typeof req.query.path === 'string' && req.query.path ? req.query.path : null;
+      const worktree = req.params.wt;
+      const result = filePath
+        ? await getCommitFileDiff(req.params.name, req.params.sha, filePath, { contextLines, worktree })
+        : await getCommitDiff(req.params.name, req.params.sha, { contextLines, worktree });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
   // Remove a worktree. Refuses if there's a live instance attached or
   // the worktree has uncommitted changes (unless ?force=1).
   r.delete('/projects/:name/worktrees/:wt', async (req, res, next) => {
