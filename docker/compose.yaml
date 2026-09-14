@@ -19,6 +19,7 @@ services:
         USER_NAME: ${CC_USER:-node}
         USER_UID:  ${CC_UID:-1000}
         USER_GID:  ${CC_GID:-1000}
+        WITH_SUDO:       ${CC_WITH_SUDO:-1}
         WITH_DOCKER:     ${CC_WITH_DOCKER:-0}
         WITH_SYSTEMS:    ${CC_WITH_SYSTEMS:-0}
         WITH_CLOUDFLARED: ${CC_WITH_CLOUDFLARED:-0}
