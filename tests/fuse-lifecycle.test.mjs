@@ -1384,26 +1384,32 @@ describe('the mount literals', () => {
       'CC_UNION_MARK_PATH is read with a default, or not read into mark_path at all');
   });
 
-  // 2c — THE BOOTSTRAP'S MARK ORDERING, PINNED AT THE LAYER THAT ENFORCES IT.
+  // 2c — THE BOOTSTRAP FIRES NO MARKING EVENT, PINNED AT THE LAYER THAT
+  // ENFORCES IT.
   //
-  // THE INVARIANT: the CLI's thread group makes NO union op before the marking
-  // event except its own interpreter load. That is what stops one path
-  // answering one way to a thread group's pre-mark ops and another way to its
-  // post-mark ones — measured, every pre-mark op `host` or `synth` and none
-  // resolving `project`, `fail` or `hide`.
+  // THE INVARIANT: the thread group that becomes the CLI reaches the union
+  // UNMARKED for the whole of `bootstrap.sh`'s chroot script and for setpriv
+  // and the backend launch command it execs. The marking event is the CLI's own
+  // `execve` of `$CC_UNION_MARK_PATH` and nothing earlier, so the shell, setpriv
+  // and the launcher resolve in `VIEW_HOST` — against the orchestrator, which is
+  // the machine they belong to. A mark statement anywhere in this script puts
+  // every one of them in `VIEW_CLI`, where a wide `mirrorRoot` puts each of
+  // their unpinned paths in the remote tier with no host fallback.
   //
   // THE ENFORCING LAYER FOR A SHELL SCRIPT'S STATEMENT ORDER IS THE SCRIPT
   // TEXT, so this is a source-text test and needs no sudo and no mount. It runs
-  // in plain `npm test`, which is where a reordering would otherwise go
+  // in plain `npm test`, which is where a re-added mark would otherwise go
   // unnoticed until the real gate.
   //
-  // Firing the mark HOST-SIDE, before the chroot exec, would empty the window
-  // entirely — and was ruled out because it would make dash's own pins
-  // load-bearing again. It would COST pins. So the ordering is what is pinned.
+  // THE `cd` IS NOT WHAT NEEDED THE MARK. Each component of the CLI's cwd is
+  // traversable to an unmarked caller — `policy_cwd_component` plus
+  // `resolve_class`'s `VIEW_HOST` overlay clause (policy.h), driven by
+  // `b-cwd-unmarked` in tests/fuse-union-policy.test.mjs.
   //
-  // DIES UNDER: moving the mark below the `cd`; inserting ANY command above it;
-  // deleting it.
-  test('2c: bootstrap.sh fires the marking event as its FIRST chroot statement, before the cd', async () => {
+  // DIES UNDER: re-adding any statement above the `cd`; a mark path reaching the
+  // script body at all; a positional-argument drift that makes `$2` something
+  // other than the cwd.
+  test('2c: bootstrap.sh fires NO marking event — the cd is the first chroot statement', async () => {
     const { readFile } = await import('node:fs/promises');
     const { fileURLToPath } = await import('node:url');
     const src = await readFile(
@@ -1418,25 +1424,62 @@ describe('the mount literals', () => {
     // Statements only: comments, blank lines and the leading indentation go.
     const stmts = body.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
     assert.ok(stmts.length >= 4, `the chroot script body was not parsed: ${JSON.stringify(stmts)}`);
-    // 1. THE MARK IS THE FIRST STATEMENT. A plain existence test, because the
-    //    daemon marks on RESOLUTION — a stat is the whole event.
-    assert.equal(stmts[0], '[ -e "$5" ] || :',
-      'the marking event is not the FIRST statement of the chroot script — every union op this '
-      + 'thread group makes before it is an UNMARKED op on the pid that becomes the CLI');
-    // 2. AND THE cd IS STRICTLY AFTER IT. Without the mark the first union op
-    //    this pid makes is the `cd` into the project tree, unmarked, and the
-    //    launch dies "cwd does not exist inside the chroot" before the CLI runs.
-    const cd = stmts.findIndex(l => l.startsWith('cd "$2"'));
-    assert.ok(cd > 0, `the chroot script no longer cds to the CLI's cwd: ${JSON.stringify(stmts)}`);
-    assert.ok(cd > 0 && stmts.indexOf(stmts[0]) === 0 && cd > stmts.indexOf(stmts[0]),
-      'the `cd` is not strictly after the marking event');
-    // 3. `$5` IS THE MARK PATH, positionally — the argument list is what makes
-    //    `[ -e "$5" ]` mean anything at all, and a reordering there would make
-    //    the mark stat probe some other path while still passing (1) and (2).
+    // 1. NO MARK PATH REACHES THE SCRIPT AT ALL — neither as a positional
+    //    argument nor by name. Asserted over the WHOLE body, comments included,
+    //    because a re-added stat is the mutant this exists to catch and a
+    //    commented-out one is a re-add waiting to happen.
+    assert.ok(!/\$\{?5\b/.test(body) && !body.includes('CC_FUSE_MARK_PATH'),
+      'the chroot script references a fifth positional argument or the mark path — the marking '
+      + 'event is the CLI\'s own execve and nothing in the bootstrap may pre-fire it: '
+      + JSON.stringify(body));
+    // 2. THE cd IS THE FIRST STATEMENT. Anything above it is one more unmarked
+    //    op on the pid that becomes the CLI — harmless today, but the slot a
+    //    re-added mark would occupy.
+    assert.ok(stmts[0].startsWith('cd "$2"'),
+      `the cd is not the FIRST statement of the chroot script: ${JSON.stringify(stmts)}`);
+    // 3. AND THE SHIFT MATCHES THE ARGUMENT COUNT. `shift 5` against four
+    //    leading arguments silently eats the CLI's own argv[0].
+    assert.ok(stmts.includes('shift 4'),
+      `the chroot script no longer shifts exactly its four leading arguments: ${JSON.stringify(stmts)}`);
+    // 4. THE POSITIONAL ARGUMENTS, EXACTLY — the argument list is what makes
+    //    `"$2"` mean the cwd, and a reordering there would still pass (2).
     const argv = src.slice(close + 1).split('\n')[0];
-    assert.match(argv, /^ sh "\$SETPRIV_BIN" "\$CC_FUSE_CWD" "\$CC_FUSE_UID" "\$CC_FUSE_GID" "\$CC_FUSE_MARK_PATH" "\$@"$/,
-      `the chroot script's positional arguments changed, so "$5" is no longer the mark path and `
-      + `"$2" no longer the cwd: ${argv}`);
+    assert.match(argv, /^ sh "\$SETPRIV_BIN" "\$CC_FUSE_CWD" "\$CC_FUSE_UID" "\$CC_FUSE_GID" "\$@"$/,
+      `the chroot script's positional arguments changed, so "$2" is no longer the cwd: ${argv}`);
+  });
+
+  // 2c-bis — THE MARK PATH STILL REACHES THE DAEMON, AND IT IS STILL THE CLI
+  // LAUNCHER.
+  //
+  // 2c removed the SHELL's positional copy of the mark path. The DAEMON's copy
+  // is a different channel — `CC_FUSE_MARK_PATH` in the worker env, which step 4
+  // renames to `CC_UNION_MARK_PATH` on the daemon's own command line, and
+  // without which `union.c` refuses to mount. Removing the shell's copy must not
+  // take the daemon's with it: that mutant leaves 2c green, `wrapLaunch`'s env
+  // test green, and every spawn marking NOBODY — a silently host-only
+  // filesystem, which is exactly what the daemon's presence refusal exists to
+  // prevent.
+  //
+  // AND THE VALUE IS THE CLI LAUNCH COMMAND, at the one place it is constructed.
+  // That is the standing condition the whole two-view argument rests on: point
+  // the mark at a widely-used binary and every process loading it becomes
+  // marked, at which point an unmarked caller's `fail → host` is the wrong
+  // answer for a caller that CAN reach the remote.
+  //
+  // DIES UNDER: dropping `CC_UNION_MARK_PATH` from the daemon's environment;
+  // pointing `markPath` at anything but the resolved launch command.
+  test('2c-bis: the mark path still reaches the daemon, and is still the CLI launcher', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const boot = await readFile(path.join(here, '..', 'src', 'systems', 'fuse', 'bootstrap.sh'), 'utf8');
+    assert.match(boot, /^CC_UNION_MARK_PATH="\$CC_FUSE_MARK_PATH" \\$/m,
+      'bootstrap.sh no longer hands the daemon CC_UNION_MARK_PATH — the mount refuses, or mounts '
+      + 'and marks nobody');
+    const inst = await readFile(path.join(here, '..', 'src', 'instances.ts'), 'utf8');
+    assert.match(inst, /markPath: claudeCommand,/,
+      'the single buildFusePlan construction site no longer points markPath at the resolved CLI '
+      + 'launch command');
   });
 
   // A17 — PINS the mount options as LITERALS. Every one is load-bearing and

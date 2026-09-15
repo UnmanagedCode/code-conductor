@@ -28,6 +28,15 @@
  *                     `mount --bind` succeeds onto a synthetic node
  *   marking policy    that fuse_get_context()->pid is the TID in practice, and
  *                     that the marking event fires on the CLI's real first read
+ *                     of its binary. THAT SECOND CLAIM IS LOAD-BEARING FOR THE
+ *                     LAUNCH: nothing pre-fires the mark any more — bootstrap.sh
+ *                     fires no marking event, so the chroot'd shell, setpriv and
+ *                     the backend launch command all run UNMARKED and the CLI's
+ *                     own execve is the only marking event there is. It is also
+ *                     what decides that mark_maybe stays on RESOLUTION rather
+ *                     than moving to pt_open: a symlinked launcher's registered
+ *                     spelling is never opened, only its target is. Real gate
+ *                     arms R12 and R16.
  *   frame codec       the socket transport itself, its blocking behaviour under
  *                     libfuse's multithreaded loop, and EIO on a dead cc
  *

@@ -24,12 +24,16 @@
 //
 //   COVERED NOWHERE, and recorded as such rather than assigned to an arm that
 //   does not exist — that `fuse_get_context()->pid` is a TID in practice (a
-//   nontrivial share of a live session's ops arrive with pid != tgid), and
-//   that the marking event fires on the CLI's own first read of its binary.
-//   No live arm re-measures either. `bootstrap.sh` fires the marking event
-//   deliberately, so the second claim is not load-bearing for the launch — R2
-//   fails if the mark does not reach the CLI's thread group — but nothing pins
-//   the TID claim.
+//   nontrivial share of a live session's ops arrive with pid != tgid). Nothing
+//   pins that claim.
+//
+//   THE SECOND HALF OF THAT PAIR IS COVERED, by a named arm: that the marking
+//   event fires on the CLI's own first read of its binary IS load-bearing for
+//   the launch, because `bootstrap.sh` fires no marking event
+//   — the chroot'd shell, `setpriv` and the backend launch command all run
+//   unmarked, and the CLI's `execve` is the only marking event there is. Real
+//   gate `R12` asserts the first marked op names `plan.markPath`; `R16` asserts
+//   it for a SYMLINKED launcher, which is the spelling cc registers.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -328,6 +332,12 @@ describe('the compiled policy driver', { skip }, () => {
     ['b28-cwd-input-validated',
                       'the cwd normalisation predicate rejects a trailing `/`, a `//` and a `.`/`..` component, and accepts a dotfile-named one',
                       'accept a doubled slash ⇒ the cwd itself stops matching and every chdir dies at its destination; accept a `..` component; reject a dotfile-named component ⇒ a real cwd is refused'],
+    // THE FACT `bootstrap.sh` FIRING NO MARKING EVENT RESTS ON, and the only
+    // one: its chroot'd shell `cd`s into the CLI's cwd UNMARKED. `b39` proves
+    // the chain is enterable in `VIEW_HOST`; this drives who selects that view.
+    ['b-cwd-unmarked',
+                      'an UNMARKED thread group — the /proc reader says so — resolving the CLI’s cwd through the whole route gets the OVERLAY node at the cwd leaf and a traversable answer at every component above it, never the remote tier, on the axis where the orchestrator has nothing; while the MARKED caller at the same path still gets T_PROJECT',
+                      'drop the overlay clause from resolve_class ⇒ the cwd leaf is fail → host and the bootstrap’s chdir dies -ENOENT; drop T_PROJECT from policy_tier_is_caller_sensitive ⇒ route() never reads the mark and the shell keeps the remote tier; let the unmarked branch return the input tier ⇒ the cwd is the remote tier to a caller that cannot reach it; let the MARKED branch substitute ⇒ the non-vacuity contrast dies'],
     ['b24-event-kinds',
                       'each of the FIVE reasons policy.h emits carries exactly one kind, read back out of the sink, and one emission per reason produces exactly one row each',
                       'classify unmarked-host-served as `deny` (it would join R4’s fatal filter on an ordinary shell startup); classify unmarked-project-denied as `served`; give the re-resolved project/synth substitution a reason of its own ⇒ a sixth reason the table does not name'],

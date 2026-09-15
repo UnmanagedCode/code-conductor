@@ -1243,6 +1243,87 @@ static void b22_cwd_chain_extent(void)
 	      "so no overlay node exists anywhere and the chdir dies");
 }
 
+/* ── B-CWD-UNMARKED: the bootstrap's own `cd`, unmarked ─────────────────── */
+/*
+ * THE SINGLE FACT `bootstrap.sh` FIRING NO MARKING EVENT RESTS ON: a thread
+ * group the /proc reader reports as UNMARKED can `chdir` into the CLI's cwd,
+ * where the tier table says `project` and the orchestrator has nothing.
+ *
+ * WHAT MAKES THIS ITS OWN CASE RATHER THAN b39's. `b39` calls `resolve_class`
+ * with `VIEW_HOST` handed to it, so it proves the chain is enterable IN that
+ * view; it never asks who selects the view. This case drives the WHOLE unmarked
+ * route — the /proc mark read, the caller-sensitivity gate and
+ * `policy_caller_tier` — from a tgid that was never marked, which is precisely
+ * the bootstrap shell's position: nothing fires the mark ahead of the CLI. And it
+ * drives the CWD LEAF, the one path where "serve the host, floored" has no node
+ * to put a mode on.
+ *
+ * NO HOST fd, DELIBERATELY: `policy_host_absent` then answers 1 everywhere, so
+ * this is the "the orchestrator lacks systemPath" axis — production's default,
+ * and the axis where the overlay is irreducible.
+ */
+static void b_cwd_unmarked(void)
+{
+	static const char *const chain[] = { "/", "/srv", "/srv/app" };
+	struct stat st;
+	size_t i;
+
+	policy_host_fd = -1;
+	pin("project\t/srv/app");
+	anc_build();
+	cwd_path = "/srv/app";
+
+	proc_set(700, 700, 111);               /* the bootstrap shell: never marked */
+	proc_set(600, 600, 222);               /* the CLI, after its own execve */
+	policy_mark_tid(600);
+
+	/* NON-VACUITY, THE CALLER. Without this the case could pass against a
+	 * fixture whose /proc reports everyone unmarked. */
+	CHECK(policy_is_marked_tid(700) == 0, "the bootstrap shell's thread group is unmarked");
+	CHECK(policy_is_marked_tid(600) == 1, "and the CLI's is marked, so the axis is real");
+
+	/* NON-VACUITY, THE TABLE. The cwd really is the remote tier as written —
+	 * otherwise the substitution below has nothing to substitute. */
+	CHECK(resolve_class("/srv/app", VIEW_CLI) == T_PROJECT,
+	      "the tier table says the cwd is the remote tier (%s)",
+	      tier_name(resolve_class("/srv/app", VIEW_CLI)));
+	CHECK(policy_tier_is_caller_sensitive(T_PROJECT) == 1,
+	      "and route() therefore reads the mark before dispatching it");
+
+	/* THE CWD LEAF: the unmarked caller gets the OVERLAY, and it is
+	 * traversable. This is the `cd` in bootstrap.sh's chroot script. */
+	CHECK(policy_caller_tier("getattr", "/srv/app", resolve_class("/srv/app", VIEW_CLI), 0, 700) == T_SYNTH,
+	      "an UNMARKED caller at the cwd gets the overlay node, not the remote tier (%s)",
+	      tier_name(policy_caller_tier("getattr", "/srv/app",
+					  resolve_class("/srv/app", VIEW_CLI), 0, 700)));
+	CHECK(policy_synth_getattr("/srv/app", &st, VIEW_HOST) == 0 && (st.st_mode & 0111) == 0111,
+	      "and the overlay node is traversable, so the chdir lands (mode %o)",
+	      (unsigned)(st.st_mode & 07777));
+
+	/* AND EVERY COMPONENT ABOVE IT, because a chdir walks all of them. */
+	for (i = 0; i < sizeof(chain) / sizeof(chain[0]); i++) {
+		enum tier t = policy_caller_tier("getattr", chain[i],
+						 resolve_class(chain[i], VIEW_CLI), 0, 700);
+
+		CHECK(t != T_PROJECT, "%s is not the remote tier for the unmarked caller", chain[i]);
+		CHECK(t == T_SYNTH || t == T_HOST,
+		      "%s is answered by the overlay or by the orchestrator (%s)", chain[i], tier_name(t));
+		if (t != T_SYNTH)
+			continue;
+		CHECK(policy_synth_getattr(chain[i], &st, VIEW_HOST) == 0 && (st.st_mode & 0111) == 0111,
+		      "and %s is traversable (mode %o)", chain[i], (unsigned)(st.st_mode & 07777));
+	}
+
+	/* THE MARK IS THE ONLY VARIABLE. Same path, same table, same host axis —
+	 * the MARKED caller still gets the remote tier, which is what a mark fired
+	 * ahead of the CLI makes of this shell, putting its every later unpinned
+	 * lookup in the remote tier with no host fallback. */
+	CHECK(policy_caller_tier("getattr", "/srv/app", resolve_class("/srv/app", VIEW_CLI), 1, 600) == T_PROJECT,
+	      "a MARKED caller at the same path still gets the remote tier");
+
+	cwd_path = NULL;
+}
+
 /* ── B24: every reason maps to exactly ONE kind, at the policy.h sites ──── */
 /*
  * THE KIND IS PINNED WHERE IT IS PRODUCED — read back out of the sink, never
@@ -2922,6 +3003,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b20-caller-sensitive-set")) b20_caller_sensitive_set();
 	else if (!strcmp(c, "b21-unmarked-refused-only-at-project")) b21_unmarked_refused_only_at_project();
 	else if (!strcmp(c, "b22-cwd-chain-extent")) b22_cwd_chain_extent();
+	else if (!strcmp(c, "b-cwd-unmarked")) b_cwd_unmarked();
 	else if (!strcmp(c, "b24-event-kinds")) b24_event_kinds();
 	else if (!strcmp(c, "b25-substitution-logged-per-path-and-tgid")) b25_substitution_logged_per_path_and_tgid();
 	else if (!strcmp(c, "b27-cwd-ino-distinct")) b27_cwd_ino_distinct();

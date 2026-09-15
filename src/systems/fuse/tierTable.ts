@@ -48,20 +48,28 @@
 // by building the real table both ways.
 //
 // The split, from the measured pre-mark window plus `ldd`, recorded rather than
-// acted on:
-//   DEAD (default config only)  BOOTSTRAP_CHAIN's `/bin/sh`, `/usr/bin/sh`,
-//     `/bin/dash`, `/usr/bin/dash` — the shell loads at pre-mark ops 18–44 and
-//     no marked caller ever execs it. `/bin/bash`, `/usr/bin/bash` were already
-//     dead: `bootstrap.sh` execs `/bin/sh`.
-//   LOAD-BEARING  everything else, and each for a measured reason — `setpriv`
-//     execs AFTER the mark in the same tgid; `ld-linux` and `libc` are measured
-//     on both sides of it; node's own NEEDED set and glibc's dlopen closure are
-//     all post-mark; `/etc/ld.so.cache` and `/etc/passwd`/`/etc/group` are the
-//     marked CLI's and setpriv's; `/etc/hosts` and the TLS trust are the marked
-//     CLI's own DNS and TLS. `/etc/ld.so.preload` and `/etc/claude-code` are
-//     pinned on the HAZARD rather than on a measurement — a remote-supplied one
-//     would preload a remote object into a host binary, or inject settings into
-//     the CLI — and that stays an inference, said so here.
+// acted on. `bootstrap.sh` fires NO marking event, so the whole bootstrap chain
+// runs unmarked and the window is the chain in full:
+//   DEAD AT EVERY GEOMETRY  the WHOLE of BOOTSTRAP_CHAIN — every shell spelling
+//     AND `setpriv` — plus everything `binaryPins` derives from each, which
+//     includes the `/usr/bin` install prefix (via `/usr/bin/sh` -> `/usr/bin/dash`
+//     and `/usr/bin/setpriv`), and `libcap-ng.so.0` in LOADER_OBJECTS, which is
+//     setpriv's alone. Every one of them is read exclusively by an UNMARKED
+//     caller — the chroot'd shell, `setpriv`, and the backend launch command
+//     `setpriv` execs — and an unmarked caller resolves in VIEW_HOST at every
+//     geometry, so nothing here is load-bearing under a wide `mirrorRoot`
+//     either. The standing licence is real gate `R13w`: no marked op names a
+//     path under `/usr/bin` at all.
+//   LOAD-BEARING  everything else, and each for a measured reason — `binaryPins`
+//     of the CLI launcher, INCLUDING its realpath and the ancestors of that
+//     realpath, because the mark fires at the launcher's own lookup and the
+//     symlink target's chain is walked marked (`R16`); `ld-linux` and `libc`;
+//     node's own NEEDED set and glibc's dlopen closure; `/etc/ld.so.cache` and
+//     `/etc/passwd`/`/etc/group` for the CLI's own identity lookups; `/etc/hosts`
+//     and the TLS trust for its DNS and TLS. `/etc/ld.so.preload` and
+//     `/etc/claude-code` are pinned on the HAZARD rather than on a measurement —
+//     a remote-supplied one would preload a remote object into a host binary, or
+//     inject settings into the CLI — and that stays an inference, said so here.
 //
 // A THIRD CLASS, OUTSIDE THESE THREE ARRAYS AND LOAD-BEARING FOR THE RULING:
 // the whole-`$HOME` pin, the whole-`projectsRoot` pin and the `sessionTmpDir`
@@ -140,7 +148,9 @@ const ETC_PINS = [
 // waiting to happen.
 //
 // `libcap-ng.so.0` is `setpriv`'s, from `ldd` on this host — one layer below
-// the interpreter chain above, and covered by no other entry here.
+// the interpreter chain above, and covered by no other entry here. `setpriv`
+// runs UNMARKED, so this entry is in the same class as BOOTSTRAP_CHAIN: see the
+// header block's split.
 //
 // THE LIST IS HAND-MAINTAINED, and entries keep arriving the expensive way:
 // several were added by reading the refusal log AFTER a spawn had already died
@@ -217,9 +227,13 @@ const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...realpathsOf(LOADER_OBJECT
 
 // THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
 // as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
-// setpriv ...'`. Unpinned, those paths resolve in the remote tier, so which
-// side answers depends on the remote's contents — load-bearing the moment a
-// provider advertises `mirrorRoot: '/'`.
+// setpriv ...'`.
+//
+// EVERY ENTRY HERE IS READ BY AN UNMARKED CALLER AND BY NOTHING ELSE, at every
+// geometry — `bootstrap.sh` fires no marking event, so the shell and `setpriv`
+// both run in `VIEW_HOST`, where an unpinned path is served from the
+// orchestrator rather than from the remote. The header block above records what
+// that means for this array and names the arm licensing it (`R13w`).
 //
 // Both spellings of each, because which one exists is a distribution choice and
 // a pin that matches nothing costs nothing. `chroot` itself is NOT here: it runs
