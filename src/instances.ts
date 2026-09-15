@@ -4833,6 +4833,43 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       );
     }
 
+    // AN UNRESOLVABLE BACKEND LAUNCH COMMAND, REFUSED BY NAME — and this is a
+    // DIAGNOSIS refusal, not a pin-correctness one. The resolved command needs
+    // no host pin: `setpriv` execs it before the CLI, so it runs unmarked from
+    // start to finish and `VIEW_HOST` serves it whatever the tier table says
+    // (measured at a real mount by gate arm `R14L`). What it does need is
+    // attribution — an unresolvable one fails the launch inside `setpriv`, deep
+    // in the chroot, naming nothing. The spawn seam knows the token.
+    //
+    // HERE AND NOT BESIDE `FUSE_LAUNCHER_UNRESOLVED` in the `remote` block
+    // above: `finalModel` is not settled until the resume-model recovery and
+    // `canonicalizeModel` that run after that block, and `resolveBackendLaunch`
+    // refuses a model-less substitution launch. It is still ABOVE
+    // `new Instance(…)`, so it joins the refusals that run above the resume
+    // reclaim and leave an existing instance alone.
+    //
+    // THE EXEMPTION IS THE SAME STRUCTURAL ONE the CLI guard uses: an
+    // in-process launcher runs the CLI inside cc's own process, so nothing is
+    // exec'd in a chroot. For the `claude` backend the resolved command is
+    // `resolveClaudeBin().command`, which `FUSE_LAUNCHER_UNRESOLVED` already
+    // refused above — so this cannot double-fire in practice and needs no
+    // special case for it.
+    if (remote && !this._claudeLauncher.inProcess) {
+      const backendRec = getBackend(backend);
+      const launch = resolveBackendLaunch(backendRec, finalModel, resolveClaudeBin());
+      if (!resolveOnPath(launch.command)) {
+        throw Object.assign(
+          new Error(`FUSE_BACKEND_UNRESOLVED: cannot spawn a worker for project '${project}' on `
+            + `system '${proj.system.id}' — backend '${backend}' launches '${launch.command}', `
+            + `which does not resolve on cc's own PATH. Template: ${JSON.stringify(backendRec?.template ?? '')}. `
+            + `That command is the binary the chroot execs, and an exec failure inside setpriv names `
+            + `nothing — so it is refused here instead. Install it on cc's machine, or fix the `
+            + `backend's template in Settings → Backends.`),
+          { statusCode: 501, code: 'FUSE_BACKEND_UNRESOLVED' },
+        );
+      }
+    }
+
     // Resolve context capacity ONCE, from the concrete {backend, exact model}
     // pair now settled above. This single number feeds the substitution
     // backend's context env vars, summary(), the MCP projection, the client ctx

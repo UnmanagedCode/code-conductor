@@ -278,10 +278,14 @@ export function parsePolicyEvents(text: string): PolicyEventRow[] {
 // a LOCAL contract — this function's precondition is legible without reaching
 // across files for that invariant — and the REASON test is the one a fixture
 // kills.
-export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string } | null {
+export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string; note: string } | null {
   if (row.kind !== 'deny' || row.reason !== 'unpinned-fail-closed') return null;
   const s = suggestPin(row.path);
-  return { list: s.list ?? 'UNDECIDED', entry: s.entry };
+  // `note` RIDES THROUGH UNTOUCHED. `suggestPin` has two arms that answer
+  // `list: null` with DIFFERENT advice — a bin-directory path is the marked
+  // CLI's and no array owns it; anything else could belong in either array —
+  // and a caller that kept only the name has nothing left to tell them apart.
+  return { list: s.list ?? 'UNDECIDED', entry: s.entry, note: s.note };
 }
 
 async function harvestEvents(rundir: string, instanceId: string): Promise<PolicyEventRow[]> {
@@ -339,20 +343,29 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
     parts.push('the daemon refused: '
       + shown.map(r => `${asText(r.path)} (${asText(r.comm.value ?? r.comm.status)}[${r.pid}])`).join(', ')
       + (more > 0 ? ` (+${more} more; full list at ${storePath})` : ''));
-    // THE REPAIR, GROUPED BY THE ARRAY THAT OWNS IT, because that is the edit
-    // the reader has to make. `suggestPin` (tierTable.ts) owns the mapping and
-    // the restart caveat.
-    const byList = new Map<string, string[]>();
+    // THE REPAIR, GROUPED BY THE ADVICE AND NOT BY THE ARRAY NAME, because two
+    // of `suggestPin`'s arms answer `list: null` and they do not say the same
+    // thing: a bin-directory path is the MARKED CLI's and no array owns it,
+    // while anything else could belong in either. Keyed on the name alone they
+    // merged, and one arm's sentence was printed for both.
+    //
+    // AND THE `null` ARM'S SENTENCE IS `suggestPin`'S OWN `note`, VERBATIM —
+    // never a copy of it here. A second spelling of that advice is a second
+    // source of truth for a mapping whose whole value is naming the one real
+    // one, and it is exactly what drifted. The NAMED-list sentence is built
+    // from `list` rather than copied, so it cannot drift the same way.
+    const byNote = new Map<string, { list: string; entries: string[] }>();
     for (const r of shown) {
       const s = pinSuggestionFor(r);
       if (!s) continue;
-      if (!byList.has(s.list)) byList.set(s.list, []);
-      byList.get(s.list)!.push(s.entry);
+      let group = byNote.get(s.note);
+      if (!group) byNote.set(s.note, group = { list: s.list, entries: [] });
+      group.entries.push(s.entry);
     }
-    for (const [list, entries] of byList) {
+    for (const [note, { list, entries }] of byNote) {
       const named = entries.map(asText).join(', ');
       parts.push(list === 'UNDECIDED'
-        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${named} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
+        ? `${named}: ${note}`
         : `add ${named} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
     }
   }

@@ -24,7 +24,10 @@ only when the session has plugin dirs).
 `buildSettingsJSON`/`buildMcpConfigJSON` in `src/settings.ts`.) A template that
 wraps `claude` in a container or over ssh without mounting those paths will
 fail. Local wrappers such as the built-in `ollama launch claude … --` are
-unaffected.
+unaffected. On a **union-bound** spawn (a project on a system) the template's
+first token must additionally resolve on cc's own machine, or the spawn is
+refused by name — see `FUSE_BACKEND_UNRESOLVED` in
+[features.md](features.md).
 
 Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 `models.backends`.

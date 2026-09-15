@@ -25,6 +25,7 @@ import { adoptProject, orchStoreRoot } from '../src/projects.ts';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 
 const exists = (p) => fs.access(p).then(() => true, () => false);
@@ -854,6 +855,61 @@ describe('a union-bound spawn whose launcher does not resolve', () => {
   // printed in place of the other: the raw value alone says nothing about what
   // was looked up, and the resolved spelling alone hides that the operator set
   // the variable empty.
+  // PINS THE SECOND SPAWN-SEAM REFUSAL, and its identity: a BACKEND whose
+  // launch command cannot be resolved on cc's own PATH is refused by name.
+  //
+  // IT IS A DIAGNOSIS REFUSAL, NOT A PIN. The resolved command runs unmarked
+  // inside the chroot and needs no host pin (gate arm `R14L`); what it lacks
+  // without this guard is attribution — the launch dies inside `setpriv`,
+  // naming nothing. So the message has to carry the token that failed and the
+  // template it came from, and that is what is asserted.
+  //
+  // DRIVEN THROUGH `instances.create` RATHER THAN OVER HTTP, because the shared
+  // error handler sends the message alone and drops the `code` a caller
+  // branches on.
+  test('an unresolvable BACKEND launch command is refused FUSE_BACKEND_UNRESOLVED, leaving no instance behind', async () => {
+    await addBackend({ id: 'unresolvable', label: 'Unresolvable',
+      template: `${BAD} launch claude --model {model} --` });
+    await addCustomModel({ label: 'U', model: 'u:v1', backend: 'unresolvable', contextWindow: 128_000 });
+    const before = instances.list().length;
+    await assert.rejects(
+      async () => instances.create({ project: 'app', mode: 'bypassPermissions',
+        model: 'u:v1', backend: 'unresolvable' }),
+      (e) => {
+        assert.equal(e.code, 'FUSE_BACKEND_UNRESOLVED', `code field: ${e.code} — ${e.message}`);
+        assert.equal(e.statusCode, 501, e.message);
+        assert.match(e.message, /backend 'unresolvable'/, e.message);
+        assert.match(e.message, new RegExp(`launches '${BAD}'`), e.message);
+        assert.match(e.message, new RegExp(BAD + ' launch claude'), 'the template is named');
+        return true;
+      },
+    );
+    assert.equal(instances.list().length, before,
+      'a refusal that left a phantom instance behind would be resumable into the state it refused');
+  });
+
+  // THE EXEMPTION CONTROL, and without it the refusal above could be a blanket
+  // one and this arm's sibling would still pass: the SAME unresolvable template
+  // on an IN-PROCESS launcher spawns, because nothing is exec'd in a chroot.
+  test('…and the same unresolvable template on an in-process launcher still spawns', async () => {
+    const launcher = new InProcessClaudeLauncher();
+    const ctx2 = await bootServer({ claudeLauncher: launcher });
+    try {
+      const remote2 = await bindRemoteSystem();
+      const tree2 = await seedRepo(path.join(remote2.root, 'app2'));
+      assert.equal((await adoptProject('app2', tree2, { system: remote2.id })).ok, true);
+      await addBackend({ id: 'unresolvable2', label: 'Unresolvable 2',
+        template: `${BAD} launch claude --model {model} --` });
+      await addCustomModel({ label: 'U2', model: 'u2:v1', backend: 'unresolvable2', contextWindow: 128_000 });
+      const r = await api(ctx2.baseUrl, 'POST', '/api/instances',
+        { project: 'app2', mode: 'bypassPermissions', model: 'u2:v1', backend: 'unresolvable2' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+    } finally {
+      await ctx2.close();
+      disposeSystemHandles();
+    }
+  });
+
   test('the empty CLAUDE_BIN docker ships is refused, naming the raw value AND the resolved spelling', async () => {
     const savedPath = process.env.PATH;
     process.env.PATH = pathWithoutClaude();
