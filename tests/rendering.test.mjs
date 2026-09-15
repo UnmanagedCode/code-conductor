@@ -69,7 +69,7 @@ test('DOM: a Bash tool call renders a tool block with the command visible', asyn
   assert.ok(summary, 'tool block must have a <summary>');
   const summaryText = summary.textContent;
   assert.match(summaryText, /Bash/, `summary should mention tool name (got: ${summaryText})`);
-  assert.match(summaryText, /ls -la/, `summary should mention the command (got: ${summaryText})`);
+  assert.match(summaryText, /List files/, `summary should mention the description (got: ${summaryText})`);
 
   // The tool block body should also contain the command (in the diff/JSON view).
   const body = tool.querySelector('.tool-body');
@@ -95,6 +95,10 @@ test('DOM: a Bash tool call renders a tool block with the command visible', asyn
   assert.match(cmdPre.textContent, /ls -la/, 'bash-cmd pre must contain the command');
   const copyBtn = cmdWrap.querySelector('.bash-cmd-copy');
   assert.ok(copyBtn, '.bash-cmd-wrap must have a copy button (.bash-cmd-copy)');
+
+  // The description is now shown collapsed (asserted above); the expanded
+  // body must not repeat it.
+  assertNull(cmdWrap.querySelector('.bash-cmd-desc'), 'expanded body must not repeat the description');
 });
 
 function editToolCallStream() {

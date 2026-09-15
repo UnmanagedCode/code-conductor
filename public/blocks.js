@@ -219,7 +219,10 @@ export function describeToolInput(name, input, ctx = {}) {
     return out;
   }
   switch (renderKindFor(name)) {
-    case 'Bash':       return trunc(input.command);
+    case 'Bash': {
+      const desc = typeof input.description === 'string' ? input.description.trim() : '';
+      return trunc(desc || input.command);
+    }
     case 'Edit':
     case 'Write':
     case 'Read':
@@ -452,12 +455,6 @@ function formatElapsed(ms) {
 
 function renderBashCommand(input) {
   const wrap = el('div', { class: 'bash-cmd-wrap' });
-
-  // Description renders above the command box as a sibling — not inside the
-  // position:relative box — so absolute button positioning anchors to the box.
-  if (typeof input.description === 'string' && input.description.trim()) {
-    wrap.appendChild(el('div', { class: 'bash-cmd-desc' }, input.description.trim()));
-  }
 
   // Inner box is position:relative so the Copy button anchors to its corner.
   const box = el('div', { class: 'bash-cmd-box' });
