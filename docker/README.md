@@ -19,7 +19,7 @@ open http://127.0.0.1:8787   # logs: make logs · stop: make down
 Optional stacks:
 
 ```bash
-make GPU=1 up                # + host GPU via gpus: all (needs nvidia-container-toolkit; pair with CC_WITH_OLLAMA=1)
+make CC_GPU=1 up             # + host GPU via gpus: all (needs nvidia-container-toolkit; pair with CC_WITH_OLLAMA=1)
 ```
 
 Two `.env` flags each drive a build **and** a compose-chain half from one knob; set them and run plain `make up`:
@@ -50,7 +50,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_WITH_SUDO` | `1` | **On by default**, unlike every other `CC_WITH_*`. See below. |
 | `CC_WITH_DOCKER` / `CC_WITH_SYSTEMS` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CLAUDE_CODE_PROXY` | `0` | Build-time tooling flags — see below. `CC_WITH_DOCKER` and `CC_WITH_SYSTEMS` are **also** compose-chain triggers (they pull in `compose.docker.yaml` / `compose.systems.yaml`). `CC_WITH_OLLAMA`, `CC_WITH_CLAUDE_CODE_PROXY`, and `CC_WITH_TAILSCALE` also start their service detached at boot. |
 
-Make variables: `GPU`, `CC_MOUNT`, `DOCKER`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`, `CC_BASE_IMAGE_TAG`. The Makefile `-include`s `.env`, so **any** of them may be set there too; a make command-line assignment overrides `.env`, an exported environment variable does not. `DOCKER` (default `docker`) is used only for the `CC_BASE_IMAGE_FILE` pre-build, which compose cannot do.
+Make variables: `CC_GPU`, `CC_MOUNT`, `DOCKER`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`, `CC_BASE_IMAGE_TAG`. The Makefile `-include`s `.env`, so **any** of them may be set there too; a make command-line assignment overrides `.env`, an exported environment variable does not. `DOCKER` (default `docker`) is used only for the `CC_BASE_IMAGE_FILE` pre-build, which compose cannot do.
 
 ## What lives where
 

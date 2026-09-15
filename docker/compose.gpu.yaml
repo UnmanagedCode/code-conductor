@@ -1,5 +1,5 @@
 # Optional override: forward the host GPU (main use: ollama with CUDA).
-# Enable via `make GPU=1 up`. Requires nvidia-container-toolkit on the host.
+# Enable via `make CC_GPU=1 up`. Requires nvidia-container-toolkit on the host.
 # Compose ≥ v2.30 (2024-09). On older compose use instead:
 #   deploy:
 #     resources:

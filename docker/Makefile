@@ -18,10 +18,10 @@ DOCKER ?= docker
 # make variable below is overridable from .env for the same reason.
 -include .env
 
-GPU ?= 0                # 1 → chain compose.gpu.yaml (host GPU for ollama; needs nvidia-container-toolkit)
+CC_GPU ?= 0             # 1 → chain compose.gpu.yaml (host GPU for ollama; needs nvidia-container-toolkit)
 CC_MOUNT ?= outside     # outside | inside — where the cc checkout binds (see docker/README.md)
 
-# Recursively expanded so the target-specific variables set by GPU=1-style
+# Recursively expanded so the target-specific variables set by CC_GPU=1-style
 # overrides are visible at recipe time; an ifeq at parse time would miss them.
 # CC_WITH_SYSTEMS=1 and CC_WITH_DOCKER=1 each chain their override from here —
 # one flag per feature turns on BOTH the tooling build and the runtime deltas.
@@ -30,7 +30,7 @@ CC_MOUNT ?= outside     # outside | inside — where the cc checkout binds (see 
 COMPOSE_FILES = -f compose.yaml \
   $(if $(filter 1,$(CC_WITH_SYSTEMS)),-f compose.systems.yaml) \
   $(if $(filter 1,$(CC_WITH_DOCKER)),-f compose.docker.yaml) \
-  $(if $(filter 1,$(GPU)),-f compose.gpu.yaml) \
+  $(if $(filter 1,$(CC_GPU)),-f compose.gpu.yaml) \
   $(foreach f,$(CC_COMPOSE_EXTRA),-f $(f))
 
 ifneq ($(filter-out inside outside,$(CC_MOUNT)),)
