@@ -31,9 +31,11 @@
 //   event fires on the CLI's own first read of its binary IS load-bearing for
 //   the launch, because `bootstrap.sh` fires no marking event
 //   — the chroot'd shell, `setpriv` and the backend launch command all run
-//   unmarked, and the CLI's `execve` is the only marking event there is. Real
-//   gate `R12` asserts the first marked op names `plan.markPath`; `R16` asserts
-//   it for a SYMLINKED launcher, which is the spelling cc registers.
+//   unmarked, and the mark the launch relies on is the CLI's own `execve`. Not
+//   the only marking event a launch can contain: `bootstrap.sh`'s step 10 names
+//   the residual. Real gate `R12` asserts the first marked op names
+//   `plan.markPath`; `R16` asserts it for a SYMLINKED launcher, which is the
+//   spelling cc registers.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';

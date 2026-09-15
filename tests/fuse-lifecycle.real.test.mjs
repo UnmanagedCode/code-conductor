@@ -2509,7 +2509,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // ahead of the CLI puts the chroot'd shell, `setpriv` and the backend launch
   // command in `VIEW_CLI`, where every unpinned path they touch is `project`
   // tier with no host fallback — measured as `deny getattr
-  // /usr/local/sbin/<launcher> remote-absent comm=setpriv`, and a launch that
+  // /usr/local/bin/<launcher> remote-absent comm=setpriv`, and a launch that
   // dies `setpriv: failed to execute`.
   //
   // WHAT IT PINS, and the second is the one this arm exists for:
