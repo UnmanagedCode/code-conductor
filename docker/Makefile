@@ -70,7 +70,7 @@ endif
 ifneq ($(CC_BASE_IMAGE),)
 export CC_BASE_IMAGE
 endif
-.PHONY: build up down logs restart mount login login/tailscale base-image
+.PHONY: build up down logs restart mount login login/tailscale login/ollama base-image
 
 # No-op unless CC_BASE_IMAGE_FILE is set. $(error) inside a recipe expands only
 # when that recipe is about to run, so the conflict is fatal for build/up and
@@ -121,3 +121,6 @@ login:
 # key persists across container recreation (<projects>/.cc-home/.tailscale).
 login/tailscale:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor tailscale up
+
+login/ollama:
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor ollama login

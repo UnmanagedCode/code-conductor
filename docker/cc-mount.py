@@ -101,7 +101,8 @@ def _docker(argv):
 
 
 def _compose_project():
-    """compose.yaml names the compose project code-conductor."""
+    """Default compose project name is code-conductor; COMPOSE_PROJECT_NAME in
+    docker/.env overrides it (compose's own precedence, not this script's)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
                   encoding="utf-8") as fh:

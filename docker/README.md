@@ -34,6 +34,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | Variable | Default | Meaning |
 |---|---|---|
 | `CC_PROJECTS_DIR` | *(required)* | Absolute host projects root. Must exist, be outside the cc repo, and be writable by `CC_UID`/`CC_GID`. |
+| `COMPOSE_PROJECT_NAME` | `code-conductor` | Read by compose itself (not a `CC_` var). Sets the container/volume/network prefix, e.g. `mybox` → `mybox-conductor-1`. Changing it after containers/volumes exist orphans the old-named ones. |
 | `CC_PORT` | `8787` | Host port (container side is fixed 8787). |
 | `CC_BIND` | `127.0.0.1` | Host IP the port publishes on. Loopback by default on purpose — widen deliberately. |
 | `CC_USER` | `node` | The **account** the container runs as (compose `user:`). A name, so docker resolves it through the image's passwd/group files at container creation and loads the account's supplementary groups — an all-digit value is refused at build. Changing it needs a **rebuild**: `docker compose start` against the old image fails with a raw `unable to find user`; `make up` always rebuilds. |
@@ -87,6 +88,14 @@ make login/tailscale
 ```
 
 (= `docker compose -f compose.yaml exec conductor tailscale up`.) State lives under `$HOME` (`<projects dir>/.cc-home/.tailscale/`), so the node key persists across container recreation: after the first join, later boots come up connected automatically.
+
+**ollama (with `CC_WITH_OLLAMA=1`).** The entrypoint starts `ollama serve` detached at boot. To sign in to ollama's hosted service:
+
+```bash
+make login/ollama
+```
+
+(= `docker compose -f compose.yaml exec conductor ollama login`.)
 
 ## cc mount position (`CC_MOUNT`)
 
