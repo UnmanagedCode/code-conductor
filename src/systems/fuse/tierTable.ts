@@ -183,15 +183,18 @@ const LOADER_OBJECTS = [
 // tier — so pinning a link while its target stays unpinned is a `fail`-tier
 // -ENOENT at the second hop.
 //
-// The loader list is where it was measured. Pinning `libcap-ng.so.0` while its
-// target `libcap-ng.so.0.0.0` stayed unpinned is what the refusal log named on
-// the first fail-closed launch —
+// The loader list is where it was measured, on a pin THIS FILE DOES NOT CARRY:
+// `setpriv`'s `libcap-ng.so.0`, which runs unmarked and is in neither array
+// here. Pinning that link while its target `libcap-ng.so.0.0.0` stayed unpinned
+// is what the refusal log named on the first fail-closed launch —
 //
 //     /usr/bin/setpriv: error while loading shared libraries: libcap-ng.so.0:
 //     cannot open shared object file: No such file or directory
 //
 // — and it was invisible under the instrument's host fallback, which served the
-// target whether it was pinned or not.
+// target whether it was pinned or not. THE MEASUREMENT IS WHAT THE DERIVATION
+// RESTS ON, not a live entry: the hazard belongs to every pinned leaf, which is
+// why `realpathsOf` runs over the arrays rather than over one of them.
 //
 // `ETC_PINS` carries the same hazard UNMEASURED HERE: nothing in it is a
 // symlink on this host, but `/etc/resolv.conf` is one to
@@ -210,8 +213,7 @@ function realpathsOf(paths: readonly string[]): string[] {
 // two lists cannot drift. On a merged-usr host `/lib` and `/lib64` are symlinks
 // to `/usr/lib` and `/usr/lib64` — but the tier table matches PATH STRINGS, and
 // the ELF header of every binary here requests `/lib64/ld-linux-x86-64.so.2`
-// literally, which the `/usr/lib64` spelling does not match. Same class as the
-// interpreter chain, one layer down.
+// literally, which the `/usr/lib64` spelling does not match.
 const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...realpathsOf(LOADER_OBJECTS)].flatMap(
   p => p.startsWith('/usr/') ? [p, p.slice(4)] : [p],
 ))];
@@ -441,7 +443,7 @@ export function suggestPin(refusedPath: string): PinSuggestion {
       note: `add the /usr/-prefixed spelling: LOADER_PINS derives the /lib spelling AND the realpath from it, so the other spelling leaves the closure open. Then ${restart}`,
     };
   }
-  // A BIN DIRECTORY IS NO LONGER A GUESS, and the note says what the denial
+  // A BIN DIRECTORY IS NOT A GUESS, and the note says what the denial
   // MEANS rather than naming an array. `bootstrap.sh` fires no marking event,
   // so the chroot'd shell, `setpriv` and the backend launch command are all
   // unmarked and host-served without any pin — a refusal here therefore means
@@ -452,7 +454,7 @@ export function suggestPin(refusedPath: string): PinSuggestion {
     return {
       list: null,
       entry: refusedPath,
-      note: `a bin-directory refusal means the MARKED CLI named this — the bootstrap's own shell and setpriv are unmarked and host-served with no pin. Check first whether it is the launcher's own closure, which binaryPins(claudeCommand) pins automatically; otherwise decide between LOADER_OBJECTS, ETC_PINS and the session's localRoots (declared at the ONE construction site, src/instances.ts). Then ${restart}`,
+      note: `a bin-directory refusal means the MARKED CLI named this — the bootstrap's own shell and setpriv are unmarked and host-served with no pin. Check first whether it is the launcher's own closure, which binaryPins(claudeCommand) pins automatically. If it is not, no array here owns it: LOADER_OBJECTS is the loader's NEEDED/dlopen closure and ETC_PINS is /etc, and a bin path in either lands where those derivations say nothing about it. The one declared mechanism for a host-local prefix is the session's localRoots (declared at the ONE construction site, src/instances.ts). Then ${restart}`,
     };
   }
   // NO GUESS, AND IT NAMES EVERY PLACE A HUMAN MIGHT PUT IT. A wrong array is

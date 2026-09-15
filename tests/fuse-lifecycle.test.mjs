@@ -1025,11 +1025,18 @@ describe('the policy event harvest', () => {
     // host-served with no pin, so a refusal here is the MARKED CLI's. The
     // launcher-closure check comes FIRST, because `binaryPins(claudeCommand)`
     // already pins that and a hand-added entry there would be a second source.
+    //
+    // AND THE TWO ARRAYS ARE RULED OUT RATHER THAN OFFERED. Neither is reachable
+    // as a correct destination from this arm — an `/etc/` path is claimed by the
+    // first test in `suggestPin` and a loader path by the second, so anything
+    // arriving here is neither — and this file's own standard is that a wrong
+    // array is worse than no suggestion.
     for (const b of ['/bin/tar', '/sbin/ldconfig', '/usr/bin/git', '/usr/sbin/nologin']) {
       assert.equal(suggestPin(b).list, null, b);
       assert.equal(suggestPin(b).entry, b);
-      assert.match(suggestPin(b).note, /MARKED CLI/, b);
       const note = suggestPin(b).note;
+      assert.match(note, /MARKED CLI/, b);
+      assert.match(note, /no array here owns it/, b);
       assert.ok(note.indexOf('binaryPins(claudeCommand)') < note.indexOf('LOADER_OBJECTS'),
         `the launcher-closure check must be named before the arrays: ${note}`);
     }
