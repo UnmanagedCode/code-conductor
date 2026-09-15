@@ -8,7 +8,8 @@
 // the call; it does not call process.kill.
 //
 // The real end-to-end gate — real sudo, real unshare, real FUSE, a fake claude
-// binary — is tests/fuse-lifecycle.real.test.mjs behind RUN_FUSE_LIFECYCLE=1.
+// binary — is the tests/fuse-*.real.test.mjs family behind RUN_FUSE_LIFECYCLE=1,
+// over the shared harness tests/fuseGateCase.mjs.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';

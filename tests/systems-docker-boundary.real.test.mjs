@@ -28,7 +28,8 @@
 //
 // DOUBLY OPT-IN SINCE THE FUSE-UNION GEOMETRY. This suite needs `RUN_DOCKER_SYSTEM=1`
 // AND a host that can mount the union — `sudo -n`, `/dev/fuse`, `fusectl`, gcc and
-// libfuse3 headers, the same set `tests/fuse-lifecycle.real.test.mjs` asserts. The
+// libfuse3 headers, the same set `tests/fuseGateCase.mjs` asserts for the
+// tests/fuse-*.real.test.mjs family. The
 // union is mandatory for a remote-backed worker, and this is the ONE suite that
 // crosses a real machine boundary: a worker here runs at the project's path
 // INSIDE the container, which does not exist on the host, so a run that bypassed

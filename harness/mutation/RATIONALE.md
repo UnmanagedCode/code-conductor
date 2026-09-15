@@ -162,10 +162,11 @@ the data and the derivation.
 
 **§5.1 Snapshot of the gates — a starting point to re-derive, not a fact to trust.**
 Re-derived with (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
-sort -u`) → **six**, not the four this table listed: `RUN_FUSE_LIFECYCLE` and `RUN_DOCKER_SYSTEM`
-were added after the snapshot. `RUN_CLI_CONTRACT` is a **seventh** and the grep above misses it —
-it is read in `tests/cliContractCase.mjs`, a shared helper rather than a `*.test.mjs`, so re-derive
-with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
+sort -u`) → **five** of the seven below: `RUN_DOCKER_SYSTEM` was added after the snapshot, and
+**two** gates the grep above misses because each is read in a shared helper rather than a
+`*.test.mjs` — `RUN_CLI_CONTRACT` in `tests/cliContractCase.mjs` and `RUN_FUSE_LIFECYCLE` in
+`tests/fuseGateCase.mjs`. Re-derive with
+`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see both.
 
 | Env flag | Surface left unproven |
 |---|---|
@@ -173,7 +174,7 @@ with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
 | `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
-| `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here: that the libfuse op bodies CALL the policy (R3); `route()`'s host arm and its no-fallback rule (R2); that `mount --bind` succeeds onto a synthetic node (R3); the socket transport itself and that a dead cc is REPORTED as an error rather than wedging the mount (R6). **`-EIO` on a dead cc is NOT in that set** — the driver's `b12` drives it deterministically through the injected transport. **And two claims no arm covers at all**, recorded rather than assigned to one: that `fuse_get_context()->pid` is a TID in practice (measured, but the instrument that produced the measurement no longer exists), and that the marking event fires on the CLI's own first read of its binary (not load-bearing — `bootstrap.sh` fires it deliberately). |
+| `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (the four `fuse-*.real` files over `tests/fuseGateCase.mjs`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here — all four in `fuse-union-mount.real`: that the libfuse op bodies CALL the policy (R3); `route()`'s host arm and its no-fallback rule (R2); that `mount --bind` succeeds onto a synthetic node (R3); the socket transport itself and that a dead cc is REPORTED as an error rather than wedging the mount (R6). **`-EIO` on a dead cc is NOT in that set** — the driver's `b12` drives it deterministically through the injected transport. **And two claims no arm covers at all**, recorded rather than assigned to one: that `fuse_get_context()->pid` is a TID in practice (measured, but the instrument that produced the measurement no longer exists), and that the marking event fires on the CLI's own first read of its binary (not load-bearing — `bootstrap.sh` fires it deliberately). |
 | `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
 | `RUN_CLI_CONTRACT` | the real-`claude` CLI-behaviour contract cases (`systems-cli-*.real`), read through `tests/cliContractCase.mjs`. Deliberately left UNSET by `npm run gate:systems` — see its header for the pricing. |
 
