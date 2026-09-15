@@ -70,7 +70,7 @@ endif
 ifneq ($(CC_BASE_IMAGE),)
 export CC_BASE_IMAGE
 endif
-.PHONY: build up down logs restart mount login login/tailscale base-image
+.PHONY: build up down logs restart mount login login/tailscale login/ollama base-image
 
 # No-op unless CC_BASE_IMAGE_FILE is set. $(error) inside a recipe expands only
 # when that recipe is about to run, so the conflict is fatal for build/up and
@@ -86,8 +86,17 @@ endif
 build: base-image
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) build
 
+# Mirrors compose.yaml's `${CC_BIND:-127.0.0.1}:${CC_PORT:-8787}:8787` port
+# publish default exactly, so the URL `up` prints can't disagree with what
+# was actually published. 0.0.0.0 (widen-deliberately) isn't a clickable
+# host, so print loopback instead when bound wide open.
+CC_BIND ?= 127.0.0.1
+CC_PORT ?= 8787
+CC_URL_HOST = $(if $(filter 0.0.0.0,$(CC_BIND)),127.0.0.1,$(CC_BIND))
+
 up: base-image
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) up -d --build
+	@echo "Reachable at: http://$(CC_URL_HOST):$(CC_PORT)$(if $(filter 0.0.0.0,$(CC_BIND)), (published on 0.0.0.0 — all interfaces),)"
 
 down:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) down
@@ -116,8 +125,25 @@ endif
 login:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor claude auth login
 
+# make HOSTNAME=<node-name> login/tailscale passes --hostname for that one
+# invocation. Only origin `command line` (make HOSTNAME=... login/tailscale)
+# or `file` (set in docker/.env, -include'd above) counts as deliberate;
+# `environment`/`environment override` are ignored on purpose — HOSTNAME is
+# commonly present as an ambient env var (e.g. inside containers), and honoring
+# it would silently register the node under the host machine's name on a bare
+# `make login/tailscale`.
+ifneq ($(filter command line file,$(origin HOSTNAME)),)
+TAILSCALE_HOSTNAME_ARG = --hostname=$(HOSTNAME)
+endif
+
 # One-time tailscale join inside the running container: authenticate via the
 # URL `tailscale up` prints, then approve the node in the browser. The node
 # key persists across container recreation (<projects>/.cc-home/.tailscale).
+# Container hostname (CC_HOSTNAME in .env) is tailscale's default node name;
+# HOSTNAME=<name> here overrides it for this one join.
 login/tailscale:
-	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor tailscale up
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor tailscale up $(TAILSCALE_HOSTNAME_ARG)
+
+# One-time sign-in to ollama's hosted service; needs CC_WITH_OLLAMA=1.
+login/ollama:
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor ollama login
