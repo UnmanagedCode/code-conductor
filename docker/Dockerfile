@@ -85,7 +85,12 @@ RUN if [ "$WITH_TAILSCALE" = "1" ]; then curl -fsSL https://tailscale.com/instal
 RUN if [ "$WITH_TAILSCALE" = "1" ]; then mkdir -p /var/run/tailscale && chmod 0777 /var/run/tailscale; fi
 
 ARG WITH_OLLAMA=0
-RUN if [ "$WITH_OLLAMA" = "1" ]; then curl -fsSL https://ollama.com/install.sh | sh; fi
+# The installer's payloads are zstd-compressed; it hard-fails extraction without the package.
+RUN if [ "$WITH_OLLAMA" = "1" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends zstd \
+      && rm -rf /var/lib/apt/lists/* \
+      && curl -fsSL https://ollama.com/install.sh | sh; fi
 
 ARG WITH_CLAUDE_CODE_PROXY=0
 # claude-code-proxy serves an Anthropic-compatible API on 127.0.0.1:18765
