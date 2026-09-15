@@ -1162,9 +1162,10 @@ describe('the policy event harvest', () => {
       // `eventPaths` stays a DISTINCT-PATH list — it is a path list, and its one
       // consumer (the boot sweep) asks only whether it is empty.
       assert.deepEqual(report.eventPaths, ['/var'], label);
-      // And the sentence names the repair, which is the half the bug removed.
+      // And the sentence names the repair, which is the half the bug removed —
+      // the path, then `suggestPin`'s own note for it, verbatim.
       assert.match(report.notes.find(n => n.startsWith('cc-fuse: ')) ?? '',
-        /no array in src\/systems\/fuse\/tierTable\.ts obviously owns \/var/, label);
+        /\/var: no array in src\/systems\/fuse\/tierTable\.ts obviously owns this path/, label);
     }
   });
 
@@ -1278,6 +1279,58 @@ describe('the policy event harvest', () => {
     assert.match(line, /full event log at \/store\/events\.log/);
     // Nothing at all is not a line, so a clean session emits nothing.
     assert.equal(describePolicyEvents([], '/store/events.log'), null);
+  });
+
+  // PINS THE OPERATOR SENTENCE FOR A BIN-DIRECTORY DENIAL — the surface
+  // `suggestPin`'s own test cannot reach, and the one an operator actually
+  // reads when a union-bound worker dies.
+  //
+  // TWO ARMS OF `suggestPin` ANSWER `list: null` AND THEY DISAGREE. A
+  // bin-directory path is the MARKED CLI's and no array owns it; anything else
+  // could belong in either array. Grouped by the list NAME they merge into one
+  // `UNDECIDED` group and one sentence is printed for both — which told an
+  // operator to hand-add a bin path into arrays whose derivations say nothing
+  // about it, while `suggestPin` said the opposite about the same path.
+  //
+  // DIES UNDER: grouping the repair by `list` instead of by the note;
+  // re-copying either sentence into session.ts instead of surfacing the note.
+  test('a bin-directory denial and a no-array denial get their OWN sentences, each suggestPin’s own', () => {
+    const rows = [
+      'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed\t7\t7\tclaude\tclaude',
+      'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed\t7\t7\tclaude\tclaude',
+    ];
+    const line = describePolicyEvents(parsePolicyEvents(rows.join('\n') + '\n'), '/store/events.log');
+    // NON-VACUITY: both paths really reached the sentence.
+    assert.match(line, /\/usr\/bin\/git/);
+    assert.match(line, /\/var\/opt\/thing/);
+
+    // THE TWO REPAIRS ARE SEPARATE CLAUSES, which is the grouping claim. `; `
+    // is the join `describePolicyEvents` uses between its parts; the REPAIR
+    // clauses are the ones that are neither the `daemon refused` roll-call
+    // (which names every path by construction) nor the store-file pointer.
+    const clauses = line.split('; ');
+    const repairs = clauses.filter(c => !c.includes('the daemon refused: ')
+      && !c.startsWith('full event log at'));
+    assert.equal(repairs.length, 2, `one repair clause per advice, got ${JSON.stringify(repairs)}`);
+    const bin = repairs.find(c => c.includes('/usr/bin/git'));
+    const other = repairs.find(c => c.includes('/var/opt/thing'));
+    assert.ok(bin && other, line);
+    assert.notEqual(bin, other, `both paths landed in one clause, so they share one advice: ${line}`);
+
+    // THE BIN CLAUSE CARRIES THE BIN ARM'S ADVICE, and rules the arrays OUT.
+    assert.match(bin, /MARKED CLI/, bin);
+    assert.match(bin, /binaryPins\(claudeCommand\)/, bin);
+    assert.match(bin, /no array here owns it/, bin);
+    assert.doesNotMatch(bin, /decide between LOADER_OBJECTS/, bin);
+
+    // AND THE DEFAULT ARM STILL OFFERS THEM, because a path arriving there
+    // genuinely could belong in either.
+    assert.match(other, /decide between LOADER_OBJECTS, ETC_PINS and the session's localRoots/, other);
+
+    // NEITHER IS AN "ADD IT TO AN ARRAY" INSTRUCTION — that sentence is for a
+    // named list only, and handing a bin path one is the defect this pins.
+    assert.doesNotMatch(line, /add \/usr\/bin\/git to/, line);
+    assert.doesNotMatch(line, /add \/var\/opt\/thing to/, line);
   });
 
   // PINS: THE `#` HEADER LINE IS SKIPPED, and the field test is not what skips
