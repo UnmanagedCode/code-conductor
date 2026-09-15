@@ -29,6 +29,10 @@ services:
     image: code-conductor:local
     init: true                       # tini: signal delivery + zombie reaping
     restart: unless-stopped
+    # Opt-in only: an unset/empty CC_HOSTNAME makes compose drop this key
+    # entirely (verified via `docker compose config`), leaving docker's
+    # default container hostname unchanged.
+    hostname: ${CC_HOSTNAME:-}
     # The NAME form, not "uid:gid": docker resolves a name through the image's
     # passwd/group files and loads the account's SUPPLEMENTARY groups (which
     # group_add in compose.docker.yaml extends). A bare uid:gid pair is passed
