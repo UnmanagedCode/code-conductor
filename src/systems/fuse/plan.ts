@@ -150,6 +150,11 @@ export interface FusePlan {
   // daemon refuses to mount without it: with no marking event no caller is ever
   // marked and the project tier is unreachable, which would look exactly like a
   // containment success.
+  //
+  // THE COMMAND SPELLING, NEVER THE REALPATH, and that is what makes a symlinked
+  // launcher work: symlink resolution happens in the VFS, so the daemon is asked
+  // about the LINK first and marks there — after which the target's own ancestor
+  // chain is walked already marked. Real gate `R16`.
   markPath: string;
   tiers: TierEntry[];
   pinsText: string;

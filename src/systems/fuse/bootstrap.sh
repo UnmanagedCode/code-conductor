@@ -224,26 +224,39 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 PATH="${CC_FUSE_PATH:-$PATH}"
 export PATH
 exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '
-	# THE MARKING EVENT, FIRED DELIBERATELY AND BEFORE THE cd.
+	# NOTHING HERE FIRES THE MARKING EVENT, AND THAT IS THE DESIGN.
 	#
-	# The union serves a project path only to a thread group marked as the
-	# CLI, and a thread group is marked the first time it resolves the CLI
-	# binary. Every link from here on — this shell, setpriv, the CLI — is the
-	# SAME pid, because each one execs, and exec preserves the thread group
-	# and its start time. So marking here marks the CLI.
+	# WHAT MARKS: the CLI reading its own binary. The daemon marks a thread
+	# group the first time it RESOLVES $CC_UNION_MARK_PATH, and the kernel
+	# resolves that path as the first step of the CLI`s own execve — so the
+	# marking event is the CLI`s, and the marked population is the CLI`s
+	# thread group plus whatever it goes on to read in place. A symlinked
+	# launcher marks on the LINK, which is the spelling cc registers, and the
+	# target`s chain is then walked marked (real gate R16).
 	#
-	# Without it the FIRST union op this pid makes is the `cd` below, into
-	# the project tree, unmarked — and the launch dies "cwd does not exist
-	# inside the chroot" before the CLI is ever reached. Waiting for the
-	# loader to read the binary incidentally is one op too late, and it also
-	# leaves the pre-mark window wide open.
+	# WHAT IS DELIBERATELY UNMARKED, and each is a process that has no
+	# business resolving in the CLI`s view: this shell, setpriv below, and
+	# the backend launch command setpriv execs — which resolves its own name
+	# against $CC_FUSE_PATH and reads its own libraries and $HOME state.
+	# Unmarked callers resolve in VIEW_HOST, where the remote tier is struck
+	# entirely and an unpinned path is served from the orchestrator instead
+	# of denied, so all three run against the machine they belong to.
 	#
-	# A plain existence test: the daemon marks on RESOLUTION, so a stat is
-	# the whole event. `|| :` because the mark path is host-pinned and an
-	# unreadable one is the daemon`s refusal to report, not this shell`s.
-	[ -e "$5" ] || :
+	# THE cd IS ANSWERED BY THE CWD CHAIN, NOT BY A MARK. Every component of
+	# $CC_FUSE_CWD is traversable to an unmarked caller — the orchestrator`s
+	# own directory floored to --x, or a traverse-only overlay node where it
+	# has none (`policy_cwd_component` + resolve_class`s VIEW_HOST clause,
+	# policy.h). This shell is still root here, and the chain does not vary
+	# with the advertised mirror root.
+	#
+	# RESIDUAL, DISCLOSED RATHER THAN DESIGNED AROUND: the mark fires on
+	# RESOLUTION, so any process that merely stats the launcher marks ITSELF
+	# — a backend that probes for `claude` on PATH before forking, say. It
+	# cannot leave the CLI unmarked (a forked child is a fresh thread group
+	# and marks itself at its own execve), and $CC_FUSE_EVENT_LOG`s tgid and
+	# comm columns name it directly if it ever bites.
 	cd "$2" || { echo "cc-fuse-bootstrap: REFUSED — cwd $2 does not exist inside the chroot" >&2; exit 78; }
 	sp=$1; u=$3; g=$4
-	shift 5
+	shift 4
 	exec "$sp" --reuid="$u" --regid="$g" --init-groups -- "$@"
-' sh "$SETPRIV_BIN" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$CC_FUSE_MARK_PATH" "$@"
+' sh "$SETPRIV_BIN" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$@"
