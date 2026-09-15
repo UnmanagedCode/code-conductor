@@ -35,7 +35,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 |---|---|---|
 | `CC_PROJECTS_DIR` | *(required)* | Absolute host projects root. Must exist, be outside the cc repo, and be writable by `CC_UID`/`CC_GID`. |
 | `COMPOSE_PROJECT_NAME` | `code-conductor` | Read by compose itself (not a `CC_` var). Sets the container/volume/network prefix, e.g. `mybox` → `mybox-conductor-1`. Changing it after containers/volumes exist orphans the old-named ones. |
-| `CC_HOSTNAME` | *(empty — docker's default)* | The container's own hostname (compose `hostname:`). Empty/unset leaves docker's default unchanged (verified: compose drops the key entirely rather than setting an empty one). |
+| `CC_HOSTNAME` | *(empty — docker's default)* | The container's own hostname (compose `hostname:`). Empty/unset leaves docker's default unchanged — compose drops the key entirely rather than setting an empty one. |
 | `CC_PORT` | `8787` | Host port (container side is fixed 8787). |
 | `CC_BIND` | `127.0.0.1` | Host IP the port publishes on. Loopback by default on purpose — widen deliberately. |
 | `CC_USER` | `node` | The **account** the container runs as (compose `user:`). A name, so docker resolves it through the image's passwd/group files at container creation and loads the account's supplementary groups — an all-digit value is refused at build. Changing it needs a **rebuild**: `docker compose start` against the old image fails with a raw `unable to find user`; `make up` always rebuilds. |
@@ -88,7 +88,9 @@ The server boots regardless of auth state (banner warning only); `claude` is nee
 make login/tailscale
 ```
 
-(= `docker compose -f compose.yaml exec conductor tailscale up`.) State lives under `$HOME` (`<projects dir>/.cc-home/.tailscale/`), so the node key persists across container recreation: after the first join, later boots come up connected automatically. `make HOSTNAME=<name> login/tailscale` passes `--hostname=<name>` for that one join (documentation-derived, not measured here: `tailscale up` otherwise names the node after the OS hostname — i.e. `CC_HOSTNAME` if you've set one); a bare `make login/tailscale` is unaffected, and an ambient `HOSTNAME` environment variable is deliberately ignored (only a command-line or `.env` value counts).
+(= `docker compose -f compose.yaml exec conductor tailscale up`.) State lives under `$HOME` (`<projects dir>/.cc-home/.tailscale/`), so the node key persists across container recreation: after the first join, later boots come up connected automatically.
+
+`make HOSTNAME=<name> login/tailscale` passes `--hostname=<name>` for that one join; `tailscale up` otherwise names the node after the OS hostname, i.e. `CC_HOSTNAME` when you've set one. A bare `make login/tailscale` is unaffected, and an ambient `HOSTNAME` environment variable is deliberately ignored — only a command-line or `.env` value counts.
 
 **ollama (with `CC_WITH_OLLAMA=1`).** The entrypoint starts `ollama serve` detached at boot. To sign in to ollama's hosted service:
 
