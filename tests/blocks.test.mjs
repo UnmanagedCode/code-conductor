@@ -58,6 +58,15 @@ test('describeToolInput: Bash → command', () => {
   assert.equal(describeToolInput('Bash', { command: 'ls -la' }), 'ls -la');
 });
 
+test('describeToolInput: Bash prefers description over command, falls back without one', () => {
+  assert.equal(
+    describeToolInput('Bash', { command: 'ls -la', description: 'List files' }),
+    'List files',
+  );
+  assert.equal(describeToolInput('Bash', { command: 'ls -la' }), 'ls -la');
+  assert.equal(describeToolInput('Bash', { command: 'ls -la', description: '   ' }), 'ls -la');
+});
+
 test('describeToolInput: Edit/Write/Read → file_path', () => {
   assert.equal(describeToolInput('Edit',  { file_path: '/x/y.js' }), '/x/y.js');
   assert.equal(describeToolInput('Write', { file_path: '/x/y.js' }), '/x/y.js');
@@ -92,6 +101,15 @@ test('describeToolInput: collapses whitespace and truncates long values', () => 
   const s = describeToolInput('Bash', { command: `echo\n\n   ${long}` });
   assert.ok(s.length <= 121, `expected ≤121 chars, got ${s.length}`);
   assert.ok(s.endsWith('…'));
+});
+
+test('describeToolInput: Bash description is whitespace-collapsed and truncated too', () => {
+  const longDesc = 'b'.repeat(300);
+  const s = describeToolInput('Bash', { command: 'echo short', description: `explain\n\n   ${longDesc}` });
+  assert.ok(s.length <= 121, `expected ≤121 chars, got ${s.length}`);
+  assert.ok(s.endsWith('…'));
+  assert.ok(s.startsWith('explain b'), `expected description content, got "${s.slice(0, 20)}"`);
+  assert.equal(s.includes('short'), false, 'must not fall back to command when description is present');
 });
 
 test('describeToolInput: unknown tool → first stringy field as key=value', () => {
@@ -416,6 +434,18 @@ test('ToolUseBlock: rich parsers (Edit/Write/Bash) render inside expanded detail
     assert.ok(details, `${name}: expected details.block.tool-args`);
     assert.ok(details.hasAttribute('open'), `${name}: details should be open`);
   }
+});
+
+test('ToolUseBlock: Bash expanded body shows the command but not the description', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Bash', toolUseId: 'tu_desc' });
+  block.finalizeInput({ command: 'ls -la', description: 'List files' });
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  assertNull(details.querySelector('.bash-cmd-desc'), 'description must not repeat in the expanded body');
+  const pre = details.querySelector('pre.bash-cmd');
+  assert.ok(pre, 'expected pre.bash-cmd');
+  assert.equal(pre.textContent, 'ls -la');
 });
 
 test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with JSON', () => {
