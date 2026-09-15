@@ -256,13 +256,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // MEASURED, and it is the fixture precondition a wide root imposes: at
     // `mirrorRoot: '/'` every UNPINNED DIRECTORY becomes `project` tier —
     // including the ancestors of the host pins (`/usr` above
-    // `/usr/bin/setpriv`, `/usr/lib/x86_64-linux-gnu` above `libc.so.6`). A
-    // MARKED caller resolves those through the control channel, so the mirror
-    // SOURCE must have a directory at each of them. A real remote system has
-    // them by construction; this fixture's fake remote is deliberately narrow
-    // (one project tree), and without this scaffold the bootstrap's
-    // `exec /usr/bin/setpriv` died at `/usr` with `remote-absent` — the daemon
-    // named the path — and the worker never reached the CLI.
+    // `/usr/lib/x86_64-linux-gnu/libc.so.6`, and `/usr/lib/x86_64-linux-gnu`
+    // above `libc.so.6` itself). A MARKED caller resolves those through the
+    // control channel, so the mirror SOURCE must have a directory at each of
+    // them. A real remote system has them by construction; this fixture's fake
+    // remote is deliberately narrow (one project tree), and without this
+    // scaffold a marked walk dies at `/usr` with `remote-absent` — the daemon
+    // names the path — and the worker never reaches the CLI.
     //
     // DIRECTORIES ONLY, WHICH IS WHY IT DOES NOT REINTRODUCE THE HAZARD the
     // narrow fake remote exists to avoid: an unpinned FILE under one of these
@@ -900,8 +900,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // (a) THE MARKED CLI GETS THE SCAFFOLD: `policy_fixed_dir`'s own fixed
       // `0555 root:root` with mtime 0, not the host's real mode and real mtime.
       // `/usr` carries no pin of its own and is a strict ancestor of many `host`
-      // pins (`ETC_PINS`, `LOADER_OBJECTS` and `BOOTSTRAP_CHAIN` all seed
-      // `/usr/...`), so it is `T_SYNTH` to this caller.
+      // pins (`ETC_PINS` and `LOADER_OBJECTS` both seed `/usr/...`), so it is
+      // `T_SYNTH` to this caller.
       //
       // MARK-THEN-`exec`, the idiom R7 already runs and passes on: `[ -e ]` is a
       // shell BUILTIN, so the marking `getattr` is made by the shell's own
@@ -2518,10 +2518,16 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   //      the `setpriv` binary and at a `/usr/bin` entry, with no `deny` row for
   //      any of them.
   //   2. NO MARKED OP NAMES A PATH UNDER `/usr/bin` AT ALL. That is the claim
-  //      licensing `BOOTSTRAP_CHAIN` and the `/usr/bin` install-prefix pin it
-  //      derives to be dropped: a pin exists only for a path a MARKED caller
-  //      reads. If the CLI ever grows a marked read under
-  //      `/usr/bin`, this dies and the pin is load-bearing again.
+  //      licensing the bootstrap chain to carry no pin: a pin exists only for a
+  //      path a MARKED caller reads. If the CLI ever grows a marked read under
+  //      `/usr/bin`, this dies and those pins are load-bearing again.
+  //   3. AND THE CONTRAST, which is (1)'s non-vacuity: the SAME three paths to
+  //      a MARKED caller are NOT the orchestrator's. Nothing pins them, so at
+  //      `mirrorRoot: '/'` they resolve `project` — the remote tier, which has
+  //      no host fallback and (in this fixture's mirror, directories only)
+  //      holds no such file. Without this, (1) would be satisfied by a table
+  //      that served every caller the host, and the view would be proving
+  //      nothing.
   //
   // THE TRACE IS SNAPSHOTTED BEFORE THIS ARM'S OWN MARKED PROBE RUNS, because
   // that probe would otherwise supply the very rows (2) rules out.
@@ -2548,9 +2554,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const markedUsrBin = trace.filter(l => /\bmark=1\b/.test(l)
         && (l.split('\t')[1] ?? '').startsWith('/usr/bin/'));
       assert.deepEqual(markedUsrBin.map(l => l.split('\t').slice(0, 2).join(' ')), [],
-        'A MARKED CALLER READ A PATH UNDER /usr/bin. `BOOTSTRAP_CHAIN` and the `/usr/bin` '
-        + 'install-prefix pin it derives are justified by exactly this not happening — they are '
-        + 'load-bearing again, and dropping them would put this path in the remote tier for the CLI');
+        'A MARKED CALLER READ A PATH UNDER /usr/bin. The bootstrap chain carrying no pin is '
+        + 'justified by exactly this not happening — a pin there is load-bearing again, and its '
+        + 'absence puts this path in the remote tier for the CLI');
 
       // (1) THE ORCHESTRATOR'S OWN BYTES, compared at the mount. `nsenter` does
       // NOT chroot, so the union spelling and the host spelling are both
@@ -2576,17 +2582,35 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         assert.deepEqual(events.filter(r => r[0] === 'deny' && r[2] === bin), [],
           `${bin} produced a deny row for an unmarked caller`);
 
-      // THE CONTRAST, LAST: the same three paths to a MARKED caller are still
-      // the orchestrator's, because `BOOTSTRAP_CHAIN` and `binaryPins` pin them
-      // host at every geometry. That is what makes their removal a review
-      // question rather than a guess — today nothing needs them, and this says
-      // what they currently do.
+      // (3) THE CONTRAST, LAST, AND IT IS THE INVERSE OF (1). Nothing pins
+      // these three paths, so a MARKED caller resolves them in the REMOTE tier
+      // at `mirrorRoot: '/'` — no host fallback, and this fixture's mirror
+      // carries directories only — and `cmp` cannot read the union spelling at
+      // all. That the two probes DISAGREE is what makes (1) a statement about
+      // the VIEW rather than about a table that happens to serve everyone the
+      // host.
+      //
+      // MARK-THEN-`exec`: `[ -e ]` is a shell BUILTIN, so the marking getattr
+      // is the shell's own thread group, and `exec` keeps the tgid the daemon
+      // validates. The `cmp` binary itself is named at its HOST path, outside
+      // the union, so the probe's own image is never the thing under test.
       for (const bin of probes) {
         const r = await inNs(record.anchorPid, '[ -e "$1" ]; exec /usr/bin/cmp -s "$2" "$3"',
           inside(record, inst._fuse.plan.markPath), inside(record, bin), bin);
-        assert.equal(r.ok, true,
-          `a MARKED caller did not get the orchestrator's own ${bin}: ${r.stdout} ${r.stderr}`);
+        assert.equal(r.ok, false,
+          `A MARKED CALLER WAS SERVED THE ORCHESTRATOR'S OWN ${bin} at a wide mirror root. `
+          + `Something pins it host again — which would make (2) above the only thing standing `
+          + `between the bootstrap chain and a reinstated pin set: ${r.stdout} ${r.stderr}`);
       }
+      // AND THE DAEMON SAID SO, by name: the refusal is the tier answering, not
+      // the probe failing for some unrelated reason. Re-read, because `events`
+      // above was snapshotted before these probes ran.
+      const afterProbes = await eventsOf(inst.id);
+      const markedDenied = new Set(afterProbes.filter(r => r[0] === 'deny').map(r => r[2]));
+      for (const bin of probes)
+        assert.ok(markedDenied.has(bin),
+          `the marked probe of ${bin} produced no deny row, so its failure is unattributed: `
+          + JSON.stringify([...markedDenied]));
 
       console.log(`fuse gate [R13w] ${trace.length} traced ops, `
         + `${trace.filter(l => /\bmark=1\b/.test(l)).length} marked; `

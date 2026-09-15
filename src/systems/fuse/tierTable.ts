@@ -20,46 +20,43 @@
 //
 // ── WHAT THE LIST HAS TO COVER, AND WHAT IT DOES NOT
 //
-// THE LIST DOES NOT SHRINK — IT STOPS GROWING. `fail → host` for an unmarked
-// caller (`policy_caller_tier`, policy.h) means the arrays below have to cover
-// **the CLI's own execution closure and nothing else**: its NEEDED set, its
-// dlopen closure, its settings, its temp paths. They do not have to grow when
-// somebody installs a new tool on the host — a new shell, a new binary, a new
-// library some UNMARKED subprocess reaches for is served the host at an
-// unpinned path. Nothing below is deleted, and the reason is the next
-// paragraph.
+// THE LIST DOES NOT GROW WITH THE HOST. `fail → host` for an unmarked caller
+// (`policy_caller_tier`, policy.h) means the arrays below have to cover **the
+// CLI's own execution closure and nothing else**: its NEEDED set, its dlopen
+// closure, its settings, its temp paths. They do not have to grow when somebody
+// installs a new tool on the host — a new shell, a new binary, a new library
+// some UNMARKED subprocess reaches for is served the host at an unpinned path.
 //
-// EVERY ENTRY STAYS, BECAUSE "DEAD" IS CONFIGURATION-DEPENDENT. A pin is dead
-// only if every path it covers is read exclusively by an unmarked caller — and
-// only under the DEFAULT `mirrorRoot` (= the project's own path), where an
-// unpinned path is `fail` and an unmarked caller is served the host anyway.
+// AND AN ENTRY IS DELETABLE ONLY ON THE CALLER, NEVER ON THE GEOMETRY. A pin is
+// dead when every path it covers is read exclusively by an UNMARKED caller,
+// which resolves in `VIEW_HOST` at every geometry. It is NOT dead merely
+// because the DEFAULT `mirrorRoot` (= the project's own path) makes an unpinned
+// path `fail`, which the host answers anyway.
 //
-// UNDER AN ADVERTISED `mirrorRoot: '/'` EVERY ENTRY BELOW IS LOAD-BEARING
-// AGAIN, AND FOR THE MARKED CALLER. `add('project', '/')` covers everything
-// unpinned, so `tier_of` can never return `T_FAIL` and an unpinned `/bin/sh`
-// would be `project` tier — i.e. the REMOTE's shell, not the orchestrator's
-// one the chroot is built around. The pin is a longer prefix than `project /`,
+// UNDER AN ADVERTISED `mirrorRoot: '/'` EVERY SURVIVING ENTRY IS LOAD-BEARING,
+// AND FOR THE MARKED CALLER. `add('project', '/')` covers everything unpinned,
+// so `tier_of` can never return `T_FAIL` and an unpinned `/usr/lib/.../libc.so.6`
+// would be `project` tier — i.e. the REMOTE's libc, not the orchestrator's one
+// the chroot is built around. The pin is a longer prefix than `project /`,
 // which is the only thing keeping it host-served FOR THE MARKED CLI. (What is
 // NOT the reason: it is not that an UNMARKED caller loses anything here. An
 // unmarked caller resolves in `VIEW_HOST`, where every `project` pin is
 // struck — so it is served
-// the orchestrator's own `/bin/sh` at a wide root with or without these pins,
+// the orchestrator's own copy at a wide root with or without these pins,
 // and at every other geometry identically. The pins are for the CLI.) Measured
 // by building the real table both ways.
 //
-// The split, from the measured pre-mark window plus `ldd`, recorded rather than
-// acted on. `bootstrap.sh` fires NO marking event, so the whole bootstrap chain
-// runs unmarked and the window is the chain in full:
-//   DEAD AT EVERY GEOMETRY  the WHOLE of BOOTSTRAP_CHAIN — every shell spelling
-//     AND `setpriv` — plus everything `binaryPins` derives from each, which
-//     includes the `/usr/bin` install prefix (via `/usr/bin/sh` -> `/usr/bin/dash`
-//     and `/usr/bin/setpriv`), and `libcap-ng.so.0` in LOADER_OBJECTS, which is
-//     setpriv's alone. Every one of them is read exclusively by an UNMARKED
-//     caller — the chroot'd shell, `setpriv`, and the backend launch command
-//     `setpriv` execs — and an unmarked caller resolves in VIEW_HOST at every
-//     geometry, so nothing here is load-bearing under a wide `mirrorRoot`
-//     either. The standing licence is real gate `R13w`: no marked op names a
-//     path under `/usr/bin` at all.
+// The split, from the measured pre-mark window plus `ldd`. `bootstrap.sh` fires
+// NO marking event, so the whole bootstrap chain runs unmarked and the window
+// is the chain in full:
+//   RETIRED  every shell spelling AND `setpriv`, everything `binaryPins`
+//     derived from each, and `libcap-ng.so.0` — setpriv's alone. Each was read
+//     exclusively by an UNMARKED caller — the chroot'd shell, `setpriv`, and
+//     the backend launch command `setpriv` execs — and an unmarked caller
+//     resolves in VIEW_HOST at every geometry, so none of it was load-bearing
+//     under a wide `mirrorRoot` either. The standing licence is real gate
+//     `R13w`: no marked op names a path under `/usr/bin` at all. If the CLI
+//     grows a marked read there, `R13w` fails and the pins come back.
 //   LOAD-BEARING  everything else, and each for a measured reason — `binaryPins`
 //     of the CLI launcher, INCLUDING its realpath and the ancestors of that
 //     realpath, because the mark fires at the launcher's own lookup and the
@@ -71,7 +68,7 @@
 //     a remote-supplied one would preload a remote object into a host binary, or
 //     inject settings into the CLI — and that stays an inference, said so here.
 //
-// A THIRD CLASS, OUTSIDE THESE THREE ARRAYS AND LOAD-BEARING FOR THE RULING:
+// A THIRD CLASS, OUTSIDE THESE ARRAYS AND LOAD-BEARING FOR THE RULING:
 // the whole-`$HOME` pin, the whole-`projectsRoot` pin and the `sessionTmpDir`
 // localRoot are JOINTLY what keep the cross-mark handoff class empty — the
 // CLI's shell snapshot (marked CLI writes, unmarked per-call shell reads at
@@ -147,11 +144,6 @@ const ETC_PINS = [
 // libc that dlopens the REMOTE's NSS or gconv modules is a version mismatch
 // waiting to happen.
 //
-// `libcap-ng.so.0` is `setpriv`'s, from `ldd` on this host — one layer below
-// the interpreter chain above, and covered by no other entry here. `setpriv`
-// runs UNMARKED, so this entry is in the same class as BOOTSTRAP_CHAIN: see the
-// header block's split.
-//
 // THE LIST IS HAND-MAINTAINED, and entries keep arriving the expensive way:
 // several were added by reading the refusal log AFTER a spawn had already died
 // on them. Deriving it from `ldd` of the binaries this file already pins is the
@@ -164,7 +156,6 @@ const LOADER_OBJECTS = [
   '/usr/lib/x86_64-linux-gnu/libdl.so.2',
   '/usr/lib/x86_64-linux-gnu/librt.so.1',
   '/usr/lib/x86_64-linux-gnu/libpthread.so.0',
-  '/usr/lib/x86_64-linux-gnu/libcap-ng.so.0',
   '/usr/lib/x86_64-linux-gnu/libnss_compat.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_dns.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_files.so.2',
@@ -225,24 +216,17 @@ const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...realpathsOf(LOADER_OBJECT
   p => p.startsWith('/usr/') ? [p, p.slice(4)] : [p],
 ))];
 
-// THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
-// as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
-// setpriv ...'`.
+// THERE IS NO BOOTSTRAP-CHAIN ARRAY, AND NO `/usr/bin` ENTRY. The interpreter
+// chain `bootstrap.sh`'s last step execs inside the union — the shell and
+// `setpriv` — resolves UNMARKED at every geometry, and `VIEW_HOST` serves the
+// orchestrator's own bytes there with or without a pin (`R13w`; the header
+// block's split).
 //
-// EVERY ENTRY HERE IS READ BY AN UNMARKED CALLER AND BY NOTHING ELSE, at every
-// geometry — `bootstrap.sh` fires no marking event, so the shell and `setpriv`
-// both run in `VIEW_HOST`, where an unpinned path is served from the
-// orchestrator rather than from the remote. The header block above records what
-// that means for this array and names the arm licensing it (`R13w`).
-//
-// Both spellings of each, because which one exists is a distribution choice and
-// a pin that matches nothing costs nothing. `chroot` itself is NOT here: it runs
-// on the host, before the union is entered. What these binaries in turn need —
-// the ELF interpreter and `libcap-ng` — is in LOADER_PINS above.
-const BOOTSTRAP_CHAIN = [
-  '/bin/sh', '/usr/bin/sh', '/bin/dash', '/usr/bin/dash', '/bin/bash', '/usr/bin/bash',
-  '/usr/bin/setpriv', '/bin/setpriv',
-];
+// `/usr/bin` IS DERIVED, never an entry: `installPins(dir, dir)` returns the
+// directory itself whenever a pinned binary there is not a symlink, so on a
+// host where node is `/usr/bin/node` it still arrives through
+// `binaryPins(execPath)` below. Nothing names it, so nothing can delete it by
+// name.
 
 export interface TierTableInput {
   // The host-local prefixes a redirected session may legitimately reach, each
@@ -295,18 +279,63 @@ export interface TierTableInput {
   exclude: readonly string[];
 }
 
-// The common ancestor of two absolute paths, or null when they share nothing
-// deeper than a single top-level component (pinning `/usr` or `/` is never what
-// a caller means).
-function installPrefix(a: string, b: string): string | null {
-  const as = a.split('/'), bs = b.split('/');
+// ['', 'usr', 'bin'] is the shallowest useful answer: pinning `/usr` or `/` is
+// never what a caller means. A CONSTANT AND NOT A PARAMETER — the only value
+// any caller would pass is this one, and a knob nothing varies invites a future
+// tune of the one number this module's correctness rests on.
+const PIN_FLOOR = 3;
+
+// `dir` and every ancestor of it that clears the floor, shallowest first.
+function ancestorsOf(dir: string): string[] {
+  const parts = dir.split('/');
   const out: string[] = [];
+  for (let i = PIN_FLOOR; i <= parts.length; i++) out.push(parts.slice(0, i).join('/'));
+  return out;
+}
+
+// THE DIRECTORY PREFIXES A MARKED WALK OF A LAUNCHER NEEDS, given the
+// launcher's own directory and its realpath's. The common ancestor when it
+// clears the floor; otherwise the REALPATH's ancestor chain, floored the same
+// way — so `/usr` and `/` are still never emitted.
+//
+// WHY THE FALLBACK IS THE REALPATH'S SIDE ONLY, and this is the half a reader
+// would otherwise "fix" back to symmetry. The mark fires at the daemon's
+// resolution of the COMMAND spelling. To reach that spelling the VFS must first
+// walk the command's own ancestors, so they are resolved BEFORE the marking
+// event, by an unmarked caller — and `VIEW_HOST` serves those from the
+// orchestrator with or without a pin. Everything the VFS walks AFTER — the
+// readlink, the realpath, and that realpath's ancestor chain — is resolved by
+// an already-marked thread group, which has no host fallback. Real gate `R16`
+// measures both halves: its `firstMarked` index is > 0, the first `mark=1` row
+// names the link, and the realpath appears in the marked set strictly after it.
+// Pinning the command side would be pinning paths no marked caller ever names.
+//
+// WHY THE CHAIN IS DECLARED AT THE FLOOR rather than at the first
+// install-specific component, so the depth is not re-opened:
+//   1. Host pins are prefix-inheriting, so `/usr/lib` SUBSUMES
+//      `/usr/lib/node_modules` and everything under it. The floor is not a
+//      wider class of grant — it is the same grant, one level up.
+//   2. It is strictly more robust, and the residual is the benign one. Neither
+//      depth removes the dependence on unpinnable ancestors existing on the
+//      remote; this one reduces it to `/usr` alone, which every Linux rootfs
+//      that could host a provider has. The SECOND component is the
+//      install-specific one — `/usr/lib` vs `/usr/lib64` vs `/usr/share` vs
+//      `/usr/lib/<triplet>` vary by distro, and a minimal remote image can
+//      legitimately lack the one cc's own layout uses.
+//   3. It adds one rule, not two: the floor, applied to the chain instead of to
+//      a single common ancestor.
+//   4. The cost is near-nil. A host pin refuses a worker's file tools on that
+//      subtree under `mirrorRoot: '/'` — but `/usr/lib` is never inside a
+//      project tree, so no worker legitimately edits through the union there.
+export function installPins(cmdDir: string, realDir: string): string[] {
+  const as = cmdDir.split('/'), bs = realDir.split('/');
+  const common: string[] = [];
   for (let i = 0; i < Math.min(as.length, bs.length); i++) {
     if (as[i] !== bs[i]) break;
-    out.push(as[i]);
+    common.push(as[i]);
   }
-  // ['', 'usr', 'bin'] is the shallowest useful answer.
-  return out.length >= 3 ? out.join('/') : null;
+  if (common.length >= PIN_FLOOR) return [common.join('/')];
+  return ancestorsOf(realDir);
 }
 
 // A BARE COMMAND NAME RESOLVED AGAINST CC'S OWN PATH, the way the bootstrap's
@@ -334,10 +363,13 @@ export function resolveOnPath(cmd: string): string {
   return '';
 }
 
-// A launcher binary's pins: the path itself, its realpath, and the install
-// prefix above both. Pinning the leaves alone left every parent directory in an
-// npm-global chain falling back on a getattr; one prefix
-// covers the walk.
+// A launcher binary's pins: the path itself, its realpath, and whatever
+// `installPins` derives above the two — one prefix where they share a deep
+// enough ancestor, the realpath's ancestor chain where they do not. Pinning the
+// leaves alone left every parent directory in an npm-global chain falling back
+// on a getattr.
+//
+// TWO CALLERS, both in `buildTierTable`: `claudeCommand` and `execPath`.
 export function binaryPins(bin: string): string[] {
   const abs = resolveOnPath(bin);
   if (!abs) return [];
@@ -346,8 +378,7 @@ export function binaryPins(bin: string): string[] {
   let real = bin;
   try { real = realpathSync(bin); } catch { /* not installed here; pin what we were given */ }
   if (real !== bin) out.push(real);
-  const prefix = installPrefix(path.dirname(bin), path.dirname(real));
-  if (prefix) out.push(prefix);
+  out.push(...installPins(path.dirname(bin), path.dirname(real)));
   return out;
 }
 
@@ -356,7 +387,7 @@ export function binaryPins(bin: string): string[] {
 // THE OWNER'S MECHANISM, NOT A FALLBACK: "I want one method that works. I'm
 // fine with a list plus a logging system, allowing the user (or a Claude
 // session) to update the list." The daemon's event log names the path; this
-// says which of the three arrays in THIS file to put it in and in which
+// says which of the two arrays in THIS file to put it in and in which
 // spelling. No runtime derivation, ever — the suggestion is text a human or a
 // session applies.
 //
@@ -365,15 +396,16 @@ export function binaryPins(bin: string): string[] {
 // real one.
 //
 // THE FOUR-STEP UPDATE PATH, which the emitted line states so nobody has to
-// know it: (1) the arrays are `LOADER_OBJECTS`, `ETC_PINS`, `BOOTSTRAP_CHAIN`
-// in this file, and there is no second copy in cc; (2) add the `entry` to the
-// `list`; (3) `buildTierTable` runs per spawn and `renderPinsFile` writes
+// know it: (1) the arrays are `LOADER_OBJECTS` and `ETC_PINS` in this file, and
+// there is no second copy in cc; (2) add the `entry` to the `list`; (3)
+// `buildTierTable` runs per spawn and `renderPinsFile` writes
 // `<rundir>/pins.txt`, which the daemon parses at mount — so the change takes
 // effect on the NEXT SPAWN AFTER AN ORCHESTRATOR RESTART, because cc holds this
 // module in memory; (4) `npm test` re-runs the tier-table tests, which pin both
-// spellings, the realpath closure and the install-prefix derivation.
+// spellings, the realpath closure, the install-prefix derivation and the
+// realpath ancestor chain `installPins` falls back to.
 export interface PinSuggestion {
-  list: 'LOADER_OBJECTS' | 'ETC_PINS' | 'BOOTSTRAP_CHAIN' | null;
+  list: 'LOADER_OBJECTS' | 'ETC_PINS' | null;
   // The exact string to add to `list`, which is NOT always the path the daemon
   // refused — see the `/usr/` canonicalisation below.
   entry: string;
@@ -409,8 +441,19 @@ export function suggestPin(refusedPath: string): PinSuggestion {
       note: `add the /usr/-prefixed spelling: LOADER_PINS derives the /lib spelling AND the realpath from it, so the other spelling leaves the closure open. Then ${restart}`,
     };
   }
+  // A BIN DIRECTORY IS NO LONGER A GUESS, and the note says what the denial
+  // MEANS rather than naming an array. `bootstrap.sh` fires no marking event,
+  // so the chroot'd shell, `setpriv` and the backend launch command are all
+  // unmarked and host-served without any pin — a refusal here therefore means
+  // the MARKED CLI reached for it, and the first thing to check is whether it
+  // is the launcher's own closure, which `binaryPins(claudeCommand)` already
+  // pins.
   if (BIN_DIRS.some(d => refusedPath.startsWith(d))) {
-    return { list: 'BOOTSTRAP_CHAIN', entry: refusedPath, note: `binaryPins derives its realpath and install prefix. Then ${restart}` };
+    return {
+      list: null,
+      entry: refusedPath,
+      note: `a bin-directory refusal means the MARKED CLI named this — the bootstrap's own shell and setpriv are unmarked and host-served with no pin. Check first whether it is the launcher's own closure, which binaryPins(claudeCommand) pins automatically; otherwise decide between LOADER_OBJECTS, ETC_PINS and the session's localRoots (declared at the ONE construction site, src/instances.ts). Then ${restart}`,
+    };
   }
   // NO GUESS, AND IT NAMES EVERY PLACE A HUMAN MIGHT PUT IT. A wrong array is
   // worse than no suggestion: the entry lands somewhere the derivations do not
@@ -418,7 +461,7 @@ export function suggestPin(refusedPath: string): PinSuggestion {
   return {
     list: null,
     entry: refusedPath,
-    note: `no array in src/systems/fuse/tierTable.ts obviously owns this path — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots (which are declared at the ONE construction site, src/instances.ts). Then ${restart}`,
+    note: `no array in src/systems/fuse/tierTable.ts obviously owns this path — decide between LOADER_OBJECTS, ETC_PINS and the session's localRoots (which are declared at the ONE construction site, src/instances.ts). Then ${restart}`,
   };
 }
 
@@ -436,7 +479,7 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
     entries.push({ tier: 'host', prefix: r.prefix, why: r.why, toolAccess: r.access });
   };
 
-  for (const p of binaryPins(input.claudeCommand)) add('host', p, 'the CLI binary and its install prefix');
+  for (const p of binaryPins(input.claudeCommand)) add('host', p, "the CLI binary, its realpath and the realpath's install chain — all walked MARKED");
   for (const p of binaryPins(input.execPath)) add('host', p, 'node — the Bash forwarder is a real subprocess that must run host bytes');
   add('host', input.selfProjectDir, "cc's own checkout — the Bash forwarder's script lives here");
   add('host', input.projectsRoot, 'the projects root: the cc repo, the store and the plugin dirs in one prefix');
@@ -447,7 +490,6 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
   // EXDEV, because renameat2 cannot cross backing stores.
   add('host', input.homeDir, "the CLI's own state — the whole home dir, because its config update straddles it");
   for (const r of input.localRoots) addLocal(r);
-  for (const b of BOOTSTRAP_CHAIN) for (const p of binaryPins(b)) add('host', p, "the bootstrap's interpreter chain, exec'd inside the union as root");
   for (const p of ETC_PINS) add('host', p, 'identity, name resolution, TLS trust, managed settings');
   for (const p of realpathsOf(ETC_PINS)) add('host', p, "the target of a pinned /etc symlink — the union's open follows it, and the target has its own tier");
   for (const p of LOADER_PINS) add('host', p, "the loader's NEEDED set and glibc's dlopen closure");

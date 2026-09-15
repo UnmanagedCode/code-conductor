@@ -16,7 +16,7 @@ import { promises as fs, rmSync } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { runTeardown, DEFAULT_DEADLINES, describePolicyEvents, parsePolicyEvents } from '../src/systems/fuse/session.ts';
-import { buildTierTable, renderPinsFile, binaryPins, resolveOnPath, resolveTierEntry, suggestPin, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
+import { buildTierTable, renderPinsFile, binaryPins, installPins, resolveOnPath, resolveTierEntry, suggestPin, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
@@ -790,22 +790,31 @@ describe('the tier table', () => {
     assert.equal(tierOf(t, '/home/wk'), 'host');
   });
 
-  // PINS: the interpreter chain bootstrap.sh execs INSIDE the union as root,
-  // before the privilege drop. Deleting the loop that adds these leaves every
-  // other assertion in this file green.
-  test("the bootstrap's interpreter chain is host-pinned, in every spelling", () => {
+  // PINS THE INVERSE: the interpreter chain bootstrap.sh execs INSIDE the union
+  // carries NO pin, in any spelling. `bootstrap.sh` fires no marking event, so
+  // the chroot'd shell and `setpriv` resolve in `VIEW_HOST` at every geometry,
+  // where an unpinned path is served from the orchestrator anyway.
+  //
+  // THE LICENCE IS REAL GATE `R13w`, which asserts at `mirrorRoot: '/'` that no
+  // marked op names a path under `/usr/bin` at all. If the CLI ever grows a
+  // marked read there, `R13w` fails and these pins are load-bearing again —
+  // this assertion is what a reinstating change has to delete.
+  test("the bootstrap's interpreter chain is NOT pinned, in any spelling", () => {
     const t = buildTierTable(input);
     for (const p of ['/bin/sh', '/usr/bin/sh', '/bin/dash', '/usr/bin/dash',
       '/bin/bash', '/usr/bin/bash', '/usr/bin/setpriv', '/bin/setpriv']) {
-      assert.equal(tierOf(t, p), 'host', p);
+      assert.equal(tierOf(t, p), undefined, `${p} carries a pin again`);
     }
+    // NON-VACUITY: the table really is populated, so "no entry" is a decision
+    // and not an empty build.
+    assert.equal(tierOf(t, '/etc/passwd'), 'host');
   });
 
-  // PINS one layer further down: the ELF interpreter baked into those binaries
-  // and setpriv's own NEEDED set. On a merged-usr host `/lib` and `/lib64` are
-  // symlinks to `/usr/lib` and `/usr/lib64`, but the table matches PATH
-  // STRINGS — so the `/lib64` spelling the ELF header actually requests has to
-  // be named, not merely implied by the `/usr/lib64` one.
+  // PINS one layer further down: the ELF interpreter baked into the CLI's own
+  // binaries and glibc's dlopen closure. On a merged-usr host `/lib` and
+  // `/lib64` are symlinks to `/usr/lib` and `/usr/lib64`, but the table matches
+  // PATH STRINGS — so the `/lib64` spelling the ELF header actually requests
+  // has to be named, not merely implied by the `/usr/lib64` one.
   test('the loader is pinned in the spelling the ELF header requests', () => {
     const t = buildTierTable(input);
     for (const p of [
@@ -813,11 +822,16 @@ describe('the tier table', () => {
       '/usr/lib64/ld-linux-x86-64.so.2',
       '/lib/x86_64-linux-gnu/libc.so.6',
       '/usr/lib/x86_64-linux-gnu/libc.so.6',
-      '/lib/x86_64-linux-gnu/libcap-ng.so.0',   // setpriv's, and in no earlier list
-      '/usr/lib/x86_64-linux-gnu/libcap-ng.so.0',
+      '/lib/x86_64-linux-gnu/libcap.so.2',      // libsystemd's, via the libnss_systemd dlopen closure the MARKED CLI drives
+      '/usr/lib/x86_64-linux-gnu/libcap.so.2',
     ]) {
       assert.equal(tierOf(t, p), 'host', p);
     }
+    // AND `libcap-ng.so.0` IS NOT THERE — it is `setpriv`'s alone, and
+    // `setpriv` runs unmarked. Adjacent to `libcap.so.2` above, similarly
+    // named, opposite class: the two must not be reinstated together.
+    for (const p of ['/lib/x86_64-linux-gnu/libcap-ng.so.0', '/usr/lib/x86_64-linux-gnu/libcap-ng.so.0'])
+      assert.equal(tierOf(t, p), undefined, `${p} carries a pin again`);
   });
 
   // PINS: the npm-global chain. Pinning the leaves alone left every parent
@@ -839,6 +853,105 @@ describe('the tier table', () => {
       `a bare name on PATH resolves to an absolute pin, got ${JSON.stringify(shPins)}`);
     assert.equal(resolveOnPath('/already/absolute'), '/already/absolute');
     assert.equal(resolveOnPath('cc-no-such-command-anywhere'), '');
+  });
+
+  // ── THE `/usr`-PREFIX GEOMETRY, AS PATH ARITHMETIC ───────────────────────
+  //
+  // PINS: where the launcher and its realpath share only a TWO-component
+  // ancestor, `installPins` emits the REALPATH's ancestor chain from the floor
+  // down, and never `/usr` or `/`.
+  //
+  // PATH STRINGS ARE THE FIXTURE, and they have to be: the defect is that the
+  // common ancestor has exactly two ABSOLUTE components, and any `mkdtemp` root
+  // is far deeper — so under a temp tree the fallback branch can never fire.
+  // T2 below drives the same function from a real symlinked tree and therefore
+  // covers only the single-prefix branch; this is the chain branch's one home.
+  //
+  // THE ASYMMETRY IS DELIBERATE AND IS ASSERTED, because it is what a reader
+  // would otherwise "fix" back to symmetry: the mark fires at the daemon's
+  // resolution of the COMMAND spelling, so the command's own ancestors are
+  // walked to reach it — before the marking event, by an unmarked caller
+  // `VIEW_HOST` serves from the orchestrator with no pin. Everything the VFS
+  // walks after (the readlink, the realpath, that realpath's ancestors) is
+  // resolved by an already-marked thread group. `R16` measures both halves at a
+  // real mount.
+  test('installPins chains the realpath side when the common ancestor is below the floor', () => {
+    // The `/usr`-prefix host: npm prefix `/usr`, globals under
+    // `/usr/lib/node_modules`. The common ancestor is `/usr` — two components,
+    // below the floor — so the chain is the realpath's, from the floor down.
+    const usr = installPins('/usr/bin', '/usr/lib/node_modules/@anthropic-ai/claude-code/bin');
+    assert.deepEqual(usr, [
+      '/usr/lib',
+      '/usr/lib/node_modules',
+      '/usr/lib/node_modules/@anthropic-ai',
+      '/usr/lib/node_modules/@anthropic-ai/claude-code',
+      '/usr/lib/node_modules/@anthropic-ai/claude-code/bin',
+    ]);
+    // THE COMMAND SIDE IS ABSENT, and that is the asymmetry above.
+    assert.ok(!usr.includes('/usr/bin'), usr.join(' '));
+    // THE FLOOR, and this assertion is the ONLY thing in the suite pinning its
+    // invariant: the install-prefix arm in the test above is disjunctive (the
+    // bin directory OR the prefix) and passes under any floor at all.
+    assert.ok(!usr.includes('/usr') && !usr.includes('/'), usr.join(' '));
+
+    // THE HEALTHY LAYOUT, unchanged: a 4-component common ancestor clears the
+    // floor, so one prefix is emitted and no chain is derived. The regression
+    // guard for every host whose npm prefix is not `/usr`.
+    assert.deepEqual(
+      installPins('/usr/local/share/npm-global/bin',
+        '/usr/local/share/npm-global/lib/node_modules/@anthropic-ai/claude-code/bin'),
+      ['/usr/local/share/npm-global']);
+
+    // NO SYMLINK TO FOLLOW: the common ancestor is the directory itself, which
+    // is what still puts `/usr/bin` in the table through `binaryPins(execPath)`
+    // on a host where node is `/usr/bin/node`.
+    assert.deepEqual(installPins('/usr/bin', '/usr/bin'), ['/usr/bin']);
+
+    // A COMMAND SIDE THAT SHARES ONLY `/` WITH ITS TARGET: the realpath's
+    // directory is emitted and the command's is not.
+    assert.deepEqual(installPins('/bin', '/usr/bin'), ['/usr/bin']);
+  });
+
+  // PINS, from a real symlinked tree rather than from arithmetic: `binaryPins`
+  // emits the launcher's own path, ITS REALPATH, and the install prefix — and
+  // resolves a bare name against PATH to the same set.
+  //
+  // THE REALPATH ENTRY IS ASSERTED UNCONDITIONALLY. Nothing else in the suite
+  // does: in the `/usr`-prefix geometry the common ancestor is below the floor,
+  // so the realpath row is the only pin covering the launcher's actual script,
+  // and a `binaryPins` that dropped it left every other assertion green.
+  //
+  // THE SINGLE-PREFIX BRANCH BY CONSTRUCTION: a `mkdtemp` root always clears
+  // the 3-component floor, so the common ancestor here is never rejected and
+  // the chain branch is unreachable from this fixture. T1 owns that branch.
+  test('binaryPins carries the realpath and the install prefix, from a real symlink', async () => {
+    const root = await mkdtemp('cc-binpins-');
+    const binDir = path.join(root, 'bin');
+    const pkgBin = path.join(root, 'lib', 'node_modules', 'pkg', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(pkgBin, { recursive: true });
+    const real = path.join(pkgBin, 'claude.exe');
+    const link = path.join(binDir, 'claude');
+    await fs.writeFile(real, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await fs.symlink(real, link);
+
+    const pins = binaryPins(link);
+    assert.ok(pins.includes(link), `the launcher's own spelling: ${pins.join(' ')}`);
+    assert.ok(pins.includes(real),
+      `THE REALPATH IS NOT PINNED. The union follows the symlink and the target has its own `
+      + `tier, so an unpinned target is a fail-tier -ENOENT at the second hop: ${pins.join(' ')}`);
+    assert.ok(pins.includes(root), `the install prefix: ${pins.join(' ')}`);
+
+    // THE SAME SET FROM A BARE NAME ON PATH — `resolveClaudeBin()` returns a
+    // bare `claude` by default, so this is the production spelling.
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath}`;
+    try {
+      assert.deepEqual(binaryPins('claude'), pins);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+    }
   });
 
   // PINS: the rendered file is what union.c's pins_load actually parses —
@@ -907,8 +1020,19 @@ describe('the policy event harvest', () => {
     assert.equal(suggestPin('/lib/x86_64-linux-gnu/gconv').list, 'LOADER_OBJECTS');
     assert.equal(suggestPin('/etc/machine-id').list, 'ETC_PINS');
     assert.equal(suggestPin('/etc/machine-id').entry, '/etc/machine-id');
-    for (const b of ['/bin/tar', '/sbin/ldconfig', '/usr/bin/git', '/usr/sbin/nologin'])
-      assert.equal(suggestPin(b).list, 'BOOTSTRAP_CHAIN', b);
+    // A BIN DIRECTORY IS THE NO-GUESS SHAPE TOO, and the note has to say what
+    // the denial MEANS: the bootstrap's shell and setpriv are unmarked and
+    // host-served with no pin, so a refusal here is the MARKED CLI's. The
+    // launcher-closure check comes FIRST, because `binaryPins(claudeCommand)`
+    // already pins that and a hand-added entry there would be a second source.
+    for (const b of ['/bin/tar', '/sbin/ldconfig', '/usr/bin/git', '/usr/sbin/nologin']) {
+      assert.equal(suggestPin(b).list, null, b);
+      assert.equal(suggestPin(b).entry, b);
+      assert.match(suggestPin(b).note, /MARKED CLI/, b);
+      const note = suggestPin(b).note;
+      assert.ok(note.indexOf('binaryPins(claudeCommand)') < note.indexOf('LOADER_OBJECTS'),
+        `the launcher-closure check must be named before the arrays: ${note}`);
+    }
     // NO GUESS where no array owns the path — a wrong array is worse than none,
     // because the entry lands where the derivations do not apply and the path
     // stays refused for a reason the log no longer explains.

@@ -352,7 +352,7 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
     for (const [list, entries] of byList) {
       const named = entries.map(asText).join(', ');
       parts.push(list === 'UNDECIDED'
-        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${named} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
+        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${named} — decide between LOADER_OBJECTS, ETC_PINS and the session's localRoots`
         : `add ${named} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
     }
   }

@@ -162,7 +162,10 @@ describe('a mirror root wider than the project', () => {
         `${p} is not project tier under a wide root — the regression's input is gone`);
     // …while the exact host pins INSIDE those directories keep their own tier,
     // which is why the failure is multiply determined rather than one bad pin.
-    assert.equal(at(wide, '/bin/sh'), 'host');
+    // `/bin/sh` is NOT one of them: the bootstrap chain runs unmarked and is
+    // served by the view rather than by a pin, so a loader object stands in for
+    // it here as the host pin under a project-tier parent.
+    assert.equal(at(wide, '/usr/lib/x86_64-linux-gnu/libc.so.6'), 'host');
     assert.equal(at(wide, '/etc/hosts'), 'host');
 
     // THE NARROW CONTROL: the same intermediate paths belong to no tier at all,
