@@ -346,9 +346,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   //
   // Not just the /proc scan. Every arm in the family that takes a residue delta
   // measures it UNDER `runRoot`, so a `runRoot` that is wrong-but-plausible
-  // makes both sides of the delta read empty and the arm passes vacuously —
-  // the same failure an `undefined` root produced before `mountsUnder` began
-  // refusing one. MEASURED: publish a valid absolute root that is not this
+  // makes both sides of the delta read empty and the arm passes vacuously — the
+  // same shape `mountsUnder` refuses a non-absolute root to prevent, and which
+  // nothing here can refuse. MEASURED: publish a valid absolute root that is not this
   // run's (`/opt`) and the mount, routing and marking files all stay green,
   // 7/7, 7/7 and 4/4. `CTX_SHAPE` in ./fuseGateCase.mjs cannot close this — no
   // predicate there distinguishes the true run root from any other absolute

@@ -116,10 +116,18 @@ export const mountsOf = (pid) => {
 // HOW BLIND THAT LEFT THE FAMILY IS MEASURED, not counted: with a broken root
 // and no refusal here, 24 of the 26 arms passed silently. Only arm 1 and arm 4
 // noticed, and they notice because they assert POSITIVE mount membership rather
-// than a delta. (A hand census of "arms that reach this only through
-// `snapshot()`" is the wrong instrument and goes stale as arms move — arm 6, for
-// one, is in that set yet would fail anyway, on its own `fs.readdir(runRoot)`.)
-// Refuse the input instead.
+// than a delta.
+//
+// A HAND CENSUS OF "ARMS THAT REACH THIS ONLY THROUGH `snapshot()`" IS THE
+// WRONG INSTRUMENT, and arm 6 is the sharpest illustration: it is in that set,
+// it ALSO reads the run root directly, and it still passes silently on a broken
+// one. `fs.promises.readdir(undefined)` REJECTS rather than throwing
+// synchronously, and both of its reads are `(await fs.readdir(runRoot).catch(()
+// => []))`, so each rejection is swallowed, both sides read `[]` and the
+// `deepEqual` holds; a merely WRONG absolute root makes both reads succeed
+// instead. So membership in that set predicts nothing about which arms notice.
+// Refuse the input instead — which is what reds arm 6, through its `snapshot()`
+// calls.
 export const mountsUnder = (pid, prefix) => {
   if (typeof prefix !== 'string' || !prefix.startsWith('/')) {
     throw new TypeError(`mountsUnder needs an absolute root, got ${JSON.stringify(prefix)}`
