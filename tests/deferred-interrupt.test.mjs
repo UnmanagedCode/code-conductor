@@ -65,6 +65,8 @@ async function stdinLines() {
       .split('\n').filter(Boolean).map(l => JSON.parse(l));
   } catch { return []; } // engine has not opened the file yet ⇒ nothing sent
 }
+const stderrLines = (inst) => inst.ring.toArray().filter(
+  e => e.kind === 'system' && e.subtype === 'stderr');
 const interruptsIn = (lines) => lines.filter(
   l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
 async function interruptCount() { return interruptsIn(await stdinLines()).length; }
@@ -405,6 +407,132 @@ test('a failed fire is re-armable within the same turn', async () => {
   assert.equal(inst.interrupting, true, 're-armed');
   assert.equal(inst._interruptFired, true, 'second attempt fired');
   await waitInterrupts(1);
+});
+
+// Card 2026-0207 — the FORCED tier owes the same re-armability. A force latches
+// `_interruptFired` before its round-trip; when that request rejects the latch
+// must roll back, or `_maybeFireArmedInterrupt`'s first guard shuts the SOFT
+// tier off for the rest of the turn and no ⏸ can ever reach the CLI again.
+for (const { shape, timedOut, makeErr } of [
+  { shape: 'a plain rejection', timedOut: false, makeErr: () => new Error('boom') },
+  { shape: 'a timeout', timedOut: true,
+    makeErr: () => Object.assign(new Error('control_request timeout'), { timedOut: true }) },
+]) {
+  test(`a failed FORCE (${shape}) leaves the turn soft-interruptible`, async () => {
+    const inst = await setupInstance();
+    const evs = collect(inst);
+    inst.prompt('open text');
+    await waitFor(() => evs.some(e => e.kind === 'text_delta'));
+    assert.equal(inst.status, 'turn');
+    assert.equal(inst.interrupting, false, 'nothing armed — this is a BARE force');
+
+    const real = inst._controlRequest.bind(inst);
+    let attempts = 0;
+    inst._controlRequest = async () => { attempts += 1; throw makeErr(); };
+    await assert.rejects(() => inst.interrupt({ force: true }));
+    inst._controlRequest = real;
+
+    assert.equal(attempts, 1, 'the force attempted a request');
+    assert.equal(inst.status, 'turn', 'the turn survived the failed force');
+    assert.equal(inst._interruptFired, false, 'rolled back — the abort never landed');
+    assert.equal(inst._interruptArmed, false, 'the force branch never arms');
+    assert.equal(inst.interrupting, false, 'and never raises the armed flag');
+    // The qualifier keeps its own, timedOut-keyed pessimism: the two rollbacks
+    // answer different questions and are deliberately not in step.
+    assert.equal(inst.turnForceAborted, timedOut, 'the report qualifier is unchanged');
+    assert.equal(await interruptCount(), 0, 'nothing reached the CLI');
+    assert.equal(stderrLines(inst).length, 0,
+      'the force catch annotates nothing — unlike the soft tier\'s failure handler');
+
+    // The cheap door still works: a fresh ⏸ arms and fires at the next boundary.
+    await inst.interrupt();
+    assert.equal(inst.interrupting, true, 're-armed after the failed force');
+    assert.equal(inst._interruptFired, false, 'mid-block ⇒ nothing sent yet');
+    inject(inst, blockStop(0));
+    assert.equal(inst._interruptFired, true, 'fired at the block close');
+    await waitInterrupts(1);
+    assert.equal(interruptsIn(await stdinLines()).length, 1, 'exactly one reached the CLI');
+  });
+}
+
+test('a failed forced ESCALATION leaves the live soft arm able to fire', async () => {
+  const { inst } = await armedMidTextBlock();
+
+  const real = inst._controlRequest.bind(inst);
+  let attempts = 0;
+  inst._controlRequest = async () => {
+    attempts += 1;
+    throw Object.assign(new Error('control_request timeout'), { timedOut: true });
+  };
+  await assert.rejects(() => inst.interrupt({ force: true }));
+  inst._controlRequest = real;
+
+  assert.equal(attempts, 1, 'the escalation attempted a request');
+  assert.equal(inst.status, 'turn');
+  assert.equal(inst._interruptFired, false, 'rolled back — the abort never landed');
+  assert.equal(inst._interruptArmed, true, 'the soft arm the force escalated is untouched');
+  // Deliberately NOT rolled back: the arm really is still armed, and this flag
+  // is what keeps the ⏹ escalate lever on screen for the operator.
+  assert.equal(inst.interrupting, true, 'left armed');
+  assert.equal(stderrLines(inst).length, 0, 'the force catch annotates nothing');
+
+  // One arm per turn: a repeat ⏸ is still a no-op. Recovery has to come from
+  // the LIVE arm, not from a re-arm.
+  await inst.interrupt();
+  assert.equal(attempts, 1, 'the repeat ⏸ sent nothing');
+  assert.equal(inst._interruptFired, false);
+
+  inject(inst, blockStop(0));
+  assert.equal(inst._interruptFired, true, 'the live arm fired at the next boundary');
+  assert.equal(inst.interrupting, true, 'still armed-and-stopping — _setStatus owns the clear');
+  await waitInterrupts(1);
+  assert.equal(interruptsIn(await stdinLines()).length, 1,
+    'one interrupt total — the failed force never reached stdin');
+});
+
+test('a failed forced escalation AT a boundary attempts no synchronous re-fire', async () => {
+  const { inst } = await armedMidTextBlock();
+
+  // The force's own request fails; anything sent AFTER it goes to the real
+  // channel. So a second attempt would genuinely reach the CLI's stdin — the
+  // "nothing was sent" assertions below are an absence the patch cannot fake.
+  const real = inst._controlRequest.bind(inst);
+  let attempts = 0;
+  inst._controlRequest = (...args) => {
+    attempts += 1;
+    if (attempts === 1) {
+      return Promise.reject(Object.assign(new Error('control_request timeout'), { timedOut: true }));
+    }
+    return real(...args);
+  };
+
+  // Not awaited: the block close lands while the force is still in flight, so
+  // by the time the rejection reaches the catch the live arm is sitting AT a
+  // boundary — the one state in which a re-fire from the catch would succeed.
+  // (The close itself fires nothing: _interruptFired is still latched here.)
+  const forced = inst.interrupt({ force: true });
+  assert.equal(inst._interruptFired, true, 'latched for the in-flight force');
+  inject(inst, blockStop(0));
+  assert.equal(attempts, 1, 'the boundary was suppressed by the latch');
+  await assert.rejects(() => forced);
+
+  // Every guard _maybeFireArmedInterrupt would consult now passes...
+  assert.equal(inst.status, 'turn');
+  assert.equal(inst._interruptArmed, true, 'the arm is live');
+  assert.equal(inst._interruptFired, false, 'rolled back');
+  assert.equal(inst._atInterruptBoundary(), true, 'and the stream is at a boundary');
+  // ...so nothing but the absence of the call explains this: the catch does not
+  // re-send on the channel that just failed. Recovery is _emitUi's tail's job.
+  assert.equal(attempts, 1, 'the catch attempted no second control_request');
+  assert.equal(await interruptCount(), 0, 'nothing reached the CLI');
+  assert.equal(stderrLines(inst).length, 0, 'and the force catch annotates nothing');
+
+  // The next event proves the arm really was fireable all along.
+  inject(inst, toolResult('tu_di_bash'));
+  assert.equal(inst._interruptFired, true, 'the live arm fired at the next boundary event');
+  assert.equal(attempts, 2);
+  await waitInterrupts(1);
+  assert.equal(interruptsIn(await stdinLines()).length, 1, 'exactly one interrupt reached the CLI');
 });
 
 test('real capture: the armed interrupt fires at the last tool_result, before the extra round-trip', async () => {

@@ -926,8 +926,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // An armed interrupt fires at the first such point, so no half-streamed
     // block is cut and no completed tool work is thrown away. _interruptArmed
     // is the fire's own gate — deliberately NOT `interrupting`, which is also the
-    // WS-visible "stopping…" flag — and _interruptFired holds it to at most one
-    // control_request per arm.
+    // WS-visible "stopping…" flag — and _interruptFired suppresses any further
+    // control_request until a request rejects or the turn exits; an ACK does not
+    // clear it, and it is NOT one per arm. Full rule: docs/protocol.md → Two-tier
+    // interrupt.
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
@@ -3255,9 +3257,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.status !== 'turn') return;
     if (force) {
       // Also disarms any pending deferred fire: the abort is happening now, so a
-      // later boundary must not send a second control_request.
+      // later boundary must not send a second control_request. Rolled back in the
+      // catch below if the request rejects — see there for why unconditionally.
       this._interruptFired = true;
-      // Set BEFORE the await, and rolled back if the abort is never confirmed.
+      // `_turnForceAborted` is set BEFORE the await, and rolled back if the abort
+      // is never confirmed.
       // Before is forced by ordering: the CLI's control_response ACK and the
       // abort's own `result` can arrive in the SAME stdout chunk, and stdout lines
       // are handled synchronously in a loop — so turn_end can be processed before
@@ -3281,6 +3285,15 @@ export class Instance extends EventEmitter implements InstanceLike {
       try {
         await this._controlRequest({ subtype: 'interrupt' });
       } catch (e) {
+        // Unconditional, unlike the qualifier below it, because on an UNKNOWN
+        // outcome the safe bet runs the other way for this flag. It is the head
+        // guard of _maybeFireArmedInterrupt, so latching it on an abort that may
+        // never have landed shuts the SOFT tier off for the rest of the turn —
+        // whereas a redundant second interrupt costs nothing. The qualifier's own
+        // readers prefer the opposite bet, for the reasons set out where it is set.
+        // The soft tier's failure handler clears this flag on every rejection mode
+        // too.
+        this._interruptFired = false;
         if (!(e as { timedOut?: boolean })?.timedOut) this._turnForceAborted = false;
         throw e;
       }
