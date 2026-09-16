@@ -266,9 +266,10 @@ function assertCtxComplete() {
   const bad = Object.keys(CTX_SHAPE).filter(k => !CTX_SHAPE[k](ctx[k]));
   assert.deepEqual(bad, [], `fuse gate: setupFuseGate is about to publish a ctx whose `
     + `${JSON.stringify(bad)} ${bad.length === 1 ? 'binding is' : 'bindings are'} missing or `
-    + `malformed (${JSON.stringify(Object.fromEntries(bad.map(k => [k, ctx[k]])))}). Every file `
-    + `destructures these; an undefined one reaches the arms instead of failing here, and an arm `
-    + `that only reads it through snapshot() cannot notice.`);
+    + `malformed (${JSON.stringify(Object.fromEntries(bad.map(k => [k, ctx[k]])))}). That is `
+    + `POPULATION-side breakage — this harness stopped publishing the field, or derived it to an `
+    + `empty string — and it fires before any arm runs. A file's own destructure typo is NOT this: `
+    + `it leaves the bag complete, passes here, and reds at arm level in mountsUnder.`);
 }
 
 // Registers the whole lifecycle on the CALLING FILE's suite. Call it INSIDE the
