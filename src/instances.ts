@@ -926,8 +926,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // An armed interrupt fires at the first such point, so no half-streamed
     // block is cut and no completed tool work is thrown away. _interruptArmed
     // is the fire's own gate — deliberately NOT `interrupting`, which is also the
-    // WS-visible "stopping…" flag — and _interruptFired holds it to at most one
-    // control_request per arm.
+    // WS-visible "stopping…" flag — and _interruptFired suppresses a second
+    // control_request while one is outstanding. NOT one per arm: both tiers roll it
+    // back when their own request rejects, so an arm that survives a failed FORCED
+    // escalation goes on to fire at a later boundary.
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
@@ -3256,9 +3258,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (force) {
       // Also disarms any pending deferred fire: the abort is happening now, so a
       // later boundary must not send a second control_request. Rolled back in the
-      // catch below if the request rejects — this flag is the head guard of
-      // _maybeFireArmedInterrupt, so latching it on a force that never landed
-      // would shut the whole SOFT tier off for the rest of the turn.
+      // catch below if the request rejects — see there for why unconditionally.
       this._interruptFired = true;
       // `_turnForceAborted` is set BEFORE the await, and rolled back if the abort
       // is never confirmed.
@@ -3285,12 +3285,14 @@ export class Instance extends EventEmitter implements InstanceLike {
       try {
         await this._controlRequest({ subtype: 'interrupt' });
       } catch (e) {
-        // Unconditional, unlike the qualifier below it, because the two flags
-        // answer different questions. This one gates whether ANOTHER interrupt
-        // may be SENT for this turn, and a second one is cheap; the qualifier
-        // only decides what the owner is TOLD about a turn already over. The soft
-        // tier's own failure handler clears this flag on every rejection mode for
-        // exactly the same reason.
+        // Unconditional, unlike the qualifier below it, because on an UNKNOWN
+        // outcome the safe bet runs the other way for this flag. It is the head
+        // guard of _maybeFireArmedInterrupt, so latching it on an abort that may
+        // never have landed shuts the SOFT tier off for the rest of the turn —
+        // whereas a redundant second interrupt costs nothing. The qualifier's own
+        // readers prefer the opposite bet, for the reasons set out where it is set.
+        // The soft tier's failure handler clears this flag on every rejection mode
+        // too.
         this._interruptFired = false;
         if (!(e as { timedOut?: boolean })?.timedOut) this._turnForceAborted = false;
         throw e;
