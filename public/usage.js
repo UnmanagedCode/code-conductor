@@ -24,7 +24,7 @@ export class UsageTracker {
 
   reset() {
     this.model = null;        // from system/init.data.model (authoritative)
-    this.lastUsage = null;    // last observed turn_end.usage object
+    this.lastUsage = null;    // last usage-bearing message_start/context_usage block
     this.cum = {
       inputTokens: 0,
       outputTokens: 0,
@@ -57,11 +57,22 @@ export class UsageTracker {
       if (m) this.model = m;
       return;
     }
-    // model_changed fires when the CLI switches models interactively
-    // mid-session (see src/instances.js _trackModel) — flip immediately.
+    // model_changed fires on an interactive mid-session switch and on the UI
+    // "Change model" picker (both sites go through Instance._announceModelSwitch,
+    // src/instances.ts). Flip the model AND drop the reading: the switch moves the
+    // window denominator without changing what lastUsage measured, so retaining it
+    // renders the old model's used tokens against the new model's window. A
+    // known-wrong number is worse than none — `ctx —` until the next usage-bearing
+    // message_start/context_usage, which is the same rule the server's prune path
+    // applies via _skipUsageSeed. The drop is unconditional, not gated on
+    // `ev.data?.to`: a notice whose `to` is missing still means the denominator
+    // moved. Never reset() — that would also blank cum.*, which backs the
+    // session-totals popover and is genuinely cumulative work a switch does not
+    // invalidate.
     if (ev.kind === 'system' && ev.subtype === 'model_changed') {
       const m = ev.data?.to;
       if (m) this.model = m;
+      this.lastUsage = null;
       return;
     }
     // message_start is the AUTHORITATIVE source for "current context

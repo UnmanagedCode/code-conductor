@@ -1506,6 +1506,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // message produced no message_start reading, so the two can never fight
     // within one message. Whole-object last-wins, same as above — there is no
     // per-field merge site anywhere on this path.
+    // Cleared in two places: _wipeForResume (rewind/respawn) and
+    // _announceModelSwitch (a mid-session model switch moves the denominator).
     if ((ev.kind === 'message_start' || ev.kind === 'context_usage') && ev.usage) {
       this._lastContextUsage = ev.usage;
     }
@@ -1599,7 +1601,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // The cache is model-specific, so a switch legitimately shrinks/invalidates
       // the prefix; re-baseline next turn instead of flagging a cross-turn miss.
       this._prefixBaselineInvalid = true;
-      this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to: canonical } });
+      this._announceModelSwitch(from, canonical);
       // summary() carries contextWindowTokens, so the client chip follows the
       // switch without waiting for an unrelated refetch.
       this.emit('status', this.summary());
@@ -1622,6 +1624,26 @@ export class Instance extends EventEmitter implements InstanceLike {
       // refetch, so the ctx chip reads `ctx —` for the whole first turn.
       this.emit('status', this.summary());
     }
+  }
+
+  // The ONE place a model switch is announced and the context reading dropped.
+  // Both switch sites (_trackModel's real-switch branch, setModel) route through
+  // here so the event shape and the latch clear cannot drift apart.
+  //
+  // A switch moves the DENOMINATOR (_refreshModelCapabilities) without changing
+  // what the retained numerator measured, so keeping the reading renders the old
+  // model's used-token count against the new model's window. A known-wrong number
+  // is worse than none — drop it and let the chip read `ctx —` until the next
+  // usage-bearing message_start/context_usage. Same rule pruneSession applies via
+  // _skipUsageSeed (see loadHistory).
+  //
+  // Safe to clear unconditionally despite a switch frame that also carries usage:
+  // _handleStdoutLine calls _trackModel BEFORE the loop's _emitUi(ev), so such a
+  // frame re-latches the new model's own reading in the same line and the chip
+  // never flashes `ctx —`.
+  _announceModelSwitch(from: string, to: string): void {
+    this._lastContextUsage = null;
+    this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to } });
   }
 
   // Re-resolve capacity from the current {backend, model}, INCLUDING null.
@@ -3132,9 +3154,25 @@ export class Instance extends EventEmitter implements InstanceLike {
     // already refused every other case.
     const canonical = canonicalizeModel(model, CLAUDE_BACKEND_ID) as string;
     await this._controlRequest({ subtype: 'set_model', model: canonical });
+    // Read `from` AFTER the round-trip, not before it: a `message_start` (or a
+    // `system/init`) reporting a different model can land inside the await — a
+    // turn in flight, or the CLI's own `/model` — and _trackModel will already
+    // have announced THAT switch. A `from` captured before the await names a
+    // model the transcript has since moved off, so the notice either skips a
+    // step (an M1→M2 notice followed by M1→M3) or repeats one the CLI report
+    // already made. `from` is by definition the model immediately preceding the
+    // assignment below.
+    const from = this.model;
     this.model = canonical;
     // Capacity moves with the model.
     this._refreshModelCapabilities();
+    // The picker highlights the tier the session is already on, so re-selecting
+    // it must emit no notice and blank no chip. Compare CANONICAL forms: the
+    // client sends a bare version id and the catalog may add a launch tag, so a
+    // raw-string compare false-positives on every re-select of a tagged model.
+    // A null `from` (the model was never known) skips the announce, consistent
+    // with _trackModel's silent-adopt branch.
+    if (from && from !== canonical) this._announceModelSwitch(from, canonical);
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.model;

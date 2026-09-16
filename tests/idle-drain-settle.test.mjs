@@ -173,6 +173,40 @@ test('trap (post-arm evidence): any event after the arm freezes out the settle; 
   cleanup(cond, work);
 });
 
+// I1 (CHARACTERIZATION, not regression — it cannot red before the change that
+// motivates it). `system/model_changed` is retained by EventLog.push, so a UI
+// "Change model" landing inside the settle window advances ring.nextSeq and
+// freezes the settle out exactly like any other retained idle-time event. That
+// is accepted and documented (architecture.md → the idle task-drain settle):
+// the cost is DELAY — the wake falls back to the heartbeat — never a spurious,
+// early or doubled wake. This test exists so a future "fix" that force-fires
+// the settle, or that makes the announce seq-less to dodge this interaction,
+// trips a named test instead of surprising someone.
+test('characterization: a UI model switch inside the settle window delays the wake, never loses it', async () => {
+  const cond = makeFake({ id: 'c2b', sessionId: 'cs2b' });
+  const work = makeFake({ id: 'w2b', sessionId: 'ws2b' });
+  inject(cond, work);
+  armWake('cs2b', 'ws2b');
+
+  emitTaskEvent('w2b', 'task_notification');
+  assert.equal(pendingSettles().size, 1, 'idle drain armed the settle');
+  // Instance._announceModelSwitch emits ONE retained event, so the ring
+  // advances by exactly one — the whole footprint a setModel switch has here.
+  work.ring.nextSeq += 1;
+
+  await pastSettle();
+  assert.equal(cond._promptCalls.length, 0, 'the settle dropped — no early wake');
+  assert.equal(instances._idleHub.hasArmedWake('w2b'), true,
+    'the subscription is kept, not consumed');
+  const entry = instances._idleHub.subscribers.get('w2b')?.get('c2b');
+  assert.ok(entry?.timerId, 'the heartbeat stays armed, so the wake is delayed rather than lost');
+
+  // And the ordinary path still delivers it, exactly once.
+  emitTurnEnd('w2b'); await tick();
+  assert.equal(cond._promptCalls.length, 1, 'woken exactly once, at the next turn_end');
+  cleanup(cond, work);
+});
+
 test('trap (pre-arm evidence): a dirty idle window refuses to arm; turn_end delivers', async () => {
   // Review Finding 1: task B drains while task A's re-invocation is ALREADY
   // opening (its init/status written before B's drain events, its
