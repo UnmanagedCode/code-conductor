@@ -926,10 +926,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // An armed interrupt fires at the first such point, so no half-streamed
     // block is cut and no completed tool work is thrown away. _interruptArmed
     // is the fire's own gate — deliberately NOT `interrupting`, which is also the
-    // WS-visible "stopping…" flag — and _interruptFired suppresses a second
-    // control_request while one is outstanding. NOT one per arm: both tiers roll it
-    // back when their own request rejects, so an arm that survives a failed FORCED
-    // escalation goes on to fire at a later boundary.
+    // WS-visible "stopping…" flag — and _interruptFired suppresses any further
+    // control_request until a request rejects or the turn exits; an ACK does not
+    // clear it, and it is NOT one per arm. Full rule: docs/protocol.md → Two-tier
+    // interrupt.
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
