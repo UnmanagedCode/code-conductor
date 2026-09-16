@@ -3255,9 +3255,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.status !== 'turn') return;
     if (force) {
       // Also disarms any pending deferred fire: the abort is happening now, so a
-      // later boundary must not send a second control_request.
+      // later boundary must not send a second control_request. Rolled back in the
+      // catch below if the request rejects — this flag is the head guard of
+      // _maybeFireArmedInterrupt, so latching it on a force that never landed
+      // would shut the whole SOFT tier off for the rest of the turn.
       this._interruptFired = true;
-      // Set BEFORE the await, and rolled back if the abort is never confirmed.
+      // `_turnForceAborted` is set BEFORE the await, and rolled back if the abort
+      // is never confirmed.
       // Before is forced by ordering: the CLI's control_response ACK and the
       // abort's own `result` can arrive in the SAME stdout chunk, and stdout lines
       // are handled synchronously in a loop — so turn_end can be processed before
@@ -3281,6 +3285,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       try {
         await this._controlRequest({ subtype: 'interrupt' });
       } catch (e) {
+        // Unconditional, unlike the qualifier below it, because the two flags
+        // answer different questions. This one gates whether ANOTHER interrupt
+        // may be SENT for this turn, and a second one is cheap; the qualifier
+        // only decides what the owner is TOLD about a turn already over. The soft
+        // tier's own failure handler clears this flag on every rejection mode for
+        // exactly the same reason.
+        this._interruptFired = false;
         if (!(e as { timedOut?: boolean })?.timedOut) this._turnForceAborted = false;
         throw e;
       }
