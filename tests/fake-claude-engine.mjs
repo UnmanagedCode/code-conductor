@@ -188,6 +188,17 @@ export async function runFakeClaude({ argv, env, cwd, stdin, stdout, stderr, onR
   // Match real claude: nothing is emitted on stdout until the first stdin line
   // is received. Startup events (`scenario.events`) are emitted alongside the
   // first turn's response.
+  //
+  // That first line need not be a PROMPT. On an instance that has never been
+  // prompted, a `control_request` is what triggers the prelude — so the
+  // prelude's events (typically a `system/init` naming the session's model)
+  // land INSIDE that request's round-trip, between the call and its ack. A test
+  // asserting on what arrived during a round-trip then reads fixture events as
+  // if the code under test produced them, and an init re-reporting the spawn
+  // model can make stale state look correct. Warm the instance with one turn
+  // first: `spawnTagged` (tests/ctx-latch-model-switch.test.mjs) and
+  // `guardScenario`'s WARM turn (tests/overage-turn-guard.test.mjs) both exist
+  // for this.
   let startupEmitted = false;
   const rl = readline.createInterface({ input: stdin, crlfDelay: Infinity });
 

@@ -192,12 +192,12 @@ afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 // The scenario's `system/init` reports `claude-sonnet-4-6`, which canonicalizes
 // to what we spawn with — so the spawn itself fires no switch.
 //
-// HARNESS NOTE, load-bearing for S8/S9: the fake CLI emits that prelude LAZILY,
-// on its first inbound line (`tests/fake-claude-engine.mjs`). Without the flush
-// turn below, the first inbound line is whatever control_request a test sends,
-// so the prelude's init lands INSIDE that round-trip and announces a model
-// switch of its own — which happens to restore the spawn model and thereby
-// masks exactly the stale-`from` defect S8/S9 exist to catch.
+// HARNESS NOTE, load-bearing for S8/S9: the flush turn below is what keeps the
+// scenario prelude out of a later control-request round-trip (the lazy-emit
+// rule is stated at its site in `tests/fake-claude-engine.mjs`). Unflushed, the
+// prelude's init lands inside `setModel`'s await and announces a switch back to
+// the spawn model — which makes a stale `from` look correct and masks exactly
+// the defect S8/S9 exist to catch.
 async function spawnTagged(project) {
   await api(baseUrl, 'POST', '/api/projects', { name: project });
   const r = await api(baseUrl, 'POST', '/api/instances',
