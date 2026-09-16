@@ -8,7 +8,14 @@
 //
 // Skipped by default — opt in with `RUN_FUSE_LIFECYCLE=1`.
 //
-//   RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//   TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//
+// THE CAP IS NOT OPTIONAL. These four files each spawn real workers into real
+// FUSE mounts, and at the default concurrency they starve each other: measured
+// 3 kills in 18 runs of the bare glob, always one arm riding the runner's 60s
+// per-test timeout until its whole file died at FILE_KILL_MS. tests/run.mjs has
+// no per-file exclusivity, so the cap lives in the invocation. See
+// docs/architecture.md -> "The FUSE-union chroot" for the measurements.
 //
 // One of the four tests/fuse-*.real.test.mjs files. The dependency preflight,
 // the server, the three systems, the mirror scaffold, the shared observation
@@ -354,10 +361,11 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
     await fs.writeFile(path.join(anchorDir, loose), 'ORCHESTRATOR-SIDE\n');
     // THE FLOOR'S SCOPE CONTROL, declared out here so the `finally` can remove
     // it. ITS OWN LEAF NAME rather than R14's `off-chain`, AND THE DIRECTION OF
-    // THE COUPLING IS THIS ONE: `box` is shared by every arm in the file, node
-    // runs them in declaration order, and THIS ARM RUNS FIRST — so it is R15's
-    // copy surviving into R14 that would matter, never R14's reaching back. The
-    // `process.pid` suffix and the `finally` removal below are what stop it.
+    // THE COUPLING IS THIS ONE: `box` is shared by every arm in this file, node
+    // runs them in declaration order, and THIS ARM IS DECLARED BEFORE R14 — so
+    // it is R15's copy surviving into R14 that would matter, never R14's
+    // reaching back. Keep that order; the `process.pid` suffix and the `finally`
+    // removal below are what stop the leftover either way.
     const offChain = path.join(anchorDir, `cc-r15-off-chain-${process.pid}`);
     let inst;
     try {

@@ -3,12 +3,26 @@
 // R1-R7. These need a real mount, a real chroot and a
 // real second process in the namespace, so they cannot be deterministic. The
 // policy split does not retire them: it moved what CAN be proven without a
-// mount into `tests/fuse-union-policy.test.mjs`, and what is left here is
-// exactly the remainder that table names.
+// mount into `tests/fuse-union-policy.test.mjs`.
+//
+// WHICH OF THE REMAINDER LANDS HERE. `policy.h`'s "deliberately not provable
+// here" table names three rows; this file carries TWO of them — TIER RESOLUTION
+// (that `pt_getattr`/`pt_opendir` call `resolve_class()`, and that `mount
+// --bind` succeeds onto a synthetic node) and the FRAME CODEC (the socket
+// transport, its blocking behaviour under libfuse's multithreaded loop, and EIO
+// on a dead cc). The third, MARKING POLICY, is R12 and R16 in
+// `tests/fuse-union-marking.real.test.mjs`.
 //
 // Skipped by default — opt in with `RUN_FUSE_LIFECYCLE=1`.
 //
-//   RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//   TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//
+// THE CAP IS NOT OPTIONAL. These four files each spawn real workers into real
+// FUSE mounts, and at the default concurrency they starve each other: measured
+// 3 kills in 18 runs of the bare glob, always one arm riding the runner's 60s
+// per-test timeout until its whole file died at FILE_KILL_MS. tests/run.mjs has
+// no per-file exclusivity, so the cap lives in the invocation. See
+// docs/architecture.md -> "The FUSE-union chroot" for the measurements.
 //
 // One of the four tests/fuse-*.real.test.mjs files. The dependency preflight,
 // the server, the three systems, the mirror scaffold, the shared observation

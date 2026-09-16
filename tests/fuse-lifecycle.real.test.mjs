@@ -1,7 +1,14 @@
 // THE LIFECYCLE ARMS of the real-FUSE gate. Skipped by default — opt in with
 // `RUN_FUSE_LIFECYCLE=1`.
 //
-//   RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//   TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//
+// THE CAP IS NOT OPTIONAL. These four files each spawn real workers into real
+// FUSE mounts, and at the default concurrency they starve each other: measured
+// 3 kills in 18 runs of the bare glob, always one arm riding the runner's 60s
+// per-test timeout until its whole file died at FILE_KILL_MS. tests/run.mjs has
+// no per-file exclusivity, so the cap lives in the invocation. See
+// docs/architecture.md -> "The FUSE-union chroot" for the measurements.
 //
 // One of the four tests/fuse-*.real.test.mjs files. The dependency preflight,
 // the server, the three systems, the mirror scaffold, the shared observation

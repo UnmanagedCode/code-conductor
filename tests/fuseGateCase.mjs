@@ -2,7 +2,26 @@
 // `RUN_FUSE_LIFECYCLE=1`, which needs `sudo -n`, /dev/fuse, fusectl, gcc and
 // libfuse3 headers.
 //
-//   RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//   TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
+//
+// THE CAP IS PART OF THE INVOCATION, NOT A TUNING KNOB. Every file here spawns
+// real workers into real FUSE mounts, and at the default concurrency the four
+// starve each other: measured 3 kills in 18 runs of the BARE glob, always the
+// same shape — one arm rides the runner's 60s per-test timeout, and its whole
+// file then dies at FILE_KILL_MS, taking that file's arm names with it. The
+// stalled arm varied (R9, R10, R14), so it is contention, not an arm-specific
+// bug; `peak concurrent fake-claude subprocesses` reads 4 uncapped against 1
+// capped. At TEST_CONCURRENCY=1: 10 consecutive runs, 0 kills.
+//
+// tests/run.mjs has no per-file exclusivity — one `run({files, concurrency})`
+// call and a global TEST_CONCURRENCY — so there is nowhere else to put this.
+//
+// Turning the gate on for a WHOLE-SUITE run is the same hazard by another route:
+//
+//   TEST_CONCURRENCY=4 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs
+//
+// See docs/architecture.md → "The FUSE-union chroot" for every measurement,
+// including what the cap costs in wall.
 //
 // Real sudo, real unshare, real FUSE, real mounts, real pids — and a FAKE
 // claude binary (`bootServer({realProcess:true})`), because the question is
@@ -81,7 +100,19 @@ export const mountsOf = (pid) => {
   try { return readFileSync(`/proc/${pid}/mounts`, 'utf8').split('\n').filter(Boolean).map(l => l.split(' ')[1]); }
   catch { return null; }
 };
-export const mountsUnder = (pid, prefix) => (mountsOf(pid) ?? []).filter(m => m === prefix || m.startsWith(prefix + '/'));
+// A ROOT THAT IS NOT A ROOT IS REFUSED, NOT FILTERED. An `undefined` prefix
+// makes the filter test `startsWith('undefined/')`, which matches nothing — so
+// BOTH sides of a residue delta read empty and `assertNoResidue` compares an
+// empty set with itself and passes. That is the shape a broken `ctx` binding
+// takes, and 19 of the family's arms reach this function only through
+// `snapshot()`, i.e. they would never notice. Refuse the input instead.
+export const mountsUnder = (pid, prefix) => {
+  if (typeof prefix !== 'string' || !prefix.startsWith('/')) {
+    throw new TypeError(`mountsUnder needs an absolute root, got ${JSON.stringify(prefix)}`
+      + ' — a non-root prefix filters to nothing and turns every residue delta vacuous');
+  }
+  return (mountsOf(pid) ?? []).filter(m => m === prefix || m.startsWith(prefix + '/'));
+};
 // /proc/<pid>/stat field 22 — the identity killPids re-verifies before signalling.
 export const startOf = (pid) => {
   try {
@@ -183,6 +214,36 @@ let server, baseUrl, instances, home, box, runRoot, fakeRemote, prevFakeRemote;
 // row prints; the other three print a `[chroot]` row alone, whose `n=` field
 // says how many arms it averages.
 const timings = { chroot: [], control: [] };
+
+// THE HANDOFF IS CHECKED, BECAUSE MOST OF THE FAMILY CANNOT CHECK IT. Each file
+// destructures the bindings it needs out of `ctx`, and a binding that arrived
+// `undefined` — a typo in the destructure, a field this harness stopped
+// publishing — travels into the arms rather than failing. Only the arms that
+// name a binding DIRECTLY would notice; the ones that reach `runRoot` only
+// through `snapshot()` would not, because an empty-vs-empty residue delta
+// passes. So the bag is verified HERE, where one assertion covers every file,
+// and it names the binding rather than letting an `undefined` leave the hook.
+//
+// Shape, not just presence: an empty string is as broken as a missing key and
+// is what a mis-derived path root looks like.
+const CTX_SHAPE = {
+  baseUrl: (v) => typeof v === 'string' && v.startsWith('http'),
+  instances: (v) => typeof v?.get === 'function',
+  box: (v) => typeof v === 'string' && v.startsWith('/'),
+  runRoot: (v) => typeof v === 'string' && v.startsWith('/'),
+  fakeRemote: (v) => typeof v === 'string' && v.startsWith('/'),
+  home: (v) => typeof v === 'string' && v.startsWith('/'),
+  server: (v) => typeof v?.close === 'function',
+};
+
+function assertCtxComplete() {
+  const bad = Object.keys(CTX_SHAPE).filter(k => !CTX_SHAPE[k](ctx[k]));
+  assert.deepEqual(bad, [], `fuse gate: setupFuseGate is about to publish a ctx whose `
+    + `${JSON.stringify(bad)} ${bad.length === 1 ? 'binding is' : 'bindings are'} missing or `
+    + `malformed (${JSON.stringify(Object.fromEntries(bad.map(k => [k, ctx[k]])))}). Every file `
+    + `destructures these; an undefined one reaches the arms instead of failing here, and an arm `
+    + `that only reads it through snapshot() cannot notice.`);
+}
 
 // Registers the whole lifecycle on the CALLING FILE's suite. Call it INSIDE the
 // `describe`, not at module top level: `{ skip: !ENABLED }` on the describe is
@@ -364,6 +425,7 @@ export function setupFuseGate(label, onReady) {
       + '(tests/fuse-union-routing.real.test.mjs) is vacuous');
 
     Object.assign(ctx, { baseUrl, instances, box, runRoot, fakeRemote, home, server });
+    assertCtxComplete();
     onReady?.(ctx);
   });
 

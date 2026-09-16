@@ -100,8 +100,12 @@ It mutates source and re-runs the DEFAULT suite, where the four `tests/fuse-*.re
 arms self-skip — and an arm that never executes contributes neither a pass nor a kill. So a C mutant
 reported as a survivor is a survivor *of the default suite*, not of the FUSE coverage as a whole.
 Running the gate once before merge is the only thing that reads those arms:
-`RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs` — measured 21.7 s of wall for the
-family on a quiet 16-core box, the four files running concurrently.
+`TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs` — measured
+95.4-96.9 s of wall for the family on a quiet 16-core box, 0 kills in 10 consecutive runs. **The cap is
+part of the invocation**: uncapped, the four files starve each other into the runner's 60 s per-test
+timeout and a file is SIGKILLed at `FILE_KILL_MS`, measured 3 runs in 18. Setting the flag on a
+WHOLE-SUITE run is the same hazard and wants `TEST_CONCURRENCY=4`. `docs/architecture.md` →
+"The FUSE-union chroot" carries every measurement.
 
 ## What to expect
 
