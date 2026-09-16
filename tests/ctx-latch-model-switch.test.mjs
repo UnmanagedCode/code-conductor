@@ -191,13 +191,29 @@ afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // The scenario's `system/init` reports `claude-sonnet-4-6`, which canonicalizes
 // to what we spawn with — so the spawn itself fires no switch.
+//
+// HARNESS NOTE, load-bearing for S8/S9: the fake CLI emits that prelude LAZILY,
+// on its first inbound line (`tests/fake-claude-engine.mjs`). Without the flush
+// turn below, the first inbound line is whatever control_request a test sends,
+// so the prelude's init lands INSIDE that round-trip and announces a model
+// switch of its own — which happens to restore the spawn model and thereby
+// masks exactly the stale-`from` defect S8/S9 exist to catch.
 async function spawnTagged(project) {
   await api(baseUrl, 'POST', '/api/projects', { name: project });
   const r = await api(baseUrl, 'POST', '/api/instances',
     { project, mode: 'bypassPermissions', model: TAGGED_BARE });
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+  const preamble = [];
+  inst.on('event', (ev) => preamble.push(ev));
+  await inst.prompt('go');
+  await waitFor(() => inst.status === 'idle'
+    && preamble.some(e => e.kind === 'system' && e.subtype === 'init'));
   assert.equal(inst.model, TAGGED, 'premise: the catalog launch tag is applied server-side');
+  assert.equal(modelChanges(preamble).length, 0,
+    'premise: the prelude settles on the spawn model, announcing nothing');
+
   const events = [];
   inst.on('event', (ev) => events.push(ev));
   inst._emitUi({ kind: 'message_start', msgId: 'm0', usage: OLD_USAGE });
@@ -205,7 +221,8 @@ async function spawnTagged(project) {
   return { id: r.body.id, inst, events };
 }
 
-// S5 — AC2, the `setModel` site, plus the emit it does not do today.
+// S5 — AC2 at the `setModel` site: the latch drops, and the switch is announced
+// with the outgoing and incoming canonical ids.
 test('S5: a UI model switch drops the reading and announces the change', async () => {
   const { inst, events } = await spawnTagged('s5');
   await inst.setModel(M2);
@@ -228,6 +245,56 @@ test('S6: re-selecting the running tier changes nothing', async () => {
   assert.deepEqual(inst.lastContextUsage, OLD_USAGE,
     'a raw-string compare false-positives here and blanks a chip nothing invalidated');
   assert.equal(modelChanges(events).length, 0, 'no notice for a non-change');
+});
+
+// S8/S9 — `setModel` reads the announce's `from` AFTER the control-request
+// round-trip. A `message_start` reporting a different model can land inside
+// that await (a turn in flight, or the CLI's own `/model`), and `_trackModel`
+// will have announced THAT switch already.
+//
+// The interleave is deterministic, not a race: `setModel`'s prefix up to its
+// `await _controlRequest(...)` is synchronous (the request is on stdin by the
+// time the call returns a promise), so a `_handleStdoutLine` in the same
+// synchronous turn provably precedes the ack, which needs a yield to arrive.
+
+// S8 — no GAP. Reds against capturing `from` before the await, which announces
+// the outgoing model of a switch that has already been superseded.
+test('S8: a CLI switch inside the control round-trip leaves no gap in the notice chain', async () => {
+  const { inst, events } = await spawnTagged('s8');
+
+  const p = inst.setModel(M2);
+  inst._handleStdoutLine(msgStartLine({ id: 'mid', model: M1, usage: NEW_USAGE }));
+  assert.equal(inst.model, M1, 'premise: the CLI switch landed inside the await');
+  await p;
+
+  assert.equal(inst.model, M2, 'the requested model still wins the end state');
+  const changes = modelChanges(events).map(e => e.data);
+  assert.equal(changes.length, 2, 'one notice per switch');
+  assert.deepEqual(changes[0], { from: TAGGED, to: M1 }, 'the CLI switch, announced by _trackModel');
+  assert.deepEqual(changes[1], { from: M1, to: M2 },
+    'the second notice must start where the first ended — a `from` read before the await names TAGGED and skips M1');
+  assert.equal(inst.lastContextUsage, null,
+    'the mid-await reading was measured under M1, which is no longer current');
+});
+
+// S9 — no DUPLICATE. Reds against the same pre-await capture: when the CLI
+// report already landed on the model being requested, a stale `from` makes the
+// no-op guard compare against the OUTGOING model and announce the same switch
+// a second time.
+test('S9: a CLI switch that already reached the requested model suppresses the second notice', async () => {
+  const { inst, events } = await spawnTagged('s9');
+
+  const p = inst.setModel(M1);
+  inst._handleStdoutLine(msgStartLine({ id: 'mid', model: M1, usage: NEW_USAGE }));
+  assert.equal(inst.model, M1, 'premise: the CLI switch landed inside the await');
+  await p;
+
+  assert.equal(inst.model, M1);
+  const changes = modelChanges(events).map(e => e.data);
+  assert.deepEqual(changes, [{ from: TAGGED, to: M1 }],
+    'the switch is announced once, by whichever site observed it');
+  assert.deepEqual(inst.lastContextUsage, NEW_USAGE,
+    'a suppressed announce must not blank a reading measured under the model the session is now on');
 });
 
 // ── server↔client seam over a real WS ───────────────────────────────────────
@@ -321,6 +388,31 @@ test('C3: the next usage-bearing frame of either kind restores the reading', () 
   assert.equal(viaContextUsage.currentContextSize(), 420_000, 'the fallback kind re-latches too');
 });
 
+// C4 — the drop is UNCONDITIONAL, never gated on the notice carrying `to`: a
+// notice whose `to` is missing still means the denominator moved. This is a
+// PIN for a property the current code already has, not a defect row — it
+// cannot red before the change. It exists because every other model_changed
+// fixture in this file carries `data:{from, to}`, so a "defensive"
+// `if (m) { this.model = m; this.lastUsage = null; }` — the natural shape for
+// someone folding the drop into the adjacent model-flip line — would pass the
+// whole suite while the clause's own comment says it cannot.
+test('C4: a model_changed with no `to` still drops the reading', () => {
+  const noTo = new UsageTracker();
+  noTo.apply({ kind: 'message_start', model: M1, usage: OLD_USAGE });
+  assert.equal(noTo.currentContextSize(), 190_000, 'premise');
+  noTo.apply({ kind: 'system', subtype: 'model_changed', data: {} });
+  assert.equal(noTo.currentContextSize(), null,
+    'the denominator moved whether or not the notice names the new model');
+  assert.equal(noTo.effectiveModel(), M1,
+    'an absent `to` leaves the model alone — there is nothing to adopt');
+
+  // The same through the `ev.data?.to` optional chain, with no `data` at all.
+  const noData = new UsageTracker();
+  noData.apply({ kind: 'message_start', model: M1, usage: OLD_USAGE });
+  noData.apply({ kind: 'system', subtype: 'model_changed' });
+  assert.equal(noData.currentContextSize(), null);
+});
+
 // ── the rendered chip (happy-dom + the real installHeader) ──────────────────
 
 async function headerFixture() {
@@ -402,8 +494,17 @@ test('D1: the chip reads `ctx —` after a switch, never the old count over the 
     `expected the no-reading tooltip, got ${JSON.stringify(after.title)}`);
 });
 
-// D2 — the client-visible symptom of the over-eager fixes S2 catches
-// server-side: a switch frame that carried a measurement must not blank.
+// D2 — the re-latch path through the REAL chip: a `model_changed` followed by
+// the switch frame's own measurement must render that measurement against the
+// NEW denominator.
+//
+// What this does NOT cover: the server-side latch clear is O(1) state, not a
+// frame, so this frame sequence is IDENTICAL under every server-side
+// clear-placement mutant — under a clear placed after `_emitUi` the server
+// still emits these two events and this test still renders
+// `ctx 42% · 420k/1.0M` and passes. Server-side placement is S2's job alone.
+// What reds here: a client-side STICKY drop (C3 catches that at tracker level,
+// this at render level), and a denominator that failed to follow the switch.
 test('D2: a switch whose frame carried a measurement renders that measurement', async () => {
   const h = await headerFixture();
   h.setInstance({ model: M1, contextWindowTokens: 200_000 });

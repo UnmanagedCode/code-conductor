@@ -3153,8 +3153,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     // bare version ids. The backend is pinned to `claude` — the guard above
     // already refused every other case.
     const canonical = canonicalizeModel(model, CLAUDE_BACKEND_ID) as string;
-    const from = this.model;
     await this._controlRequest({ subtype: 'set_model', model: canonical });
+    // Read `from` AFTER the round-trip, not before it: a `message_start` (or a
+    // `system/init`) reporting a different model can land inside the await — a
+    // turn in flight, or the CLI's own `/model` — and _trackModel will already
+    // have announced THAT switch. A `from` captured before the await names a
+    // model the transcript has since moved off, so the notice either skips a
+    // step (an M1→M2 notice followed by M1→M3) or repeats one the CLI report
+    // already made. `from` is by definition the model immediately preceding the
+    // assignment below.
+    const from = this.model;
     this.model = canonical;
     // Capacity moves with the model.
     this._refreshModelCapabilities();
