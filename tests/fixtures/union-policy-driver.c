@@ -2895,6 +2895,193 @@ static void b49_table_child_exists(void)
 	rmdir(box);
 }
 
+/* ── B50: the cwd overlay under a HOST pin ──────────────────────────────── */
+/*
+ * THE CWD-CHAIN INVARIANT'S SECOND ARM, ON THE GEOMETRY NO OTHER CASE BUILDS:
+ * "by the orchestrator's own directory floored to `--x` where it has one, or by
+ * the OVERLAY node where it has none" — with a `host` pin COVERING the component
+ * the orchestrator has none of. `b39`'s three geometries and `b-cwd-unmarked`
+ * all leave the chain uncovered by any `host` pin, so the component falls to
+ * `fail` and the overlay's `T_FAIL` gate is met by accident of the pin set.
+ *
+ * THE SHAPE IS PRODUCTION'S, NOT A CONSTRUCTION. `buildTierTable` pins the
+ * projects root `host` (so a remote box cannot shadow a host-owned plugin) and
+ * pins a remote `systemPath` `project`; a project adopted at a path UNDER that
+ * root therefore carries both, and the `project` pin is the deeper one.
+ *
+ * WHY THE DEEPER PIN DOES NOT SIMPLY WIN. `tier_of` STRIKES every `project` pin
+ * in `VIEW_HOST` — deliberately, so a shorter `host` or `bind` pin can win the
+ * contest and the path lands where the orchestrator's own filesystem puts it.
+ * The struck pin hands the contest to `host <box>`, and `T_HOST` is not `T_FAIL`.
+ * The tier the contest produces is asserted BELOW, off `tier_of` itself, so the
+ * case states why the gate is reached at all rather than assuming it.
+ *
+ * WHAT IT COSTS WHEN IT IS WRONG: `route()`'s `T_HOST` arm hands the op the
+ * orchestrator's own fd, `fstatat` answers the orchestrator's own ENOENT, and
+ * the chroot'd bootstrap's `cd` into the CLI's cwd dies before execve. The floor
+ * cannot rescue it either — it mutates a `struct stat` a nonexistent directory
+ * never produces.
+ *
+ * THE ANTI-OVERREACH CONTROLS ARE IN THIS CASE AND NOT A SIBLING, because the
+ * clause being widened is one expression and a widening mutant must meet all of
+ * them at once: the component the host HAS stays the host's, the sibling OFF the
+ * chain stays the host's, a `hide` pin still wins, a `bind` pin still wins, the
+ * MARKED caller still gets the remote tier, and an unset cwd synthesizes nothing.
+ */
+static void b50_cwd_overlay_under_a_host_pin(void)
+{
+	char box[] = "/tmp/cc-policy-b50XXXXXX";
+	char sys[PATH_MAX], sib[PATH_MAX], child[PATH_MAX], line[PATH_MAX + 32];
+	struct stat st;
+
+	host_box(box);
+	hjoin(sys, sizeof(sys), box, "/app");         /* NEVER created */
+	hjoin(sib, sizeof(sib), box, "/app2");        /* NEVER created either */
+	hjoin(child, sizeof(child), box, "/app/tool");/* nor this */
+	policy_host_fd = host_root_fd();
+	cwd_path = sys;
+
+	npins = 0;
+	snprintf(line, sizeof(line), "host\t%s", box);    pin(line);
+	snprintf(line, sizeof(line), "project\t%s", sys); pin(line);
+	snprintf(line, sizeof(line), "host\t%s", child);  pin(line);
+	anc_build();
+
+	/* ── NON-VACUITY, THE HOST AXIS. The box is the orchestrator's mkdtemp,
+	 *    so it really has the directory above and really has nothing at the
+	 *    project root — the two halves the overlay's conjunct separates. */
+	CHECK(policy_host_absent(box) == 0, "the orchestrator HAS the directory above the project");
+	CHECK(policy_host_absent(sys) == 1, "and has NOTHING at the project root itself");
+
+	/* ── NON-VACUITY, THE CONTEST. The `project` pin is struck in VIEW_HOST
+	 *    and the SHORTER `host` pin wins — which is what puts the gate at
+	 *    T_HOST instead of T_FAIL. Read off `tier_of`, so the case names the
+	 *    cause rather than restating resolve_class's answer. */
+	CHECK(tier_of(sys, VIEW_CLI) == T_PROJECT,
+	      "the deeper `project` pin wins the contest for the CLI (%s)",
+	      tier_name(tier_of(sys, VIEW_CLI)));
+	CHECK(tier_of(sys, VIEW_HOST) == T_HOST,
+	      "and is STRUCK for everyone else, handing it to the shorter `host` pin (%s)",
+	      tier_name(tier_of(sys, VIEW_HOST)));
+	CHECK(policy_cwd_component(sys) == 1, "while the project root is the cwd itself");
+
+	/* ── THE ARM. A cwd component the orchestrator lacks is the OVERLAY node
+	 *    even under a `host` pin, and it is traversable — this is the `cd` in
+	 *    bootstrap.sh's chroot script. */
+	CHECK(resolve_class(sys, VIEW_HOST) == T_SYNTH,
+	      "a host-pinned cwd component the orchestrator LACKS is the overlay node (%s)",
+	      tier_name(resolve_class(sys, VIEW_HOST)));
+	CHECK(policy_caller_tier("getattr", sys, resolve_class(sys, VIEW_CLI), 0, 700) == T_SYNTH,
+	      "and the whole unmarked route lands there too, not on the orchestrator's fd (%s)",
+	      tier_name(policy_caller_tier("getattr", sys, resolve_class(sys, VIEW_CLI), 0, 700)));
+	CHECK(policy_synth_getattr(sys, &st, VIEW_HOST) == 0 && (st.st_mode & 0111) == 0111,
+	      "the node is traversable, so the chdir lands (mode %o)",
+	      (unsigned)(st.st_mode & 07777));
+	CHECK(st.st_ino == policy_cwd_ino(sys) && st.st_ino != policy_bind_ino(sys),
+	      "and its inode comes from the CHAIN's own sub-range, not the exact-pin fallback");
+
+	/* ── CONTROL: THE HOST-ABSENT CONJUNCT. `box` is on the chain and is
+	 *    host-pinned, and the ONLY thing keeping it off the overlay is that the
+	 *    orchestrator HAS it. Drop that conjunct and a real host directory is
+	 *    hidden behind a 0555 node — constraints 1 and 2, silently. */
+	CHECK(policy_cwd_component(box) == 1, "the directory above the project is ON the chain too");
+	CHECK(resolve_class(box, VIEW_HOST) == T_HOST,
+	      "but the orchestrator has it, so it stays the host's (%s)",
+	      tier_name(resolve_class(box, VIEW_HOST)));
+	CHECK(fstatat(policy_host_fd, policy_rel(box), &st, 0) == 0, "and it really is there");
+	policy_floor_traversal(box, &st, VIEW_HOST);
+	CHECK((st.st_mode & 0111) == 0111,
+	      "answered by the FLOOR, which is the invariant's other arm (mode %o)",
+	      (unsigned)(st.st_mode & 07777));
+	CHECK(resolve_class("/", VIEW_HOST) == T_FAIL,
+	      "and / — on the chain, unpinned, and the orchestrator's — is still fail -> host (%s)",
+	      tier_name(resolve_class("/", VIEW_HOST)));
+
+	/* ── CONTROL: THE CHAIN CONJUNCT. The sibling is host-pinned and equally
+	 *    absent; only being OFF the chain keeps it a host question. Drop
+	 *    `policy_cwd_component` and every host-pinned absent path becomes a
+	 *    node. */
+	CHECK(policy_cwd_component(sib) == 0, "the sibling is OFF the chain");
+	CHECK(policy_host_absent(sib) == 1, "and the orchestrator lacks it just as much");
+	CHECK(resolve_class(sib, VIEW_HOST) == T_HOST,
+	      "yet it stays the host's, and the host answers -ENOENT for itself (%s)",
+	      tier_name(resolve_class(sib, VIEW_HOST)));
+
+	/* ── CONTROL: THE MARK IS STILL THE ONLY VARIABLE. Same path, same table,
+	 *    same host axis — the marked CLI still reaches the remote tier. */
+	CHECK(policy_caller_tier("getattr", sys, resolve_class(sys, VIEW_CLI), 1, 600) == T_PROJECT,
+	      "a MARKED caller at the same path still gets the remote tier");
+
+	/* ── THE LISTING, WHICH IS THE INTENDED SIDE-EFFECT AND IS ASSERTED
+	 *    RATHER THAN DISCOVERED. An unmarked `ls` of the host-pinned parent now
+	 *    NAMES the project directory — which is what stops `ls` and `cd` from
+	 *    disagreeing about it. It discloses the directory's own name, which the
+	 *    same shell already holds in $CC_FUSE_CWD.
+	 *
+	 *    AND THE NODE SERVES NO REMOTE NAMES: a `host` pin child of it that the
+	 *    orchestrator lacks is enumerated by the pin walk and then DROPPED by
+	 *    the existence predicate, so nothing the orchestrator has not got
+	 *    reaches a listing through the overlay. */
+	CHECK(policy_dirent_visible(sys, VIEW_HOST) == 1,
+	      "the overlay node is a name an unmarked listing of its parent may see");
+	CHECK(policy_table_child_exists(sys, VIEW_HOST, 0) == 1,
+	      "and one it may open — a fixed node exists by construction");
+	nlisted = 0;
+	CHECK(policy_synth_children(sys, VIEW_HOST, collect, NULL) == 1
+	      && strcmp(listed[0], "tool") == 0,
+	      "the pin walk names the node's one table child (%zu emitted)", nlisted);
+	CHECK(policy_table_child_exists(child, VIEW_HOST, 0) == 0,
+	      "which the existence predicate then drops, because the orchestrator lacks it");
+
+	/* ── CONTROL: `hide` IS EXCLUDED BY CONSTRUCTION, and that is what the
+	 *    enumerated gate buys over negating the other tiers. A `hide` pin under
+	 *    a `host` pin is production's own shape (the run dir sits under the
+	 *    projects root); putting it AT the cwd is what makes the exclusion
+	 *    observable — the mirror and cc's control socket must stay unreachable
+	 *    even to a caller whose cwd names them. */
+	npins = 0;
+	snprintf(line, sizeof(line), "host\t%s", box);    pin(line);
+	snprintf(line, sizeof(line), "hide\t%s", sys);    pin(line);
+	snprintf(line, sizeof(line), "project\t%s", sys); pin(line);
+	anc_build();
+	CHECK(resolve_class(sys, VIEW_HOST) == T_HIDE,
+	      "a `hide` pin at an absent cwd component still wins — no overlay over it (%s)",
+	      tier_name(resolve_class(sys, VIEW_HOST)));
+	CHECK(policy_caller_tier("getattr", sys, resolve_class(sys, VIEW_CLI), 0, 700) == T_HIDE,
+	      "and the unmarked route carries T_HIDE through, where route() answers -ENOENT");
+	CHECK(policy_synth_getattr(sys, &st, VIEW_HOST) == -ENOENT,
+	      "so there is no node to stat at all");
+
+	/* ── CONTROL: `bind` LIKEWISE, and its node keeps the EXACT-PIN inode
+	 *    rather than the chain's. */
+	npins = 0;
+	snprintf(line, sizeof(line), "host\t%s", box);    pin(line);
+	snprintf(line, sizeof(line), "bind\t%s", sys);    pin(line);
+	snprintf(line, sizeof(line), "project\t%s", sys); pin(line);
+	anc_build();
+	CHECK(resolve_class(sys, VIEW_HOST) == T_BIND,
+	      "a `bind` pin at an absent cwd component still wins (%s)",
+	      tier_name(resolve_class(sys, VIEW_HOST)));
+	CHECK(policy_synth_getattr(sys, &st, VIEW_HOST) == 0
+	      && st.st_ino == policy_bind_ino(sys) && st.st_ino != policy_cwd_ino(sys),
+	      "and its node is the bind target's, taking the exact-pin inode");
+
+	/* ── CONTROL: THE OVERLAY'S WHOLE DOMAIN IS THE CHAIN. With no cwd
+	 *    injected nothing is synthesized anywhere, under a `host` pin or not. */
+	npins = 0;
+	snprintf(line, sizeof(line), "host\t%s", box);    pin(line);
+	snprintf(line, sizeof(line), "project\t%s", sys); pin(line);
+	anc_build();
+	cwd_path = NULL;
+	CHECK(resolve_class(sys, VIEW_HOST) == T_HOST,
+	      "with no cwd the host-pinned absent path is the host's again (%s)",
+	      tier_name(resolve_class(sys, VIEW_HOST)));
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	rmdir(box);
+}
+
 static void print_vec(const char *label, const char *b, size_t n)
 {
 	size_t i;
@@ -3022,6 +3209,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b47-floor-is-applied-at-every-reporting-op")) b47_floor_is_applied_at_every_reporting_op();
 	else if (!strcmp(c, "b48-probe-falls-not-absent")) b48_probe_falls_not_absent();
 	else if (!strcmp(c, "b49-table-child-exists")) b49_table_child_exists();
+	else if (!strcmp(c, "b50-cwd-overlay-under-a-host-pin")) b50_cwd_overlay_under_a_host_pin();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
