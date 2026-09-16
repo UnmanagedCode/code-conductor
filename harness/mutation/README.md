@@ -104,7 +104,8 @@ Running the gate once before merge is the only thing that reads those arms:
 95.4-96.9 s of wall for the family on a quiet 16-core box, 0 kills in 10 consecutive runs. **The cap is
 part of the invocation**: uncapped, the four files starve each other into the runner's 60 s per-test
 timeout and a file is SIGKILLed at `FILE_KILL_MS`, measured 3 runs in 18. Setting the flag on a
-WHOLE-SUITE run is the same hazard and wants `TEST_CONCURRENCY=4`. `docs/architecture.md` →
+WHOLE-SUITE run is the same hazard; `TEST_CONCURRENCY=4` is what has been tried there, but it has
+measured green once and red once (`R14L`, the same starvation shape), so it carries no rate. `docs/architecture.md` →
 "The FUSE-union chroot" carries every measurement.
 
 ## What to expect

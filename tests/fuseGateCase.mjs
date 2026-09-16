@@ -10,15 +10,23 @@
 // same shape — one arm rides the runner's 60s per-test timeout, and its whole
 // file then dies at FILE_KILL_MS, taking that file's arm names with it. The
 // stalled arm varied (R9, R10, R14), so it is contention, not an arm-specific
-// bug; `peak concurrent fake-claude subprocesses` reads 4 uncapped against 1
-// capped. At TEST_CONCURRENCY=1: 10 consecutive runs, 0 kills.
+// bug. The runner's `peak concurrent fake-claude subprocesses` line is a 100ms
+// sampler's maximum, not a census, so it is a range: over 11 uncapped runs it
+// read 3 ten times and 4 once, and over 10 capped runs it read 1 every time.
+// At TEST_CONCURRENCY=1: 10 consecutive runs, 0 kills.
 //
 // tests/run.mjs has no per-file exclusivity — one `run({files, concurrency})`
 // call and a global TEST_CONCURRENCY — so there is nowhere else to put this.
 //
-// Turning the gate on for a WHOLE-SUITE run is the same hazard by another route:
+// Turning the gate on for a WHOLE-SUITE run is the same hazard by another
+// route. TEST_CONCURRENCY=4 is what has been tried there —
 //
 //   TEST_CONCURRENCY=4 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs
+//
+// — but it is MEASURED ONCE GREEN AND ONCE RED (a later gate-on baseline at
+// that setting red R14L with the same starvation shape, and the marking file
+// then passed 4/4 alone at TEST_CONCURRENCY=1), so it carries no rate. Only the
+// capped family glob above does.
 //
 // See docs/architecture.md → "The FUSE-union chroot" for every measurement,
 // including what the cap costs in wall.
@@ -103,9 +111,15 @@ export const mountsOf = (pid) => {
 // A ROOT THAT IS NOT A ROOT IS REFUSED, NOT FILTERED. An `undefined` prefix
 // makes the filter test `startsWith('undefined/')`, which matches nothing — so
 // BOTH sides of a residue delta read empty and `assertNoResidue` compares an
-// empty set with itself and passes. That is the shape a broken `ctx` binding
-// takes, and 19 of the family's arms reach this function only through
-// `snapshot()`, i.e. they would never notice. Refuse the input instead.
+// empty set with itself and passes.
+//
+// HOW BLIND THAT LEFT THE FAMILY IS MEASURED, not counted: with a broken root
+// and no refusal here, 24 of the 26 arms passed silently. Only arm 1 and arm 4
+// noticed, and they notice because they assert POSITIVE mount membership rather
+// than a delta. (A hand census of "arms that reach this only through
+// `snapshot()`" is the wrong instrument and goes stale as arms move — arm 6, for
+// one, is in that set yet would fail anyway, on its own `fs.readdir(runRoot)`.)
+// Refuse the input instead.
 export const mountsUnder = (pid, prefix) => {
   if (typeof prefix !== 'string' || !prefix.startsWith('/')) {
     throw new TypeError(`mountsUnder needs an absolute root, got ${JSON.stringify(prefix)}`
@@ -215,17 +229,29 @@ let server, baseUrl, instances, home, box, runRoot, fakeRemote, prevFakeRemote;
 // says how many arms it averages.
 const timings = { chroot: [], control: [] };
 
-// THE HANDOFF IS CHECKED, BECAUSE MOST OF THE FAMILY CANNOT CHECK IT. Each file
-// destructures the bindings it needs out of `ctx`, and a binding that arrived
-// `undefined` — a typo in the destructure, a field this harness stopped
-// publishing — travels into the arms rather than failing. Only the arms that
-// name a binding DIRECTLY would notice; the ones that reach `runRoot` only
-// through `snapshot()` would not, because an empty-vs-empty residue delta
-// passes. So the bag is verified HERE, where one assertion covers every file,
-// and it names the binding rather than letting an `undefined` leave the hook.
+// THE HANDOFF IS CHECKED ON THE POPULATION SIDE. That is the half this can
+// see, and the two halves are disjoint — measured, from where each failure
+// lands:
+//
+//   POPULATION-SIDE (this check). A field this harness stopped publishing, or
+//   one it derived to an empty string. `before()` throws here, BEFORE
+//   `onReady`, so the failure is at DESCRIBE level and no arm runs at all.
+//   Verified in all four files against a bag published with `runRoot: ''`.
+//
+//   CONSUMER-SIDE (not this check). A typo in a file's own destructure leaves
+//   the bag COMPLETE, so this passes silently and the `undefined` travels into
+//   that file's arms. What catches it is `mountsUnder`'s refusal one level
+//   down, at ARM level. Verified in all four files by dropping `runRoot` from
+//   the destructure: every arm that takes a residue delta reds.
+//
+// So do not read this check as guarding the destructure — it guards what the
+// harness itself hands over.
 //
 // Shape, not just presence: an empty string is as broken as a missing key and
-// is what a mis-derived path root looks like.
+// is what a mis-derived path root looks like. WHAT NO PREDICATE HERE CAN SEE is
+// an absolute path that is simply the WRONG root; see the blindness note on
+// arm 7 in tests/fuse-lifecycle.real.test.mjs, which covers this observation
+// too.
 const CTX_SHAPE = {
   baseUrl: (v) => typeof v === 'string' && v.startsWith('http'),
   instances: (v) => typeof v?.get === 'function',

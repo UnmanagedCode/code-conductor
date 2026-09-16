@@ -341,6 +341,26 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // ./fuseGateCase.mjs — but as a TRIPWIRE, not as coverage: only here does
   // arm 4 hold an attributable process alive and assert the scan SEES it, so
   // only here is a zero known to be a scan that could have found something.
+  //
+  // ── THE SAME BLINDNESS REACHES THE MOUNT-RESIDUE OBSERVATION ────────────
+  //
+  // Not just the /proc scan. Every arm in the family that takes a residue delta
+  // measures it UNDER `runRoot`, so a `runRoot` that is wrong-but-plausible
+  // makes both sides of the delta read empty and the arm passes vacuously —
+  // the same failure an `undefined` root produced before `mountsUnder` began
+  // refusing one. MEASURED: publish a valid absolute root that is not this
+  // run's (`/opt`) and the mount, routing and marking files all stay green,
+  // 7/7, 7/7 and 4/4. `CTX_SHAPE` in ./fuseGateCase.mjs cannot close this — no
+  // predicate there distinguishes the true run root from any other absolute
+  // path, and the refusal in `mountsUnder` does not either.
+  //
+  // WHAT DOES CLOSE IT IS IN THIS FILE, AND ONLY THIS FILE: arm 1 and arm 4
+  // assert POSITIVE mount membership — that `record.root` IS in the daemon's
+  // or the anchor's table under `runRoot` — which a wrong root cannot satisfy.
+  // That is why the same `/opt` substitution kills here and nowhere else. So
+  // for the other three files, both record-independent observations — the
+  // process scan and the mount delta — rest on this file's positive controls
+  // holding in a sibling process, and neither is claimed as coverage there.
   test('arm 7 — no process attributable to this run survives it (record-independent)', async () => {
     const leaked = await attributableProcesses();
     console.log(`fuse gate [arm 7] processes carrying CC_FUSE_RUNDIR under ${runRoot}: ${leaked.length}`);
