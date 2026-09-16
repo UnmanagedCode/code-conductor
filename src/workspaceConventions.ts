@@ -54,12 +54,14 @@ const catalog = createFragmentCatalog({
   noun: 'convention',
 });
 
-// ── Fragment read (core is always-on, cached per resolved path) ──────────────
+// ── Fragment read (core is always-on, read per call) ─────────────────────────
+//
+// Not memoised, for the reason seedBody isn't (src/fragmentCatalog.ts): every
+// destination this text reaches is overwritten from it, so a body frozen at
+// first read reverts an edit instead of merely aging.
 
-let coreCache: string | undefined;
 async function getCore(): Promise<string> {
-  if (coreCache === undefined) coreCache = (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
-  return coreCache;
+  return (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
 }
 
 // ── Catalog + CRUD (delegated to the shared helper) ──────────────────────────

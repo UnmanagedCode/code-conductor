@@ -9,8 +9,10 @@
 // body, which is the bug this surface exists to prevent.
 //
 // Fixtures are USER-OVERLAY playbooks (<store>/playbooks/*.json), never the
-// built-in seeds: fragmentCatalog caches seed bodies for the process lifetime,
-// so a mutated seed would be invisible and the drift proof would be vacuous.
+// built-in seeds: a drift test mutates the definition it composes from, and the
+// seeds are committed files in a working tree the whole run shares. Each
+// overlay lives under the test's own store root instead, so the mutation is
+// invisible to every concurrent file.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
