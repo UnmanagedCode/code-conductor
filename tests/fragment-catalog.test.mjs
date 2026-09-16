@@ -247,3 +247,25 @@ test('composeWithMeta returns compose()\'s exact text plus the catalog\'s degrad
     }
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+// Seed bodies are read per call, never memoised for the process lifetime. The
+// composed docs this catalog feeds (a project's CONVENTIONS.md, .conduct/
+// CONVENTIONS.md) are REGENERATED OVER committed files, so a body frozen at
+// first read does not merely go stale — the next regeneration writes the
+// pre-edit text back over the correct one, and the edit silently reverts until
+// the orchestrator restarts.
+//
+// No mock of any kind here on purpose: the claim is that the bytes travel from
+// the filesystem on every call, so the edit is a real write to a real seed file
+// and the assertion is on the body that comes back.
+test('a seed fragment edited on disk is re-read on the next compose', async () => {
+  const { dir, catalog } = await mkFixture();
+  try {
+    assert.equal(await catalog.compose(['foo']), '\n## Foo\n- foo body\n'); // warms the read
+    await fs.writeFile(path.join(dir, 'seeds', 'foo.md'), '## Foo\n- EDITED body\n');
+    assert.equal(await catalog.compose(['foo']), '\n## Foo\n- EDITED body\n',
+      'compose() carries the CURRENT bytes of the fragment, not the ones read first');
+    assert.equal((await catalog.getCatalog()).find(c => c.slug === 'foo').body, '## Foo\n- EDITED body',
+      'and so does the catalog entry the settings UI renders');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});

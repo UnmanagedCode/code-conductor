@@ -76,9 +76,8 @@ test('composeConduct([]) = core + footer only (no convention headings)', async (
 // ── The generated playbook listing ───────────────────────────────────────────
 //
 // The listing is GENERATED from the definitions, never hand-written alongside
-// them. These are the only guard on that: fragment bodies are cached and never
-// invalidated, and nothing asserts fragment CONTENT, so a broken prompt section
-// fails silently in the product.
+// them. These are the only guard on that: nothing else asserts fragment
+// CONTENT, so a broken prompt section fails silently in the product.
 
 test('the composed prompt lists every built-in playbook by id and description', async () => {
   const { playbooks } = await loadPlaybooks();

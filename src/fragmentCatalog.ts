@@ -157,14 +157,15 @@ export interface FragmentCatalog {
 }
 
 export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
-  const fragmentCache = new Map<string, string>(); // slug -> body
-
+  // Read per call, never memoised: an edit to a committed fragment must reach
+  // the next composition without an orchestrator restart. A memo here does not
+  // merely go stale — every document these bodies feed is REGENERATED OVER a
+  // committed file, so the pre-edit text gets written back and the edit
+  // silently reverts. Cost is measured and stated in docs/architecture.md →
+  // src/fragmentCatalog.ts.
   async function seedBody(slug: string): Promise<string> {
-    if (fragmentCache.has(slug)) return fragmentCache.get(slug) as string;
     const body = await fs.readFile(path.join(seedDir, `${slug}${seedExt}`), 'utf8');
-    const trimmed = body.replace(/\s+$/, '');
-    fragmentCache.set(slug, trimmed);
-    return trimmed;
+    return body.replace(/\s+$/, '');
   }
 
   async function loadStore(): Promise<Record<string, unknown>> {

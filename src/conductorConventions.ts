@@ -87,16 +87,17 @@ const catalog = createFragmentCatalog({
   extraProvider: () => pluginConductorConventionsProvider(),
 });
 
-// ── Fragment reads (core + footer are always-on, cached per resolved path) ──
+// ── Fragment reads (core + footer are always-on, read per call) ─────────────
+//
+// Not memoised, for the reason seedBody isn't (src/fragmentCatalog.ts):
+// `.conduct/CONVENTIONS.md` is rewritten from this text before every conductor
+// spawn, so a body frozen at first read reverts an edit instead of merely aging.
 
-let coreCache: string | undefined; let footerCache: string | undefined;
 async function getCore(): Promise<string> {
-  if (coreCache === undefined) coreCache = (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
-  return coreCache;
+  return (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
 }
 async function getFooter(): Promise<string> {
-  if (footerCache === undefined) footerCache = (await fs.readFile(FOOTER_FILE, 'utf8')).replace(/\s+$/, '');
-  return footerCache;
+  return (await fs.readFile(FOOTER_FILE, 'utf8')).replace(/\s+$/, '');
 }
 
 // ── Catalog + CRUD (delegated to the shared helper) ──────────────────────────
