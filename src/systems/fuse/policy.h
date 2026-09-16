@@ -37,11 +37,13 @@
  *                     names the residual. The same claim decides that mark_maybe
  *                     stays on RESOLUTION rather than moving to pt_open — a
  *                     symlinked launcher's registered spelling is never opened,
- *                     only its target is. Real gate arms R12 and R16.
+ *                     only its target is. Real gate arms R12 and R16
+ *                     (tests/fuse-union-marking.real.test.mjs).
  *   frame codec       the socket transport itself, its blocking behaviour under
  *                     libfuse's multithreaded loop, and EIO on a dead cc
  *
- * Every one of those is a real-gate arm (tests/fuse-lifecycle.real.test.mjs).
+ * Every one of those is a real-gate arm, in the tests/fuse-*.real.test.mjs
+ * family over tests/fuseGateCase.mjs.
  *
  * Header-only, and every function is `static inline`, so an including TU that
  * uses half of it draws no unused-function warning.

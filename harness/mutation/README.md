@@ -96,11 +96,17 @@ only failing test is `A16` is **unattributed** — re-run it narrower rather tha
 RATIONALE.md §5.1c has the measurement and the scoping recipe.
 
 And its counterpart on the other side: **a mutation run cannot see the real gate's arms at all.**
-It mutates source and re-runs the DEFAULT suite, where `tests/fuse-lifecycle.real.test.mjs`'s arms
-self-skip — and an arm that never executes contributes neither a pass nor a kill. So a C mutant
+It mutates source and re-runs the DEFAULT suite, where the four `tests/fuse-*.real.test.mjs` files'
+arms self-skip — and an arm that never executes contributes neither a pass nor a kill. So a C mutant
 reported as a survivor is a survivor *of the default suite*, not of the FUSE coverage as a whole.
-Running the gate once before merge (`RUN_FUSE_LIFECYCLE=1`, about 72 seconds) is the only thing that
-reads those arms.
+Running the gate once before merge is the only thing that reads those arms:
+`TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs` — measured
+95.4-96.9 s of wall for the family on a quiet 16-core box, 0 kills in 10 consecutive runs. **The cap is
+part of the invocation**: uncapped, the four files starve each other into the runner's 60 s per-test
+timeout and a file is SIGKILLed at `FILE_KILL_MS`, measured 3 runs in 18. Setting the flag on a
+WHOLE-SUITE run is the same hazard; `TEST_CONCURRENCY=4` is what has been tried there, but it has
+measured green once and red once (`R14L`, the same starvation shape), so it carries no rate. `docs/architecture.md` →
+"The FUSE-union chroot" carries every measurement.
 
 ## What to expect
 
