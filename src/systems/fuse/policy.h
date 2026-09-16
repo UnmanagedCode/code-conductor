@@ -353,11 +353,32 @@ static inline void anc_build(void)
  * host. Its only synthetic nodes come from the OVERLAY below.
  *
  * THE OVERLAY: a traverse-only directory where the orchestrator has none and the
- * chroot cannot run without one. Its two conjuncts and their ORDER are a
- * correctness requirement rather than a style: `policy_cwd_component` is a
- * bounded string compare and `policy_host_absent` is a syscall, and this
+ * chroot cannot run without one. Its three conjuncts and the ORDER of the last
+ * two are a correctness requirement rather than a style: `policy_cwd_component`
+ * is a bounded string compare and `policy_host_absent` is a syscall, and this
  * function is called once PER DIRENT in readdir's real arm. Reverse them and a
- * listing of a large directory pays one fstatat per entry.
+ * listing of a large directory pays one fstatat per entry. The tier test leads
+ * for the same reason — a dirent at any other tier short-circuits before the
+ * string compare.
+ *
+ * THE TIER SET IS {T_FAIL, T_HOST} AND IS ENUMERATED RATHER THAN NEGATED, so
+ * `T_HIDE`, `T_BIND` and `T_PROJECT` stay out BY CONSTRUCTION. T_HOST is in it
+ * because a `host` pin routinely COVERS a chain component the orchestrator does
+ * not have: `buildTierTable` pins the projects root, the home dir, cc's own
+ * checkout and every plugin dir `host`, and a `project` pin nested under one of
+ * those is STRUCK in this view (`tier_of`), which hands the contest to the
+ * shorter `host` pin. Gate on `T_FAIL` alone and the overlay is unreachable at
+ * exactly those paths — `route()`'s T_HOST arm hands the op the orchestrator's
+ * own fd, `fstatat` answers its own ENOENT, and the chroot'd `cd` into the
+ * CLI's cwd dies before execve. The floor cannot stand in: it mutates a
+ * `struct stat` a nonexistent directory never produces.
+ *
+ * IT CANNOT REACH WHAT A `host` PIN PROTECTS, and that is structural rather
+ * than argued: `policy_host_absent` fires it ONLY where the orchestrator has
+ * nothing, so the store and the plugin dirs — which exist — are unreachable by
+ * it. The node it produces is a fixed 0555 read-only directory in `VIEW_HOST`,
+ * where this function cannot return T_PROJECT at all and
+ * `policy_table_child_exists` drops every table name the orchestrator lacks.
  *
  * The probe is deliberately PER-OP and not cached at mount. The set needing the
  * decision is `depth(cwd)` paths behind a string compare, so the cost is a
@@ -375,7 +396,8 @@ static inline enum tier resolve_class(const char *path, enum view v)
 
 	if (v == VIEW_CLI)
 		return (t == T_FAIL && anc_find(path) >= 0) ? T_SYNTH : t;
-	if (t == T_FAIL && policy_cwd_component(path) && policy_host_absent(path))
+	if ((t == T_FAIL || t == T_HOST)
+	    && policy_cwd_component(path) && policy_host_absent(path))
 		return T_SYNTH;
 	return t;
 }
