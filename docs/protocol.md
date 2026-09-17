@@ -7,6 +7,7 @@
 claude -p \
   --input-format=stream-json --output-format=stream-json \
   --verbose --include-partial-messages --include-hook-events \
+  --exclude-dynamic-system-prompt-sections \
   --allow-dangerously-skip-permissions \
   --permission-prompt-tool stdio \
   --permission-mode <plan|bypassPermissions> --effort <effort> --thinking <thinking> \

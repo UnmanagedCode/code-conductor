@@ -2085,6 +2085,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       '--verbose',
       '--include-partial-messages',
       '--include-hook-events',
+      // Moves per-machine sections (cwd, env, memory paths, git status) out
+      // of the system prompt into the first user message, improving
+      // cross-user prompt-cache reuse. Only takes effect with the default
+      // system prompt — cc passes no --system-prompt, so this always
+      // applies.
+      '--exclude-dynamic-system-prompt-sections',
       // Required so a mid-session `set_permission_mode bypassPermissions`
       // control_request is accepted — without it the CLI rejects the
       // switch with "session was not launched with
