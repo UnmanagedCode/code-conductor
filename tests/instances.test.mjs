@@ -662,6 +662,11 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
       `--allow-dangerously-skip-permissions missing; argv was: ${argv.join(' ')}`,
     );
 
+    assert.ok(
+      argv.includes('--exclude-dynamic-system-prompt-sections'),
+      `--exclude-dynamic-system-prompt-sections missing; argv was: ${argv.join(' ')}`,
+    );
+
     // The interactive tools (ExitPlanMode / EnterPlanMode / AskUserQuestion)
     // are enabled via `--permission-prompt-tool stdio` (routes their permission
     // prompts to us as `can_use_tool` control_requests) and gated at that layer
