@@ -441,6 +441,33 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   });
 });
 
+// THE COMMAND WORDS OF A SHELL FRAGMENT — the first word of every simple
+// command, which is the only thing a `PATH` lookup can hide behind. Three
+// shapes have to be seen for that to be true, and each was a blind spot worth
+// naming: a COMMAND SUBSTITUTION (`X=$(mv a b)` runs `mv`, and an
+// assignment-prefix rule applied to the raw text reads `a` as the command
+// instead, which is why substitutions are lifted out FIRST), a PIPE (the right
+// side is a command too), and an ASSIGNMENT PREFIX (`FOO=bar cmd` runs `cmd`,
+// while a part that is only assignments runs nothing at all).
+//
+// Backticks are deliberately not scanned: they appear inside this script's
+// `die` strings, where they are prose, and `$(…)` is the form the script uses.
+function commandWordsOf(text) {
+  const out = [];
+  let body = text.split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+  body = body.replace(/\$\(\s*([^\s)]+)[^)]*\)/g, (_, w) => { out.push(w); return "''"; });
+  for (const line of body.split('\n')) {
+    // `\|\|?` so `||` is consumed whole before a single `|` can split it.
+    for (const part of line.split(/\|\|?|&&|;/)) {
+      const toks = part.trim().split(/\s+/).filter(Boolean);
+      let i = 0;
+      while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
+      if (i < toks.length) out.push(toks[i]);
+    }
+  }
+  return out;
+}
+
 describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   const plan = {
     instanceId: 'inst-1', rundir: '/store/run/inst-1',
@@ -481,8 +508,8 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // worker env as `{...process.env}`, so an orchestrator's own
   // `CC_FUSE_TRACE=0` — the natural way to turn a thing off — is in `spec.env`
   // at EVERY launch. TWO GUARDS keep it out of the worker-side path slot, and
-  // neither is the names being different: `planVars` is composed from the plan
-  // alone, so nothing in `spec.env` is an input to it, and `CC_FUSE_TRACE_LOG`
+  // neither is the names being different: `planVars` is composed from `plan`
+  // and `ctx` alone, so nothing in `spec.env` is an input to it, and `CC_FUSE_TRACE_LOG`
   // is a `PLAN_KEY`, so the worker file — sourced last, and otherwise the
   // winner — is stripped of it. THE PRECONDITION THAT WOULD HAVE TO COME BACK
   // is a producer feeding `planVars` from `spec.env`: under that, one name puts
@@ -680,6 +707,30 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     assert.ok(checkAt < sourceAt, 'the re-verification runs after the source it is meant to guard');
   });
 
+  // PINS the PARSER the test below rests on, over the three shapes a command
+  // word can hide in. A scan that silently misses one is a guard that reads
+  // green while the defect it exists for is back in the script — and that
+  // defect cost a launch that failed with the mount, the daemon and the
+  // handshake already made.
+  // DIES UNDER: dropping the substitution lift; splitting on `||` but not `|`;
+  // treating an assignment PREFIX as the command word, or a whole-assignment
+  // part as one.
+  test('the command-word parser sees a substitution, a pipe and an assignment prefix', () => {
+    // A command hiding in an assignment's substitution.
+    assert.deepEqual(commandWordsOf('X=$(mv a b)'), ['mv']);
+    assert.deepEqual(commandWordsOf('D=$(dirname "$1") || die "x"'), ['dirname', 'die']);
+    // The far side of a pipe, without `||` being split in half.
+    assert.deepEqual(commandWordsOf('cat f | tr a b'), ['cat', 'tr']);
+    assert.deepEqual(commandWordsOf('a || b && c; d'), ['a', 'b', 'c', 'd']);
+    // An assignment prefix is not the command; an assignment alone is no command.
+    assert.deepEqual(commandWordsOf('FOO=bar cmd arg'), ['cmd']);
+    assert.deepEqual(commandWordsOf('CHROOT_BIN=$1'), []);
+    assert.deepEqual(commandWordsOf('# just a comment'), []);
+    // And the shapes the script actually uses still read correctly.
+    assert.deepEqual(commandWordsOf('"$RM_BIN" -f "$F" 2>/dev/null || :'), ['"$RM_BIN"', ':']);
+    assert.deepEqual(commandWordsOf('[ -x "$B" ] || die "no"'), ['[', 'die']);
+  });
+
   // PINS: AFTER THE WORKER ENVIRONMENT IS SOURCED, NOTHING RESOLVES A COMMAND
   // NAME AGAINST `PATH`. From that line on `PATH` is the CALLER's, and cc's
   // Backends settings merge user-supplied pairs into the spawn environment
@@ -714,14 +765,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     const outer = `${after.slice(0, bodyOpen)}${after.slice(bodyClose + 1)}\n${trap[1]}`
       .split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
 
-    // Every simple command's first word, `||`/`&&`/`;` included.
-    const words = [];
-    for (const line of outer.split('\n')) {
-      for (const part of line.split(/\|\||&&|;/)) {
-        const w = part.trim().split(/\s+/)[0];
-        if (w) words.push(w);
-      }
-    }
+    const words = commandWordsOf(outer);
     assert.ok(words.length > 0, `nothing was parsed out of step 10's tail: ${JSON.stringify(outer)}`);
     // `[`, `exec`, `shift`, `:` are dash builtins; `die` is this script's own
     // function, defined above `set -eu`'s first use of it.
@@ -2830,21 +2874,27 @@ describe('FuseSession lifecycle', () => {
 
   // PINS: `prepare()` leaves the run-directory CHAIN at 0700 — the run root as
   // well as this session's directory, and whether or not each already existed.
-  // The leaf alone is not enough: write access to `run/` is what lets a peer
-  // rename a session's directory aside and recreate one it OWNS at that path,
-  // after which cc populates it, step 0's ownership test passes on the cc-owned
-  // files inside, and the peer can swap one between the check and the source.
-  // A store that predates this keeps `run/` at whatever mode it was made with,
-  // which is why the chmod is not just `mode:` on the mkdir.
-  // DIES UNDER: dropping the run root from the chain; dropping the chmod and
+  // The leaf alone is not enough. Write access at ANY level above a directory
+  // is write access to that directory's NAME: a peer can rename a live
+  // session's directory aside and put another at its path, and inside a file's
+  // own 0600 protects its CONTENTS, not its name — so cc's file can be swapped
+  // between step 0's check and step 10's source for another cc-owned, 0600
+  // inode, which a hardlink to an earlier launch's file is. The directory's
+  // owner and mode are what tell those apart, and this is what keeps them
+  // trustworthy. `systems/` and `fuse/` are on the chain because
+  // `ensureUnionBinary` creates them on its way to `bin/`, at default mode.
+  // DIES UNDER: dropping any level from the chain; dropping the chmod and
   // relying on `mode:`, which does not apply to a directory that exists.
-  test('prepare() leaves the run root and the session directory at 0700, pre-existing or not', async (t) => {
-    const { fuseRunRoot } = await import('../src/systems/fuse/plan.ts');
-    const runRoot = fuseRunRoot();
-    // THE PRE-EXISTING CASE, which is the one `mode:` cannot reach: make the
-    // run root first, group- and other-readable, as an older store left it.
-    await fs.mkdir(runRoot, { recursive: true });
-    await fs.chmod(runRoot, 0o755);
+  test('prepare() leaves every level cc creates on the way to the run directory at 0700', async (t) => {
+    const { fuseStoreChain } = await import('../src/systems/fuse/plan.ts');
+    const chain = fuseStoreChain();
+    const runRoot = chain[chain.length - 1];
+    // THE PRE-EXISTING CASE, which is the one `mode:` cannot reach: make every
+    // level first, group- and other-readable, as an older store left them.
+    for (const d of chain) {
+      await fs.mkdir(d, { recursive: true });
+      await fs.chmod(d, 0o755);
+    }
     const rundir = path.join(runRoot, `inst-chain-${randomUUID()}`);
     t.after(() => rmSync(rundir, { recursive: true, force: true }));
 
@@ -2853,10 +2903,11 @@ describe('FuseSession lifecycle', () => {
     t.after(() => s.teardown());
     await s.prepare();
 
-    for (const at of [runRoot, rundir]) {
+    assert.ok(chain.length >= 3, `the chain is ${JSON.stringify(chain)} — it should reach above run/`);
+    for (const at of [...chain, rundir]) {
       assert.equal((await fs.stat(at)).mode & 0o777, 0o700,
-        `${at} is mode ${((await fs.stat(at)).mode & 0o777).toString(8)}, so a group peer can rename `
-        + "the environment files' directory aside and own its replacement");
+        `${at} is mode ${((await fs.stat(at)).mode & 0o777).toString(8)}, so a group peer has write `
+        + "access on the path to the environment files' directory and can rename it aside");
     }
   });
 

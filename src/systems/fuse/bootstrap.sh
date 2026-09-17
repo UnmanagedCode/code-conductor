@@ -42,12 +42,16 @@ PLAN_ENV=$1
 EXPECT_UID=$2
 shift 2
 command -v stat >/dev/null 2>&1 || die "\`stat\` is not on PATH"
-# CAPTURED ABSOLUTELY, HERE, because the only place it is used is step 10 —
-# AFTER the worker environment is sourced, where PATH is the caller's. A bare
-# `rm` there is exit 127 under `set -e` on any PATH without it, and by then the
-# mount, the daemon, the record and the handshake all exist: a launch that fails
-# having created everything. cc's own Backends settings put user-supplied pairs
-# into that environment, so `PATH=/opt/claude/bin` reaches it.
+# CAPTURED ABSOLUTELY, HERE, AND USED IN TWO PLACES: step 10's explicit unlink,
+# and the EXIT trap armed at the end of this step. Absolute covers both for one
+# reason — neither can afford to be wrong about which binary it runs, and one of
+# them can run at a moment when PATH is the CALLER'S. Step 10's unlink is after
+# the source by construction; the trap fires wherever the `die` was, which is
+# before the source on every path but step 10's own checks. A bare `rm` in the
+# after case is exit 127 under `set -e`, with the mount, the daemon, the record
+# and the handshake already made: a launch that fails having created everything.
+# cc's own Backends settings put user-supplied pairs into that environment, so
+# `PATH=/opt/claude/bin` reaches it.
 RM_BIN=$(command -v rm) || die "\`rm\` is not on PATH"
 check_owner_mode() { # check_owner_mode <path> <expected-uid> <noun>
 	_o=$(stat -c %u "$1" 2>/dev/null) || die "could not stat environment $3 $1"
@@ -62,12 +66,15 @@ check_owner_mode() { # check_owner_mode <path> <expected-uid> <noun>
 check_env_file() { # check_env_file <path> <expected-uid>
 	[ -f "$1" ] || die "environment file $1 is missing or is not a regular file"
 	check_owner_mode "$1" "$2" file
-	# AND THE DIRECTORY HOLDING IT, because a file's own mode does not protect its
-	# NAME: a principal who can write the directory renames cc's file aside and
-	# puts its own at that path, and every test above then passes on a file cc
-	# never wrote. Both must pass before anything is sourced; which is checked
-	# first only decides which refusal you read. `${1%/*}` and not `dirname`,
-	# which would be a command resolved against PATH.
+	# AND THE DIRECTORY HOLDING IT, because a file's own mode protects its
+	# CONTENTS and not its NAME. A principal who can write the directory renames
+	# cc's file aside and links another inode in at that path — and the tests
+	# above cannot tell the two apart if that inode is also cc-owned and 0600,
+	# which a hardlink to an earlier launch's file is. A file the PEER owns is
+	# refused by check_owner_mode; this is what closes the case where it is not.
+	# Both must pass before anything is sourced; which is checked first only
+	# decides which refusal you read. `${1%/*}` and not `dirname`, which would be
+	# a command resolved against PATH.
 	_d=${1%/*}
 	[ -n "$_d" ] || _d=/
 	[ -d "$_d" ] || die "environment directory $_d is missing or is not a directory"
@@ -82,13 +89,13 @@ check_env_file "$PLAN_ENV" "$EXPECT_UID"
 # CHECKED HERE, RE-CHECKED AND SOURCED AT STEP 10: a bad worker file must refuse
 # before the mount exists, not only after.
 check_env_file "$CC_FUSE_WORKER_ENV" "$EXPECT_UID"
-# EVERY EXIT PATH, NOT ONLY THE ONE THAT REACHES STEP 10. The worker file is
-# cc's whole environment, API keys included, and a `die` at any step below
-# leaves it in a run directory that outlives this process — until cc's teardown,
-# and on a WEDGED teardown until the next boot sweep, which is the residue this
-# unlink exists to prevent. `exec` replaces the shell without running traps, so
-# step 10 unlinks explicitly as well; this covers everything that is not that
-# exec.
+# EVERY `die` FROM STEP 1 TO STEP 9, NOT ONLY THE PATH THAT REACHES STEP 10. The
+# worker file is cc's whole environment, API keys included, and a refusal at any
+# step below leaves it in a run directory that outlives this process — until
+# cc's teardown, and on a WEDGED teardown until the next boot sweep, which is
+# the residue this unlink exists to prevent. `exec` replaces the shell without
+# running traps, so step 10 unlinks explicitly as well. An external SIGKILL runs
+# no trap either and is outside what this can cover.
 trap '"$RM_BIN" -f "$CC_FUSE_WORKER_ENV" 2>/dev/null || :' EXIT
 
 # ── 1. re-assert preflight, as defence in depth. cc checked all of this before
@@ -298,13 +305,12 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 #        THE WORKER'S OWN ENVIRONMENT IS COMPOSED HERE AND NOWHERE EARLIER.
 #        Sourced early, its PATH would be what step 1's `command -v` probes
 #        resolved against; sourced here it is an ordinary key and PATH needs no
-#        smuggling alias. Everything below this line is `exec`, so what this
-#        shell holds is what the CLI runs with.
-#
-#        NOTHING BELOW RESOLVES A COMMAND NAME AGAINST PATH once the source
-#        has run — every command word past it is a shell builtin, this script's
-#        own `die`, or a binary this script resolved absolutely BEFORE the
-#        source and stashed. The caller's PATH need not contain anything.
+#        smuggling alias. Everything below runs in THIS shell and ends at the
+#        single `exec` — no fork, no new process — so what this shell holds
+#        there is what the CLI runs with. Only two commands run below: `stat`,
+#        before the source and so against sudo's own PATH, and the stashed
+#        absolute `rm`. NOTHING BELOW RESOLVES A COMMAND NAME AGAINST THE
+#        CALLER'S PATH; it need not contain anything.
 #
 #        THE unset IS SUDO'S OWN env_reset SUBSTITUTIONS (HOME=/root and
 #        friends). cc's set overwrites each of them; unsetting first is what
@@ -345,8 +351,9 @@ shift 8
 #        those bytes in the run directory for as long as the session lives, and
 #        past a wedged teardown until the next boot sweep. cc rewrites it before
 #        every spawn, so a relaunch is unaffected. The EXIT trap armed at step 0
-#        covers every path that does not reach this line; `exec` runs no trap,
-#        which is why this one is explicit.
+#        covers every `die` from step 1 to step 9 and not this line, because
+#        `exec` runs no trap — nor does an external SIGKILL, which cc's own
+#        teardown can deliver, and which no trap can cover.
 "$RM_BIN" -f "$CC_FUSE_WORKER_ENV"
 #        DEFENCE IN DEPTH, THE SAME KIND AS STEP 1's: what step 1 resolved is
 #        re-checked here because the host can change in between. It is the stash
