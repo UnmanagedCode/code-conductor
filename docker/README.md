@@ -181,7 +181,7 @@ Socket access is root-equivalent on the host either way; `CC_WITH_DOCKER=1` is t
 | `sudo -n true` — cc's **only** sudo requirement | `CC_WITH_SUDO` (default on) + an account for the uid |
 | `unshare`, `nsenter`, `setpriv` | `util-linux` |
 | `mount`, `umount` | `mount` (Debian splits these out of `util-linux`) |
-| `chroot`, `stat` | `coreutils` |
+| `chroot`, `stat`, `rm` | `coreutils` |
 | `fusermount3` | `fuse3` |
 | `fusectl` in `/proc/filesystems` | **the host kernel** — not installable |
 | `gcc` | `gcc` (+ `libc6-dev`, for the union daemon's compile) |

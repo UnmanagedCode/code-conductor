@@ -42,16 +42,36 @@ PLAN_ENV=$1
 EXPECT_UID=$2
 shift 2
 command -v stat >/dev/null 2>&1 || die "\`stat\` is not on PATH"
-check_env_file() { # check_env_file <path> <expected-uid>
-	[ -f "$1" ] || die "environment file $1 is missing or is not a regular file"
-	_o=$(stat -c %u "$1" 2>/dev/null) || die "could not stat environment file $1"
-	[ "$_o" = "$2" ] || die "environment file $1 is owned by uid $_o, not by cc's uid $2"
-	_m=$(stat -c %04a "$1" 2>/dev/null) || die "could not stat environment file $1"
+# CAPTURED ABSOLUTELY, HERE, because the only place it is used is step 10 —
+# AFTER the worker environment is sourced, where PATH is the caller's. A bare
+# `rm` there is exit 127 under `set -e` on any PATH without it, and by then the
+# mount, the daemon, the record and the handshake all exist: a launch that fails
+# having created everything. cc's own Backends settings put user-supplied pairs
+# into that environment, so `PATH=/opt/claude/bin` reaches it.
+RM_BIN=$(command -v rm) || die "\`rm\` is not on PATH"
+check_owner_mode() { # check_owner_mode <path> <expected-uid> <noun>
+	_o=$(stat -c %u "$1" 2>/dev/null) || die "could not stat environment $3 $1"
+	[ "$_o" = "$2" ] || die "environment $3 $1 is owned by uid $_o, not by cc's uid $2"
+	_m=$(stat -c %04a "$1" 2>/dev/null) || die "environment $3 $1 could not be stat'd for its mode"
 	# `%04a` is fixed-width, so character 3 is the group triad and character 4 the
 	# other triad, and `2367` is every octal digit carrying the write bit.
 	case "$_m" in
-		??[2367]?|???[2367]) die "environment file $1 is group- or other-writable (mode $_m)" ;;
+		??[2367]?|???[2367]) die "environment $3 $1 is group- or other-writable (mode $_m)" ;;
 	esac
+}
+check_env_file() { # check_env_file <path> <expected-uid>
+	[ -f "$1" ] || die "environment file $1 is missing or is not a regular file"
+	check_owner_mode "$1" "$2" file
+	# AND THE DIRECTORY HOLDING IT, because a file's own mode does not protect its
+	# NAME: a principal who can write the directory renames cc's file aside and
+	# puts its own at that path, and every test above then passes on a file cc
+	# never wrote. Both must pass before anything is sourced; which is checked
+	# first only decides which refusal you read. `${1%/*}` and not `dirname`,
+	# which would be a command resolved against PATH.
+	_d=${1%/*}
+	[ -n "$_d" ] || _d=/
+	[ -d "$_d" ] || die "environment directory $_d is missing or is not a directory"
+	check_owner_mode "$_d" "$2" directory
 }
 check_env_file "$PLAN_ENV" "$EXPECT_UID"
 . "$PLAN_ENV"
@@ -59,9 +79,17 @@ check_env_file "$PLAN_ENV" "$EXPECT_UID"
 [ "${CC_FUSE_UID:-}" = "$EXPECT_UID" ] \
 	|| die "plan file $PLAN_ENV says uid ${CC_FUSE_UID:-<unset>}, argv says $EXPECT_UID"
 [ -n "${CC_FUSE_WORKER_ENV:-}" ] || die "plan file $PLAN_ENV names no worker environment file"
-# CHECKED HERE, SOURCED AT STEP 10: a bad worker file must refuse before the
-# mount exists, not after.
+# CHECKED HERE, RE-CHECKED AND SOURCED AT STEP 10: a bad worker file must refuse
+# before the mount exists, not only after.
 check_env_file "$CC_FUSE_WORKER_ENV" "$EXPECT_UID"
+# EVERY EXIT PATH, NOT ONLY THE ONE THAT REACHES STEP 10. The worker file is
+# cc's whole environment, API keys included, and a `die` at any step below
+# leaves it in a run directory that outlives this process — until cc's teardown,
+# and on a WEDGED teardown until the next boot sweep, which is the residue this
+# unlink exists to prevent. `exec` replaces the shell without running traps, so
+# step 10 unlinks explicitly as well; this covers everything that is not that
+# exec.
+trap '"$RM_BIN" -f "$CC_FUSE_WORKER_ENV" 2>/dev/null || :' EXIT
 
 # ── 1. re-assert preflight, as defence in depth. cc checked all of this before
 #       spawning; between that check and here the host can have changed, and a
@@ -273,38 +301,53 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 #        smuggling alias. Everything below this line is `exec`, so what this
 #        shell holds is what the CLI runs with.
 #
+#        NOTHING BELOW RESOLVES A COMMAND NAME AGAINST PATH once the source
+#        has run — every command word past it is a shell builtin, this script's
+#        own `die`, or a binary this script resolved absolutely BEFORE the
+#        source and stashed. The caller's PATH need not contain anything.
+#
 #        THE unset IS SUDO'S OWN env_reset SUBSTITUTIONS (HOME=/root and
 #        friends). cc's set overwrites each of them; unsetting first is what
 #        makes that true rather than probable, and a missing HOME is a loud
 #        failure where a root one is a silent wrong answer.
 #
-#        NOTHING THE SOURCE CAN NAME REACHES THE exec BELOW, and the positional
-#        parameters are how. The worker set is cc's WHOLE process environment,
-#        so an `export CHROOT_BIN=…` in it would replace the absolute path step
-#        1 resolved and this shell would exec that as root, inside the mount
-#        namespace. A `set NAME=value` line cannot reach a positional
-#        parameter, so every value still needed past the source is stashed
-#        there and read back afterwards. That is TOTAL — it needs no list of
-#        reserved names, and a variable added to the exec later cannot quietly
-#        reopen it.
-set -- "$CHROOT_BIN" "$SETPRIV_BIN" "$CC_FUSE_ROOT" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$CC_FUSE_WORKER_ENV" "$@"
+#        NO NAME THE SOURCE CAN SET IS READ BY THE exec BELOW, and the
+#        positional parameters are how. Every name in that file DOES reach the
+#        exec — as the CLI's environment, which is the whole point of the
+#        channel; what must not happen is this shell READING one. The worker set
+#        is cc's WHOLE process environment, so an `export CHROOT_BIN=…` in it
+#        would replace the absolute path step 1 resolved and this shell would
+#        hand that to `exec` as root, inside the mount namespace. An
+#        `export NAME=value` line cannot reach a positional parameter, so every
+#        value still read past the source is stashed there and read back
+#        afterwards. That is TOTAL — it needs no list of reserved names, and a
+#        variable added to the exec later cannot quietly reopen it.
+set -- "$CHROOT_BIN" "$SETPRIV_BIN" "$RM_BIN" "$CC_FUSE_ROOT" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$CC_FUSE_WORKER_ENV" "$@"
 unset HOME MAIL LOGNAME USER SHELL || :
+#        RE-VERIFIED AT THE POINT OF USE. Step 0's check refuses before anything
+#        is created, which is its own job; between it and here the whole mount
+#        sequence runs, and this file is about to be sourced AS ROOT. `stat` is
+#        still resolved against sudo's own PATH on this line, because the source
+#        has not happened yet.
+check_env_file "$CC_FUSE_WORKER_ENV" "$CC_FUSE_UID"
 . "$CC_FUSE_WORKER_ENV"
 CHROOT_BIN=$1
 SETPRIV_BIN=$2
-CC_FUSE_ROOT=$3
-CC_FUSE_CWD=$4
-CC_FUSE_UID=$5
-CC_FUSE_GID=$6
-CC_FUSE_WORKER_ENV=$7
-shift 7
-#        UNLINKED THE INSTANT ITS ONE READER IS DONE. This file is cc's entire
-#        environment — API keys included — and the line above is the only thing
-#        that ever reads it; leaving it would put those bytes in the run
-#        directory for as long as the session lives, and past a wedged teardown
-#        until the next boot sweep. cc rewrites it before every spawn, so a
-#        relaunch is unaffected.
-rm -f "$CC_FUSE_WORKER_ENV"
+RM_BIN=$3
+CC_FUSE_ROOT=$4
+CC_FUSE_CWD=$5
+CC_FUSE_UID=$6
+CC_FUSE_GID=$7
+CC_FUSE_WORKER_ENV=$8
+shift 8
+#        UNLINKED THE INSTANT ITS ONE READER IS DONE — the `.` above. This file
+#        is cc's entire environment, API keys included; leaving it would put
+#        those bytes in the run directory for as long as the session lives, and
+#        past a wedged teardown until the next boot sweep. cc rewrites it before
+#        every spawn, so a relaunch is unaffected. The EXIT trap armed at step 0
+#        covers every path that does not reach this line; `exec` runs no trap,
+#        which is why this one is explicit.
+"$RM_BIN" -f "$CC_FUSE_WORKER_ENV"
 #        DEFENCE IN DEPTH, THE SAME KIND AS STEP 1's: what step 1 resolved is
 #        re-checked here because the host can change in between. It is the stash
 #        above, not these, that makes the source unable to substitute a binary.

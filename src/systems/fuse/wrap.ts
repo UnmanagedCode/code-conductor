@@ -156,22 +156,29 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): WrappedLaunch {
     //
     // `CC_FUSE_TRACE` is cc's own on/off flag, read by `resolveTraceEnabled`
     // and keyed exactly on `'1'`; this is the worker-side PATH the bootstrap
-    // hands the daemon, and the bootstrap tests it for NON-EMPTINESS. Two
-    // meanings under one name would put an orchestrator's own `CC_FUSE_TRACE=0`
-    // — the most natural way an operator turns something off — into this slot,
-    // where that test reads it as ON and the daemon gets `CC_UNION_TRACE="0"`:
-    // `fopen("0","a")` as root writes a junk file named `0` and pays the full
-    // per-op tracing cost on every spawn. Keeping the two names apart is what
-    // puts that out of reach, and `instances.ts` builds the worker env as
-    // `{...process.env}`, so the operator's value IS in `spec.env` at every
-    // launch.
+    // hands the daemon, and the bootstrap tests it for NON-EMPTINESS.
+    //
+    // TWO GUARDS KEEP AN OPERATOR'S VALUE OUT OF THIS SLOT, AND NEITHER IS THE
+    // NAMES BEING DIFFERENT. `planVars` is composed from `plan` and `ctx`
+    // alone, so nothing in `spec.env` is an input to it; and
+    // `CC_FUSE_TRACE_LOG` is a PLAN_KEY, so the worker file — sourced last, and
+    // otherwise the winner — is stripped of it (and step 4 runs before that
+    // source in any case). THE PRECONDITION THAT WOULD HAVE TO COME BACK is a
+    // producer feeding this object from `spec.env`: `instances.ts` builds the
+    // worker env as `{...process.env}`, so an operator's `CC_FUSE_TRACE=0` — the
+    // most natural way to turn a thing off — is in `spec.env` at every launch,
+    // and under one name it lands in this slot, where the non-emptiness test
+    // reads it as ON and the daemon `fopen("0","a")`s as root, writing a junk
+    // file named `0` and paying the full per-op tracing cost on every spawn.
+    //
+    // The two names differ for a different reason: cc's own reader contract, so
+    // that `resolveTraceEnabled`'s switch and this path can never be read for
+    // each other.
     //
     // THE CONTRACT: when cc chose no tracing, the plan file does not NAME this
     // key. Set below rather than here so that stays true — an
     // `export CC_FUSE_TRACE_LOG=''` is inert under the bootstrap's test, but it
-    // is a value where the plan means an absence. An INHERITED one cannot
-    // arrive by the other door either: this name is in PLAN_KEYS, so the worker
-    // file — sourced last, and otherwise the winner — is stripped of it.
+    // is a value where the plan means an absence.
   };
   if (plan.tracePath) planVars.CC_FUSE_TRACE_LOG = plan.tracePath;
   // cc's own environment, MINUS every name the plan owns — see PLAN_KEYS.

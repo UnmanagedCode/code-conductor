@@ -13,7 +13,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs, rmSync } from 'node:fs';
+import { promises as fs, rmSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { runTeardown, DEFAULT_DEADLINES, describePolicyEvents, parsePolicyEvents } from '../src/systems/fuse/session.ts';
@@ -477,15 +477,17 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // pins lives in what `wrapLaunch` EMITS. A produce-vs-consume gap is exactly
   // where a defect hides from the consumer's own tests.
   //
-  // WHAT THEY RULE OUT: `CC_FUSE_TRACE` naming BOTH cc's on/off switch and the
-  // worker-side path. `instances.ts` builds the worker env as
-  // `{...process.env}`, so an orchestrator's own `CC_FUSE_TRACE=0` — the
-  // natural way to turn a thing off — is in `spec.env` at EVERY launch; under
-  // one name it would land in the path slot, where the bootstrap's
-  // non-emptiness test reads it as ON and the daemon gets `CC_UNION_TRACE="0"`.
-  // TWO THINGS HOLD THEM APART and both are asserted below: the names differ,
-  // and `CC_FUSE_TRACE_LOG` is a `PLAN_KEY`, so the worker file — sourced last
-  // — cannot carry an inherited one past the plan's decision.
+  // WHAT THEY PIN, AND WHAT ACTUALLY GUARDS IT. `instances.ts` builds the
+  // worker env as `{...process.env}`, so an orchestrator's own
+  // `CC_FUSE_TRACE=0` — the natural way to turn a thing off — is in `spec.env`
+  // at EVERY launch. TWO GUARDS keep it out of the worker-side path slot, and
+  // neither is the names being different: `planVars` is composed from the plan
+  // alone, so nothing in `spec.env` is an input to it, and `CC_FUSE_TRACE_LOG`
+  // is a `PLAN_KEY`, so the worker file — sourced last, and otherwise the
+  // winner — is stripped of it. THE PRECONDITION THAT WOULD HAVE TO COME BACK
+  // is a producer feeding `planVars` from `spec.env`: under that, one name puts
+  // `"0"` in the path slot, the bootstrap's non-emptiness test reads it as ON,
+  // and the daemon gets `CC_UNION_TRACE="0"`. Both guards are asserted below.
 
   // PINS: what `wrapLaunch` emits for the worker-side trace path is decided by
   // `plan.tracePath` ALONE, and an inherited value never survives it.
@@ -585,11 +587,13 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
       "bootstrap.sh reads cc's operator switch, which is how the two names collapsed before");
   });
 
-  // PINS: NO NAME THE WORKER ENVIRONMENT FILE CAN CARRY REACHES STEP 10's
-  // `exec`. That file is cc's WHOLE process environment, and it is sourced as
-  // root inside the mount namespace — so an `export CHROOT_BIN=…` or an
+  // PINS: NO NAME THE WORKER ENVIRONMENT FILE CAN SET IS READ BY STEP 10's
+  // `exec` LINE. Every name in that file does reach the exec — as the CLI's own
+  // environment, which is the channel's whole point; what must not happen is
+  // the SHELL reading one. That file is cc's WHOLE process environment, sourced
+  // as root inside the mount namespace, so an `export CHROOT_BIN=…` or an
   // `export SETPRIV_BIN=…` in cc's own environment would replace the absolute
-  // path step 1 resolved and this shell would exec that instead, as uid 0. The
+  // path step 1 resolved and this shell would hand that to `exec` as uid 0. The
   // mechanism is the POSITIONAL PARAMETERS, which an `export NAME=value` line
   // cannot reach.
   //
@@ -653,19 +657,109 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     }
   });
 
-  // PINS: step 10 unlinks the worker environment file, and does it AFTER the
-  // source and BEFORE the exec — the only window in which the file has been
-  // read and this shell still exists. It holds cc's whole environment, API keys
-  // included; the run directory outlives the launch, and past a wedged teardown
-  // it outlives the session. The real gate's arm 8 asserts the CONSEQUENCE at a
-  // live mount; this is the same fact where `npm test` can reach it.
-  // DIES UNDER: deleting the `rm`; moving it above the `.`, which would unlink
-  // the file before its one reader runs.
-  test('step 10 unlinks the worker environment file between the source and the exec', async () => {
+  // PINS: the worker environment file is verified AGAIN immediately before it
+  // is sourced, not only at step 0. Step 0's check refuses before anything is
+  // created, which is its own job and stays; but the whole mount sequence runs
+  // between it and the source, and the source happens AS ROOT — so a check that
+  // is only at step 0 narrows the window rather than closing it.
+  // DIES UNDER: deleting the second call; moving it before the daemon launch,
+  // where it is step 0's check under another name; putting it after the `.`.
+  test('the worker environment file is re-verified at the point of use, not only at step 0', async () => {
     const { readFile } = await import('node:fs/promises');
     const src = await readFile(BOOTSTRAP, 'utf8');
     const sourceAt = src.indexOf('. "$CC_FUSE_WORKER_ENV"');
-    const rmAt = src.indexOf('rm -f "$CC_FUSE_WORKER_ENV"');
+    assert.ok(sourceAt > 0, 'step 10 no longer sources the worker environment file');
+    // Step 4's daemon launch — everything cc has to reclaim exists past it.
+    const daemonAt = src.indexOf('"$CC_FUSE_BIN" -f -o');
+    assert.ok(daemonAt > 0, 'the daemon launch is not the shape this test pins — re-anchor or repair');
+    const checkAt = src.lastIndexOf('check_env_file "$CC_FUSE_WORKER_ENV"', sourceAt);
+    assert.ok(checkAt > daemonAt,
+      'the worker environment file is verified only at step 0 and then sourced as root after the '
+      + 'mount, the daemon and the handshake have all been made — a window a peer who can reach '
+      + 'the run directory has the whole mount sequence to win');
+    assert.ok(checkAt < sourceAt, 'the re-verification runs after the source it is meant to guard');
+  });
+
+  // PINS: AFTER THE WORKER ENVIRONMENT IS SOURCED, NOTHING RESOLVES A COMMAND
+  // NAME AGAINST `PATH`. From that line on `PATH` is the CALLER's, and cc's
+  // Backends settings merge user-supplied pairs into the spawn environment
+  // (`Object.assign(spawnEnv, backendEnvVars)`, instances.ts) — so a user
+  // setting `PATH=/opt/claude/bin` is enough. Under `set -eu` a command name
+  // that does not resolve is exit 127, and step 10 runs AFTER the mount, the
+  // daemon, the record and the handshake: a launch that fails having created
+  // everything.
+  //
+  // DERIVED: the command words are read out of the script, so a `mv`, a `cat`
+  // or a second `rm` added below the source is caught the day it is added.
+  // DIES UNDER: spelling any of them bare; resolving one at step 1 but not
+  // stashing it; stashing one that was never resolved absolutely.
+  test('no command word after the source resolves against the caller PATH', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(BOOTSTRAP, 'utf8');
+    const sourceAt = src.indexOf('. "$CC_FUSE_WORKER_ENV"');
+    const head = src.slice(0, sourceAt);
+    const stashAt = head.lastIndexOf('\nset -- ');
+    const stashed = [...head.slice(stashAt + 1).split('\n')[0].matchAll(/"\$([A-Za-z_][A-Za-z0-9_]*)"/g)].map(m => m[1]);
+    const tail = src.slice(sourceAt);
+    const shift = /^shift (\d+)$/m.exec(tail);
+    const after = tail.slice(shift.index);
+    const at = after.indexOf("/bin/sh -c '");
+    const bodyOpen = after.indexOf("'", at);
+    const bodyClose = after.indexOf("'", bodyOpen + 1);
+    // The chroot script body is the INNER shell's, with its own PATH question,
+    // and `2c` owns it. The EXIT trap's body is in scope here though: it can
+    // fire after the source, so it is under the same rule.
+    const trap = /^trap '(.*)' EXIT$/m.exec(src);
+    assert.ok(trap, 'no EXIT trap is armed — see the unlink test');
+    const outer = `${after.slice(0, bodyOpen)}${after.slice(bodyClose + 1)}\n${trap[1]}`
+      .split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+
+    // Every simple command's first word, `||`/`&&`/`;` included.
+    const words = [];
+    for (const line of outer.split('\n')) {
+      for (const part of line.split(/\|\||&&|;/)) {
+        const w = part.trim().split(/\s+/)[0];
+        if (w) words.push(w);
+      }
+    }
+    assert.ok(words.length > 0, `nothing was parsed out of step 10's tail: ${JSON.stringify(outer)}`);
+    // `[`, `exec`, `shift`, `:` are dash builtins; `die` is this script's own
+    // function, defined above `set -eu`'s first use of it.
+    const BUILTINS = ['[', 'exec', 'shift', ':', 'die', 'set', 'unset', '.'];
+    for (const w of words) {
+      if (BUILTINS.includes(w) || w.startsWith('/') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
+      const ref = /^"\$([A-Za-z_][A-Za-z0-9_]*)"$/.exec(w);
+      assert.ok(ref,
+        `\`${w}\` is a command name resolved against PATH after the worker environment is sourced. `
+        + 'From that line PATH is the CALLER\'s, and under `set -eu` a name that does not resolve is '
+        + 'exit 127 — with the mount, the daemon and the handshake already made.');
+      assert.ok(stashed.includes(ref[1]),
+        `$${ref[1]} is the command word of a statement that can run after the source, but it is not `
+        + 'stashed across it, so the sourced file chooses the binary this script runs as root');
+      assert.match(head, new RegExp(`^${ref[1]}=\\$\\(command -v [a-z]+\\)`, 'm'),
+        `$${ref[1]} is used as a command word but is not resolved absolutely with \`command -v\` `
+        + 'before the source, so it carries whatever the caller put there');
+    }
+  });
+
+  // PINS: the worker environment file is unlinked on BOTH kinds of exit, and
+  // that is two mechanisms because `exec` runs no trap. It holds cc's whole
+  // environment, API keys included; the run directory outlives the launch, and
+  // past a WEDGED teardown it outlives the session.
+  //   - the explicit unlink, between the `.` that reads it and the `exec`;
+  //   - an EXIT trap covering every `die` from step 1 to step 9 — a failed
+  //     unshare, a union that never mounts — armed before ANYTHING is created,
+  //     so no path that creates the mount can skip it.
+  // DIES UNDER: deleting either; moving the explicit one above the `.`, which
+  // would unlink the file before its one reader runs; arming the trap after the
+  // first thing this script creates.
+  test('the worker environment file is unlinked on both the exec path and every die path', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(BOOTSTRAP, 'utf8');
+    const sourceAt = src.indexOf('. "$CC_FUSE_WORKER_ENV"');
+    // FROM the source, because the EXIT trap's body is the same command spelled
+    // earlier — this is the EXPLICIT one, on the path the trap cannot cover.
+    const rmAt = src.indexOf('"$RM_BIN" -f "$CC_FUSE_WORKER_ENV"', sourceAt);
     const execAt = src.indexOf('exec "$CHROOT_BIN"');
     assert.ok(sourceAt > 0, 'step 10 no longer sources the worker environment file');
     assert.ok(rmAt > 0,
@@ -674,6 +768,19 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     assert.ok(execAt > 0, 'the final chroot exec is not the shape this test pins — re-anchor or repair');
     assert.ok(rmAt > sourceAt, 'the unlink runs BEFORE the source, so the file its one reader needs is gone');
     assert.ok(rmAt < execAt, 'the unlink is placed after the exec, where nothing runs');
+
+    const trap = /^trap '(.*)' EXIT$/m.exec(src);
+    assert.ok(trap,
+      'no EXIT trap unlinks the worker environment file, so a `die` anywhere between here and the '
+      + "exec leaves cc's whole environment in a run directory that a wedged teardown does not reclaim");
+    assert.match(trap[1], /-f "\$CC_FUSE_WORKER_ENV"/, trap[1]);
+    // ARMED BEFORE THE FIRST THING THIS SCRIPT CREATES — the step-2 scaffolding
+    // is the earliest, and every process and mount comes after it.
+    const firstCreate = src.indexOf('mkdir -p "$CC_FUSE_ROOT"');
+    assert.ok(firstCreate > 0, 'step 2 is not the shape this test pins — re-anchor or repair');
+    assert.ok(trap.index < firstCreate,
+      'the EXIT trap is armed after this script starts creating things, so a refusal in between '
+      + "leaves cc's environment on disk beside a half-built session");
   });
 
   // PINS: the namespace is private and the mount namespace is new. Losing
@@ -864,6 +971,18 @@ describe('bootstrap.sh step 0 — the environment files are verified before anyt
   before(async () => { dir = await mkdtemp('cc-fuse-step0-'); });
 
   let seq = 0;
+  // A 0600 file inside a directory of the caller's chosen mode — the fixture
+  // for the directory half of the check. `mkdtemp` mints 0700, which is why the
+  // rows above reach the FILE tests at all.
+  const inDir = async (dirMode, text) => {
+    const sub = path.join(dir, `d${seq++}`);
+    await fs.mkdir(sub);
+    const at = path.join(sub, 'env.sh');
+    await fs.writeFile(at, text, { mode: 0o600 });
+    await fs.chmod(at, 0o600);
+    await fs.chmod(sub, dirMode);
+    return at;
+  };
   const write = async (text, mode = 0o600) => {
     const at = path.join(dir, `f${seq++}.sh`);
     await fs.writeFile(at, text, { mode });
@@ -914,6 +1033,19 @@ describe('bootstrap.sh step 0 — the environment files are verified before anyt
       ['a world-writable WORKER file, refused before the mount',
         [await write(planText({ CC_FUSE_WORKER_ENV: await write(renderEnvFile({ HOME: '/home/wk' }), 0o666) })), uid, 'claude'],
         /group- or other-writable \(mode 0666\)/],
+      // THE DIRECTORY, NOT ONLY THE FILE. A 0600 file in a directory a group
+      // peer can write is not protected: they rename cc's aside and put their
+      // own at that path, and every file test passes on a file cc never wrote.
+      ['a plan file in a group-writable directory',
+        [await inDir(0o770, planText({ CC_FUSE_WORKER_ENV: goodWorker })), uid, 'claude'],
+        /environment directory .* is group- or other-writable \(mode 0770\)/],
+      ['a plan file in an other-writable directory',
+        [await inDir(0o707, planText({ CC_FUSE_WORKER_ENV: goodWorker })), uid, 'claude'],
+        /environment directory .* is group- or other-writable \(mode 0707\)/],
+      // AND THE WORKER FILE'S DIRECTORY TOO, at step 0, before the mount.
+      ['a WORKER file in a world-writable directory',
+        [await write(planText({ CC_FUSE_WORKER_ENV: await inDir(0o777, renderEnvFile({ HOME: '/home/wk' })) })), uid, 'claude'],
+        /environment directory .* is group- or other-writable \(mode 0777\)/],
     ];
     for (const [label, args, re] of cases) {
       const r = await run(...args);
@@ -931,6 +1063,15 @@ describe('bootstrap.sh step 0 — the environment files are verified before anyt
     const plan = await write(planText({ CC_FUSE_WORKER_ENV: worker, CC_FUSE_BIN: '/nonexistent/union' }));
     const r = await run(plan, uid, 'claude');
     assert.equal(r.code, 78, `stderr ${JSON.stringify(r.err)}`);
+    // AND THE EXIT TRAP FIRED, DRIVEN RATHER THAN READ. This refusal is a `die`
+    // past step 0, i.e. exactly the shape — a failed unshare, a union that
+    // never mounts — that would otherwise leave cc's whole environment on disk
+    // in a run directory a wedged teardown does not reclaim. The PLAN file
+    // survives, which is what says this is the trap and not a run that deleted
+    // everything.
+    assert.equal(existsSync(worker), false,
+      `the worker environment file survived a refusal at ${JSON.stringify(r.err)}`);
+    assert.equal(existsSync(plan), true, 'the plan file was removed too');
     // Step 1's own messages, in the order it can reach them from here. Which
     // one fires depends on the host and on whether the runner is root; none of
     // them is step 0's, which is the whole claim.
@@ -2067,9 +2208,11 @@ describe('the criterion-9 refusal', () => {
   });
 
   // PINS: the required-binary list is the bootstrap chain's, not a subset.
-  // `stat` is step 0's, and step 0 runs before every other line of the script.
+  // `stat` and `rm` are step 0's — step 0 runs before every other line of the
+  // script, and `rm` is captured there precisely so that step 10 never looks it
+  // up against the caller's PATH.
   test('the required binary list covers the whole bootstrap chain', () => {
-    for (const b of ['unshare', 'stat', 'mount', 'umount', 'nsenter', 'chroot', 'setpriv', 'fusermount3']) {
+    for (const b of ['unshare', 'stat', 'rm', 'mount', 'umount', 'nsenter', 'chroot', 'setpriv', 'fusermount3']) {
       assert.ok(REQUIRED_BINARIES.includes(b), b);
     }
   });
@@ -2685,14 +2828,49 @@ describe('FuseSession lifecycle', () => {
     uid: 1000, gid: 1000, sourceOverrideRoot: '', tracePath: '',
   });
 
+  // PINS: `prepare()` leaves the run-directory CHAIN at 0700 — the run root as
+  // well as this session's directory, and whether or not each already existed.
+  // The leaf alone is not enough: write access to `run/` is what lets a peer
+  // rename a session's directory aside and recreate one it OWNS at that path,
+  // after which cc populates it, step 0's ownership test passes on the cc-owned
+  // files inside, and the peer can swap one between the check and the source.
+  // A store that predates this keeps `run/` at whatever mode it was made with,
+  // which is why the chmod is not just `mode:` on the mkdir.
+  // DIES UNDER: dropping the run root from the chain; dropping the chmod and
+  // relying on `mode:`, which does not apply to a directory that exists.
+  test('prepare() leaves the run root and the session directory at 0700, pre-existing or not', async (t) => {
+    const { fuseRunRoot } = await import('../src/systems/fuse/plan.ts');
+    const runRoot = fuseRunRoot();
+    // THE PRE-EXISTING CASE, which is the one `mode:` cannot reach: make the
+    // run root first, group- and other-readable, as an older store left it.
+    await fs.mkdir(runRoot, { recursive: true });
+    await fs.chmod(runRoot, 0o755);
+    const rundir = path.join(runRoot, `inst-chain-${randomUUID()}`);
+    t.after(() => rmSync(rundir, { recursive: true, force: true }));
+
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    t.after(() => s.teardown());
+    await s.prepare();
+
+    for (const at of [runRoot, rundir]) {
+      assert.equal((await fs.stat(at)).mode & 0o777, 0o700,
+        `${at} is mode ${((await fs.stat(at)).mode & 0o777).toString(8)}, so a group peer can rename `
+        + "the environment files' directory aside and own its replacement");
+    }
+  });
+
   // ── THE WRAP SEAM'S ONE IMPURE STEP ──────────────────────────────────────
   //
   // PINS: `FuseSession.wrap` WRITES both environment files, at 0600, before it
   // returns the spec its caller hands to `spawn`. `wrapLaunch` is pure and
   // composes only the bytes, so without this the two files are never on disk
-  // and every launch dies at bootstrap.sh's step 0 — and the 0600 is what makes
-  // the step-0-verify / step-10-source window closed rather than a race a group
-  // peer can win.
+  // and every launch dies at bootstrap.sh's step 0. THE 0600 IS NOT WHAT CLOSES
+  // THE step-0-verify / step-10-source WINDOW — it stops a write to the
+  // existing inode, not a rename over the name. What closes that is the 0700
+  // run directory `#prepare` creates and the directory check in
+  // `check_env_file`; the 0600 is what step 0 REFUSES on, so a launch whose
+  // file cc left readable to a peer does not start.
   // DIES UNDER: dropping either write; dropping the chmod (which is what holds
   // the mode on a RELAUNCH, where `mode:` does not apply); returning the
   // unwrapped spec; writing after the return.

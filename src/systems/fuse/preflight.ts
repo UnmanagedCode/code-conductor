@@ -18,7 +18,7 @@ export const FUSE_UNAVAILABLE = 'FUSE_UNAVAILABLE';
 
 // The binaries the bootstrap chain needs, in the order it needs them.
 export const REQUIRED_BINARIES = [
-  'unshare', 'stat', 'mount', 'umount', 'nsenter', 'chroot', 'setpriv', 'fusermount3',
+  'unshare', 'stat', 'rm', 'mount', 'umount', 'nsenter', 'chroot', 'setpriv', 'fusermount3',
 ] as const;
 
 export interface PreflightProbes {
