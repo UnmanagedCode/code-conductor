@@ -69,6 +69,20 @@ export function fuseBinDir(): string {
   return path.join(orchStoreRoot(), 'systems', 'fuse', 'bin');
 }
 
+// EVERY DIRECTORY CC CREATES ON THE WAY TO A RUN DIRECTORY, outermost first,
+// and ONE list because two creators reach these levels: `ensureUnionBinary`
+// makes `<store>/systems/fuse/bin` and `FuseSession.prepare` makes `run/<id>`.
+// A mode set by only one of them leaves the other's levels at 0777 & ~umask —
+// group-writable on a host with umask 002 and a shared primary group — and
+// write access at ANY level above the run directory is write access to the
+// NAME of the environment files' directory. Derived from `fuseRunRoot()` so the
+// layout is spelled once.
+export function fuseStoreChain(): string[] {
+  const run = fuseRunRoot();
+  const fuse = path.dirname(run);
+  return [path.dirname(fuse), fuse, run];
+}
+
 // cc's pre-record, written BEFORE spawn. Its whole job is to make a crash
 // between spawn and the bootstrap's handshake recoverable by name: the run
 // directory exists and says whose it is, even though no mount happened yet.
@@ -126,6 +140,12 @@ export interface FusePlan {
   intentPath: string;
   recordPath: string;
   daemonLog: string;
+  // THE TWO ENVIRONMENT FILES cc writes into the run directory before the
+  // spawn, because nothing cc means the bootstrap or the CLI to have travels
+  // through sudo (`wrap.ts`). `bootstrap.sh` takes the PLAN file's path
+  // positionally and reads the WORKER file's out of it.
+  planEnvPath: string;
+  workerEnvPath: string;
   // THE POLICY EVENT LOG the daemon writes (`CC_UNION_EVENTS`) — a `#` header
   // line, then `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>`
   // per distinct (path, reason, tgid). It is the
@@ -321,6 +341,8 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     intentPath: path.join(rundir, 'intent.json'),
     recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
+    planEnvPath: path.join(rundir, 'env.plan.sh'),
+    workerEnvPath: path.join(rundir, 'env.worker.sh'),
     eventLog: path.join(rundir, EVENT_LOG_NAME),
     controlSock,
     markPath: input.markPath,

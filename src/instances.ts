@@ -68,7 +68,7 @@ import { localDirSource } from './systems/fuse/remoteSource.ts';
 import { systemSource } from './systems/fuse/systemSource.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
-import { wrapLaunch, type LaunchWrap } from './systems/fuse/wrap.ts';
+import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';

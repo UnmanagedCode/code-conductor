@@ -22,11 +22,11 @@
 // ZOMBIE-ORPHAN rather than reaped.
 
 import path from 'node:path';
-import { promises as fsp } from 'node:fs';
+import { promises as fsp, writeFileSync, chmodSync } from 'node:fs';
 import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
-import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore } from './plan.ts';
+import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseStoreChain } from './plan.ts';
 import { suggestPin } from './tierTable.ts';
 import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
@@ -909,16 +909,43 @@ export class FuseSession {
   get wrap(): LaunchWrap {
     const unionBinary = this.unionBinary;
     if (!unionBinary) throw new Error('cc: FuseSession.wrap read before the union binary was resolved');
-    return (spec) => wrapLaunch(spec, {
-      plan: this.plan, unionBinary, ccBootId: this.#ccBootId, spawnedAt: Date.now(),
-    });
+    return (spec) => {
+      const w = wrapLaunch(spec, {
+        plan: this.plan, unionBinary, ccBootId: this.#ccBootId, spawnedAt: Date.now(),
+      });
+      // THE ONE IMPURE STEP, AT THE SEAM THAT ALREADY OWNS THE RUN DIRECTORY.
+      // `wrapLaunch` composes the bytes; this writes them, synchronously,
+      // because `LaunchWrap` is called inline immediately before `spawn` and
+      // both files must exist by then. They are cc-owned and 0600 — which is
+      // what bootstrap.sh's step 0 checks, along with the mode and ownership of
+      // `<rundir>` itself, before sourcing either as root.
+      //
+      // THEY DO NOT SHARE A LIFETIME. `env.plan.sh` is reclaimed with
+      // `<rundir>` like every other file there; `env.worker.sh` is cc's whole
+      // environment, so bootstrap.sh unlinks it as soon as its one reader is
+      // done — at step 10, or from the EXIT trap that covers every `die` the
+      // bootstrap can make between there and its first step. An external
+      // SIGKILL runs no trap; `runTeardown`'s reclaim of `<rundir>` is what
+      // covers that.
+      for (const f of w.files) {
+        writeFileSync(f.path, f.content, { mode: 0o600 });
+        // `mode` applies only where the file is CREATED, and a relaunch into the
+        // same run directory is ordinary (see #prepare).
+        chmodSync(f.path, 0o600);
+      }
+      return w.spec;
+    };
   }
 
-  // Everything cc owns is created HERE, before the spawn, so that every file
-  // under the run directory is cc-owned and teardown can reclaim the tree
-  // without sudo — a root-created intermediate directory would need root to
-  // remove. It is also what makes a crash before the handshake recoverable by
-  // name: the directory exists and intent.json says whose it is.
+  // Everything cc owns is created BEFORE the spawn, so that every file under
+  // the run directory is cc-owned and teardown can reclaim the tree without
+  // sudo — a root-created intermediate directory would need root to remove.
+  // HERE for all of it but the two environment files, which the `wrap` closure
+  // above writes inline because both are composed per launch — one out of the
+  // launch spec, the other out of the plan plus that spawn's own timestamp.
+  // This creates the 0700 chain they land in. It is also what makes a crash
+  // before the handshake recoverable by name: the directory exists and
+  // intent.json says whose it is.
   // MUTUAL EXCLUSION BETWEEN prepare() AND teardown(), and it is not a
   // tidy-up — the interleaving loses a whole mount.
   //
@@ -981,6 +1008,24 @@ export class FuseSession {
     await fsp.rm(p.recordPath, { force: true }).catch(() => {});
     this.record = null;
     this.#tornDown = false;
+    // 0700, AND IT IS THE ENVIRONMENT FILES THAT MAKE IT MATTER. `env.plan.sh`
+    // and `env.worker.sh` land here, and bootstrap.sh verifies each as root and
+    // then sources it; a directory a group peer could write into turns that
+    // window into a real TOCTOU rather than a moot one, because write access to
+    // the directory is enough to rename cc's file aside and put another at its
+    // path. A bare `mkdir` takes 0777 & ~umask, which on a host with umask 002
+    // and a shared primary group is group-writable.
+    //
+    // THE WHOLE CHAIN, NOT THE LEAF, and `chmod` and not just `mode:`. `mode:`
+    // applies only where a directory is CREATED, so any level a store that
+    // predates this already has keeps whatever it was made with — and write
+    // access at ANY of them is enough to rename this run directory aside and own
+    // its replacement. `fuseStoreChain` is the list, because `ensureUnionBinary`
+    // creates two of those levels on its own way to `bin/`.
+    for (const d of [...fuseStoreChain(), p.rundir]) {
+      await fsp.mkdir(d, { recursive: true, mode: 0o700 });
+      await fsp.chmod(d, 0o700);
+    }
     await fsp.mkdir(p.root, { recursive: true });
     await fsp.mkdir(p.mirror, { recursive: true });
     await fsp.mkdir(p.fusectl, { recursive: true });

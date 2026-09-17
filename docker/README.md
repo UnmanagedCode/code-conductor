@@ -133,7 +133,7 @@ Notes:
 
 Baked at build time behind `ARG`s via the `CC_WITH_*` env vars (all default OFF except `CC_WITH_SUDO`); **never installed at boot** — to add or remove a flag, set it in `.env` and rebuild (`make up` always builds). To also refresh the base image, run `docker compose -f compose.yaml build --pull` — **except** with `CC_BASE_IMAGE_FILE` set, where the base is a local tag and `--pull` fails; `make build`/`make up` rebuild that base Dockerfile every run, so refresh its own `FROM` with `docker build --pull -f $CC_BASE_IMAGE_FILE …` directly.
 
-`CC_WITH_SUDO` is the one flag defaulting **on** (~4 MB on `node:24-trixie`): `sudo` plus `/etc/sudoers.d/cc-conductor`, a passwordless `SETENV` rule for `CC_USER`, which is what cc's Systems feature probes for (`src/systems/fuse/preflight.ts`). With that default the grant is unrestricted and every session cc spawns has it, not just an interactive shell. `CC_WITH_SYSTEMS=1` needs it, and the build refuses the pair.
+`CC_WITH_SUDO` is the one flag defaulting **on** (~4 MB on `node:24-trixie`): `sudo` plus `/etc/sudoers.d/cc-conductor`, a passwordless rule for `CC_USER`, which is what cc's Systems feature probes for (`src/systems/fuse/preflight.ts`). No `SETENV:` tag is needed — nothing cc means the mount bootstrap or the worker to have travels through sudo. A rule that carries the tag anyway works too: `SETENV:` permits `-E`, it does not mandate it, and `env_reset` still applies to a plain `sudo -n` on such a host. With that default the grant is unrestricted and every session cc spawns has it, not just an interactive shell. `CC_WITH_SYSTEMS=1` needs it, and the build refuses the pair.
 
 | Flag | Size | Notes |
 |---|---|---|
@@ -178,11 +178,10 @@ Socket access is root-equivalent on the host either way; `CC_WITH_DOCKER=1` is t
 | Probe | Supplied by |
 |---|---|
 | `/dev/fuse` is a character device | `compose.systems.yaml`'s `devices:` — **runtime, no package** |
-| `sudo -n true` | `CC_WITH_SUDO` (default on) + an account for the uid |
-| `sudo -n -E` preserves the environment | the `SETENV:` tag on that rule |
+| `sudo -n true` — cc's **only** sudo requirement | `CC_WITH_SUDO` (default on) + an account for the uid |
 | `unshare`, `nsenter`, `setpriv` | `util-linux` |
 | `mount`, `umount` | `mount` (Debian splits these out of `util-linux`) |
-| `chroot` | `coreutils` |
+| `chroot`, `stat`, `rm` | `coreutils` |
 | `fusermount3` | `fuse3` |
 | `fusectl` in `/proc/filesystems` | **the host kernel** — not installable |
 | `gcc` | `gcc` (+ `libc6-dev`, for the union daemon's compile) |

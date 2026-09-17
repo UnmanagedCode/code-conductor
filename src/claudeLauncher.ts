@@ -16,9 +16,11 @@ export class RealClaudeLauncher {
   readonly inProcess = false;
 
   // `wrap` is THE documented seam for launching the CLI somewhere other than
-  // this machine's root filesystem: a pure transform of {command,args,cwd,env}
+  // this machine's root filesystem: a transform of {command,args,cwd,env}
   // applied immediately before spawn (src/systems/fuse/wrap.ts wraps the launch
-  // in `sudo -n unshare --mount` + the mount bootstrap). It is applied only
+  // in `sudo -n unshare --mount` + the mount bootstrap; the closure
+  // `FuseSession` builds around it also writes that bootstrap's two environment
+  // files, so this seam is not side-effect-free). It is applied only
   // here — the in-process launcher tests inject runs the CLI inside cc's own
   // process, where there is no subprocess to put in a namespace.
   //

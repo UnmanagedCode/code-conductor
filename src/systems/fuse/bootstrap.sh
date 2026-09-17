@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs as root inside a fresh private mount namespace, created by
-# `sudo -n -E unshare --mount --propagation private` (see wrap.ts). Mounts the
+# `sudo -n unshare --mount --propagation private` (see wrap.ts). Mounts the
 # union, records the handshake, drops privilege, chroots, and EXECS the CLI.
 #
 # IT OWNS NO TEARDOWN. Step 10 execs into `claude` and this script ceases to
@@ -17,6 +17,87 @@ set -eu
 
 die() { echo "cc-fuse-bootstrap: REFUSED — $*" >&2; exit 78; }
 
+# ── 0. THE ENVIRONMENT FILES, AND WHY THEY ARE FILES. Nothing cc means this
+#       script or the CLI to have travels through sudo: `-E` — like a
+#       `VAR=value` argv prefix — needs the sudoers SETENV: tag, and requiring
+#       that of every host running cc is a cost cc declines. It writes two
+#       0600 files into the run directory it already owns and passes the
+#       FIRST one's path POSITIONALLY; the second's path is a key in the first.
+#       Values are shell-quoted by `renderEnvFile` (wrap.ts), so a newline, a
+#       quote or a `$` round-trips.
+#
+#       A PATH IN ARGV IS NOT A SECRET. /proc/<pid>/cmdline is world-readable;
+#       the 0600 file it names is not.
+#
+#       SOURCED AS ROOT, BEFORE THE PRIVILEGE DROP, deliberately. The writer is
+#       cc and the file is cc-owned and not group/other-writable — which is what
+#       the check below establishes — so reopening after the drop would buy
+#       nothing the ownership test does not already give.
+#
+#       PATH IS NOT IN THE PLAN SET, and must never be added: step 1's
+#       `command -v` probes resolve against sudo's secure_path, and the CLI's
+#       own PATH arrives with the worker set at step 10.
+[ $# -ge 2 ] || die "usage: bootstrap.sh <plan-env-file> <cc-uid> <command> [args...]"
+PLAN_ENV=$1
+EXPECT_UID=$2
+shift 2
+command -v stat >/dev/null 2>&1 || die "\`stat\` is not on PATH"
+# CAPTURED ABSOLUTELY, HERE, AND USED IN TWO PLACES: step 10's explicit unlink,
+# and the EXIT trap armed at the end of this step. Absolute covers both for one
+# reason — neither can afford to be wrong about which binary it runs, and one of
+# them can run at a moment when PATH is the CALLER'S. Step 10's unlink is after
+# the source by construction; the trap fires wherever the `die` was, which is
+# before the source on every path but step 10's own checks. A bare `rm` in the
+# after case is exit 127 under `set -e`, with the mount, the daemon, the record
+# and the handshake already made: a launch that fails having created everything.
+# cc's own Backends settings put user-supplied pairs into that environment, so
+# `PATH=/opt/claude/bin` reaches it.
+RM_BIN=$(command -v rm) || die "\`rm\` is not on PATH"
+check_owner_mode() { # check_owner_mode <path> <expected-uid> <noun>
+	_o=$(stat -c %u "$1" 2>/dev/null) || die "could not stat environment $3 $1"
+	[ "$_o" = "$2" ] || die "environment $3 $1 is owned by uid $_o, not by cc's uid $2"
+	_m=$(stat -c %04a "$1" 2>/dev/null) || die "environment $3 $1 could not be stat'd for its mode"
+	# `%04a` is fixed-width, so character 3 is the group triad and character 4 the
+	# other triad, and `2367` is every octal digit carrying the write bit.
+	case "$_m" in
+		??[2367]?|???[2367]) die "environment $3 $1 is group- or other-writable (mode $_m)" ;;
+	esac
+}
+check_env_file() { # check_env_file <path> <expected-uid>
+	[ -f "$1" ] || die "environment file $1 is missing or is not a regular file"
+	check_owner_mode "$1" "$2" file
+	# AND THE DIRECTORY HOLDING IT, because a file's own mode protects its
+	# CONTENTS and not its NAME. A principal who can write the directory renames
+	# cc's file aside and links another inode in at that path — and the tests
+	# above cannot tell the two apart if that inode is also cc-owned and 0600,
+	# which a hardlink to an earlier launch's file is. A file the PEER owns is
+	# refused by check_owner_mode; this is what closes the case where it is not.
+	# Both must pass before anything is sourced; which is checked first only
+	# decides which refusal you read. `${1%/*}` and not `dirname`, which would be
+	# a command resolved against PATH.
+	_d=${1%/*}
+	[ -n "$_d" ] || _d=/
+	[ -d "$_d" ] || die "environment directory $_d is missing or is not a directory"
+	check_owner_mode "$_d" "$2" directory
+}
+check_env_file "$PLAN_ENV" "$EXPECT_UID"
+. "$PLAN_ENV"
+# ONE FACT WITH TWO SPELLINGS, rather than two that can drift apart.
+[ "${CC_FUSE_UID:-}" = "$EXPECT_UID" ] \
+	|| die "plan file $PLAN_ENV says uid ${CC_FUSE_UID:-<unset>}, argv says $EXPECT_UID"
+[ -n "${CC_FUSE_WORKER_ENV:-}" ] || die "plan file $PLAN_ENV names no worker environment file"
+# CHECKED HERE, RE-CHECKED AND SOURCED AT STEP 10: a bad worker file must refuse
+# before the mount exists, not only after.
+check_env_file "$CC_FUSE_WORKER_ENV" "$EXPECT_UID"
+# EVERY `die` FROM STEP 1 TO STEP 9, NOT ONLY THE PATH THAT REACHES STEP 10. The
+# worker file is cc's whole environment, API keys included, and a refusal at any
+# step below leaves it in a run directory that outlives this process — until
+# cc's teardown, and on a WEDGED teardown until the next boot sweep, which is
+# the residue this unlink exists to prevent. `exec` replaces the shell without
+# running traps, so step 10 unlinks explicitly as well. An external SIGKILL runs
+# no trap either and is outside what this can cover.
+trap '"$RM_BIN" -f "$CC_FUSE_WORKER_ENV" 2>/dev/null || :' EXIT
+
 # ── 1. re-assert preflight, as defence in depth. cc checked all of this before
 #       spawning; between that check and here the host can have changed, and a
 #       named refusal on stderr beats a mount that half-happens.
@@ -26,7 +107,7 @@ for b in mount umount chroot setpriv; do
 	command -v "$b" >/dev/null 2>&1 || die "\`$b\` is not on PATH"
 done
 # RESOLVED HERE, ABSOLUTELY, and exec'd by these paths at step 10. That step
-# restores a CALLER-SUPPLIED PATH immediately before exec'ing as uid 0, so a
+# sources a CALLER-SUPPLIED PATH immediately before exec'ing as uid 0, so a
 # bare name there would be resolved against it. This probe already ran; capture
 # what it found rather than looking again through a different PATH.
 CHROOT_BIN=$(command -v chroot)
@@ -137,15 +218,14 @@ write_record starting
 #       non-emptiness test on a PATH is exact — where the same test on a flag
 #       accepted "0".
 #
-#       THE `else` ARM IS LOAD-BEARING: sudo -E carries the orchestrator's whole
-#       environment through, so an ambient CC_UNION_TRACE would otherwise reach
-#       the daemon on a spawn where cc chose no tracing at all. This is the one
-#       place the daemon's environment is composed, so it is the one place that
-#       can be sure.
+#       THE GUARD HAS ONE ARM BECAUSE THE DAEMON'S ENVIRONMENT IS COMPOSED,
+#       NOT DEFENDED. What reaches this line is sudo's own env_reset output plus
+#       the plan file sourced at step 0 — cc hands sudo nothing but the PATH
+#       node needs to find it (wrap.ts) — so no ambient CC_UNION_TRACE of cc's
+#       exists for a second arm to clear. Hand sudo cc's environment again and
+#       that stops being true.
 if [ -n "${CC_FUSE_TRACE_LOG:-}" ]; then
 	export CC_UNION_TRACE="$CC_FUSE_TRACE_LOG"
-else
-	unset CC_UNION_TRACE || :
 fi
 CC_UNION_HOST_ROOT=/ \
 CC_UNION_REMOTE="$CC_FUSE_MIRROR" \
@@ -221,8 +301,65 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 #        root-owned files into the real ~/.claude. `exec` at every link keeps
 #        cc's three pipes attached and leaves this pid — recorded above as
 #        `bootstrapPid` — as the CLI's own.
-PATH="${CC_FUSE_PATH:-$PATH}"
-export PATH
+#
+#        THE WORKER'S OWN ENVIRONMENT IS COMPOSED HERE AND NOWHERE EARLIER.
+#        Sourced early, its PATH would be what step 1's `command -v` probes
+#        resolved against; sourced here it is an ordinary key and PATH needs no
+#        smuggling alias. Everything below runs in THIS shell and ends at the
+#        single `exec` — no fork, no new process — so what this shell holds
+#        there is what the CLI runs with. Only two commands run below: `stat`,
+#        before the source and so against sudo's own PATH, and the stashed
+#        absolute `rm`. NOTHING BELOW RESOLVES A COMMAND NAME AGAINST THE
+#        CALLER'S PATH; it need not contain anything.
+#
+#        THE unset IS SUDO'S OWN env_reset SUBSTITUTIONS (HOME=/root and
+#        friends). cc's set overwrites each of them; unsetting first is what
+#        makes that true rather than probable, and a missing HOME is a loud
+#        failure where a root one is a silent wrong answer.
+#
+#        NO NAME THE SOURCE CAN SET IS READ BY THE exec BELOW, and the
+#        positional parameters are how. Every name in that file DOES reach the
+#        exec — as the CLI's environment, which is the whole point of the
+#        channel; what must not happen is this shell READING one. The worker set
+#        is cc's WHOLE process environment, so an `export CHROOT_BIN=…` in it
+#        would replace the absolute path step 1 resolved and this shell would
+#        hand that to `exec` as root, inside the mount namespace. An
+#        `export NAME=value` line cannot reach a positional parameter, so every
+#        value still read past the source is stashed there and read back
+#        afterwards. That is TOTAL — it needs no list of reserved names, and a
+#        variable added to the exec later cannot quietly reopen it.
+set -- "$CHROOT_BIN" "$SETPRIV_BIN" "$RM_BIN" "$CC_FUSE_ROOT" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$CC_FUSE_WORKER_ENV" "$@"
+unset HOME MAIL LOGNAME USER SHELL || :
+#        RE-VERIFIED AT THE POINT OF USE. Step 0's check refuses before anything
+#        is created, which is its own job; between it and here the whole mount
+#        sequence runs, and this file is about to be sourced AS ROOT. `stat` is
+#        still resolved against sudo's own PATH on this line, because the source
+#        has not happened yet.
+check_env_file "$CC_FUSE_WORKER_ENV" "$CC_FUSE_UID"
+. "$CC_FUSE_WORKER_ENV"
+CHROOT_BIN=$1
+SETPRIV_BIN=$2
+RM_BIN=$3
+CC_FUSE_ROOT=$4
+CC_FUSE_CWD=$5
+CC_FUSE_UID=$6
+CC_FUSE_GID=$7
+CC_FUSE_WORKER_ENV=$8
+shift 8
+#        UNLINKED THE INSTANT ITS ONE READER IS DONE — the `.` above. This file
+#        is cc's entire environment, API keys included; leaving it would put
+#        those bytes in the run directory for as long as the session lives, and
+#        past a wedged teardown until the next boot sweep. cc rewrites it before
+#        every spawn, so a relaunch is unaffected. The EXIT trap armed at step 0
+#        covers every `die` from step 1 to step 9 and not this line, because
+#        `exec` runs no trap — nor does an external SIGKILL, which cc's own
+#        teardown can deliver, and which no trap can cover.
+"$RM_BIN" -f "$CC_FUSE_WORKER_ENV"
+#        DEFENCE IN DEPTH, THE SAME KIND AS STEP 1's: what step 1 resolved is
+#        re-checked here because the host can change in between. It is the stash
+#        above, not these, that makes the source unable to substitute a binary.
+[ -x "$CHROOT_BIN" ] || die "chroot binary $CHROOT_BIN is missing or not executable"
+[ -x "$SETPRIV_BIN" ] || die "setpriv binary $SETPRIV_BIN is missing or not executable"
 exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '
 	# NOTHING HERE FIRES THE MARKING EVENT, AND THAT IS THE DESIGN.
 	#
@@ -237,7 +374,7 @@ exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '
 	# WHAT IS DELIBERATELY UNMARKED, and each is a process that has no
 	# business resolving in the CLI`s view: this shell, setpriv below, and
 	# the backend launch command setpriv execs — which resolves its own name
-	# against $CC_FUSE_PATH and reads its own libraries and $HOME state.
+	# against $PATH and reads its own libraries and $HOME state.
 	# Unmarked callers resolve in VIEW_HOST, where the remote tier is struck
 	# entirely and an unpinned path is served from the orchestrator instead
 	# of denied, so all three run against the machine they belong to.

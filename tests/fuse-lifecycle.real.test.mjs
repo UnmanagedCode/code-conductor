@@ -24,6 +24,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { api, waitFor } from './helpers.mjs';
 import { killPids } from './procTree.mjs';
@@ -328,6 +329,106 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const runDirsAfter = (await fs.readdir(runRoot).catch(() => [])).sort();
     assert.deepEqual(runDirsAfter, runDirsBefore,
       `the refused spawn created ${JSON.stringify(runDirsAfter.filter(d => !runDirsBefore.includes(d)))}`);
+  });
+
+  // ── ARM 8 ────────────────────────────────────────────────────────────────
+  // PINS: cc's whole sudoers requirement is a plain NOPASSWD rule. Nothing
+  // rides through sudo, and the worker's own environment reaches the CLI
+  // anyway — over the two 0600 files `wrapLaunch` composes and
+  // `FuseSession.wrap` writes into the run directory.
+  //
+  // THIS IS THE ONLY PLACE THE CLAIM IS OBSERVABLE. The unit suite pins what
+  // `wrapLaunch` EMITS; whether a variable emitted into a file actually lands
+  // in the CLI's environment is a question about sudo, `unshare`, `chroot` and
+  // `setpriv` on a real host, and only a real launch answers it.
+  //
+  // ORDERED BEFORE ARM 7, which must stay last — it sees every earlier arm's
+  // residue.
+  test("arm 8 — the launch needs NOPASSWD only: sudo strips the environment here, and the worker's own env arrives anyway", async () => {
+    const before = snapshot(runRoot);
+
+    // (1) THE POSITIVE CONTROL, AND IT COMES FIRST. Every assertion below is
+    //     evidence only if the environment does NOT cross sudo on THIS host,
+    //     which is the condition a NOPASSWD-without-SETENV host is in. On a
+    //     host that disables `env_reset` the rest of this arm would pass
+    //     whether the file channel works or not.
+    const { execFile } = await import('node:child_process');
+    const control = await new Promise((res) => execFile('sudo',
+      ['-n', '/bin/sh', '-c', 'printf %s "${CC_GATE_SENTINEL-ABSENT}"'],
+      { timeout: 30_000, env: { ...process.env, CC_GATE_SENTINEL: 'ok' } },
+      (e, so) => res({ ok: !e, out: String(so ?? '') })));
+    assert.equal(control.ok, true, 'the control could not run `sudo -n` at all');
+    assert.equal(control.out, 'ABSENT',
+      'a sentinel exported into this process crossed `sudo -n` on this host, so `env_reset` is '
+      + 'disabled here and this arm cannot be run: every assertion below would be satisfied by '
+      + 'sudo carrying the environment, which is exactly what the file channel exists to stop '
+      + 'depending on. Re-run on a host with sudo\'s default `env_reset`.');
+
+    // (2) A MARKER ONLY THE FILE CHANNEL CAN CARRY. `src/instances.ts` builds
+    //     the worker env as `{...process.env}`, so this reaches `spec.env`;
+    //     given (1), sudo is not a path it can take.
+    const marker = randomUUID();
+    const prev = process.env.CC_GATE_MARKER;
+    let inst = null;
+    let record = null;
+    try {
+      process.env.CC_GATE_MARKER = marker;
+      inst = await spawnWorker();
+      record = await readRecord(inst.id);
+      assert.ok(record, 'no mount.json handshake was written');
+
+      // Readable to cc for the same reason arm 1's `/proc/<pid>/root` is: by
+      // now setpriv has dropped the worker to cc's own uid.
+      const raw = await fs.readFile(`/proc/${record.bootstrapPid}/environ`, 'utf8');
+      const entries = raw.split('\0').filter(Boolean);
+      const value = (name) => {
+        const at = entries.find(e => e.startsWith(`${name}=`));
+        return at === undefined ? null : at.slice(name.length + 1);
+      };
+
+      // (3) THE CLI'S OWN ENVIRONMENT ARRIVED.
+      assert.equal(value('CC_GATE_MARKER'), marker,
+        "a variable set in cc's process did not reach the CLI. Given the control above, the worker "
+        + 'environment file is the only channel from cc to the worker, so this is that channel');
+
+      // (4) AND IT IS CC'S PATH, NOT SUDOERS' `secure_path` — the one variable
+      //     sudo replaces rather than drops, and the reason a smuggling alias
+      //     existed at all. `tierTable`'s `resolveOnPath` resolves a bare
+      //     launcher name against cc's list, and the in-chroot `setpriv` must
+      //     resolve it against the same one.
+      assert.equal(value('PATH'), process.env.PATH,
+        "the worker's PATH is not cc's, so a bare `claude` resolves against a different list "
+        + 'inside the chroot than the pins were derived from');
+      assert.equal(value('CC_FUSE_PATH'), null,
+        'CC_FUSE_PATH is back in the worker environment');
+
+      // (5) AND THE PLAN'S OWN NAMES ARE EXPORTED, WITH THE PLAN'S VALUES.
+      //     `procScan.ts` and `sweep.ts` attribute a process by reading exactly
+      //     these two out of `/proc/<pid>/environ`; a plan file written without
+      //     `export`, or a worker file that overwrote them, blinds the orphan
+      //     backstop and the boot sweep with every other arm still green.
+      assert.equal(value('CC_FUSE_INSTANCE_ID'), inst.id);
+      assert.equal(value('CC_FUSE_RUNDIR'), fuseRunDir(inst.id));
+
+      // (6) AND THE WORKER FILE IS GONE WHILE THE SESSION IS STILL UP. It is
+      //     cc's whole environment, API keys included, and step 10's `.` is its
+      //     only reader; left behind it would sit in the run directory for the
+      //     life of the session, past a wedged teardown until the next boot
+      //     sweep, and into any backup of the orch store. The PLAN file is
+      //     still there, which is what makes this an unlink rather than a
+      //     launch that wrote neither.
+      const fusePlan = inst._fuse.plan;
+      assert.equal(existsSync(fusePlan.workerEnvPath), false,
+        `${fusePlan.workerEnvPath} outlived the launch that read it`);
+      assert.equal(existsSync(fusePlan.planEnvPath), true,
+        `${fusePlan.planEnvPath} is gone too, so (6) above is satisfied by a launch that wrote `
+        + 'neither file rather than by the unlink');
+    } finally {
+      if (prev === undefined) delete process.env.CC_GATE_MARKER;
+      else process.env.CC_GATE_MARKER = prev;
+      if (inst) await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, record, 'arm 8');
   });
 
   // ── ARM 7 ────────────────────────────────────────────────────────────────

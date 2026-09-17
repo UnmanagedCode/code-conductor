@@ -341,8 +341,8 @@ export function installPins(cmdDir: string, realDir: string): string[] {
 }
 
 // A BARE COMMAND NAME RESOLVED AGAINST CC'S OWN PATH, the way the bootstrap's
-// final `setpriv` resolves it INSIDE the chroot — `wrap.ts` carries cc's PATH
-// through as `CC_FUSE_PATH` and the bootstrap restores it immediately before
+// final `setpriv` resolves it INSIDE the chroot — `wrap.ts` puts cc's PATH in
+// the worker environment file and the bootstrap sources it immediately before
 // that exec, so the two lookups see the same list.
 //
 // IT STOPPED BEING OPTIONAL WHEN `T_FAIL` REACHED ENUM INDEX 0. Under the

@@ -23,7 +23,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 # Declared here, not with the other WITH_* flags below, because setup-user.sh
 # writes the sudoers rule and must run after the package is in place. Defaults
-# ON: cc's Systems feature needs `sudo -n -E` (src/systems/fuse/preflight.ts).
+# ON: cc's Systems feature needs `sudo -n` (src/systems/fuse/preflight.ts).
 ARG WITH_SUDO=1
 RUN if [ "$WITH_SUDO" = "1" ]; then apt-get update \
       && apt-get install -y --no-install-recommends sudo \

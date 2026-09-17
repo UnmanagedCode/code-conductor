@@ -195,23 +195,20 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
       // chain of four explicit links: `CC_FUSE_TRACE=1` →
       // `resolveTraceEnabled()` → `plan.tracePath` = `<rundir>/trace.log`
       // (both in `src/systems/fuse/plan.ts`) → `wrapLaunch` emitting
-      // `CC_FUSE_TRACE_LOG` (`src/systems/fuse/wrap.ts`) → bootstrap.sh
-      // exporting `CC_UNION_TRACE` from it (its `CC_UNION_TRACE` assignment).
+      // `CC_FUSE_TRACE_LOG` into the PLAN ENVIRONMENT FILE
+      // (`src/systems/fuse/wrap.ts`) → bootstrap.sh sourcing that file at step 0
+      // and exporting `CC_UNION_TRACE` from it (its `CC_UNION_TRACE`
+      // assignment).
       //
-      // AN AMBIENT `CC_UNION_TRACE` IS NOT A CHANNEL, and must not become one
-      // again: bootstrap.sh's `else` arm unsets it exactly so that `sudo -E`,
-      // which carries the orchestrator's whole environment, cannot leak
-      // tracing into a spawn cc chose none for. That hardening is pinned
-      // (single assignment site) in `tests/fuse-lifecycle.test.mjs`.
+      // AN AMBIENT `CC_UNION_TRACE` IS NOT A CHANNEL: nothing of cc's crosses
+      // sudo at all, so the daemon's environment is composed from sudo's own
+      // `env_reset` output plus the plan file. That the plan file is the SINGLE
+      // assignment site is pinned in `tests/fuse-lifecycle.test.mjs`.
       //
-      // NOT sudoers, and that is checked rather than assumed: cc's preflight
-      // already probes this exact `sudo -n -E` form with a sentinel
-      // (`sudoPreservesEnv`, preflight.ts) and REFUSES the spawn before any
-      // arm runs, so a host that does not preserve the environment dies at
-      // `spawnWorker` and never reaches this line. The only sudoers channel
-      // left is a value-content rule (`env_check`-style) that could
-      // discriminate this PATH-valued variable from preflight's plain
-      // sentinel — remote enough to name last.
+      // NOT SUDOERS EITHER, and for the same reason rather than by a probe: cc
+      // hands sudo nothing but the PATH node needs to find it, so there is no
+      // sudoers configuration — `SETENV:` or not, `env_reset` or not — under
+      // which a value of cc's reaches the daemon other than through the file.
       //
       // Nor is it the daemon failing to OPEN the file: `union.c` refuses to
       // mount when it cannot (`cc-union: trace <path>: …`, then `return 1`),
@@ -223,10 +220,9 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
         'THE TRACE INSTRUMENT DID NOT RUN — no rows were written, so the assertion below could '
         + 'not be made. In likelihood order: the product\'s trace chain broke a link '
         + '(`resolveTraceEnabled` in plan.ts, `plan.tracePath`, `wrapLaunch` emitting '
-        + 'CC_FUSE_TRACE_LOG in wrap.ts, or bootstrap.sh exporting CC_UNION_TRACE from it); '
-        + 'this arm\'s own set/restore of process.env.CC_FUSE_TRACE; or — remotely — a sudoers '
-        + 'value-content rule filtering a path-valued variable that preflight\'s plain sentinel '
-        + 'does not catch. '
+        + 'CC_FUSE_TRACE_LOG into the plan environment file in wrap.ts, or bootstrap.sh sourcing '
+        + 'that file and exporting CC_UNION_TRACE from it); or this arm\'s own set/restore of '
+        + 'process.env.CC_FUSE_TRACE. '
         + `A failed fopen is NOT a cause: the daemon refuses to mount instead. Expected rows at ${tracePath}.`);
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // THE ROUTED TIER, FROM THE DAEMON'S OWN MOUTH. `host` and not `synth`:
