@@ -6,9 +6,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import {
   validatePlaybook, loadPlaybooks, loadToolIndex, governableToolNames,
-  SEED_PLAYBOOK_IDS, PIN_FORBIDDEN_KEYS,
+  SEED_PLAYBOOK_IDS, PIN_FORBIDDEN_KEYS, PLAYBOOKS_DIR,
 } from '../src/playbooks.ts';
 import { buildTools } from '../src/mcp/tools.ts';
 import { resolveSpawnModel } from '../src/mcp/handlers.ts';
@@ -71,6 +72,35 @@ test('the built-in playbooks are exactly the seed ids, and all load clean', asyn
     assert.ok(playbooks.get(id).entryStages.length > 0,
       `${id} declares no entry stage — no run of it could ever start`);
   }
+});
+
+// THE DISK, which the loaded key set above cannot speak for. `loadPlaybooks`
+// reads each seed body BY SLUG — createFragmentCatalog's `seeds` are
+// SEED_PLAYBOOK_IDS and its `seedDir` is only ever joined with one of them — so
+// PLAYBOOKS_DIR is never listed, a `playbooks/*.json` naming no seed id is never
+// opened, and both sides of that comparison descend from the same list. Only an
+// enumeration can tell the two apart, so this one binds PLAYBOOKS_DIR itself
+// rather than rebuilding the path.
+test('the repo playbook files on disk are exactly the seed ids', async () => {
+  const onDisk = (await fs.readdir(PLAYBOOKS_DIR))
+    .filter(name => name.endsWith('.json'))
+    .map(name => name.slice(0, -'.json'.length))
+    .sort();
+
+  // A file naming no seed id is dead weight: it ships, it is never read, and
+  // nothing else in the suite can see it.
+  assert.deepEqual(onDisk.filter(slug => !SEED_PLAYBOOK_IDS.includes(slug)), [],
+    `${PLAYBOOKS_DIR} holds a definition no seed id names — the loader reads seeds by slug, so this file ` +
+    'is never opened. Add its id to SEED_PLAYBOOK_IDS, or delete it.');
+
+  // The converse. loadPlaybooks() does red on a missing file, but as a readFile
+  // rejection out of the catalog; asserted here it names the cause instead.
+  assert.deepEqual(SEED_PLAYBOOK_IDS.filter(id => !onDisk.includes(id)), [],
+    `a seed id has no definition file in ${PLAYBOOKS_DIR} — loadPlaybooks() cannot read a body for it.`);
+
+  // Guards the enumeration the way its siblings below guard their loops: an
+  // unreadable or wrongly-rooted directory would satisfy both filters vacuously.
+  assert.ok(onDisk.length >= 4, `expected the shipped definitions, enumerated ${onDisk.length}`);
 });
 
 // ── `needs.position` vs the graph ───────────────────────────────────────────

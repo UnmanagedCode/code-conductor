@@ -28,7 +28,11 @@ import {
   type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runRootOf, sameRun,
 } from './playbookLedger.ts';
 
-const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playbooks');
+// EXPORTED FOR DISK-BINDING IN TESTS, for the same reason the validator's
+// allowlists below are: tests/playbook-schema.test.mjs enumerates this directory
+// to check the files on disk against SEED_PLAYBOOK_IDS, and a second copy of the
+// path there would let the two drift onto different directories.
+export const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playbooks');
 
 // The ids of the built-in playbooks. Bodies live in playbooks/<id>.json, and
 // each body owns its own `name`/`description` — restating them here would be a
