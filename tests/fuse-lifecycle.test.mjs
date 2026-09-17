@@ -477,12 +477,15 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // pins lives in what `wrapLaunch` EMITS. A produce-vs-consume gap is exactly
   // where a defect hides from the consumer's own tests.
   //
-  // THE DEFECT IT RULES OUT: `CC_FUSE_TRACE` naming BOTH cc's on/off switch and
-  // the worker-side path. `instances.ts` builds the worker env as
-  // `{...process.env}` and the spread at the top of `wrapLaunch`'s object runs
-  // FIRST, so an orchestrator started with `CC_FUSE_TRACE=0` — the natural way
-  // to turn a thing off — put `"0"` into the path slot, the bootstrap's
-  // non-emptiness test read it as ON, and the daemon got `CC_UNION_TRACE="0"`.
+  // WHAT THEY RULE OUT: `CC_FUSE_TRACE` naming BOTH cc's on/off switch and the
+  // worker-side path. `instances.ts` builds the worker env as
+  // `{...process.env}`, so an orchestrator's own `CC_FUSE_TRACE=0` — the
+  // natural way to turn a thing off — is in `spec.env` at EVERY launch; under
+  // one name it would land in the path slot, where the bootstrap's
+  // non-emptiness test reads it as ON and the daemon gets `CC_UNION_TRACE="0"`.
+  // TWO THINGS HOLD THEM APART and both are asserted below: the names differ,
+  // and `CC_FUSE_TRACE_LOG` is a `PLAN_KEY`, so the worker file — sourced last
+  // — cannot carry an inherited one past the plan's decision.
 
   // PINS: what `wrapLaunch` emits for the worker-side trace path is decided by
   // `plan.tracePath` ALONE, and an inherited value never survives it.
@@ -580,6 +583,97 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     // And the operator's own flag is read NOWHERE here: cc is its only reader.
     assert.equal(/\$\{?CC_FUSE_TRACE[^_]/.test(src), false,
       "bootstrap.sh reads cc's operator switch, which is how the two names collapsed before");
+  });
+
+  // PINS: NO NAME THE WORKER ENVIRONMENT FILE CAN CARRY REACHES STEP 10's
+  // `exec`. That file is cc's WHOLE process environment, and it is sourced as
+  // root inside the mount namespace — so an `export CHROOT_BIN=…` or an
+  // `export SETPRIV_BIN=…` in cc's own environment would replace the absolute
+  // path step 1 resolved and this shell would exec that instead, as uid 0. The
+  // mechanism is the POSITIONAL PARAMETERS, which an `export NAME=value` line
+  // cannot reach.
+  //
+  // DERIVED FROM THE SCRIPT, NOT FROM A LIST. The names asserted here are read
+  // out of step 10's own tail, so a variable added to the `exec` later is
+  // covered the day it is added rather than the day someone remembers to
+  // extend a reserved-name list. The `[ -x … ]` checks beside the exec are
+  // defence in depth against the HOST changing, and cannot substitute: they
+  // test whatever the variable now holds.
+  // DIES UNDER: dropping the stash; dropping one name from it; a `shift` that
+  // disagrees with it; a restore that reads the wrong positional.
+  test("step 10 stashes every value its exec reads across the source, where an export cannot reach it", async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(BOOTSTRAP, 'utf8');
+
+    const sourceAt = src.indexOf('. "$CC_FUSE_WORKER_ENV"');
+    assert.ok(sourceAt > 0, 'step 10 no longer sources the worker environment file — re-anchor or repair');
+
+    // THE STASH: the last `set --` ahead of the source.
+    const head = src.slice(0, sourceAt);
+    const stashAt = head.lastIndexOf('\nset -- ');
+    assert.ok(stashAt > 0,
+      'step 10 sources cc\'s whole environment and stashes NOTHING across it, so an `export '
+      + 'CHROOT_BIN=…` in that environment is what this shell then execs as root');
+    const stash = head.slice(stashAt + 1).split('\n')[0];
+    assert.ok(stash.endsWith('"$@"'), `the stash drops the CLI's own argv: ${stash}`);
+    const stashed = [...stash.matchAll(/"\$([A-Za-z_][A-Za-z0-9_]*)"/g)].map(m => m[1]);
+    assert.ok(stashed.length > 0, `nothing was parsed out of the stash line: ${stash}`);
+
+    // THE RESTORE reads them back in order, and the shift matches the count —
+    // a `shift` one short leaves a stashed value at the head of the CLI's argv.
+    const tail = src.slice(sourceAt);
+    const shift = /^shift (\d+)$/m.exec(tail);
+    assert.ok(shift, 'the stash is never shifted back off, so it rides into the CLI\'s own argv');
+    assert.equal(Number(shift[1]), stashed.length,
+      `the stash holds ${stashed.length} values and step 10 shifts ${shift[1]}: `
+      + `${JSON.stringify(stashed)}`);
+    const restore = tail.slice(0, shift.index);
+    stashed.forEach((n, i) => assert.match(restore, new RegExp(`^${n}=\\$${i + 1}$`, 'm'),
+      `${n} is stashed at position ${i + 1} and never read back from it, so the value the sourced `
+      + 'file left in that name is what stands'));
+
+    // AND EVERY NAME READ AFTER THE SHIFT IS ONE OF THEM. The single-quoted
+    // chroot script body is excluded: its `$` references are the INNER shell's
+    // positionals, resolved after this shell is gone.
+    const after = tail.slice(shift.index);
+    const at = after.indexOf("/bin/sh -c '");
+    assert.ok(at > 0, 'the final chroot exec is not the shape this test pins — re-anchor or repair');
+    const bodyOpen = after.indexOf("'", at);
+    const bodyClose = after.indexOf("'", bodyOpen + 1);
+    assert.ok(bodyClose > bodyOpen, 'the chroot script body is unterminated');
+    const outer = (after.slice(0, bodyOpen) + after.slice(bodyClose + 1))
+      .split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+    const read = [...new Set([...outer.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g)].map(m => m[1]))];
+    assert.ok(read.length > 0, `nothing was parsed out of step 10's tail: ${JSON.stringify(outer)}`);
+    for (const n of read) {
+      assert.ok(stashed.includes(n),
+        `$${n} is read AFTER the worker environment file is sourced but is not stashed across it. `
+        + `That file is cc's whole process environment, so an \`export ${n}=…\` there replaces this `
+        + 'value and the shell below hands it to `exec` as root, inside the mount namespace.');
+    }
+  });
+
+  // PINS: step 10 unlinks the worker environment file, and does it AFTER the
+  // source and BEFORE the exec — the only window in which the file has been
+  // read and this shell still exists. It holds cc's whole environment, API keys
+  // included; the run directory outlives the launch, and past a wedged teardown
+  // it outlives the session. The real gate's arm 8 asserts the CONSEQUENCE at a
+  // live mount; this is the same fact where `npm test` can reach it.
+  // DIES UNDER: deleting the `rm`; moving it above the `.`, which would unlink
+  // the file before its one reader runs.
+  test('step 10 unlinks the worker environment file between the source and the exec', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(BOOTSTRAP, 'utf8');
+    const sourceAt = src.indexOf('. "$CC_FUSE_WORKER_ENV"');
+    const rmAt = src.indexOf('rm -f "$CC_FUSE_WORKER_ENV"');
+    const execAt = src.indexOf('exec "$CHROOT_BIN"');
+    assert.ok(sourceAt > 0, 'step 10 no longer sources the worker environment file');
+    assert.ok(rmAt > 0,
+      "step 10 never unlinks the worker environment file, so cc's whole environment — API keys "
+      + 'included — stays in the run directory for the life of the session');
+    assert.ok(execAt > 0, 'the final chroot exec is not the shape this test pins — re-anchor or repair');
+    assert.ok(rmAt > sourceAt, 'the unlink runs BEFORE the source, so the file its one reader needs is gone');
+    assert.ok(rmAt < execAt, 'the unlink is placed after the exec, where nothing runs');
   });
 
   // PINS: the namespace is private and the mount namespace is new. Losing
@@ -2582,11 +2676,61 @@ describe('FuseSession lifecycle', () => {
     fusectl: path.join(rundir, 'fusectl'), pinsPath: path.join(rundir, 'pins.txt'),
     intentPath: path.join(rundir, 'intent.json'), recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
+    planEnvPath: path.join(rundir, 'env.plan.sh'),
+    workerEnvPath: path.join(rundir, 'env.worker.sh'),
     eventLog: path.join(rundir, 'events.log'),
     controlSock: path.join(rundir, 'control.sock'),
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',
     uid: 1000, gid: 1000, sourceOverrideRoot: '', tracePath: '',
+  });
+
+  // ── THE WRAP SEAM'S ONE IMPURE STEP ──────────────────────────────────────
+  //
+  // PINS: `FuseSession.wrap` WRITES both environment files, at 0600, before it
+  // returns the spec its caller hands to `spawn`. `wrapLaunch` is pure and
+  // composes only the bytes, so without this the two files are never on disk
+  // and every launch dies at bootstrap.sh's step 0 — and the 0600 is what makes
+  // the step-0-verify / step-10-source window closed rather than a race a group
+  // peer can win.
+  // DIES UNDER: dropping either write; dropping the chmod (which is what holds
+  // the mode on a RELAUNCH, where `mode:` does not apply); returning the
+  // unwrapped spec; writing after the return.
+  test('wrap() writes both environment files at 0600 before it returns the spec', async () => {
+    const rundir = await mkdtemp('cc-fuse-wrapwrite-');
+    const p = plan(rundir);
+    const s = new FuseSession({ plan: p, ccBootId: 'boot-9', driver: fakeDriver() });
+    s.unionBinary = '/store/bin/union-abc';
+
+    const spec = s.wrap({
+      command: 'claude', args: ['-p', 'x'], cwd: '/srv/app',
+      env: { HOME: '/home/wk', PATH: '/opt/bin', CC_FUSE_RUNDIR: '/stale/rundir' },
+    });
+    // The spec `spawn` gets is the wrapped one, and both files are ALREADY
+    // there — asserted after the call returns, which is the ordering the
+    // synchronous contract of `LaunchWrap` rests on.
+    assert.equal(spec.command, 'sudo');
+    assert.ok(spec.args.includes(p.planEnvPath), JSON.stringify(spec.args));
+    for (const at of [p.planEnvPath, p.workerEnvPath]) {
+      const st = await fs.stat(at);
+      assert.equal(st.mode & 0o777, 0o600, `${at} is mode ${(st.mode & 0o777).toString(8)}, not 0600`);
+    }
+    // And they are the two halves, not one file twice.
+    assert.match(await fs.readFile(p.planEnvPath, 'utf8'),
+      new RegExp(`^export CC_FUSE_RUNDIR='${rundir}'$`, 'm'));
+    const worker = await fs.readFile(p.workerEnvPath, 'utf8');
+    assert.match(worker, /^export HOME='\/home\/wk'$/m);
+    assert.equal(/^export CC_FUSE_RUNDIR=/m.test(worker), false,
+      'the stale inherited CC_FUSE_RUNDIR reached the worker file');
+
+    // A RELAUNCH REUSES THE FILE, and `writeFileSync`'s `mode:` applies only
+    // where it CREATES one — so a file left group/other-writable stays that way
+    // unless the chmod runs.
+    await fs.chmod(p.workerEnvPath, 0o666);
+    s.wrap({ command: 'claude', args: [], cwd: '/srv/app', env: { HOME: '/home/wk' } });
+    assert.equal((await fs.stat(p.workerEnvPath)).mode & 0o777, 0o600,
+      'a relaunch left the worker environment file group- and other-writable, which bootstrap.sh '
+      + 'step 0 refuses — and which a group peer can rewrite between that check and the source');
   });
 
   // T3 / B1 — PINS: the teardown latch is released by a successful prepare().

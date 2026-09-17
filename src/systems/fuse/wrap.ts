@@ -155,23 +155,34 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): WrappedLaunch {
     // THE TRACE PATH, AND ITS NAME IS NOT THE OPERATOR'S SWITCH.
     //
     // `CC_FUSE_TRACE` is cc's own on/off flag, read by `resolveTraceEnabled`
-    // and keyed exactly on `'1'`. This is the worker-side PATH the bootstrap
-    // hands the daemon. Two meanings under one name, on two sides of a process
-    // boundary that `{...process.env}` crosses, is a live defect and not a
-    // tidiness question: an orchestrator started with `CC_FUSE_TRACE=0` — the
-    // most natural way an operator turns something off — put `"0"` in the
-    // worker's slot, and the bootstrap's non-emptiness test handed the daemon
-    // `CC_UNION_TRACE="0"`. `fopen("0","a")` as root then writes a junk file
-    // named `0` and pays the full per-op tracing cost on EVERY spawn.
+    // and keyed exactly on `'1'`; this is the worker-side PATH the bootstrap
+    // hands the daemon, and the bootstrap tests it for NON-EMPTINESS. Two
+    // meanings under one name would put an orchestrator's own `CC_FUSE_TRACE=0`
+    // — the most natural way an operator turns something off — into this slot,
+    // where that test reads it as ON and the daemon gets `CC_UNION_TRACE="0"`:
+    // `fopen("0","a")` as root writes a junk file named `0` and pays the full
+    // per-op tracing cost on every spawn. Keeping the two names apart is what
+    // puts that out of reach, and `instances.ts` builds the worker env as
+    // `{...process.env}`, so the operator's value IS in `spec.env` at every
+    // launch.
     //
-    // Set below rather than here, because turning it off is a DELETE and not a
-    // value: `renderEnvFile` emits a key whose value is `''` as an empty
-    // assignment, which the bootstrap's non-emptiness test would read as off —
-    // but `CC_FUSE_TRACE_LOG` is a PLAN_KEY, so the worker file cannot smuggle
-    // an inherited one past it either way.
+    // THE CONTRACT: when cc chose no tracing, the plan file does not NAME this
+    // key. Set below rather than here so that stays true — an
+    // `export CC_FUSE_TRACE_LOG=''` is inert under the bootstrap's test, but it
+    // is a value where the plan means an absence. An INHERITED one cannot
+    // arrive by the other door either: this name is in PLAN_KEYS, so the worker
+    // file — sourced last, and otherwise the winner — is stripped of it.
   };
   if (plan.tracePath) planVars.CC_FUSE_TRACE_LOG = plan.tracePath;
   // cc's own environment, MINUS every name the plan owns — see PLAN_KEYS.
+  //
+  // DISCLOSED RESIDUAL: EVERY OTHER NAME IS DELIVERED VERBATIM, `LD_PRELOAD`
+  // and `LD_LIBRARY_PATH` included, where sudo's own environment policy strips
+  // that class from what it forwards. Not a boundary crossing — cc writes the
+  // file, the CLI cc is launching reads it, both on the far side of the
+  // privilege drop, and an unwrapped launch hands the CLI cc's environment
+  // wholesale anyway. It IS a difference from what the root-side bootstrap and
+  // the daemon see, which get sudo's filtered set plus the plan file.
   const workerVars: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(spec.env)) {
     if (!PLAN_KEY_SET.has(k)) workerVars[k] = v;
@@ -206,9 +217,10 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): WrappedLaunch {
       // resolve the bare `sudo`. Everything else would be discarded by
       // `env_reset` anyway, and keeping cc's environment out of
       // /proc/<sudopid>/environ is also what lets bootstrap.sh compose the
-      // daemon's environment rather than defend it. A host that needs some other
-      // variable to dynamically link `sudo` itself would have to add that one
-      // name here.
+      // daemon's environment rather than defend it. DISCLOSED RESIDUAL: a host
+      // that needs some other variable to dynamically link `sudo` itself would
+      // have to add that one name here. What the CLI gets is the other
+      // residual, at `workerVars` above.
       env: { PATH: spec.env.PATH ?? '' },
     },
     files: [

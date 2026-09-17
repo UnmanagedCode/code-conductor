@@ -409,6 +409,20 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       //     backstop and the boot sweep with every other arm still green.
       assert.equal(value('CC_FUSE_INSTANCE_ID'), inst.id);
       assert.equal(value('CC_FUSE_RUNDIR'), fuseRunDir(inst.id));
+
+      // (6) AND THE WORKER FILE IS GONE WHILE THE SESSION IS STILL UP. It is
+      //     cc's whole environment, API keys included, and step 10's `.` is its
+      //     only reader; left behind it would sit in the run directory for the
+      //     life of the session, past a wedged teardown until the next boot
+      //     sweep, and into any backup of the orch store. The PLAN file is
+      //     still there, which is what makes this an unlink rather than a
+      //     launch that wrote neither.
+      const fusePlan = inst._fuse.plan;
+      assert.equal(existsSync(fusePlan.workerEnvPath), false,
+        `${fusePlan.workerEnvPath} outlived the launch that read it`);
+      assert.equal(existsSync(fusePlan.planEnvPath), true,
+        `${fusePlan.planEnvPath} is gone too, so (6) above is satisfied by a launch that wrote `
+        + 'neither file rather than by the unlink');
     } finally {
       if (prev === undefined) delete process.env.CC_GATE_MARKER;
       else process.env.CC_GATE_MARKER = prev;

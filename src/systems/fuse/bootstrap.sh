@@ -277,11 +277,37 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 #        friends). cc's set overwrites each of them; unsetting first is what
 #        makes that true rather than probable, and a missing HOME is a loud
 #        failure where a root one is a silent wrong answer.
+#
+#        NOTHING THE SOURCE CAN NAME REACHES THE exec BELOW, and the positional
+#        parameters are how. The worker set is cc's WHOLE process environment,
+#        so an `export CHROOT_BIN=…` in it would replace the absolute path step
+#        1 resolved and this shell would exec that as root, inside the mount
+#        namespace. A `set NAME=value` line cannot reach a positional
+#        parameter, so every value still needed past the source is stashed
+#        there and read back afterwards. That is TOTAL — it needs no list of
+#        reserved names, and a variable added to the exec later cannot quietly
+#        reopen it.
+set -- "$CHROOT_BIN" "$SETPRIV_BIN" "$CC_FUSE_ROOT" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$CC_FUSE_WORKER_ENV" "$@"
 unset HOME MAIL LOGNAME USER SHELL || :
 . "$CC_FUSE_WORKER_ENV"
-#        RE-ASSERTED AFTER THE SOURCE: the worker set is cc's process
-#        environment, so an operator who exported one of these names would
-#        otherwise replace the absolute path step 1 resolved.
+CHROOT_BIN=$1
+SETPRIV_BIN=$2
+CC_FUSE_ROOT=$3
+CC_FUSE_CWD=$4
+CC_FUSE_UID=$5
+CC_FUSE_GID=$6
+CC_FUSE_WORKER_ENV=$7
+shift 7
+#        UNLINKED THE INSTANT ITS ONE READER IS DONE. This file is cc's entire
+#        environment — API keys included — and the line above is the only thing
+#        that ever reads it; leaving it would put those bytes in the run
+#        directory for as long as the session lives, and past a wedged teardown
+#        until the next boot sweep. cc rewrites it before every spawn, so a
+#        relaunch is unaffected.
+rm -f "$CC_FUSE_WORKER_ENV"
+#        DEFENCE IN DEPTH, THE SAME KIND AS STEP 1's: what step 1 resolved is
+#        re-checked here because the host can change in between. It is the stash
+#        above, not these, that makes the source unable to substitute a binary.
 [ -x "$CHROOT_BIN" ] || die "chroot binary $CHROOT_BIN is missing or not executable"
 [ -x "$SETPRIV_BIN" ] || die "setpriv binary $SETPRIV_BIN is missing or not executable"
 exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '

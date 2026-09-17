@@ -929,11 +929,14 @@ export class FuseSession {
     };
   }
 
-  // Everything cc owns is created HERE, before the spawn, so that every file
-  // under the run directory is cc-owned and teardown can reclaim the tree
-  // without sudo — a root-created intermediate directory would need root to
-  // remove. It is also what makes a crash before the handshake recoverable by
-  // name: the directory exists and intent.json says whose it is.
+  // Everything cc owns is created BEFORE the spawn, so that every file under
+  // the run directory is cc-owned and teardown can reclaim the tree without
+  // sudo — a root-created intermediate directory would need root to remove.
+  // HERE for all of it but the two environment files, whose contents are the
+  // launch spec's and which the `wrap` closure above therefore writes inline;
+  // this creates the 0700 directory they land in. It is also what makes a crash
+  // before the handshake recoverable by name: the directory exists and
+  // intent.json says whose it is.
   // MUTUAL EXCLUSION BETWEEN prepare() AND teardown(), and it is not a
   // tidy-up — the interleaving loses a whole mount.
   //
@@ -996,6 +999,16 @@ export class FuseSession {
     await fsp.rm(p.recordPath, { force: true }).catch(() => {});
     this.record = null;
     this.#tornDown = false;
+    // 0700, AND IT IS THE ENVIRONMENT FILES THAT MAKE IT MATTER. `env.plan.sh`
+    // and `env.worker.sh` land here, and bootstrap.sh verifies each as root and
+    // then sources it; a run directory a group peer could write into turns that
+    // window into a real TOCTOU rather than a moot one. A bare `mkdir` takes
+    // 0777 & ~umask, which on a host with umask 002 and a shared primary group
+    // is group-writable.
+    await fsp.mkdir(p.rundir, { recursive: true, mode: 0o700 });
+    // `mode` applies only where a directory is CREATED, and a relaunch lands in
+    // one that already exists.
+    await fsp.chmod(p.rundir, 0o700);
     await fsp.mkdir(p.root, { recursive: true });
     await fsp.mkdir(p.mirror, { recursive: true });
     await fsp.mkdir(p.fusectl, { recursive: true });
