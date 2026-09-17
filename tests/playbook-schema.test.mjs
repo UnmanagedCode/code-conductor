@@ -53,10 +53,10 @@ test('the base fixture is valid (guards every expectErr below against a broken f
 
 // ── the shipped built-ins ───────────────────────────────────────────────────
 
-test('the built-in playbooks are exactly solo/relay/freeform, and all load clean', async () => {
+test('the built-in playbooks are exactly the seed ids, and all load clean', async () => {
   const { playbooks, errors } = await loadPlaybooks();
   assert.deepEqual(errors, [], `built-in playbooks must validate: ${JSON.stringify(errors)}`);
-  assert.deepEqual([...playbooks.keys()].sort(), ['freeform', 'relay', 'solo'],
+  assert.deepEqual([...playbooks.keys()].sort(), [...SEED_PLAYBOOK_IDS].sort(),
     'a leftover definition file or a missing one both land here');
   for (const id of SEED_PLAYBOOK_IDS) {
     assert.ok(playbooks.has(id), `missing built-in playbook '${id}'`);
@@ -126,6 +126,32 @@ test('every built-in `needs.position` covers every stage its anchor can reach', 
   // Guards the loop: a graph edit that left no `needs` entry to check, or a
   // refactor that stopped finding them, would otherwise pass vacuously.
   assert.ok(checked >= 4, `expected to check several needs entries, checked ${checked}`);
+});
+
+// A stage declaring `needs` joins an existing run specifically to read what its
+// anchor produced, and it reaches that work through a `worktree` argument the
+// conductor supplies. A `createWorktree: true` pin does not conflict with that
+// argument — applyPin only refuses a conflict on the SAME argument name — so
+// `src/mcp/handlers.ts` silently prefers the pin and the worker lands on a fresh,
+// empty tree with nothing to read. Derived from the graph rather than a frozen
+// list, and scoped to the built-ins, which is what this repo ships.
+test('no built-in stage declaring `needs` pins createWorktree', async () => {
+  const { playbooks } = await loadPlaybooks();
+  let checked = 0;
+  for (const id of SEED_PLAYBOOK_IDS) {
+    for (const [name, stage] of Object.entries(playbooks.get(id).stages)) {
+      if (stage.needs.length === 0) continue;
+      checked++;
+      for (const [toolName, policy] of Object.entries(stage.tools)) {
+        if (typeof policy === 'string') continue;
+        assert.equal('createWorktree' in policy.pin, false,
+          `${id}.${name} declares \`needs\` but pins ${toolName}.createWorktree — its anchor's worktree is ` +
+          'what it was spawned to read, and the pin discards the `worktree` argument that would reach it.');
+      }
+    }
+  }
+  // Guards the loop the same way its siblings above do.
+  assert.ok(checked >= 4, `expected to check several stages with needs, checked ${checked}`);
 });
 
 // The built-ins are the templates user authors copy, and (per the dynamic

@@ -1647,3 +1647,77 @@ test('enforce: a stage model pin beats the default-spawn-tier fallback and never
     assert.equal(dev.model, 'claude-sonnet-5', 'an unpinned stage falls through to the default tier');
   } finally { await t.close(); }
 });
+
+// ── forge's two contract edges ─────────────────────────────────────────────
+//
+// The file's usual rule — never pin a shipped playbook's stage names — is
+// suspended here deliberately. These two `needs` edges ARE the feature: without
+// them `forge` permits `plan -> implement` and both critic passes become optional
+// decoration, which is the whole difference between `forge` and `relay`. An edit
+// that removes one SHOULD red, so the expectations are literal.
+//
+// Each test asserts three things, and all three are required for it to be
+// non-vacuous: the refusal code, the stage the reason names as missing, and a
+// spawn that satisfies the edge succeeding. A refusal-only assertion passes just
+// as happily when a stage name is typo'd and the spawn refuses on other grounds.
+
+test('forge: verify refuses a spawn whose provenance names no architect worker', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const planner = await t.spawnWorker({ project: 'demo', playbook: 'forge', stage: 'plan' });
+    assert.ok(planner.sessionId, `plan spawn refused: ${JSON.stringify(planner)}`);
+    const worktree = planner.worktree.worktreeName;
+
+    // The realistic mistake: a conductor carrying relay's habits hands the
+    // planner straight to the defect pass. `plan` is an ignored extra key here —
+    // checkNeeds reads only the key its own `needs` entry names.
+    const early = await t.spawnWorker({
+      project: 'demo', stage: 'verify', worktree, provenance: { plan: planner.sessionId },
+    });
+    refused(early, 'NEEDS_UNSATISFIED');
+    assert.match(early.reason, /architect/,
+      'the refusal must name the stage whose worker is missing, not just that something is');
+
+    const architect = await t.spawnWorker({
+      project: 'demo', stage: 'architect', worktree, provenance: { plan: planner.sessionId },
+    });
+    assert.ok(architect.sessionId, `architect spawn refused: ${JSON.stringify(architect)}`);
+
+    const verify = await t.spawnWorker({
+      project: 'demo', stage: 'verify', worktree, provenance: { architect: architect.sessionId },
+    });
+    assert.ok(verify.sessionId, `verify spawn refused once its need was satisfied: ${JSON.stringify(verify)}`);
+  } finally { await t.close(); }
+});
+
+test('forge: implement refuses a spawn whose provenance names no verify worker', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const planner = await t.spawnWorker({ project: 'demo', playbook: 'forge', stage: 'plan' });
+    assert.ok(planner.sessionId, `plan spawn refused: ${JSON.stringify(planner)}`);
+    const worktree = planner.worktree.worktreeName;
+
+    const architect = await t.spawnWorker({
+      project: 'demo', stage: 'architect', worktree, provenance: { plan: planner.sessionId },
+    });
+    assert.ok(architect.sessionId, `architect spawn refused: ${JSON.stringify(architect)}`);
+
+    // Exactly the `plan -> implement` move the playbook exists to forbid.
+    const early = await t.spawnWorker({
+      project: 'demo', stage: 'implement', worktree, provenance: { plan: planner.sessionId },
+    });
+    refused(early, 'NEEDS_UNSATISFIED');
+    assert.match(early.reason, /verify/,
+      'the refusal must name the stage whose worker is missing, not just that something is');
+
+    const verify = await t.spawnWorker({
+      project: 'demo', stage: 'verify', worktree, provenance: { architect: architect.sessionId },
+    });
+    assert.ok(verify.sessionId, `verify spawn refused: ${JSON.stringify(verify)}`);
+
+    const dev = await t.spawnWorker({
+      project: 'demo', stage: 'implement', worktree, provenance: { verify: verify.sessionId },
+    });
+    assert.ok(dev.sessionId, `implement spawn refused once its need was satisfied: ${JSON.stringify(dev)}`);
+  } finally { await t.close(); }
+});

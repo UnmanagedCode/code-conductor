@@ -247,8 +247,8 @@ at — **or** a concrete `{backend, model}`. The two are told apart by
 `kind === 'tier'`; a tier reference names no backend, so it keeps `kind`.
 
 - **Built-in**: `ROLES` (the seed role list in `src/modelVersions.ts`), each defaulting to the `powerful`
-  tier (`DEFAULT_ROLE_BINDING`). The Conduct button spawns via the Conductor role; relay's `plan` stage
-  pins spawns to the Planner role, solo's and relay's `review` stages to the Reviewer role.
+  tier (`DEFAULT_ROLE_BINDING`). The Conduct button spawns via the Conductor role; built-in
+  playbook stages pin the Planner and Reviewer roles, and `playbooks/*.json` names which.
 - **User-custom**: `models.customRoles: [name]`, name-only (the name is the
   display), matching `^[A-Za-z][A-Za-z0-9-]*$` (≤40) and case-insensitively disjoint
   from tiers, built-in roles, family aliases, and other custom/plugin roles. Created
