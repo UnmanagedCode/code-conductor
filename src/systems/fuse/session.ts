@@ -22,7 +22,7 @@
 // ZOMBIE-ORPHAN rather than reaped.
 
 import path from 'node:path';
-import { promises as fsp } from 'node:fs';
+import { promises as fsp, writeFileSync, chmodSync } from 'node:fs';
 import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
@@ -909,9 +909,24 @@ export class FuseSession {
   get wrap(): LaunchWrap {
     const unionBinary = this.unionBinary;
     if (!unionBinary) throw new Error('cc: FuseSession.wrap read before the union binary was resolved');
-    return (spec) => wrapLaunch(spec, {
-      plan: this.plan, unionBinary, ccBootId: this.#ccBootId, spawnedAt: Date.now(),
-    });
+    return (spec) => {
+      const w = wrapLaunch(spec, {
+        plan: this.plan, unionBinary, ccBootId: this.#ccBootId, spawnedAt: Date.now(),
+      });
+      // THE ONE IMPURE STEP, AT THE SEAM THAT ALREADY OWNS THE RUN DIRECTORY.
+      // `wrapLaunch` composes the bytes; this writes them, synchronously,
+      // because `LaunchWrap` is called inline immediately before `spawn` and
+      // both files must exist by then. They are cc-owned and 0600 — which is
+      // what bootstrap.sh's step 0 checks before sourcing either as root — and
+      // they are reclaimed with `<rundir>` like every other file under it.
+      for (const f of w.files) {
+        writeFileSync(f.path, f.content, { mode: 0o600 });
+        // `mode` applies only where the file is CREATED, and a relaunch into the
+        // same run directory is ordinary (see #prepare).
+        chmodSync(f.path, 0o600);
+      }
+      return w.spec;
+    };
   }
 
   // Everything cc owns is created HERE, before the spawn, so that every file

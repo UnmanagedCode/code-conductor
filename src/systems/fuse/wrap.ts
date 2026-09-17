@@ -1,7 +1,14 @@
-// The argv/env/cwd transform, and nothing else. A PURE function, so the shape
-// of the launch — that it goes through `sudo -n unshare --mount --propagation
-// private`, that the cwd is rewritten, that spawnEnv rides through — is
-// unit-testable with no sudo, no mount and no FUSE.
+// The argv/env/cwd transform, and nothing else. A PURE function — it returns
+// the spec AND the bytes of the two environment files, and writes neither — so
+// the shape of the launch is unit-testable with no sudo, no mount and no FUSE.
+//
+// NOTHING RIDES THROUGH SUDO. `sudo -E`, and equally a `VAR=value` argv prefix,
+// needs the sudoers `SETENV:` tag; requiring that tag of every host running cc
+// is the cost this module's file channel exists to avoid. So the environment cc
+// means the bootstrap and the CLI to have travels in two 0600 files under the
+// run directory, and the only thing handed to sudo is the `PATH` node's
+// `spawn` needs to resolve the bare `sudo` — `env_reset`, sudo's default and
+// now the only configuration cc requires, discards the rest anyway.
 //
 // EVERY STEP OF THE CHAIN MUST `exec`. cc's spawn() builds readline over
 // proc.stdout/stderr and _sendRaw needs proc.stdin.writable, so the fds have to
@@ -27,6 +34,13 @@ export interface LaunchSpec {
 
 export type LaunchWrap = (spec: LaunchSpec) => LaunchSpec;
 
+// One environment file's whole content, for the caller that owns the run
+// directory to write. `mode` is the caller's business and 0600 is the contract
+// bootstrap.sh checks; see `FuseSession.wrap`.
+export interface EnvFile { path: string; content: string }
+
+export interface WrappedLaunch { spec: LaunchSpec; files: EnvFile[] }
+
 export interface WrapContext {
   plan: FusePlan;
   unionBinary: string;
@@ -38,10 +52,84 @@ export interface WrapContext {
   bootstrap?: string;
 }
 
-export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
+// EVERY NAME THE PLAN FILE MAY CARRY, AND THE FILTER THE WORKER FILE IS BUILT
+// WITH. The two files are sourced at opposite ends of bootstrap.sh, so the
+// worker's set — cc's own process environment — is sourced LAST and would win
+// every collision. Stripping these names from it is what keeps the plan
+// authoritative, and that is not cosmetic: `procScan.ts` and `sweep.ts`
+// attribute a process by reading `CC_FUSE_INSTANCE_ID` and `CC_FUSE_RUNDIR` out of
+// `/proc/<pid>/environ`, so an inherited stale value overwriting the plan's
+// would blind the orphan backstop and the boot sweep while every mount test
+// stayed green.
+//
+// `CC_FUSE_TRACE` is deliberately NOT here: it is cc's own operator switch,
+// read only in cc's process (`resolveTraceEnabled`), and it rides through to
+// the worker inert like any other inherited variable.
+export const PLAN_KEYS = [
+  'CC_FUSE_INSTANCE_ID',
+  'CC_FUSE_BOOT_ID',
+  'CC_FUSE_SPAWNED_AT',
+  'CC_FUSE_RUNDIR',
+  'CC_FUSE_ROOT',
+  'CC_FUSE_MIRROR',
+  'CC_FUSE_FUSECTL',
+  'CC_FUSE_PINS',
+  'CC_FUSE_BIN',
+  'CC_FUSE_RECORD',
+  'CC_FUSE_DAEMON_LOG',
+  'CC_FUSE_MOUNT_OPTS',
+  'CC_FUSE_CWD',
+  'CC_FUSE_UID',
+  'CC_FUSE_GID',
+  'CC_FUSE_CONTROL',
+  'CC_FUSE_MARK_PATH',
+  'CC_FUSE_EVENT_LOG',
+  'CC_FUSE_TRACE_LOG',
+  'CC_FUSE_WORKER_ENV',
+] as const;
+
+export type PlanKey = (typeof PLAN_KEYS)[number];
+
+const PLAN_KEY_SET: ReadonlySet<string> = new Set<string>(PLAN_KEYS);
+
+// A portable shell identifier, which is the whole of what an `export NAME=`
+// line can name.
+const SHELL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// SINGLE-QUOTE WRAPPING, WHICH ROUND-TRIPS EVERY BYTE. Inside single quotes the
+// shell interprets nothing at all, so a newline, a `$`, a backtick, a backslash
+// or a `!` survives; the one byte that cannot appear is the quote itself, which
+// closes the string, escapes, and reopens.
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+// The bytes of one environment file: one `export` line per variable and nothing
+// else, in sorted key order so the artifact left in the run directory diffs.
+//
+// A NAME THAT IS NOT A SHELL IDENTIFIER IS SKIPPED, NOT REFUSED. `process.env`
+// carries names like `BASH_FUNC_x%%` that `dash` cannot represent at all, so
+// refusing the spawn over one would break a launch that works today. The skip
+// is VISIBLE — the file names what it dropped — because a silently missing
+// variable is the shape that costs a reader an afternoon.
+export function renderEnvFile(vars: NodeJS.ProcessEnv): string {
+  // `undefined` is legal in NodeJS.ProcessEnv and `spawn` omits it; so does this.
+  const names = Object.keys(vars).filter(n => vars[n] !== undefined).sort();
+  const skipped = names.filter(n => !SHELL_IDENTIFIER.test(n));
+  const lines: string[] = [];
+  // JSON-quoted, so a name carrying a newline cannot end the comment and become
+  // a command this file then runs as root.
+  if (skipped.length) lines.push(`# skipped (not a shell identifier): ${skipped.map(n => JSON.stringify(n)).join(', ')}`);
+  for (const n of names) {
+    if (!SHELL_IDENTIFIER.test(n)) continue;
+    lines.push(`export ${n}=${shellQuote(vars[n] as string)}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): WrappedLaunch {
   const { plan } = ctx;
-  const env: NodeJS.ProcessEnv = {
-    ...spec.env,
+  const planVars: Partial<Record<PlanKey, string>> = {
     CC_FUSE_INSTANCE_ID: plan.instanceId,
     CC_FUSE_BOOT_ID: ctx.ccBootId,
     CC_FUSE_SPAWNED_AT: String(ctx.spawnedAt),
@@ -60,6 +148,10 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     CC_FUSE_CONTROL: plan.controlSock,
     CC_FUSE_MARK_PATH: plan.markPath,
     CC_FUSE_EVENT_LOG: plan.eventLog,
+    // THE PATH OF THE SECOND FILE, CARRIED IN THE FIRST. Only the plan file's
+    // path rides in argv; bootstrap.sh reads this one out of it, checks it at
+    // step 0 and sources it at step 10.
+    CC_FUSE_WORKER_ENV: plan.workerEnvPath,
     // THE TRACE PATH, AND ITS NAME IS NOT THE OPERATOR'S SWITCH.
     //
     // `CC_FUSE_TRACE` is cc's own on/off flag, read by `resolveTraceEnabled`
@@ -73,37 +165,55 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     // named `0` and pays the full per-op tracing cost on EVERY spawn.
     //
     // Set below rather than here, because turning it off is a DELETE and not a
-    // value: the spread at the top of this object runs first, so an inherited
-    // `CC_FUSE_TRACE_LOG` survives anything short of removing the key. (An
-    // `undefined` value would be omitted by `spawn`, but the key would still be
-    // `in` the object, and a caller — or a test — reading this env would
-    // disagree with the child's.)
-    // sudo's `secure_path` replaces PATH even under `-E`, so the PATH the CLI
-    // is meant to run with is carried in a name sudo does not know about and
-    // restored by the bootstrap immediately before the final exec. Without this
-    // a non-absolute `claude` (resolveClaudeBin's default) is looked up against
-    // sudoers' PATH rather than cc's.
-    CC_FUSE_PATH: spec.env.PATH ?? '',
+    // value: `renderEnvFile` emits a key whose value is `''` as an empty
+    // assignment, which the bootstrap's non-emptiness test would read as off —
+    // but `CC_FUSE_TRACE_LOG` is a PLAN_KEY, so the worker file cannot smuggle
+    // an inherited one past it either way.
   };
-  if (plan.tracePath) env.CC_FUSE_TRACE_LOG = plan.tracePath;
-  else delete env.CC_FUSE_TRACE_LOG;
+  if (plan.tracePath) planVars.CC_FUSE_TRACE_LOG = plan.tracePath;
+  // cc's own environment, MINUS every name the plan owns — see PLAN_KEYS.
+  const workerVars: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(spec.env)) {
+    if (!PLAN_KEY_SET.has(k)) workerVars[k] = v;
+  }
   return {
-    command: 'sudo',
-    args: [
-      '-n', '-E',
-      'unshare', '--mount', '--propagation', 'private', '--',
-      ctx.bootstrap ?? BOOTSTRAP,
-      // The CLI's own argv, passed POSITIONALLY and consumed as `"$@"`. Safe
-      // for an argument containing a newline or a space: this is an execve argv
-      // array from end to end and `"$@"` never re-splits it. (What an argument
-      // containing a newline DOES break is a TRACE parsing
-      // /proc/<pid>/cmdline, which is a reader's problem, not this argv's.)
-      spec.command, ...spec.args,
+    spec: {
+      command: 'sudo',
+      args: [
+        '-n',
+        'unshare', '--mount', '--propagation', 'private', '--',
+        ctx.bootstrap ?? BOOTSTRAP,
+        // THE PLAN FILE AND CC'S UID, a FIXED-ARITY positional prefix the
+        // bootstrap consumes with `shift 2`. Fixed arity is what makes a `--`
+        // separator unnecessary, so the CLI's argv stays safe for an argument
+        // spelled like an option.
+        //
+        // NEITHER WORD IS A SECRET. /proc/<pid>/cmdline is world-readable; the
+        // 0600 file this names is not.
+        plan.planEnvPath, String(plan.uid),
+        // The CLI's own argv, passed POSITIONALLY and consumed as `"$@"`. Safe
+        // for an argument containing a newline or a space: this is an execve argv
+        // array from end to end and `"$@"` never re-splits it. (What an argument
+        // containing a newline DOES break is a TRACE parsing
+        // /proc/<pid>/cmdline, which is a reader's problem, not this argv's.)
+        spec.command, ...spec.args,
+      ],
+      // The CLI's real cwd is `CC_FUSE_CWD`, which the bootstrap `cd`s to INSIDE
+      // the chroot. On the host it may not exist at all, and spawn() would fail
+      // with ENOENT before the bootstrap ever ran.
+      cwd: '/',
+      // WHAT SUDO ITSELF IS HANDED, AND IT IS ONLY WHAT SPAWN NEEDS: `PATH`, to
+      // resolve the bare `sudo`. Everything else would be discarded by
+      // `env_reset` anyway, and keeping cc's environment out of
+      // /proc/<sudopid>/environ is also what lets bootstrap.sh compose the
+      // daemon's environment rather than defend it. A host that needs some other
+      // variable to dynamically link `sudo` itself would have to add that one
+      // name here.
+      env: { PATH: spec.env.PATH ?? '' },
+    },
+    files: [
+      { path: plan.planEnvPath, content: renderEnvFile(planVars) },
+      { path: plan.workerEnvPath, content: renderEnvFile(workerVars) },
     ],
-    // The CLI's real cwd is `CC_FUSE_CWD`, which the bootstrap `cd`s to INSIDE
-    // the chroot. On the host it may not exist at all, and spawn() would fail
-    // with ENOENT before the bootstrap ever ran.
-    cwd: '/',
-    env,
   };
 }

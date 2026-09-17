@@ -1,7 +1,7 @@
 #!/bin/sh
 # Reconcile the image's unprivileged account with USER_NAME/USER_UID/USER_GID
 # (Dockerfile ARGs, visible here as env vars), then grant it the passwordless
-# SETENV sudo rule cc's Systems feature requires — see the probe list in
+# sudo rule cc's Systems feature requires — see the probe list in
 # src/systems/fuse/preflight.ts. Runs as root at build time.
 set -eu
 
@@ -93,9 +93,10 @@ else
 fi
 
 # ── Sudoers (WITH_SUDO) ──────────────────────────────────────────────────
-# NOPASSWD alone is not enough: the mount plan rides in CC_FUSE_* environment
-# variables through `sudo -n -E`, which needs the SETENV tag. visudo -cf makes
-# a malformed rule fail the build instead of the first spawn.
+# NOPASSWD is the whole of it: nothing cc means the mount bootstrap or the
+# worker to have travels through sudo, so the rule needs no SETENV tag
+# (src/systems/fuse/wrap.ts). visudo -cf makes a malformed rule fail the build
+# instead of the first spawn.
 if [ "$WITH_SUDO" = "1" ]; then
   # A uid below 1000 is a system account: it exists in the base image for
   # something other than this, so say so before handing it passwordless root.
@@ -103,7 +104,7 @@ if [ "$WITH_SUDO" = "1" ]; then
     warn "'$USER_NAME' is a pre-existing system account (uid $USER_UID) and now has passwordless root."
   fi
   sudoers=/etc/sudoers.d/cc-conductor
-  printf '%s ALL=(ALL:ALL) NOPASSWD:SETENV: ALL\n' "$USER_NAME" > "$sudoers"
+  printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$USER_NAME" > "$sudoers"
   chmod 0440 "$sudoers"
   visudo -cf "$sudoers"
 fi

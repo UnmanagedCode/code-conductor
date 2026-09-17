@@ -126,6 +126,12 @@ export interface FusePlan {
   intentPath: string;
   recordPath: string;
   daemonLog: string;
+  // THE TWO ENVIRONMENT FILES cc writes into the run directory before the
+  // spawn, because nothing cc means the bootstrap or the CLI to have travels
+  // through sudo (`wrap.ts`). `bootstrap.sh` takes the PLAN file's path
+  // positionally and reads the WORKER file's out of it.
+  planEnvPath: string;
+  workerEnvPath: string;
   // THE POLICY EVENT LOG the daemon writes (`CC_UNION_EVENTS`) — a `#` header
   // line, then `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>`
   // per distinct (path, reason, tgid). It is the
@@ -321,6 +327,8 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     intentPath: path.join(rundir, 'intent.json'),
     recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
+    planEnvPath: path.join(rundir, 'env.plan.sh'),
+    workerEnvPath: path.join(rundir, 'env.worker.sh'),
     eventLog: path.join(rundir, EVENT_LOG_NAME),
     controlSock,
     markPath: input.markPath,

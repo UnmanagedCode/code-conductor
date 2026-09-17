@@ -71,8 +71,8 @@ describe('a worker inside a FUSE-union chroot: marking and the bootstrap chain',
   //
   // THE TRACE COMES FROM THE PRODUCT'S OWN SWITCH, `CC_FUSE_TRACE=1`, read by
   // `resolveTraceEnabled()` in THIS process at spawn time — never a raw
-  // `CC_UNION_TRACE`, which bootstrap.sh deliberately unsets on an untraced
-  // spawn.
+  // `CC_UNION_TRACE`, which no channel carries into the launch: cc hands sudo
+  // no environment at all, so the daemon's is composed from the plan file.
   test('R12 — the marking event is the CLI’s own, and the whole bootstrap chain precedes it', async () => {
     const before = snapshot(runRoot);
     const prevTrace = process.env.CC_FUSE_TRACE;

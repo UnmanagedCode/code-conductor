@@ -18,7 +18,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { runTeardown, DEFAULT_DEADLINES, describePolicyEvents, parsePolicyEvents } from '../src/systems/fuse/session.ts';
 import { buildTierTable, renderPinsFile, binaryPins, installPins, resolveOnPath, resolveTierEntry, suggestPin, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
-import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
+import { wrapLaunch, renderEnvFile, shellQuote, PLAN_KEYS, BOOTSTRAP } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
 import { reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
@@ -448,6 +448,8 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     fusectl: '/store/run/inst-1/fusectl', pinsPath: '/store/run/inst-1/pins.txt',
     intentPath: '/store/run/inst-1/intent.json', recordPath: '/store/run/inst-1/mount.json',
     daemonLog: '/store/run/inst-1/daemon.log',
+    planEnvPath: '/store/run/inst-1/env.plan.sh',
+    workerEnvPath: '/store/run/inst-1/env.worker.sh',
     eventLog: '/store/run/inst-1/events.log',
     controlSock: '/store/run/inst-1/control.sock',
     markPath: '/usr/local/bin/claude',
@@ -459,6 +461,14 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/wk', PATH: '/opt/bin:/usr/bin' } },
     { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
   );
+  // The bytes of one of the two files `wrapLaunch` emits, by the path it emits
+  // them at — which is also the path bootstrap.sh is told to source.
+  const fileText = (w, at) => {
+    const f = w.files.find(x => x.path === at);
+    assert.ok(f, `wrapLaunch emitted no file at ${at}: ${JSON.stringify(w.files.map(x => x.path))}`);
+    return f.content;
+  };
+  const has = (text, name) => new RegExp(`^export ${name}=`, 'm').test(text);
 
   // ── THE TRACE SWITCH, PINNED AT THE PRODUCER ────────────────────────────
   //
@@ -476,8 +486,9 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
 
   // PINS: what `wrapLaunch` emits for the worker-side trace path is decided by
   // `plan.tracePath` ALONE, and an inherited value never survives it.
-  // DIES UNDER: reverting to a spread that omits rather than deletes; keying
-  // the emitted variable on anything in `spec.env`; renaming one end only.
+  // DIES UNDER: dropping `CC_FUSE_TRACE_LOG` from `PLAN_KEYS`, which would let
+  // an inherited one into the worker file — sourced LAST, so it would win;
+  // keying the emitted variable on anything in `spec.env`; renaming one end only.
   test('the worker-side trace path is emitted only when the plan has one, and an inherited one is STRIPPED', () => {
     const inherited = {
       HOME: '/home/wk', PATH: '/opt/bin',
@@ -488,24 +499,25 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     const call = (tracePath) => wrapLaunch(
       { command: 'claude', args: [], cwd: '/x', env: inherited },
       { plan: { ...plan, tracePath }, unionBinary: '/b', ccBootId: 'b', spawnedAt: 1 },
-    ).env;
+    );
 
     const off = call('');
-    assert.equal('CC_FUSE_TRACE_LOG' in off, false,
+    assert.equal(has(fileText(off, plan.planEnvPath), 'CC_FUSE_TRACE_LOG'), false,
+      'the plan file names a trace path for a launch cc decided was untraced');
+    // AND NOT BY THE OTHER DOOR EITHER. The worker file is sourced LAST, so a
+    // `CC_FUSE_TRACE_LOG` surviving into it would overwrite the plan's absence.
+    assert.equal(has(fileText(off, plan.workerEnvPath), 'CC_FUSE_TRACE_LOG'), false,
       'an inherited trace path rode through a launch cc decided was untraced');
-    // The KEY is gone, not merely undefined: `spawn` would omit an undefined
-    // value, but a reader of this object would still see the key and disagree
-    // with the child.
-    assert.equal(Object.prototype.hasOwnProperty.call(off, 'CC_FUSE_TRACE_LOG'), false);
     // The operator's own switch DOES ride through, and that is correct rather
     // than overlooked: the worker inherits the orchestrator's environment
     // wholesale, and stripping one inert variable out of it would be a rule
     // with no reader. What makes it inert is asserted on the other side —
     // bootstrap.sh reads `CC_FUSE_TRACE_LOG` and nothing else.
-    assert.equal(off.CC_FUSE_TRACE, '0');
+    assert.match(fileText(off, plan.workerEnvPath), /^export CC_FUSE_TRACE='0'$/m);
 
     const on = call('/store/run/inst-1/trace.log');
-    assert.equal(on.CC_FUSE_TRACE_LOG, '/store/run/inst-1/trace.log');
+    assert.match(fileText(on, plan.planEnvPath),
+      /^export CC_FUSE_TRACE_LOG='\/store\/run\/inst-1\/trace\.log'$/m);
   });
 
   // PINS: the two ends are keyed on DIFFERENT NAMES, so the operator's flag
@@ -528,11 +540,12 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
           `CC_FUSE_TRACE=${JSON.stringify(value)}`);
         // AND THROUGH THE PRODUCER, with the operator's own value inherited —
         // the whole path the defect took.
-        const env = wrapLaunch(
+        const w = wrapLaunch(
           { command: 'claude', args: [], cwd: '/x', env: { ...(value === undefined ? {} : { CC_FUSE_TRACE: value }) } },
           { plan: { ...plan, tracePath: p.tracePath }, unionBinary: '/b', ccBootId: 'b', spawnedAt: 1 },
-        ).env;
-        assert.equal('CC_FUSE_TRACE_LOG' in env, wantOn, `CC_FUSE_TRACE=${JSON.stringify(value)}`);
+        );
+        assert.equal(has(fileText(w, plan.planEnvPath), 'CC_FUSE_TRACE_LOG'), wantOn,
+          `CC_FUSE_TRACE=${JSON.stringify(value)}`);
       }
     } finally {
       if (prev === undefined) delete process.env.CC_FUSE_TRACE;
@@ -546,17 +559,19 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // composes the daemon's environment cannot be observed from a deterministic
   // fixture, and running the bootstrap needs sudo and a real mount.
   //
-  // Both arms are asserted, because the `else` is not tidiness: `sudo -E`
-  // carries the orchestrator's whole environment through, so an ambient
-  // `CC_UNION_TRACE` reaches the daemon on an untraced spawn unless this
-  // clears it.
-  // DIES UNDER: keying the guard on `CC_FUSE_TRACE` again; dropping the `else`.
-  test("bootstrap.sh keys the daemon's trace on the PATH, and clears an ambient one", async () => {
+  // THE GUARD HAS ONE ARM, AND THE MISSING ONE IS NOT AN OVERSIGHT. cc hands
+  // sudo nothing but `PATH` and sudo's `env_reset` discards even that on the
+  // far side, so the daemon's environment at step 4 is COMPOSED — sudo's own
+  // output plus the plan file — rather than defended. There is no ambient
+  // `CC_UNION_TRACE` for a second arm to clear.
+  // DIES UNDER: keying the guard on `CC_FUSE_TRACE` again; a second assignment
+  // site anywhere in the script.
+  test("bootstrap.sh keys the daemon's trace on the PATH, and assigns CC_UNION_TRACE nowhere else", async () => {
     const { readFile } = await import('node:fs/promises');
     const { fileURLToPath } = await import('node:url');
     const src = await readFile(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'systems', 'fuse', 'bootstrap.sh'), 'utf8');
-    const guard = /if \[ -n "\$\{CC_FUSE_TRACE_LOG:-\}" \]; then\n\texport CC_UNION_TRACE="\$CC_FUSE_TRACE_LOG"\nelse\n\tunset CC_UNION_TRACE \|\| :\nfi/;
+    const guard = /if \[ -n "\$\{CC_FUSE_TRACE_LOG:-\}" \]; then\n\texport CC_UNION_TRACE="\$CC_FUSE_TRACE_LOG"\nfi/;
     assert.match(src, guard, 'the daemon trace guard is not the shape this test pins — re-anchor or repair');
     // NOTHING ELSE MAY SET IT. A second assignment anywhere would be a second
     // mechanism, and the guard above would stop being the whole answer.
@@ -570,47 +585,107 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // PINS: the namespace is private and the mount namespace is new. Losing
   // `--propagation private` would let the mount escape into /proc/1/mounts,
   // which is the exact condition criterion 5 forbids.
-  test('enters a private mount namespace under non-interactive sudo', () => {
-    const w = wrapped();
-    assert.equal(w.command, 'sudo');
-    const j = w.args.join(' ');
-    assert.ok(j.startsWith('-n -E unshare --mount --propagation private --'), j);
+  //
+  // AND THAT NOTHING RIDES THROUGH SUDO, which is the argv half of the whole
+  // file channel's reason to exist: BOTH forms that would carry a variable
+  // across sudo need the sudoers `SETENV:` tag, and requiring that tag of every
+  // host running cc is the cost the two files replace.
+  // DIES UNDER: restoring `-E`; prefixing the bootstrap with `VAR=value`.
+  test('enters a private mount namespace under non-interactive sudo, carrying no variable across it', () => {
+    const { spec } = wrapped();
+    assert.equal(spec.command, 'sudo');
+    const j = spec.args.join(' ');
+    assert.ok(j.startsWith('-n unshare --mount --propagation private --'), j);
+    assert.equal(spec.args.includes('-E'), false,
+      `-E is back in the sudo argv, and it needs the sudoers SETENV: tag: ${j}`);
+    assert.deepEqual(spec.args.filter(a => /^[A-Za-z_][A-Za-z0-9_]*=/.test(a)), [],
+      `a VAR=value argv prefix needs the sudoers SETENV: tag just as -E does: ${j}`);
   });
 
   // PINS: the CLI's own argv rides through positionally and untouched, INCLUDING
-  // an argument containing a newline.
-  test('carries the CLI argv through verbatim, newline and all', () => {
-    const w = wrapped();
-    const i = w.args.indexOf('claude');
-    assert.ok(i > 0, 'the CLI command is not in the wrapped argv');
-    assert.deepEqual(w.args.slice(i), ['claude', '-p', 'a prompt\nwith a newline', '--model', 'x']);
+  // an argument containing a newline — and the FIXED-ARITY prefix ahead of it is
+  // exactly the plan file's path and cc's uid, which is what lets the bootstrap
+  // `shift 2` with no `--` separator.
+  test('carries the CLI argv through verbatim after a two-word prefix, newline and all', () => {
+    const { spec } = wrapped();
+    const b = spec.args.indexOf(BOOTSTRAP);
+    assert.ok(b > 0, 'the bootstrap is not in the wrapped argv');
+    assert.deepEqual(spec.args.slice(b + 1, b + 3), [plan.planEnvPath, String(plan.uid)]);
+    assert.deepEqual(spec.args.slice(b + 3), ['claude', '-p', 'a prompt\nwith a newline', '--model', 'x']);
   });
 
   // PINS: the cwd is rewritten to `/`. The CLI's real cwd may not exist on the
   // host at all, and spawn() would fail with ENOENT before the bootstrap ran.
-  test('rewrites cwd to / and carries the real cwd in the environment', () => {
-    const w = wrapped();
-    assert.equal(w.cwd, '/');
-    assert.equal(w.env.CC_FUSE_CWD, '/srv/app');
+  test('rewrites cwd to / and carries the real cwd in the plan file', () => {
+    const { spec } = wrapped();
+    assert.equal(spec.cwd, '/');
+    assert.match(fileText(wrapped(), plan.planEnvPath), /^export CC_FUSE_CWD='\/srv\/app'$/m);
   });
 
-  // PINS: spawnEnv rides through. Every cc-managed variable (HOME,
-  // CLAUDE_CODE_TMPDIR, the context-window pair) is delivered this way, and the
-  // whole host-pin design rests on those paths keeping their spelling.
-  test('preserves the caller environment and carries the plan in CC_FUSE_*', () => {
+  // PINS: sudo is handed NOTHING BUT `PATH`, and the two loads travel in the two
+  // files — the plan for the bootstrap, cc's own environment for the CLI. Every
+  // cc-managed variable (HOME, CLAUDE_CODE_TMPDIR, the context-window pair) is
+  // delivered by the second, and the whole host-pin design rests on those paths
+  // keeping their spelling.
+  //
+  // `PATH` IS NOT IN THE PLAN FILE, and that is a constraint rather than an
+  // omission: step 0 sources it before step 1's `command -v chroot`/`setpriv`
+  // probes run, so a `PATH` there would decide what those probes resolve.
+  // DIES UNDER: handing sudo `spec.env`; putting `PATH` in the plan set;
+  // emitting one file instead of two.
+  test('hands sudo only PATH, and splits the rest into the plan file and the worker file', () => {
     const w = wrapped();
-    assert.equal(w.env.HOME, '/home/wk');
-    assert.equal(w.env.CC_FUSE_ROOT, plan.root);
-    assert.equal(w.env.CC_FUSE_PINS, plan.pinsPath);
-    assert.equal(w.env.CC_FUSE_BIN, '/store/bin/union-abc');
-    assert.equal(w.env.CC_FUSE_RECORD, plan.recordPath);
-    assert.equal(w.env.CC_FUSE_MOUNT_OPTS, plan.mountOpts);
-    assert.equal(w.env.CC_FUSE_UID, '1000');
-    assert.equal(w.env.CC_FUSE_INSTANCE_ID, 'inst-1');
-    assert.equal(w.env.CC_FUSE_BOOT_ID, 'boot-9');
-    // sudo's secure_path replaces PATH even under -E, so the CLI's PATH travels
-    // under a name sudo does not know about.
-    assert.equal(w.env.CC_FUSE_PATH, '/opt/bin:/usr/bin');
+    assert.deepEqual(w.spec.env, { PATH: '/opt/bin:/usr/bin' });
+    assert.deepEqual(w.files.map(f => f.path), [plan.planEnvPath, plan.workerEnvPath]);
+
+    const planText = fileText(w, plan.planEnvPath);
+    for (const [name, value] of [
+      ['CC_FUSE_ROOT', plan.root], ['CC_FUSE_PINS', plan.pinsPath],
+      ['CC_FUSE_BIN', '/store/bin/union-abc'], ['CC_FUSE_RECORD', plan.recordPath],
+      ['CC_FUSE_MOUNT_OPTS', plan.mountOpts], ['CC_FUSE_UID', '1000'],
+      ['CC_FUSE_INSTANCE_ID', 'inst-1'], ['CC_FUSE_BOOT_ID', 'boot-9'],
+      // THE SECOND FILE'S PATH TRAVELS IN THE FIRST, which is what keeps argv at
+      // two added words.
+      ['CC_FUSE_WORKER_ENV', plan.workerEnvPath],
+    ]) {
+      assert.match(planText, new RegExp(`^export ${name}='${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'$`, 'm'), name);
+    }
+    assert.equal(has(planText, 'PATH'), false,
+      'PATH is in the plan file, which step 0 sources ahead of step 1\'s `command -v` probes');
+
+    const workerText = fileText(w, plan.workerEnvPath);
+    assert.match(workerText, /^export HOME='\/home\/wk'$/m);
+    assert.match(workerText, /^export PATH='\/opt\/bin:\/usr\/bin'$/m);
+  });
+
+  // PINS: no name the plan owns can reach the worker file — the ONE assertion
+  // standing between a stale inherited `CC_FUSE_RUNDIR`/`CC_FUSE_INSTANCE_ID`
+  // and a blind orphan backstop. bootstrap.sh sources the worker file LAST, so
+  // a collision there wins; `procScan.ts` and `sweep.ts` attribute a process by
+  // reading exactly those two names out of `/proc/<pid>/environ`, and a session
+  // whose worker carries someone else's values is unreclaimable by name while
+  // every mount test stays green.
+  // DIES UNDER: dropping the PLAN_KEYS filter; dropping any single name from it.
+  test('no name the plan owns reaches the worker file, however stale the inherited value', () => {
+    const junk = Object.fromEntries(PLAN_KEYS.map(k => [k, `/stale/${k}`]));
+    const w = wrapLaunch(
+      { command: 'claude', args: [], cwd: '/x', env: { ...junk, HOME: '/home/wk', PATH: '/opt/bin' } },
+      { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
+    );
+    const workerText = fileText(w, plan.workerEnvPath);
+    for (const k of PLAN_KEYS) {
+      assert.equal(has(workerText, k), false,
+        `${k} rode into the worker env file, which bootstrap.sh sources AFTER the plan file, so it `
+        + 'wins the collision — and procScan/sweep read CC_FUSE_INSTANCE_ID and CC_FUSE_RUNDIR out '
+        + 'of /proc/<pid>/environ to attribute a process to this session');
+    }
+    // And the plan's own values are what the worker's environ then carries.
+    const planText = fileText(w, plan.planEnvPath);
+    assert.match(planText, new RegExp(`^export CC_FUSE_RUNDIR='${plan.rundir}'$`, 'm'));
+    assert.match(planText, /^export CC_FUSE_INSTANCE_ID='inst-1'$/m);
+    // The operator's own switch is NOT one of the plan's names, so it rides
+    // through to the worker inert — asserted in the trace test above.
+    assert.equal(PLAN_KEYS.includes('CC_FUSE_TRACE'), false);
   });
 
   // PINS: the things the daemon REFUSES TO MOUNT without, carried by name.
@@ -620,16 +695,153 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   // without it and simply records nothing — but it rides the same channel and a
   // missing one costs the whole pin-derivation instrument.
   test('carries the control socket, the mark path, the cwd and the event log', () => {
-    const w = wrapped();
-    assert.equal(w.env.CC_FUSE_CONTROL, plan.controlSock);
-    assert.equal(w.env.CC_FUSE_MARK_PATH, plan.markPath);
-    assert.equal(w.env.CC_FUSE_EVENT_LOG, plan.eventLog);
+    const planText = fileText(wrapped(), plan.planEnvPath);
+    const value = (name) => planText.match(new RegExp(`^export ${name}='(.*)'$`, 'm'))?.[1] ?? null;
+    assert.equal(value('CC_FUSE_CONTROL'), plan.controlSock);
+    assert.equal(value('CC_FUSE_MARK_PATH'), plan.markPath);
+    assert.equal(value('CC_FUSE_EVENT_LOG'), plan.eventLog);
     // THE CWD IS A MOUNT PRECONDITION TOO (`CC_UNION_CWD`): it is the whole
     // domain of the floor and of the overlay, so without it nothing is floored,
     // no overlay node exists, and the launch dies at the `cd`. It rides as
     // `CC_FUSE_CWD`, which `wrapLaunch` already set for the bootstrap's own
     // `cd`.
-    assert.equal(w.env.CC_FUSE_CWD, plan.cwdInside);
+    assert.equal(value('CC_FUSE_CWD'), plan.cwdInside);
+  });
+
+  // ── THE FILE FORMAT ──────────────────────────────────────────────────────
+  //
+  // PINS: every byte of a value survives the round trip into a sourced file —
+  // asserted THROUGH A REAL `/bin/sh`, because a string comparison against
+  // `shellQuote`'s output only restates the function. In a `spawn` env array a
+  // newline, a `$` or a backtick is never a question; in a sourced file each of
+  // them is one.
+  // DIES UNDER: double quotes; a backslash escape instead of the close/escape/
+  // reopen form; dropping the quoting entirely.
+  test('renderEnvFile round-trips every byte through a real /bin/sh', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const dir = await mkdtemp('cc-fuse-envfile-');
+    const values = ['', 'plain', "a'b", 'a"b', '$HOME', '`id`', 'a\nb', 'a\\b', 'x  y',
+      'ünïcode', '!!', "it's $(id) `id` \\ 'x' \nand a second line"];
+    for (const [i, v] of values.entries()) {
+      const at = path.join(dir, `env-${i}.sh`);
+      await fs.writeFile(at, renderEnvFile({ V: v }));
+      const out = execFileSync('/bin/sh', ['-c', '. "$1"; printf %s "${V-}"', 'sh', at], { encoding: 'utf8' });
+      assert.equal(out, v, `the value ${JSON.stringify(v)} did not survive the file: ${JSON.stringify(out)}`);
+    }
+    // And the quoting is the total function the round trip implies.
+    assert.equal(shellQuote("a'b"), "'a'\\''b'");
+  });
+
+  // PINS: a name `dash` cannot spell is DROPPED and SAID SO, never refused and
+  // never emitted. `process.env` carries `BASH_FUNC_x%%`-shaped names on an
+  // ordinary host, so refusing the spawn over one would break a launch that
+  // works; emitting one would make the file a syntax error and take the whole
+  // launch with it. The comment is JSON-quoted so a name carrying a newline
+  // cannot end it and become a command the file runs as root.
+  // DIES UNDER: refusing instead of skipping; emitting the bad name; dropping
+  // the sort; emitting a key whose value is `undefined`.
+  test('renderEnvFile skips a name no shell can spell, names it, sorts, and omits undefined', () => {
+    const text = renderEnvFile({
+      'BASH_FUNC_x%%': '() { :; }', '1A': 'v', 'A-B': 'v', ZED: 'z', ABLE: 'a', GONE: undefined,
+    });
+    assert.deepEqual(text.split('\n').filter(Boolean), [
+      '# skipped (not a shell identifier): "1A", "A-B", "BASH_FUNC_x%%"',
+      "export ABLE='a'",
+      "export ZED='z'",
+    ]);
+    assert.deepEqual(renderEnvFile({ 'A\nB=evil': 'v' }).split('\n').filter(Boolean),
+      ['# skipped (not a shell identifier): "A\\nB=evil"']);
+  });
+});
+
+// ── BOOTSTRAP.SH STEP 0, DRIVEN FOR REAL ────────────────────────────────────
+//
+// Its refusals all precede step 1's `id -u` check, so every one of them is
+// reachable as an ordinary user with no sudo, no mount and no FUSE — which is
+// what makes the file channel's verification testable at all rather than only
+// at the real gate.
+//
+// THE FIXTURES ARE WRITTEN BY `renderEnvFile`, the real producer, so these are
+// the two ends of the channel driven against each other rather than a hand-made
+// approximation of one of them.
+describe('bootstrap.sh step 0 — the environment files are verified before anything is mounted', () => {
+  let dir;
+  const uid = String(process.getuid());
+  before(async () => { dir = await mkdtemp('cc-fuse-step0-'); });
+
+  let seq = 0;
+  const write = async (text, mode = 0o600) => {
+    const at = path.join(dir, `f${seq++}.sh`);
+    await fs.writeFile(at, text, { mode });
+    // `mode` applies only on create, and every name here is fresh — but a chmod
+    // costs nothing and makes the fixture say what it means.
+    await fs.chmod(at, mode);
+    return at;
+  };
+  const run = async (...args) => {
+    const { execFile } = await import('node:child_process');
+    return new Promise((res) => {
+      execFile('/bin/sh', [BOOTSTRAP, ...args], { timeout: 20_000 }, (err, _so, se) =>
+        res({ code: err?.code ?? 0, err: String(se ?? '') }));
+    });
+  };
+  const planText = (vars) => renderEnvFile({ CC_FUSE_UID: uid, ...vars });
+
+  // PINS: every one of step 0's refusals — the arity, the two file predicates,
+  // the ownership test, the group/other-writable test, and the plan file's two
+  // required keys — refuses with exit 78 and names the file it refused over.
+  // A file the worker's own environment is read from, as root, before the
+  // privilege drop, is only as trustworthy as these checks.
+  // DIES UNDER: dropping any single check; checking the plan file but not the
+  // worker file; widening the mode test past the group and other write bits.
+  test('refuses a missing, mis-owned, or group/other-writable environment file, naming it', async () => {
+    const goodWorker = await write(renderEnvFile({ HOME: '/home/wk' }));
+    const cases = [
+      ['no arguments at all', [], /usage: bootstrap\.sh/],
+      ['a plan path that does not exist',
+        [path.join(dir, 'absent.sh'), uid, 'claude'], /is missing or is not a regular file/],
+      ['a plan path that is a directory', [dir, uid, 'claude'], /is missing or is not a regular file/],
+      ['a plan file owned by somebody else',
+        [await write(planText({ CC_FUSE_WORKER_ENV: goodWorker })), String(process.getuid() + 1), 'claude'],
+        /is owned by uid \d+, not by cc's uid/],
+      ['a group-writable plan file',
+        [await write(planText({ CC_FUSE_WORKER_ENV: goodWorker }), 0o664), uid, 'claude'],
+        /group- or other-writable \(mode 0664\)/],
+      ['an other-writable plan file',
+        [await write(planText({ CC_FUSE_WORKER_ENV: goodWorker }), 0o602), uid, 'claude'],
+        /group- or other-writable \(mode 0602\)/],
+      ['a plan file naming no worker environment file',
+        [await write(planText({})), uid, 'claude'], /names no worker environment file/],
+      ['a plan file whose uid disagrees with argv',
+        [await write(renderEnvFile({ CC_FUSE_UID: '99999', CC_FUSE_WORKER_ENV: goodWorker })), uid, 'claude'],
+        /says uid 99999, argv says \d+/],
+      // THE WORKER FILE IS CHECKED AT STEP 0 THOUGH IT IS SOURCED AT STEP 10:
+      // a bad one must refuse before the mount exists, not after.
+      ['a world-writable WORKER file, refused before the mount',
+        [await write(planText({ CC_FUSE_WORKER_ENV: await write(renderEnvFile({ HOME: '/home/wk' }), 0o666) })), uid, 'claude'],
+        /group- or other-writable \(mode 0666\)/],
+    ];
+    for (const [label, args, re] of cases) {
+      const r = await run(...args);
+      assert.equal(r.code, 78, `${label}: exit ${r.code}, stderr ${JSON.stringify(r.err)}`);
+      assert.match(r.err, re, label);
+    }
+  });
+
+  // THE NON-VACUITY CONTROL, AND EVERY ROW ABOVE RESTS ON IT. Each of those is
+  // satisfied by a script that dies for any reason at all; this is the row that
+  // says step 0 can be PASSED — the same invocation with both files valid walks
+  // off the end of step 0 and is refused by step 1 instead.
+  test('a valid pair passes step 0 — the refusal that follows is step 1\'s', async () => {
+    const worker = await write(renderEnvFile({ HOME: '/home/wk' }));
+    const plan = await write(planText({ CC_FUSE_WORKER_ENV: worker, CC_FUSE_BIN: '/nonexistent/union' }));
+    const r = await run(plan, uid, 'claude');
+    assert.equal(r.code, 78, `stderr ${JSON.stringify(r.err)}`);
+    // Step 1's own messages, in the order it can reach them from here. Which
+    // one fires depends on the host and on whether the runner is root; none of
+    // them is step 0's, which is the whole claim.
+    assert.match(r.err, /not running as uid 0|union binary |\/dev\/fuse is missing|fusectl is not in/,
+      `step 0 refused a valid pair, so the rows above pass for the wrong reason: ${JSON.stringify(r.err)}`);
   });
 });
 
@@ -1637,13 +1849,13 @@ describe('the mount literals', () => {
   // LAUNCHER.
   //
   // 2c removed the SHELL's positional copy of the mark path. The DAEMON's copy
-  // is a different channel — `CC_FUSE_MARK_PATH` in the worker env, which step 4
-  // renames to `CC_UNION_MARK_PATH` on the daemon's own command line, and
-  // without which `union.c` refuses to mount. Removing the shell's copy must not
-  // take the daemon's with it: that mutant leaves 2c green, `wrapLaunch`'s env
-  // test green, and every spawn marking NOBODY — a silently host-only
-  // filesystem, which is exactly what the daemon's presence refusal exists to
-  // prevent.
+  // is a different channel — `CC_FUSE_MARK_PATH` in the plan environment file,
+  // which step 4 renames to `CC_UNION_MARK_PATH` on the daemon's own command
+  // line, and without which `union.c` refuses to mount. Removing the shell's copy
+  // must not take the daemon's with it: that mutant leaves 2c green,
+  // `wrapLaunch`'s plan-file test green, and every spawn marking NOBODY — a
+  // silently host-only filesystem, which is exactly what the daemon's presence
+  // refusal exists to prevent.
   //
   // AND THE VALUE IS THE CLI LAUNCH COMMAND, at the one place it is constructed.
   // That is the standing condition the whole two-view argument rests on: point
@@ -1717,7 +1929,6 @@ describe('the criterion-9 refusal', () => {
   const ok = {
     devFuseIsCharDevice: async () => true,
     sudoNonInteractive: async () => true,
-    sudoPreservesEnv: async () => true,
     hasBinary: async () => true,
     hasFusectl: async () => true,
     hasFuse3Dev: async () => true,
@@ -1728,16 +1939,12 @@ describe('the criterion-9 refusal', () => {
     await assertFuseAvailable({ ...ok });
   });
 
-  // PINS: each of the six probes, stubbed absent one at a time, produces a
-  // FUSE_UNAVAILABLE naming what is missing. The message is the deliverable —
-  // criterion 9 is "refuses with a message naming the reason", not "refuses".
+  // PINS: each probe, stubbed absent one at a time, produces a FUSE_UNAVAILABLE
+  // naming what is missing. The message is the deliverable — criterion 9 is
+  // "refuses with a message naming the reason", not "refuses".
   const cases = [
     ['devFuseIsCharDevice', /\/dev\/fuse/, { devFuseIsCharDevice: async () => false }],
     ['sudo', /sudo -n true/, { sudoNonInteractive: async () => false }],
-    // The host that passes every other probe and then dies inside sudo:
-    // NOPASSWD without SETENV. Probed by the exact form the launch uses,
-    // because the whole mount plan rides in CC_FUSE_* environment variables.
-    ['sudo without SETENV', /sudo -n -E.*SETENV/s, { sudoPreservesEnv: async () => false }],
     ['a binary', /unshare/, { hasBinary: async (n) => n !== 'unshare' }],
     ['fusectl', /fusectl/, { hasFusectl: async () => false }],
     ['gcc', /gcc/, { hasBinary: async (n) => n !== 'gcc' }],
@@ -1760,17 +1967,41 @@ describe('the criterion-9 refusal', () => {
   test('names the FIRST failure when several are missing', async () => {
     await assert.rejects(() => assertFuseAvailable({
       devFuseIsCharDevice: async () => false, sudoNonInteractive: async () => false,
-      sudoPreservesEnv: async () => false,
       hasBinary: async () => false, hasFusectl: async () => false, hasFuse3Dev: async () => false,
       ensureBinary: async () => { throw new Error('never reached'); },
     }), /\/dev\/fuse/);
   });
 
   // PINS: the required-binary list is the bootstrap chain's, not a subset.
+  // `stat` is step 0's, and step 0 runs before every other line of the script.
   test('the required binary list covers the whole bootstrap chain', () => {
-    for (const b of ['unshare', 'mount', 'umount', 'nsenter', 'chroot', 'setpriv', 'fusermount3']) {
+    for (const b of ['unshare', 'stat', 'mount', 'umount', 'nsenter', 'chroot', 'setpriv', 'fusermount3']) {
       assert.ok(REQUIRED_BINARIES.includes(b), b);
     }
+  });
+
+  // PINS: cc's sudoers requirement is a plain NOPASSWD rule, stated by the
+  // ABSENCE of any other from the refusals a host can be given. A half-reverted
+  // message telling an operator to add `SETENV:` would send them to fix a host
+  // that is already correct.
+  // DIES UNDER: restoring the `-E` probe or its refusal text.
+  test('no refusal it can produce asks the operator for SETENV', async () => {
+    const messages = [];
+    for (const override of [
+      { devFuseIsCharDevice: async () => false },
+      { sudoNonInteractive: async () => false },
+      { hasBinary: async () => false },
+      { hasFusectl: async () => false },
+      { hasFuse3Dev: async () => false },
+    ]) {
+      await assert.rejects(() => assertFuseAvailable({ ...ok, ...override }), (e) => {
+        messages.push(e.message);
+        return true;
+      });
+    }
+    const all = messages.join('\n');
+    assert.doesNotMatch(all, /SETENV/, all);
+    assert.doesNotMatch(all, /sudo -n -E/, all);
   });
 });
 
