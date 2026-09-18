@@ -6,9 +6,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import {
   validatePlaybook, loadPlaybooks, loadToolIndex, governableToolNames,
-  SEED_PLAYBOOK_IDS, PIN_FORBIDDEN_KEYS,
+  SEED_PLAYBOOK_IDS, PIN_FORBIDDEN_KEYS, PLAYBOOKS_DIR,
 } from '../src/playbooks.ts';
 import { buildTools } from '../src/mcp/tools.ts';
 import { resolveSpawnModel } from '../src/mcp/handlers.ts';
@@ -53,10 +54,10 @@ test('the base fixture is valid (guards every expectErr below against a broken f
 
 // ── the shipped built-ins ───────────────────────────────────────────────────
 
-test('the built-in playbooks are exactly solo/relay/freeform, and all load clean', async () => {
+test('the built-in playbooks are exactly the seed ids, and all load clean', async () => {
   const { playbooks, errors } = await loadPlaybooks();
   assert.deepEqual(errors, [], `built-in playbooks must validate: ${JSON.stringify(errors)}`);
-  assert.deepEqual([...playbooks.keys()].sort(), ['freeform', 'relay', 'solo'],
+  assert.deepEqual([...playbooks.keys()].sort(), [...SEED_PLAYBOOK_IDS].sort(),
     'a leftover definition file or a missing one both land here');
   for (const id of SEED_PLAYBOOK_IDS) {
     assert.ok(playbooks.has(id), `missing built-in playbook '${id}'`);
@@ -71,6 +72,35 @@ test('the built-in playbooks are exactly solo/relay/freeform, and all load clean
     assert.ok(playbooks.get(id).entryStages.length > 0,
       `${id} declares no entry stage — no run of it could ever start`);
   }
+});
+
+// THE DISK, which the loaded key set above cannot speak for. `loadPlaybooks`
+// reads each seed body BY SLUG — createFragmentCatalog's `seeds` are
+// SEED_PLAYBOOK_IDS and its `seedDir` is only ever joined with one of them — so
+// PLAYBOOKS_DIR is never listed, a `playbooks/*.json` naming no seed id is never
+// opened, and both sides of that comparison descend from the same list. Only an
+// enumeration can tell the two apart, so this one binds PLAYBOOKS_DIR itself
+// rather than rebuilding the path.
+test('the repo playbook files on disk are exactly the seed ids', async () => {
+  const onDisk = (await fs.readdir(PLAYBOOKS_DIR))
+    .filter(name => name.endsWith('.json'))
+    .map(name => name.slice(0, -'.json'.length))
+    .sort();
+
+  // A file naming no seed id is dead weight: it ships, it is never read, and
+  // nothing else in the suite can see it.
+  assert.deepEqual(onDisk.filter(slug => !SEED_PLAYBOOK_IDS.includes(slug)), [],
+    `${PLAYBOOKS_DIR} holds a definition no seed id names — the loader reads seeds by slug, so this file ` +
+    'is never opened. Add its id to SEED_PLAYBOOK_IDS, or delete it.');
+
+  // The converse. loadPlaybooks() does red on a missing file, but as a readFile
+  // rejection out of the catalog; asserted here it names the cause instead.
+  assert.deepEqual(SEED_PLAYBOOK_IDS.filter(id => !onDisk.includes(id)), [],
+    `a seed id has no definition file in ${PLAYBOOKS_DIR} — loadPlaybooks() cannot read a body for it.`);
+
+  // Guards the enumeration the way its siblings below guard their loops: an
+  // unreadable or wrongly-rooted directory would satisfy both filters vacuously.
+  assert.ok(onDisk.length >= 4, `expected the shipped definitions, enumerated ${onDisk.length}`);
 });
 
 // ── `needs.position` vs the graph ───────────────────────────────────────────
@@ -126,6 +156,32 @@ test('every built-in `needs.position` covers every stage its anchor can reach', 
   // Guards the loop: a graph edit that left no `needs` entry to check, or a
   // refactor that stopped finding them, would otherwise pass vacuously.
   assert.ok(checked >= 4, `expected to check several needs entries, checked ${checked}`);
+});
+
+// A stage declaring `needs` joins an existing run specifically to read what its
+// anchor produced, and it reaches that work through a `worktree` argument the
+// conductor supplies. A `createWorktree: true` pin does not conflict with that
+// argument — applyPin only refuses a conflict on the SAME argument name — so
+// `src/mcp/handlers.ts` silently prefers the pin and the worker lands on a fresh,
+// empty tree with nothing to read. Derived from the graph rather than a frozen
+// list, and scoped to the built-ins, which is what this repo ships.
+test('no built-in stage declaring `needs` pins createWorktree', async () => {
+  const { playbooks } = await loadPlaybooks();
+  let checked = 0;
+  for (const id of SEED_PLAYBOOK_IDS) {
+    for (const [name, stage] of Object.entries(playbooks.get(id).stages)) {
+      if (stage.needs.length === 0) continue;
+      checked++;
+      for (const [toolName, policy] of Object.entries(stage.tools)) {
+        if (typeof policy === 'string') continue;
+        assert.equal('createWorktree' in policy.pin, false,
+          `${id}.${name} declares \`needs\` but pins ${toolName}.createWorktree — its anchor's worktree is ` +
+          'what it was spawned to read, and the pin discards the `worktree` argument that would reach it.');
+      }
+    }
+  }
+  // Guards the loop the same way its siblings above do.
+  assert.ok(checked >= 4, `expected to check several stages with needs, checked ${checked}`);
 });
 
 // The built-ins are the templates user authors copy, and (per the dynamic

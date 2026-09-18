@@ -28,13 +28,17 @@ import {
   type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runRootOf, sameRun,
 } from './playbookLedger.ts';
 
-const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playbooks');
+// EXPORTED FOR DISK-BINDING IN TESTS, for the same reason the validator's
+// allowlists below are: tests/playbook-schema.test.mjs enumerates this directory
+// to check the files on disk against SEED_PLAYBOOK_IDS, and a second copy of the
+// path there would let the two drift onto different directories.
+export const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playbooks');
 
 // The ids of the built-in playbooks. Bodies live in playbooks/<id>.json, and
 // each body owns its own `name`/`description` — restating them here would be a
 // second source that drifts, so the catalog seeds carry the id only and
 // getPlaybooks() reads the metadata from the parsed body.
-export const SEED_PLAYBOOK_IDS = ['solo', 'relay', 'freeform'] as const;
+export const SEED_PLAYBOOK_IDS = ['solo', 'relay', 'forge', 'freeform'] as const;
 
 // The playbook an unset Settings selection resolves to (see
 // resolveDefaultPlaybookId in conductorConventions.ts). Typed to the seed union
@@ -1173,7 +1177,7 @@ function checkNeeds(
 // source is checked for `get_recent_messages` against ITS OWN current stage.
 // PERMISSION ONLY: `stage`/`provenance` on this call belong to the TARGET, so
 // running the target's move against the source would refuse relay's own
-// implement<-plan forward as a TRANSITION_ILLEGAL plan -> refine.
+// implement<-plan forward as a TRANSITION_ILLEGAL plan -> implement.
 //
 // Only the deny/allow axis is read. A `pin` names argument values of a CALL,
 // and a forward makes no get_recent_messages call to constrain.
