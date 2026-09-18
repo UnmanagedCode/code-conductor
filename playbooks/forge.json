@@ -14,19 +14,19 @@
       }
     },
     "plan-rival": {
-      "description": "Spawn it onto the planner's worktree and forward it the plan. It answers with a rival approach worked to the same specificity as the plan, or with a statement that it found none better and why. Require it to check the plan's load-bearing claims about the code against the tree while it builds that rival: it is arguing about a plan nobody has fact-checked, and a rival resting on the planner's own mistake is worth nothing. One round; a second only on a finding that blocks, and waive the rest out loud — \"is there something better?\" never comes back clean on its own.",
+      "description": "Spawn it onto the planner's worktree and forward it the plan, briefed to read that tree and never write it: anything it leaves behind is inherited by the implementer and lands with the work. It answers with a rival approach worked to the same specificity as the plan, or with a statement that it found none better and why. Require it to check the plan's load-bearing claims about the code against the tree while it builds that rival: it is arguing about a plan nobody has fact-checked, and a rival resting on the planner's own mistake is worth nothing. One round; a second only on a finding that blocks, and waive the rest out loud — \"is there something better?\" never comes back clean on its own.",
       "needs": [{ "stage": "plan" }],
       "workers": "many",
       "tools": {
-        "spawn_instance": { "pin": { "model": "reviewer" } }
+        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } }
       }
     },
     "plan-verify": {
-      "description": "Spawn it onto the planner's worktree once the shape is settled, and forward it the plan. It reports only falsifiable defects: a claim about the code that is false, an acceptance criterion the plan cannot meet, a step that consumes an output a later step produces. Taste, naming and alternatives it would have preferred are out of scope: a finding here must be checkable against the tree or the plan. Same one-round cap as `plan-rival`: a second pass only on a finding that blocks.",
+      "description": "Spawn it onto the planner's worktree once the shape is settled, and forward it the plan. It reports only falsifiable defects: a claim about the code that is false, an acceptance criterion the plan cannot meet, a step that consumes an output a later step produces. Taste, naming and alternatives it would have preferred are out of scope: a finding here must be checkable against the tree or the plan. Same read-only brief as `plan-rival`, and the same one-round cap: a second pass only on a finding that blocks.",
       "needs": [{ "stage": "plan-rival", "liveness": "any" }],
       "workers": "many",
       "tools": {
-        "spawn_instance": { "pin": { "model": "reviewer" } }
+        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } }
       }
     },
     "implement": {
