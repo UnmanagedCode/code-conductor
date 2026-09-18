@@ -13,17 +13,17 @@
         "approve_plan": "deny"
       }
     },
-    "architect": {
-      "description": "Despite the name, this worker does not do the architecture — the plan already exists, and its job is to contest that plan's shape. Spawn it onto the planner's worktree and forward it the plan. It answers with a rival approach worked to the same specificity as the plan, or with a statement that it found none better and why. Require it to check the plan's load-bearing claims about the code against the tree while it builds that rival: it is arguing about a plan nobody has fact-checked, and a rival resting on the planner's own mistake is worth nothing. One round; a second only on a finding that blocks, and waive the rest out loud — \"is there something better?\" never comes back clean on its own.",
+    "plan-rival": {
+      "description": "Spawn it onto the planner's worktree and forward it the plan. It answers with a rival approach worked to the same specificity as the plan, or with a statement that it found none better and why. Require it to check the plan's load-bearing claims about the code against the tree while it builds that rival: it is arguing about a plan nobody has fact-checked, and a rival resting on the planner's own mistake is worth nothing. One round; a second only on a finding that blocks, and waive the rest out loud — \"is there something better?\" never comes back clean on its own.",
       "needs": [{ "stage": "plan" }],
       "workers": "many",
       "tools": {
-        "spawn_instance": { "pin": { "model": "planner" } }
+        "spawn_instance": { "pin": { "model": "reviewer" } }
       }
     },
-    "verify": {
-      "description": "Spawn it onto the planner's worktree once the shape is settled, and forward it the plan. It reports only falsifiable defects: a claim about the code that is false, an acceptance criterion the plan cannot meet, a step that consumes an output a later step produces. Taste, naming and alternatives it would have preferred are out of scope: a finding here must be checkable against the tree or the plan. Same one-round cap as `architect`: a second pass only on a finding that blocks.",
-      "needs": [{ "stage": "architect", "liveness": "any" }],
+    "plan-verify": {
+      "description": "Spawn it onto the planner's worktree once the shape is settled, and forward it the plan. It reports only falsifiable defects: a claim about the code that is false, an acceptance criterion the plan cannot meet, a step that consumes an output a later step produces. Taste, naming and alternatives it would have preferred are out of scope: a finding here must be checkable against the tree or the plan. Same one-round cap as `plan-rival`: a second pass only on a finding that blocks.",
+      "needs": [{ "stage": "plan-rival", "liveness": "any" }],
       "workers": "many",
       "tools": {
         "spawn_instance": { "pin": { "model": "reviewer" } }
@@ -31,7 +31,7 @@
     },
     "implement": {
       "description": "A fresh worker, not the planner — it starts with no context, so hand it the surviving plan itself, never a paraphrase: spawn it, then `send_prompt({forward})` the planner's output into it. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against.",
-      "needs": [{ "stage": "verify", "liveness": "any" }],
+      "needs": [{ "stage": "plan-verify", "liveness": "any" }],
       "tools": {
         "spawn_instance": { "pin": { "mode": "bypassPermissions" } },
         "set_mode": "deny"
@@ -49,8 +49,8 @@
 
   "transitions": [
     { "from": "plan", "to": "plan" },
-    { "from": "architect", "to": "architect" },
-    { "from": "verify", "to": "verify" },
+    { "from": "plan-rival", "to": "plan-rival" },
+    { "from": "plan-verify", "to": "plan-verify" },
     { "from": "implement", "to": "implement" },
     { "from": "review", "to": "review" }
   ]

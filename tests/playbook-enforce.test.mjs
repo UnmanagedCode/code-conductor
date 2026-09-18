@@ -1661,7 +1661,7 @@ test('enforce: a stage model pin beats the default-spawn-tier fallback and never
 // spawn that satisfies the edge succeeding. A refusal-only assertion passes just
 // as happily when a stage name is typo'd and the spawn refuses on other grounds.
 
-test('forge: verify refuses a spawn whose provenance names no architect worker', async () => {
+test('forge: plan-verify refuses a spawn whose provenance names no plan-rival worker', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const planner = await t.spawnWorker({ project: 'demo', playbook: 'forge', stage: 'plan' });
@@ -1672,51 +1672,51 @@ test('forge: verify refuses a spawn whose provenance names no architect worker',
     // planner straight to the defect pass. `plan` is an ignored extra key here —
     // checkNeeds reads only the key its own `needs` entry names.
     const early = await t.spawnWorker({
-      project: 'demo', stage: 'verify', worktree, provenance: { plan: planner.sessionId },
+      project: 'demo', stage: 'plan-verify', worktree, provenance: { plan: planner.sessionId },
     });
     refused(early, 'NEEDS_UNSATISFIED');
-    assert.match(early.reason, /architect/,
+    assert.match(early.reason, /plan-rival/,
       'the refusal must name the stage whose worker is missing, not just that something is');
 
-    const architect = await t.spawnWorker({
-      project: 'demo', stage: 'architect', worktree, provenance: { plan: planner.sessionId },
+    const rival = await t.spawnWorker({
+      project: 'demo', stage: 'plan-rival', worktree, provenance: { plan: planner.sessionId },
     });
-    assert.ok(architect.sessionId, `architect spawn refused: ${JSON.stringify(architect)}`);
+    assert.ok(rival.sessionId, `plan-rival spawn refused: ${JSON.stringify(rival)}`);
 
-    const verify = await t.spawnWorker({
-      project: 'demo', stage: 'verify', worktree, provenance: { architect: architect.sessionId },
+    const verifier = await t.spawnWorker({
+      project: 'demo', stage: 'plan-verify', worktree, provenance: { 'plan-rival': rival.sessionId },
     });
-    assert.ok(verify.sessionId, `verify spawn refused once its need was satisfied: ${JSON.stringify(verify)}`);
+    assert.ok(verifier.sessionId, `plan-verify spawn refused once its need was satisfied: ${JSON.stringify(verifier)}`);
   } finally { await t.close(); }
 });
 
-test('forge: implement refuses a spawn whose provenance names no verify worker', async () => {
+test('forge: implement refuses a spawn whose provenance names no plan-verify worker', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const planner = await t.spawnWorker({ project: 'demo', playbook: 'forge', stage: 'plan' });
     assert.ok(planner.sessionId, `plan spawn refused: ${JSON.stringify(planner)}`);
     const worktree = planner.worktree.worktreeName;
 
-    const architect = await t.spawnWorker({
-      project: 'demo', stage: 'architect', worktree, provenance: { plan: planner.sessionId },
+    const rival = await t.spawnWorker({
+      project: 'demo', stage: 'plan-rival', worktree, provenance: { plan: planner.sessionId },
     });
-    assert.ok(architect.sessionId, `architect spawn refused: ${JSON.stringify(architect)}`);
+    assert.ok(rival.sessionId, `plan-rival spawn refused: ${JSON.stringify(rival)}`);
 
     // Exactly the `plan -> implement` move the playbook exists to forbid.
     const early = await t.spawnWorker({
       project: 'demo', stage: 'implement', worktree, provenance: { plan: planner.sessionId },
     });
     refused(early, 'NEEDS_UNSATISFIED');
-    assert.match(early.reason, /verify/,
+    assert.match(early.reason, /plan-verify/,
       'the refusal must name the stage whose worker is missing, not just that something is');
 
-    const verify = await t.spawnWorker({
-      project: 'demo', stage: 'verify', worktree, provenance: { architect: architect.sessionId },
+    const verifier = await t.spawnWorker({
+      project: 'demo', stage: 'plan-verify', worktree, provenance: { 'plan-rival': rival.sessionId },
     });
-    assert.ok(verify.sessionId, `verify spawn refused: ${JSON.stringify(verify)}`);
+    assert.ok(verifier.sessionId, `plan-verify spawn refused: ${JSON.stringify(verifier)}`);
 
     const dev = await t.spawnWorker({
-      project: 'demo', stage: 'implement', worktree, provenance: { verify: verify.sessionId },
+      project: 'demo', stage: 'implement', worktree, provenance: { 'plan-verify': verifier.sessionId },
     });
     assert.ok(dev.sessionId, `implement spawn refused once its need was satisfied: ${JSON.stringify(dev)}`);
   } finally { await t.close(); }
