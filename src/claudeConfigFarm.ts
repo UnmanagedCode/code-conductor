@@ -1,6 +1,5 @@
 // THE SYMLINK FARM that makes a per-remote CLI config directory share the
-// host's real one for everything except the three entries that must not be
-// shared.
+// host's real one for everything except the entries that must not be shared.
 //
 // `remoteConfigDir()` (src/projects.ts) names the directory; this module fills
 // it. A worker on a remote is launched with `CLAUDE_CONFIG_DIR` pointing there,
@@ -20,29 +19,58 @@
 // with a real file and fork the state — the failure mode is loud.
 
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { claudeConfigDir, remoteConfigDir } from './projects.ts';
 
-// THE THREE ENTRIES THAT ARE NEVER LINKED, each for its own reason:
+// THE TWO EXACT NAMES that are never linked. The third exclusion is a CLASS,
+// not a name, and is below.
 //
 //   `projects`         — the transcripts. Sharing them IS the defect this whole
 //                        mechanism exists to fix, so it is a real, private
 //                        directory per remote.
-//   `.claude.json`     — the CLI's global config. Its lock path is NOT
-//                        realpath-resolved, so N config dirs over one real file
-//                        take N distinct locks: measured 8 of 15 concurrent
-//                        writes lost, against 5 of 5 kept under one shared lock.
-//                        Worse, its `projects` map is keyed by ABSOLUTE CWD and
-//                        carries `allowedTools`, `mcpServers` and
-//                        `hasTrustDialogAccepted` — so sharing it would
-//                        re-create this card's own defect on a second surface,
-//                        leaking permission state between remotes. Left for the
-//                        CLI to create, and deliberately NOT seeded: seeding is
-//                        what would reintroduce drift.
 //   `.credentials.json`— reached through `CLAUDE_SECURESTORAGE_CONFIG_DIR`
 //                        instead (see Instance.spawn), which pins credentials to
 //                        the real config dir without a link.
-const NEVER_LINKED = new Set(['projects', '.claude.json', '.credentials.json']);
+const NEVER_LINKED = new Set(['projects', '.credentials.json']);
+
+// THE GLOBAL-CONFIG CLASS, matched as a PATTERN rather than by name.
+//
+// The CLI's own bundle treats `^\.claude(-[a-z-]+)?\.json(\.backup)?$` as one
+// class — `.claude.json` is merely the spelling a release build uses, and
+// `.config.json` is the same file under its legacy name (the bundle's own
+// `legacyPath`, which its resolver prefers when present). `.claude.json.lock`
+// and `.claude.json.tmp.<pid>` are the write dance's transient siblings.
+//
+// GUARDED AS A CLASS BECAUSE THE HARM IS THE CLASS'S, not one filename's:
+// every member is the CLI's global config, whose `projects` map is keyed by
+// ABSOLUTE CWD and carries `allowedTools`, `mcpServers` and
+// `hasTrustDialogAccepted`. Linking any one of them would re-create this card's
+// own defect on a second surface, leaking permission state between remotes —
+// and it would do so INVISIBLY, because the farm links whatever new top-level
+// entry it finds at the next spawn. Its lock path is also NOT realpath-resolved,
+// so N config dirs over one real file take N distinct locks: measured 8 of 15
+// concurrent writes lost, against 5 of 5 kept under one shared lock.
+//
+// Left for the CLI to create, and deliberately NOT seeded: seeding is what
+// would reintroduce drift. Nothing reachable writes a non-`.claude.json` member
+// today — this is defence in depth against a CLI that starts to, not a claim
+// that one does.
+const GLOBAL_CONFIG_RE = /^\.claude(-[a-z-]+)?\.json(\.backup)?$/;
+const LEGACY_GLOBAL_CONFIG = '.config.json';
+
+// `placeLink`'s in-flight temp name. Skipped by the prune below so a concurrent
+// refresh cannot unlink another call's half-built link out from under its
+// `rename` — which would turn this module's own concurrency fix into a new race.
+const TMP_LINK_RE = /\.cc-tmp-\d+-[0-9a-f]+$/;
+
+function neverLinked(name: string): boolean {
+  return NEVER_LINKED.has(name)
+    || name === LEGACY_GLOBAL_CONFIG
+    || GLOBAL_CONFIG_RE.test(name)
+    // `.claude.json.lock` (a directory) and `.claude.json.tmp.<pid>.<rand>`.
+    || name.startsWith('.claude.json.');
+}
 
 export interface FarmLogger { warn(msg: string): void }
 
@@ -78,13 +106,13 @@ export async function ensureRemoteConfigDir(
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 
   for (const name of names) {
-    if (NEVER_LINKED.has(name)) continue;
+    if (neverLinked(name)) continue;
     const target = path.join(source, name);
     const link = path.join(cfg, name);
     let held: Awaited<ReturnType<typeof fs.lstat>> | null = null;
     try { held = await fs.lstat(link); }
     catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
-    if (held === null) { await fs.symlink(target, link); continue; }
+    if (held === null) { await placeLink(target, link); continue; }
     if (!held.isSymbolicLink()) {
       if (!reported.has(link)) {
         reported.add(link);
@@ -94,10 +122,7 @@ export async function ensureRemoteConfigDir(
     }
     // A link to somewhere else means the real config dir moved. Repoint it, or
     // this remote serves stale settings for the rest of the install's life.
-    if (await fs.readlink(link) !== target) {
-      await fs.unlink(link);
-      await fs.symlink(target, link);
-    }
+    if (await fs.readlink(link) !== target) await placeLink(target, link);
   }
 
   await pruneVanishedLinks(cfg, source, new Set(names));
@@ -115,13 +140,43 @@ async function pruneVanishedLinks(cfg: string, source: string, live: Set<string>
   try { held = await fs.readdir(cfg, { withFileTypes: true }); }
   catch (e) { if (errCode(e) === 'ENOENT') return; throw e; }
   for (const e of held) {
-    if (!e.isSymbolicLink() || NEVER_LINKED.has(e.name) || live.has(e.name)) continue;
+    if (!e.isSymbolicLink() || neverLinked(e.name) || live.has(e.name)) continue;
+    if (TMP_LINK_RE.test(e.name)) continue;
     const link = path.join(cfg, e.name);
     let target: string;
     try { target = await fs.readlink(link); }
     catch (err) { if (errCode(err) === 'ENOENT') continue; throw err; }
     if (target !== path.join(source, e.name)) continue;
-    await fs.unlink(link);
+    // ENOENT: a concurrent refresh for the same remote already removed it.
+    try { await fs.unlink(link); }
+    catch (err) { if (errCode(err) !== 'ENOENT') throw err; }
+  }
+}
+
+// CREATE-OR-REPOINT, ATOMICALLY AND IDEMPOTENTLY — build the link under a
+// unique temp name and `rename` it into place.
+//
+// THE OBVIOUS SHAPE IS A RACE. `ensureRemoteConfigDir` runs before every spawn
+// and nothing serialises launches across sessions on one remote — the create
+// lock is per-session — so two `spawn_instance` calls fanning out onto a fresh
+// remote (an ordinary conductor pattern) both see ENOENT and both create. With
+// a bare `symlink` the loser throws EEXIST out of `launch()` and the spawn dies
+// with a raw errno; with `unlink`+`symlink` on the repoint path the loser gets
+// ENOENT instead, and there is a window where the link is absent entirely.
+//
+// `rename` has neither problem: it replaces the destination atomically, so the
+// loser simply overwrites an identical link and both callers converge.
+async function placeLink(target: string, link: string): Promise<void> {
+  const tmp = `${link}.cc-tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+  await fs.symlink(target, tmp);
+  try {
+    await fs.rename(tmp, link);
+  } catch (e) {
+    await fs.unlink(tmp).catch(() => {});
+    // The destination became a real DIRECTORY under us — someone else owns it
+    // now, and the leave-alone rule says so. Any other failure is real.
+    if (errCode(e) === 'EISDIR' || errCode(e) === 'ENOTDIR' || errCode(e) === 'ENOTEMPTY') return;
+    throw e;
   }
 }
 

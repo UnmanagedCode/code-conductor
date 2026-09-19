@@ -226,6 +226,88 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     assert.equal(await fsp.readFile(path.join(seeded, 'sid.jsonl'), 'utf8'), '{}\n');
   });
 
+  // ── THE CONCURRENT CASE ──────────────────────────────────────────
+  //
+  // `ensureRemoteConfigDir` runs before every spawn and nothing serialises
+  // launches across sessions on ONE remote — the create lock is per-session. Two
+  // `spawn_instance` calls fanning out onto a fresh remote is an ordinary
+  // conductor pattern, and with a bare check-then-act `symlink` the loser throws
+  // EEXIST out of `launch()` and the spawn dies with a raw errno.
+  //
+  // Sequential idempotence does NOT cover this: the interleave is the whole
+  // subject, so the farm must not exist when the calls start.
+  test('concurrent builds of one remote all resolve, and the farm is correct', async () => {
+    // Enough entries that the per-entry awaits really interleave.
+    for (let i = 0; i < 12; i++) await fsp.writeFile(path.join(source, `extra-${i}.json`), '{}');
+    const cfg = remoteConfigDir(place);
+    assert.equal(await fsp.access(cfg).then(() => true, () => false), false, 'the farm must not pre-exist');
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => ensureRemoteConfigDir(place)));
+    assert.deepEqual([...new Set(results)], [cfg], 'every call returned the same farm');
+
+    const snap = await snapshot(cfg);
+    assert.equal(snap['settings.json'], `link:${path.join(source, 'settings.json')}`);
+    assert.equal(snap['projects'], 'dir');
+    for (let i = 0; i < 12; i++) {
+      assert.equal(snap[`extra-${i}.json`], `link:${path.join(source, `extra-${i}.json`)}`);
+    }
+    // No half-built temp link survived a racing rename.
+    assert.deepEqual(Object.keys(snap).filter(n => n.includes('.cc-tmp-')), []);
+  });
+
+  // The repoint path races the same way: `unlink`+`symlink` leaves the loser an
+  // ENOENT and a window with no link at all.
+  test('concurrent REPOINTS of one remote all resolve', async () => {
+    await ensureRemoteConfigDir(place);
+    const moved = path.join(home, 'moved-claude');
+    await fsp.mkdir(moved, { recursive: true });
+    await fsp.writeFile(path.join(moved, 'settings.json'), '{"moved":true}');
+    process.env.CLAUDE_CONFIG_DIR = moved;
+
+    await Promise.all(Array.from({ length: 8 }, () => ensureRemoteConfigDir(place)));
+    const snap = await snapshot(remoteConfigDir(place));
+    assert.equal(snap['settings.json'], `link:${path.join(moved, 'settings.json')}`);
+  });
+
+  // And the prune: two refreshes both deciding to unlink the same vanished link.
+  test('concurrent PRUNES of one remote all resolve', async () => {
+    await ensureRemoteConfigDir(place);
+    await rmrf(path.join(source, 'plugins'));
+    await Promise.all(Array.from({ length: 8 }, () => ensureRemoteConfigDir(place)));
+    assert.equal((await snapshot(remoteConfigDir(place)))['plugins'], undefined);
+  });
+
+  // ── THE GLOBAL-CONFIG CLASS ──────────────────────────────────────
+  //
+  // `.claude.json` is one spelling of a class the CLI's own bundle matches with
+  // `^\.claude(-[a-z-]+)?\.json(\.backup)?$`, plus `.config.json` (the same file
+  // under its legacy name) and the write dance's transient siblings. Every
+  // member carries the cwd-keyed `projects` map, so linking ANY of them leaks
+  // allowed tools and trust acceptance between remotes — and the farm would do
+  // it silently at the next spawn.
+  test('no member of the global-config class is ever linked', async () => {
+    const members = [
+      '.claude.json', '.claude.json.backup', '.claude-dev.json', '.claude-staging.json',
+      '.config.json', '.claude.json.lock', '.claude.json.tmp.1234.abcdef',
+    ];
+    for (const m of members) await fsp.writeFile(path.join(source, m), '{}');
+
+    const snap = await snapshot(await ensureRemoteConfigDir(place));
+    for (const m of members) assert.equal(snap[m], undefined, `${m} was linked into the farm`);
+  });
+
+  // The control that keeps the pattern from being an always-true predicate: a
+  // name that merely LOOKS adjacent is still shared.
+  test('a neighbouring name that is NOT the global config is still linked', async () => {
+    const shared = ['claude.json', 'settings.json.backup', 'claude-config.json', '.claudeignore'];
+    for (const n of shared) await fsp.writeFile(path.join(source, n), '{}');
+
+    const snap = await snapshot(await ensureRemoteConfigDir(place));
+    for (const n of shared) {
+      assert.equal(snap[n], `link:${path.join(source, n)}`, `${n} should be shared`);
+    }
+  });
+
   test('two remotes get two farms', async () => {
     const a = await ensureRemoteConfigDir({ system: 'box', remoteId: 'r1' });
     const b = await ensureRemoteConfigDir({ system: 'box', remoteId: 'r2' });
