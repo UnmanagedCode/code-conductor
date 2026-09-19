@@ -4455,23 +4455,32 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions
   // list — otherwise clicking the row would 409 against the live instance.
-  // BACKING ids of every non-dead instance at this cwd — the exclusion set the
+  // BACKING ids of every non-dead instance at this PLACE — the exclusion set the
   // on-disk session walk needs. It MUST be backing ids: listSessionsForCwdWithCounts
   // / summarizeSessions match against transcript FILENAMES, so a set of public ids
   // would exclude nothing and every live worker would also be listed as an
   // inactive row off its own transcript. Dead instances are deliberately absent —
   // an exited session reappearing as an inactive row is how it stays resumable.
-  liveBackingIdsForCwd(cwd: string): Set<string> {
+  //
+  // KEYED ON THE PLACE, NOT THE CWD, for the same reason the walk it feeds is:
+  // `/root/app3` is one cwd on every box that has it, so a bare cwd match would
+  // exclude another remote's live worker from THIS place's listing — dropping a
+  // real row — while the walk itself looked in a different directory.
+  liveBackingIdsForPlace(place: TranscriptPlacement): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.cwd === cwd && !isDeadStatus(i.status) && i.backingSessionId) out.add(i.backingSessionId);
+      if (samePlace(i.transcriptPlace, place) && !isDeadStatus(i.status) && i.backingSessionId) {
+        out.add(i.backingSessionId);
+      }
     }
     return out;
   }
-  tempSessionIdsForCwd(cwd: string): Set<string> {
+  tempSessionIdsForPlace(place: TranscriptPlacement): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.temp && i.proc && i.cwd === cwd && i.backingSessionId) out.add(i.backingSessionId);
+      if (i.temp && i.proc && samePlace(i.transcriptPlace, place) && i.backingSessionId) {
+        out.add(i.backingSessionId);
+      }
     }
     return out;
   }
@@ -6095,6 +6104,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 // Everything the redirection policy needs to address the system, and everything
 // a relaunch needs to re-check the mirror advertisement. Held on the Instance
 // because launch() runs long after create() resolved the handle.
+// Two placements name ONE transcript directory. All three fields, because
+// dropping any one of them is how two remotes at a shared absolute path, or two
+// targets of one system, would read as the same place.
+function samePlace(a: TranscriptPlacement, b: TranscriptPlacement): boolean {
+  return a.system === b.system && a.remoteId === b.remoteId && a.cwd === b.cwd;
+}
+
 export interface RedirectPlacement {
   system: RedirectableSystem;
   systemId: string;

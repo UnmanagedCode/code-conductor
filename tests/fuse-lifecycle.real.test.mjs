@@ -83,9 +83,6 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // nothing: the union serves the link, so the target has to have a tier of
     // its own.
     //
-    // Read INSIDE the chroot, at the union's own spelling, because that is the
-    // only place the pin boundary exists — a host-side read would pass whatever
-    // the tier table said.
     // Read INSIDE the union, at the worker's own spelling, because that is the
     // only place the pin boundary exists — a host-side read would pass whatever
     // the tier table said. `nsenter` into the daemon's namespace and chroot,

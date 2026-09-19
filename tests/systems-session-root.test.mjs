@@ -101,14 +101,22 @@ describe('criterion 8: a remote session composes no session root', () => {
     assert.equal(s.inst.cwd, s.tree, "the CLI's cwd is not the project's path on its system");
     assert.equal(await exists(path.join(orchStoreRoot(), 'systems', s.id, 'sessions')), false);
 
-    // The per-remote CLI config farm is EXCLUDED, and it is not a hole in this
-    // net. `<store>/claude-config/<dirName>/.claude/sessions` is cc's symlink to
-    // the host CLI's OWN `sessions` directory — one per REMOTE, created before
-    // the spawn and identical across every session on that remote. What this
-    // claim forbids is a per-SESSION root cc composes and serves the worker
-    // from, which would appear anywhere else under the store.
-    const under = (await walk(orchStoreRoot()))
-      .filter(p => !p.startsWith(`${CLAUDE_CONFIG_FARM_DIRNAME}/`));
+    // ONE EXEMPTION, AS NARROW AS THE FACT IT EXEMPTS.
+    // `<store>/claude-config/<dirName>/.claude/sessions` is cc's symlink to the
+    // host CLI's OWN `sessions` directory — one per REMOTE, created before the
+    // spawn and identical across every session on that remote. Exempting the
+    // whole farm subtree instead would stop this net catching a per-session root
+    // composed anywhere in it, including inside the private `projects/` tree,
+    // which is precisely where a regression would put one.
+    const FARM_SESSIONS_LINK =
+      new RegExp(`^${CLAUDE_CONFIG_FARM_DIRNAME}/[^/]+/\\.claude/sessions(/|$)`);
+    const all = await walk(orchStoreRoot());
+    const under = all.filter(p => !FARM_SESSIONS_LINK.test(p));
+    // NON-VACUITY: the net really does reach into the farm, so the exemption
+    // above is narrow rather than a subtree the walk simply stopped covering.
+    assert.ok(under.some(p => p.startsWith(`${CLAUDE_CONFIG_FARM_DIRNAME}/`)
+      && p.endsWith('/projects')),
+    `the walk did not reach the farm's private projects dir: ${JSON.stringify(all.slice(0, 20))}`);
     assert.deepEqual(under.filter(p => p.includes('sessions')), [],
       `something composed a session root: ${JSON.stringify(under.filter(p => p.includes('sessions')))}`);
     assert.deepEqual(under.filter(p => p.endsWith('.manifest.json')), [],

@@ -291,8 +291,8 @@ export interface InstanceManagerLike {
   dropSessionRenewRequest(instanceId: string): void;
   idsForWorktree(project: string, worktreeName: string): string[];
   // Route surface (src/routes.ts).
-  tempSessionIdsForCwd(cwd: string): Set<string>;
-  liveBackingIdsForCwd(cwd: string): Set<string>;
+  tempSessionIdsForPlace(place: TranscriptPlacement): Set<string>;
+  liveBackingIdsForPlace(place: TranscriptPlacement): Set<string>;
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
   removeAllForProject(projectName: string): Promise<number>;

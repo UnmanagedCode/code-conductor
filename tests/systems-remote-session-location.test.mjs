@@ -214,13 +214,25 @@ describe('a session on a project on a system', () => {
 
 
   // ── T6 ──────────────────────────────────────────────────────────────
-  // PINS: the RE-PLACEMENT state survives — a project adopted locally at P that
-  // accrued sessions in that tree, was unregistered, and was re-adopted on a
-  // system whose path is also P, still resolves those older sessions to itself.
+  // PINS: re-placing a project onto a DIFFERENT placement STRANDS the sessions
+  // it accrued under the old one. A project adopted locally at P, which ran
+  // sessions in that tree, was unregistered, and was re-adopted on a system
+  // whose path is also P, no longer resolves those older sessions to itself —
+  // they sit under the local transcript root, and the project now reads the
+  // remote's own.
+  //
+  // THE PLACEMENT IS PART OF THE COORDINATE, so changing it changes the
+  // directory. That is the whole mechanism of this card, seen from the side
+  // where it costs something. T6b below is the other side: re-registering at
+  // the SAME placement lands in the same directory and the transcripts are the
+  // project's again — which is what narrows card 2026-0302 rather than leaving
+  // it untouched.
+  //
   // NOT claiming the state is supported, or reachable by mutating a placement
   // in place (no route does that) — only that unregister-then-re-register
-  // reaches it, and that cc does not paper over it.
-  test('T6: an old local session survives the project being re-placed onto a system', async () => {
+  // reaches it, and that cc neither papers over it nor silently shares one
+  // directory to hide it.
+  test('T6: re-placing a project onto a system strands its old local sessions', async () => {
     const remote = await bindRemoteSystem();
     // P is OUTSIDE the projects root and on the reference provider's own path
     // space (which is this machine), so one string names both placements.
@@ -243,11 +255,45 @@ describe('a session on a project on a system', () => {
     // root, exactly as every other pre-upgrade remote transcript is.
     //
     // NOT RECOVERABLE BY PROBING BOTH ROOTS: that is the compatibility
-    // dual-read this change deliberately does not have. Re-registering at the
-    // SAME placement is the case that still resolves, and T5 is the control
-    // that local places are untouched.
+    // dual-read this change deliberately does not have. T6b is the case that
+    // DOES still resolve, and T10 is the control that local places are
+    // untouched.
     assert.equal(await findSessionLocation(oldSid), null,
       'the pre-re-placement local transcript is stranded, not silently shared with the remote');
+  });
+
+  // ── T6b ─────────────────────────────────────────────────────────────
+  // PINS THE CLAIM THAT NARROWS CARD 2026-0302, and it is load-bearing rather
+  // than a mirror of T6: the directory is keyed on (system, remoteId, cwd) and
+  // on NOTHING ELSE, so unregistering and re-registering at the SAME placement
+  // lands in the SAME directory and the old transcripts are correctly the
+  // project's again. Without this the card would have to stay open in full.
+  //
+  // A key that folded in anything transient — a connection generation, the
+  // mirror advertisement, a registration timestamp, the cc project NAME — would
+  // pass T6 and fail here.
+  test('T6b: re-registering at the SAME placement recovers its sessions', async () => {
+    const remote = await bindRemoteSystem();
+    const tree = await seedRepo(path.join(remote.root, 'samesame'));
+    assert.equal((await adoptProject('samesame', tree, { system: remote.id })).ok, true);
+
+    const sid = 'dddddddd-4444-4444-8444-444444444444';
+    const place = await projectRootPlace('samesame', tree);
+    await seedSessionJsonl(place, sid);
+    assert.deepEqual(await findSessionLocation(sid),
+      { project: 'samesame', worktreeName: null, cwd: tree, place });
+
+    assert.equal((await api(baseUrl, 'DELETE', '/api/projects/samesame')).status, 200);
+    // Unregistered: nothing owns the directory, so nothing resolves.
+    assert.equal(await findSessionLocation(sid), null);
+
+    // Re-registered at the same (system, remoteId, systemPath) — and under a
+    // DIFFERENT cc project name, so the name is proven not to be part of the
+    // key. A rename must not strand a project's history.
+    assert.equal((await adoptProject('renamed', tree, { system: remote.id })).ok, true);
+    assert.deepEqual(await findSessionLocation(sid),
+      { project: 'renamed', worktreeName: null, cwd: tree, place: await projectRootPlace('renamed', tree) },
+      'the same placement did not land in the same transcript directory');
   });
 
   // ── T7 ──────────────────────────────────────────────────────────────

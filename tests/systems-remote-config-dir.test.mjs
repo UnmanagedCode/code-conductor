@@ -463,6 +463,40 @@ describe('T1: two remotes at one absolute path', () => {
     assert.equal((await findSessionLocation(sidB))?.project, 'onb');
   });
 
+  // PINS THE EXCLUSION-SET KEYING. `liveBackingIdsForPlace` /
+  // `tempSessionIdsForPlace` feed the on-disk session walk its exclusion set,
+  // and they used to match on a bare `i.cwd === cwd`. That no longer keys a
+  // directory: a live worker on remote B at the shared path would be excluded
+  // from remote A's listing — dropping a real row — while the walk itself read
+  // a different directory entirely.
+  //
+  // ONE live worker is enough, and is the sharper probe: the same cwd queried
+  // under the OTHER system's coordinate must not find it, while its own must.
+  test('the live-exclusion helpers key on the place, not the cwd', async () => {
+    assert.equal((await adoptProject('ona', shared, { system: boxA.id })).ok, true);
+    assert.equal((await adoptProject('onb', shared, { system: boxB.id })).ok, true);
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'ona', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    // LIVE, or the helper excludes it for being dead and both assertions pass
+    // for the wrong reason.
+    await waitFor(() => inst.status === 'idle' && inst.backingSessionId);
+
+    const own = instances.liveBackingIdsForPlace(inst.transcriptPlace);
+    assert.equal(own.has(inst.backingSessionId), true, "the worker is missing from its OWN place's set");
+
+    // Same cwd, other machine — the exact query a bare-cwd match got wrong.
+    const other = { system: boxB.id, remoteId: null, cwd: inst.cwd };
+    assert.equal(inst.transcriptPlace.cwd, other.cwd, 'the premise: one cwd, two machines');
+    assert.equal(instances.liveBackingIdsForPlace(other).has(inst.backingSessionId), false,
+      "remote A's live worker leaked into remote B's exclusion set");
+
+    // And the remoteId half: two targets of one system are two places too.
+    const otherTarget = { system: boxA.id, remoteId: 'somewhere-else', cwd: inst.cwd };
+    assert.equal(instances.liveBackingIdsForPlace(otherTarget).has(inst.backingSessionId), false);
+  });
+
   // The same claim through the REST surface, so a reader cannot dismiss the
   // above as an internal-API artefact.
   test('the per-project sessions endpoint does not leak the other remote\'s session', async () => {

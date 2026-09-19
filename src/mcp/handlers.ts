@@ -530,7 +530,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // archived outnumbers active ~25:1 and the per-transcript cost is the
     // first-prompt read, which the walk skips for archived rows it is not
     // listing — so the count for a `+N archived` line is effectively free.
-    const attached = instances ? instances.liveBackingIdsForCwd(t.cwd) : null;
+    const attached = instances ? instances.liveBackingIdsForPlace(t.place) : null;
     const { rows, archivedCount } = await listSessionsForCwdWithCounts(t.place, attached, { includeArchived })
       .catch(() => ({ rows: [], archivedCount: 0 }));
     const liveHere = live.filter(r => r.project === t.project

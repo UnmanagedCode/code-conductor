@@ -454,13 +454,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // each worktree too, so the sidebar can decide whether to show
         // its "Sessions (N)" subnode without an extra fetch.
         const worktreesWithSessions = await Promise.all(gitFacts.worktrees.map(async (w) => {
-          const wtTempSids = instances ? instances.tempSessionIdsForCwd(w.worktreePath) : null;
+          const wtPlace = placeOf(p, w.worktreePath);
+          const wtTempSids = instances ? instances.tempSessionIdsForPlace(wtPlace) : null;
           return {
             ...w,
-            sessions: await summarizeSessions(placeOf(p, w.worktreePath), wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+            sessions: await summarizeSessions(wtPlace, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           };
         }));
-        const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
+        const projPlace = placeOf(p, p.systemPath ?? p.path);
+        const projTempSids = instances ? instances.tempSessionIdsForPlace(projPlace) : null;
         return {
           ...p,
           sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
@@ -471,7 +473,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(placeOf(p, p.systemPath ?? p.path), projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+          sessions: await summarizeSessions(projPlace, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
         };
       }));
@@ -704,8 +706,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.get('/projects/:name/sessions', async (req, res, next) => {
     try {
       const proj = await getProject(req.params.name);
-      const tempSids = instances ? instances.tempSessionIdsForCwd(proj.path) : null;
       const place = await projectRootPlace(req.params.name, proj.path);
+      const tempSids = instances ? instances.tempSessionIdsForPlace(place) : null;
       const sessions = await listSessionsForCwd(place, tempSids, { includeArchived: !!req.query.includeArchived });
       res.json(sessions);
     } catch (e) { next(e); }
@@ -856,8 +858,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     try {
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw httpError(404, 'worktree not found');
-      const tempSids = instances ? instances.tempSessionIdsForCwd(wt.worktreePath) : null;
       const wtPlace = await projectRootPlace(req.params.name, wt.worktreePath);
+      const tempSids = instances ? instances.tempSessionIdsForPlace(wtPlace) : null;
       const wtSessions = await listSessionsForCwd(wtPlace, tempSids, { includeArchived: !!req.query.includeArchived });
       res.json(wtSessions);
     } catch (e) { next(e); }
@@ -1092,15 +1094,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       }
       const hit = await findSessionLocation(sid);
       if (!hit) throw httpError(404, 'session not found');
-      // ONE 404, not two. The hit's `cwd` is PROOF the directory holds the file
-      // — the probe stat'd it — so the second "resolved to nothing" 404 that
-      // used to sit here has no state left to catch. It covered a RE-DERIVATION
-      // (getWorktree returning null, or getProject refusing) that could
-      // disagree with the probe; nothing re-derives now. The one falsy `cwd`
-      // still constructible is `''`, from a remote record with no `systemPath`
-      // — and there `''` is the CORRECT cwd for what the probe found
-      // (`sessionFilePath('', id)` is `<claudeProjectsRoot>/<id>.jsonl`), so a
-      // 404 would refuse a read that works.
+      // ONE 404, not two. The hit's `place` is PROOF the directory holds the
+      // file — the probe stat'd it at exactly that coordinate — so the second
+      // "resolved to nothing" 404 that used to sit here has no state left to
+      // catch. It covered a RE-DERIVATION (getWorktree returning null, or
+      // getProject refusing) that could disagree with the probe; nothing
+      // re-derives now, and the read below takes the probe's own place rather
+      // than rebuilding one.
       // The transcript reads take the backing id; the summaries store keeps the
       // caller's id (cc-owned, not filename-keyed — see the GET above).
       const place = hit.place;
