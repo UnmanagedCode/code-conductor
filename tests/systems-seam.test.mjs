@@ -205,15 +205,18 @@ async function drive(label, fn, { tree = target, expectSystemOps = true } = {}) 
 }
 
 test('resolving and listing a project reaches its tree only through the System', async () => {
+  // RESOLUTION IS A RECORD READ: it touches nothing inside the tree, so there is
+  // no System op to expect — only nothing to leak. That is the property AC4
+  // buys, and it is why the store read is not a routing target.
   await drive('getProject', async () => {
     const proj = await mods.projects.getProject('ext');
     assert.equal(proj.path, target);
     assert.equal(proj.system.id, 'local', 'the resolver hands the caller a System handle');
-  });
+  }, { expectSystemOps: false });
   await drive('listProjects', async () => {
     const names = (await mods.projects.listProjects()).map(p => p.name);
     assert.deepEqual(names, ['ext']);
-  });
+  }, { expectSystemOps: false });
 });
 
 test('git reaches the project tree only through the System', async () => {
@@ -285,11 +288,14 @@ test('the shell-only exec option cannot land on a System that would ignore it', 
 });
 
 test('deleting the project reaches the tree only through the System', async () => {
+  // A plain delete deregisters and touches nothing in the tree; the OPT-IN is
+  // the only thing that removes it, and that removal goes through the System.
   await drive('deleteProject', async () => {
     const r = await mods.projects.deleteProject('ext');
     assert.equal(r.path, target);
-  });
-  assert.ok((await fsp.stat(target)).isDirectory(), 'the adopted repo survives — it was unregistered');
+    assert.equal(r.directoryDeleted, false);
+  }, { expectSystemOps: false });
+  assert.ok((await fsp.stat(target)).isDirectory(), 'the adopted repo survives — it was deregistered');
 });
 
 test('an IN-ROOT project reaches its tree only through the System, from create to delete', async () => {
@@ -316,17 +322,14 @@ test('an IN-ROOT project reaches its tree only through the System, from create t
   await git(tree, 'add', '.');
   await git(tree, 'commit', '-q', '-m', 'initial');
 
-  // resolveProjectDir's IN-ROOT branch — a different stat from the adopted
-  // path's, and the one every in-root project in a real install goes through.
+  // Resolution, for a project whose tree is under the projects root: the same
+  // one record read as any other, and it touches nothing inside the tree.
   await drive('getProject (in-root)', async () => {
     const proj = await mods.projects.getProject(name);
     assert.equal(proj.path, tree);
-    assert.equal(proj.external, false);
-  }, { tree });
-  // Listing an IN-ROOT project touches nothing inside its tree — the path is
-  // composed from the root enumeration, never probed — so there is no System op
-  // to expect here, only nothing to leak. That is exactly why the root
-  // `fs.readdir` is a sanctioned exception rather than a routing target.
+  }, { tree, expectSystemOps: false });
+  // Listing touches nothing inside a tree either — every path comes from the
+  // store — so there is no System op to expect here, only nothing to leak.
   await drive('listProjects (in-root)', async () => {
     assert.deepEqual((await mods.projects.listProjects()).map(p => p.name), [name]);
   }, { tree, expectSystemOps: false });
@@ -342,11 +345,13 @@ test('an IN-ROOT project reaches its tree only through the System, from create t
     assert.equal((await mods.projectClaudeMd.ensureProjectConventionsMd(name)).regenerated, true);
   }, { tree });
   const wt = await drive('createWorktree (in-root)', () => mods.worktrees.createWorktree(name), { tree });
-  assert.equal(path.dirname(wt.worktreePath), projectsRoot, 'the worktree dir is a SIBLING, not inside the watched tree');
+  assert.equal(wt.worktreePath, path.join(projectsRoot, '.worktrees', name, wt.worktreeName),
+    'the checkout lands in cc\'s own worktree area, not inside the watched tree');
   await drive('removeWorktree (in-root)', () => mods.worktrees.removeWorktree(name, wt.worktreeName), { tree });
 
-  // deleteProject's other branch: an in-root project's tree really is removed,
-  // through the System. The adopted fixture can only ever prove the opposite.
-  await drive('deleteProject (in-root)', () => mods.projects.deleteProject(name), { tree });
-  await assert.rejects(() => fsp.stat(tree), 'the in-root tree is removed — the unlink branch must not have swallowed this one');
+  // deleteProject's OPT-IN branch: the tree really is removed, and through the
+  // System. The plain delete above can only ever prove the opposite.
+  await drive('deleteProject (in-root)',
+    () => mods.projects.deleteProject(name, { deleteDirectory: true }), { tree });
+  await assert.rejects(() => fsp.stat(tree), 'the ticked opt-in removed the tree');
 });

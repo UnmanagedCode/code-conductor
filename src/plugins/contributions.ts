@@ -456,13 +456,22 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
       // to a system only to conclude cc will not use it — a connect attempt and
       // a log line on every session launch while that system is down. It also
       // keeps this skip silent and by-design, which is what it is.
-      if ((await projectPlacement(entry.project)).system !== LOCAL_SYSTEM_ID) continue;
-      // Local from here, so this resolution never leaves cc's own machine. No
-      // memo to fingerprint either — the placement above and the cwd below are
-      // both read fresh on every call, which is all this member needs.
+      //
+      // INSIDE THE SAME PER-ENTRY CATCH as the resolution below, because the
+      // record read THROWS on a record it cannot parse. Left outside, one
+      // unreadable `project.json` rejects this whole function — and its only
+      // consumer (`src/instances.ts`) catches with a bare warn and spawns with
+      // `claudePluginDirs: []`, so a single broken record silently strips every
+      // plugin's `--plugin-dir` from every launch. The conventions path degrades
+      // that same record loudly one branch over; this is that, per entry.
       let place: PluginPlacement;
-      try { place = await resolvePlacement(entry); }
-      catch (e) { console.warn(`plugins: claudePlugin placement for '${entry.id}' failed: ${errMsg(e)}`); continue; }
+      try {
+        if ((await projectPlacement(entry.project))?.system !== LOCAL_SYSTEM_ID) continue;
+        // Local from here, so this resolution never leaves cc's own machine. No
+        // memo to fingerprint either — the placement above and the cwd below are
+        // both read fresh on every call, which is all this member needs.
+        place = await resolvePlacement(entry);
+      } catch (e) { console.warn(`plugins: claudePlugin placement for '${entry.id}' failed: ${errMsg(e)}`); continue; }
       if (place.kind !== 'ok') continue; // unregistered: nothing to contribute
       for (const rel of rels) {
         const root = path.join(place.cwd, rel);

@@ -1,5 +1,5 @@
 // System resolution: the one place a project name becomes a System handle, and
-// the one reader of the record field that names it.
+// the one reader of a project record's `location`.
 //
 // `local` is in-process; every other system is reached by launching the
 // provider command its registry row carries and speaking the wire protocol to
@@ -10,7 +10,8 @@
 // nothing can reach, and a project on it is REFUSED here BY NAME rather than
 // quietly resolved local (see resolveSystem).
 
-import { readProjectMeta } from '../projects.ts';
+import { readProjectRecord } from '../projects.ts';
+import type { ProjectLocation } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { SystemError } from './protocol.ts';
 import { LocalSystem, LOCAL_SYSTEM_ID } from './localSystem.ts';
@@ -41,6 +42,13 @@ export interface SystemRecord {
   // the managed `local` row, which is in-process, and on a user row that has
   // not been given one: such a row is a name with nothing behind it.
   launch?: string[];
+  // Where cc creates worktree checkouts for projects on this system, as an
+  // ABSOLUTE POSIX path. Absent means the default, derived per project:
+  // `<dirname(project path)>/.worktrees/<project>/<key>`. It is a property of
+  // the SYSTEM rather than of a project because a remote TARGET is discovered
+  // from the provider at resolve time and is not registered state — the system
+  // row is.
+  worktreesDir?: string;
 }
 
 // `local` is the machine cc runs on. It is managed for the same reason the
@@ -114,10 +122,9 @@ export function localSystem(): System {
   return LOCAL;
 }
 
-// Where a project's tree lives: the System, WHICH TARGET of it, and — only for
-// a non-local one — the path on it. A local project's path comes from the
-// projects root or its `.external/<name>` symlink instead, so `systemPath`
-// stays null for it.
+// Where a project's tree lives: the System, WHICH TARGET of it, and the path on
+// it. `path` is ALWAYS set — a project's location is one stored field, and it
+// carries a path for a local project exactly as it does for a remote one.
 //
 // One registered system can serve many targets (ten containers behind one
 // docker provider), so a path identifies a tree only together with BOTH: the
@@ -126,52 +133,42 @@ export interface ProjectPlacement {
   system: string;
   // Which target of that system, or null for the provider's own default.
   remoteId: string | null;
-  systemPath: string | null;
+  path: string;
 }
 
-// THE PIN, and the one reader of the record's `system` field.
+// THE PIN, and the one reader of a record's `location`.
 //
-// ABSENCE OF `system` IS THE LOCAL ANSWER. That is the whole migration story:
-// most projects have no `project.json` at all, so stamping `system: "local"`
-// would CREATE ~25 files to record the default, and writeProjectMeta drops
-// empty fields anyway. Reading absence as local is what makes no-backfill
-// correct rather than merely cheap.
-//
-// Pure, and takes an already-read record, so a caller holding one (listProjects
-// reads it for `workspace`) does not read it twice.
-export function placementOf(
-  projectName: string,
-  meta: { system?: string | null; remoteId?: string | null; systemPath?: string | null },
-): ProjectPlacement {
+// Pure, and takes an already-read location, so a caller holding a record
+// (listProjects reads it for `workspace`) does not read it twice.
+export function placementOf(projectName: string, location: ProjectLocation): ProjectPlacement {
   // `.conduct` IS the orchestrator, and cc runs it on its own host: its dir is
   // cc-owned under projectsRoot(), its sessions drive every other project over
-  // MCP on 127.0.0.1, and the store it reads is local by invariant. So it is
-  // pinned UNCONDITIONALLY — this returns before the record is consulted, and a
-  // record naming a system for it is IGNORED rather than honoured. Every reader
-  // of a project's system comes through here, so the pin holds for all of them:
-  // resolution, the listing, and the registry's still-referenced check.
-  if (projectName === CONDUCT_PROJECT_NAME) {
-    return { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null };
+  // MCP on 127.0.0.1, and the store it reads is local by invariant. So its
+  // MACHINE is pinned UNCONDITIONALLY — a record naming a system for it is
+  // IGNORED rather than honoured. Every reader of a project's system comes
+  // through here, so the pin holds for all of them: resolution, the listing,
+  // and the registry's still-referenced check.
+  if (projectName === CONDUCT_PROJECT_NAME || location.kind === 'local') {
+    // A local system forces `remoteId` null: cc's own machine is one machine,
+    // and a record naming a target on it names nothing.
+    return { system: LOCAL_SYSTEM_ID, remoteId: null, path: location.path };
   }
-  const id = typeof meta.system === 'string' ? meta.system.trim() : '';
-  // A local system forces `remoteId` null for the same reason it forces
-  // `systemPath` null: cc's own machine is one machine, and a record naming a
-  // target on it names nothing.
-  if (!id || id === LOCAL_SYSTEM_ID) return { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null };
-  const p = typeof meta.systemPath === 'string' ? meta.systemPath.trim() : '';
-  const r = typeof meta.remoteId === 'string' ? meta.remoteId.trim() : '';
-  return { system: id, remoteId: r || null, systemPath: p || null };
+  return { system: location.system, remoteId: location.remoteId, path: location.path };
 }
 
-export async function projectPlacement(projectName: string): Promise<ProjectPlacement> {
-  return placementOf(projectName, await readProjectMeta(projectName));
+// The placement of a REGISTERED project, or null when no record names it.
+export async function projectPlacement(projectName: string): Promise<ProjectPlacement | null> {
+  const record = await readProjectRecord(projectName);
+  return record ? placementOf(projectName, record.location) : null;
 }
 
-// The System a project's tree, git repo and shell commands live on.
+// The System a project's tree, git repo and shell commands live on. An
+// unregistered name resolves to cc's own machine — the caller that needs the
+// name to EXIST asks getProject, which 404s.
 export async function resolveSystem(projectName: string): Promise<System> {
-  const { system, remoteId } = await projectPlacement(projectName);
-  if (system === LOCAL_SYSTEM_ID) return LOCAL;
-  return systemById(system, remoteId, `project '${projectName}'`);
+  const placement = await projectPlacement(projectName);
+  if (!placement || placement.system === LOCAL_SYSTEM_ID) return LOCAL;
+  return systemById(placement.system, placement.remoteId, `project '${projectName}'`);
 }
 
 // One live handle per registered system, keyed by id. A System handle is a

@@ -462,8 +462,10 @@ test('create_project RETURNS the composed scaffold directive from picked convent
   assert.match(content, /## Harness/);
   // Nothing persisted to the store — the project meta stays clean (the marker in
   // CONVENTIONS.md is the only selection record), no spawn coupling.
-  const { readProjectMeta } = await import('../src/projects.ts');
-  assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null, system: null, remoteId: null, systemPath: null });
+  const { readProjectRecord, projectsRoot: rootOf } = await import('../src/projects.ts');
+  // The record exists — it IS the registration — and carries no scaffold.
+  assert.deepEqual(await readProjectRecord('sc-proj'),
+    { workspace: null, location: { kind: 'local', path: path.join(rootOf(), 'sc-proj') } });
 });
 
 test('REST POST /api/projects returns the scaffold directive in the 201 body', async () => {

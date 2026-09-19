@@ -60,9 +60,12 @@ export async function registeredPlaces(): Promise<TranscriptPlace[]> {
   const { registeredWorktreeNames, worktreePathFor } = await import('../worktrees.ts');
   const out: TranscriptPlace[] = [];
   for (const proj of await listProjects()) {
+    // A row whose record could not be parsed carries no path, so it names no
+    // directory anything could collide with.
+    if (proj.degraded) continue;
     out.push({
       project: proj.name, worktree: null, system: proj.system, remoteId: proj.remoteId,
-      cwd: proj.systemPath ?? proj.path,
+      cwd: proj.path,
     });
     for (const wt of await registeredWorktreeNames(proj.name)) {
       out.push({
@@ -117,6 +120,18 @@ export function transcriptCollisionReason(
   // Named only when it is not this one's, because "on system 'local'" in the
   // ordinary all-local case is noise; when the two differ it is the whole
   // explanation for why two paths that look unrelated are not.
+  //
+  // UNREACHABLE FOR ANY HIT `transcriptCwdCollision` RETURNS, under the current
+  // root model. A hit means one transcript DIRECTORY, so one `transcriptRoot`,
+  // and `transcriptRoot` is injective on `(system, remoteId)`: local resolves to
+  // `claudeProjectsRoot()` and a remote to a config-farm path carrying a
+  // sha256 of `system\0remoteId`. The two placements are therefore always
+  // equal here and this evaluates to ''. It is kept, not deleted, because the
+  // injectivity is a property of the root model rather than of this function:
+  // a root that several placements could share — a flat farm, a digest dropped
+  // for legibility, `CLAUDE_PROJECTS_ROOT` pointed into the farm — makes it
+  // live again, and a refusal that then named no machine would be the whole
+  // missing explanation. Callers passing a hand-built hit exercise it today.
   const where = hit.system === candidate.system && hit.remoteId === candidate.remoteId
     ? ''
     : ` on ${hit.remoteId === null ? `system '${hit.system}'` : `remote '${hit.remoteId}' of system '${hit.system}'`}`;

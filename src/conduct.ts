@@ -1,12 +1,12 @@
 // Bootstrap for the hidden `.conduct` project — home of Conductor
 // sessions that orchestrate other Claude sessions via MCP. The dir lives
-// at `<projectsRoot>/.conduct/` and is filtered out of listProjects() by
-// the existing dot-prefix rule, so it never appears in the sidebar; the
-// sidebar synthesises a row only when a live conductor instance exists.
+// at `<projectsRoot>/.conduct/` and listProjects() skips it unless a caller
+// opts in, so it never appears in the sidebar; the sidebar synthesises a row
+// only when a live conductor instance exists.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot, writeFileAtomic } from './projects.ts';
+import { projectsRoot, writeFileAtomic, readProjectRecord, registerProject } from './projects.ts';
 import { composeCurrentConduct } from './conductorConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
@@ -45,11 +45,21 @@ export function isConductorInstance(inst: { project: string } | null | undefined
 export async function ensureConductProject(): Promise<{ path: string; created: boolean }> {
   const dir = conductProjectPath();
   let created = false;
+  // The projects root itself may not exist yet — nothing else creates it on a
+  // cold start now that the project listing is store-derived.
+  await fs.mkdir(projectsRoot(), { recursive: true });
   try {
     await fs.mkdir(dir, { recursive: false });
     created = true;
   } catch (e) {
     if (errCode(e) !== 'EEXIST') throw e;
+  }
+  // CHECK, THEN REGISTER — never an unconditional registerProject, which
+  // refuses a name it already holds. `.conduct` is a registered project like
+  // any other: its record is what makes it resolve, list under
+  // `includeConduct`, and take worktree-free session lookups.
+  if (await readProjectRecord(CONDUCT_PROJECT_NAME) === null) {
+    await registerProject(CONDUCT_PROJECT_NAME, { kind: 'local', path: dir });
   }
   // Resolved, not assumed: `.conduct` is PINNED to the local system, so this is
   // the one call that both proves and uses the pin.

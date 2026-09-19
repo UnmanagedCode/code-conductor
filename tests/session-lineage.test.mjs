@@ -19,6 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { registerLocalProject } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { localPlace } from '../src/projects.ts';
 
@@ -273,6 +274,8 @@ test('a vanished segment file: reads still succeed, and NOTHING is written on a 
   await reset();
   const { encodeCwd, findSessionLocation } = await import('../src/projects.ts');
   const cwd = path.join(process.env.PROJECTS_ROOT, 'vanish');
+  // findSessionLocation walks REGISTERED projects — a bare directory is not one.
+  await registerLocalProject('vanish', cwd);
   const dir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(cwd));
   await fs.mkdir(cwd, { recursive: true });
   await fs.mkdir(dir, { recursive: true });
@@ -315,6 +318,8 @@ test('crash safety: a rotation lost before its persist still resolves to a real 
   await reset();
   const { encodeCwd, findSessionLocation } = await import('../src/projects.ts');
   const cwd = path.join(process.env.PROJECTS_ROOT, 'crashy');
+  // findSessionLocation walks REGISTERED projects — a bare directory is not one.
+  await registerLocalProject('crashy', cwd);
   const dir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(cwd));
   await fs.mkdir(cwd, { recursive: true });
   await fs.mkdir(dir, { recursive: true });

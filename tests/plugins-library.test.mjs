@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import { registerLocalProject } from './helpers.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginLibrary } from '../src/plugins/library.ts';
-import { orchStoreRoot, adoptProject, listProjects, externalDir } from '../src/projects.ts';
+import { orchStoreRoot, adoptProject, listProjects, readProjectRecord } from '../src/projects.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { rmrf } from './rmrf.mjs';
@@ -129,11 +130,17 @@ test('list(): a dropped file whose id matches the built-in overrides it', async 
   }
 });
 
-test('list(): installed flips true once the derived target dir exists', async () => {
+test('list(): installed flips true once the derived name is REGISTERED', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addProject('code-share');
+    // A directory alone is not an install any more: the record is.
+    const dir = path.join(env.root, '.plugins', 'code-share');
+    await fs.mkdir(dir, { recursive: true });
     const lib = createPluginLibrary();
+    assert.equal((await lib.list()).entries[0].installed, false,
+      'an unregistered checkout is not an install');
+
+    await registerLocalProject('code-share', dir);
     const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
     assert.equal(rows[0].installedAs, 'code-share');
@@ -193,6 +200,7 @@ test('list(): installed + up to date with origin -> updateAvailable false, behin
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
     await git(env.root, 'clone', '-q', remoteDir, 'code-share');
+    await registerLocalProject('code-share', path.join(env.root, 'code-share'));
 
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
@@ -222,6 +230,7 @@ test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fet
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
     await git(env.root, 'clone', '-q', remoteDir, 'code-share');
+    await registerLocalProject('code-share', path.join(env.root, 'code-share'));
 
     // A new commit lands upstream after the install-time clone — list()
     // must fetch on its own (its comparison-only helper reads cached refs)
@@ -306,11 +315,11 @@ test('install(): a name held by an ADOPTED project -> 409 before any clone', asy
     // And exactly ONE record still answers to that name: the adopted one.
     const rows = (await listProjects()).filter(p => p.name === 'code-share');
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].external, true);
     assert.equal(rows[0].path, await fs.realpath(outside));
-    await assert.rejects(() => fs.stat(path.join(env.root, 'code-share')),
-      'no in-root directory was created for a name already held');
-    assert.deepEqual(await fs.readdir(externalDir()), ['code-share']);
+    assert.deepEqual((await readProjectRecord('code-share')).location,
+      { kind: 'local', path: await fs.realpath(outside) }, 'the adopted record is untouched');
+    await assert.rejects(() => fs.stat(path.join(env.root, '.plugins', 'code-share')),
+      'no checkout was created for a name already held');
   } finally {
     await rmrf(outside);
     await env.restore();
@@ -341,13 +350,91 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
     assert.equal(result.name, 'code-share');
     assert.equal(cloneCalls.length, 1);
     assert.equal(cloneCalls[0].url, 'https://github.com/UnmanagedCode/code-share');
-    assert.ok((await fs.stat(path.join(env.root, 'code-share'))).isDirectory());
+    assert.ok((await fs.stat(path.join(env.root, '.plugins', 'code-share'))).isDirectory());
     assert.equal(rescanned, 1);
     assert.deepEqual(enabled, ['code-share'], 'the freshly discovered plugin is enabled by default');
     assert.equal(result.postClone, null, 'code-share has no postClone configured');
 
     const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
+  } finally {
+    await env.restore();
+  }
+});
+
+// PINS: the install target is cc's OWN plugin area, not the projects root — a
+// directory in the root is a user's, and cloning into it is what made a plugin
+// checkout indistinguishable from a project the user made.
+test('install(): clones into .plugins/<name> and writes the record', async () => {
+  const env = await makePluginRoot();
+  try {
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir) => {
+        await fs.mkdir(destDir, { recursive: true });
+        await fs.writeFile(path.join(destDir, 'conductor.plugin.json'),
+          JSON.stringify({ id: 'code-share', name: 'Code Share', version: '1', pluginApi: 1 }));
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    const result = await lib.install('code-share');
+    const target = path.join(env.root, '.plugins', 'code-share');
+    assert.equal(result.path, target);
+    assert.ok((await fs.stat(target)).isDirectory());
+    await assert.rejects(() => fs.stat(path.join(env.root, 'code-share')),
+      'nothing is created in the projects root');
+
+    const { readProjectRecord } = await import('../src/projects.ts');
+    assert.deepEqual((await readProjectRecord('code-share')).location,
+      { kind: 'local', path: target });
+  } finally {
+    await env.restore();
+  }
+});
+
+// PINS: an installed plugin has NO kind flag — its row is shape-identical to
+// any other project's, which is what makes deleting it an ordinary deregister
+// rather than a route through an uninstall.
+test('install(): an installed plugin\'s list_projects row is shape-identical to a non-plugin\'s', async () => {
+  const env = await makePluginRoot();
+  try {
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir) => {
+        await fs.mkdir(destDir, { recursive: true });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    await lib.install('code-share');
+    await registerLocalProject('ordinary', path.join(env.root, 'ordinary'));
+
+    const { listProjects } = await import('../src/projects.ts');
+    const rows = await listProjects();
+    const mask = r => ({ ...r, name: '<name>', path: '<path>' });
+    assert.deepEqual(rows.map(r => r.name), ['code-share', 'ordinary']);
+    assert.deepEqual(mask(rows[0]), mask(rows[1]));
+  } finally {
+    await env.restore();
+  }
+});
+
+// PINS: a REFUSED registration leaves no half-installed checkout behind for a
+// later adopt or rescan to find — the clone is rolled back with the record.
+test('install(): a registration refused after the clone cleans the checkout up', async () => {
+  const env = await makePluginRoot();
+  try {
+    // Hold the transcript directory the install's checkout would take, so
+    // registerProject refuses at the write.
+    const target = path.join(env.root, '.plugins', 'code-share');
+    const { registerProject } = await import('../src/projects.ts');
+    await registerProject('holder', { kind: 'local', path: target });
+
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir) => {
+        await fs.mkdir(destDir, { recursive: true });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    await assert.rejects(() => lib.install('code-share'));
+    await assert.rejects(() => fs.stat(target), 'the clone was rolled back');
   } finally {
     await env.restore();
   }
@@ -452,7 +539,7 @@ test('install(): runs postClone after a successful clone + rescan', async () => 
     const result = await lib.install('code-playwright');
     assert.equal(hookCalls.length, 1);
     assert.equal(hookCalls[0].command, 'bash install.sh');
-    assert.equal(hookCalls[0].cwd, path.join(env.root, 'code-playwright'));
+    assert.equal(hookCalls[0].cwd, path.join(env.root, '.plugins', 'code-playwright'));
     assert.deepEqual(result.postClone, { ran: true, ok: true, code: 0, tail: 'deps installed' });
     assert.equal(rescanned, 1, 'rescan happens before postClone, per the documented order');
   } finally {
@@ -475,7 +562,7 @@ test('install(): postClone failure keeps the clone on disk and resolves (not rej
     assert.equal(result.postClone.ok, false);
     assert.equal(result.postClone.code, 1);
     assert.match(result.postClone.tail, /network timeout/);
-    assert.ok((await fs.stat(path.join(env.root, 'code-playwright'))).isDirectory(), 'clone was NOT removed');
+    assert.ok((await fs.stat(path.join(env.root, '.plugins', 'code-playwright'))).isDirectory(), 'clone was NOT removed');
   } finally {
     await env.restore();
   }
@@ -572,6 +659,7 @@ test('update(): pulls new commits, runs postPull, and triggers a rescan', async 
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
     await git(env.root, 'clone', '-q', remoteDir, 'code-x');
+    await registerLocalProject('code-x', path.join(env.root, 'code-x'));
 
     // A new commit lands upstream after the install-time clone.
     await fs.writeFile(path.join(seedDir, 'file.txt'), 'v2');

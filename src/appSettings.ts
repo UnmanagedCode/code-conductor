@@ -479,6 +479,21 @@ function readLaunch(v: unknown): string[] | null {
   return argv.length === v.length ? argv : null;
 }
 
+// Where cc puts worktree checkouts on this system. Absent/null clears it (back
+// to the per-project default beside the tree); a non-empty ABSOLUTE POSIX path
+// sets it. Absolute because a relative one resolves against whatever working
+// directory the provider process happens to have — not a property of the
+// system, and not one the user can see.
+function validateWorktreesDir(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string') throw httpError(400, 'worktreesDir must be a string or null');
+  const t = v.trim();
+  if (t === '') return null;
+  if (!t.startsWith('/')) throw httpError(400, `worktreesDir must be an absolute path (got '${t}')`);
+  const n = path.posix.normalize(t);
+  return n.length > 1 && n.endsWith('/') ? n.slice(0, -1) : n;
+}
+
 // The provider command as the API accepts it: absent/null clears it, an array
 // of non-empty strings sets it. Anything else is a 400 — a row whose command
 // cc cannot spawn is worse than a row with none, because it names a system that
@@ -522,16 +537,19 @@ export function getSystems(): SystemRecord[] {
   const seen = new Set<string>(MANAGED_SYSTEM_IDS);
   for (const e of stored) {
     if (!e || typeof e !== 'object') continue;
-    const rec = e as { id?: unknown; label?: unknown; launch?: unknown };
+    const rec = e as { id?: unknown; label?: unknown; launch?: unknown; worktreesDir?: unknown };
     if (typeof rec.id !== 'string' || !rec.id) continue;
     if (seen.has(rec.id)) continue;
     seen.add(rec.id);
     const launch = readLaunch(rec.launch);
+    const worktreesDir = typeof rec.worktreesDir === 'string' && rec.worktreesDir.trim().startsWith('/')
+      ? rec.worktreesDir.trim() : null;
     out.push({
       id: rec.id,
       label: typeof rec.label === 'string' && rec.label ? rec.label : rec.id,
       managed: false,
       ...(launch ? { launch } : {}),
+      ...(worktreesDir ? { worktreesDir } : {}),
     });
   }
   return out;
@@ -566,7 +584,7 @@ function storedSystems(): Array<Record<string, unknown>> {
 }
 
 export async function addSystem(
-  input: { id?: unknown; label?: unknown; launch?: unknown } = {},
+  input: { id?: unknown; label?: unknown; launch?: unknown; worktreesDir?: unknown } = {},
 ): Promise<SystemRecord> {
   const cleanId = String(input.id ?? '').trim();
   if (!isSlug(cleanId)) {
@@ -578,20 +596,23 @@ export async function addSystem(
   const label = String(input.label ?? '').trim();
   if (!label) throw httpError(400, 'label is required');
   const launch = validateLaunch(input.launch);
+  const worktreesDir = validateWorktreesDir(input.worktreesDir);
   if (launch) await verifySystemLaunch(cleanId, launch);
-  await writeSystems([...storedSystems(), { id: cleanId, label, ...(launch ? { launch } : {}) }]);
-  return { id: cleanId, label, managed: false, ...(launch ? { launch } : {}) };
+  await writeSystems([...storedSystems(), {
+    id: cleanId, label, ...(launch ? { launch } : {}), ...(worktreesDir ? { worktreesDir } : {}),
+  }]);
+  return { id: cleanId, label, managed: false, ...(launch ? { launch } : {}), ...(worktreesDir ? { worktreesDir } : {}) };
 }
 
 // The managed row has nothing editable: its id and label both come from code.
 export async function updateSystem(
   id: string,
-  { label, launch }: { label?: unknown; launch?: unknown } = {},
+  { label, launch, worktreesDir }: { label?: unknown; launch?: unknown; worktreesDir?: unknown } = {},
 ): Promise<SystemRecord | null> {
   const existing = getSystem(id);
   if (!existing) return null;
   if (existing.managed) {
-    if (label !== undefined || launch !== undefined) {
+    if (label !== undefined || launch !== undefined || worktreesDir !== undefined) {
       throw httpError(400, `system '${id}' is built in — it cannot be edited`);
     }
     return getSystem(id); // no-op PATCH on a read-only row
@@ -608,7 +629,12 @@ export async function updateSystem(
   // The live handle was built from the old command; a changed one must not keep
   // being served by the process the old one started.
   if (JSON.stringify(next) !== JSON.stringify(existing.launch ?? null)) disposeSystemHandle(id);
-  await writeSystems([...storedSystems().filter(s => s.id !== id), { id, label: clean, ...(next ? { launch: next } : {}) }]);
+  // An omitted `worktreesDir` keeps the current one; an explicit null clears it.
+  const nextWtDir = worktreesDir === undefined
+    ? (existing.worktreesDir ?? null) : validateWorktreesDir(worktreesDir);
+  await writeSystems([...storedSystems().filter(s => s.id !== id), {
+    id, label: clean, ...(next ? { launch: next } : {}), ...(nextWtDir ? { worktreesDir: nextWtDir } : {}),
+  }]);
   return getSystem(id);
 }
 

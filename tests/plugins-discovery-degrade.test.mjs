@@ -36,7 +36,7 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { freshProjectsRoot, rmrf } from './helpers.mjs';
+import { freshProjectsRoot, rmrf, registerLocalProject } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { waitFor } from './plugin-helpers.mjs';
 import { createPluginHost } from '../src/plugins/registry.ts';
@@ -126,8 +126,7 @@ describe('a discovery scan that could not reach a project says so', () => {
   // makes one: a bare mkdir, which is all an in-root project IS.
   async function localProject(name) {
     const dir = path.join(process.env.PROJECTS_ROOT, name);
-    await fs.mkdir(dir, { recursive: true });
-    return dir;
+    return registerLocalProject(name, dir);
   }
 
   // A project whose committed CONVENTIONS.md carries `slugs`, plus the exact
@@ -389,8 +388,8 @@ describe('a discovery scan that could not reach a project says so', () => {
   test('an unregistered project is absent from the scan, not skipped by it, and does not degrade', async () => {
     const dir = await localProject('localplug');
     await seedPluginTree(dir, manifest('local-plug'), 'LOCAL CONTENT');
-    assert.equal(await fs.stat(projectStoreDir('localplug')).then(() => true, () => false), false,
-      'a healthy in-root project has NO store dir — which is why 2026-0263\'s discriminator cannot be reused here');
+    assert.equal(await fs.stat(projectStoreDir('localplug')).then(() => true, () => false), true,
+      'a registered project HAS a store dir — the record in it is the registration');
 
     await host.enable('local-plug');
     assert.equal(bodyOf(await host.conventions(), 'local-plug/frag'), 'LOCAL CONTENT');

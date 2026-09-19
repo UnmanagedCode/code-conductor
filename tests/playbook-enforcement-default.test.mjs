@@ -22,7 +22,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, freshProjectsRoot, waitFor, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, waitFor, rmrf, registerLocalProject } from './helpers.mjs';
 import {
   getDefaultPlaybookEnforcement, setDefaultPlaybookEnforcement,
   getDefaultPlaybookSelection, setDefaultPlaybook,
@@ -190,7 +190,7 @@ test('the persisted level is read live — a change lands on the next spawn, no 
 
 test('a non-conductor instance is unaffected by the setting', async () => {
   await setDefaultPlaybookEnforcement(OTHER);
-  await fs.mkdir(path.join(ctx.projectsRoot, 'demo'), { recursive: true });
+  await registerLocalProject('demo', path.join(ctx.projectsRoot, 'demo'));
   const spawned = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
   assert.equal(spawned.status, 201, JSON.stringify(spawned.body));
   assert.equal(instances.get(spawned.body.id).playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT,

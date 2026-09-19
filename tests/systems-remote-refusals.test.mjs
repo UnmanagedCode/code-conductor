@@ -100,6 +100,29 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.equal(inst._redirect.systemPath, path.join(remote.root, 'app'));
   });
 
+  // PINS: A REDIRECTED SESSION'S BOUNDARY IS ITS CWD, NOT THE PROJECT ROOT.
+  //
+  // `systemPath` names two disjoint things and both are strings, so conflating
+  // them typechecks and fails at runtime: on the project RECORD it is where the
+  // project is, and on a `RedirectPlacement` it is the SESSION's cwd — the
+  // project path OR the worktree path, whichever the session runs in. A rename
+  // that folded the second into the first would repoint the union's remote tier
+  // and the tool-redirect boundary at the project root for every worktree
+  // session, and serve that as correct.
+  test('a WORKTREE session on a remote project is redirected at the worktree, not the project', async () => {
+    const tree = await adoptRemote();
+    const { createWorktree } = await import('../src/worktrees.ts');
+    const wt = await createWorktree('app', { name: 'feature' });
+    assert.notEqual(wt.worktreePath, tree, 'premise: the two paths differ');
+
+    const r = await callTool(baseUrl, 'spawn_instance', { project: 'app', worktree: wt.worktreeName });
+    assert.notEqual(r.isError, true, JSON.stringify(r));
+    const inst = [...instances.byId.values()][0];
+    assert.ok(inst._redirect, 'the session carries a redirection policy');
+    assert.equal(inst._redirect.systemPath, wt.worktreePath);
+    assert.notEqual(inst._redirect.systemPath, tree);
+  });
+
   // PINS: a `Bash(...)` permission rule the redirected forwarder would silently
   // void REFUSES the spawn, naming the rule and its file. Measured against the
   // real CLI: such a rule IS enforced under bypassPermissions, and rules match
@@ -143,7 +166,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
     for (const [tool, args] of [
       ['project_status', { project: 'app' }],
       ['project_read', { project: 'app', relativePath: 'README.md' }],
-      ['project_diff', { project: 'app', worktree: 'app_worktree_feature' }],
+      ['project_diff', { project: 'app', worktree: 'feature' }],
       ['project_bash', { project: 'app', command: 'echo hi' }],
     ]) {
       const r = await callTool(baseUrl, tool, args);
@@ -172,7 +195,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
     disposeSystemHandles();
     await updateSystem(remote.id, { launch: null });
 
-    const r = await mergeWorktreeIntoParent('app', 'app_worktree_feature');
+    const r = await mergeWorktreeIntoParent('app', 'feature');
     assert.equal(r.ok, false);
     assert.equal(r.code, 'SYSTEM_UNREACHABLE');
     assert.match(r.reason, new RegExp(remote.id));
@@ -185,7 +208,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
     await createWorktree('app', { name: 'feature' });
     disposeSystemHandles();
     await updateSystem(remote.id, { launch: null });
-    const r = await callTool(baseUrl, 'merge_worktree', { project: 'app', worktree: 'app_worktree_feature' });
+    const r = await callTool(baseUrl, 'merge_worktree', { project: 'app', worktree: 'feature' });
     const text = r.content.map(c => c.text).join('\n');
     assert.match(text, /SYSTEM_UNREACHABLE/, text);
   });

@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
-import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject, orchStoreRoot } from '../src/projects.ts';
+import { readProjectRecord, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject, orchStoreRoot } from '../src/projects.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
 import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
@@ -85,7 +85,7 @@ test('enable persists, auto-assigns CC-Dev only when unassigned; disable persist
     assert.equal(row.state, 'stopped');
     assert.equal(row.enabled, true);
     assert.deepEqual(row.activeVersion, { type: 'main' });
-    assert.equal((await readProjectMeta('aplug')).workspace, 'CC-Dev');
+    assert.equal((await readProjectRecord('aplug')).workspace, 'CC-Dev');
     assert.ok((await listWorkspaces()).includes('CC-Dev'));
 
     // A second host instance sees the persisted state (registry.json).
@@ -99,7 +99,7 @@ test('enable persists, auto-assigns CC-Dev only when unassigned; disable persist
     // Pre-assigned workspace is never overwritten.
     await writeProjectMeta('aplug', { workspace: 'Mine' });
     await host.enable('fake-plugin');
-    assert.equal((await readProjectMeta('aplug')).workspace, 'Mine');
+    assert.equal((await readProjectRecord('aplug')).workspace, 'Mine');
   } finally {
     await env.restore();
   }
@@ -111,7 +111,7 @@ test('discovery (rescan), not just enable, auto-assigns CC-Dev to a newly discov
     await env.addPluginProject('aplug');
     const host = createPluginHost();
     await host.rescan();
-    assert.equal((await readProjectMeta('aplug')).workspace, 'CC-Dev');
+    assert.equal((await readProjectRecord('aplug')).workspace, 'CC-Dev');
     assert.ok((await listWorkspaces()).includes('CC-Dev'));
     // Never enabled — still just discovered, but already placed.
     assert.equal((await host.list()).find(r => r.project === 'aplug').state, 'discovered');
@@ -127,7 +127,7 @@ test('discovery (rescan) never moves a plugin project already assigned to anothe
     await writeProjectMeta('aplug', { workspace: 'Mine' });
     const host = createPluginHost();
     await host.rescan();
-    assert.equal((await readProjectMeta('aplug')).workspace, 'Mine');
+    assert.equal((await readProjectRecord('aplug')).workspace, 'Mine');
   } finally {
     await env.restore();
   }
@@ -610,11 +610,16 @@ test('conventions(): a placement-resolution failure degrades every scope array, 
     await createProject('referencer', { conventionsDoc: doc });
     const target = conventionsTargetPath(path.join(env.root, 'referencer'));
 
-    // Remove the MAIN checkout only (the worktree at a sibling path survives).
+    // Repoint the project's RECORD at a system that is not in the registry.
     // No rescan happens between here and the conventions() call below, so
     // discovery still reports 'cwdfail' as 'ok' from the earlier call —
-    // placement resolution itself is what fails now, live.
-    await fs.rm(path.join(env.root, 'aplug'), { recursive: true, force: true });
+    // placement resolution itself is what fails now, live. (Deleting the
+    // checkout is no longer a resolution failure: the record is the
+    // registration, so a vanished tree resolves and its fragment file is
+    // simply absent — which is the skip-with-a-warning case, not a degrade.)
+    await fs.writeFile(path.join(projectStoreDir('aplug'), 'project.json'), JSON.stringify({
+      location: { kind: 'remote', system: 'no-such-system', remoteId: null, path: '/elsewhere' },
+    }));
 
     const degraded = await host.conventions();
     assert.equal(degraded.project.some(e => e.slug === 'cwdfail/vis'), false, 'the entry drops out when its placement cannot be resolved');
@@ -1210,23 +1215,26 @@ test("two concurrent stops both persist runtime.json — neither steals the othe
 // literally afterwards — by reconcileActiveVersion on load (a miss self-heals by
 // resetting to {type:'main'}) and by the GUI's `worktree:${worktreeName}` option
 // values. So the bare slug is accepted on the way in, and canonicalized on write.
-test('setActiveVersion accepts a worktree by bare slug and persists the canonical name', async () => {
+test('setActiveVersion names a worktree by its one registered spelling', async () => {
   const env = await makePluginRoot();
   try {
     await env.addPluginProject('aplug');
-    await fabricateWorktree(env, 'aplug', 'aplug_worktree_va');
+    await fabricateWorktree(env, 'aplug', 'va');
 
     const host = createPluginHost();
     await host.enable('fake-plugin');
+    // There is ONE spelling per worktree — the store key, the worktreeName and
+    // the directory basename are one string — so the old `<project>_worktree_`
+    // alias is not a second way in, it is simply not a worktree of this project.
+    await rejectsWithStatus(host.setActiveVersion('fake-plugin', { type: 'worktree', name: 'aplug_worktree_va' }), 404);
     const set = await host.setActiveVersion('fake-plugin', { type: 'worktree', name: 'va' });
-    assert.deepEqual(set.activeVersion, { type: 'worktree', name: 'aplug_worktree_va' },
-      'the bare slug resolved, and the canonical name is what was stored');
+    assert.deepEqual(set.activeVersion, { type: 'worktree', name: 'va' });
 
     // Read back through a fresh host — i.e. off registry.json, past
     // reconcileActiveVersion, which would reset a non-canonical name to main.
     const reread = createPluginHost();
     const row = (await reread.list()).find(r => r.id === 'fake-plugin');
-    assert.deepEqual(row.activeVersion, { type: 'worktree', name: 'aplug_worktree_va' });
+    assert.deepEqual(row.activeVersion, { type: 'worktree', name: 'va' });
   } finally {
     await env.restore();
   }

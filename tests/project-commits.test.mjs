@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -36,6 +36,7 @@ function git(cwd, ...args) { return gitEnv(cwd, {}, ...args); }
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -225,7 +226,7 @@ test('GET /commits/:sha/diff returns 404 for an unknown commit (summary and ?pat
 });
 
 test('GET /commits returns empty history for a non-git project', async () => {
-  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
+  await registerLocalProject('plain', path.join(projectsRoot, 'plain'));
   const r = await api(baseUrl, 'GET', '/api/projects/plain/commits');
   assert.equal(r.status, 200);
   assert.equal(r.body.branch, null);
@@ -288,6 +289,7 @@ test('GET /commits/uncommitted/diff returns empty files on a clean tree', async 
 test('GET /commits/uncommitted/diff?path= returns 404 on a repo with no HEAD (no commits yet)', async () => {
   const repoPath = path.join(projectsRoot, 'fresh');
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject('fresh', repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await fs.writeFile(path.join(repoPath, 'a.txt'), 'hello\n');
 
@@ -309,10 +311,12 @@ test('GET /commits returns aheadCount when project has upstream tracking', async
   // Create a bare "remote" and clone it so we have an upstream.
   const bareDir = path.join(projectsRoot, 'demo.git');
   await fs.mkdir(bareDir, { recursive: true });
+  await registerLocalProject('demo.git', bareDir);
   await git(bareDir, 'init', '-q', '--bare', '-b', 'main');
 
   const repoPath = path.join(projectsRoot, 'demo');
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject('demo', repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -494,6 +498,7 @@ function d(author, committer) {
 async function makeTopoRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -579,6 +584,7 @@ test("the fixture's default git ordering really does violate topology", async ()
 async function makeNonPrefixWorktree() {
   const parentPath = path.join(projectsRoot, 'nonprefix');
   await fs.mkdir(parentPath, { recursive: true });
+  await registerLocalProject('nonprefix', parentPath);
   await git(parentPath, 'init', '-q', '-b', 'main');
   await git(parentPath, 'config', 'user.email', 'test@example.com');
   await git(parentPath, 'config', 'user.name', 'test');

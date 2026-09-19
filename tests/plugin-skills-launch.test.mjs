@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 
 // End-to-end wire: an enabled cc plugin declaring `claudePlugin` (a Claude Code
 // plugin root) must add `--plugin-dir <root>` to the claude subprocess argv at
@@ -32,6 +32,7 @@ afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 async function addSkillPlugin(projectsRoot, { rel = 'claude', withCcRoot = true } = {}) {
   const dir = path.join(projectsRoot, 'skillp');
   await fs.mkdir(dir, { recursive: true });
+  await registerLocalProject('skillp', dir);
   await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
     id: 'skill-plugin', name: 'Skill Plugin', version: '1.0.0', pluginApi: 1, claudePlugin: rel,
   }));

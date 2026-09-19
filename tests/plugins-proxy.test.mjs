@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { WebSocket } from 'ws';
-import { bootServer, waitFor } from './helpers.mjs';
+import { bootServer, waitFor, registerLocalProject } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
 
@@ -12,7 +12,9 @@ import { pidAlive } from '../src/plugins/ports.ts';
 // a project and enabled — every test drives the real /plugins proxy.
 async function setup() {
   const boot = await bootServer();
-  await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });
+  const dir = path.join(boot.projectsRoot, 'fakeplug');
+  await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true });
+  await registerLocalProject('fakeplug', dir);
   await boot.pluginHost.enable('fake-plugin');
   return boot;
 }

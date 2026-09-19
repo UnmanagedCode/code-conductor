@@ -22,6 +22,17 @@ export async function makePluginRoot() {
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = root;
 
+  // Every project is REGISTERED: a directory under the projects root no longer
+  // registers one by existing, so discovery — which walks listProjects — would
+  // see nothing without this.
+  async function register(name, dir) {
+    const { readProjectRecord, registerProject } = await import('../src/projects.ts');
+    if (await readProjectRecord(name) === null) {
+      await registerProject(name, { kind: 'local', path: dir });
+    }
+    return dir;
+  }
+
   async function addPluginProject(name, { manifest, withFixtureFiles = true } = {}) {
     const dir = path.join(root, name);
     await fs.mkdir(dir, { recursive: true });
@@ -29,13 +40,13 @@ export async function makePluginRoot() {
     if (manifest !== undefined) {
       await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest, null, 2));
     }
-    return dir;
+    return register(name, dir);
   }
 
   async function addProject(name) {
     const dir = path.join(root, name);
     await fs.mkdir(dir, { recursive: true });
-    return dir;
+    return register(name, dir);
   }
 
   async function restore() {

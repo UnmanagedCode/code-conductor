@@ -710,7 +710,7 @@ export function installHeader({
     projectChip.title = `session ${inst.sessionId ?? '?'}`;
     dom.instanceTitle.appendChild(projectChip);
     if (inst.worktree?.worktreeName) {
-      const wtShort = inst.worktree.worktreeName.replace(`${inst.project}_worktree_`, 'wt:');
+      const wtShort = `wt:${inst.worktree.worktreeName}`;
       dom.instanceTitle.appendChild(chip('ih-worktree',
         `${wtShort} (← ${inst.worktree.baseBranch})`));
     }

@@ -26,16 +26,20 @@
 //   - headerUpdate():              repaint the header after an optimistic local
 //                                  mirror (applySessionTitle). Lazy — the header
 //                                  handle is assigned after this install runs.
+//   - deleteProjectDom:            the delete-project dialog's elements. This
+//                                  module installs that dialog and keeps the
+//                                  HTTP call, so app.js wires one thing.
 //
 // Returns the action handles.
 
 import { apiFetch } from './http.js';
 import { send } from './ws.js';
+import { installDeleteProjectDialog } from './deleteProjectDialog.js';
 
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
   refreshProjects, refreshInstances, selectInstance,
-  sidebar, clearUnread, headerUpdate,
+  sidebar, clearUnread, headerUpdate, deleteProjectDom,
 }) {
   // Promote a live temp session into a regular one. The server flips the
   // temp flag, writes the resume-picker metadata, and broadcasts the
@@ -158,55 +162,41 @@ export function installSessionActions({
     }
   }
 
-  // Deleting a project means three different things, and the confirmation is
-  // the one moment the user can act on the difference:
-  //   in-root  — cc owns the directory and removes it;
-  //   adopted  — the `.external` symlink is unlinked, the user's directory untouched;
-  //   remote   — the record is cleared, the tree on the system untouched.
-  // The last two are UNREGISTER, and saying "rm -rf" for them would promise
-  // something about a checkout cc does not own.
-  async function deleteProject(project) {
+  // The sidebar delete action DEREGISTERS the project: its record goes, its
+  // tree stays unless the user ticks the opt-in in the dialog. The confirm
+  // lives in public/deleteProjectDialog.js — it needs a checkbox, which
+  // `window.prompt` cannot hold. The HTTP call and the active-instance
+  // bookkeeping stay here; the dialog owns only the wording and the tick.
+  function deleteProject(project) {
     const insts = getInstances().filter(i => i.project === project.name);
-    const wts = project.worktrees ?? [];
-    const remoteSystem = project.system && project.system !== 'local' ? project.system : null;
-    const unregisterOnly = !!remoteSystem || !!project.external;
-    // One system can serve many targets, so "on prod-box" would not say which
-    // machine is being left alone — the whole point of the sentence.
-    const where = remoteSystem
-      ? `${project.path} on ${project.remoteId ? `remote '${project.remoteId}' of ` : ''}system '${remoteSystem}'`
-      : project.path;
-    const summary = [
-      unregisterOnly ? `Unregister project '${project.name}'?` : `Delete project '${project.name}'?`,
-      `Path: ${where}`,
-      ``,
-      `This will:`,
-      `  • kill ${insts.length} running instance${insts.length === 1 ? '' : 's'}`,
-      unregisterOnly
-        ? `  • unregister ${wts.length} worktree${wts.length === 1 ? '' : 's'} (their directories and branches are left in place)`
-        : `  • remove ${wts.length} worktree${wts.length === 1 ? '' : 's'} (dir + branch)`,
-      unregisterOnly
-        ? `  • forget the project — ${where} is NOT touched`
-        : `  • rm -rf the project directory itself`,
-      ``,
-      `(Your ~/.claude/projects/ session history is left in place.)`,
-      `Type the project name to confirm:`,
-    ].join('\n');
-    const typed = window.prompt(summary, '');
-    if (typed !== project.name) {
-      if (typed !== null) alert(`Name mismatch — nothing deleted.`);
-      return;
-    }
-    try {
-      await apiFetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE' });
-      if (getActiveId() && insts.some(i => i.id === getActiveId())) {
-        setActiveId(null);
-      }
-      await refreshProjects();
-      await refreshInstances();
-    } catch (e) {
-      alert(`delete project failed: ${e.message}`);
-    }
+    // Installed on first use, not at install time: the dialog reads its
+    // elements out of the document, and most of this module's callers never
+    // reach the delete path.
+    deleteProjectDialog ??= installDeleteProjectDialog({
+      dom: deleteProjectDom, deleteProject: performProjectDelete,
+    });
+    deleteProjectDialog.open(project, { instanceCount: insts.length });
   }
+
+  // Handed to the dialog: resolves on success and THROWS on failure, so the
+  // dialog reopens with the server's reason inline. A worktree that is dirty,
+  // dirty-unknown or depended-on refuses the whole delete, and that refusal is
+  // the one the user has to read.
+  async function performProjectDelete({ name, deleteDirectory }) {
+    const insts = getInstances().filter(i => i.project === name);
+    await apiFetch(`/api/projects/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deleteDirectory }),
+    });
+    if (getActiveId() && insts.some(i => i.id === getActiveId())) {
+      setActiveId(null);
+    }
+    await refreshProjects();
+    await refreshInstances();
+  }
+
+  let deleteProjectDialog = null;
 
   // The sidebar × action archives a session (keeps its transcript) rather
   // than deleting it — it moves to Settings → Archived, where it can be

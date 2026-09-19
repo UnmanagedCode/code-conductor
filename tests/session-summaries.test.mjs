@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.ts';
@@ -461,6 +461,7 @@ test('a fast tier on a backend whose command does not exist fails the request WI
 test('findSessionLocation resolves a session under the hidden .conduct project', async () => {
   const conductPath = path.join(projectsRoot, '.conduct');
   await fs.mkdir(conductPath, { recursive: true });
+  await registerLocalProject('.conduct', conductPath);
   const sid = 'sid-conduct-locate';
   await plantJsonl(conductPath, sid, [
     { type: 'user', message: { role: 'user', content: 'hi' } },
@@ -473,6 +474,7 @@ test('findSessionLocation resolves a session under the hidden .conduct project',
 test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async () => {
   const conductPath = path.join(projectsRoot, '.conduct');
   await fs.mkdir(conductPath, { recursive: true });
+  await registerLocalProject('.conduct', conductPath);
   const sid = 'sid-conduct-summary';
   await plantJsonl(conductPath, sid, [
     { type: 'user', message: { role: 'user', content: 'hello' } },
@@ -499,6 +501,7 @@ test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async ()
 test('POST title for a .conduct session never hints "conduct" as the project', async () => {
   const conductPath = path.join(projectsRoot, '.conduct');
   await fs.mkdir(conductPath, { recursive: true });
+  await registerLocalProject('.conduct', conductPath);
   const sid = 'sid-conduct-title';
   await plantJsonl(conductPath, sid, [
     { type: 'user', message: { role: 'user', content: 'hello' } },

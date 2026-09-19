@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, registerLocalProject} from './helpers.mjs';
 import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../src/idleSubscriptions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,6 +67,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -242,7 +243,7 @@ test('project_read binary returns a base64 body block', async () => {
 test('project_diff diff mode → 2 blocks, head is a SHA, no sizeBytes; summary → 1 block', async () => {
   await makeRealRepo('demo');
   const wt = meta(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   await fs.writeFile(path.join(wtPath, 'new.txt'), 'fresh\n');
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
@@ -340,7 +341,7 @@ test('delete_worktree soft-refuses (ok:false + code) on dirty and attached, neve
     await callTool('kill_instance', { sessionId: spawn.sessionId });
 
     // Dirty: uncommitted change in the worktree.
-    await fs.writeFile(path.join(projectsRoot, wtName, 'dirty.txt'), 'uncommitted\n');
+    await fs.writeFile(path.join(projectsRoot, '.worktrees', 'demo', wtName, 'dirty.txt'), 'uncommitted\n');
     const dirty = meta(await callTool('delete_worktree', { project: 'demo', worktree: wtName }));
     assert.equal(dirty.ok, false);
     assert.equal(dirty.code, 'WORKTREE_DIRTY');

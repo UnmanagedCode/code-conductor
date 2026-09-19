@@ -746,8 +746,7 @@ export class ProviderSystem implements System, ShellHost {
 
   async unlink(p: string): Promise<void> {
     requireAbsolute('unlink', 'path', p);
-    // ONE directory entry, never followed and never recursed — the shape the
-    // `.external/<name>` record is deleted with.
+    // ONE directory entry, never followed and never recursed.
     await this.#deriveOk(`unlink '${p}'`, ['unlink', '--', p]);
   }
 

@@ -23,9 +23,12 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
+import { createWorktree } from '../src/worktrees.ts';
 import {
-  createProject, deleteProject, adoptProject, getProject, listProjects,
-  readProjectMeta, writeProjectMeta, resolveProjectDir, projectStoreDir, transcriptRoot } from '../src/projects.ts';
+  createProject, deleteProject, adoptProject, getProject, listProjects, encodeCwd,
+  readProjectRecord, registerProject, writeProjectMeta, resolveProjectDir, projectStoreDir,
+  transcriptRoot,
+} from '../src/projects.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, disposeSystemHandles, placementOf, projectPlacement,
 } from '../src/systems/registry.ts';
@@ -52,18 +55,19 @@ describe('remoteId in the project record', () => {
 
   // PINS: `remoteId` round-trips through the record, AND survives a later write
   // that is about something else entirely. writeProjectRecord merges over what
-  // readProjectMeta returns and drops empty fields, so a field the reader
-  // forgot would be silently DELETED by the next workspace change.
+  // the reader returns, so a location the reader forgot would be silently
+  // DELETED by the next workspace change — and with it gone, the project is
+  // UNREGISTERED.
   test('the record round-trips remoteId and survives an unrelated write', async () => {
     await createProject('app', { system: remote.id, remoteId: 'a', systemPath: path.join(rootA, 'app') });
-    assert.equal((await readRecord('app')).remoteId, 'a');
-    assert.equal((await readProjectMeta('app')).remoteId, 'a');
+    assert.equal((await readRecord('app')).location.remoteId, 'a');
+    assert.equal((await readProjectRecord('app')).location.remoteId, 'a');
 
     await writeProjectMeta('app', { workspace: 'CTF' });
     const after = await readRecord('app');
     assert.equal(after.workspace, 'CTF');
-    assert.equal(after.remoteId, 'a', 'an unrelated write must not drop the placement');
-    assert.equal(after.system, remote.id);
+    assert.equal(after.location.remoteId, 'a', 'an unrelated write must not drop the placement');
+    assert.equal(after.location.system, remote.id);
   });
 
   // PINS: absence of `remoteId` is the provider's own default target — the same
@@ -72,25 +76,25 @@ describe('remoteId in the project record', () => {
   test('a remote project with no remoteId records none', async () => {
     const bare = await bindRemoteSystem({ id: 'bare' });
     await createProject('plain', { system: bare.id, systemPath: path.join(bare.root, 'plain') });
-    assert.equal('remoteId' in (await readRecord('plain')), false);
+    assert.equal((await readRecord('plain')).location.remoteId, null);
     assert.equal((await projectPlacement('plain')).remoteId, null);
   });
 
-  // PINS: a LOCAL placement forces remoteId null, whatever the record says —
-  // cc's own machine is one machine, so a target named on it names nothing.
+  // PINS: a LOCAL location forces remoteId null — cc's own machine is one
+  // machine, so a target named on it names nothing.
   test('placementOf forces remoteId null for a local project', () => {
     assert.deepEqual(
-      placementOf('p', { system: LOCAL_SYSTEM_ID, remoteId: 'a', systemPath: '/app' }),
-      { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null },
+      placementOf('p', { kind: 'local', path: '/app' }),
+      { system: LOCAL_SYSTEM_ID, remoteId: null, path: '/app' },
     );
   });
 
-  // PINS: the `.conduct` pin is UNCONDITIONAL — it returns before the record is
-  // consulted, so a remoteId in its record is ignored rather than honoured.
+  // PINS: the `.conduct` pin is UNCONDITIONAL on the MACHINE — a record naming
+  // a system and a target for it is ignored rather than honoured.
   test('.conduct stays local with remoteId null even if its record names one', () => {
     assert.deepEqual(
-      placementOf(CONDUCT_PROJECT_NAME, { system: 'prod-box', remoteId: 'a', systemPath: '/app' }),
-      { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null },
+      placementOf(CONDUCT_PROJECT_NAME, { kind: 'remote', system: 'prod-box', remoteId: 'a', path: '/app' }),
+      { system: LOCAL_SYSTEM_ID, remoteId: null, path: '/app' },
     );
   });
 
@@ -185,6 +189,108 @@ describe('remoteId in the project record', () => {
     assert.notEqual(
       transcriptRoot({ system: remote.id, remoteId: 'a', cwd: shared }),
       transcriptRoot({ system: remote.id, remoteId: 'b', cwd: shared }));
+  });
+
+  // ── The candidate's own target ───────────────────────────────────────
+  //
+  // A transcript directory is keyed on (system, remoteId, cwd), and
+  // `remoteConfigDirName` hashes `${system}\0${remoteId ?? ''}` — so a
+  // candidate built WITHOUT its remoteId is not merely under-specified, it
+  // silently reads as the provider's DEFAULT target. Both directions below are
+  // needed: one alone is satisfied by a guard that never fires, the other by a
+  // guard that always does.
+  //
+  // Both use an ALIASING pair (`h_h` / `h-h`), because the same path twice on
+  // one target is refused earlier, as TARGET_ALREADY_MANAGED.
+
+  // PINS the false-positive direction: a candidate on target 'a' must NOT be
+  // refused by a holder on the DEFAULT target, whose transcript directory it
+  // does not share.
+  //
+  // The holder is registered directly rather than adopted: this provider
+  // advertises remotes and so refuses a request naming none. That is legitimate
+  // rather than a shortcut — the guard reads records and contacts no system, so
+  // a place cc could not reach through the provider is still a registered one.
+  test('a candidate on a named target does not collide with a holder on the DEFAULT target', async () => {
+    const held = await seedRepo(path.join(sandbox, 'h_h'));
+    await registerProject('holder', { kind: 'remote', system: remote.id, remoteId: null, path: held });
+
+    const colliding = await seedRepo(path.join(sandbox, 'h-h'));
+    assert.notEqual(colliding, held, 'premise: two different directories');
+    assert.equal(encodeCwd(colliding), encodeCwd(held),
+      'premise: they encode alike, so only the TARGET can keep them apart');
+
+    const r = await adoptProject('cand', colliding, { system: remote.id, remoteId: 'a' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal((await readRecord('cand')).location.remoteId, 'a');
+  });
+
+  // PINS the false-negative direction, and the same clause from the other side:
+  // on ONE target the aliasing pair IS one transcript directory, and the refusal
+  // must fire. A candidate that dropped its remoteId would read as the default
+  // target and sail past this holder.
+  test('two places on ONE named target collide even when only their spelling differs', async () => {
+    const held = await seedRepo(path.join(sandbox, 'k_k'));
+    assert.equal((await adoptProject('holder', held, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    const colliding = await seedRepo(path.join(sandbox, 'k-k'));
+    assert.equal(encodeCwd(colliding), encodeCwd(held), 'premise: they encode alike');
+
+    const r = await adoptProject('cand', colliding, { system: remote.id, remoteId: 'a' });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(r.reason, /'holder'/);
+    assert.equal(await readRecord('cand'), null, 'and the refused adopt wrote nothing');
+    // THE WHERE-CLAUSE IS SILENT, and cannot be otherwise for a real hit: a
+    // collision means one transcript root, and a root names one (system,
+    // remoteId) — so the two places are always on the same target here.
+    assert.ok(!/ on system | on remote /.test(r.reason),
+      `both places are on one target, so none must be named: ${r.reason}`);
+  });
+
+  // PINS THE SAME CLAUSE AT THE WORKTREE SITE. `createWorktree` builds its own
+  // candidate, and takes the target off the project's System handle rather than
+  // re-reading the record — so this is a second place a dropped coordinate
+  // would silently admit a collision.
+  test('a worktree on a named target collides with a holder on that target', async () => {
+    const tree = await seedRepo(path.join(sandbox, 'beta'));
+    assert.equal((await adoptProject('beta', tree, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    // A remote project's worktrees sit at `dirname(path)/.worktrees/<project>/<key>`,
+    // and the sibling below encodes to the same name.
+    const wtPath = path.join(sandbox, '.worktrees', 'beta', 'w1');
+    const taken = await seedRepo(path.join(sandbox, '-worktrees-beta-w1'));
+    assert.equal(encodeCwd(taken), encodeCwd(wtPath), 'premise: they encode alike');
+    assert.equal((await adoptProject('holder', taken, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    await assert.rejects(() => createWorktree('beta', { name: 'w1' }), (e) => {
+      assert.equal(e.statusCode, 409);
+      assert.equal(e.code, 'TRANSCRIPT_DIR_COLLISION');
+      assert.match(e.message, /'holder'/);
+      return true;
+    });
+  });
+
+  // PINS THE SAME CLAUSE ON THE RELOCATE ARM, the one candidate site with no
+  // counterpart on the creation paths: the name is already held, by the record
+  // being repointed, so the guard is called explicitly there.
+  test("onStaleRecord:'relocate' on a named target is refused by a holder on it", async () => {
+    const gone = await seedRepo(path.join(sandbox, 'r_gone'));
+    assert.equal((await adoptProject('app', gone, { system: remote.id, remoteId: 'a' })).ok, true);
+    await fs.rm(gone, { recursive: true, force: true });
+
+    const held = await seedRepo(path.join(sandbox, 'g_g'));
+    assert.equal((await adoptProject('holder', held, { system: remote.id, remoteId: 'a' })).ok, true);
+    const colliding = await seedRepo(path.join(sandbox, 'g-g'));
+    assert.equal(encodeCwd(colliding), encodeCwd(held), 'premise: they encode alike');
+
+    const r = await adoptProject('app', colliding, {
+      system: remote.id, remoteId: 'a', onStaleRecord: 'relocate',
+    });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(r.reason, /'holder'/);
+    assert.equal((await readRecord('app')).location.path, gone, 'the refused relocation wrote nothing');
   });
 
   // PINS: the mechanism the "a worktree can only re-derive to the target it was

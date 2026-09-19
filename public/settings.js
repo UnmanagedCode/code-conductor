@@ -67,6 +67,7 @@ export function installSettings({
   const syIdEl = document.getElementById('sy-id');
   const syLabelEl = document.getElementById('sy-label');
   const syLaunchEl = document.getElementById('sy-launch');
+  const syWorktreesDirEl = document.getElementById('sy-worktrees-dir');
   const sySaveEl = document.getElementById('sy-save');
   const syCancelEl = document.getElementById('sy-cancel');
   const syFormLegendEl = document.getElementById('sy-form-legend');
@@ -630,6 +631,14 @@ export function installSettings({
           ? sys.launch.join(' ')
           : 'no provider command — projects on this system cannot be reached';
         li.appendChild(launch);
+        // Where worktrees of this system's projects land. Shown only when set:
+        // absence is the per-project default and says nothing a reader acts on.
+        if (typeof sys.worktreesDir === 'string' && sys.worktreesDir) {
+          const wd = document.createElement('div');
+          wd.className = 'sy-row-launch';
+          wd.textContent = `worktrees: ${sys.worktreesDir}`;
+          li.appendChild(wd);
+        }
       }
 
       // What still holds the row. Shown up front so the 409 is a surprise to
@@ -657,6 +666,7 @@ export function installSettings({
     if (syIdEl) { syIdEl.value = ''; syIdEl.disabled = false; }
     if (syLabelEl) { syLabelEl.value = ''; syLabelEl.disabled = false; }
     if (syLaunchEl) syLaunchEl.value = '';
+    if (syWorktreesDirEl) syWorktreesDirEl.value = '';
     if (sySaveEl) sySaveEl.textContent = 'Add';
     if (syCancelEl) syCancelEl.hidden = true;
     if (syFormLegendEl) syFormLegendEl.textContent = 'Add a system';
@@ -668,6 +678,7 @@ export function installSettings({
     if (syIdEl) { syIdEl.value = sys.id; syIdEl.disabled = true; }
     if (syLabelEl) { syLabelEl.value = sys.label; syLabelEl.disabled = false; }
     if (syLaunchEl) syLaunchEl.value = Array.isArray(sys.launch) ? sys.launch.join(' ') : '';
+    if (syWorktreesDirEl) syWorktreesDirEl.value = typeof sys.worktreesDir === 'string' ? sys.worktreesDir : '';
     if (sySaveEl) sySaveEl.textContent = 'Save';
     if (syCancelEl) syCancelEl.hidden = false;
     if (syFormLegendEl) syFormLegendEl.textContent = `Edit ${sys.label}`;
@@ -683,18 +694,21 @@ export function installSettings({
       // `null` — clear the command — and never `[]`, which the server refuses.
       const parts = (syLaunchEl?.value ?? '').trim().split(/\s+/).filter(Boolean);
       const launch = parts.length ? parts : null;
+      // Empty clears it — the per-project default (a `.worktrees` beside the
+      // tree) is what absence means, not an error.
+      const worktreesDir = (syWorktreesDirEl?.value ?? '').trim() || null;
       // Editing is only offered for user rows, so the id is fixed; the label and
       // the provider command are what can move.
       const r = syEditingId
         ? await fetch(`/api/settings/systems/${encodeURIComponent(syEditingId)}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ label, launch }),
+            body: JSON.stringify({ label, launch, worktreesDir }),
           })
         : await fetch('/api/settings/systems', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ id: syIdEl?.value?.trim(), label, launch }),
+            body: JSON.stringify({ id: syIdEl?.value?.trim(), label, launch, worktreesDir }),
           });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);

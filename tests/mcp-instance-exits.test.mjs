@@ -17,7 +17,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { conductProjectPath } from '../src/conduct.ts';
+import { conductProjectPath, ensureConductProject } from '../src/conduct.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -231,13 +231,14 @@ test('the project filter is validated, and .conduct stays legal', async () => {
 });
 
 test('a conductor session is listed with and WITHOUT the filter', async () => {
-  // listProjects skips dotdirs, so `.conduct` reaches the unfiltered scan only
-  // because listSessions appends it. Without that, a conductor whose own prior
+  // listProjects skips `.conduct` unless a caller opts in, so it reaches the
+  // unfiltered scan only because listSessions does. Without that, a conductor whose own prior
   // session ended (restart, /clear, crash) calls list_sessions() to find
   // something to resume and sees every project's stopped sessions except its
   // own. Asserting on a REAL sessionId, not a count: the previous version of
   // this test matched a bare count regex, which any behaviour satisfies.
   const sid = '33333333-3333-4333-8333-333333333333';
+  await ensureConductProject();
   const dir = path.join(claudeProjectsRoot, encodeCwd(conductProjectPath()));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');

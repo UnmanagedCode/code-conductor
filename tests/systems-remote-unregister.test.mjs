@@ -48,6 +48,10 @@ async function writeRecord(name, record) {
   await fs.writeFile(path.join(projectStoreDir(name), 'project.json'), JSON.stringify(record, null, 2) + '\n');
 }
 
+// Where a project lives is ONE stored field.
+const remoteRecord = (system, p, remoteId = null) =>
+  ({ location: { kind: 'remote', system, remoteId, path: p } });
+
 describe('a project on a system cc cannot reach can still be unregistered', () => {
   let ctx, baseUrl, home, remote;
   before(async () => { ctx = await bootServer(); ({ baseUrl } = ctx); });
@@ -77,7 +81,8 @@ describe('a project on a system cc cannot reach can still be unregistered', () =
     const r = await api(baseUrl, 'DELETE', '/api/projects/app');
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.system, remote.id);
-    assert.equal(r.body.unregisteredOnly, true);
+    assert.equal(r.body.directoryDeleted, false,
+      'nothing was removed — cc owns no directory on another machine');
     assertTreeUnchanged(assert, before, await snapshotTree(tree), 'the tree on the system is untouched');
     assert.equal(await exists(projectStoreDir('app')), false, 'the record is gone');
     assert.deepEqual((await api(baseUrl, 'GET', '/api/projects')).body.map(p => p.name), []);
@@ -102,36 +107,36 @@ describe('a project on a system cc cannot reach can still be unregistered', () =
   // the harshest unreachable state, and the one a removed system would leave
   // behind if removal ever stopped refusing.
   test('DELETE works when the system is not even in the registry', async () => {
-    await writeRecord('ghosted', { system: 'ghostbox', systemPath: '/app' });
+    await writeRecord('ghosted', remoteRecord('ghostbox', '/app'));
     const r = await api(baseUrl, 'DELETE', '/api/projects/ghosted');
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.system, 'ghostbox');
     assert.equal(await exists(projectStoreDir('ghosted')), false);
   });
 
-  // PINS: a record naming a system with NO systemPath — which cc never writes,
-  // so it is a half-written or hand-edited one — is still deletable. Deleting it
-  // IS the repair, so this is the one path that must not refuse it.
-  test('DELETE works on a record with a system and no systemPath', async () => {
-    await writeRecord('broken', { system: remote.id });
+  // PINS: a record cc cannot PARSE — which cc never writes, so it is a
+  // half-written or hand-edited one — is still deletable. Deleting it IS the
+  // repair for exactly that state, so this is the one path that must not refuse
+  // it, and the reader that throws everywhere else must not throw here.
+  test('DELETE works on a record cc cannot parse', async () => {
+    await writeRecord('broken', { system: remote.id });   // no `location` at all
     const r = await api(baseUrl, 'DELETE', '/api/projects/broken');
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.equal(r.body.system, remote.id);
     assert.equal(await exists(projectStoreDir('broken')), false);
   });
 
-  // PINS P2's degraded-listing contract for that same record: an unresolvable
-  // row STAYS VISIBLE and says why. Invisible AND undeletable is how it pinned
-  // the system row at 409 with nothing on any page to explain it.
-  test('a record with no systemPath is still listed, carrying its reason', async () => {
+  // PINS the degraded-listing contract for that same record: an unparseable row
+  // STAYS VISIBLE and says why. Invisible AND undeletable is how it pinned the
+  // system row at 409 with nothing on any page to explain it.
+  test('an unparseable record is still listed, carrying its reason', async () => {
     await writeRecord('broken', { system: remote.id });
     const r = await api(baseUrl, 'GET', '/api/projects');
     assert.equal(r.status, 200);
     const row = r.body.find(p => p.name === 'broken');
     assert.ok(row, `the row must not disappear; got ${JSON.stringify(r.body.map(p => p.name))}`);
-    assert.equal(row.system, remote.id);
-    assert.match(row.systemUnreachable, /systemPath/,
-      'the row says WHY it could not be resolved, so the page is not silently wrong');
+    assert.equal(row.path, '', 'it carries no path, because nothing could be read off it');
+    assert.match(row.degraded, /location/,
+      'the row says WHY it could not be read, so the page is not silently wrong');
     assert.equal('isGitRepo' in row, false, 'and invents no measured fact');
   });
 
@@ -142,7 +147,7 @@ describe('a project on a system cc cannot reach can still be unregistered', () =
     const r = await callTool(baseUrl, 'list_projects', {});
     const text = r.content.map(c => c.text).join('\n');
     assert.match(text, /▸ broken\b/, text);
-    assert.match(text, /! system unreachable/);
+    assert.match(text, /! unreadable project record/);
     assert.ok(!text.includes('! not a git repo'));
   });
 
@@ -177,17 +182,21 @@ describe('a held name on an unreachable system is a REFUSAL, never a throw', () 
 
   // PINS: adopt's documented contract — "every refusal is RETURNED with a code,
   // never thrown". A purely LOCAL adopt whose NAME happens to be held by a
-  // project on a down system must answer PROJECT_EXISTS, not throw about a
-  // system the caller never mentioned.
-  test('a local adopt under a held remote name returns PROJECT_EXISTS', async () => {
+  // project on a down system must ANSWER, not throw about a system the caller
+  // never mentioned. The code is the UNDECIDABLE one: cc could not ask whether
+  // the held path is still there, so it cannot tell a moved project from a
+  // machine that is merely off — and offering relocation would repoint a
+  // perfectly good project because a box was down.
+  test('a local adopt under a held remote name returns PROJECT_EXISTS_UNRESOLVABLE', async () => {
     await strandedProject('app');
     const localRepo = await seedRepo(path.join(home, 'mine'));
     const r = await api(baseUrl, 'POST', '/api/projects/external', { name: 'app', path: localRepo });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.ok, false);
-    assert.equal(r.body.code, 'PROJECT_EXISTS',
-      'the name is held; the repair is to unregister it, not to hunt a system');
-    assert.match(r.body.reason, new RegExp(remote.id), 'and the reason names where it is held');
+    assert.equal(r.body.code, 'PROJECT_EXISTS_UNRESOLVABLE',
+      'the name is held and cc could not tell whether it still resolves');
+    assert.ok(r.body.reason.includes(path.join(remote.root, 'app')),
+      'and the reason names where it is held');
   });
 
   // PINS the same on the MCP face, where the returned-not-thrown contract is

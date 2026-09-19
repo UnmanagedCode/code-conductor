@@ -213,6 +213,61 @@ describe('a session on a project on a system', () => {
 
 
 
+  // PINS: the ARCHIVED listing composes a remote project's places with the
+  // project's own machine coordinate. `listArchivedGroupedByProject` reads both
+  // halves through `placeOf(proj, …)`, so a coordinate taken from cc's own
+  // machine would look under the local transcript root, find nothing, and drop
+  // the group entirely — the row would simply not be in Settings → Archived,
+  // with no error anywhere. Both halves are asserted, because they are two
+  // independent `placeOf` calls.
+  test('T14: an archived session of a REMOTE project and its worktree group under it', async () => {
+    const w = await wideSystem(path.join('nest', 'app'));
+    assert.equal((await adoptProject('app', w.tree, { system: w.id })).ok, true);
+    const wt = await createWorktree('app', { name: 'wt1' });
+
+    const root = await retiredSession({ project: 'app' });
+    const inWt = await retiredSession({ project: 'app', worktree: wt.worktreeName });
+    const { markArchived } = await import('../src/archivedSessions.ts');
+    await markArchived(root.backingSessionId);
+    await markArchived(inWt.backingSessionId);
+
+    const r = await api(baseUrl, 'GET', '/api/archived');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const group = r.body.groups.find(g => g.project === 'app');
+    assert.ok(group, `the remote project's archived sessions must group under it: ${JSON.stringify(r.body)}`);
+    const ids = group.sessions.map(x => x.sessionId);
+    // The rows carry the PUBLIC session id, which is what a reader clicks.
+    assert.ok(ids.includes(root.sessionId), `the project-root half: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes(inWt.sessionId), `and the worktree half: ${JSON.stringify(ids)}`);
+    assert.equal(group.sessions.find(x => x.sessionId === inWt.sessionId).worktreeName,
+      wt.worktreeName);
+  });
+
+  // PINS: the per-WORKTREE session summary on a remote project. Both listing
+  // faces compose it as `summarizeSessions(placeOf(p, w.worktreePath))`, and a
+  // wrong coordinate reports `count: 0` rather than failing — the sidebar simply
+  // never offers the worktree's "Sessions (N)" subnode, and `list_projects`
+  // tells a conductor the worktree is idle. Asserted on BOTH faces: they compose
+  // the place separately.
+  test('T15: a remote worktree\'s session count is measured at the remote root', async () => {
+    const w = await wideSystem(path.join('nest', 'app'));
+    assert.equal((await adoptProject('app', w.tree, { system: w.id })).ok, true);
+    const wt = await createWorktree('app', { name: 'wt1' });
+    const s = await retiredSession({ project: 'app', worktree: wt.worktreeName });
+    assert.equal(s.cwd, wt.worktreePath, 'premise: the session ran at the worktree on the system');
+
+    const rest = await api(baseUrl, 'GET', '/api/projects');
+    const row = rest.body.find(p => p.name === 'app');
+    const wtRow = row.worktrees.find(x => x.worktreeName === wt.worktreeName);
+    assert.equal(wtRow.sessions.count, 1,
+      `REST: the worktree's sessions must be found at its own root: ${JSON.stringify(wtRow.sessions)}`);
+
+    const mcpBody = await callTool('list_projects', {});
+    const text = mcpBody.result.content.map(c => c.text).join('\n');
+    assert.match(text, new RegExp(`${wt.worktreeName}[^\\n]*sessions 1`),
+      `MCP: the worktree row must report its session: ${text}`);
+  });
+
   // ── T6 ──────────────────────────────────────────────────────────────
   // PINS: re-placing a project onto a DIFFERENT placement STRANDS the sessions
   // it accrued under the old one. A project adopted locally at P, which ran
@@ -391,7 +446,7 @@ describe('a session on a project on a system', () => {
     // (c) defence in depth: a record naming a system with NO registry row.
     const dir = projectStoreDir('beta');
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify({ system: 'prod-box', systemPath: '/app' }));
+    await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify({ location: { kind: 'remote', system: 'prod-box', remoteId: null, path: '/app' } }));
     // The record's OWN systemPath is the cwd now — no local image to compose,
     // and no registry row needed to derive it.
     const cwd = '/app';

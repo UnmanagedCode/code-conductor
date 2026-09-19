@@ -23,10 +23,13 @@ import {
 import { orchStoreRoot, projectStoreDir, createProject } from '../src/projects.ts';
 import { MANAGED_SYSTEMS, MANAGED_SYSTEM_IDS, LOCAL_SYSTEM_ID, parseProviderLaunch } from '../src/systems/registry.ts';
 
-async function writeRecord(name, record) {
+// Where a project lives is ONE stored field, so a fixture that places a project
+// on a system writes its `location`.
+async function writeRemoteRecord(name, { system, remoteId = null, path: p }) {
   const dir = projectStoreDir(name);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(record, null, 2) + '\n');
+  await fs.writeFile(path.join(dir, 'project.json'),
+    JSON.stringify({ location: { kind: 'remote', system, remoteId, path: p } }, null, 2) + '\n');
 }
 
 const settingsFile = () => path.join(orchStoreRoot(), 'settings.json');
@@ -135,9 +138,9 @@ describe('the systems namespace', () => {
   test('removal is REFUSED 409 while a project record names the system', async () => {
     await addSystem({ id: 'prod-box', label: 'Prod box' });
     await createProject('shipping');
-    await writeRecord('shipping', { system: 'prod-box', systemPath: '/app' });
+    await writeRemoteRecord('shipping', { system: 'prod-box', path: '/app' });
     await createProject('billing');
-    await writeRecord('billing', { system: 'prod-box', systemPath: '/srv/billing' });
+    await writeRemoteRecord('billing', { system: 'prod-box', path: '/srv/billing' });
 
     await assert.rejects(() => removeSystem('prod-box'), (e) => {
       assert.equal(e.statusCode, 409);
@@ -157,10 +160,13 @@ describe('the systems namespace', () => {
 
   test('a stale store directory cannot hold a system hostage', async () => {
     await addSystem({ id: 'prod-box', label: 'Prod box' });
-    // The store keeps directories for projects that no longer exist. One with a
-    // record that names NO system is not a reference — the check keys on the
-    // positive marker, which is exactly why no backfill may stamp `local`.
-    await writeRecord('long-gone', { workspace: 'Old' });
+    // The store keeps directories for projects that no longer exist. A record
+    // whose LOCATION is local is not a reference, and a store directory with no
+    // record at all is not a project — the check keys on the positive marker.
+    const dir = projectStoreDir('long-gone');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(
+      { workspace: 'Old', location: { kind: 'local', path: '/gone' } }, null, 2) + '\n');
     await fs.mkdir(projectStoreDir('also-gone'), { recursive: true });
     assert.equal(await removeSystem('prod-box'), true);
   });
@@ -181,7 +187,7 @@ describe('systems settings routes', () => {
 
     await api(baseUrl, 'POST', '/api/settings/systems', { id: 'prod-box', label: 'Prod box' });
     await createProject('shipping');
-    await writeRecord('shipping', { system: 'prod-box', systemPath: '/app' });
+    await writeRemoteRecord('shipping', { system: 'prod-box', path: '/app' });
     const r = await api(baseUrl, 'GET', '/api/settings/systems');
     // Each referent names its TARGET as well: on a system serving many, the
     // project name alone does not say which one holds the row open.
@@ -210,7 +216,7 @@ describe('systems settings routes', () => {
     assert.equal((await api(baseUrl, 'PATCH', '/api/settings/systems/ghost', { label: 'x' })).status, 404);
 
     await createProject('shipping');
-    await writeRecord('shipping', { system: 'prod-box', systemPath: '/app' });
+    await writeRemoteRecord('shipping', { system: 'prod-box', path: '/app' });
     const refused = await api(baseUrl, 'DELETE', '/api/settings/systems/prod-box');
     assert.equal(refused.status, 409);
     assert.match(refused.body.error, /shipping/);

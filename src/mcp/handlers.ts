@@ -33,7 +33,7 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
-  listDependentWorktrees, dependentsRefusal, resolveWorktreeName, resolveProjectCwd,
+  listDependentWorktrees, dependentsRefusal, resolveProjectCwd,
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
@@ -393,7 +393,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       isGitRepo: projIsGitRepo,
       unbornHead: unborn,
       worktrees: worktreesWithSessions,
-      sessions: await summarizeSessions(placeOf(p, p.systemPath ?? p.path)).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+      sessions: await summarizeSessions(placeOf(p, p.path)).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
   }));
   return textResult(renderProjects(enriched));
@@ -425,7 +425,15 @@ export function compareInstanceRows(a: Record<string, unknown>, b: Record<string
 // worktrees costs a `git worktree list` per project — doing it a second time to
 // look the metadata back up was the single most expensive thing in an
 // unfiltered scan.
-async function sessionCwdsFor(p: { name: string; path: string }) {
+async function sessionCwdsFor(p: { name: string; path: string; degraded?: string }) {
+  // A DEGRADED ROW CONTRIBUTES NO TARGET. Its record could not be parsed, so it
+  // carries an empty path and there is nothing to scan — and the placement read
+  // below is exactly the read that threw. The unfiltered scope deliberately
+  // includes these rows (the listing contract keeps them visible so they stay
+  // deletable), and this scan is fanned out through one Promise.all, so a throw
+  // here rejects the whole batch and one unparseable file takes down the fleet
+  // view for every other project.
+  if (p.degraded) return [];
   const wts = await fsListWorktrees(p.name).catch(() => []);
   // ONE placement read per project, reused for its worktrees: they are all on
   // the same machine by construction, and the coordinate is what tells this
@@ -506,22 +514,17 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   // sessions exist for a cwd, and which of them are archived"
   // (listSessionsForCwdWithCounts, whose row half is also behind
   // GET /projects/:name/sessions).
-  // fsListProjects skips dotdirs, so the unfiltered scope must add `.conduct`
-  // back explicitly. Without it a conductor looking for its own prior session to
-  // resume — after a restart, a /clear, or a crash — gets every other project's
-  // stopped sessions and none of its own.
-  const scope = target ? [target] : [...await fsListProjects(), conductTarget];
+  // The unfiltered scope opts `.conduct` back in. Without it a conductor looking
+  // for its own prior session to resume — after a restart, a /clear, or a crash
+  // — gets every other project's stopped sessions and none of its own.
+  const scope = target ? [target] : await fsListProjects({ includeConduct: true });
   let targets = (await Promise.all(scope.map(sessionCwdsFor))).flat();
   if (worktreeArg !== null) {
-    // The targets' names came straight out of listWorktrees, so resolving
-    // against them costs nothing extra and lets the bare slug filter too.
-    const wtName = resolveWorktreeName(
-      project as string, worktreeArg, targets.map(t => t.worktree).filter((n): n is string => n !== null),
-    );
-    // Guard the null: the project-root target carries `worktree: null`, so an
-    // unresolved name would otherwise filter down to the root and silently
-    // report the project's own sessions as the worktree's.
-    targets = wtName === null ? [] : targets.filter(t => t.worktree === wtName);
+    // EXACT match on the registered key — there is one spelling per worktree.
+    // The project-root target carries `worktree: null`, so an unmatched name
+    // must filter to nothing rather than fall through to the root and report
+    // the project's own sessions as the worktree's.
+    targets = targets.filter(t => t.worktree === worktreeArg);
     if (!targets.length) throw new Error(`worktree '${worktreeArg}' not found under project '${project}'`);
   }
 
@@ -2018,10 +2021,10 @@ export async function createProject({ name, conventions = [], system, remoteId, 
   return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 
-export async function adoptProject({ name, path: targetPath, system, remoteId }: {
-  name: string; path: string; system?: string; remoteId?: string;
+export async function adoptProject({ name, path: targetPath, system, remoteId, onStaleRecord }: {
+  name: string; path: string; system?: string; remoteId?: string; onStaleRecord?: string;
 }) {
-  return fsAdoptProject(name, targetPath, { system, remoteId });
+  return fsAdoptProject(name, targetPath, { system, remoteId, onStaleRecord });
 }
 
 // Both listings return an OBJECT, not the bare array, so the catalog's

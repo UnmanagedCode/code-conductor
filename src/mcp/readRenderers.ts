@@ -110,18 +110,18 @@ const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'systemUnreachable', default: null, label: '! system unreachable' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
   { key: 'unbornHead', default: false, label: '! no commits yet — a worktree needs a first commit' },
-  // Adopted from outside the projects root. The real target path is already the
-  // `▸ <name>  <path>` header, so this only has to say WHICH kind it is.
-  { key: 'external', default: false, label: 'external' },
-  // The System the tree lives on. DEVIANT for the same reason `external` is:
-  // `local` is where every project is unless its record says otherwise, so the
-  // common listing stays short and a project on another machine says so — with
-  // the path on that machine, which the `▸` header does not carry.
+  // The project's RECORD could not be parsed, so its path is absent and nothing
+  // below it was measured. Leads with `!` for the same reason
+  // `systemUnreachable` does: it is the reason the rest is missing.
+  { key: 'degraded', default: null, label: '! unreadable project record' },
+  // The System the tree lives on. DEVIANT because `local` is where every
+  // project is unless its record says otherwise, so the common listing stays
+  // short and a project on another machine says so. Its path is the
+  // `▸ <name>  <path>` header — one path field, whichever machine it is on.
   { key: 'system', default: 'local', label: 'system' },
   // WHICH TARGET of that system. Deviant on the same footing: absence is the
   // provider's own target, so only a project that names one says so.
   { key: 'remoteId', default: null, label: 'remoteId' },
-  { key: 'systemPath', default: null, label: 'systemPath' },
 ];
 
 export function renderProjects(projects: unknown): string {

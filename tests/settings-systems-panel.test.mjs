@@ -169,7 +169,7 @@ test('the add form POSTs id + label + provider command, then resets to add mode'
   assert.equal(calls[0].url, '/api/settings/systems');
   // `launch: null` — not an omitted key and not `[]`: a row added with no
   // provider command is registration-only, which is legal.
-  assert.deepEqual(calls[0].body, { id: 'staging-box', label: 'Staging', launch: null });
+  assert.deepEqual(calls[0].body, { id: 'staging-box', label: 'Staging', launch: null, worktreesDir: null });
   assert.equal($('sy-id').value, '');
   assert.equal($('sy-label').value, '');
   assert.equal($('sy-save').textContent, 'Add');
@@ -215,7 +215,7 @@ test('editing a user row PATCHes label + provider command; the id is fixed', asy
   // The provider command travels with the edit, unchanged: an omitted `launch`
   // would be indistinguishable from clearing it, and a relabel must not silently
   // strip the command that makes the system reachable.
-  assert.deepEqual(calls[0].body, { label: 'Production', launch: ['ssh', 'prod', 'cc-provider'] });
+  assert.deepEqual(calls[0].body, { label: 'Production', launch: ['ssh', 'prod', 'cc-provider'], worktreesDir: null });
   assert.equal($('sy-save').textContent, 'Add', 'back to add mode after a successful save');
 });
 
@@ -308,7 +308,7 @@ test('the add form sends the provider command as argv', async () => {
   await tick();
 
   assert.deepEqual(calls[0].body, {
-    id: 'staging-box', label: 'Staging',
+    id: 'staging-box', label: 'Staging', worktreesDir: null,
     launch: ['docker', 'exec', '-i', 'ctr', 'cc-provider'],
   });
 });
@@ -329,7 +329,7 @@ test('an empty provider command clears it rather than sending an empty argv', as
   await tick();
 
   assert.equal(calls[0].method, 'PATCH');
-  assert.deepEqual(calls[0].body, { label: 'Prod box', launch: null });
+  assert.deepEqual(calls[0].body, { label: 'Prod box', launch: null, worktreesDir: null });
 });
 
 // PINS: the registration-time refusal reaches the user VERBATIM on the form.

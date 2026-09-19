@@ -249,6 +249,7 @@
                 <input id="sy-id" type="text" placeholder="id (e.g. prod-box)" autocomplete="off" />
                 <input id="sy-label" type="text" placeholder="Label (e.g. Prod box)" autocomplete="off" />
                 <input id="sy-launch" type="text" placeholder="Provider command (e.g. docker exec -i ctr cc-provider)" autocomplete="off" />
+                <input id="sy-worktrees-dir" type="text" placeholder="Worktrees dir (absolute, optional — default: beside each project)" autocomplete="off" />
                 <div class="sy-form-actions">
                   <button type="button" id="sy-save" class="btn">Add</button>
                   <button type="button" id="sy-cancel" class="btn" hidden>Cancel</button>
@@ -591,6 +592,24 @@
         <button id="gd-delete" type="button" class="gd-delete" hidden>Delete workspace</button>
         <button value="cancel" formnovalidate>Cancel</button>
         <button id="gd-save" value="save">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="delete-project-dialog">
+    <form method="dialog">
+      <h3 id="dpd-title">Delete project</h3>
+      <p id="dpd-summary" class="hint"></p>
+      <ul id="dpd-effects"></ul>
+      <label id="dpd-dir-row" class="dpd-dir-row">
+        <input id="dpd-delete-dir" type="checkbox" />
+        <span id="dpd-dir-label"></span>
+      </label>
+      <label>Type the project name to confirm <input id="dpd-confirm" autocomplete="off" /></label>
+      <p class="error" id="dpd-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="dpd-submit" value="delete">Delete</button>
       </menu>
     </form>
   </dialog>
