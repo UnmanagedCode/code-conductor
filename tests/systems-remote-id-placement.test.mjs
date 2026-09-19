@@ -24,8 +24,9 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import {
-  createProject, deleteProject, adoptProject, getProject, listProjects,
-  readProjectRecord, writeProjectMeta, resolveProjectDir, projectStoreDir, transcriptRoot,
+  createProject, deleteProject, adoptProject, getProject, listProjects, encodeCwd,
+  readProjectRecord, registerProject, writeProjectMeta, resolveProjectDir, projectStoreDir,
+  transcriptRoot,
 } from '../src/projects.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, disposeSystemHandles, placementOf, projectPlacement,
@@ -187,6 +188,63 @@ describe('remoteId in the project record', () => {
     assert.notEqual(
       transcriptRoot({ system: remote.id, remoteId: 'a', cwd: shared }),
       transcriptRoot({ system: remote.id, remoteId: 'b', cwd: shared }));
+  });
+
+  // ── The candidate's own target ───────────────────────────────────────
+  //
+  // A transcript directory is keyed on (system, remoteId, cwd), and
+  // `remoteConfigDirName` hashes `${system}\0${remoteId ?? ''}` — so a
+  // candidate built WITHOUT its remoteId is not merely under-specified, it
+  // silently reads as the provider's DEFAULT target. Both directions below are
+  // needed: one alone is satisfied by a guard that never fires, the other by a
+  // guard that always does.
+  //
+  // Both use an ALIASING pair (`h_h` / `h-h`), because the same path twice on
+  // one target is refused earlier, as TARGET_ALREADY_MANAGED.
+
+  // PINS the false-positive direction: a candidate on target 'a' must NOT be
+  // refused by a holder on the DEFAULT target, whose transcript directory it
+  // does not share.
+  //
+  // The holder is registered directly rather than adopted: this provider
+  // advertises remotes and so refuses a request naming none, while the guard
+  // itself is store reads only and never contacts a system — which is the
+  // other half of what this fixture shows.
+  test('a candidate on a named target does not collide with a holder on the DEFAULT target', async () => {
+    const held = await seedRepo(path.join(sandbox, 'h_h'));
+    await registerProject('holder', { kind: 'remote', system: remote.id, remoteId: null, path: held });
+
+    const colliding = await seedRepo(path.join(sandbox, 'h-h'));
+    assert.notEqual(colliding, held, 'premise: two different directories');
+    assert.equal(encodeCwd(colliding), encodeCwd(held),
+      'premise: they encode alike, so only the TARGET can keep them apart');
+
+    const r = await adoptProject('cand', colliding, { system: remote.id, remoteId: 'a' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal((await readRecord('cand')).location.remoteId, 'a');
+  });
+
+  // PINS the false-negative direction, and the same clause from the other side:
+  // on ONE target the aliasing pair IS one transcript directory, and the refusal
+  // must fire. A candidate that dropped its remoteId would read as the default
+  // target and sail past this holder.
+  test('two places on ONE named target collide even when only their spelling differs', async () => {
+    const held = await seedRepo(path.join(sandbox, 'k_k'));
+    assert.equal((await adoptProject('holder', held, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    const colliding = await seedRepo(path.join(sandbox, 'k-k'));
+    assert.equal(encodeCwd(colliding), encodeCwd(held), 'premise: they encode alike');
+
+    const r = await adoptProject('cand', colliding, { system: remote.id, remoteId: 'a' });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(r.reason, /'holder'/);
+    assert.equal(await readRecord('cand'), null, 'and the refused adopt wrote nothing');
+    // THE WHERE-CLAUSE IS SILENT, and cannot be otherwise for a real hit: a
+    // collision means one transcript root, and a root names one (system,
+    // remoteId) — so the two places are always on the same target here.
+    assert.ok(!/ on system | on remote /.test(r.reason),
+      `both places are on one target, so none must be named: ${r.reason}`);
   });
 
   // PINS: the mechanism the "a worktree can only re-derive to the target it was

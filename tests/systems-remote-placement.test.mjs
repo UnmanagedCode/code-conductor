@@ -340,12 +340,12 @@ describe('remote project placement', () => {
   });
 
   // PINS: AC10 ON THE REMOTE RELOCATE ARM. The relocate branch passes the
-  // LOCATION's system to the transcript-key guard, and the guard compares
-  // across every system — the CLI names its transcript directory from the
-  // working directory and nothing else, so `/srv/a_b` on a box and `/srv/a-b`
-  // on the same box are one directory's worth of sessions. A guard that always
-  // passed `local` would still refuse local collisions while silently letting
-  // every cross-system one through, so the local arm alone cannot pin this.
+  // LOCATION's own coordinates to the transcript-key guard, and a transcript
+  // directory is `<root for (system, remoteId)>/<encodeCwd(cwd)>` — so
+  // `/srv/a_b` and `/srv/a-b` on ONE target are one directory's worth of
+  // sessions. A guard handed `local` instead would look under cc's own
+  // transcript root and find nothing, letting every remote collision through,
+  // so the local arm alone cannot pin this.
   test('a remote relocate is refused when its target collides on the transcript key', async () => {
     const gone = await seedRepo(path.join(remote.root, 'r_gone'));
     assert.equal((await adoptProject('app', gone, { system: remote.id })).ok, true);
@@ -361,37 +361,12 @@ describe('remote project placement', () => {
     assert.equal(res.code, 'TRANSCRIPT_DIR_COLLISION');
     assert.match(res.reason, /'holder'/);
     assert.equal((await readRecord('app')).location.path, gone, 'the refused relocation wrote nothing');
-    // THE SYSTEM THE GUARD IS GIVEN IS THE LOCATION'S, NOT `local`. Detection
-    // is system-BLIND by design — the CLI names its transcript directory from
-    // the working directory and nothing else — so the observable is the
-    // refusal's where-clause, which is named only when the holder is on a
-    // DIFFERENT machine from the candidate. Both are on this system, so it must
-    // be silent; a hard-coded `local` candidate would make every same-system
-    // collision read as a cross-machine one.
-    assert.ok(!/on system/.test(res.reason),
-      `both places are on the same system, so the machine must not be named: ${res.reason}`);
-  });
-
-  // PINS the other half of that clause, so the absence asserted above is not
-  // satisfiable by a refusal that never names a machine at all: when the holder
-  // really IS on a different machine, the reason says which — that is the whole
-  // explanation for why two paths that look unrelated are not.
-  test('a cross-machine collision on the relocate path NAMES the other machine', async () => {
-    const gone = await seedRepo(path.join(remote.root, 'x_gone'));
-    assert.equal((await adoptProject('app', gone, { system: remote.id })).ok, true);
-    await fs.rm(gone, { recursive: true, force: true });
-
-    // The holder is LOCAL; the candidate is on the system. The reference
-    // provider is this same machine, so both paths are real and encode alike.
-    const holder = await seedRepo(path.join(remote.root, 'k_k'));
-    assert.equal((await adoptProject('holder', holder)).ok, true);
-    const colliding = await seedRepo(path.join(remote.root, 'k-k'));
-
-    const res = await adoptProject('app', colliding, { system: remote.id, onStaleRecord: 'relocate' });
-    assert.equal(res.ok, false, JSON.stringify(res));
-    assert.equal(res.code, 'TRANSCRIPT_DIR_COLLISION');
-    assert.match(res.reason, /on system 'local'/,
-      `the holder is on cc's own machine and the refusal must say so: ${res.reason}`);
+    // AND THE WHERE-CLAUSE IS SILENT. A hit means one transcript root, and a
+    // root names one (system, remoteId), so a real collision is always between
+    // two places on one target — the clause has nothing to add here and must
+    // not invent a second machine.
+    assert.ok(!/on system|on remote/.test(res.reason),
+      `both places are on one target, so none must be named: ${res.reason}`);
   });
 
   // PINS: duplicates compare (system, path), not path alone — the same path on

@@ -1628,8 +1628,16 @@ export async function adoptProject(
       // folds `/` and `-` alike, so `/srv/a-b` and `/srv/a/b` pass it.
       // `transcriptCwdCollision` skips the candidate's own identity, so the
       // stale record being replaced cannot refuse its own relocation.
+      //
+      // BOTH COORDINATES OF THE LOCATION, not the system alone: a transcript
+      // directory is keyed on (system, remoteId, cwd), so a candidate that
+      // dropped the target would be compared against the provider's DEFAULT
+      // target's directory — refused by a holder it shares nothing with, and
+      // admitted past one it does.
       const why = await projectKeyCollisionReason(
-        location.kind === 'remote' ? location.system : LOCAL_SYSTEM_ID, name, real);
+        location.kind === 'remote' ? location.system : LOCAL_SYSTEM_ID,
+        location.kind === 'remote' ? location.remoteId : null,
+        name, real);
       if (why) return { ok: false, code: 'TRANSCRIPT_DIR_COLLISION', reason: why };
       await writeProjectRecord(name, { location });
       // The cached git facts were measured at the path the project just left.
