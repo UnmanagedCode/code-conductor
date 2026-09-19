@@ -85,24 +85,54 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     //
     // Read INSIDE the union, at the worker's own spelling, because that is the
     // only place the pin boundary exists — a host-side read would pass whatever
-    // the tier table said. `nsenter` into the daemon's namespace and chroot,
-    // dropped to cc's uid exactly as the Bash forwarder's children run.
+    // the tier table said.
+    //
+    // THROUGH THE ANCHOR, NOT THE DAEMON. The anchor is the process that exists
+    // to hold the namespace open and enterable; a union daemon's own
+    // `/proc/<pid>/ns/mnt` is not openable even as root (measured on this box),
+    // so addressing it yields a harness failure that looks exactly like a
+    // product one. Arm 5 enters the same way.
     const cfg = inst._spawnEnv.CLAUDE_CONFIG_DIR;
     assert.ok(cfg, 'a remote-backed worker was launched with no CLAUDE_CONFIG_DIR');
-    const inUnion = (script) => sh('sudo', ['-n', 'nsenter', `--mount=/proc/${record.daemonPid}/ns/mnt`, '--',
-      'chroot', record.root,
-      'setpriv', `--reuid=${process.getuid()}`, `--regid=${process.getgid()}`, '--init-groups', '--',
-      '/bin/sh', '-c', script]);
 
-    const seen = await inUnion(`test -r ${JSON.stringify(path.join(cfg, 'settings.json'))}`);
-    assert.equal(seen.ok, true,
-      `the union did not serve ${cfg}/settings.json to the worker — the farm link or its `
-      + `target is unpinned, so the CLI starts with no settings: ${seen.stderr}`);
+    // "I COULD NOT ASK" AND "THE ANSWER WAS NO" MUST NOT LOOK ALIKE. This arm is
+    // the only automated evidence that the farm works through the union rather
+    // than merely host-side, so a scaffolding failure that reported itself as a
+    // tier-table bug would send the next reader hunting something that does not
+    // exist — which is exactly what it did once.
+    //
+    // The sentinel is what separates them: `CC_INSIDE` is echoed by the first
+    // command that runs after nsenter+chroot+setpriv have all succeeded. Absent,
+    // the probe never executed and nothing was measured. Present, `CC_YES`/
+    // `CC_NO` is the union's actual answer.
+    const inUnion = async (label, script) => {
+      const r = await sh('sudo', ['-n', 'nsenter', `--mount=/proc/${record.anchorPid}/ns/mnt`, '--',
+        'chroot', record.root,
+        'setpriv', `--reuid=${process.getuid()}`, `--regid=${process.getgid()}`, '--init-groups', '--',
+        '/bin/sh', '-c', `echo CC_INSIDE; if ${script}; then echo CC_YES; else echo CC_NO; fi`]);
+      if (!r.stdout.includes('CC_INSIDE')) {
+        assert.fail(`HARNESS, NOT A PRODUCT ANSWER: could not enter the union to ask about ${label}. `
+          + `nsenter --mount=/proc/${record.anchorPid}/ns/mnt (the ANCHOR pid) / chroot ${record.root} `
+          + `never reached the probe, so the union was not asked and nothing here is evidence about `
+          + `the tier table. stderr=${JSON.stringify(r.stderr.trim())}`);
+      }
+      return r.stdout.includes('CC_YES');
+    };
+
+    assert.equal(await inUnion('<cfg>/settings.json', `test -r ${JSON.stringify(path.join(cfg, 'settings.json'))}`), true,
+      `the union DECLINED to serve ${cfg}/settings.json to the worker — the probe ran inside the `
+      + 'chroot and the read failed, so the farm link or its target is unpinned and the CLI starts '
+      + 'with no settings');
+
     // `projects/` is a real directory in the farm, not a link, and the worker
     // must be able to WRITE its transcript there.
-    const wrote = await inUnion(`: > ${JSON.stringify(path.join(cfg, 'projects', '.cc-probe'))}`);
-    assert.equal(wrote.ok, true,
-      `the worker cannot write its own transcript dir under ${cfg}/projects: ${wrote.stderr}`);
+    assert.equal(await inUnion('<cfg>/projects', `: > ${JSON.stringify(path.join(cfg, 'projects', '.cc-probe'))}`), true,
+      `the union DECLINED the worker a write to ${cfg}/projects — its own transcript directory`);
+
+    // NON-VACUITY: the probe can say NO. A path the union is known to deny must
+    // come back false, or `CC_YES` would be proving only that a shell ran.
+    assert.equal(await inUnion('a denied path', `test -r ${JSON.stringify(path.join(runRoot, 'nothing-here'))}`), false,
+      'the in-union probe answered YES for a path the union does not serve — it is not measuring anything');
 
     await instances.remove(inst.id);
     assertNoResidue(before, runRoot, record, 'arm 1 cleanup');
