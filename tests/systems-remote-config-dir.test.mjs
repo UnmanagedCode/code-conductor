@@ -16,9 +16,11 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { freshProjectsRoot, rmrf } from './helpers.mjs';
+import { api, bootServer, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
-  claudeConfigFarmRoot, remoteConfigDir, remoteConfigDirName,
+  adoptProject, claudeConfigFarmRoot, createProject, remoteConfigDir, remoteConfigDirName,
 } from '../src/projects.ts';
 import { ensureRemoteConfigDir } from '../src/claudeConfigFarm.ts';
 
@@ -228,5 +230,97 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     assert.notEqual(a, b);
     assert.equal((await snapshot(a))['settings.json'], `link:${path.join(source, 'settings.json')}`);
     assert.equal((await snapshot(b))['settings.json'], `link:${path.join(source, 'settings.json')}`);
+  });
+});
+
+// ── T2: the spawn env points the CLI at the remote's own config dir ───
+//
+// This is the half that makes the isolation real: the farm can be built
+// perfectly and change nothing unless the worker's CLI is actually launched
+// against it.
+describe('T2: the spawn env', () => {
+  let home, baseUrl, instances, close, remote, tree, savedName;
+
+  beforeEach(async () => {
+    // A HOST-SET VALUE, PLANTED FIRST. `spawnEnv = {...process.env}` copies the
+    // host environment wholesale (card 2026-0384), so an already-empty env
+    // would make the delete below vacuous — the assertion has to be able to
+    // fail. A host CLAUDE_CODE_PROJECT_DIR_NAME is the worst case there is: it
+    // would redirect every session INSIDE the per-remote directory and
+    // re-collapse exactly what this card fixes.
+    savedName = process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+    process.env.CLAUDE_CODE_PROJECT_DIR_NAME = 'host_planted_key';
+    ({ home } = await freshProjectsRoot());
+    ({ baseUrl, instances, close } = await bootServer());
+    remote = await bindRemoteSystem();
+    tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+    await createProject('localproj');
+  });
+  afterEach(async () => {
+    if (savedName === undefined) delete process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+    else process.env.CLAUDE_CODE_PROJECT_DIR_NAME = savedName;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    await instances?.shutdown();
+    await close?.();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  async function spawnIn(project) {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst._spawnEnv && Object.keys(inst._spawnEnv).length > 0);
+    return inst;
+  }
+
+  test('a remote instance is pointed at its own config dir', async () => {
+    const inst = await spawnIn('app');
+    assert.equal(inst._spawnEnv.CLAUDE_CONFIG_DIR, remoteConfigDir({ system: remote.id, remoteId: null }));
+    // Built, not merely named: the CLI would create a bare one and share nothing.
+    assert.equal((await fsp.stat(path.join(inst._spawnEnv.CLAUDE_CONFIG_DIR, 'projects'))).isDirectory(), true);
+  });
+
+  // THE UNCONDITIONAL DELETE. Local spawns are covered too, and that is the
+  // point: a host-set name would otherwise redirect them as well.
+  test('the host CLAUDE_CODE_PROJECT_DIR_NAME never reaches the CLI', async () => {
+    assert.equal(process.env.CLAUDE_CODE_PROJECT_DIR_NAME, 'host_planted_key', 'the fixture plants it');
+    assert.equal((await spawnIn('app'))._spawnEnv.CLAUDE_CODE_PROJECT_DIR_NAME, undefined);
+    assert.equal((await spawnIn('localproj'))._spawnEnv.CLAUDE_CODE_PROJECT_DIR_NAME, undefined);
+  });
+
+  // The control: a local session's config resolution is untouched, so its
+  // global config, trust records and onboarding state stay where they were.
+  test('a LOCAL instance is given neither variable', async () => {
+    const inst = await spawnIn('localproj');
+    assert.equal(inst._spawnEnv.CLAUDE_CONFIG_DIR, undefined);
+    assert.equal(inst._spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR, undefined);
+  });
+
+  // ── the CLAUDE_SECURESTORAGE_CONFIG_DIR ternary, BOTH branches ──
+  //
+  // Credentials are NOT linked into the farm; they are reached through this
+  // second lever. The EMPTY-STRING form resolves to `join(homedir(), '.claude')`
+  // — NOT to the config dir — and, because the suffix is keyed on the
+  // variable's presence rather than its value, it also produces the unsuffixed
+  // secure-storage service name an unpinned CLI uses. It is therefore correct
+  // ONLY while the host's real config dir is the default.
+  test('default host config dir: the empty-string form', async () => {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    const inst = await spawnIn('app');
+    assert.equal(inst._spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR, '');
+  });
+
+  test('non-default host config dir: the explicit path', async () => {
+    const elsewhere = path.join(home, 'elsewhere-claude');
+    await fsp.mkdir(elsewhere, { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = elsewhere;
+    const inst = await spawnIn('app');
+    // The explicit path, because '' would send the CLI to ~/.claude for
+    // credentials the host does not keep there.
+    assert.equal(inst._spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR, elsewhere);
+    // And the config dir is still the remote's own, not the host's.
+    assert.notEqual(inst._spawnEnv.CLAUDE_CONFIG_DIR, elsewhere);
   });
 });

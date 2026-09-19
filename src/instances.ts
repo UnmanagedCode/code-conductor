@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, projectsRoot, selfProjectDir, placeOf, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, remoteConfigDir, projectsRoot, selfProjectDir, placeOf, type TranscriptPlacement } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -96,6 +96,8 @@ import { SessionRedirect, isRedirectable, type RedirectableSystem } from './syst
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
+import { cliEnvBase } from './cliEnv.ts';
+import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
@@ -1803,6 +1805,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     // propagates deliberately: a role-less conductor is worse than a surfaced
     // error, and every caller is async and returns errors to REST/MCP.
     if (isConductorInstance(this)) await materializeCurrentConduct();
+    // BUILD OR REFRESH THIS REMOTE'S CLI CONFIG DIRECTORY before the process
+    // starts. Here rather than in spawn() for the same reason as the line
+    // above: it is I/O, spawn() is synchronous, and every relaunch entry point
+    // funnels through launch(). Re-run per launch deliberately — the CLI grows
+    // new top-level entries across versions, and a farm built once at
+    // registration would silently stop sharing whatever appeared afterwards.
+    if (this.transcriptPlace.system !== LOCAL_SYSTEM_ID) {
+      await ensureRemoteConfigDir(this.transcriptPlace);
+    }
     // A RE-ADVERTISEMENT IS SESSION-FATAL, and reported by name. `launch()` is
     // the only path every relaunch funnels through — rewind, respawn, resume
     // after a restart — so it is where a provider that changed its mirror root
@@ -2166,10 +2177,30 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the backend's own env, the substitution-backend native window, the
     // .conduct override) are allowed to set them, and they must run after this
     // strip so their values win.
-    const spawnEnv = { ...process.env };
-    delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-    delete spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
-    delete spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+    const spawnEnv = cliEnvBase();
+    // A REMOTE-BACKED WORKER GETS ITS REMOTE'S OWN CLI CONFIG DIRECTORY, so the
+    // transcript directory the CLI derives from its cwd is scoped by a root
+    // that already differs per machine. Two projects at `/root/app3` on two
+    // boxes stop being one directory. A LOCAL session is given neither
+    // variable: pinning CLAUDE_CONFIG_DIR even to its own default is NOT a
+    // no-op — the CLI's global config resolver is
+    // `join(CLAUDE_CONFIG_DIR ?? homedir(), '.claude.json')`, so setting it
+    // moves `~/.claude.json` to `<configDir>/.claude.json` and the session
+    // loses its projects map, trust acceptances and onboarding state.
+    //
+    // CREDENTIALS COME THROUGH THE SECOND LEVER, not through the farm: the
+    // EMPTY-STRING form resolves to `join(homedir(), '.claude')` — not to the
+    // config dir — and, because the secure-storage service name is suffixed on
+    // the variable's PRESENCE rather than its value, the empty form also keeps
+    // the unsuffixed name an unpinned CLI uses. It is therefore correct only
+    // while the host's real config dir is the default; the explicit path is
+    // what the other branch needs, at the cost of a suffixed service name that
+    // matters only to a host using OS secure storage.
+    if (this.transcriptPlace.system !== LOCAL_SYSTEM_ID) {
+      spawnEnv.CLAUDE_CONFIG_DIR = remoteConfigDir(this.transcriptPlace);
+      spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR =
+        claudeConfigDir() === path.join(os.homedir(), '.claude') ? '' : claudeConfigDir();
+    }
     // The backend's user-configured env pairs (Settings → Backends). Applied
     // BEFORE the cc-managed context vars below so those always win — they are
     // deliberately not exposed in the Backends UI.

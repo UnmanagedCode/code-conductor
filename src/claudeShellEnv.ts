@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { orchStoreRoot, writeFileAtomic } from './projects.ts';
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
+import { cliEnvBase } from './cliEnv.ts';
 
 const VERSION_TIMEOUT_MS = 5000;
 const MARKER = 'CLAUDE_CODE_EXECPATH';
@@ -132,7 +133,7 @@ Then stop — do not summarize the output.`;
   await new Promise<void>((resolve, reject) => {
     let proc;
     try {
-      proc = spawn(spawnCommand, args, { cwd: spawnDir, env: { ...process.env, ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
+      proc = spawn(spawnCommand, args, { cwd: spawnDir, env: { ...cliEnvBase(), ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
       reject(new Error(`claudeShellEnv: failed to spawn claude -p: ${errMsg(err)}`));
       return;

@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, orchStoreRoot } from '../src/projects.ts';
+import { adoptProject, orchStoreRoot, CLAUDE_CONFIG_FARM_DIRNAME } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 
@@ -101,7 +101,14 @@ describe('criterion 8: a remote session composes no session root', () => {
     assert.equal(s.inst.cwd, s.tree, "the CLI's cwd is not the project's path on its system");
     assert.equal(await exists(path.join(orchStoreRoot(), 'systems', s.id, 'sessions')), false);
 
-    const under = await walk(orchStoreRoot());
+    // The per-remote CLI config farm is EXCLUDED, and it is not a hole in this
+    // net. `<store>/claude-config/<dirName>/.claude/sessions` is cc's symlink to
+    // the host CLI's OWN `sessions` directory — one per REMOTE, created before
+    // the spawn and identical across every session on that remote. What this
+    // claim forbids is a per-SESSION root cc composes and serves the worker
+    // from, which would appear anywhere else under the store.
+    const under = (await walk(orchStoreRoot()))
+      .filter(p => !p.startsWith(`${CLAUDE_CONFIG_FARM_DIRNAME}/`));
     assert.deepEqual(under.filter(p => p.includes('sessions')), [],
       `something composed a session root: ${JSON.stringify(under.filter(p => p.includes('sessions')))}`);
     assert.deepEqual(under.filter(p => p.endsWith('.manifest.json')), [],

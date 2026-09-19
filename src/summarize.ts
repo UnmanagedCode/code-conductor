@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { cliEnvBase } from './cliEnv.ts';
 import { sessionFilePath, orchStoreRoot, findSessionLocation, type TranscriptPlacement } from './projects.ts'; // sessionFilePath used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
@@ -253,7 +254,7 @@ export async function generateSummary(sessionId: string, place: TranscriptPlacem
   const parsed = await new Promise<SummaryOutput>((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: spawnDir,
-      env: { ...process.env, ...backendEnvVars },
+      env: { ...cliEnvBase(), ...backendEnvVars },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
