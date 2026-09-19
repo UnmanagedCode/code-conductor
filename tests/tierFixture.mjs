@@ -10,10 +10,20 @@
 
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 
+// The session's own per-remote CLI config directory, and the farm holding
+// every other remote's. Spelled out here because the cross-remote deny is the
+// property a "simplification" of the roots would silently drop.
+export const FIXTURE_OWN_CONFIG_DIR = '/home/wk/cc-projects/.cc-store/claude-config/boxa-0123456789ab/.claude';
+export const FIXTURE_OTHER_CONFIG_DIR = '/home/wk/cc-projects/.cc-store/claude-config/boxb-ba9876543210/.claude';
+export const FIXTURE_CONFIG_FARM = '/home/wk/cc-projects/.cc-store/claude-config';
+
 export const FIXTURE_LOCAL_ROOTS = [
   { prefix: '/store/attachments/app', access: 'allow', why: "this project's upload channel" },
   { prefix: '/store/session-tmp/inst-1', access: 'allow', why: "this session's own tmp dir" },
-  { prefix: '/home/wk/.claude/plans', access: 'allow', why: 'plan mode writes its plan file here' },
+  { prefix: `${FIXTURE_OWN_CONFIG_DIR}/plans`, access: 'allow', why: "plan mode writes its plan file here — this remote's own config dir" },
+  { prefix: FIXTURE_OWN_CONFIG_DIR, access: 'deny', why: "this remote's CLI config and every session on it" },
+  { prefix: FIXTURE_CONFIG_FARM, access: 'deny', why: "every other remote's CLI config and transcripts" },
+  { prefix: '/home/wk/.claude/plans', access: 'allow', why: 'a plan file forwarded from another session lives here' },
   { prefix: '/home/wk/.claude', access: 'deny', why: "the CLI's own settings and credentials" },
   { prefix: '/home/wk/.claude/projects', access: 'deny', why: "every session on this machine's transcripts" },
 ];

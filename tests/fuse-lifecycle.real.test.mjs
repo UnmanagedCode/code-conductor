@@ -74,6 +74,39 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // What a project path answers, and to WHOM, is R2's subject — an nsenter
     // process is unmarked by construction and criterion 6 denies it there.
 
+    // THE FARM IS REACHABLE THROUGH THE UNION, and its links resolve. The
+    // worker's CLI config directory lives under the store — host-pinned by the
+    // `projectsRoot` prefix — while its entries are symlinks into `$HOME`,
+    // which is pinned whole and separately. A pin boundary between a link and
+    // its target would answer -ENOENT to the marked CLI, and the worker would
+    // launch with no settings, no plugins and no skills while reporting
+    // nothing: the union serves the link, so the target has to have a tier of
+    // its own.
+    //
+    // Read INSIDE the chroot, at the union's own spelling, because that is the
+    // only place the pin boundary exists — a host-side read would pass whatever
+    // the tier table said.
+    // Read INSIDE the union, at the worker's own spelling, because that is the
+    // only place the pin boundary exists — a host-side read would pass whatever
+    // the tier table said. `nsenter` into the daemon's namespace and chroot,
+    // dropped to cc's uid exactly as the Bash forwarder's children run.
+    const cfg = inst._spawnEnv.CLAUDE_CONFIG_DIR;
+    assert.ok(cfg, 'a remote-backed worker was launched with no CLAUDE_CONFIG_DIR');
+    const inUnion = (script) => sh('sudo', ['-n', 'nsenter', `--mount=/proc/${record.daemonPid}/ns/mnt`, '--',
+      'chroot', record.root,
+      'setpriv', `--reuid=${process.getuid()}`, `--regid=${process.getgid()}`, '--init-groups', '--',
+      '/bin/sh', '-c', script]);
+
+    const seen = await inUnion(`test -r ${JSON.stringify(path.join(cfg, 'settings.json'))}`);
+    assert.equal(seen.ok, true,
+      `the union did not serve ${cfg}/settings.json to the worker — the farm link or its `
+      + `target is unpinned, so the CLI starts with no settings: ${seen.stderr}`);
+    // `projects/` is a real directory in the farm, not a link, and the worker
+    // must be able to WRITE its transcript there.
+    const wrote = await inUnion(`: > ${JSON.stringify(path.join(cfg, 'projects', '.cc-probe'))}`);
+    assert.equal(wrote.ok, true,
+      `the worker cannot write its own transcript dir under ${cfg}/projects: ${wrote.stderr}`);
+
     await instances.remove(inst.id);
     assertNoResidue(before, runRoot, record, 'arm 1 cleanup');
   });

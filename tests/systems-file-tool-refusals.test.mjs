@@ -33,7 +33,7 @@ import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
 import { divergedRefusal, overCapRefusal, refusesTool } from '../src/systems/fuse/faultRefusals.ts';
 import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
 import { withinPosix } from '../src/systems/mirror.ts';
-import { tierFixtureInput } from './tierFixture.mjs';
+import { tierFixtureInput, FIXTURE_OWN_CONFIG_DIR, FIXTURE_OTHER_CONFIG_DIR, FIXTURE_CONFIG_FARM } from './tierFixture.mjs';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -971,4 +971,66 @@ describe('the fault refusals — divergence and over-cap', () => {
     assert.equal(await redirect.postToolUse('Write', { file_path: 'relative/x' }, { ok: true }), null,
       'a relative path was classified rather than ignored');
   });
+});
+
+// A9b — PINS THE CROSS-REMOTE HALF, which is the property the blanket farm
+// deny exists for and the one a "simplification" of the roots would drop while
+// leaving every other case green.
+//
+// A worker on remote A reaches its OWN config directory's plans dir and nothing
+// else under the farm. Its neighbour's config directory is denied — including
+// that neighbour's `plans`, which has the same shape as the one allowance this
+// session does get, so an over-broad `*/plans` rule fails here and only here.
+test('A9b: a worker reaches its own config dir, never another remote\'s', () => {
+  const { classify } = fixture();
+
+  // Its own: plan mode works.
+  assert.deepEqual(classify(`${FIXTURE_OWN_CONFIG_DIR}/plans/a-plan.md`), { decision: 'allow' });
+  // Its own, but not the rest of it — its transcripts are not a file-tool target.
+  denied(classify(`${FIXTURE_OWN_CONFIG_DIR}/projects/-root-app3/s.jsonl`), 'host-pinned');
+  denied(classify(`${FIXTURE_OWN_CONFIG_DIR}/settings.json`), 'host-pinned');
+
+  // ANOTHER REMOTE'S — the whole point.
+  denied(classify(`${FIXTURE_OTHER_CONFIG_DIR}/projects/-root-app3/s.jsonl`), 'host-pinned');
+  denied(classify(`${FIXTURE_OTHER_CONFIG_DIR}/plans/their-plan.md`), 'host-pinned');
+  denied(classify(`${FIXTURE_OTHER_CONFIG_DIR}/settings.json`), 'host-pinned');
+  // And the farm root itself.
+  denied(classify(`${FIXTURE_CONFIG_FARM}/anything`), 'host-pinned');
+
+  // Component boundary: a sibling that merely shares the allowed prefix is not
+  // allowed, so the allowance cannot be widened by naming.
+  denied(classify(`${FIXTURE_OWN_CONFIG_DIR}/plans-backup/x.md`), 'host-pinned');
+});
+
+// A9c — PINS REACHABILITY, which is a different question from tool access and
+// the one that decides whether the worker's CLI can start at all.
+//
+// `toolAccess` governs what a FILE TOOL may name. What the union SERVES is the
+// tier: an unpinned path is fail-closed and answers -ENOENT to the marked CLI.
+// The farm sits under the store (host-pinned via `projectsRoot`) while its
+// entries are symlinks into `$HOME` (pinned whole, separately) — so BOTH sides
+// of every link need a tier, or the CLI launches with no settings, no plugins
+// and no skills while nothing reports an error.
+//
+// `resolveTierEntry` returning null IS the fail-closed case, so these are not
+// assertions about a label.
+test('A9c: the farm and its symlink targets are both served by the union', () => {
+  const { tiers } = fixture();
+  const served = (p) => resolveTierEntry(tiers, p);
+
+  // The session's own config dir, and the farm above it.
+  assert.equal(served(`${FIXTURE_OWN_CONFIG_DIR}/settings.json`)?.tier, 'host');
+  assert.equal(served(`${FIXTURE_OWN_CONFIG_DIR}/projects`)?.tier, 'host');
+  assert.equal(served(FIXTURE_CONFIG_FARM)?.tier, 'host');
+  // Another remote's is SERVED too — it is under the same store prefix — and is
+  // kept out of reach by `toolAccess`, not by being invisible. Both halves
+  // matter: a reader who conflates them would "fix" one by breaking the other.
+  assert.equal(served(`${FIXTURE_OTHER_CONFIG_DIR}/settings.json`)?.tier, 'host');
+  assert.equal(served(`${FIXTURE_OTHER_CONFIG_DIR}/settings.json`)?.toolAccess, 'deny');
+
+  // The LINK TARGETS, on the other side of the farm's symlinks. The union
+  // follows a pinned symlink and the target has its own tier — the same
+  // property `realpathsOf(ETC_PINS)` relies on.
+  assert.equal(served('/home/wk/.claude/settings.json')?.tier, 'host');
+  assert.equal(served('/home/wk/.claude/plugins')?.tier, 'host');
 });

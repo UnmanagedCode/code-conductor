@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, remoteConfigDir, projectsRoot, selfProjectDir, placeOf, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, placeOf, type TranscriptPlacement } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -5086,8 +5086,26 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // other sessions' plan files and cannot be narrowed to "its own" ahead
         // of the write, because the CLI chooses the filename. Longer than the
         // `~/.claude` deny below, so longest-prefix lets it through.
+        // THIS SESSION'S OWN CLI CONFIG DIRECTORY — the one it was launched
+        // against, which is NOT `~/.claude` for a remote-backed worker. The
+        // CLI resolves its plans directory as `<configDir>/plans`, so without
+        // the allow below plan mode is denied outright for every remote worker.
+        { prefix: path.join(remoteConfigDir(transcriptPlace), 'plans'), access: 'allow',
+          why: "plan mode writes its plan file here — this remote's own config dir" },
+        { prefix: remoteConfigDir(transcriptPlace), access: 'deny',
+          why: "this remote's CLI config and every session on it" },
+        // EVERY OTHER REMOTE'S. Shorter than the two above, so longest-prefix
+        // lets this session reach its own while refusing its neighbours'. The
+        // store prefix already denies these by tier; this entry exists so the
+        // refusal names what it is rather than saying "the projects root".
+        { prefix: claudeConfigFarmRoot(), access: 'deny',
+          why: "every other remote's CLI config and transcripts" },
+        // The HOST's config dir, still reachable by name through the farm's
+        // symlinks. Plan mode does not write here any more, but the
+        // orchestrator forwards plan paths under it between sessions, so the
+        // allow stays — with the residual recorded in docs/features.md.
         { prefix: path.join(claudeConfigDir(), 'plans'), access: 'allow',
-          why: "plan mode writes its plan file here" },
+          why: "a plan file forwarded from another session lives here" },
         { prefix: claudeConfigDir(), access: 'deny',
           why: "the CLI's own settings, credentials, todos and shell snapshots" },
         // Every session on this machine's transcripts. A conductor that
