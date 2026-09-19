@@ -23,6 +23,7 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
+import { createWorktree } from '../src/worktrees.ts';
 import {
   createProject, deleteProject, adoptProject, getProject, listProjects, encodeCwd,
   readProjectRecord, registerProject, writeProjectMeta, resolveProjectDir, projectStoreDir,
@@ -245,6 +246,51 @@ describe('remoteId in the project record', () => {
     // remoteId) — so the two places are always on the same target here.
     assert.ok(!/ on system | on remote /.test(r.reason),
       `both places are on one target, so none must be named: ${r.reason}`);
+  });
+
+  // PINS THE SAME CLAUSE AT THE WORKTREE SITE. `createWorktree` builds its own
+  // candidate, and takes the target off the project's System handle rather than
+  // re-reading the record — so this is a second place a dropped coordinate
+  // would silently admit a collision.
+  test('a worktree on a named target collides with a holder on that target', async () => {
+    const tree = await seedRepo(path.join(sandbox, 'beta'));
+    assert.equal((await adoptProject('beta', tree, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    // A remote project's worktrees sit at `dirname(path)/.worktrees/<project>/<key>`,
+    // and the sibling below encodes to the same name.
+    const wtPath = path.join(sandbox, '.worktrees', 'beta', 'w1');
+    const taken = await seedRepo(path.join(sandbox, '-worktrees-beta-w1'));
+    assert.equal(encodeCwd(taken), encodeCwd(wtPath), 'premise: they encode alike');
+    assert.equal((await adoptProject('holder', taken, { system: remote.id, remoteId: 'a' })).ok, true);
+
+    await assert.rejects(() => createWorktree('beta', { name: 'w1' }), (e) => {
+      assert.equal(e.statusCode, 409);
+      assert.equal(e.code, 'TRANSCRIPT_DIR_COLLISION');
+      assert.match(e.message, /'holder'/);
+      return true;
+    });
+  });
+
+  // PINS THE SAME CLAUSE ON THE RELOCATE ARM, the one candidate site with no
+  // counterpart on the creation paths: the name is already held, by the record
+  // being repointed, so the guard is called explicitly there.
+  test("onStaleRecord:'relocate' on a named target is refused by a holder on it", async () => {
+    const gone = await seedRepo(path.join(sandbox, 'r_gone'));
+    assert.equal((await adoptProject('app', gone, { system: remote.id, remoteId: 'a' })).ok, true);
+    await fs.rm(gone, { recursive: true, force: true });
+
+    const held = await seedRepo(path.join(sandbox, 'g_g'));
+    assert.equal((await adoptProject('holder', held, { system: remote.id, remoteId: 'a' })).ok, true);
+    const colliding = await seedRepo(path.join(sandbox, 'g-g'));
+    assert.equal(encodeCwd(colliding), encodeCwd(held), 'premise: they encode alike');
+
+    const r = await adoptProject('app', colliding, {
+      system: remote.id, remoteId: 'a', onStaleRecord: 'relocate',
+    });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(r.reason, /'holder'/);
+    assert.equal((await readRecord('app')).location.path, gone, 'the refused relocation wrote nothing');
   });
 
   // PINS: the mechanism the "a worktree can only re-derive to the target it was
