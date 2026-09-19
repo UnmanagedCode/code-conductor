@@ -69,7 +69,7 @@ test('returns usage data on successful fetch', async () => {
   const stub = stubFetch(SAMPLE_USAGE);
   _resetCache();
   try {
-    const result = await getAccountUsage({ home: tmpHome });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude') });
     assert.deepEqual(result, SAMPLE_USAGE);
     assert.equal(stub.calls, 1);
   } finally {
@@ -83,8 +83,8 @@ test('cache hit — second call within 180 s makes no additional API request', a
   const stub = stubFetch(SAMPLE_USAGE);
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome });
-    const second = await getAccountUsage({ home: tmpHome });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude') });
+    const second = await getAccountUsage({ configDir: path.join(tmpHome, '.claude') });
     assert.deepEqual(second, SAMPLE_USAGE);
     assert.equal(stub.calls, 1, 'should only hit the API once within the cache window');
   } finally {
@@ -97,7 +97,7 @@ test('returns null when credentials file is missing', async () => {
   await makeTmpHome(); // no .credentials.json written
   _resetCache();
   try {
-    const result = await getAccountUsage({ home: tmpHome });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude') });
     assert.equal(result, null);
   } finally {
     await cleanTmpHome();
@@ -109,7 +109,7 @@ test('returns null when credentials file has no OAuth token', async () => {
   const stub = stubFetch(SAMPLE_USAGE);
   _resetCache();
   try {
-    const result = await getAccountUsage({ home: tmpHome });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude') });
     assert.equal(result, null);
     assert.equal(stub.calls, 0, 'should not call API when no token');
   } finally {
@@ -123,7 +123,7 @@ test('returns null on 401 response', async () => {
   const stub = stubFetch({ error: 'Unauthorized' }, 401);
   _resetCache();
   try {
-    const result = await getAccountUsage({ home: tmpHome });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude') });
     assert.equal(result, null);
   } finally {
     stub.restore();
@@ -188,11 +188,11 @@ test('no re-fetch during backoff window after 429', async () => {
   _resetCache();
   try {
     // First call — hits 429, sets nextAllowedAt = t0 + BASE_RETRY_MS
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // Second call before the window expires — should not fetch
-    const result = await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(result, null);
     assert.equal(stub.calls, 1, 'should not re-fetch during backoff window');
   } finally {
@@ -207,11 +207,11 @@ test('re-fetches after backoff window elapses (429)', async () => {
   const stub = stubFetch({ error: 'rate limited' }, 429);
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // Exactly at the boundary — window has elapsed, should retry
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry once the backoff window has elapsed');
   } finally {
     stub.restore();
@@ -226,20 +226,20 @@ test('backoff doubles on repeated failures', async () => {
   _resetCache();
   try {
     // Failure 1 at t0 → delay = 10s → nextAllowedAt = t0 + 10_000
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // Failure 2 at t0+10s → delay = 20s → nextAllowedAt = t0 + 30_000
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 10_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 10_000, _random: NO_JITTER });
     assert.equal(stub.calls, 2);
 
     // At t0 + 25s — still in second backoff window (need t0 + 30s)
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 25_000, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 25_000, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 2, 'second backoff is 20s so t0+25s should still be blocked');
 
     // At t0 + 30s — window has elapsed, should retry
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 30_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 30_000, _random: NO_JITTER });
     assert.equal(stub.calls, 3, 'should retry once second backoff window elapses');
   } finally {
     stub.restore();
@@ -254,16 +254,16 @@ test('Retry-After delta-seconds overrides exponential backoff on 429', async () 
   _resetCache();
   try {
     // Failure: Retry-After: 30 → nextAllowedAt = t0 + 30_000
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // 25s later — still blocked
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 25_000, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 25_000, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 1, 'should respect Retry-After: 30 and not re-fetch at 25s');
 
     // 30s later — window elapsed
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 30_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 30_000, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry at exactly 30s as instructed by Retry-After');
   } finally {
     stub.restore();
@@ -278,16 +278,16 @@ test('Retry-After capped at MAX_RETRY_MS even when server sends a huge value', a
   const stub = stubFetch({ error: 'rate limited' }, 429, { 'retry-after': '9999' });
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // 1 ms before the cap — still blocked
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + MAX_RETRY_MS - 1, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + MAX_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 1, 'should not re-fetch before MAX_RETRY_MS cap');
 
     // Exactly at cap — should retry (not waiting 9999s)
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + MAX_RETRY_MS, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + MAX_RETRY_MS, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry at MAX_RETRY_MS cap, not at 9999s');
   } finally {
     stub.restore();
@@ -303,14 +303,14 @@ test('Retry-After HTTP-date format honored on 429', async () => {
   const stub = stubFetch({ error: 'rate limited' }, 429, { 'retry-after': retryDate });
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 25_000, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 25_000, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 1, 'should be blocked by HTTP-date Retry-After at 25s');
 
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 30_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 30_000, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry at the HTTP-date specified time');
   } finally {
     stub.restore();
@@ -325,16 +325,16 @@ test('Retry-After: 0 is floored to BASE_RETRY_MS (never immediate re-poll)', asy
   _resetCache();
   try {
     // Failure: Retry-After: 0 — without floor this would allow immediate re-poll
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // Must still be blocked one millisecond before BASE_RETRY_MS
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 1, 'Retry-After: 0 should be floored to BASE_RETRY_MS — still blocked');
 
     // Exactly at BASE_RETRY_MS — window elapsed, should retry
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry at BASE_RETRY_MS after Retry-After: 0');
   } finally {
     stub.restore();
@@ -349,21 +349,21 @@ test('tiny Retry-After (1 s) is floored to BASE_RETRY_MS', async () => {
   const stub = stubFetch({ error: 'rate limited' }, 429, { 'retry-after': '1' });
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
     // Still blocked at 1s (what an unflored Retry-After: 1 would have allowed)
-    const blockedAt1s = await getAccountUsage({ home: tmpHome, _now: () => t0 + 1_000, _random: NO_JITTER });
+    const blockedAt1s = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 1_000, _random: NO_JITTER });
     assert.equal(blockedAt1s, null);
     assert.equal(stub.calls, 1, 'Retry-After: 1 should be floored — still blocked at 1s');
 
     // Still blocked just before BASE_RETRY_MS
-    const blockedAtFloor = await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    const blockedAtFloor = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(blockedAtFloor, null);
     assert.equal(stub.calls, 1, 'still blocked one ms before floor elapses');
 
     // Unblocked at BASE_RETRY_MS
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry at BASE_RETRY_MS after tiny Retry-After');
   } finally {
     stub.restore();
@@ -377,14 +377,14 @@ test('503 response also respects Retry-After', async () => {
   const stub = stubFetch({ error: 'service unavailable' }, 503, { 'retry-after': '20' });
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
     assert.equal(stub.calls, 1);
 
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 15_000, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 15_000, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 1, '503 Retry-After: 20 should block re-fetch at 15s');
 
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 20_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 20_000, _random: NO_JITTER });
     assert.equal(stub.calls, 2, 'should retry at 20s as instructed by 503 Retry-After');
   } finally {
     stub.restore();
@@ -400,8 +400,8 @@ test('successful fetch after failures resets backoff to base', async () => {
   // Phase 1: two failures → failureCount grows to 2, next delay would be 40s
   const failStub = stubFetch({ error: 'rate limited' }, 429);
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 10_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 10_000, _random: NO_JITTER });
     assert.equal(failStub.calls, 2);
   } finally {
     failStub.restore();
@@ -410,7 +410,7 @@ test('successful fetch after failures resets backoff to base', async () => {
   // Phase 2: success at t0+30s → resets failureCount to 0
   const successStub = stubFetch(SAMPLE_USAGE, 200);
   try {
-    const result = await getAccountUsage({ home: tmpHome, _now: () => t0 + 30_000, _random: NO_JITTER });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 30_000, _random: NO_JITTER });
     assert.deepEqual(result, SAMPLE_USAGE, 'should return data after recovery');
     assert.equal(successStub.calls, 1);
   } finally {
@@ -422,16 +422,16 @@ test('successful fetch after failures resets backoff to base', async () => {
   const failAgainStub = stubFetch({ error: 'rate limited' }, 429);
   try {
     // t0 + 30_000 + 180_000 = past the success cache
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 210_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 210_000, _random: NO_JITTER });
     assert.equal(failAgainStub.calls, 1);
 
     // Blocked at t0 + 210_000 + BASE_RETRY_MS - 1
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 210_000 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 210_000 + BASE_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(failAgainStub.calls, 1, 'delay after reset should be base 10s, not 40s');
 
     // Unblocked at t0 + 210_000 + BASE_RETRY_MS
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 210_000 + BASE_RETRY_MS, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 210_000 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(failAgainStub.calls, 2, 'should retry after base 10s backoff');
   } finally {
     failAgainStub.restore();
@@ -446,25 +446,25 @@ test('_resetCache() also resets retry state', async () => {
   _resetCache();
   try {
     // Three failures → failureCount = 3, next backoff would be 80s
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 10_000, _random: NO_JITTER });
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 30_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 10_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 30_000, _random: NO_JITTER });
     assert.equal(stub.calls, 3);
 
     // Reset wipes both cache and retry state
     _resetCache();
 
     // Next failure should use base 10s delay, not 80s
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 110_000, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 110_000, _random: NO_JITTER });
     assert.equal(stub.calls, 4);
 
     // Blocked at base - 1 ms
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 110_000 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    const blocked = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 110_000 + BASE_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(stub.calls, 4, 'after _resetCache(), delay should be base 10s');
 
     // Unblocked at base
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 110_000 + BASE_RETRY_MS, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 110_000 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(stub.calls, 5, 'should retry at base 10s after reset');
   } finally {
     stub.restore();
@@ -480,8 +480,8 @@ test('allowStale — fresh cache hit returns { data, stale: false, fetchedAt }',
   const stub = stubFetch(SAMPLE_USAGE);
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
-    const result = await getAccountUsage({ home: tmpHome, _now: () => t0 + 1000, _random: NO_JITTER, allowStale: true });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0 + 1000, _random: NO_JITTER, allowStale: true });
     assert.deepEqual(result, { data: SAMPLE_USAGE, stale: false, fetchedAt: t0 });
     assert.equal(stub.calls, 1, 'second call should be served from cache, not refetch');
   } finally {
@@ -498,7 +498,7 @@ test('allowStale — serves last-good data as stale during a backoff window, whi
   const successStub = stubFetch(SAMPLE_USAGE, 200);
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
   } finally {
     successStub.restore();
   }
@@ -507,16 +507,16 @@ test('allowStale — serves last-good data as stale during a backoff window, whi
   const failStub = stubFetch({ error: 'rate limited' }, 429);
   try {
     const tFail = t0 + 180_000;
-    await getAccountUsage({ home: tmpHome, _now: () => tFail, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => tFail, _random: NO_JITTER });
     assert.equal(failStub.calls, 1);
 
     // Still inside the backoff window: plain call → null, allowStale → last-good data marked stale.
     const tCheck = tFail + BASE_RETRY_MS - 1;
-    const plain = await getAccountUsage({ home: tmpHome, _now: () => tCheck, _random: NO_JITTER });
+    const plain = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => tCheck, _random: NO_JITTER });
     assert.equal(plain, null, 'default (allowStale: false) must stay strict fresh-or-null');
     assert.equal(failStub.calls, 1, 'the plain call must not have forced a refetch');
 
-    const stale = await getAccountUsage({ home: tmpHome, _now: () => tCheck, _random: NO_JITTER, allowStale: true });
+    const stale = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => tCheck, _random: NO_JITTER, allowStale: true });
     assert.deepEqual(stale, { data: SAMPLE_USAGE, stale: true, fetchedAt: t0 });
     assert.equal(failStub.calls, 1, 'the allowStale call must not have forced a refetch either');
   } finally {
@@ -532,7 +532,7 @@ test('allowStale — returns null once the retained data ages past maxStaleMs', 
   const successStub = stubFetch(SAMPLE_USAGE, 200);
   _resetCache();
   try {
-    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER });
   } finally {
     successStub.restore();
   }
@@ -540,7 +540,7 @@ test('allowStale — returns null once the retained data ages past maxStaleMs', 
   const failStub = stubFetch({ error: 'rate limited' }, 429);
   try {
     const tFail = t0 + 180_000; // past the success cache
-    await getAccountUsage({ home: tmpHome, _now: () => tFail, _random: NO_JITTER });
+    await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => tFail, _random: NO_JITTER });
 
     // Same clock reading (still well inside the BASE_RETRY_MS backoff window, so
     // no further fetch is attempted) — only maxStaleMs differs, isolating the age
@@ -572,7 +572,7 @@ test('allowStale — returns null when there is no prior successful fetch to ser
   const stub = stubFetch({ error: 'rate limited' }, 429);
   _resetCache();
   try {
-    const result = await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER, allowStale: true });
+    const result = await getAccountUsage({ configDir: path.join(tmpHome, '.claude'), _now: () => t0, _random: NO_JITTER, allowStale: true });
     assert.equal(result, null);
   } finally {
     stub.restore();

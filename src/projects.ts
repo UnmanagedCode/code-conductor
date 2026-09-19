@@ -116,8 +116,27 @@ export function worktreeStoreDir(projectName: string, worktreeName: string): str
   return path.join(worktreesStoreRoot(projectName), worktreeName);
 }
 
+// THE CLI'S OWN CONFIG DIRECTORY on this machine — `~/.claude` unless the host
+// overrode it. Every cc reader of the CLI's state resolves through here rather
+// than spelling `~/.claude`, because the CLI's own resolution honours the
+// variable and a reader that did not would be looking at a directory the CLI is
+// not writing.
+//
+// NOT the directory a remote-backed worker is pointed at: that one is cc-owned,
+// per remote, and comes from `remoteConfigDir()`. This is the SOURCE the farm
+// links into, and the directory a LOCAL session keeps using untouched.
+export function claudeConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+}
+
+// Where LOCAL places' transcripts live. A remote-backed place resolves its root
+// through `transcriptRoot()` instead — this function is that expression's local
+// branch, and nothing else may call it to name a remote place's directory.
+//
+// `CLAUDE_PROJECTS_ROOT` stays cc's own reader override (the fake CLIs in tests
+// honour it); unset, cc and the CLI agree by construction.
 export function claudeProjectsRoot(): string {
-  return process.env.CLAUDE_PROJECTS_ROOT ?? path.join(os.homedir(), '.claude', 'projects');
+  return process.env.CLAUDE_PROJECTS_ROOT ?? path.join(claudeConfigDir(), 'projects');
 }
 
 export function encodeCwd(abs: string): string {

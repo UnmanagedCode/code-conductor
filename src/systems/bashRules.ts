@@ -49,8 +49,8 @@
 // prompt, never a command that should not have run.
 
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { claudeConfigDir } from '../projects.ts';
 import type { System } from './system.ts';
 
 export interface UnenforceableRule { rule: string; source: string }
@@ -92,7 +92,7 @@ export function bashRuleSources(projectDir: string): SettingsSource[] {
   return [
     { path: path.join(projectDir, '.claude', 'settings.local.json'), scope: 'project' },
     { path: path.join(projectDir, '.claude', 'settings.json'), scope: 'project' },
-    { path: path.join(os.homedir(), '.claude', 'settings.json'), scope: 'host' },
+    { path: path.join(claudeConfigDir(), 'settings.json'), scope: 'host' },
     { path: MANAGED_POLICY_PATH, scope: 'host' },
   ];
 }
@@ -131,7 +131,7 @@ export async function findDisabledHooks(sources: SettingsSource[], system: Syste
 // machine.
 function layerLabel(source: string, systemId: string): string {
   if (source === MANAGED_POLICY_PATH) return 'managed policy — admin-owned, so an administrator has to change it';
-  if (source.startsWith(path.join(os.homedir(), '.claude') + path.sep)) return 'your user settings';
+  if (source.startsWith(claudeConfigDir() + path.sep)) return 'your user settings';
   if (source.endsWith('settings.local.json')) return `project local settings, on '${systemId}'`;
   return `project settings, on '${systemId}'`;
 }

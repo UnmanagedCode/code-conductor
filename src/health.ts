@@ -6,9 +6,9 @@
 
 import { spawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { resolveClaudeBin } from './claudeLauncher.ts';
+import { claudeConfigDir } from './projects.ts';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -59,8 +59,8 @@ async function probeBin({ timeoutMs }: { timeoutMs: number }): Promise<ClaudeBin
   });
 }
 
-async function probeDir(home: string): Promise<{ exists: boolean; path: string }> {
-  const p = path.join(home, '.claude');
+async function probeDir(configDir: string): Promise<{ exists: boolean; path: string }> {
+  const p = configDir;
   try {
     const st = await fsp.stat(p);
     return { exists: st.isDirectory(), path: p };
@@ -69,11 +69,11 @@ async function probeDir(home: string): Promise<{ exists: boolean; path: string }
   }
 }
 
-async function probeAuth(home: string): Promise<{ ok: boolean; source: 'env' | 'credentials' | null }> {
+async function probeAuth(configDir: string): Promise<{ ok: boolean; source: 'env' | 'credentials' | null }> {
   if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim()) {
     return { ok: true, source: 'env' };
   }
-  const credentials = path.join(home, '.claude', '.credentials.json');
+  const credentials = path.join(configDir, '.credentials.json');
   try {
     await fsp.access(credentials);
     return { ok: true, source: 'credentials' };
@@ -96,11 +96,14 @@ export interface ReadinessResult {
   issues: ReadinessIssue[];
 }
 
-export async function checkClaudeReadiness({ home = os.homedir(), timeoutMs = DEFAULT_TIMEOUT_MS }: { home?: string; timeoutMs?: number } = {}): Promise<ReadinessResult> {
+// `configDir` is the CLI's CONFIG DIRECTORY, not a home: the CLI honours
+// CLAUDE_CONFIG_DIR, so probing `<home>/.claude` would report on a directory it
+// is not reading. Injectable for tests; production takes the derivation.
+export async function checkClaudeReadiness({ configDir = claudeConfigDir(), timeoutMs = DEFAULT_TIMEOUT_MS }: { configDir?: string; timeoutMs?: number } = {}): Promise<ReadinessResult> {
   const [claudeBin, claudeDir, authenticated] = await Promise.all([
     probeBin({ timeoutMs }),
-    probeDir(home),
-    probeAuth(home),
+    probeDir(configDir),
+    probeAuth(configDir),
   ]);
   const issues: ReadinessIssue[] = [];
   if (!claudeBin.found) {

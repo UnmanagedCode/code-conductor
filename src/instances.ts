@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, projectsRoot, selfProjectDir } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, projectsRoot, selfProjectDir } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -5039,9 +5039,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // other sessions' plan files and cannot be narrowed to "its own" ahead
         // of the write, because the CLI chooses the filename. Longer than the
         // `~/.claude` deny below, so longest-prefix lets it through.
-        { prefix: path.join(os.homedir(), '.claude', 'plans'), access: 'allow',
+        { prefix: path.join(claudeConfigDir(), 'plans'), access: 'allow',
           why: "plan mode writes its plan file here" },
-        { prefix: path.join(os.homedir(), '.claude'), access: 'deny',
+        { prefix: claudeConfigDir(), access: 'deny',
           why: "the CLI's own settings, credentials, todos and shell snapshots" },
         // Every session on this machine's transcripts. A conductor that
         // legitimately needs one has `get_transcript`, which is not a file tool.
