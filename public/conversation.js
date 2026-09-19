@@ -15,6 +15,13 @@ import { parseWakeCallback } from './wakeCallback.js';
 // the gap dedupe must key on `history-gap` only.
 const HISTORY_GAP_CLASS = 'history-gap';
 
+// System annotations that END the machinery run: the turn was interrupted or
+// the process died, so whatever was accumulating will never continue. They fold
+// the group without closing the segment, exactly as a turn end does.
+// `_handleExit` (src/instances.ts) emits `exit` on every process death and
+// `crashed` alongside it when stderr explains why.
+const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit', 'crashed']);
+
 export function isHistoryGapNode(node) {
   return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
 }
@@ -209,8 +216,14 @@ export class Conversation {
   // group the pointer never names — and a closer keyed on it would fold a
   // different wrap and leave that group expanded for the rest of the session.
   // Only wraps actually holding a group are touched, and closing is idempotent.
+  //
+  // RECURSES into the sub-agent panels, which have no run-ender of their own: a
+  // `turn_end` is emitted for top-level result envelopes only, and the Agent's
+  // own `tool_result` just attaches to the parent tool block. Without this a
+  // sub-agent's machinery stays expanded for the rest of the session.
   _closeAllActionGroups() {
     for (const w of this.messageWraps.values()) this._closeActionGroup(w);
+    for (const sub of this.subConvs.values()) sub._closeAllActionGroups();
   }
 
   // Finalize every block that is still visually streaming. For STATIC batches
@@ -387,10 +400,7 @@ export class Conversation {
           break;
         }
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
-        // The turn was interrupted or killed: the machinery that was
-        // accumulating will never continue, so the run is over. Closes the
-        // group but not the segment, exactly as a turn end does.
-        if (ev.subtype === 'soft_interrupted') this._closeAllActionGroups();
+        if (RUN_ENDING_SYSTEM_SUBTYPES.has(ev.subtype)) this._closeAllActionGroups();
         // Resume fired: collapse the ghost queued bubbles — they're folding into
         // the single delivered turn that follows.
         if (ev.subtype === 'auto_resume') {
