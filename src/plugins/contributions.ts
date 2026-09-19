@@ -456,7 +456,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
       // to a system only to conclude cc will not use it — a connect attempt and
       // a log line on every session launch while that system is down. It also
       // keeps this skip silent and by-design, which is what it is.
-      if ((await projectPlacement(entry.project)).system !== LOCAL_SYSTEM_ID) continue;
+      if ((await projectPlacement(entry.project))?.system !== LOCAL_SYSTEM_ID) continue;
       // Local from here, so this resolution never leaves cc's own machine. No
       // memo to fingerprint either — the placement above and the cwd below are
       // both read fresh on every call, which is all this member needs.

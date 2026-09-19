@@ -24,7 +24,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { api, bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { api, bootServer, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import {
   createWorktree, getWorktree, listWorktrees, listDependentWorktrees,
   syncWorktree, mergeWorktreeIntoParent, removeWorktree, buildRebasePrompt,
@@ -63,6 +63,7 @@ function gitCode(cwd, ...args) {
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -445,9 +446,11 @@ test('T6b: a depth-3 chain refuses at every level, then lands leaf-first with al
 // ---------------------------------------------------------------------------
 test('T6c: the refusal names the whole subtree deepest-first, and that order is followable', async () => {
   const repoPath = await makeRealRepo('demo');
-  const a = await createWorktree('demo', { name: 'a' });
-  const b = await createWorktree('demo', { baseWorktree: a.worktreeName, name: 'b' });
-  const c = await createWorktree('demo', { baseWorktree: b.worktreeName, name: 'c' });
+  // Distinctive names: the assertions below search the refusal PROSE for them,
+  // and a one-letter name matches a letter inside "worktree".
+  const a = await createWorktree('demo', { name: 'root-wt' });
+  const b = await createWorktree('demo', { baseWorktree: a.worktreeName, name: 'mid-wt' });
+  const c = await createWorktree('demo', { baseWorktree: b.worktreeName, name: 'leaf-wt' });
   await commitFile(repoPath, 'main.js', 'export const m = 1;\n', 'main moves on');
 
   const refused = await syncWorktree('demo', a.worktreeName);
@@ -570,7 +573,7 @@ test('T7: a name is slugified into the branch + dir; collisions and empty slugs 
   await makeRealRepo('demo');
 
   const wt = await createWorktree('demo', { name: 'Auth Refactor!' });
-  assert.equal(wt.worktreeName, 'demo_worktree_auth-refactor');
+  assert.equal(wt.worktreeName, 'auth-refactor');
   assert.equal(wt.branch, 'code-conductor/auth-refactor');
   assert.equal(await exists(wt.worktreePath), true);
 
@@ -591,7 +594,7 @@ test('T7: a name is slugified into the branch + dir; collisions and empty slugs 
 
   // The unnamed path is unchanged: still a random short id.
   const anon = await createWorktree('demo');
-  assert.match(anon.worktreeName, /^demo_worktree_[0-9a-f]{6}$/);
+  assert.match(anon.worktreeName, /^[0-9a-f]{6}$/);
   assert.equal(anon.baseWorktree, undefined, 'a root-based record carries no baseWorktree');
 });
 
@@ -670,18 +673,18 @@ test('T9: MCP create_worktree takes name/baseWorktree; refusals keep their chann
   // Unknown properties are rejected by the router, so this also proves the
   // schema gained both keys.
   const feature = unwrap(await callTool('create_worktree', { project: 'demo', name: 'auth' }));
-  assert.equal(feature.worktree, 'demo_worktree_auth');
+  assert.equal(feature.worktree, 'auth');
   assert.equal(feature.branch, 'code-conductor/auth');
 
   const task = unwrap(await callTool('create_worktree', {
-    project: 'demo', baseWorktree: 'demo_worktree_auth',
+    project: 'demo', baseWorktree: 'auth',
   }));
-  assert.equal(task.baseWorktree, 'demo_worktree_auth');
+  assert.equal(task.baseWorktree, 'auth');
   assert.equal(task.baseBranch, 'code-conductor/auth');
 
   // A business refusal is soft: no isError, and the reason reaches the caller
   // un-reworded — proving it is minted once in the git layer, not per surface.
-  const refused = await callTool('merge_worktree', { project: 'demo', worktree: 'demo_worktree_auth' });
+  const refused = await callTool('merge_worktree', { project: 'demo', worktree: 'auth' });
   assert.ok(!refused.isError, 'a dependents refusal must not use the error channel');
   const body = unwrap(refused);
   assert.equal(body.ok, false);
@@ -927,26 +930,28 @@ test('T12: a task rebases onto its feature, not onto main', async () => {
 
 // baseWorktree is the foreign key listDependentWorktrees matches on. Persisting
 // the caller's spelling would produce a record no dependents query can see.
-test('T19: a baseWorktree named by bare slug is persisted canonically', async () => {
+test('T19: the stored baseWorktree is the base\'s one registered name', async () => {
   await makeRealRepo('demo');
   const feature = await createWorktree('demo', { name: 'auth' });
-  assert.equal(feature.worktreeName, 'demo_worktree_auth');
+  assert.equal(feature.worktreeName, 'auth');
 
   const task = await createWorktree('demo', { baseWorktree: 'auth' });
-  assert.equal(task.baseWorktree, 'demo_worktree_auth',
-    'the stored foreign key is canonical, not the caller\'s spelling');
+  assert.equal(task.baseWorktree, 'auth');
   assert.equal(task.parentPath, feature.worktreePath);
 
-  assert.deepEqual(await listDependentWorktrees('demo', 'demo_worktree_auth'), [task.worktreeName]);
-  assert.deepEqual(await listDependentWorktrees('demo', 'auth'), [task.worktreeName],
-    'listDependentWorktrees aliases too');
+  // The foreign key is matched LITERALLY, and a reference that matches nothing
+  // yields an EMPTY dependents list rather than an error — so the one spelling
+  // must be the one that is stored.
+  assert.deepEqual(await listDependentWorktrees('demo', 'auth'), [task.worktreeName]);
+  assert.deepEqual(await listDependentWorktrees('demo', 'demo_worktree_auth'), [],
+    'a name that is not a registered key matches nothing');
 });
 
 // THE safety test. removeWorktree feeds listDependentWorktrees; with a raw bare
 // slug that returns [], the dependents refusal is silently bypassed and the
 // base's branch is deleted out from under its child. Asserting the child
 // SURVIVES — not merely that it threw — is what makes this a safety assertion.
-test('T20: removeWorktree by bare slug still refuses a base that has dependents', async () => {
+test('T20: removeWorktree refuses a base that has dependents', async () => {
   await makeRealRepo('demo');
   const feature = await createWorktree('demo', { name: 'auth' });
   const task = await createWorktree('demo', { baseWorktree: feature.worktreeName });
@@ -984,40 +989,24 @@ test('T21: syncWorktree by bare slug still returns the dependents refusal', asyn
 // Create side: one exact `<project>_worktree_` prefix is stripped before
 // slugifying, so a caller echoing a full dir name back into create_worktree
 // names the worktree they meant rather than a mangled sibling.
-test('T22: create strips one <project>_worktree_ prefix before slugifying', async () => {
+test('T22: a name is slugified whole — there is no prefix to strip', async () => {
   await makeRealRepo('demo');
 
-  // 1. Both "don't strip" and "slugify before stripping" would yield
-  //    demo_worktree_demo-worktree-x.
+  // The old create-side strip existed to mirror a read-side alias that no
+  // longer exists. With one spelling per worktree, `demo_worktree_x` is just a
+  // name: it slugifies whole, and it is a DIFFERENT worktree from `x`.
   const prefixed = await createWorktree('demo', { name: 'demo_worktree_x' });
-  assert.equal(prefixed.worktreeName, 'demo_worktree_x');
-  assert.equal(prefixed.branch, 'code-conductor/x');
+  assert.equal(prefixed.worktreeName, 'demo-worktree-x');
+  assert.equal(prefixed.branch, 'code-conductor/demo-worktree-x');
 
-  // 2. The two spellings collide — i.e. they name the same worktree.
-  await assert.rejects(
-    () => createWorktree('demo', { name: 'x' }),
-    (e) => { assert.equal(e.statusCode, 409); assert.match(e.message, /code-conductor\/x/); return true; },
-  );
-
-  // 3. The direct "same directory either way" assertion.
-  await removeWorktree('demo', 'demo_worktree_x');
   const bare = await createWorktree('demo', { name: 'x' });
-  assert.equal(bare.worktreeName, prefixed.worktreeName);
-  assert.equal(bare.branch, prefixed.branch);
+  assert.equal(bare.worktreeName, 'x');
+  assert.notEqual(bare.worktreePath, prefixed.worktreePath);
 
-  // 4. The bound: only the literal underscored prefix, and strip-then-validate
-  //    (an empty remainder still 400s rather than returning the unstripped name).
-  const dashed = await createWorktree('demo', { name: 'demo-worktree-y' });
-  assert.equal(dashed.worktreeName, 'demo_worktree_demo-worktree-y');
-
-  // 5. EXACTLY once, not greedily. A doubled prefix strips one level only, so
-  //    the remaining `_` slugifies to `-`. A strip-every-occurrence
-  //    implementation would yield demo_worktree_x — a different worktree.
-  const doubled = await createWorktree('demo', { name: 'demo_worktree_demo_worktree_z' });
-  assert.equal(doubled.worktreeName, 'demo_worktree_demo-worktree-z');
-  assert.equal(doubled.branch, 'code-conductor/demo-worktree-z');
+  // Strip-then-validate is gone with the strip, but the empty-slug refusal is
+  // not: a name with no usable characters still 400s.
   await assert.rejects(
-    () => createWorktree('demo', { name: 'demo_worktree_' }),
+    () => createWorktree('demo', { name: '___' }),
     (e) => { assert.equal(e.statusCode, 400); assert.match(e.message, /no usable characters/); return true; },
   );
 });

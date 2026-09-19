@@ -574,7 +574,7 @@ export class Sidebar {
       head._pill = el('span', { class: 'wt-unmerged' });
     }
     const { _nameSpan: nameSpan, _baseSpan: baseSpan, _pill: pill } = head;
-    nameSpan.textContent = wt.worktreeName.replace(`${p.name}_worktree_`, '');
+    nameSpan.textContent = wt.worktreeName;
     nameSpan.title = `${wt.branch}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}`;
     baseSpan.textContent = `← ${wt.baseBranch}`;
     const status = wt.mergeStatus;
@@ -763,7 +763,7 @@ export class Sidebar {
       systemPill.textContent = p.remoteId ? `${p.system}/${p.remoteId}` : (p.system || 'unknown system');
       systemPill.title = unreachable
         ? unreachable
-        : `this project's tree, git repo and commands live on ${where} at ${p.systemPath}`
+        : `this project's tree, git repo and commands live on ${where} at ${p.path}`
           + ` — a worker session runs the claude CLI here and redirects its shell and file tools there.`
           + ` Click to change which target it is on.`;
       systemPill.classList.toggle('system-pill-unreachable', !!unreachable);

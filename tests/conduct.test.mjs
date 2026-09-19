@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { materializeCurrentConduct, conductConventionsPath } from '../src/conduct.ts';
 import { composeCurrentConduct } from '../src/conductorConventions.ts';
 import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
@@ -70,6 +70,7 @@ test('import detection is LINE-level: prose merely mentioning @CONVENTIONS.md st
   // equals it; anything else never reaches the disagreement state.
   const conductDir = path.join(projectsRoot, '.conduct');
   await fs.mkdir(conductDir, { recursive: true });
+  await registerLocalProject('.conduct', conductDir);
   const claudeMdPath = path.join(conductDir, 'CLAUDE.md');
   const prose = 'see @CONVENTIONS.md notes';
   const userContent = `# custom\n\n${prose}\n`;
@@ -97,6 +98,7 @@ test('ensureConductProject preserves a user CLAUDE.md verbatim, and a second cal
   // must survive, in order, with only the import gained.
   const conductDir = path.join(projectsRoot, '.conduct');
   await fs.mkdir(conductDir, { recursive: true });
+  await registerLocalProject('.conduct', conductDir);
   const claudeMdPath = path.join(conductDir, 'CLAUDE.md');
   const userContent = '# custom\n\n## Shorthand\n- keep me\n';
   await fs.writeFile(claudeMdPath, userContent);

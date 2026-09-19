@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer } from './helpers.mjs';
+import { bootServer, registerLocalProject} from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -51,6 +51,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(projectsRoot, name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'Test');

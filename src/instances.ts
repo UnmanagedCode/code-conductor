@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, placeOf, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -58,7 +58,7 @@ import {
   trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, assertRemoteLive, projectPlacement } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
 import { EVENT_LOG_NAME, buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
@@ -4755,11 +4755,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       //
       // Naming the session's OWN worktree is legitimate and stays legal — that is
       // what the restart manifest and the UI both pass — so only a MISMATCH is
-      // refused. Compared on the canonical worktreeName, never the raw argument:
-      // `getWorktree` accepts the bare slug too (resolveWorktreeName,
-      // src/worktrees.ts), and a raw-string comparison would refuse that spelling.
-      // A session findSessionLocation cannot place is left to the pre-flight
-      // below rather than refused here.
+      // refused. Compared on the resolved record's `worktreeName` rather than the
+      // raw argument, so the comparison is against what `getWorktree` actually
+      // matched. A session findSessionLocation cannot place is left to the
+      // pre-flight below rather than refused here.
       if (resume) {
         const recorded = await findSessionLocation(resume).catch(() => null);
         if (recorded && recorded.worktreeName !== worktreeMeta.worktreeName) {
@@ -4781,7 +4780,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // one absolute path apart. Every transcript read and write below, and every
     // one the Instance makes later, goes through this rather than re-deriving:
     // a second derivation is a second chance to disagree.
-    const transcriptPlace: TranscriptPlacement = placeOf(await projectPlacement(project), cwd);
+    const transcriptPlace: TranscriptPlacement = await projectRootPlace(project, cwd);
 
     // A REMOTE PROJECT'S `cwd` IS ITS PATH ON ITS OWN SYSTEM, and that is the
     // whole of criterion 8: one spelling per path, whichever tool names it.

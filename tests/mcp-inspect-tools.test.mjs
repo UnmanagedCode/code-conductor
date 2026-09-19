@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +70,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -188,7 +189,7 @@ describe('project_bash', () => {
   test('project_bash runs inside a worktree cwd', async () => {
     await makeRealRepo('demo');
     const wt = await makeWorktree('demo');
-    const wtPath = path.join(projectsRoot, wt.worktree);
+    const wtPath = wt.worktreePath;
     await fs.writeFile(path.join(wtPath, 'only-in-worktree.txt'), 'x\n');
 
     const r = unwrapBash(await callTool('project_bash', { project: 'demo', worktree: wt.worktree, command: 'ls' }));
@@ -260,21 +261,21 @@ describe('project_bash', () => {
   test('project_bash echoes the canonical worktree name on the normal-exit path', async () => {
     await makeRealRepo('demo');
     const wt = await makeWorktreeNamed('demo', 'echoalias');
-    assert.equal(wt.worktree, 'demo_worktree_echoalias');
+    assert.equal(wt.worktree, 'echoalias');
 
     const ok = unwrapBash(await callTool('project_bash', {
       project: 'demo', worktree: 'echoalias', command: 'echo hi',
     }));
     assert.equal(ok.exitCode, 0);
-    assert.equal(ok.worktree, 'demo_worktree_echoalias');
+    assert.equal(ok.worktree, 'echoalias');
 
     // A non-zero exit takes the same close handler, and the full spelling is
     // unchanged — this is a canonicalization, not a rename.
     const failed = unwrapBash(await callTool('project_bash', {
-      project: 'demo', worktree: 'demo_worktree_echoalias', command: 'exit 3',
+      project: 'demo', worktree: 'echoalias', command: 'exit 3',
     }));
     assert.equal(failed.exitCode, 3);
-    assert.equal(failed.worktree, 'demo_worktree_echoalias');
+    assert.equal(failed.worktree, 'echoalias');
   });
 
   // The async `error` event: reached by removing the checkout while its git
@@ -283,13 +284,13 @@ describe('project_bash', () => {
   test('project_bash echoes the canonical worktree name on the spawn-error path', async () => {
     await makeRealRepo('demo');
     const wt = await makeWorktreeNamed('demo', 'erroralias');
-    await fs.rm(path.join(projectsRoot, wt.worktree), { recursive: true, force: true });
+    await fs.rm(wt.worktreePath, { recursive: true, force: true });
 
     const errored = unwrapBash(await callTool('project_bash', {
       project: 'demo', worktree: 'erroralias', command: 'echo hi',
     }));
     assert.equal(errored.error, true, 'the spawn-error path is the one exercised');
-    assert.equal(errored.worktree, 'demo_worktree_erroralias');
+    assert.equal(errored.worktree, 'erroralias');
   });
 
   // The SYNCHRONOUS spawn-throw catch. `wrapped` interpolates the raw caller
@@ -300,14 +301,14 @@ describe('project_bash', () => {
   test('project_bash echoes the canonical worktree name on the synchronous spawn-throw path', async () => {
     await makeRealRepo('demo');
     const wt = await makeWorktreeNamed('demo', 'nulalias');
-    assert.equal(wt.worktree, 'demo_worktree_nulalias');
+    assert.equal(wt.worktree, 'nulalias');
 
     const thrown = unwrapBash(await callTool('project_bash', {
       project: 'demo', worktree: 'nulalias', command: 'echo a\u0000b',
     }));
     assert.equal(thrown.error, true, 'the synchronous spawn-throw path is the one exercised');
     assert.equal(thrown.exitCode, null);
-    assert.equal(thrown.worktree, 'demo_worktree_nulalias');
+    assert.equal(thrown.worktree, 'nulalias');
   });
 });
 
@@ -346,7 +347,7 @@ describe('project_bash with a zsh-flavored bundle', { skip: !hasZsh() && 'zsh no
 test('project_diff default now surfaces uncommitted changes', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   // Commit something
   await fs.writeFile(path.join(wtPath, 'committed.txt'), 'committed\n');
   await git(wtPath, 'add', '.');
@@ -368,7 +369,7 @@ test('project_diff default now surfaces uncommitted changes', async () => {
 test('project_diff surfaces staged+unstaged changes', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   // Commit something first
   await fs.writeFile(path.join(wtPath, 'committed.txt'), 'committed\n');
   await git(wtPath, 'add', '.');
@@ -389,7 +390,7 @@ test('project_diff surfaces staged+unstaged changes', async () => {
 test('project_diff surfaces untracked files in metadata', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   // Drop a new untracked file (never git-added)
   await fs.writeFile(path.join(wtPath, 'brand-new.txt'), 'brand new content\n');
 
@@ -404,7 +405,7 @@ test('project_diff surfaces untracked files in metadata', async () => {
 test('project_diff with clean working tree: hasUncommittedChanges false', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   await fs.writeFile(path.join(wtPath, 'committed.txt'), 'committed\n');
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add committed.txt');
@@ -422,7 +423,7 @@ test('project_diff with clean working tree: hasUncommittedChanges false', async 
 test('project_diff summary:true adds uncommitted section', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   await fs.writeFile(path.join(wtPath, 'committed.txt'), 'committed\n');
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add committed.txt');

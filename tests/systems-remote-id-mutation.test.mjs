@@ -81,7 +81,7 @@ describe('changing a project target', () => {
       { system: result.system, remoteId: result.remoteId },
       { system: remote.id, remoteId: 'b' },
     );
-    assert.equal((await readRecord('app')).remoteId, 'b');
+    assert.equal((await readRecord('app')).location.remoteId, 'b');
     assert.equal((await projectPlacement('app')).remoteId, 'b');
 
     const resolved = await resolveProjectDir('app');
@@ -190,11 +190,14 @@ describe('changing a project target', () => {
   // rather than silently recording a field placementOf would then ignore.
   test('a local project cannot be given a target', async () => {
     await createProject('here');
+    const before = await readRecord('here');
     await assert.rejects(
       () => setProjectRemote('here', 'a', NO_INSTANCES),
       (e) => e.statusCode === 400,
     );
-    assert.equal(await readRecord('here'), null);
+    assert.deepEqual(await readRecord('here'), before,
+      'the refusal wrote nothing — no target was silently recorded');
+    assert.equal(before.location.kind, 'local');
   });
 
   // ── What a permitted change invalidates ──────────────────────────────
@@ -236,6 +239,6 @@ describe('changing a project target', () => {
     await seed();
     const result = await setProjectRemote('app', 'a', NO_INSTANCES);
     assert.equal(result.remoteId, 'a');
-    assert.equal((await readRecord('app')).remoteId, 'a');
+    assert.equal((await readRecord('app')).location.remoteId, 'a');
   });
 });

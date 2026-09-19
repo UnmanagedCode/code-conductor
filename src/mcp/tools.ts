@@ -64,8 +64,9 @@ export function buildTools(): Tool[] {
         'One block per project: its absolute path, workspace when set, session counts, a ' +
         'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
         + 'and each worktree with branch, base, ahead/behind and its path. ' +
-        'A project adopted from OUTSIDE the projects root is marked `external`; its path is the real ' +
-        'target path, which is the one to pass to every other tool. ' +
+        'A project lives wherever its record says — inside the projects root, nested in a container ' +
+        'directory, elsewhere on disk, or on a registered system — and every row has the same shape: ' +
+        'the `path` it reports is the one to pass to every other tool. ' +
         'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
@@ -121,7 +122,7 @@ export function buildTools(): Tool[] {
           },
           worktree: {
             type: 'string',
-            description: 'Narrow to one worktree of `project`. Requires `project`.',
+            description: 'Narrow to one worktree of `project`, by its exact registered name. Requires `project`.',
           },
           includeArchived: {
             type: 'boolean',
@@ -162,8 +163,8 @@ export function buildTools(): Tool[] {
         'List orchestrator-owned git worktrees for a project as PLAIN TEXT (this tool returns ' +
         'no JSON), oldest-first: the parent project and path as a header, then each worktree\'s ' +
         'name, branch, base branch@sha, creation time and absolute path. The name is the ' +
-        '`worktree` argument every other worktree tool takes — as printed, or as just the ' +
-        'part after `<project>_worktree_`.',
+        '`worktree` argument every other worktree tool takes, exactly as printed — there is one ' +
+        'spelling per worktree.',
       inputSchema: {
         type: 'object',
         properties: { project: { type: 'string' } },
@@ -760,7 +761,7 @@ export function buildTools(): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
+          name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$ and must not start with "." — dot-leading names are reserved for orchestrator-managed state and are refused at registration.' },
           conventions: {
             type: 'array',
             items: { type: 'string' },
@@ -777,31 +778,45 @@ export function buildTools(): Tool[] {
     {
       name: 'adopt_project',
       description:
-        'Adopt an EXISTING directory that already lives on disk OUTSIDE the projects root as a project, by ' +
-        'absolute path. Nothing is copied or moved: cc records a symlink and every project tool then works ' +
-        'on the directory in place. The target must not be a *subdirectory* of a git repository (adopt that ' +
-        "repo's root instead), and must not be a git directory with no work tree (a bare repo, or a repo's " +
-        'own `.git`). A plain non-git directory is fine — it becomes an ordinary non-git project. The target ' +
-        'must also not already be managed. Afterwards the project\'s paths are the target\'s REAL path ' +
-        '(symlinks resolved), which is what list_projects reports. ' +
+        'Adopt an EXISTING directory that already lives on disk as a project, by absolute path. Nothing ' +
+        'is copied or moved: cc records where it is and every project tool then works on the directory ' +
+        'in place. NESTING UNDER THE PROJECTS ROOT IS LEGAL — a container directory there can hold ' +
+        'projects at any depth, and only the ones adopted are projects. The target must not be a ' +
+        "*subdirectory* of a git repository (adopt that repo's root instead), must not be a git " +
+        "directory with no work tree (a bare repo, or a repo's own `.git`), and must not be inside " +
+        "code-conductor's own state. A plain non-git directory is fine — it becomes an ordinary " +
+        "non-git project. Afterwards the project's path is the target's REAL path (symlinks " +
+        'resolved), which is what list_projects reports. ' +
         'WRITES INTO THE TARGET: cc creates/overwrites `<target>/CONVENTIONS.md` (its own file, ' +
         'carrying the workspace + project conventions) and ensures `<target>/CLAUDE.md` has an ' +
         '`@CONVENTIONS.md` line, prepending it without touching existing content. Both land in the ' +
         'target directory; in a git target they are changes to commit. ' +
         'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
-        'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_INSIDE_REPO, ' +
-        'TARGET_NO_WORK_TREE, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, INVALID_REMOTE_ID, ' +
-        'PROJECT_EXISTS — not errors. ' +
+        'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_IS_CC_STATE, ' +
+        'TARGET_INSIDE_REPO, TARGET_NO_WORK_TREE, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, ' +
+        'INVALID_REMOTE_ID, INVALID_STALE_ACTION, PROJECT_EXISTS, PROJECT_EXISTS_STALE, ' +
+        'PROJECT_EXISTS_UNRESOLVABLE — not errors. PROJECT_EXISTS_STALE means the name is held by a ' +
+        'record whose path no longer exists; it carries `heldPath` and `discards`, and re-calling ' +
+        'with `onStaleRecord` resolves it. PROJECT_EXISTS_UNRESOLVABLE means cc could not ask, so it ' +
+        'cannot tell a moved project from a machine that is merely down. ' +
         'A path identifies a tree only together with its (system, remoteId), so the same path on two ' +
         'targets of one system is two adoptable trees. ' +
-        'Deleting an adopted project only unregisters it; the directory itself is never touched.',
+        'Deleting an adopted project only deregisters it; the directory itself is never touched.',
       inputSchema: {
         type: 'object',
         properties: {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the directory by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
           path: { type: 'string', description: 'Absolute path to the existing directory to adopt — on `system` when one is given, else on cc\'s own machine.' },
-          system: { type: 'string', description: 'Adopt a tree living on this registered system. The path is then validated there, and cc records the placement instead of a symlink.' },
+          system: { type: 'string', description: 'Adopt a tree living on this registered system. The path is then validated there, and cc records the placement.' },
           remoteId: { type: 'string', description: 'Which TARGET of `system` the tree is on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`.' },
+          onStaleRecord: {
+            type: 'string',
+            enum: ['relocate', 'replace'],
+            description: 'What to do when the name is held by a record whose path no longer exists '
+              + '(the PROJECT_EXISTS_STALE refusal). `relocate` repoints that record at this target and '
+              + 'keeps its stored state (attachments, debug captures, worktree registrations); `replace` '
+              + 'discards that state and registers the target afresh. Omit to be refused with the counts.',
+          },
         },
         required: ['name', 'path'],
       },

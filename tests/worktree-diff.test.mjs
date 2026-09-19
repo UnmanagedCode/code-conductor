@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { FILE_DIFF_LINE_GUARD } from '../src/gitDiff.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(projectsRoot, name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -55,7 +56,7 @@ test('GET /diff returns structured data for a worktree with changes', async () =
   });
   assert.equal(created.status, 201);
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   // Configure git identity in the worktree and add a new file.
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
@@ -91,7 +92,7 @@ test('GET /diff?path= returns hunks for one file', async () => {
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');
@@ -128,7 +129,7 @@ test('GET /diff lists every file in a change exceeding 200 KB raw diff', async (
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');
@@ -160,7 +161,7 @@ test('GET /diff reports a renamed file with oldPath, and ?path= on the new name 
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');
@@ -190,7 +191,7 @@ test('GET /diff handles a non-ASCII filename: summary shows the real name, and ?
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');
@@ -220,7 +221,7 @@ test('GET /diff reports a binary file, and ?path= returns binary with no hunks',
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');
@@ -251,7 +252,7 @@ test('GET /diff?path= flags an oversized file without reading its full diff', as
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');
@@ -300,20 +301,21 @@ test('GET /diff returns 404 for an unknown worktree', async () => {
 
 // REST :wt aliasing, plus the canonical-echo invariant: a response always
 // reports the full dir name, never the caller's spelling.
-test('GET /diff accepts the bare slug and echoes the canonical worktreeName', async () => {
+test('GET /diff addresses a worktree by its one name, and the legacy spelling 404s', async () => {
+  // ONE spelling per worktree: the store key, the `worktreeName` and the
+  // directory basename are one string, so there is no alias to resolve and the
+  // old `<project>_worktree_<slug>` form names nothing.
   await makeRealRepo(projectsRoot, 'demo');
   const { createWorktree } = await import('../src/worktrees.ts');
   const wt = await createWorktree('demo', { name: 'diffalias' });
-  assert.equal(wt.worktreeName, 'demo_worktree_diffalias');
+  assert.equal(wt.worktreeName, 'diffalias');
 
-  const bySlug = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/diffalias/diff');
-  assert.equal(bySlug.status, 200, `expected 200, got ${bySlug.status}`);
-  assert.equal(bySlug.body.worktreeName, 'demo_worktree_diffalias',
-    'the response reports the canonical name, not the alias the caller sent');
+  const byName = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/diffalias/diff');
+  assert.equal(byName.status, 200, `expected 200, got ${byName.status}`);
+  assert.equal(byName.body.worktreeName, 'diffalias');
 
-  const byFull = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/demo_worktree_diffalias/diff');
-  assert.equal(byFull.status, 200);
-  assert.deepEqual(bySlug.body, byFull.body);
+  const legacy = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/demo_worktree_diffalias/diff');
+  assert.equal(legacy.status, 404);
 });
 
 test('GET /diff rejects baseRef starting with - (option injection)', async () => {
@@ -346,7 +348,7 @@ test('GET /diff reflects modifications and deletions in the structured output', 
     project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtName);
 
   await git(wtPath, 'config', 'user.email', 'agent@example.com');
   await git(wtPath, 'config', 'user.name', 'agent');

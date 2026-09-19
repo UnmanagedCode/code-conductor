@@ -90,7 +90,7 @@ describe('a project on a system, end to end, with no worker', () => {
     assert.equal(row.isGitRepo, true, 'the git facts were measured ON THE SYSTEM');
     assert.equal(row.unbornHead, false);
     assert.equal(row.system, remote.id);
-    assert.equal(row.systemPath, tree);
+    assert.equal(row.path, tree, 'one path field, whichever machine it is on');
     assert.equal(row.path, tree);
 
     // ── 3. A worktree, through the tool a conductor calls (worktree creation
@@ -99,7 +99,7 @@ describe('a project on a system, end to end, with no worker', () => {
     const wtText = await callTool(baseUrl, 'create_worktree', { project: 'app', name: 'feature' });
     const wt = (await api(baseUrl, 'GET', '/api/projects/app/worktrees')).body[0];
     assert.ok(wt, `no worktree was registered; create_worktree said: ${wtText}`);
-    assert.equal(wt.worktreePath, path.join(remote.root, wt.worktreeName));
+    assert.equal(wt.worktreePath, path.posix.join(remote.root, '.worktrees', 'app', wt.worktreeName));
     assert.equal(await exists(path.join(wt.worktreePath, 'app.txt')), true, 'a real checkout on the system');
     assert.equal(await exists(path.join(projectsRoot(), wt.worktreeName)), false);
 
@@ -155,7 +155,7 @@ describe('a project on a system, end to end, with no worker', () => {
     const del = await api(baseUrl, 'DELETE', '/api/projects/app');
     assert.equal(del.status, 200, JSON.stringify(del.body));
     assert.equal(del.body.system, remote.id);
-    assert.equal(del.body.unregisteredOnly, true,
+    assert.equal(del.body.directoryDeleted, false,
       'the response says the tree was left alone, so the UI can too');
     assertTreeUnchanged(assert, before, await snapshotTree(tree),
       'the remote tree is byte-identical after unregistering');
@@ -175,8 +175,9 @@ describe('a project on a system, end to end, with no worker', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.equal(r.body.ok, true);
     assert.equal(r.body.system, remote.id);
-    assert.equal(r.body.external, false, 'a remote adopt is not an `.external` one');
-    assert.equal(await exists(path.join(projectsRoot(), '.external', 'existing')), false);
+    assert.equal(r.body.external, undefined, 'a project carries no kind flag');
+    assert.equal(await exists(path.join(projectsRoot(), 'existing')), false,
+      'and nothing was written under the local projects root');
 
     // CONVENTIONS.md was delivered INTO THE TREE ON THE SYSTEM, as the adopt
     // contract promises for a local one.
@@ -214,7 +215,7 @@ describe('a project on a system, end to end, with no worker', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     await callTool(baseUrl, 'create_worktree', { project: 'app', name: 'feature' });
     const wt = (await api(baseUrl, 'GET', '/api/projects/app/worktrees')).body[0];
-    assert.equal(wt.worktreePath, path.join(degraded.root, wt.worktreeName));
+    assert.equal(wt.worktreePath, path.posix.join(degraded.root, '.worktrees', 'app', wt.worktreeName));
     const out = await callTool(baseUrl, 'project_bash', {
       project: 'app', worktree: wt.worktreeName, command: 'echo alive',
     });

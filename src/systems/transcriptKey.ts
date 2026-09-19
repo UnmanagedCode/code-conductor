@@ -60,9 +60,12 @@ export async function registeredPlaces(): Promise<TranscriptPlace[]> {
   const { registeredWorktreeNames, worktreePathFor } = await import('../worktrees.ts');
   const out: TranscriptPlace[] = [];
   for (const proj of await listProjects()) {
+    // A row whose record could not be parsed carries no path, so it names no
+    // directory anything could collide with.
+    if (proj.degraded) continue;
     out.push({
       project: proj.name, worktree: null, system: proj.system, remoteId: proj.remoteId,
-      cwd: proj.systemPath ?? proj.path,
+      cwd: proj.path,
     });
     for (const wt of await registeredWorktreeNames(proj.name)) {
       out.push({

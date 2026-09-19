@@ -23,7 +23,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { markSessionMode, getSessionMode } from '../src/sessionModes.ts';
 
@@ -42,6 +42,7 @@ const git = (cwd, ...args) => execFileP('git', args, { cwd });
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');

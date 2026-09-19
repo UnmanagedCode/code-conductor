@@ -9,6 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { runMigrations } from '../migrations/index.mjs';
 import * as m0001 from '../migrations/0001-centralize-orchestrator-state.mjs';
+import * as m0002 from '../migrations/0002-rename-group-to-workspace.mjs';
 import * as m0010 from '../migrations/0010-conduct-md-generated-file.mjs';
 import * as m0022 from '../migrations/0022-drop-conduct-md-file.mjs';
 
@@ -23,6 +24,18 @@ async function exists(p) {
 async function writeJson(p, obj) {
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, JSON.stringify(obj, null, 2));
+}
+
+// Run ONE migration exactly as runMigrations would, including its log line —
+// for the tests that assert on a single migration's output rather than on the
+// end state of the whole chain.
+async function runOne(m, { root, log = console.log }) {
+  const result = await m.run({ root, log });
+  if (result?.applied) {
+    const tail = result.summary ? ' — ' + JSON.stringify(result.summary) : '';
+    log(`migration ${m.name}: applied${tail}`);
+  }
+  return result;
 }
 
 async function withEnv(overrides, fn) {
@@ -99,13 +112,12 @@ test('0001 migration: moves project + worktree state into the central store', as
     );
     assert.ok(await exists(path.join(root, '.code-conductor', 'projects', 'alpha', 'debug', 'inst-1', 'meta.json')));
 
-    // Worktree metadata + attachments moved.
-    const wtMeta = path.join(root, '.code-conductor', 'projects', 'alpha', 'worktrees', 'alpha_worktree_abc', 'worktree.json');
-    assert.equal(JSON.parse(await fs.readFile(wtMeta, 'utf8')).parentProject, 'alpha');
-    assert.equal(
-      await fs.readFile(path.join(root, '.code-conductor', 'projects', 'alpha', 'worktrees', 'alpha_worktree_abc', 'attachments', 'w.png'), 'utf8'),
-      'PNGW',
-    );
+    // Worktree metadata + attachments moved. The whole chain runs here, so the
+    // store key is the one 0037 leaves behind: the bare worktree name, with the
+    // attachments carried across the rename with it.
+    const wtStore = path.join(root, '.code-conductor', 'projects', 'alpha', 'worktrees', 'abc');
+    assert.equal(JSON.parse(await fs.readFile(path.join(wtStore, 'worktree.json'), 'utf8')).parentProject, 'alpha');
+    assert.equal(await fs.readFile(path.join(wtStore, 'attachments', 'w.png'), 'utf8'), 'PNGW');
 
     // Old in-tree dotfolders removed.
     assert.equal(await exists(path.join(root, 'alpha', '.code-conductor')), false);
@@ -119,8 +131,13 @@ test('0001 migration: moves project + worktree state into the central store', as
     const exclude = await fs.readFile(path.join(fakeGitDir, 'info', 'exclude'), 'utf8');
     assert.ok(!exclude.includes('/.code-conductor/'), `exclude line should be stripped, got: ${exclude}`);
 
-    // beta untouched.
-    assert.equal(await exists(path.join(root, '.code-conductor', 'projects', 'beta')), false);
+    // beta had nothing of 0001's to move, so 0001 wrote no attachments/debug for
+    // it — but the chain's 0037 does register it, because a project's record is
+    // now the only thing that makes it a project.
+    assert.equal(await exists(path.join(root, '.code-conductor', 'projects', 'beta', 'attachments')), false);
+    assert.deepEqual(
+      JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'projects', 'beta', 'project.json'), 'utf8')),
+      { location: { kind: 'local', path: path.join(root, 'beta') } });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -194,10 +211,11 @@ test('0001 migration: no candidates → applied:false, no log output', async () 
     await fs.mkdir(path.join(root, 'epsilon'), { recursive: true });
 
     const logs = [];
-    // Pin 0009's legacy-baseline lookup off the real machine's home dir —
-    // this test wants a truly empty workspace with no migration output.
+    // 0001 ALONE. The full chain would also run 0037, which legitimately
+    // registers that directory as a project and says so — a different
+    // migration's output, and not what this asserts about.
     await withEnv({ TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
-      await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
+      await runOne(m0001, { root, log: (...args) => logs.push(args.join(' ')) });
     });
 
     assert.deepEqual(logs, []);
@@ -281,7 +299,9 @@ test('0002 migration: renames group → workspace and seeds workspaces.json', as
     );
 
     const logs = [];
-    await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
+    // 0002 ALONE: these rows have no tree on disk, so the full chain's 0037
+    // would move them aside as unlocatable before this could read them back.
+    await runOne(m0002, { root, log: (...args) => logs.push(args.join(' ')) });
 
     // group → workspace on every affected file.
     const a = JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'projects', 'a', 'project.json'), 'utf8'));
@@ -300,7 +320,7 @@ test('0002 migration: renames group → workspace and seeds workspaces.json', as
 
     // Second run is a fast no-op (no groups remain + registry exists).
     const logs2 = [];
-    await runMigrations({ root, log: (...args) => logs2.push(args.join(' ')) });
+    await runOne(m0002, { root, log: (...args) => logs2.push(args.join(' ')) });
     assert.ok(!logs2.some(l => l.includes('migration 0002')), 'second run does not log 0002');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -312,7 +332,8 @@ test('0002 migration: prefers existing workspace field if both keys are present'
   try {
     const file = path.join(root, '.code-conductor', 'projects', 'dual', 'project.json');
     await writeJson(file, { group: 'Old', workspace: 'New' });
-    await runMigrations({ root, log: () => {} });
+    // 0002 ALONE, for the same reason as the test above.
+    await runOne(m0002, { root, log: () => {} });
     const body = JSON.parse(await fs.readFile(file, 'utf8'));
     assert.equal(body.workspace, 'New');
     assert.ok(!('group' in body));

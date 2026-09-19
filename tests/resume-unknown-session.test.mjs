@@ -323,14 +323,15 @@ test('a resume into a worktree the session did not run in is refused; its OWN wo
     assert.equal(ctx.instances.anyForSession(w.sessionId).cwd, inst.cwd);
     await ctx.instances.remove(ctx.instances.anyForSession(w.sessionId).id);
 
-    // …and the bare slug, which resolveWorktreeName aliases to the same record.
-    // A guard comparing raw strings would false-positive here.
-    const slug = own.replace('demo_worktree_', '');
-    assert.notEqual(slug, own, 'premise: the two spellings differ');
-    const bySlug = await spawnInstance(
-      { resume: w.sessionId, project: 'demo', worktree: slug, mode: 'bypassPermissions' },
-      { instances: ctx.instances });
-    assert.notEqual(bySlug.ok, false, `the bare slug must work too: ${JSON.stringify(bySlug)}`);
+    // …and there is only ONE spelling, so the old composed dir name names no
+    // worktree of this project and is refused like any other unknown one.
+    const legacy = `demo_worktree_${own}`;
+    await assert.rejects(
+      () => spawnInstance(
+        { resume: w.sessionId, project: 'demo', worktree: legacy, mode: 'bypassPermissions' },
+        { instances: ctx.instances }),
+      (e) => { assert.equal(e.statusCode, 404); assert.match(e.message, /not found/); return true; },
+    );
   } finally {
     await ctx.close();
   }

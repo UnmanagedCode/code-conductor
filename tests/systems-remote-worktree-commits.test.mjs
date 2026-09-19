@@ -1,6 +1,7 @@
 // THE COMMIT-HISTORY VIEW, ADDRESSED AT A WORKTREE.
 //
-// A worktree of a REMOTE project lives beside its parent's tree on the system
+// A worktree of a REMOTE project lives ON THE SYSTEM, under
+// `<dirname(project path)>/.worktrees/<project>/<key>` by default
 // (`worktreePathFor`), so there is nothing under cc's projects root to find and
 // no store record that registers it as a project — the only addressing form
 // that can reach it is `(project, worktree)`. The local arm of these same
@@ -32,8 +33,10 @@ describe('commit history for a worktree on a system', () => {
     assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
     wt = await createWorktree('app', { name: 'feature' });
     // The condition every assertion below turns on: the worktree is on the
-    // system, not under cc's projects root.
-    assert.equal(wt.worktreePath, path.join(remote.root, wt.worktreeName));
+    // system, not under cc's projects root — and in the ONE uniform layout,
+    // `<worktrees root>/<project>/<key>`, with no per-kind exception.
+    assert.equal(wt.worktreePath,
+      path.posix.join(remote.root, '.worktrees', 'app', wt.worktreeName));
   });
 
   afterEach(async () => {

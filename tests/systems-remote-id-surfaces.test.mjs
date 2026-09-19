@@ -32,6 +32,11 @@ async function readRecord(name) {
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
 
+// Where a project lives is ONE stored field, so the target is read off it.
+async function readRemoteId(name) {
+  return (await readRecord(name))?.location?.remoteId ?? null;
+}
+
 describe('remoteId across REST and MCP', () => {
   let ctx, baseUrl, home, sandbox, remote;
   before(async () => { ctx = await bootServer(); ({ baseUrl } = ctx); });
@@ -58,7 +63,7 @@ describe('remoteId across REST and MCP', () => {
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     assert.equal(created.body.remoteId, 'a');
-    assert.equal((await readRecord('app')).remoteId, 'a');
+    assert.equal(await readRemoteId('app'), 'a');
 
     const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'app');
     assert.equal(row.remoteId, 'a');
@@ -84,7 +89,7 @@ describe('remoteId across REST and MCP', () => {
     });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.equal(r.body.remoteId, 'b');
-    assert.equal((await readRecord('app')).remoteId, 'b');
+    assert.equal(await readRemoteId('app'), 'b');
   });
 
   // ── PUT /projects/:name/remote ───────────────────────────────────────
@@ -98,7 +103,7 @@ describe('remoteId across REST and MCP', () => {
     const r = await api(baseUrl, 'PUT', '/api/projects/app/remote', { remoteId: 'b' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.remoteId, 'b');
-    assert.equal((await readRecord('app')).remoteId, 'b');
+    assert.equal(await readRemoteId('app'), 'b');
   });
 
   // PINS: a local project has no target, and the route says so rather than
@@ -136,7 +141,7 @@ describe('remoteId across REST and MCP', () => {
     });
     const r = await callTool(baseUrl, 'set_project_remote', { project: 'app', remoteId: 'b' });
     assert.equal(r.isError, undefined, JSON.stringify(r));
-    assert.equal((await readRecord('app')).remoteId, 'b');
+    assert.equal(await readRemoteId('app'), 'b');
   });
 
   // PINS: BOTH SURFACES PRODUCE THE SAME REFUSAL, because both call the one
@@ -190,7 +195,7 @@ describe('remoteId across REST and MCP', () => {
       const r = await api(baseUrl, 'PUT', '/api/projects/app/remote', { remoteId: value });
       assert.equal(r.status, 200, `${JSON.stringify(value)}: ${JSON.stringify(r.body)}`);
       assert.equal(r.body.remoteId, null);
-      assert.equal('remoteId' in (await readRecord('app')), false, `${JSON.stringify(value)} clears the field`);
+      assert.equal(await readRemoteId('app'), null, `${JSON.stringify(value)} clears the field`);
     }
   });
 
@@ -209,7 +214,7 @@ describe('remoteId across REST and MCP', () => {
 
     const cleared = await callTool(baseUrl, 'set_project_remote', { project: 'app', remoteId: null });
     assert.equal(cleared.isError, undefined, JSON.stringify(cleared));
-    assert.equal('remoteId' in (await readRecord('app')), false);
+    assert.equal(await readRemoteId('app'), null);
   });
 
   // PINS: create_project over MCP carries the target too, so a conductor's
@@ -219,7 +224,7 @@ describe('remoteId across REST and MCP', () => {
       name: 'app', system: remote.id, remoteId: 'a', systemPath: path.join(sandbox, 'app'),
     });
     assert.equal(r.isError, undefined, JSON.stringify(r));
-    assert.equal((await readRecord('app')).remoteId, 'a');
+    assert.equal(await readRemoteId('app'), 'a');
   });
 
   // ── Settings sees which targets are bound ────────────────────────────

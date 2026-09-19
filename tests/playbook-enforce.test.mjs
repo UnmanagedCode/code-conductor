@@ -21,7 +21,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, seedSessionJsonl, registerLocalProject} from './helpers.mjs';
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
 import { orchStoreRoot, localPlace} from '../src/projects.ts';
 import { listWorktrees } from '../src/worktrees.ts';
@@ -49,6 +49,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(projectsRoot, name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');

@@ -9,7 +9,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { createWorktree } from '../src/worktrees.ts';
 import { projectStoreDir } from '../src/projects.ts';
 
@@ -34,6 +34,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');

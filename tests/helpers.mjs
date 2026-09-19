@@ -260,6 +260,21 @@ export function stripMessageBoundaryHeader(body) {
   return body.replace(BOUNDARY_HEADER_RE, '');
 }
 
+// REGISTER A LOCAL PROJECT, mkdir'ing its directory first.
+//
+// A directory under the projects root no longer registers a project by
+// existing — the record in `<store>/projects/<name>/project.json` does — so
+// every fixture that used to mkdir one has to register it too. Idempotent, so a
+// fixture that also goes through createProject/adoptProject can call it freely.
+export async function registerLocalProject(name, dir) {
+  const { readProjectRecord, registerProject } = await import('../src/projects.ts');
+  await fs.mkdir(dir, { recursive: true });
+  if (await readProjectRecord(name) === null) {
+    await registerProject(name, { kind: 'local', path: dir });
+  }
+  return dir;
+}
+
 // A directory under `baseDir` whose absolute path is at least `minBytes` long,
 // created. The length has to come from subdirectories INSIDE `baseDir`:
 // `tmpRegistry.mkdtemp` refuses to register anything but a direct child of the

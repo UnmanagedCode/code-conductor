@@ -1,7 +1,7 @@
 // THE THIRD PLACEMENT: a project whose tree lives on another system.
 //
-// A remote project is neither in-root nor `.external`. Every binary
-// "in-root or external?" branch in the codebase is therefore a site that had to
+// A remote project's tree is on another machine. Every branch that used to ask
+// "in-root or external?" in the codebase is therefore a site that had to
 // learn a third answer, and the failure mode being guarded against is not a
 // crash — it is a call that composes a path under the LOCAL projects root,
 // finds nothing there, and REPORTS SUCCESS while the real tree is untouched.
@@ -21,7 +21,7 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, snapshotTree, assertTreeUnchanged } from './remoteSystem.mjs';
 import {
   createProject, deleteProject, adoptProject, getProject, listProjects,
-  resolveProjectDir, projectsRoot, projectStoreDir, externalLinkPath,
+  resolveProjectDir, projectsRoot, projectStoreDir,
 } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles, LOCAL_SYSTEM_ID } from '../src/systems/registry.ts';
@@ -54,7 +54,6 @@ describe('remote project placement', () => {
 
     const resolved = await resolveProjectDir('app');
     assert.equal(resolved.path, tree);
-    assert.equal(resolved.external, false);
     assert.equal(resolved.system.id, remote.id);
 
     const proj = await getProject('app');
@@ -91,22 +90,21 @@ describe('remote project placement', () => {
 
   // PINS: a record naming a system with no path is refused BY NAME rather than
   // resolving to some path — there is no tree to place.
-  test('a record with a system but no systemPath refuses, naming the fix', async () => {
+  test('a record cc cannot parse refuses 500, naming the file', async () => {
     await fs.mkdir(projectStoreDir('broken'), { recursive: true });
     await fs.writeFile(path.join(projectStoreDir('broken'), 'project.json'),
       JSON.stringify({ system: remote.id }));
     await assert.rejects(
       () => resolveProjectDir('broken'),
-      (e) => e.statusCode === 500 && /systemPath/.test(e.message),
+      (e) => e.statusCode === 500 && /malformed/.test(e.message),
     );
   });
 
   // ── SITE 2: listProjects' union ──────────────────────────────────────
 
-  // PINS: the listing unions the local filesystem with the store records that
-  // name a system, so a remote project is visible at all — and carries the
-  // placement fields, with `path` being the path on the system.
-  test('the listing unions local projects with store-derived remote ones', async () => {
+  // PINS: the listing is store-derived, so a remote project is visible at all —
+  // and carries the placement fields, with `path` being the path on the system.
+  test('the listing carries a remote project with its path on the system', async () => {
     await createProject('localone');
     const tree = path.join(remote.root, 'app');
     await createProject('app', { system: remote.id, systemPath: tree });
@@ -115,18 +113,18 @@ describe('remote project placement', () => {
     assert.deepEqual(rows.map(r => r.name), ['app', 'localone']);
     const app = rows.find(r => r.name === 'app');
     assert.equal(app.system, remote.id);
-    assert.equal(app.systemPath, tree);
     assert.equal(app.path, tree, 'the listing agrees with the hub about where the tree is');
-    assert.equal(app.external, false, 'a remote project is not an adopted local one');
+    assert.equal(app.external, undefined, 'a project row carries no kind flag');
     const loc = rows.find(r => r.name === 'localone');
     assert.equal(loc.system, LOCAL_SYSTEM_ID);
     assert.equal(loc.path, path.join(projectsRoot(), 'localone'));
   });
 
-  // PINS: the union does not double-list a name that has BOTH a remote record
-  // and a local directory — one name is one project, and the record wins (as
-  // the hub resolves it).
-  test('a name with a remote record and a local directory is listed once', async () => {
+  // PINS: a name with BOTH a remote record and a same-named local directory is
+  // ONE project, and the record decides where it is. The decoy is what gives
+  // this teeth — a resolver that still probed the projects root would answer
+  // with the directory.
+  test('a name with a remote record and a same-named local directory is listed once', async () => {
     const tree = path.join(remote.root, 'app');
     await createProject('app', { system: remote.id, systemPath: tree });
     await fs.mkdir(path.join(projectsRoot(), 'app'), { recursive: true });
@@ -135,25 +133,8 @@ describe('remote project placement', () => {
     assert.equal(rows[0].path, tree);
   });
 
-  // PINS the OTHER half of the dedup. There are two suppressions, one per local
-  // enumeration, and the in-root one above does not cover the `.external` one:
-  // a name with a remote record AND an adopted symlink is still ONE project,
-  // and the record wins, exactly as the resolver resolves it. Two rows would be
-  // two registrations sharing one store entry and one encoded session dir.
-  test('a name with a remote record and an .external symlink is listed once', async () => {
-    const tree = path.join(remote.root, 'app');
-    await createProject('app', { system: remote.id, systemPath: tree });
-    // An adopted-looking link of the same name, planted directly: adoptProject
-    // would refuse the name, which is the point — only a stale link gets here.
-    const localRepo = await seedRepo(path.join(remote.root, 'stale-local'));
-    await fs.mkdir(path.dirname(externalLinkPath('app')), { recursive: true });
-    await fs.symlink(localRepo, externalLinkPath('app'));
-
-    const rows = await listProjects();
-    assert.deepEqual(rows.map(r => r.name), ['app']);
-    assert.equal(rows[0].path, tree, 'the record wins over the symlink');
-    assert.equal(rows[0].external, false);
-  });
+  // The `.external` half of the old dedup is gone with the mechanism: there is
+  // no second registration artefact left for a record to win against.
 
   // ── SITE 3: createProject ────────────────────────────────────────────
 
@@ -173,7 +154,8 @@ describe('remote project placement', () => {
     assert.equal(await fs.readFile(path.join(tree, 'CONVENTIONS.md'), 'utf8'), '# conventions\n');
     assert.equal(await exists(path.join(projectsRoot(), 'app')), false,
       'nothing is created under the local projects root');
-    assert.deepEqual(await readRecord('app'), { system: remote.id, systemPath: tree });
+    assert.deepEqual(await readRecord('app'),
+      { location: { kind: 'remote', system: remote.id, remoteId: null, path: tree } });
   });
 
   // PINS: an unreachable system refuses the create and leaves NO record — a
@@ -241,7 +223,8 @@ describe('remote project placement', () => {
     try { result = await deleteProject('app'); }
     finally { Object.assign(proto, orig); }
 
-    assert.deepEqual(result, { name: 'app', path: tree, system: remote.id, remoteId: null });
+    assert.deepEqual(result,
+      { name: 'app', path: tree, system: remote.id, remoteId: null, directoryDeleted: false });
     assert.deepEqual(removals, [], `no removal was issued on the system: ${removals.join('; ')}`);
     assertTreeUnchanged(assert, before, await snapshotTree(tree), 'the remote tree is byte-identical');
 
@@ -269,17 +252,18 @@ describe('remote project placement', () => {
 
   // ── SITE 5: adoptProject ─────────────────────────────────────────────
 
-  // PINS: adopting a repo that already exists on a system writes a RECORD, not
-  // a `.external` symlink — `.external` is a purely local mechanism.
-  test('adopt on a system records the placement, with no local symlink', async () => {
+  // PINS: adopting a repo that already exists on a system writes a RECORD whose
+  // location names that system — the same one mechanism every project uses.
+  test('adopt on a system records the placement', async () => {
     const tree = await seedRepo(path.join(remote.root, 'existing'));
     const r = await adoptProject('existing', tree, { system: remote.id });
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.equal(r.path, tree);
     assert.equal(r.system, remote.id);
-    assert.equal(r.external, false);
-    assert.equal(await exists(externalLinkPath('existing')), false, 'no `.external` link is written');
-    assert.deepEqual(await readRecord('existing'), { system: remote.id, systemPath: tree });
+    assert.equal(await exists(path.join(projectsRoot(), 'existing')), false,
+      'nothing is written under the local projects root');
+    assert.deepEqual(await readRecord('existing'),
+      { location: { kind: 'remote', system: remote.id, remoteId: null, path: tree } });
     assert.equal((await getProject('existing')).path, tree);
   });
 
@@ -288,7 +272,7 @@ describe('remote project placement', () => {
   test('the duplicate check is on (system, path), not path', async () => {
     const tree = await seedRepo(path.join(remote.root, 'shared'));
     assert.equal((await adoptProject('one', tree, { system: remote.id })).ok, true);
-    assert.deepEqual(await readRecord('one'), { system: remote.id, systemPath: tree });
+    assert.deepEqual(await readRecord('one'), { location: { kind: 'remote', system: remote.id, remoteId: null, path: tree } });
 
     const again = await adoptProject('two', tree, { system: remote.id });
     assert.equal(again.ok, false);
@@ -300,7 +284,7 @@ describe('remote project placement', () => {
     // Same LAST path segment, different system — and, more importantly, the
     // check must key on the system too.
     assert.equal((await adoptProject('three', elsewhere, { system: other.id })).ok, true);
-    assert.deepEqual(await readRecord('three'), { system: other.id, systemPath: elsewhere });
+    assert.deepEqual(await readRecord('three'), { location: { kind: 'remote', system: other.id, remoteId: null, path: elsewhere } });
   });
 
   // PINS: the local-projects-root containment tests are skipped for a remote
@@ -312,7 +296,7 @@ describe('remote project placement', () => {
     const mirrored = await seedRepo(path.join(remote.root, 'mirror'));
     const r = await adoptProject('mirror', mirrored, { system: remote.id });
     assert.equal(r.ok, true, JSON.stringify(r));
-    assert.deepEqual(await readRecord('mirror'), { system: remote.id, systemPath: mirrored });
+    assert.deepEqual(await readRecord('mirror'), { location: { kind: 'remote', system: remote.id, remoteId: null, path: mirrored } });
     // And the local test still applies to a LOCAL adopt.
     const local = await adoptProject('inroot', projectsRoot(), {});
     assert.equal(local.ok, false);
@@ -327,7 +311,7 @@ describe('remote project placement', () => {
     await fs.mkdir(notARepo, { recursive: true });
     const r = await adoptProject('plain', notARepo, { system: remote.id });
     assert.equal(r.ok, true, JSON.stringify(r));
-    assert.deepEqual(await readRecord('plain'), { system: remote.id, systemPath: notARepo });
+    assert.deepEqual(await readRecord('plain'), { location: { kind: 'remote', system: remote.id, remoteId: null, path: notARepo } });
 
     // A repo that exists on cc's own machine but not on the system must not be
     // adoptable onto the system: that is the wrong-machine read.
@@ -368,26 +352,29 @@ describe('remote project placement', () => {
 
     const r = await adoptProject('nogit', tree, { system: remote.id });
     assert.equal(r.ok, true, JSON.stringify(r));
-    assert.deepEqual(await readRecord('nogit'), { system: remote.id, systemPath: tree });
+    assert.deepEqual(await readRecord('nogit'), { location: { kind: 'remote', system: remote.id, remoteId: null, path: tree } });
   });
 
   // ── SITE 6: createWorktree's parent directory ────────────────────────
 
-  // PINS: a remote project's worktree DIRECTORY is created on the system,
-  // sibling to its tree — never under the local projects root, which would
-  // leave the directory here while every git command ran there.
-  test('a worktree of a remote project lands on the system, beside its tree', async () => {
+  // PINS: a remote project's worktree DIRECTORY is created ON THE SYSTEM —
+  // never under the local projects root, which would leave the directory here
+  // while every git command ran there. One layout, `<root>/<project>/<key>`,
+  // with only the root differing: a `.worktrees` beside the tree by default,
+  // because cc owns no area on another machine.
+  test('a worktree of a remote project lands on the system', async () => {
     const tree = await seedRepo(path.join(remote.root, 'app'));
     assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
 
     const wt = await createWorktree('app', { name: 'feature' });
-    assert.equal(wt.worktreePath, path.join(remote.root, wt.worktreeName),
-      'sibling to the tree on the system');
+    assert.equal(wt.worktreePath,
+      path.posix.join(remote.root, '.worktrees', 'app', wt.worktreeName));
     assert.equal(await exists(path.join(wt.worktreePath, '.git')), true,
       'the checkout really exists there');
     assert.equal(await exists(path.join(projectsRoot(), wt.worktreeName)), false,
       'and nothing was created under the local projects root');
-    assert.equal(await exists(path.join(projectsRoot(), '.external', wt.worktreeName)), false);
+    assert.equal(await exists(path.join(projectsRoot(), '.worktrees', 'app', wt.worktreeName)), false,
+      "a remote project's worktree is never created in cc's own local area");
 
     // git agrees it is a registered worktree of the remote repo.
     const list = await git(tree, 'worktree', 'list', '--porcelain');

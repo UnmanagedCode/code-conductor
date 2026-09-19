@@ -55,7 +55,7 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { freshProjectsRoot, rmrf } from './helpers.mjs';
+import { freshProjectsRoot, rmrf, registerLocalProject } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { git } from './remoteSystem.mjs';
 import { waitFor } from './plugin-helpers.mjs';
@@ -196,6 +196,7 @@ describe('a plugin fragment follows its project, live', () => {
   test('deleting an in-root plugin project stops its contributions, without degrading', async () => {
     const dir = path.join(process.env.PROJECTS_ROOT, 'localplug');
     await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('localplug', dir);
     await seedPluginTree(dir, 'local-plug', 'LOCAL CONTENT', { claudePlugin: 'claude' });
 
     await host.enable('local-plug');
@@ -303,6 +304,7 @@ describe('a plugin fragment follows its project, live', () => {
     const root = process.env.PROJECTS_ROOT;
     const dir = path.join(root, 'ghostplug');
     await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('ghostplug', dir);
     await seedPluginTree(dir, 'ghost-plug', 'GHOST CONTENT');
 
     await host.enable('ghost-plug');
@@ -370,6 +372,7 @@ describe('a plugin fragment follows its project, live', () => {
     // The degrader: local, in-root, and a DIFFERENT plugin.
     const ghostDir = path.join(process.env.PROJECTS_ROOT, 'ghostplug');
     await fs.mkdir(ghostDir, { recursive: true });
+    await registerLocalProject('ghostplug', ghostDir);
     await seedPluginTree(ghostDir, 'ghost-plug', 'GHOST CONTENT');
 
     await host.enable('swap-plug');
@@ -429,6 +432,7 @@ describe('a plugin fragment follows its project, live', () => {
   test('a vanished store root degrades rather than declaring every plugin unregistered', async () => {
     const dir = path.join(process.env.PROJECTS_ROOT, 'rootlessplug');
     await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('rootlessplug', dir);
     await seedPluginTree(dir, 'rootless-plug', 'ROOTLESS CONTENT');
 
     await host.enable('rootless-plug');
@@ -514,6 +518,7 @@ describe('a plugin fragment follows its project, live', () => {
   test('an unreadable store dir degrades rather than reading as unregistered', async () => {
     const dir = path.join(process.env.PROJECTS_ROOT, 'enotdirplug');
     await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('enotdirplug', dir);
     await seedPluginTree(dir, 'enotdir-plug', 'ENOTDIR CONTENT');
 
     await host.enable('enotdir-plug');
@@ -583,6 +588,7 @@ describe('a plugin fragment follows its project, live', () => {
     // after 'sw', so it cannot be the entry the scan parks on.
     const secondDir = path.join(process.env.PROJECTS_ROOT, 'zsecond');
     await fs.mkdir(secondDir, { recursive: true });
+    await registerLocalProject('zsecond', secondDir);
     await seedPluginTree(secondDir, 'second-plug', 'SECOND CONTENT');
 
     await host.enable('swap-plug');

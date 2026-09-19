@@ -391,7 +391,7 @@ describe('a session on a project on a system', () => {
     // (c) defence in depth: a record naming a system with NO registry row.
     const dir = projectStoreDir('beta');
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify({ system: 'prod-box', systemPath: '/app' }));
+    await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify({ location: { kind: 'remote', system: 'prod-box', remoteId: null, path: '/app' } }));
     // The record's OWN systemPath is the cwd now — no local image to compose,
     // and no registry row needed to derive it.
     const cwd = '/app';

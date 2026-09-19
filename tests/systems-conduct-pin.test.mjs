@@ -25,7 +25,7 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   orchStoreRoot, projectStoreDir, projectsRoot, projectsBySystem,
-  readProjectMeta, writeProjectMeta, createProject, listProjects,
+  readProjectRecord, writeProjectMeta, createProject, listProjects,
 } from '../src/projects.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, placementOf, projectPlacement, resolveSystem,
@@ -44,25 +44,28 @@ async function writeRecord(name, record) {
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(record, null, 2) + '\n');
 }
 
-const REMOTE = { workspace: 'CTF', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' };
+const REMOTE_LOCATION = { kind: 'remote', system: 'prod-box', remoteId: 'ctr-7', path: '/app' };
+const REMOTE = { workspace: 'CTF', location: REMOTE_LOCATION };
 
 test('a record claiming .conduct is on another system is IGNORED by the pin', async () => {
   await writeRecord(CONDUCT_PROJECT_NAME, REMOTE);
   // The record really is on disk and really does say prod-box — otherwise the
   // assertions below would pass against nothing.
-  assert.deepEqual(await readProjectMeta(CONDUCT_PROJECT_NAME),
-    { workspace: 'CTF', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
+  assert.deepEqual(await readProjectRecord(CONDUCT_PROJECT_NAME), REMOTE);
 
-  // Every placement field is pinned, the target included: a record naming both
-  // a system and a target on it is ignored whole, not narrowed.
+  // The MACHINE is pinned, the target included: a record naming both a system
+  // and a target on it is ignored whole, not narrowed. The PATH is still the
+  // record's — the pin is about which machine, and `.conduct`'s own bootstrap
+  // is what writes that path.
   assert.deepEqual(await projectPlacement(CONDUCT_PROJECT_NAME),
-    { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null });
+    { system: LOCAL_SYSTEM_ID, remoteId: null, path: '/app' });
   // Without the pin this THROWS (501: no transport to prod-box).
   assert.equal((await resolveSystem(CONDUCT_PROJECT_NAME)).id, LOCAL_SYSTEM_ID);
   // The pin is name-based, not record-based: an empty record proves nothing, so
   // the contradicting one above is the whole test. Any other project with the
   // same record is NOT pinned — that asymmetry is what the pin means.
-  assert.deepEqual(placementOf('other', REMOTE), { system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
+  assert.deepEqual(placementOf('other', REMOTE_LOCATION),
+    { system: 'prod-box', remoteId: 'ctr-7', path: '/app' });
 });
 
 test('ensureConductProject still bootstraps LOCALLY against a contradicting record', async () => {
@@ -75,7 +78,7 @@ test('ensureConductProject still bootstraps LOCALLY against a contradicting reco
   assert.equal(dir, conductProjectPath());
   // Under projectsRoot(), not under the `/app` its record named.
   assert.equal((await fs.stat(dir)).isDirectory(), true);
-  assert.ok(!dir.startsWith('/app'), 'the record\'s systemPath never becomes a path');
+  assert.ok(!dir.startsWith('/app'), 'the record never relocates the orchestrator');
   // And the CLAUDE.md import was written there, through the local system.
   assert.match(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
 });
@@ -96,16 +99,15 @@ test("cc's own store stays local for a project that IS on another system", async
 
   // Its tree is unreachable, but its RECORD is cc's own bookkeeping and is read
   // from the local store like any other.
-  assert.deepEqual(await readProjectMeta('shipping'),
-    { workspace: 'CTF', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
+  assert.deepEqual(await readProjectRecord('shipping'), REMOTE);
   await assert.rejects(() => resolveSystem('shipping'), /prod-box/);
 });
 
-test('an unrelated write PRESERVES the record\'s system fields', async () => {
-  // The field-dropping hazard that rules out a backfill migration also rules out
-  // a reader that forgets these fields: writeProjectMeta merges over what
-  // readProjectMeta returns and drops what is missing, so a field the reader
-  // forgot is DELETED by the next unrelated write (a workspace change).
+test('an unrelated write PRESERVES the record\'s location', async () => {
+  // The field-dropping hazard: writeProjectMeta merges over what the reader
+  // returns, so a location the reader forgot would be DELETED by the next
+  // unrelated write (a workspace change) — and with the location gone the
+  // project is UNREGISTERED.
   //
   // Driven on `.conduct` because it is the one project that can carry a
   // non-local record AND still be written this phase: a genuinely remote
@@ -115,8 +117,8 @@ test('an unrelated write PRESERVES the record\'s system fields', async () => {
   await ensureConductProject();
   await writeRecord(CONDUCT_PROJECT_NAME, REMOTE);
   await writeProjectMeta(CONDUCT_PROJECT_NAME, { workspace: 'Other' });
-  assert.deepEqual(await readProjectMeta(CONDUCT_PROJECT_NAME),
-    { workspace: 'Other', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
+  assert.deepEqual(await readProjectRecord(CONDUCT_PROJECT_NAME),
+    { workspace: 'Other', location: REMOTE_LOCATION });
   // Still not a reference: the pin outranks the record it just preserved.
   assert.deepEqual(await projectsBySystem(), {});
 });
@@ -125,8 +127,8 @@ test('a project on another system is listed with it, and refuses to resolve', as
   await createProject('shipping');
   await writeRecord('shipping', REMOTE);
   const shipping = (await listProjects()).find(p => p.name === 'shipping');
-  assert.deepEqual({ system: shipping.system, remoteId: shipping.remoteId, systemPath: shipping.systemPath },
-    { system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
+  assert.deepEqual({ system: shipping.system, remoteId: shipping.remoteId, path: shipping.path },
+    { system: 'prod-box', remoteId: 'ctr-7', path: '/app' });
   assert.deepEqual(await projectsBySystem(), { 'prod-box': [{ name: 'shipping', remoteId: 'ctr-7' }] });
   // No transport yet, so the ONE thing that must not happen is resolving local
   // and operating on `<projectsRoot>/shipping` as if it were the tree.
@@ -137,16 +139,23 @@ test('a project on another system is listed with it, and refuses to resolve', as
   });
 });
 
-test('a local project gets NO project.json as a side effect of reading its system', async () => {
+// INVERTED from "a local project gets NO project.json": every project has a
+// record now, because the record IS the registration. What stays true is that
+// READING a project's system is not a WRITE — a resolution that stamped the
+// record would rewrite it on every listing.
+test("reading a project's system does not WRITE its record", async () => {
   await createProject('plain');
+  const file = path.join(projectStoreDir('plain'), 'project.json');
+  const before = await fs.readFile(file, 'utf8');
+  const beforeMtime = (await fs.stat(file)).mtimeMs;
+
   const listed = await listProjects();
   const plain = listed.find(p => p.name === 'plain');
-  assert.deepEqual({ system: plain.system, remoteId: plain.remoteId, systemPath: plain.systemPath },
-    { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null });
+  assert.deepEqual({ system: plain.system, remoteId: plain.remoteId, path: plain.path },
+    { system: LOCAL_SYSTEM_ID, remoteId: null, path: path.join(projectsRoot(), 'plain') });
   assert.equal((await resolveSystem('plain')).id, LOCAL_SYSTEM_ID);
-  // Absence of the field IS the local answer — nothing stamped it.
-  await assert.rejects(
-    () => fs.stat(path.join(projectStoreDir('plain'), 'project.json')),
-    (e) => e.code === 'ENOENT',
-  );
+  await projectPlacement('plain');
+
+  assert.equal(await fs.readFile(file, 'utf8'), before, 'the record is byte-identical');
+  assert.equal((await fs.stat(file)).mtimeMs, beforeMtime, 'and was not rewritten');
 });

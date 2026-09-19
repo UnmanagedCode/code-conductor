@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { ensureConductProject } from '../src/conduct.ts';
 import { encodeCwd, projectsRoot } from '../src/projects.ts';
 import { isArchived, markArchived } from '../src/archivedSessions.ts';
 
@@ -135,6 +136,9 @@ test('.conduct archived sessions appear in /api/archived and are restorable', as
     // Create the .conduct dir (normally created by Conduct mode on first spawn).
     const conductDir = path.join(projectsRoot(), '.conduct');
     await fs.mkdir(conductDir, { recursive: true });
+    // `.conduct` is a registered project like any other now, so the archive
+    // view finds it through the listing rather than a hand-rolled synthesis.
+    await ensureConductProject();
 
     // Plant a fake .jsonl in the encoded .conduct session dir.
     const sid = 'eeeeeeee-ffff-0000-1111-222222222222';

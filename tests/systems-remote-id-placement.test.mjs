@@ -25,7 +25,8 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import {
   createProject, deleteProject, adoptProject, getProject, listProjects,
-  readProjectMeta, writeProjectMeta, resolveProjectDir, projectStoreDir, transcriptRoot } from '../src/projects.ts';
+  readProjectRecord, writeProjectMeta, resolveProjectDir, projectStoreDir, transcriptRoot,
+} from '../src/projects.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, disposeSystemHandles, placementOf, projectPlacement,
 } from '../src/systems/registry.ts';
@@ -52,18 +53,19 @@ describe('remoteId in the project record', () => {
 
   // PINS: `remoteId` round-trips through the record, AND survives a later write
   // that is about something else entirely. writeProjectRecord merges over what
-  // readProjectMeta returns and drops empty fields, so a field the reader
-  // forgot would be silently DELETED by the next workspace change.
+  // the reader returns, so a location the reader forgot would be silently
+  // DELETED by the next workspace change — and with it gone, the project is
+  // UNREGISTERED.
   test('the record round-trips remoteId and survives an unrelated write', async () => {
     await createProject('app', { system: remote.id, remoteId: 'a', systemPath: path.join(rootA, 'app') });
-    assert.equal((await readRecord('app')).remoteId, 'a');
-    assert.equal((await readProjectMeta('app')).remoteId, 'a');
+    assert.equal((await readRecord('app')).location.remoteId, 'a');
+    assert.equal((await readProjectRecord('app')).location.remoteId, 'a');
 
     await writeProjectMeta('app', { workspace: 'CTF' });
     const after = await readRecord('app');
     assert.equal(after.workspace, 'CTF');
-    assert.equal(after.remoteId, 'a', 'an unrelated write must not drop the placement');
-    assert.equal(after.system, remote.id);
+    assert.equal(after.location.remoteId, 'a', 'an unrelated write must not drop the placement');
+    assert.equal(after.location.system, remote.id);
   });
 
   // PINS: absence of `remoteId` is the provider's own default target — the same
@@ -72,25 +74,25 @@ describe('remoteId in the project record', () => {
   test('a remote project with no remoteId records none', async () => {
     const bare = await bindRemoteSystem({ id: 'bare' });
     await createProject('plain', { system: bare.id, systemPath: path.join(bare.root, 'plain') });
-    assert.equal('remoteId' in (await readRecord('plain')), false);
+    assert.equal((await readRecord('plain')).location.remoteId, null);
     assert.equal((await projectPlacement('plain')).remoteId, null);
   });
 
-  // PINS: a LOCAL placement forces remoteId null, whatever the record says —
-  // cc's own machine is one machine, so a target named on it names nothing.
+  // PINS: a LOCAL location forces remoteId null — cc's own machine is one
+  // machine, so a target named on it names nothing.
   test('placementOf forces remoteId null for a local project', () => {
     assert.deepEqual(
-      placementOf('p', { system: LOCAL_SYSTEM_ID, remoteId: 'a', systemPath: '/app' }),
-      { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null },
+      placementOf('p', { kind: 'local', path: '/app' }),
+      { system: LOCAL_SYSTEM_ID, remoteId: null, path: '/app' },
     );
   });
 
-  // PINS: the `.conduct` pin is UNCONDITIONAL — it returns before the record is
-  // consulted, so a remoteId in its record is ignored rather than honoured.
+  // PINS: the `.conduct` pin is UNCONDITIONAL on the MACHINE — a record naming
+  // a system and a target for it is ignored rather than honoured.
   test('.conduct stays local with remoteId null even if its record names one', () => {
     assert.deepEqual(
-      placementOf(CONDUCT_PROJECT_NAME, { system: 'prod-box', remoteId: 'a', systemPath: '/app' }),
-      { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null },
+      placementOf(CONDUCT_PROJECT_NAME, { kind: 'remote', system: 'prod-box', remoteId: 'a', path: '/app' }),
+      { system: LOCAL_SYSTEM_ID, remoteId: null, path: '/app' },
     );
   });
 

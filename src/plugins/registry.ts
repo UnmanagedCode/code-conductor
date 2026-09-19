@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   tryResolveProject, resolveProjectDir,
-  readProjectMeta, writeProjectMeta, addWorkspace,
+  readProjectRecord, writeProjectMeta, addWorkspace,
 } from '../projects.ts';
 import {
   readManifest,
@@ -55,8 +55,8 @@ export const WORKSPACE_AUTO_ASSIGN = 'CC-Dev';
 // block discovery or enable.
 async function autoAssignToCcDev(projectName: string): Promise<void> {
   try {
-    const meta = await readProjectMeta(projectName);
-    if (meta.workspace == null) {
+    const record = await readProjectRecord(projectName);
+    if (record && record.workspace == null) {
       await writeProjectMeta(projectName, { workspace: WORKSPACE_AUTO_ASSIGN });
       await addWorkspace(WORKSPACE_AUTO_ASSIGN);
     }
@@ -384,19 +384,6 @@ export function createPluginHost(opts: {
     return versionCwd(activeVersion, worktreeMeta, entry.dir);
   }
 
-  // "Is cc's own bookkeeping for this project gone?" — the middle term of the
-  // classification below, and the one that must never guess. ONLY ENOENT IS
-  // GONE: any other error means cc could not tell, and reading that as gone
-  // would classify a registered project as authoritatively unregistered and
-  // drop its contributions at degraded:false — the one direction this design
-  // must not fail in. (`existsSync` cannot make the distinction at all: it
-  // answers false on every error. Same idiom as localArtefact in
-  // src/projects.ts, so the codebase has one.)
-  async function storeStateGone(dir: string): Promise<boolean> {
-    try { await fs.stat(dir); return false; }
-    catch (e) { return errCode(e) === 'ENOENT'; }
-  }
-
   // The hoisted guard, and its safe direction is the OPPOSITE one: any failure
   // to see the store root reads as absent, which sends the classification to the
   // degrade branch. Deliberate rather than incidental — a root cc cannot see is
@@ -414,38 +401,36 @@ export function createPluginHost(opts: {
   // serves one tree's bytes as another's and reports the catalog healthy
   // (card 2026-0263).
   //
-  // THREE ANSWERS, and the difference between the last two is the whole card:
+  // TWO ANSWERS:
   //
   //   'ok'           — resolved: the System to read through, the project dir,
   //                    and the active version's cwd.
-  //   'unregistered' — cc's own store state for the project AND the artefact
-  //                    that registers it are both gone. That is authoritative
-  //                    and entirely LOCAL, so the plugin simply contributes
-  //                    nothing and the catalog stays healthy — a referencing
-  //                    project regenerates without the slug instead of freezing
-  //                    until someone presses Rescan.
-  //   a THROW        — cannot tell. An unreachable system, unreadable worktree
-  //                    metadata, or a checkout that vanished while cc still
-  //                    holds store state for the project (deleted, or an
-  //                    unmounted volume — for an in-root project the DIRECTORY
-  //                    IS the registration, so resolvability alone cannot say
-  //                    which). The caller degrades the catalog, which is what
-  //                    freezes writes rather than blanking them.
+  //   'unregistered' — no record names the project. That is authoritative and
+  //                    entirely LOCAL, so the plugin simply contributes nothing
+  //                    and the catalog stays healthy — a referencing project
+  //                    regenerates without the slug instead of freezing until
+  //                    someone presses Rescan.
+  //
+  // A THROW is what an unreachable system, unreadable worktree metadata or an
+  // unreadable store root produces; the caller degrades the catalog, which
+  // freezes writes rather than blanking them. The store-root guard is not
+  // decoration: without it a vanished store root reads as "every project is
+  // unregistered" and silently drops every contribution at once.
   async function resolvePlacement(entry: VersionedEntry): Promise<PluginPlacement> {
     const resolved = await resolveProjectDir(entry.project);
     if (!resolved) {
-      // THE ORDER IS FIXED: resolveProjectDir said no, then cc's own
-      // bookkeeping for the project is gone too, then the store ROOT itself is
-      // still there. deleteProject removes projectStoreDir(name) on all three
-      // of its branches and an `rm -rf` of a checkout does not, which is what
-      // makes the middle term the discriminator. The last term is a guard, not
-      // decoration: without it a vanished store root reads as "every project is
-      // unregistered" and silently drops every contribution at once, where with
-      // it that lands in the degrade bucket it belongs in.
-      if (await storeStateGone(projectStoreDir(entry.project)) && await storeRootPresent()) {
-        return { kind: 'unregistered' };
-      }
-      throw httpError(404, `project '${entry.project}' does not resolve, but cc still holds store state for it`);
+      if (await storeRootPresent()) return { kind: 'unregistered' };
+      throw httpError(503, `project '${entry.project}' does not resolve and cc's own store root is not readable`);
+    }
+    // THE CHECKOUT ITSELF, probed here and deliberately NOT in the resolver:
+    // resolution is a record read, so a project whose tree is temporarily gone
+    // (an unmounted volume, a checkout deleted out-of-band) still RESOLVES.
+    // For a contributing plugin that is not the same as "contributes nothing" —
+    // blanking a convention on a transient absence is the one direction this
+    // design must not fail in — so it throws and the caller degrades.
+    if ((await resolved.system.stat(resolved.path))?.kind !== 'dir') {
+      throw httpError(404, `the checkout of project '${entry.project}' is not at ${resolved.path}, `
+        + `but cc still holds a record for it`);
     }
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
     return {

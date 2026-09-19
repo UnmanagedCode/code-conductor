@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl, registerLocalProject} from './helpers.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
 import { isDeadStatus } from '../src/instances.ts';
 import { localPlace } from '../src/projects.ts';
@@ -89,9 +89,10 @@ function git(cwd, ...args) {
 }
 
 // A repo with NO commit — an unborn HEAD, what project creation now leaves.
-async function makeUnbornRepo(projectsRoot, name) {
+async function makeUnbornRepo(projectsRoot, name, { register = true } = {}) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  if (register) await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -107,9 +108,10 @@ function projectBlock(listText, name) {
   return block;
 }
 
-async function makeRealRepo(projectsRoot, name) {
+async function makeRealRepo(projectsRoot, name, { register = true } = {}) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  if (register) await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -208,16 +210,17 @@ test('unknown tool returns an isError tool-call result (not a transport error)',
 
 test('adopt_project registers an out-of-root repo and returns its realpath as JSON', async () => {
   // The repo lives under `home`, not under projectsRoot (`home/project`).
-  const repoPath = await makeRealRepo(home, 'outside-repo');
+  const repoPath = await makeRealRepo(home, 'outside-repo', { register: false });
   const res = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'ext', path: repoPath }));
   assert.equal(res.ok, true, JSON.stringify(res));
-  assert.equal(res.external, true);
   assert.equal(res.path, await fs.realpath(repoPath));
+  assert.equal(res.external, undefined, 'a project has no kind flag — only its path differs');
 
-  // Discovery rides the existing text-rendered list_projects, which now marks it.
+  // Discovery rides the existing text-rendered list_projects, and an
+  // out-of-root project's row is shape-identical to any other's.
   const out = text(await callTool(baseUrl, 'list_projects', {}));
   assert.match(out, new RegExp(`^▸ ext {2}${res.path}$`, 'm'));
-  assert.match(out, /^ {2}external$/m, 'the external deviant reaches the rendering');
+  assert.ok(!/^ {2}external$/m.test(out), 'no `external` deviant remains');
 });
 
 test('an ADOPTED repo with no commits carries both deviants and refuses a worktree by name', async () => {
@@ -229,7 +232,7 @@ test('an ADOPTED repo with no commits carries both deviants and refuses a worktr
   // project's REALPATH, which for an adopted project is the target.
   // makeUnbornRepo takes its root as a parameter, so pointing it at `home`
   // puts the repo OUTSIDE projectsRoot (`<home>/project`) with no new fixture.
-  const repoPath = await makeUnbornRepo(home, 'unborn-outside');
+  const repoPath = await makeUnbornRepo(home, 'unborn-outside', { register: false });
   const adopted = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'unborn', path: repoPath }));
   assert.equal(adopted.ok, true, `an unborn repo is still a repo root: ${JSON.stringify(adopted)}`);
 
@@ -237,14 +240,13 @@ test('an ADOPTED repo with no commits carries both deviants and refuses a worktr
   // block, so neither line can be satisfied by some other project's row.
   const block = projectBlock(text(await callTool(baseUrl, 'list_projects', {})), 'unborn');
   assert.match(block, /^ {2}! no commits yet — a worktree needs a first commit$/m);
-  assert.match(block, /^ {2}external$/m);
 
   // The REST row agrees, and says isGitRepo:true — the flag is not the
   // not-a-repo one wearing a different label.
   const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'unborn');
   assert.deepEqual(
-    { external: row.external, isGitRepo: row.isGitRepo, unbornHead: row.unbornHead },
-    { external: true, isGitRepo: true, unbornHead: true },
+    { isGitRepo: row.isGitRepo, unbornHead: row.unbornHead },
+    { isGitRepo: true, unbornHead: true },
   );
 
   // And the refusal names the real cause rather than failing deeper in git.
@@ -260,7 +262,7 @@ test('an adopt_project refusal keeps its machine-readable code through the MCP e
   // channel, and the conductor is told to act on this one.
   // `<home>/ext-repo` is outside the projects root (`<home>/project`) and does
   // not contain it, so the subdirectory refusal is the one that fires.
-  const ext = await makeRealRepo(home, 'ext-repo');
+  const ext = await makeRealRepo(home, 'ext-repo', { register: false });
   const sub = path.join(ext, 'pkg');
   await fs.mkdir(sub, { recursive: true });
   const res = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'nope', path: sub }));
@@ -845,7 +847,9 @@ test('describe_session never materialises the playbook ledger it reads', async (
 test('create_worktree + list_worktrees + delete_worktree against a real git repo', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   const createRes = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo' }));
-  assert.match(createRes.worktree, /^demo_worktree_[a-f0-9]{6}$/);
+  // ONE spelling: the store key, the worktreeName and the directory basename
+  // are one string, so the returned name carries no `<project>_worktree_` infix.
+  assert.match(createRes.worktree, /^[a-f0-9]{6}$/);
   assert.equal(createRes.baseBranch, 'main');
 
   const wts = text(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
@@ -1285,7 +1289,7 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
   const repoPath = await makeRealRepo(projectsRoot, 'demo');
   const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo' }));
   // Commit a change inside the worktree so it's `ahead` of main.
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wt.worktree);
   await fs.writeFile(path.join(wtPath, 'new.txt'), 'fresh\n');
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
@@ -1309,7 +1313,7 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
 test('project_status on a non-git project returns isGitRepo:false but still lists files', async () => {
   // Creation always inits a repo now, so reach the non-repo state with a bare
   // mkdir + the CLAUDE.md the file-listing assertion below needs.
-  await fs.mkdir(path.join(projectsRoot, 'a'), { recursive: true });
+  await registerLocalProject('a', path.join(projectsRoot, 'a'));
   await fs.writeFile(path.join(projectsRoot, 'a', 'CLAUDE.md'), '@CONVENTIONS.md\n');
   const st = text(await callTool(baseUrl, 'project_status', { project: 'a' }));
   assert.match(st, /^! not a git repo$/m);
@@ -1353,7 +1357,7 @@ test('list_projects never reports a non-repo project as having an unborn HEAD', 
   // the handler is the ONLY thing keeping both deviant lines off a bare-mkdir
   // project's block. Without it a non-repo renders as a repo that just needs a
   // commit, which is the opposite of the truth.
-  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
+  await registerLocalProject('plain', path.join(projectsRoot, 'plain'));
   await makeUnbornRepo(projectsRoot, 'fresh');
   const list = text(await callTool(baseUrl, 'list_projects', {}));
   const plain = projectBlock(list, 'plain');
@@ -1419,7 +1423,7 @@ test('project_read scoped to a worktree reads from the worktree root, not the pa
   const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo' }));
   // Same filename on both sides, different content.
   await fs.writeFile(path.join(repoPath, 'shared.txt'), 'parent\n');
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wt.worktree);
   await fs.writeFile(path.join(wtPath, 'shared.txt'), 'worktree\n');
 
   const fromWt = unwrapFile(await callTool(baseUrl, 'project_read', {
@@ -1923,49 +1927,43 @@ test('spawn_instance({resume}) recovers temp:true from the durable sidecar after
 
 
 // ---------- worktree name aliasing ----------
-// Every worktree-addressing argument accepts the full `<project>_worktree_<slug>`
-// dir name or the bare slug the GUI displays.
+// ONE SPELLING PER WORKTREE. The store key, the `worktreeName` and the
+// directory basename are one string, so there is no alias to resolve — and the
+// old `<project>_worktree_<slug>` dir name is not a second way in, it simply
+// names no worktree of the project.
 
-test('spawn_instance attaches to an existing worktree by its bare slug', async () => {
+test('spawn_instance attaches to an existing worktree by its one name', async () => {
   await makeRealRepo(projectsRoot, 'demo');
-  // The card verbatim: create by bare name, then address by bare name.
   const first = unwrap(await callTool(baseUrl, 'spawn_instance', {
     project: 'demo', mode: 'bypassPermissions', createWorktree: true, name: 'unborn-head-hint',
   }));
   await waitFor(() => instForSession(instances, first.sessionId).sessionId);
   const canonical = instForSession(instances, first.sessionId).worktree.worktreeName;
-  assert.equal(canonical, 'demo_worktree_unborn-head-hint');
+  assert.equal(canonical, 'unborn-head-hint');
 
   const second = unwrap(await callTool(baseUrl, 'spawn_instance', {
     project: 'demo', mode: 'bypassPermissions', worktree: 'unborn-head-hint',
   }));
   await waitFor(() => instForSession(instances, second.sessionId).sessionId);
-  assert.equal(instForSession(instances, second.sessionId).worktree.worktreeName, canonical,
-    'the bare slug lands in the same worktree the full name does');
+  assert.equal(instForSession(instances, second.sessionId).worktree.worktreeName, canonical);
 });
 
-test('merge_worktree by bare slug reaches the same worktree as the full name', async () => {
-  const repoPath = await makeRealRepo(projectsRoot, 'demo');
-  const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'mergealias' }));
-  assert.equal(wt.worktree, 'demo_worktree_mergealias');
+test('the legacy <project>_worktree_<slug> spelling names no worktree', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'onlyname' }));
+  assert.equal(wt.worktree, 'onlyname');
 
-  // Move the parent branch forward so the worktree is "behind" — a deterministic
-  // outcome that could only be produced by actually resolving the record.
-  await fs.writeFile(path.join(repoPath, 'extra.txt'), 'after\n');
-  await git(repoPath, 'add', '.');
-  await git(repoPath, 'commit', '-q', '-m', 'second');
-
-  const byFull = unwrap(await callTool(baseUrl, 'merge_worktree', { project: 'demo', worktree: wt.worktree }));
-  const bySlug = unwrap(await callTool(baseUrl, 'merge_worktree', { project: 'demo', worktree: 'mergealias' }));
-  assert.equal(bySlug.ok, false);
-  assert.equal(bySlug.code, 'WORKTREE_BEHIND');
-  assert.deepEqual(bySlug, byFull, 'same outcome either spelling');
+  const { body } = await rpc(baseUrl, 'tools/call', {
+    name: 'project_status', arguments: { project: 'demo', worktree: 'demo_worktree_onlyname' },
+  });
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, /not found/);
 });
 
 // The destructive-under-force path: idsForWorktree is an exact in-memory
-// compare, so an un-canonicalized bare slug sees no attached instances and
-// skips the WORKTREE_ATTACHED guard entirely.
-test('delete_worktree by bare slug still sees the attached instance', async () => {
+// compare, so a name that does not match sees no attached instances and skips
+// the WORKTREE_ATTACHED guard entirely.
+test('delete_worktree sees the attached instance', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
     project: 'demo', mode: 'bypassPermissions', createWorktree: true, name: 'delalias',
@@ -1982,80 +1980,64 @@ test('delete_worktree by bare slug still sees the attached instance', async () =
     'the worktree must survive the refused delete');
 });
 
-test('list_sessions filters by a worktree named with its bare slug', async () => {
+test('list_sessions filters by a worktree name, and an unknown one filters to nothing', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
     project: 'demo', mode: 'bypassPermissions', createWorktree: true, name: 'lsalias',
   }));
   await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
 
-  const byFull = text(await callTool(baseUrl, 'list_sessions', {
-    project: 'demo', worktree: 'demo_worktree_lsalias',
-  }));
-  const bySlug = text(await callTool(baseUrl, 'list_sessions', { project: 'demo', worktree: 'lsalias' }));
-  assert.ok(bySlug.includes('lsalias'), 'the worktree group is the one rendered');
-  assert.equal(bySlug, byFull, 'same rendering either spelling');
+  const scoped = text(await callTool(baseUrl, 'list_sessions', { project: 'demo', worktree: 'lsalias' }));
+  assert.ok(scoped.includes('lsalias'), 'the worktree group is the one rendered');
 
-  const { body: miss } = await rpc(baseUrl, 'tools/call', {
-    name: 'list_sessions', arguments: { project: 'demo', worktree: 'nosuchslug' },
-  });
-  assert.equal(miss.result.isError, true);
-  assert.match(miss.result.content[0].text, /not found/);
+  // An unmatched name must filter to NOTHING rather than fall through to the
+  // project root and report the project's own sessions as the worktree's.
+  for (const miss of ['nosuchslug', 'demo_worktree_lsalias']) {
+    const { body } = await rpc(baseUrl, 'tools/call', {
+      name: 'list_sessions', arguments: { project: 'demo', worktree: miss },
+    });
+    assert.equal(body.result.isError, true, miss);
+    assert.match(body.result.content[0].text, /not found/, miss);
+  }
 });
 
-test('project_read scoped by a bare slug reads the worktree copy, not the project root', async () => {
+test('project_read scoped by worktree reads the worktree copy, not the project root', async () => {
   const repoPath = await makeRealRepo(projectsRoot, 'demo');
   const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'readalias' }));
   await fs.writeFile(path.join(repoPath, 'shared.txt'), 'parent\n');
-  await fs.writeFile(path.join(projectsRoot, wt.worktree, 'shared.txt'), 'worktree\n');
+  await fs.writeFile(path.join(projectsRoot, '.worktrees', 'demo', wt.worktree, 'shared.txt'), 'worktree\n');
 
   const fromWt = unwrapFile(await callTool(baseUrl, 'project_read', {
     project: 'demo', worktree: 'readalias', relativePath: 'shared.txt',
   }));
-  assert.equal(fromWt.content, 'worktree\n', 'the alias scoped into the worktree, not the project root');
+  assert.equal(fromWt.content, 'worktree\n', 'the scope really did reach the worktree');
 });
 
-
-// The canonical-echo invariant (docs/protocol.md → Input params): a response
-// always reports the full `<project>_worktree_<slug>` name, never whichever
-// spelling the caller happened to address the worktree with. Without it a
-// conductor keying a card / wiki page / UI state off the returned name gets two
-// different strings for one worktree depending on how it asked.
-// project_bash's three exit paths carry the same invariant, but live in
-// mcp-inspect-tools.test.mjs where the fake-CLAUDE_BIN shell-env fixture that
-// keeps them off a live `claude -p` already exists.
-test('project_diff / project_status echo the canonical worktree name for a bare slug', async () => {
+// The echo invariant (docs/protocol.md → Input params): a response reports the
+// worktree's registered name. With one spelling there is nothing to
+// canonicalize, so what this pins is that the name is REPORTED at all — a
+// conductor keying a card / wiki page / UI state off it needs a stable string.
+test('project_diff / project_status echo the worktree name', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'echoalias' }));
-  assert.equal(wt.worktree, 'demo_worktree_echoalias');
-  // A commit in the worktree so the diff has content on both code paths.
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  assert.equal(wt.worktree, 'echoalias');
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wt.worktree);
   await fs.writeFile(path.join(wtPath, 'added.txt'), 'hello\n');
   await git(wtPath, 'add', '.');
   await git(wtPath, 'config', 'user.email', 'a@b.c');
   await git(wtPath, 'config', 'user.name', 'a');
   await git(wtPath, 'commit', '-q', '-m', 'work');
 
-  // project_diff, summary mode.
   const sum = unwrapPayload(await callTool(baseUrl, 'project_diff', {
     project: 'demo', worktree: 'echoalias', summary: true,
   }));
-  assert.equal(sum.meta.worktree, 'demo_worktree_echoalias');
+  assert.equal(sum.meta.worktree, 'echoalias');
 
-  // project_diff, diff mode — a separate metadata object, separately at risk.
   const dif = unwrapPayload(await callTool(baseUrl, 'project_diff', {
     project: 'demo', worktree: 'echoalias',
   }));
-  assert.equal(dif.meta.worktree, 'demo_worktree_echoalias');
+  assert.equal(dif.meta.worktree, 'echoalias');
 
-  // project_status renders `worktree <name>` in its header line.
   const st = text(await callTool(baseUrl, 'project_status', { project: 'demo', worktree: 'echoalias' }));
-  assert.match(st, /worktree demo_worktree_echoalias/);
-  assert.ok(!/worktree echoalias\b/.test(st), 'the caller\'s spelling must not be what is reported');
-
-  // The full spelling is unchanged — this is a canonicalization, not a rename.
-  const full = unwrapPayload(await callTool(baseUrl, 'project_diff', {
-    project: 'demo', worktree: 'demo_worktree_echoalias', summary: true,
-  }));
-  assert.equal(full.meta.worktree, 'demo_worktree_echoalias');
+  assert.match(st, /worktree echoalias/);
 });

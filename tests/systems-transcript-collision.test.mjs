@@ -1,22 +1,20 @@
 // TWO PLACES, ONE CLAUDE CLI TRANSCRIPT DIRECTORY.
 //
-// The guard compares `encodeCwd(<the CLI's cwd>)` — the place's real path on
-// whatever machine it lives on — ACROSS EVERY SYSTEM. It cannot key on a
-// cc-owned name under the store: `sessionRootKey`, and the
+// The guard compares whole transcript DIRECTORIES —
+// `<transcriptRoot(place)>/<encodeCwd(cwd)>` — not encoded cwds. It cannot key
+// on a cc-owned name under the store: `sessionRootKey`, and the
 // `sessionRootKeyCollision` lookup built over it, no longer exist and must not
 // be reintroduced. That lookup answered null for the local system outright,
 // because a local place has no session root to collide on — so it could never
 // have carried this guard.
 //
-// THE WIDENING IS FORCED, not tidy-minded. While a remote cwd lived under cc's
-// store it was disjoint from every local project path by construction, so a
-// local place could never collide with a remote one. Now a local project at
-// `/srv/app` and a remote project at `/srv/app` on `box` produce the same
-// directory — and `~/.claude` is host-pinned, so both land on the host's real
-// disk and their sessions interleave there.
+// THE ROOT IS PART OF THE KEY. Each (system, remoteId) reads its own CLI config
+// directory, so two boxes at `/root/app3` are two directories and register
+// freely; two places on ONE target at one path are one directory and do not.
 //
-// `encodeCwd` COLLAPSES `_` AND `.` TO `-`, so "collides" is strictly wider than
-// "is the same path", and half these cases are about that half.
+// `encodeCwd` COLLAPSES `_`, `.` AND `/` TO `-`, so within a single root
+// "collides" is strictly wider than "is the same path", and half these cases
+// are about that half.
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +23,10 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, createProject, encodeCwd, listProjects, normalizeSystemPath, projectsRoot, transcriptRoot } from '../src/projects.ts';
+import {
+  adoptProject, createProject, encodeCwd, listProjects, localWorktreesRoot,
+  normalizeSystemPath, projectsRoot, transcriptRoot,
+} from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
@@ -292,9 +293,6 @@ describe('the transcript-directory collision guard', () => {
     assert.equal(worktree.cwd, wt.worktreePath, "the derived worktree cwd is not the one createWorktree used");
   });
 
-  // T11 PINS THE WIDENING END TO END, at the path a user takes: adopting a
-  // REMOTE project at the same path a LOCAL project already occupies is refused.
-  // This is the case the old guard could not see at all.
   // T11 PINS THE INVERSION END TO END, through the real adopt path: the
   // configuration card 2026-0447 was filed about is now registrable, and the
   // two projects get two transcript directories rather than sharing one.
@@ -315,21 +313,63 @@ describe('the transcript-directory collision guard', () => {
       transcriptRoot({ system: remote.id, remoteId: null, cwd: shared }));
   });
 
+  // T13 PINS AC10 in the shape NESTING NEWLY MAKES REACHABLE: `<root>/A/b` and
+  // `<root>/A-b` are two directories, and the CLI collapses `/` and `-` alike —
+  // so they encode to one transcript directory. A container directory under the
+  // projects root is exactly how a user produces that pair.
+  test('T13: registering <root>/A/b is refused when <root>/A-b is registered', async () => {
+    const flat = await seedRepo(path.join(projectsRoot(), 'A-b'));
+    assert.equal((await adoptProject('flat', flat)).ok, true);
+    const nested = await seedRepo(path.join(projectsRoot(), 'A', 'b'));
+    assert.notEqual(nested, flat, 'premise: two different directories');
+    assert.equal(encodeCwd(nested), encodeCwd(flat), 'premise: they encode alike');
+
+    const r = await adoptProject('nested', nested);
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(r.reason, /'flat'/);
+  });
+
+  // T14 PINS: the refusal fires AT REGISTRATION, not at spawn. The one guarded
+  // writer is where it lives, so a surface that reaches registerProject by any
+  // route inherits it — and nothing half-registered is left behind.
+  test('T14: the refusal fires at registration, not at spawn', async () => {
+    const flat = await seedRepo(path.join(projectsRoot(), 'A-b'));
+    assert.equal((await adoptProject('flat', flat)).ok, true);
+    await seedRepo(path.join(projectsRoot(), 'A', 'b'));
+
+    const { registerProject, readProjectRecord } = await import('../src/projects.ts');
+    await assert.rejects(
+      () => registerProject('nested', { kind: 'local', path: path.join(projectsRoot(), 'A', 'b') }),
+      (e) => { assert.equal(e.statusCode, 409); assert.equal(e.code, 'TRANSCRIPT_DIR_COLLISION'); return true; },
+    );
+    assert.equal(await readProjectRecord('nested'), null, 'and nothing was registered');
+  });
+
   // T12 PINS: createWorktree asks the guard BEFORE touching git state, and the
   // refusal names the worktree as the caller would say it.
   test('T12: a worktree whose path is already held is refused before git runs', async () => {
     assert.equal((await createProject('beta')).name, 'beta');
     await seedRepo(path.join(projectsRoot(), 'beta'));
-    // A PROJECT whose own directory is the one the worktree would take: the
-    // worktree directory name is `<project>_worktree_<slug>`, and a project may
-    // legally be named that.
-    assert.equal((await createProject('beta_worktree_w1')).name, 'beta_worktree_w1');
+    // THE HOLDER IS ON CC'S OWN MACHINE, and it holds the worktree's directory
+    // by ALIASING rather than by being it: local adoption refuses cc's own
+    // worktree area outright, so the pair is `<root>/.worktrees/beta/w1` and its
+    // sibling `<root>/-worktrees-beta-w1`, two directories that encode to one
+    // because encodeCwd collapses `/` and `.` alike. A holder on another machine
+    // would not serve — it reads its own CLI config directory, so it names a
+    // different directory however its path is spelled.
+    const wtPath = path.join(localWorktreesRoot(), 'beta', 'w1');
+    const taken = path.join(projectsRoot(), '-worktrees-beta-w1');
+    await seedRepo(taken);
+    assert.notEqual(taken, wtPath, 'premise: two different directories');
+    assert.equal(encodeCwd(taken), encodeCwd(wtPath), 'premise: they encode alike');
+    assert.equal((await adoptProject('holder', taken)).ok, true);
 
     await assert.rejects(() => createWorktree('beta', { name: 'w1' }), (e) => {
       assert.equal(e.statusCode, 409);
       assert.equal(e.code, 'TRANSCRIPT_DIR_COLLISION');
       assert.match(e.message, /worktree 'w1' of project 'beta'/);
-      assert.match(e.message, /'beta_worktree_w1'/);
+      assert.match(e.message, /'holder'/);
       return true;
     });
     // AND NOTHING WAS CREATED: the guard runs before any git state is touched.

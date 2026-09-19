@@ -347,9 +347,9 @@ export interface System {
   // RECURSIVE, FORCED removal — `rm -rf`. The destructive shape: never call it
   // on a path cc does not own. See `unlink` below.
   removeTree(p: string): Promise<void>;
-  // Remove ONE directory entry, never following it and never recursing. This is
-  // the shape the `.external/<name>` record is deleted with, because its target
-  // is the user's own repo: the realpath must never reach removeTree.
+  // Remove ONE directory entry, never following it and never recursing — the
+  // non-destructive counterpart to removeTree, for an entry whose target is not
+  // cc's to delete.
   unlink(p: string): Promise<void>;
   chmod(p: string, mode: number): Promise<void>;
 

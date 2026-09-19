@@ -1,22 +1,23 @@
-// Git worktree operations for isolated agent runs. A worktree dir lives beside
-// the project's RECORD, inside cc's own tree: `<projectsRoot>/<project>_worktree_<short-id>/`
-// for an in-root project, `<projectsRoot>/.external/<project>_worktree_<short-id>/`
-// for an adopted one — whose `path` is the target's realpath, so a literal
-// sibling would put a cc-owned, cc-deleted directory in the user's own parent dir.
+// Git worktree operations for isolated agent runs. Every LOCAL worktree lives
+// at `<projectsRoot>/.worktrees/<project>/<key>`, wherever the project itself
+// lives; a worktree of a project on a system lives at that system's configured
+// `worktreesDir`, else `<dirname(project path)>/.worktrees/<project>/<key>`.
+// One layout, no per-kind exception — see `worktreePathFor`.
 // All orchestrator-owned metadata for the worktree (worktree.json,
 // attachments/, debug/) lives in the central store under
-// `<projectsRoot>/.code-conductor/projects/<project>/worktrees/<worktreeDir>/`
-// — the worktree dir itself stays clean.
+// `<projectsRoot>/.code-conductor/projects/<project>/worktrees/<key>/`
+// — the worktree dir itself stays clean. The store key, the `worktreeName` and
+// the directory basename are ONE string.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { httpError } from './httpError.ts';
 import {
-  projectsRoot, getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot,
-  EXTERNAL_DIRNAME,
+  getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot, localWorktreesRoot,
 } from './projects.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
+import { getSystem } from './appSettings.ts';
 import {
   transcriptCollisionReason, transcriptCwdCollision,
 } from './systems/transcriptKey.ts';
@@ -32,10 +33,23 @@ const WORKTREE_META_FILENAME = 'worktree.json';
 //
 // What makes re-derivation safe is that the parent's target CANNOT MOVE while a
 // worktree registration exists: `writeProjectRecord` is module-private and
-// reachable from exactly three exported functions, two of which require the
-// name to be free, and the third (setProjectRemote) refuses on
-// registeredWorktreeNames. A hand-edited `project.json` bypasses this, which is
-// the same trust model the `system` field already has.
+// reachable from exactly four exported functions — `writeProjectMeta` (workspace
+// only), `registerProject` and `adoptProject` (both requiring the name to be
+// free, or an explicit stale-record relocation), and `setProjectRemote`, which
+// refuses on registeredWorktreeNames. A hand-edited `project.json` bypasses
+// this, which is the same trust model the location field already has.
+//
+// THE STORED FIELDS BELOW ARE NOT DECORATIVE. `registeredPlaces`
+// (src/systems/transcriptKey.ts) deliberately re-derives a worktree's cwd
+// through `worktreePathFor` instead of reading `worktreePath` back — so the
+// guard cannot disagree with the thing it guards — and that is the ONLY reader
+// that ignores them. `worktreePath` is read back by the REST session listings,
+// the whole `project_diff` surface, merge status and this module's own
+// `removeWorktree`/`mergeWorktreeIntoParent`/`syncWorktree`; `parentPath`
+// drives removal and the entire merge lifecycle; `baseWorktree` is matched
+// LITERALLY in `listDependentWorktrees`, where a reference that matches nothing
+// yields an EMPTY dependents list rather than an error — so a stale one does
+// not mis-address a directory, it silently stops a guard firing.
 export interface WorktreeMeta {
   parentProject: string;
   parentPath: string;
@@ -101,38 +115,6 @@ function slugifyWorktreeName(name: string): string {
 
 function worktreeBranchName(id: string): string {
   return `code-conductor/${id}`;
-}
-
-function worktreeDirName(project: string, id: string): string {
-  return `${project}_worktree_${id}`;
-}
-
-// A caller-supplied worktree name → the canonical worktreeName among `known`.
-// Accepts the full dir name or the bare slug the GUI displays (it strips the
-// `<project>_worktree_` prefix everywhere it renders one), so the string a user
-// reads is a string the API accepts. Exact match wins, so the full spelling can
-// never be shadowed. Composes the alias rather than stripping a prefix off the
-// input: that makes it a pure function of (project, input) which can match at
-// most one record, so no ambiguity — and no ambiguity refusal — is reachable.
-export function resolveWorktreeName(
-  project: string,
-  input: string,
-  known: Iterable<string>,
-): string | null {
-  const names = [...known];
-  if (names.includes(input)) return input;
-  const composed = worktreeDirName(project, input);
-  return names.includes(composed) ? composed : null;
-}
-
-// The create-side mirror of the read side: a caller echoing a full dir name
-// back into `create_worktree` names the worktree they meant, not a mangled
-// sibling. Strips at most one literal prefix, and must run BEFORE
-// slugifyWorktreeName — that maps `_` to `-`, destroying the prefix before it
-// could be recognised. An empty remainder falls through to the caller's refusal.
-function stripWorktreeDirPrefix(project: string, name: string): string {
-  const prefix = `${project}_worktree_`;
-  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
 interface GitResult {
@@ -517,40 +499,35 @@ export async function createWorktree(
     throw httpError(400, `${baseLabel} is on a detached HEAD; check out a branch before creating a worktree`);
   }
 
+  // THE KEY: the store key, the worktreeName and the directory basename, one
+  // string. That identity is what makes listWorktrees' `path.basename`
+  // live-prune correct.
   let id: string;
   if (name !== undefined) {
-    id = slugifyWorktreeName(stripWorktreeDirPrefix(projectName, name));
+    id = slugifyWorktreeName(name);
     if (!id) {
       throw httpError(400, `worktree name '${name}' has no usable characters — use letters or digits`);
     }
   } else {
     id = shortId();
   }
-  const dirName = worktreeDirName(projectName, id);
-  // See this file's header comment for why an external project's worktrees land
-  // under `.external/` rather than beside the target directory.
-  //
-  // THE THIRD BRANCH. A remote project's worktree goes ON THE SYSTEM, beside
-  // its tree. Both local answers are paths under cc's own projects root, and
-  // either of them here would create the worktree DIRECTORY on this machine
-  // while every `runGit` below ran on the system: a split-brain worktree, and a
-  // `git worktree add` pointed at a path the repo's machine cannot see.
-  //
-  // A sibling — not a cc-owned directory like `.external/` — because cc owns no
-  // area on another machine to put one in, and inventing one would be a
-  // convention the system's owner never agreed to. The dir name already carries
-  // the project name, so it is recognisable where it lands.
-  const worktreePath = worktreePathFor({ ...proj, system: proj.system.id }, dirName);
+  const worktreePath = worktreePathFor({ name: projectName, path: proj.path, system: system.id }, id);
   const branch = worktreeBranchName(id);
 
   // THE TRANSCRIPT DIRECTORY THIS WORKTREE WOULD LAND IN, checked before any
   // git state is touched — the reverse of createProject's order, and the other
-  // half of the same pair: a project named `<project>_worktree_<slug>` can
-  // already hold it. `dirName`, not `id`: the stored worktreeName is the
-  // directory name, and the cwd is built from that.
+  // half of the same pair: a project registered at this checkout's path can
+  // already hold it.
+  //
+  // THE MACHINE COORDINATE COMES OFF THE HANDLE. A transcript directory is
+  // keyed on (system, remoteId, cwd), so a candidate missing the target would
+  // be compared against the provider's DEFAULT target — refused by a holder it
+  // does not share a directory with, and admitted past one it does. The handle
+  // is the project's own (`proj.system`), built by resolveProjectDir from the
+  // record's placement, so `system.remoteId` IS the record's target.
   const candidate = {
-    project: projectName, worktree: dirName, system: system.id,
-    remoteId: (await projectPlacement(projectName)).remoteId, cwd: worktreePath,
+    project: projectName, worktree: id, system: system.id,
+    remoteId: system.remoteId, cwd: worktreePath,
   };
   const keyHit = await transcriptCwdCollision(candidate);
   if (keyHit) {
@@ -595,7 +572,7 @@ export async function createWorktree(
   const meta: WorktreeMeta = {
     parentProject: projectName,
     parentPath: basePath,
-    worktreeName: dirName,
+    worktreeName: id,
     worktreePath,
     branch,
     baseBranch: head.branch,
@@ -606,7 +583,7 @@ export async function createWorktree(
     ...(baseWorktreeName !== undefined ? { baseWorktree: baseWorktreeName } : {}),
     createdAt: new Date().toISOString(),
   };
-  await writeMeta(projectName, dirName, meta);
+  await writeMeta(projectName, id, meta);
   // Run the per-project post-worktree-create hook. Runs AFTER the worktree
   // dir + branch + metadata are written, BEFORE the instance subprocess is
   // created — so a slow hook never interferes with the 5 s control-request
@@ -653,9 +630,9 @@ export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]
   }
 
   const out: WorktreeMeta[] = [];
-  for (const dirName of await registeredWorktreeNames(projectName)) {
-    if (live && !live.has(dirName)) continue;
-    const meta = await readMeta(projectName, dirName).catch(() => null);
+  for (const key of await registeredWorktreeNames(projectName)) {
+    if (live && !live.has(key)) continue;
+    const meta = await readMeta(projectName, key).catch(() => null);
     if (meta && meta.parentProject === projectName) out.push(meta);
   }
   out.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
@@ -670,20 +647,28 @@ export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]
 // and no system being down, can change its answer. A registration is what makes
 // a worktree re-derive its target from the parent project — so a registration
 // is what has to be gone before that target may move (setProjectRemote).
-// WHERE A WORKTREE'S DIRECTORY GOES, in one place. `createWorktree` creates it
-// here and the transcript-collision guard derives every registered worktree's
-// cwd with the same call, so the guard cannot disagree with the thing it
-// guards. A placed project's worktrees sit beside it on ITS machine; a local
-// project's sit in cc's projects root, under `.external/` when the project is.
+// WHERE A WORKTREE'S DIRECTORY GOES, in one place, in ONE layout:
+// `<worktrees root>/<project>/<key>`. `createWorktree` creates it here and the
+// transcript-collision guard derives every registered worktree's cwd with the
+// same call, so the guard cannot disagree with the thing it guards.
+//
+// The only thing that varies is the ROOT. Locally it is cc's own
+// `<projectsRoot>/.worktrees` — wherever the project's tree happens to live,
+// because cc owns that area and the user's parent directory is not cc's to
+// scatter checkouts in. On a system it is that system's configured
+// `worktreesDir`, else a `.worktrees` beside the project's tree: cc owns no
+// area on another machine, so the default sits where the tree already is.
+//
+// Synchronous and pure — `getSystem` reads already-loaded settings.
 export function worktreePathFor(
-  proj: { path: string; system: string; external?: boolean }, dirName: string,
+  proj: { name: string; path: string; system: string }, key: string,
 ): string {
-  return path.join(
-    proj.system !== LOCAL_SYSTEM_ID
-      ? path.dirname(proj.path)
-      : proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
-    dirName,
-  );
+  if (proj.system === LOCAL_SYSTEM_ID) {
+    return path.join(localWorktreesRoot(), proj.name, key);
+  }
+  const configured = getSystem(proj.system)?.worktreesDir;
+  const base = configured ?? path.posix.join(path.posix.dirname(proj.path), '.worktrees');
+  return path.posix.join(base, proj.name, key);
 }
 
 export async function registeredWorktreeNames(projectName: string): Promise<string[]> {
@@ -695,8 +680,7 @@ export async function registeredWorktreeNames(projectName: string): Promise<stri
 
 export async function getWorktree(projectName: string, worktreeName: string): Promise<WorktreeMeta | null> {
   const all = await listWorktrees(projectName);
-  const name = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName));
-  return all.find(w => w.worktreeName === name) ?? null;
+  return all.find(w => w.worktreeName === worktreeName) ?? null;
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
@@ -744,10 +728,11 @@ export async function resolveProjectCwd(projectName: string, worktreeName?: stri
 // guaranteed: siblings are independent, so any order of them deletes cleanly.
 export async function listDependentWorktrees(projectName: string, worktreeName: string): Promise<string[]> {
   const all = await listWorktrees(projectName);
-  // Alias here too, not just at getWorktree: the foreign key is matched
-  // literally below, so a bare slug would silently return [] and bypass every
-  // dependents refusal built on it.
-  const root = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName)) ?? worktreeName;
+  // `baseWorktree` is matched LITERALLY below, and a reference that matches
+  // nothing yields an EMPTY dependents list rather than an error — so a name
+  // that is not a registered key silently bypasses every dependents refusal
+  // built on this. One spelling per worktree is what keeps that honest.
+  const root = worktreeName;
   const seen = new Set<string>([root]);
   const levels: string[][] = [];
   let frontier = new Set<string>([root]);
@@ -1381,19 +1366,67 @@ export async function removeAllWorktreesForProject(projectName: string): Promise
   // checkout and a branch inside the user's own repo, on their own machine.
   // So here the registrations go and the directories and branches stay, for the
   // same reason the project's own tree does.
-  //
-  // Deleting ONE worktree deliberately still removes it (removeWorktree,
-  // unchanged): cc created that directory, and the user asked for that
-  // directory. This is the whole-project cascade, where the user asked to stop
-  // tracking a project — not to delete work on another machine.
-  const { system } = await projectPlacement(projectName);
-  const unregisterOnly = system !== LOCAL_SYSTEM_ID;
-  for (const wt of known) {
-    try {
-      if (unregisterOnly) await dropWorktreeStoreEntry(projectName, wt.worktreeName);
-      else await removeWorktree(projectName, wt.worktreeName, { force: true });
-    } catch { /* ignore */ }
+  // A record cc cannot READ has no location to act on, and deleting the project
+  // is the repair for exactly that state — so the registrations go and nothing
+  // is refused. Same rule as the remote branch below.
+  let placement: Awaited<ReturnType<typeof projectPlacement>> | 'unreadable';
+  try { placement = await projectPlacement(projectName); }
+  catch { placement = 'unreadable'; }
+  if (placement === 'unreadable' || (placement && placement.system !== LOCAL_SYSTEM_ID)) {
+    for (const key of await registeredWorktreeNames(projectName)) {
+      await dropWorktreeStoreEntry(projectName, key);
+    }
+    return;
   }
+
+  // THE CASCADE REFUSES, AND THE REFUSAL PROPAGATES. `force: true` skips the
+  // whole `if (!force)` block in removeWorktree — all three guards — so a
+  // project delete used to throw away a worktree's uncommitted work without
+  // measuring it. Here every guard runs and its 409 reaches the caller.
+  const system = await resolveSystem(projectName);
+  for (const wt of known) {
+    // Dependents first, and for EVERY row including one with nothing left on
+    // disk: a child whose base disappears is genuinely broken.
+    const dependents = await listDependentWorktrees(projectName, wt.worktreeName);
+    if (dependents.length > 0) {
+      throw httpError(409, dependentsRefusal(wt.worktreeName, dependents, 'deleting').reason,
+        { code: 'WORKTREE_HAS_DEPENDENTS' });
+    }
+    // A CHECKOUT THAT IS NOT THERE HAS NOTHING TO PROTECT. Its dirty check
+    // cannot answer, and refusing on that would make a project whose tree
+    // vanished out-of-band permanently undeletable — every registration lists
+    // (git cannot filter), every dirty check fails as dirty-unknown, and every
+    // delete 409s. Only a MEASURED dirty state, or a failed check on a checkout
+    // that DOES exist, refuses.
+    if (!(await checkoutIsProtectable(system, wt))) {
+      await dropWorktreeStoreEntry(projectName, wt.worktreeName);
+      continue;
+    }
+    try {
+      await removeWorktree(projectName, wt.worktreeName, { force: false });
+    } catch (e) {
+      // A REFUSAL BEFORE THE REMOVAL PROPAGATES; a fault AFTER it does not.
+      // removeWorktree drops the registration between `git worktree remove`
+      // and the best-effort branch delete, so whether the registration is
+      // still there is the state that says which happened — and it says so
+      // without matching on message text. A post-removal branch-delete
+      // refusal must not abort the cascade: the worktree is already gone and
+      // nothing is left stranded.
+      if ((await registeredWorktreeNames(projectName)).includes(wt.worktreeName)) throw e;
+      console.warn(`removeAllWorktreesForProject: '${wt.worktreeName}' of '${projectName}' `
+        + `was removed, but a later step failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+// Is there anything here a dirty check could be about? Both halves are needed:
+// a vanished checkout holds no uncommitted work, and a parent that is no longer
+// a repo cannot be asked about one (nor can `git worktree remove` run in it).
+async function checkoutIsProtectable(system: System, wt: WorktreeMeta): Promise<boolean> {
+  try {
+    if ((await system.stat(wt.worktreePath))?.kind !== 'dir') return false;
+    return await isGitRepo(system, wt.parentPath);
+  } catch { return false; }
 }
 
 // The central-store entry for one worktree (metadata + attachments + debug).

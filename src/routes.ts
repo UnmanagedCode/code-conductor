@@ -461,7 +461,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
             sessions: await summarizeSessions(wtPlace, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           };
         }));
-        const projPlace = placeOf(p, p.systemPath ?? p.path);
+        const projPlace = placeOf(p, p.path);
         const projTempSids = instances ? instances.tempSessionIdsForPlace(projPlace) : null;
         return {
           ...p,
@@ -522,7 +522,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     } catch (e) { next(e); }
   });
 
-  // Adopt an existing out-of-root directory as a project. Body: {name, path}.
+  // Adopt an existing directory as a project. Body: {name, path, onStaleRecord?}.
   // Mounted before the `/projects/:name` param routes so `external` can't be
   // read as a project name. Soft refusals return 200 with {ok:false, code,
   // reason} — same contract as POST /instances/:id/merge — so a caller can
@@ -530,8 +530,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // broadcastProjects(), matching POST /projects.
   r.post('/projects/external', async (req, res, next) => {
     try {
-      const { name, path: targetPath, system, remoteId } = jsonBody(req);
-      const result = await adoptProject(name, targetPath, { system, remoteId });
+      const { name, path: targetPath, system, remoteId, onStaleRecord } = jsonBody(req);
+      const result = await adoptProject(name, targetPath, { system, remoteId, onStaleRecord });
       res.status(result.ok ? 201 : 200).json(result);
     } catch (e) { next(e); }
   });
@@ -551,14 +551,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   //   1. validate the project exists,
   //   2. kill every running instance attached to it (including any
   //      inside worktrees of this project),
-  //   3. remove every worktree (git worktree remove --force + branch
-  //      delete + dir sweep for orphans),
-  //   4. remove the project itself — `rm -rf` for an in-root project, but an
-  //      ADOPTED project is only UNREGISTERED (its `.external/` symlink is
-  //      unlinked; the user's directory is never touched — see deleteProject).
-  // Step 3 must precede step 4: everything after getProject uses proj.NAME,
-  // never proj.path, and unregistering first would turn listWorktrees into a
-  // 404 and orphan both the worktree dirs and the registrations in the repo.
+  //   3. remove every worktree — and PROPAGATE its refusals: a dirty,
+  //      dirty-unknown or depended-on worktree 409s the whole delete rather
+  //      than being force-removed under the user,
+  //   4. deregister the project. The TREE stays unless `deleteDirectory` is
+  //      ticked, and for a project on a system there is no such tick.
+  // Step 3 must precede step 4: everything after getProjectForDelete uses
+  // proj.NAME, never a path, and unregistering first would turn listWorktrees
+  // into a 404 and orphan both the worktree dirs and the registrations.
   // Sessions under ~/.claude/projects/<encoded>/ are intentionally
   // left alone — they belong to the user's claude CLI history and
   // may still be referenced outside the orchestrator.
@@ -577,19 +577,19 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // could not be deleted, and removeSystem then refused 409 because that
       // project still named the system).
       const proj = await getProjectForDelete(req.params.name);
+      const deleteDirectory = jsonBody(req).deleteDirectory === true;
       let killed = 0;
       if (instances) killed = await instances.removeAllForProject(proj.name);
       await removeAllWorktreesForProject(proj.name);
-      const deleted = await deleteProject(proj.name);
+      const deleted = await deleteProject(proj.name, { deleteDirectory });
       invalidate(proj.name);
-      // `unregisteredOnly` is the asymmetry the confirm dialog has to state
-      // BEFORE the click, and the response repeats it after: an adopted or
-      // remote project's tree is the user's own and is never removed. `system`
-      // and `path` name what was left behind and where.
+      // `directoryDeleted` repeats after the click what the confirm dialog
+      // stated before it: deleting a project deregisters it, and the tree goes
+      // only when the caller asked for it.
       res.json({
         ok: true, project: proj.name, killedInstances: killed,
         system: deleted.system, remoteId: deleted.remoteId, path: deleted.path,
-        unregisteredOnly: proj.external || deleted.system !== LOCAL_SYSTEM_ID,
+        directoryDeleted: deleted.directoryDeleted,
       });
     } catch (e) { next(e); }
   });
@@ -1871,16 +1871,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   r.post('/settings/systems', async (req, res, next) => {
     try {
-      const { id, label, launch } = jsonBody(req);
-      const rec = await addSystem({ id, label, launch });
+      const { id, label, launch, worktreesDir } = jsonBody(req);
+      const rec = await addSystem({ id, label, launch, worktreesDir });
       res.status(201).json({ ...(await systemsState()), added: rec });
     } catch (e) { next(e); }
   });
 
   r.patch('/settings/systems/:id', async (req, res, next) => {
     try {
-      const { label, launch } = jsonBody(req);
-      const rec = await updateSystem(req.params.id, { label, launch });
+      const { label, launch, worktreesDir } = jsonBody(req);
+      const rec = await updateSystem(req.params.id, { label, launch, worktreesDir });
       if (!rec) return res.status(404).json({ error: 'system not found' });
       res.json({ ...(await systemsState()), updated: rec });
     } catch (e) { next(e); }

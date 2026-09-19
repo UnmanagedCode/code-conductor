@@ -208,7 +208,11 @@ describe('renderProjects', () => {
     assert.ok(!out.includes('COLD_PARENT'), 'parentProject/parentPath are dropped here — the project header carries them');
   });
 
-  test('an adopted project is tagged external; an in-root one is byte-identical to today', () => {
+  test('a project whose RECORD could not be read is tagged, and a healthy one is not', () => {
+    // There is no kind flag any more — an adopted project and an in-root one
+    // render identically, which is what makes their rows interchangeable. The
+    // one thing a row can still say about itself is that its record is
+    // unreadable, and then it carries no path either.
     const row = (extra) => ({
       name: 'p', path: '/anywhere/p', workspace: null, liveCount: 0, isGitRepo: true,
       worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 }, ...extra,
@@ -222,20 +226,22 @@ describe('renderProjects', () => {
       '  worktrees 0',
     ].join('\n');
     // A deviant declared with the wrong default would tag every project.
-    assert.equal(renderProjects([row({ external: false })]), baseline);
-    assert.equal(renderProjects([row({})]), baseline, 'an absent field is still no news');
-    assert.equal(renderProjects([row({ external: true })]), [
+    assert.equal(renderProjects([row({})]), baseline, 'an absent field is no news');
+    assert.equal(renderProjects([row({ degraded: null })]), baseline);
+    assert.equal(renderProjects([row({ external: true })]), baseline,
+      'a leftover `external` field is no longer rendered at all');
+    assert.equal(renderProjects([row({ path: '', degraded: 'no `location`' })]), [
       'PROJECTS (1)',
       '',
-      '▸ p  /anywhere/p',
-      '  external',
+      '▸ p  —',
+      '  ! unreadable project record no `location`',
       '  sessions 0   last —',
       '  live 0',
       '  worktrees 0',
     ].join('\n'));
   });
 
-  test('a project on another system names it and its path there; local is silent', () => {
+  test('a project on another system names it; local is silent', () => {
     const row = (extra) => ({
       name: 'p', path: '/anywhere/p', workspace: null, liveCount: 0, isGitRepo: true,
       worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 }, ...extra,
@@ -251,16 +257,15 @@ describe('renderProjects', () => {
     // `local` carries no news — the deviant default. Absence of the fields must
     // read the same, because absence of the record field IS local and most
     // projects have no record at all.
-    assert.equal(renderProjects([row({ system: 'local', systemPath: null })]), baseline);
+    assert.equal(renderProjects([row({ system: 'local' })]), baseline);
     assert.equal(renderProjects([row({})]), baseline, 'an absent field is still no news');
-    // A remote one says WHICH system and WHERE on it — the `▸` header path is a
-    // cc-side path and does not carry the second fact.
-    assert.equal(renderProjects([row({ system: 'prod-box', systemPath: '/app' })]), [
+    // A remote one says WHICH system. WHERE on it is the `▸` header path —
+    // one path field, whichever machine the tree is on.
+    assert.equal(renderProjects([row({ system: 'prod-box', path: '/app' })]), [
       'PROJECTS (1)',
       '',
-      '▸ p  /anywhere/p',
+      '▸ p  /app',
       '  system prod-box',
-      '  systemPath /app',
       '  sessions 0   last —',
       '  live 0',
       '  worktrees 0',

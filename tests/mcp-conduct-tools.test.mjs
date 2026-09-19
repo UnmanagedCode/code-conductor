@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn, registerLocalProject} from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -65,6 +65,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -278,7 +279,7 @@ test('reject_plan to a MID-TURN worker prepends MID_TURN_NOTE as its own block',
 test('project_diff returns the unified diff of <base>...HEAD', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   await fs.writeFile(path.join(wtPath, 'new.txt'), 'fresh content\n');
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
@@ -326,7 +327,7 @@ test('project_diff rejects unknown worktree', async () => {
 test('project_diff paginates a large diff losslessly by line index', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   // ~300 KB across many files, all lines well under the cap so pages split
   // on whole-line boundaries.
   const fileCount = 60;
@@ -376,7 +377,7 @@ test('project_diff paginates a large diff losslessly by line index', async () =>
 test('project_diff re-emits file/hunk headers on a mid-file page', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   // One big file with many lines, forcing a page boundary inside it.
   const big = Array.from({ length: 5000 }, (_, i) => `line ${i} ` + 'z'.repeat(50)).join('\n') + '\n';
   await fs.writeFile(path.join(wtPath, 'big.txt'), big);
@@ -399,7 +400,7 @@ test('project_diff re-emits file/hunk headers on a mid-file page', async () => {
 test('project_diff makes progress even when a single line exceeds the cap', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   // Single 300 KB line (no newlines) — the added content line alone is > cap.
   await fs.writeFile(path.join(wtPath, 'huge.txt'), 'x'.repeat(300 * 1024));
   await git(wtPath, 'add', '.');
@@ -423,7 +424,7 @@ test('project_diff makes progress even when a single line exceeds the cap', asyn
 test('project_diff summary returns a per-file stat (add + modify)', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   await fs.writeFile(path.join(wtPath, 'README.md'), '# test\nmore\n'); // modify
   await fs.writeFile(path.join(wtPath, 'new.txt'), 'a\nb\nc\n');         // add
   await git(wtPath, 'add', '.');
@@ -449,7 +450,7 @@ test('project_diff summary flags deletes, renames and binary files', async () =>
 
   // Rename test: pure rename so git reports R.
   const wtR = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtRPath = path.join(projectsRoot, wtR.worktree);
+  const wtRPath = wtR.worktreePath;
   await git(wtRPath, 'mv', 'README.md', 'DOC.md');
   await git(wtRPath, 'commit', '-q', '-m', 'rename');
   const resR = unwrapDiff(await callTool('project_diff', {
@@ -462,7 +463,7 @@ test('project_diff summary flags deletes, renames and binary files', async () =>
 
   // Delete test.
   const wtD = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtDPath = path.join(projectsRoot, wtD.worktree);
+  const wtDPath = wtD.worktreePath;
   await git(wtDPath, 'rm', '-q', 'README.md');
   await git(wtDPath, 'commit', '-q', '-m', 'delete');
   const resD = unwrapDiff(await callTool('project_diff', {
@@ -472,7 +473,7 @@ test('project_diff summary flags deletes, renames and binary files', async () =>
 
   // Binary test.
   const wtB = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtBPath = path.join(projectsRoot, wtB.worktree);
+  const wtBPath = wtB.worktreePath;
   const bin = Buffer.from([0, 1, 2, 0, 255, 254, 0, 10, 0, 200]);
   await fs.writeFile(path.join(wtBPath, 'blob.bin'), bin);
   await git(wtBPath, 'add', '.');
@@ -502,7 +503,7 @@ test('project_diff summary is empty for a clean worktree', async () => {
 test('project_diff scopes the diff to the given paths', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const wtPath = path.join(projectsRoot, wt.worktree);
+  const wtPath = wt.worktreePath;
   await fs.writeFile(path.join(wtPath, 'a.txt'), 'aaa\n');
   await fs.writeFile(path.join(wtPath, 'b.txt'), 'bbb\n');
   await git(wtPath, 'add', '.');

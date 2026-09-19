@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,

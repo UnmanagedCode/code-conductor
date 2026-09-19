@@ -217,17 +217,16 @@ describe('the conventions sweep never writes to an unresolvable project', () => 
     finally { process.chdir(prev); }
   }
 
-  // PINS THE DEFECT: a record naming a REACHABLE system with no `systemPath`
-  // resolves its system fine, so a sweep that resolved only the system composed
-  // `path.join('', …)` and reported `regenerated: true` for a write that went
-  // nowhere anyone chose.
-  test('a record with no systemPath is an error entry, never a success', async () => {
-    await writeRecord('broken', { system: remote.id });
+  // PINS THE DEFECT: a record cc cannot read has no path to compose against, so
+  // a sweep that resolved only the system composed `path.join('', …)` and
+  // reported `regenerated: true` for a write that went nowhere anyone chose.
+  test('a record cc cannot read is an error entry, never a success', async () => {
+    await writeRecord('broken', { system: remote.id });   // no `location`
     const { results } = await sweepUnderScratchCwd();
     const row = results.find(r => r.name === 'broken');
     assert.ok(row, `the row is swept, not skipped: ${JSON.stringify(results)}`);
     assert.equal(row.regenerated, undefined, 'it must not report success');
-    assert.match(String(row.error), /systemPath/,
+    assert.match(String(row.error), /malformed/,
       'the sweep records WHY, which is what the per-project catch is for');
   });
 
@@ -245,7 +244,7 @@ describe('the conventions sweep never writes to an unresolvable project', () => 
   // caller (adopt and the convention-mutation routes reach it directly).
   test('ensureProjectConventionsMd refuses that project by name', async () => {
     await writeRecord('broken', { system: remote.id });
-    await assert.rejects(() => ensureProjectConventionsMd('broken'), (e) => /systemPath/.test(e.message));
+    await assert.rejects(() => ensureProjectConventionsMd('broken'), (e) => /malformed/.test(e.message));
   });
 
   // PINS: one bad record does not stop the sweep reaching the healthy projects

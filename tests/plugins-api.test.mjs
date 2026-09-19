@@ -6,7 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, registerLocalProject} from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
 import { orchStoreRoot } from '../src/projects.ts';
@@ -16,7 +16,9 @@ async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
 
 async function setup() {
   const boot = await bootServer();
-  await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });
+  const dir = path.join(boot.projectsRoot, 'fakeplug');
+  await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true });
+  await registerLocalProject('fakeplug', dir);
   return boot;
 }
 
@@ -123,7 +125,7 @@ test('rescan picks up a manifest added after boot', async () => {
     // Prime discovery, then add a second plugin.
     await api(boot.baseUrl, 'GET', '/api/plugins');
     const dir = path.join(boot.projectsRoot, 'second');
-    await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('second', dir);
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
       id: 'second', name: 'Second', version: '1', pluginApi: 1,
     }));
@@ -137,7 +139,7 @@ test('error shapes: unknown 404, invalid manifest 409, disabled start 409', asyn
   const boot = await setup();
   try {
     const bad = path.join(boot.projectsRoot, 'badplug');
-    await fs.mkdir(bad, { recursive: true });
+    await registerLocalProject('badplug', bad);
     await fs.writeFile(path.join(bad, 'conductor.plugin.json'), JSON.stringify({ id: 'badplug', pluginApi: 1 }));
 
     assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/ghost/enable')).status, 404);
@@ -225,10 +227,10 @@ test('POST /api/plugins/library/:id/update — unknown id 404, not-installed 404
   } finally { await boot.close(); }
 });
 
-test('GET /api/plugins/library marks an entry installed once its target dir exists', async () => {
+test('GET /api/plugins/library marks an entry installed once its project is registered', async () => {
   const boot = await bootServer();
   try {
-    await fs.mkdir(path.join(boot.projectsRoot, 'code-share'), { recursive: true });
+    await registerLocalProject('code-share', path.join(boot.projectsRoot, '.plugins', 'code-share'));
     const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
     const row = r.body.entries.find(e => e.id === 'code-share');
     assert.equal(row.installed, true);
@@ -242,7 +244,7 @@ test('POST /api/plugins/library/:id/install — unknown id 404, already-installe
     const ghost = await api(boot.baseUrl, 'POST', '/api/plugins/library/ghost/install');
     assert.equal(ghost.status, 404);
 
-    await fs.mkdir(path.join(boot.projectsRoot, 'code-share'), { recursive: true });
+    await registerLocalProject('code-share', path.join(boot.projectsRoot, '.plugins', 'code-share'));
     const taken = await api(boot.baseUrl, 'POST', '/api/plugins/library/code-share/install');
     assert.equal(taken.status, 409);
     assert.match(taken.body.error, /already installed/);
@@ -309,6 +311,7 @@ test('POST /api/plugins/library/:id/update — streams NDJSON chunks, terminal o
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
     await git(boot.projectsRoot, 'clone', '-q', remoteDir, 'code-x');
+    await registerLocalProject('code-x', path.join(boot.projectsRoot, 'code-x'));
 
     // A new commit lands upstream after the install-time clone.
     await fs.writeFile(path.join(seedDir, 'file.txt'), 'v2');
@@ -348,7 +351,8 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
   const boot = await bootServer();
   try {
     const dir = path.join(boot.projectsRoot, 'convplug');
-    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings conventions/sample.md + scaffolds/sample.md
+    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true });
+    await registerLocalProject('convplug', dir); // brings conventions/sample.md + scaffolds/sample.md
     // One convention carrying BOTH facets (fragment file + scaffold file) —
     // mirrors code-playwright's post-migration shape.
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
@@ -385,8 +389,11 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     assert.match(created.body.scaffold, /harness wrapper/);
     const conventionsMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CONVENTIONS.md'), 'utf8');
     assert.match(conventionsMd, /Visual UX verification/);
-    // Scaffold is NOT persisted to project meta.
-    await assert.rejects(fs.stat(path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json')), { code: 'ENOENT' });
+    // Scaffold is NOT persisted to the project record — which now always
+    // exists, because the record IS the registration.
+    const rec = JSON.parse(await fs.readFile(
+      path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json'), 'utf8'));
+    assert.deepEqual(Object.keys(rec), ['location']);
 
     // Disable → convention drops from the catalog; the committed CONVENTIONS.md
     // survives because this is the direct host call, which runs no fan-out (the
@@ -404,6 +411,7 @@ test('enable/disable a project-convention plugin fans out to referencing project
   try {
     const dir = path.join(boot.projectsRoot, 'projconvplug');
     await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings conventions/sample.md
+    await registerLocalProject('projconvplug', dir);
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
       id: 'projconv', name: 'Proj Conv', version: '1.0.0', pluginApi: 1,
       conventions: [{ slug: 'vis', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
@@ -507,6 +515,7 @@ async function seedLibraryGitProject({ projectsRoot, projectName, manifestExtra 
   await git(seedDir, 'remote', 'add', 'origin', remoteDir);
   await git(seedDir, 'push', '-q', 'origin', 'main');
   await git(projectsRoot, 'clone', '-q', remoteDir, projectName);
+  await registerLocalProject(projectName, path.join(projectsRoot, projectName));
 
   const libDir = path.join(projectsRoot, '.code-conductor', 'plugins', 'library');
   await fs.mkdir(libDir, { recursive: true });
@@ -869,7 +878,7 @@ test('POST /api/plugins/library/:id/install regenerates a pre-existing project w
     // + auto-enables it. Mirrors library.ts:299-307's own reasoning for
     // adding this call to the install path.
     const refDir = path.join(boot.projectsRoot, 'preexisting');
-    await fs.mkdir(refDir, { recursive: true });
+    await registerLocalProject('preexisting', refDir);
     const target = path.join(refDir, 'CONVENTIONS.md');
     await fs.writeFile(target, '<!-- cc:conventions code-z/vis -->\n\nSTALE BODY\n');
 

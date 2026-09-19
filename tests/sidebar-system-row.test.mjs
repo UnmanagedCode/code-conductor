@@ -117,7 +117,7 @@ test('an unreachable system hides the controls that would fail, and keeps delete
 // system. Nothing is hidden on it.
 test('a reachable remote project keeps every affordance, spawn included', async () => {
   const { root } = await render(baseProject({
-    system: 'prod-box', systemPath: '/app', systemUnreachable: null, isGitRepo: true,
+    system: 'prod-box', path: '/app', systemUnreachable: null, isGitRepo: true,
   }));
   const pill = root.querySelector('.system-pill');
   assert.ok(pill, 'the row says which machine it is on');

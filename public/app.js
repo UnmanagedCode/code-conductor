@@ -420,6 +420,17 @@ sessionActions = installSessionActions({
   sidebar,
   clearUnread: unread.clear,
   headerUpdate: () => headerHandle.update(),
+  deleteProjectDom: {
+    dialog: document.getElementById('delete-project-dialog'),
+    title: document.getElementById('dpd-title'),
+    summary: document.getElementById('dpd-summary'),
+    effects: document.getElementById('dpd-effects'),
+    dirRow: document.getElementById('dpd-dir-row'),
+    deleteDir: document.getElementById('dpd-delete-dir'),
+    dirLabel: document.getElementById('dpd-dir-label'),
+    confirm: document.getElementById('dpd-confirm'),
+    error: document.getElementById('dpd-error'),
+  },
 });
 
 // Active-instance header / chips / combined-usage popover (see public/header.js).
@@ -556,9 +567,8 @@ function closeReview() {
 const review = installReview();
 sidebar.onReviewWorktree = (project, wt) => {
   closeSidebarOnMobile();
-  const short = wt.replace(`${project}_worktree_`, '');
   review.open({
-    title: `${project} / ${short}`,
+    title: `${project} / ${wt}`,
     url: `/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(wt)}/diff`,
     onBack: closeReview,
   });

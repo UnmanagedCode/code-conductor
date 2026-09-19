@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, registerLocalProject } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR, readFixtureManifest } from './plugin-helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +18,9 @@ const run = promisify(execFile);
 
 async function setup() {
   const boot = await bootServer({ scenarioPath: SCENARIO_WS });
-  await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });
+  const dir = path.join(boot.projectsRoot, 'fakeplug');
+  await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true });
+  await registerLocalProject('fakeplug', dir);
   await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
   return boot;
 }
@@ -26,6 +28,7 @@ async function setup() {
 async function addPlugin(boot, project, manifestPatch) {
   const dir = path.join(boot.projectsRoot, project);
   await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true });
+  await registerLocalProject(project, dir);
   const manifest = { ...(await readFixtureManifest()), ...manifestPatch };
   if (manifestPatch.mcp) manifest.mcp = { ...(await readFixtureManifest()).mcp, ...manifestPatch.mcp };
   await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest, null, 2));
@@ -67,7 +70,7 @@ test('visibility: every enabled plugin\'s tools are global — conductor, any-pr
   try {
     // A manifest `scope` field is accepted (compat) but inert.
     await addPlugin(boot, 'globalplug', { id: 'globalplug', name: 'Global', mcp: { scope: 'global' } });
-    await fs.mkdir(path.join(boot.projectsRoot, 'other'), { recursive: true });
+    await registerLocalProject('other', path.join(boot.projectsRoot, 'other'));
 
     // Conductor / UI (no caller): everything.
     const all = await listToolNames(boot.baseUrl);

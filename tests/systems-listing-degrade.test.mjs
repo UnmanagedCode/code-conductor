@@ -31,7 +31,7 @@ import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { projectStoreDir, projectsRoot, createProject, projectRootPlace } from '../src/projects.ts';
 
-const REMOTE = { system: 'prod-box', systemPath: '/app' };
+const REMOTE = { location: { kind: 'remote', system: 'prod-box', remoteId: null, path: '/app' } };
 
 async function writeRecord(name, record) {
   const dir = projectStoreDir(name);
@@ -49,10 +49,10 @@ async function writeRecord(name, record) {
 // the path on its system: the CLI encodes its session directory from the cwd it
 // ran in, and cc has only one such path per project.
 async function seedThree({ withSessions = false } = {}) {
-  const treeOf = (name) => (name === 'beta' ? REMOTE.systemPath : path.join(projectsRoot(), name));
+  const treeOf = (name) => (name === 'beta' ? REMOTE.location.path : path.join(projectsRoot(), name));
   for (const name of ['alpha', 'gamma']) await createProject(name);
-  // `beta` is registered by its record alone — a remote project has no
-  // directory under the projects root and no `.external` link.
+  // `beta` is registered by its record alone — as every project is; what makes
+  // it special here is only that its location names a system nothing can reach.
   await writeRecord('beta', REMOTE);
   if (withSessions) {
     for (const name of ['alpha', 'beta', 'gamma']) {
@@ -92,7 +92,7 @@ describe('a project on an unreachable system degrades its own row only', () => {
     const beta = r.body.find(p => p.name === 'beta');
     assert.match(beta.systemUnreachable, /prod-box/, 'the row says WHY its facts are missing');
     assert.equal(beta.system, 'prod-box');
-    assert.equal(beta.systemPath, '/app');
+    assert.equal(beta.path, '/app', 'one path field, whichever machine it is on');
     // Absent, not `false`: "could not look" must not be served as the positive
     // claim "not a git repo". Absent is falsy, which is all any client does with it.
     assert.equal('isGitRepo' in beta, false, 'no measured git fact is invented');
@@ -117,7 +117,8 @@ describe('a project on an unreachable system degrades its own row only', () => {
     }
     assert.match(text, /! system unreachable .*prod-box/, 'the reason is in the text');
     assert.match(text, /system prod-box/);
-    assert.match(text, /systemPath \/app/);
+    // One path field: the block header carries it, whichever machine it is on.
+    assert.match(text, /▸ beta {2}\/app/);
     // The one thing a degraded row must not do is assert a fact it never measured.
     assert.ok(!text.includes('! not a git repo'),
       'an unmeasurable project must not print the positive claim "not a git repo"');

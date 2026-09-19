@@ -20,7 +20,7 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { freshProjectsRoot, rmrf } from './helpers.mjs';
+import { freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { createFragmentCatalog } from '../src/fragmentCatalog.ts';
 import { createSelectionStore } from '../src/conventionSelection.ts';
 import {
@@ -232,6 +232,7 @@ test('S4 both scopes: setSelection rejects a non-array and an unknown slug with 
 async function synthScope(slugs, dirName) {
   const seedDir = path.join(projectsRoot, dirName);
   await fs.mkdir(seedDir, { recursive: true });
+  await registerLocalProject(dirName, seedDir);
   for (const slug of slugs) {
     await fs.writeFile(path.join(seedDir, `${slug}.md`), `## ${slug}\n- body of ${slug}`);
   }

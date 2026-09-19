@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
   registeredWorktreeNames, removeAllWorktreesForProject, runGit, GIT_OUTPUT_LIMIT_BYTES,
@@ -50,6 +50,7 @@ function git(cwd, ...args) {
 async function makeRealRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -60,7 +61,7 @@ async function makeRealRepo(name) {
   return repoPath;
 }
 
-test('createWorktree creates a sibling directory with metadata and a fresh branch', async () => {
+test('createWorktree creates the checkout under .worktrees/<project>/ with metadata and a fresh branch', async () => {
   const repoPath = await makeRealRepo('demo');
   // POST /api/instances with worktree:true should create the worktree
   // and spawn an instance into it.
@@ -76,14 +77,14 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
   const wts = await listWorktrees('demo');
   assert.equal(wts.length, 1);
   const wt = wts[0];
-  assert.match(wt.worktreeName, /^demo_worktree_[a-f0-9]{6}$/);
-  assert.equal(path.dirname(wt.worktreePath), projectsRoot);
-  // The other half of the external-project placement branch: an IN-ROOT
-  // project's worktrees must NOT move under `.external/`. Every external test
-  // in tests/external-projects.test.mjs passes if the branch is dropped and
-  // `.external/` is used unconditionally — this is what kills that.
-  assert.notEqual(path.dirname(wt.worktreePath), path.join(projectsRoot, '.external'));
-  await assert.rejects(() => fs.stat(path.join(projectsRoot, '.external', wt.worktreeName)));
+  // ONE spelling: the store key, the worktreeName and the directory basename
+  // are one string, with no `<project>_worktree_` infix.
+  assert.match(wt.worktreeName, /^[a-f0-9]{6}$/);
+  assert.equal(wt.worktreePath, path.join(projectsRoot, '.worktrees', 'demo', wt.worktreeName));
+  assert.equal(path.basename(wt.worktreePath), wt.worktreeName);
+  // Never beside the project: the projects root holds projects and cc's own
+  // dotfolders, and a checkout sitting in it would list as a project again.
+  await assert.rejects(() => fs.stat(path.join(projectsRoot, wt.worktreeName)));
   const wtBranch = (await git(wt.worktreePath, 'symbolic-ref', '--short', 'HEAD')).stdout.trim();
   assert.equal(wtBranch, wt.branch);
 
@@ -129,6 +130,7 @@ test('listProjects hides orchestrator-owned worktree directories', async () => {
 async function makeUnbornRepo(name) {
   const repoPath = path.join(projectsRoot, name);
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject(name, repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 'test@example.com');
   await git(repoPath, 'config', 'user.name', 'test');
@@ -139,7 +141,7 @@ async function makeUnbornRepo(name) {
 test('createWorktree rejects when the project is not a git repo', async () => {
   // Non-git project: just `mkdir`, no `git init`. Creating via the API is no
   // longer a way to reach this state — creation always inits a repo.
-  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
+  await registerLocalProject('plain', path.join(projectsRoot, 'plain'));
   const r = await api(baseUrl, 'POST', '/api/instances', {
     project: 'plain', mode: 'bypassPermissions', worktree: true,
   });
@@ -238,6 +240,7 @@ test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn'
 
   const plain = path.join(projectsRoot, 'plain');
   await fs.mkdir(plain, { recursive: true });
+  await registerLocalProject('plain', plain);
   await assert.rejects(getHeadBranchAndSha(localSystem(), plain), (e) => {
     assert.ok(!/no commits yet/.test(e.message),
       `a non-repo must not be told to commit in it: ${e.message}`);
@@ -265,7 +268,7 @@ test('a base worktree whose directory vanished is refused by cause, not as "no c
 
 test('GET /api/projects reports unbornHead until the first commit', async () => {
   const repoPath = await makeUnbornRepo('fresh');
-  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
+  await registerLocalProject('plain', path.join(projectsRoot, 'plain'));
 
   let list = await api(baseUrl, 'GET', '/api/projects');
   assert.equal(list.status, 200);
@@ -1018,63 +1021,72 @@ test('GET /api/projects reports null mergeStatus when the branch has no upstream
 
 
 // ---------------------------------------------------------------------------
-// Worktree name aliasing: every worktree-addressing input accepts the full
-// `<project>_worktree_<slug>` dir name OR the bare slug the GUI displays.
+// ONE SPELLING PER WORKTREE. The store key, the `worktreeName` and the
+// directory basename are one string, so no input needs aliasing and no reader
+// needs to parse a name out of a path.
 // ---------------------------------------------------------------------------
 
-test('getWorktree resolves the bare slug and the full name to the same record', async () => {
+test('a new worktree\'s store key, name, and directory basename are one string', async () => {
   await makeRealRepo('demo');
   const wt = await createWorktree('demo', { name: 'alias-probe' });
-  assert.equal(wt.worktreeName, 'demo_worktree_alias-probe');
-
-  const byFull = await getWorktree('demo', 'demo_worktree_alias-probe');
-  const bySlug = await getWorktree('demo', 'alias-probe');
-  assert.ok(byFull, 'the full spelling still resolves');
-  assert.ok(bySlug, 'the bare slug resolves — the reported defect');
-  assert.equal(bySlug.worktreeName, byFull.worktreeName);
-  assert.equal(bySlug.worktreePath, byFull.worktreePath);
+  assert.equal(wt.worktreeName, 'alias-probe');
+  assert.equal(path.basename(wt.worktreePath), 'alias-probe');
+  assert.deepEqual(await registeredWorktreeNames('demo'), ['alias-probe']);
+  assert.ok(await fs.access(worktreeStoreDir('demo', 'alias-probe')).then(() => true, () => false));
 });
 
-test('aliasing never fabricates a record: an unknown name misses in either spelling', async () => {
+test('an unknown name misses, and the legacy composed spelling is one of them', async () => {
   await makeRealRepo('demo');
   await createWorktree('demo', { name: 'alias-probe' });
   assert.equal(await getWorktree('demo', 'nope'), null);
-  assert.equal(await getWorktree('demo', 'demo_worktree_nope'), null);
+  assert.equal(await getWorktree('demo', 'demo_worktree_alias-probe'), null,
+    'the old dir-name spelling names no worktree — there is nothing to alias');
 });
 
-// Step ordering: an exact match must win over the composed alias, so a record
-// whose name literally IS the bare form can never be shadowed. Swapping the two
-// lookups in resolveWorktreeName kills only this test.
-test('an exact match wins over the composed alias', async () => {
-  const repoPath = await makeRealRepo('demo');
-  const real = await createWorktree('demo', { name: 'aliasclash' });
-  assert.equal(real.worktreeName, 'demo_worktree_aliasclash');
+test('a local worktree lands under .worktrees/<project>/<key> wherever the project lives', async () => {
+  // BOTH placements, in one test: the layout is a property of cc's own area,
+  // not of where the project's tree happens to sit.
+  await makeRealRepo('inroot');
+  const inrootWt = await createWorktree('inroot', { name: 'w' });
+  assert.equal(inrootWt.worktreePath, path.join(projectsRoot, '.worktrees', 'inroot', 'w'));
 
-  // Fabricate a second, non-cc-shaped worktree whose worktreeName is literally
-  // the bare slug. cc itself can't produce this (worktreeName is always
-  // worktreeDirName output) — hence the hand-written store record.
-  const clashPath = path.join(projectsRoot, 'aliasclash');
-  await git(repoPath, 'worktree', 'add', '-q', clashPath, '-b', 'clash-branch');
-  const metaFile = path.join(worktreeStoreDir('demo', 'aliasclash'), 'worktree.json');
-  await fs.mkdir(path.dirname(metaFile), { recursive: true });
-  await fs.writeFile(metaFile, JSON.stringify({
-    parentProject: 'demo', parentPath: repoPath, worktreeName: 'aliasclash',
-    worktreePath: clashPath, branch: 'clash-branch', baseBranch: 'main', baseSha: 'x',
-    createdAt: new Date().toISOString(),
-  }));
+  const outside = path.join(home, 'outside-repo');
+  await fs.mkdir(outside, { recursive: true });
+  await git(outside, 'init', '-q', '-b', 'main');
+  await git(outside, 'config', 'user.email', 'test@example.com');
+  await git(outside, 'config', 'user.name', 'test');
+  await git(outside, 'config', 'commit.gpgsign', 'false');
+  await fs.writeFile(path.join(outside, 'README.md'), '# out\n');
+  await git(outside, 'add', '.');
+  await git(outside, 'commit', '-q', '-m', 'initial');
+  const { adoptProject } = await import('../src/projects.ts');
+  assert.equal((await adoptProject('outside', outside)).ok, true);
 
-  const hit = await getWorktree('demo', 'aliasclash');
-  assert.equal(hit.worktreeName, 'aliasclash', 'the literal record wins, not the composed alias');
-  assert.equal(hit.worktreePath, clashPath);
+  const outsideWt = await createWorktree('outside', { name: 'w' });
+  assert.equal(outsideWt.worktreePath, path.join(projectsRoot, '.worktrees', 'outside', 'w'),
+    'an out-of-root project\'s worktrees live in cc\'s area, not beside the user\'s tree');
+  assert.notEqual(inrootWt.worktreePath, outsideWt.worktreePath,
+    'and the per-project scope is what lets two projects share a key');
 });
 
-// removeWorktree's store cleanup must key off meta.worktreeName, not the
-// caller's spelling — otherwise a bare-slug delete leaks the store entry
-// (metadata + attachments + debug) behind the removed directory.
-test('removeWorktree by bare slug removes the worktree AND its store dir', async () => {
+test('worktreePathFor and registeredPlaces derive the same cwd', async () => {
+  // The transcript guard re-derives a worktree's cwd rather than reading it
+  // back, so the guard cannot disagree with the thing it guards — but only if
+  // the derivation matches what creation actually did.
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'derive' });
+  const { registeredPlaces } = await import('../src/systems/transcriptKey.ts');
+  const place = (await registeredPlaces()).find(pl => pl.worktree === 'derive');
+  assert.ok(place, 'the worktree is a registered place');
+  assert.equal(place.cwd, wt.worktreePath);
+});
+
+// removeWorktree's store cleanup keys off meta.worktreeName — the store entry
+// (metadata + attachments + debug) must not outlive the removed directory.
+test('removeWorktree removes the worktree AND its store dir', async () => {
   await makeRealRepo('demo');
   const wt = await createWorktree('demo', { name: 'store-probe' });
-  const storeDir = worktreeStoreDir('demo', 'demo_worktree_store-probe');
+  const storeDir = worktreeStoreDir('demo', 'store-probe');
   assert.equal(await fs.access(storeDir).then(() => true, () => false), true);
 
   await removeWorktree('demo', 'store-probe');
@@ -1085,24 +1097,21 @@ test('removeWorktree by bare slug removes the worktree AND its store dir', async
   assert.deepEqual(await listWorktrees('demo'), []);
 });
 
-// The REST delete guard under an alias. idsForWorktree is an exact in-memory
-// compare, so an un-canonicalized :wt segment reports no attached instances and
-// skips the live-instance refusal entirely — then, under ?force=1, yanks the
-// directory without ever killing them. The MCP mirror of this assertion lives in
-// mcp.test.mjs; this is the REST surface the sidebar's × actually drives.
-test('DELETE worktree by bare slug still refuses (409) with a live instance attached', async () => {
+// The REST delete guard. idsForWorktree is an exact in-memory compare, so a :wt
+// segment that does not match reports no attached instances and skips the
+// live-instance refusal entirely — then, under ?force=1, yanks the directory
+// without ever killing them. The MCP mirror lives in mcp.test.mjs; this is the
+// REST surface the sidebar's × actually drives.
+test('DELETE worktree refuses (409) with a live instance attached', async () => {
   await makeRealRepo('demo');
-  // Named via the service: the REST spawn route takes no `name`, and it is the
-  // DELETE that is under test here, so the instance attaches by the full name.
   const wt = await createWorktree('demo', { name: 'restalias' });
-  assert.equal(wt.worktreeName, 'demo_worktree_restalias');
+  assert.equal(wt.worktreeName, 'restalias');
   const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: 'demo_worktree_restalias',
+    project: 'demo', mode: 'bypassPermissions', worktree: 'restalias',
   });
   assert.equal(created.status, 201);
   const wtName = created.body.worktree.worktreeName;
-  assert.equal(wtName, 'demo_worktree_restalias');
-  const wtPath = wt.worktreePath;
+  assert.equal(wtName, 'restalias');
   const id = created.body.id;
   await waitFor(() => instances.get(id)?.status === 'idle');
 
@@ -1110,7 +1119,7 @@ test('DELETE worktree by bare slug still refuses (409) with a live instance atta
   assert.equal(blocked.status, 409);
   assert.match(blocked.body.error, /running instance/i);
   assert.ok(instances.get(id), 'the instance survives the refused delete');
-  assert.equal(await fs.access(wtPath).then(() => true, () => false), true,
+  assert.equal(await fs.access(wt.worktreePath).then(() => true, () => false), true,
     'the worktree directory must still exist');
   assert.ok(await getWorktree('demo', wtName), 'the record survives too');
 });

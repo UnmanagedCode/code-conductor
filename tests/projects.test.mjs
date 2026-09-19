@@ -4,13 +4,14 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import {
   createProject,
   encodeCwd, findSessionLocation,
-  readProjectMeta, writeProjectMeta, listWorkspaces,
+  readProjectRecord, writeProjectMeta, listWorkspaces,
   findSelfProject, ensureSelfProjectWorkspace,
-  adoptProject, listProjects, externalDir, EXTERNAL_DIRNAME, localPlace} from '../src/projects.ts';
+  adoptProject, listProjects, localPlace,
+} from '../src/projects.ts';
 import { markArchived } from '../src/archivedSessions.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { localSystem } from '../src/systems/registry.ts';
@@ -223,7 +224,7 @@ test('GET /api/projects/:name/sessions 404s unknown project', async () => {
   assert.equal(r.status, 404);
 });
 
-test('DELETE /api/projects/:name removes the directory + drops from the list', async () => {
+test('DELETE /api/projects/:name deregisters, and only the opt-in removes the directory', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'goner' });
   const dir = path.join(projectsRoot, 'goner');
   await fs.stat(dir);
@@ -232,10 +233,19 @@ test('DELETE /api/projects/:name removes the directory + drops from the list', a
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
   assert.equal(r.body.killedInstances, 0);
+  assert.equal(r.body.directoryDeleted, false);
 
-  await assert.rejects(fs.stat(dir), { code: 'ENOENT' });
-  const list = await api(baseUrl, 'GET', '/api/projects');
-  assert.deepEqual(list.body, []);
+  await fs.stat(dir); // the tree survives a plain delete
+  assert.deepEqual((await api(baseUrl, 'GET', '/api/projects')).body, []);
+
+  // The opt-in is what removes it. A second project, because the first one's
+  // directory is still there — which is the whole point of the half above, and
+  // createProject's mkdir refuses a path that is already someone's tree.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'goner2' });
+  const dir2 = path.join(projectsRoot, 'goner2');
+  const opted = await api(baseUrl, 'DELETE', '/api/projects/goner2', { deleteDirectory: true });
+  assert.equal(opted.body.directoryDeleted, true);
+  await assert.rejects(fs.stat(dir2), { code: 'ENOENT' });
 });
 
 test('DELETE /api/projects/:name cascades through running instances + worktrees', async () => {
@@ -243,6 +253,7 @@ test('DELETE /api/projects/:name cascades through running instances + worktrees'
   // scenario for the running instance.
   const repoPath = path.join(projectsRoot, 'demo');
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject('demo', repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 't@t');
   await git(repoPath, 'config', 'user.name', 't');
@@ -254,12 +265,11 @@ test('DELETE /api/projects/:name cascades through running instances + worktrees'
   // Spawn one direct instance + one worktree-attached instance.
   const direct = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
   const wtSpawn = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', worktree: true });
-  const wtName = wtSpawn.body.worktree.worktreeName;
-  const wtPath = path.join(projectsRoot, wtName);
+  const wtPath = path.join(projectsRoot, '.worktrees', 'demo', wtSpawn.body.worktree.worktreeName);
   await fs.stat(wtPath);
   assert.equal(instances.list().length, 2);
 
-  const r = await api(baseUrl, 'DELETE', '/api/projects/demo');
+  const r = await api(baseUrl, 'DELETE', '/api/projects/demo', { deleteDirectory: true });
   assert.equal(r.status, 200);
   assert.equal(r.body.killedInstances, 2);
 
@@ -297,6 +307,7 @@ test('GET /api/projects exposes a sessions summary on each worktree too', async 
   // Real git repo so worktree creation works.
   const repoPath = path.join(projectsRoot, 'demo');
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject('demo', repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 't@t');
   await git(repoPath, 'config', 'user.name', 't');
@@ -419,6 +430,7 @@ test('an unresolvable public-shaped sessionId is a clean 404, never a 500', asyn
 test('DELETE worktree session removes from the worktree-encoded dir (not the parent project)', async () => {
   const repoPath = path.join(projectsRoot, 'demo');
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject('demo', repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 't@t');
   await git(repoPath, 'config', 'user.name', 't');
@@ -470,6 +482,7 @@ test('findSessionLocation returns {project, worktreeName:null} for project-root 
 test('findSessionLocation finds sessions inside a worktree', async () => {
   const repoPath = path.join(projectsRoot, 'wtproj');
   await fs.mkdir(repoPath, { recursive: true });
+  await registerLocalProject('wtproj', repoPath);
   await git(repoPath, 'init', '-q', '-b', 'main');
   await git(repoPath, 'config', 'user.email', 't@t');
   await git(repoPath, 'config', 'user.name', 't');
@@ -548,19 +561,19 @@ test('GET /api/sessions/:sid/locate 400s on malformed id', async () => {
   assert.match(r.body.error, /invalid sessionId/);
 });
 
-test('readProjectMeta returns {workspace:null} when the dotfile is absent', async () => {
+test('readProjectRecord returns the location creation wrote, with no workspace', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'fresh' });
-  const meta = await readProjectMeta('fresh');
-  // Every field null, and — the part that matters — creating a project writes
-  // no record at all. Absence of `system` IS local; nothing stamps it.
-  assert.deepEqual(meta, { workspace: null, system: null, remoteId: null, systemPath: null });
+  // The record IS the registration, so creation writes one — carrying where the
+  // project is and nothing else until a workspace is assigned.
+  assert.deepEqual(await readProjectRecord('fresh'),
+    { workspace: null, location: { kind: 'local', path: path.join(projectsRoot, 'fresh') } });
+  assert.equal(await readProjectRecord('never-made'), null, 'and an unregistered name reads as null');
 });
 
 test('writeProjectMeta({workspace}) round-trips through listProjects/GET /api/projects', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'work' });
   await writeProjectMeta('work', { workspace: 'Side-projects' });
-  const meta = await readProjectMeta('work');
-  assert.equal(meta.workspace, 'Side-projects');
+  assert.equal((await readProjectRecord('work')).workspace, 'Side-projects');
   // The on-disk file lives in the workspace-wide central store.
   const file = path.join(projectsRoot, '.code-conductor', 'projects', 'work', 'project.json');
   const raw = await fs.readFile(file, 'utf8');
@@ -571,15 +584,17 @@ test('writeProjectMeta({workspace}) round-trips through listProjects/GET /api/pr
   assert.equal(proj.workspace, 'Side-projects');
 });
 
-test('writeProjectMeta({workspace:null}) clears the field and removes the now-empty file', async () => {
+test('writeProjectMeta({workspace:null}) clears the field and KEEPS the record', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'clearme' });
   await writeProjectMeta('clearme', { workspace: 'Temp' });
   const file = path.join(projectsRoot, '.code-conductor', 'projects', 'clearme', 'project.json');
   await fs.stat(file); // exists
   await writeProjectMeta('clearme', { workspace: null });
-  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
-  const meta = await readProjectMeta('clearme');
-  assert.deepEqual(meta, { workspace: null, system: null, remoteId: null, systemPath: null });
+  // The file is NOT removed: its presence is the registration, so unlinking it
+  // over a cleared workspace would silently unregister the project.
+  assert.deepEqual(await readProjectRecord('clearme'),
+    { workspace: null, location: { kind: 'local', path: path.join(projectsRoot, 'clearme') } });
+  assert.deepEqual((await listProjects()).map(p => p.name), ['clearme']);
 });
 
 test('writeProjectMeta rejects invalid workspace strings', async () => {
@@ -611,7 +626,7 @@ test('writeProjectMeta accepts the project charset up to the 40-char bound', asy
   await api(baseUrl, 'POST', '/api/projects', { name: 'okws' });
   for (const good of ['CC-Dev', 'CTF', 'HOME', 'LLM-CHALLENGE', 'TTD', 'a.b_c-1', 'x'.repeat(40)]) {
     await writeProjectMeta('okws', { workspace: good });
-    assert.equal((await readProjectMeta('okws')).workspace, good, `expected accept for ${good}`);
+    assert.equal((await readProjectRecord('okws')).workspace, good, `expected accept for ${good}`);
   }
 });
 
@@ -739,10 +754,9 @@ test('findSelfProject matches the listProjects() entry whose path is the injecte
   assert.equal(found?.name, 'imself');
 });
 
-test('findSelfProject still finds the in-root self project while an external one exists', async () => {
-  // Both branches of listProjects() now feed the realpath comparison. External
-  // entries already carry a realpath and realpath is idempotent, so the match
-  // must be unaffected — this pins that conclusion.
+test('findSelfProject picks the right row when an out-of-root project is also listed', async () => {
+  // Every row carries a realpath and realpath is idempotent, so the match is
+  // unaffected by where the OTHER projects live — this pins that conclusion.
   const outside = path.join(home, 'outside-self');
   await fs.mkdir(outside, { recursive: true });
   await git(outside, 'init', '-q', '-b', 'main');
@@ -750,7 +764,7 @@ test('findSelfProject still finds the in-root self project while an external one
   await api(baseUrl, 'POST', '/api/projects', { name: 'imself' });
   const found = await findSelfProject(path.join(projectsRoot, 'imself'));
   assert.equal(found?.name, 'imself');
-  assert.equal(found?.external, false);
+  assert.equal(found?.path, path.join(projectsRoot, 'imself'));
 });
 
 test('createProject refuses a name already held by an external project', async () => {
@@ -768,17 +782,17 @@ test('createProject refuses a name already held by an external project', async (
   assert.deepEqual((await listProjects()).map(p => p.name), ['dupe']);
 });
 
-test('listProjects lists only the symlinks in .external/, not external worktree dirs', async () => {
+test('a worktree checkout is not a project, wherever it sits', async () => {
   const outside = path.join(home, 'outside-wt');
   await fs.mkdir(outside, { recursive: true });
   await git(outside, 'init', '-q', '-b', 'main');
   assert.equal((await adoptProject('foo', outside)).ok, true);
-  // A real directory beside the symlink, shaped like an external worktree dir.
-  await fs.mkdir(path.join(externalDir(), 'foo_worktree_ab12'), { recursive: true });
+  // Directories shaped like checkouts, in both the old and the new places.
+  await fs.mkdir(path.join(projectsRoot, '.worktrees', 'foo', 'ab12'), { recursive: true });
+  await fs.mkdir(path.join(projectsRoot, 'foo_worktree_ab12'), { recursive: true });
 
-  const names = (await listProjects()).map(p => p.name);
-  assert.deepEqual(names, ['foo'], 'a worktree dir under .external/ is not a project');
-  assert.equal(EXTERNAL_DIRNAME, '.external');
+  assert.deepEqual((await listProjects()).map(p => p.name), ['foo'],
+    'only a record makes a project, so neither directory is one');
 });
 
 test('findSelfProject returns null when nothing matches (no guessing)', async () => {
@@ -793,13 +807,13 @@ test('ensureSelfProjectWorkspace assigns CC-Dev when self is unassigned, and is 
 
   const assigned = await ensureSelfProjectWorkspace('CC-Dev', selfDir);
   assert.equal(assigned, 'conductor-self');
-  assert.equal((await readProjectMeta('conductor-self')).workspace, 'CC-Dev');
+  assert.equal((await readProjectRecord('conductor-self')).workspace, 'CC-Dev');
   assert.ok((await listWorkspaces()).includes('CC-Dev'));
 
   // Already assigned — second call is a no-op and reports nothing done.
   const again = await ensureSelfProjectWorkspace('CC-Dev', selfDir);
   assert.equal(again, null);
-  assert.equal((await readProjectMeta('conductor-self')).workspace, 'CC-Dev');
+  assert.equal((await readProjectRecord('conductor-self')).workspace, 'CC-Dev');
 });
 
 test('ensureSelfProjectWorkspace never overrides a self project already assigned elsewhere', async () => {
@@ -809,5 +823,5 @@ test('ensureSelfProjectWorkspace never overrides a self project already assigned
 
   const result = await ensureSelfProjectWorkspace('CC-Dev', selfDir);
   assert.equal(result, null);
-  assert.equal((await readProjectMeta('conductor-self2')).workspace, 'Mine');
+  assert.equal((await readProjectRecord('conductor-self2')).workspace, 'Mine');
 });

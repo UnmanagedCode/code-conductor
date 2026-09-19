@@ -1,6 +1,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot, orchStoreRoot, validateName, resolveProjectDir } from '../projects.ts';
+import {
+  projectsRoot, orchStoreRoot, pluginsRoot, validateName, resolveProjectDir,
+  readProjectRecord, registerProject, removeProjectStoreDir,
+} from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
@@ -9,7 +12,9 @@ import { localSystem } from '../systems/registry.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
-// clones the repo into the projects root, then enables the freshly-discovered
+// clones the repo into `<projectsRoot>/.plugins/<name>` and REGISTERS it as an
+// ordinary project — a plugin's row carries no kind flag and is shape-identical
+// to any other — then enables the freshly-discovered
 // plugin by default (its conventions go active immediately). Enabling is
 // start-neutral — a backend starts lazily on first use — so install never
 // launches a process; an invalid/conflicting manifest is left disabled.
@@ -281,18 +286,21 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     const { entries, skipped } = await readLibraryEntries();
     const enriched = await Promise.all(entries.map(async (entry) => {
       const name = deriveProjectName(entry.repo);
-      let installed = false;
+      // INSTALLED MEANS REGISTERED. The checkout's location is the record's,
+      // not an assumed path — a plugin project relocated by an adopt is still
+      // this entry's install.
+      let target: string | null = null;
       if (name) {
-        try { installed = (await fs.stat(path.join(projectsRoot(), name))).isDirectory(); }
-        catch { /* not installed */ }
+        try { target = (await resolveProjectDir(name))?.path ?? null; }
+        catch { target = null; }
       }
+      const installed = target !== null;
       let updateAvailable = false;
       let behind: number | null = null;
-      if (installed) {
+      if (target) {
         // Cached refs go stale between visits — a bounded, best-effort fetch
         // first means "update available" reflects the real remote, not
         // whatever was last fetched manually (see fetchOriginBounded in gitLive.ts).
-        const target = path.join(projectsRoot(), name as string);
         await fetchOriginBounded(target);
         // The library clone is cc's own, never a project on a system: always local.
         const status = await getProjectUpstreamStatus(localSystem(), target);
@@ -313,18 +321,19 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     if (!name) throw httpError(400, `could not derive a project name from repo URL '${entry.repo}'`);
     validateName(name);
 
-    const target = path.join(projectsRoot(), name);
-    // resolveProjectDir, not a bare stat on `target`: an ADOPTED project of the
-    // same name holds the name without occupying that in-root path, and cloning
-    // over it would mint a second identity for one project name.
+    const target = path.join(pluginsRoot(), name);
+    // THE RECORD, not a stat on `target`: a project of the same name holds the
+    // name wherever its tree sits, and cloning over it would mint a second
+    // identity for one project name.
     let taken = false;
-    try { taken = (await resolveProjectDir(name)) !== null; } catch { taken = true; }
+    try { taken = (await readProjectRecord(name)) !== null; } catch { taken = true; }
     if (taken) throw httpError(409, `'${name}' is already installed`);
 
     // Past this point we're actually doing work (clone + hook) — the route
     // uses this as the signal to switch its response into streaming mode.
     onValidated?.();
 
+    await fs.mkdir(pluginsRoot(), { recursive: true });
     const result = await clone(entry.repo, target, { onChunk: (text) => onChunk?.('clone', text) });
     if (result.code !== 0) {
       // A failed/timed-out clone can leave a partial dir — clear it so a
@@ -332,6 +341,16 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
       await fs.rm(target, { recursive: true, force: true }).catch(() => {});
       const tail = (result.stderr || result.stdout || '').slice(-4000);
       throw httpError(502, `git clone failed for '${entry.repo}'`, { tail });
+    }
+
+    // THE RECORD IS WHAT MAKES IT A PROJECT. A refused registration leaves no
+    // half-installed checkout behind for a later adopt or rescan to find.
+    try {
+      await registerProject(name, { kind: 'local', path: target });
+    } catch (e) {
+      await fs.rm(target, { recursive: true, force: true }).catch(() => {});
+      await removeProjectStoreDir(name).catch(() => {});
+      throw e;
     }
 
     // A freshly installed plugin defaults to enabled (its conventions become
@@ -365,9 +384,9 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     const name = deriveProjectName(entry.repo);
     if (!name) throw httpError(400, `could not derive a project name from repo URL '${entry.repo}'`);
 
-    const target = path.join(projectsRoot(), name);
-    try { await fs.stat(target); }
-    catch { throw httpError(404, `'${name}' is not installed`); }
+    let target: string | null = null;
+    try { target = (await resolveProjectDir(name))?.path ?? null; } catch { target = null; }
+    if (!target) throw httpError(404, `'${name}' is not installed`);
 
     // Past this point we're actually doing work (pull + hook) — the route
     // uses this as the signal to switch its response into streaming mode.

@@ -42,6 +42,31 @@ on server startup** via `migrations/index.mjs`, which is invoked by
 - **Don't destroy data you can't reconstruct.** When in doubt, move
   artifacts into `<root>/.code-conductor/migrated-backup-<stamp>/...`
   instead of `rm`-ing them.
+- **A FIXED-path snapshot, when the snapshot's value is the PRE-migration
+  state.** `<stamp>` is right for a move-aside, whose destination must be
+  unique across runs. It is wrong for a whole-store snapshot taken once at
+  step 0: a resumed run would stamp a fresh directory and capture a
+  half-migrated store — worse than useless — and every boot would leave
+  another. `0037` writes `migrated-backup-0037/` once, via `…-0037.tmp/` +
+  `fs.rename`, and skips the step entirely when it already exists.
+- **An UNRESOLVED LEDGER, for a per-item migration whose items can refuse.**
+  Classify every failure as either a refusal ABOUT THE INPUT (this item cannot
+  be processed and retrying will not change that) or a fault about the
+  ENVIRONMENT (throw; the operator fixes it and restarts) — there is no third
+  outcome and no silent `continue`. A refusal is recorded in
+  `<root>/.code-conductor/migration-<n>-unresolved.json`, written incrementally
+  and atomically, logged with its manual repair, and EXCLUDED from the
+  convergence probe so the migration converges around it instead of
+  re-running for ever. Removing an entry by hand re-arms the retry. `0037` is
+  the first migration with one.
+- **A completion marker, when the migration BACKFILLS from a source that
+  stops being authoritative afterwards.** A structural probe cannot see the
+  difference between "not migrated yet" and "the user made this after the
+  migration" — `0037` backfills a project record from a directory in the
+  projects root, which is an ordinary grouping directory once the model
+  changed. It writes `migration-<n>-complete.json` as its last act and
+  enumerates those one-time sources only while the marker is absent; the
+  structural clauses still run, and are what heals a torn row afterwards.
 - **Respect `PROJECTS_ROOT`.** The runner passes `root` in — never hard-code
   an absolute projects-root path (e.g. a home-anchored `~/…`).
 
