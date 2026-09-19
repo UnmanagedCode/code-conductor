@@ -2234,6 +2234,25 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* Read-only scaffold directive shown after create */
 #np-confirm textarea { width: 100%; font-family: monospace; font-size: 12px; resize: vertical; }
 
+/* Adopt dialog: the suggestion list is an input helper for #apd-path, so each
+   row is a plain button that fills the field rather than a second control. */
+.apd-suggestions {
+  list-style: none; margin: 8px 0 4px; padding: 0; max-height: 220px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.apd-suggestions .apd-suggestion {
+  width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 5px 8px; font-size: 13px; color: var(--text); cursor: pointer;
+}
+.apd-suggestions .apd-suggestion:hover { border-color: var(--accent); }
+.apd-suggestion-path { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: monospace; }
+.apd-suggestion-badge {
+  flex: 0 0 auto; font-size: 11px; color: var(--green);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+}
+.apd-discards { margin: 2px 0 8px; padding-left: 20px; font-size: 13px; color: var(--muted); }
+
 /* ── Plugins ─────────────────────────────────────────────────────────────── */
 /* App switcher: the sidebar <h1> swaps for this dropdown once an enabled
    plugin contributes a frontend (appSwitcher.js toggles the hidden attrs). */

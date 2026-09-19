@@ -25,6 +25,7 @@ import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
 import { installRestart } from './restartFlow.js';
 import { installNewProjectDialog } from './newProjectDialog.js';
+import { installAdoptProjectDialog } from './adoptProjectDialog.js';
 import { installProjectRemoteDialog } from './projectRemoteDialog.js';
 import { installWorkspaceDialog } from './workspaceDialog.js';
 import { installSpawnDialog } from './spawnDialog.js';
@@ -91,6 +92,18 @@ const dom = {
   prRemote: document.getElementById('pr-remote'),
   prError: document.getElementById('pr-error'),
   prBlockers: document.getElementById('pr-blockers'),
+  adoptProjectBtn: document.getElementById('adopt-project-btn'),
+  adoptProjectDialog: document.getElementById('adopt-project-dialog'),
+  apdForm: document.getElementById('apd-form'),
+  apdStale: document.getElementById('apd-stale'),
+  apdName: document.getElementById('apd-name'),
+  apdPath: document.getElementById('apd-path'),
+  apdSuggestions: document.getElementById('apd-suggestions'),
+  apdScanNote: document.getElementById('apd-scan-note'),
+  apdError: document.getElementById('apd-error'),
+  apdStaleSummary: document.getElementById('apd-stale-summary'),
+  apdStaleDiscards: document.getElementById('apd-stale-discards'),
+  apdStaleError: document.getElementById('apd-stale-error'),
   npForm: document.getElementById('np-form'),
   npConfirm: document.getElementById('np-confirm'),
   npScaffoldText: document.getElementById('np-scaffold-text'),
@@ -622,6 +635,27 @@ installNewProjectDialog({
     npForm: dom.npForm,
     npConfirm: dom.npConfirm,
     npScaffoldText: dom.npScaffoldText,
+  },
+  refreshProjects,
+  closeSidebarOverflow,
+});
+
+// Adopt-directory dialog: see public/adoptProjectDialog.js. The sidebar's only
+// route into POST /api/projects/external.
+installAdoptProjectDialog({
+  dom: {
+    adoptProjectBtn: dom.adoptProjectBtn,
+    adoptProjectDialog: dom.adoptProjectDialog,
+    apdForm: dom.apdForm,
+    apdStale: dom.apdStale,
+    apdName: dom.apdName,
+    apdPath: dom.apdPath,
+    apdSuggestions: dom.apdSuggestions,
+    apdScanNote: dom.apdScanNote,
+    apdError: dom.apdError,
+    apdStaleSummary: dom.apdStaleSummary,
+    apdStaleDiscards: dom.apdStaleDiscards,
+    apdStaleError: dom.apdStaleError,
   },
   refreshProjects,
   closeSidebarOverflow,

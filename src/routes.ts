@@ -12,6 +12,7 @@ import {
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName, placeOf, projectRootPlace, type TranscriptPlacement,
 } from './projects.ts';
+import { suggestAdoptableDirs } from './projectSuggestions.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
@@ -520,6 +521,19 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       });
       res.status(201).json(created);
     } catch (e) { next(e); }
+  });
+
+  // Directories under the projects root that are NOT registered — what the
+  // Adopt dialog offers instead of making the user type a path. Mounted here
+  // for the same reason `/projects/external` is: before the `/projects/:name`
+  // param routes, so `suggestions` cannot be read as a project name.
+  //
+  // No query parameters and no soft-refusal envelope: there is nothing here to
+  // refuse, and a missing or unreachable root is an empty list rather than an
+  // error. A genuine throw becomes the router's standard {error}.
+  r.get('/projects/suggestions', async (req, res, next) => {
+    try { res.json(await suggestAdoptableDirs()); }
+    catch (e) { next(e); }
   });
 
   // Adopt an existing directory as a project. Body: {name, path, onStaleRecord?}.
