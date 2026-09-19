@@ -16,11 +16,13 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { api, bootServer, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { api, bootServer, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
-  adoptProject, claudeConfigFarmRoot, createProject, remoteConfigDir, remoteConfigDirName,
+  adoptProject, claudeConfigFarmRoot, claudeProjectsRoot, createProject, encodeCwd,
+  findSessionLocation, listSessionsForCwd, localPlace, projectRootPlace, remoteConfigDir,
+  remoteConfigDirName, sessionFilePath, subAgentDirPath, transcriptRoot,
 } from '../src/projects.ts';
 import { ensureRemoteConfigDir } from '../src/claudeConfigFarm.ts';
 
@@ -322,5 +324,111 @@ describe('T2: the spawn env', () => {
     assert.equal(inst._spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR, elsewhere);
     // And the config dir is still the remote's own, not the host's.
     assert.notEqual(inst._spawnEnv.CLAUDE_CONFIG_DIR, elsewhere);
+  });
+});
+
+// ── T1: THE test that goes red if a future editor reverts this ────────
+//
+// Two remote projects at ONE absolute path on TWO systems. Before the
+// per-remote config directory this configuration could not even be
+// registered — the guard 409'd TRANSCRIPT_DIR_COLLISION — and if it had been,
+// both projects' sessions would have interleaved in one directory with
+// nothing able to tell them apart.
+//
+// A revert fails this twice over: the second adopt refuses, and the two seeds
+// land in one directory.
+describe('T1: two remotes at one absolute path', () => {
+  let home, baseUrl, instances, close, boxA, boxB, shared;
+
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    ({ baseUrl, instances, close } = await bootServer());
+    boxA = await bindRemoteSystem({ id: 'boxa' });
+    boxB = await bindRemoteSystem({ id: 'boxb' });
+    // The reference provider IS this machine, so ONE path string is reachable
+    // on both — which is what makes the two cwds identical, the premise of the
+    // whole card.
+    shared = await seedRepo(path.join(home, 'shared-app'));
+  });
+  afterEach(async () => {
+    await instances?.shutdown();
+    await close?.();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  test('both register, and each lists exactly its own sessions', async () => {
+    assert.equal((await adoptProject('ona', shared, { system: boxA.id })).ok, true);
+    const second = await adoptProject('onb', shared, { system: boxB.id });
+    assert.equal(second.ok, true, `the second adopt was refused: ${JSON.stringify(second)}`);
+
+    const placeA = await projectRootPlace('ona', shared);
+    const placeB = await projectRootPlace('onb', shared);
+    assert.equal(placeA.cwd, placeB.cwd, 'the premise: one absolute path, two machines');
+    assert.notEqual(transcriptRoot(placeA), transcriptRoot(placeB));
+
+    const sidA = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+    const sidB = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+    await seedSessionJsonl(placeA, sidA);
+    await seedSessionJsonl(placeB, sidB);
+
+    // Each project lists exactly its own — not both, and not the other's.
+    assert.deepEqual((await listSessionsForCwd(placeA)).map(r => r.sessionId), [sidA]);
+    assert.deepEqual((await listSessionsForCwd(placeB)).map(r => r.sessionId), [sidB]);
+
+    // And the reverse lookup attributes each session to the right project.
+    assert.equal((await findSessionLocation(sidA))?.project, 'ona');
+    assert.equal((await findSessionLocation(sidB))?.project, 'onb');
+  });
+
+  // The same claim through the REST surface, so a reader cannot dismiss the
+  // above as an internal-API artefact.
+  test('the per-project sessions endpoint does not leak the other remote\'s session', async () => {
+    assert.equal((await adoptProject('ona', shared, { system: boxA.id })).ok, true);
+    assert.equal((await adoptProject('onb', shared, { system: boxB.id })).ok, true);
+    await seedSessionJsonl(await projectRootPlace('ona', shared), 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa');
+
+    const a = await api(baseUrl, 'GET', '/api/projects/ona/sessions');
+    const b = await api(baseUrl, 'GET', '/api/projects/onb/sessions');
+    assert.equal(a.status, 200);
+    assert.equal(a.body.length, 1);
+    assert.deepEqual(b.body, [], "onb listed boxa's session as its own");
+  });
+});
+
+// ── T5: CONTROL — a local place is byte-identical to before ───────────
+//
+// The scope of this card is remote-backed places only. If this drifts, every
+// local project's history silently moves and nothing else in the suite would
+// say so as plainly.
+describe('T5: CONTROL — local places are untouched', () => {
+  let home;
+  beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+  afterEach(async () => { delete process.env.CLAUDE_CONFIG_DIR; await rmrf(home); });
+
+  test('transcriptRoot for a local place IS claudeProjectsRoot()', () => {
+    assert.equal(transcriptRoot(localPlace('/srv/app')), claudeProjectsRoot());
+  });
+
+  // The whole expression, not just the root: `<claudeProjectsRoot>/<encodeCwd(cwd)>`
+  // is literally what cc computed before this card.
+  test('the transcript path for a local place is the pre-card expression', () => {
+    const cwd = '/srv/my_app.v2';
+    const sid = '11111111-2222-4333-8444-555555555555';
+    assert.equal(
+      sessionFilePath(localPlace(cwd), sid),
+      path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sid}.jsonl`));
+    assert.equal(
+      subAgentDirPath(localPlace(cwd), sid),
+      path.join(claudeProjectsRoot(), encodeCwd(cwd), sid));
+  });
+
+  // And it stays that way when the host moved its config dir — the local root
+  // follows CLAUDE_CONFIG_DIR, it does not become a farm directory.
+  test('a non-default host config dir moves the local root, not into the farm', () => {
+    process.env.CLAUDE_CONFIG_DIR = '/opt/cfg';
+    delete process.env.CLAUDE_PROJECTS_ROOT;
+    assert.equal(transcriptRoot(localPlace('/srv/app')), path.join('/opt/cfg', 'projects'));
+    assert.equal(transcriptRoot(localPlace('/srv/app')).startsWith(claudeConfigFarmRoot()), false);
   });
 });

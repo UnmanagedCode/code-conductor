@@ -1,29 +1,33 @@
 // THE CLAUDE CLI'S TRANSCRIPT DIRECTORY, and the one guard that keeps two of
 // cc's places out of the same one.
 //
-// The CLI names that directory `~/.claude/projects/<encodeCwd(getcwd())>`. Two
-// places whose cwds encode alike therefore share it: their sessions interleave,
+// The CLI names that directory `<configDir>/projects/<encodeCwd(getcwd())>`.
+// Two places that resolve to the same one share it: their sessions interleave,
 // and `findSessionLocation` cannot tell them apart. `encodeCwd` collapses `_`
-// and `.` to `-`, so "alike" is wider than "equal" and a byte comparison misses
-// the interesting half.
+// and `.` to `-`, so "the same" is wider than "the same path" and a byte
+// comparison of cwds misses the interesting half.
 //
-// UNDER THE UNION GEOMETRY a remote session's cwd is the project's real path ON
-// ITS SYSTEM: there is no cc-owned local session root, so the key this guard
-// compares is a real path on a real machine.
+// IT COMPARES THE WHOLE DIRECTORY, not the encoded cwd. Each remote is given a
+// CLI config directory of its own (`remoteConfigDir`), so the root differs per
+// machine and two boxes at `/root/app3` are two directories — which is the
+// configuration this guard used to refuse and now admits. What still collides
+// is what genuinely IS one directory: two places on ONE target at one path, and
+// two LOCAL places whose cwds encode alike.
 //
-// IT THEREFORE COMPARES ACROSS EVERY SYSTEM, not remote-against-remote. A cwd
-// under cc's own store would be disjoint from every local project path by
-// construction, and a local place could never collide with a remote one. As it
-// is, a local project at `/srv/app` and a remote project at `/srv/app` on `box`
-// produce the same directory — and `~/.claude` is host-pinned, so it lands on
-// the host's real disk.
+// DERIVED THROUGH `transcriptRoot`, never re-spelled here: a guard that
+// composed the directory itself could disagree with the thing it guards.
 
-import { encodeCwd, normalizeSystemPath } from '../projects.ts';
+import { encodeCwd, normalizeSystemPath, transcriptRoot } from '../projects.ts';
+import path from 'node:path';
 
 export interface TranscriptPlace {
   project: string;
   worktree: string | null;
   system: string;
+  // WHICH TARGET of that system — part of the identity, because two targets of
+  // one system get separate config directories and therefore separate
+  // transcript directories.
+  remoteId: string | null;
   // The CLI's working directory for this place: the project's or worktree's
   // path on whatever machine it lives on.
   cwd: string;
@@ -56,9 +60,15 @@ export async function registeredPlaces(): Promise<TranscriptPlace[]> {
   const { registeredWorktreeNames, worktreePathFor } = await import('../worktrees.ts');
   const out: TranscriptPlace[] = [];
   for (const proj of await listProjects()) {
-    out.push({ project: proj.name, worktree: null, system: proj.system, cwd: proj.path });
+    out.push({
+      project: proj.name, worktree: null, system: proj.system, remoteId: proj.remoteId,
+      cwd: proj.systemPath ?? proj.path,
+    });
     for (const wt of await registeredWorktreeNames(proj.name)) {
-      out.push({ project: proj.name, worktree: wt, system: proj.system, cwd: worktreePathFor(proj, wt) });
+      out.push({
+        project: proj.name, worktree: wt, system: proj.system, remoteId: proj.remoteId,
+        cwd: worktreePathFor(proj, wt),
+      });
     }
   }
   return out;
@@ -81,13 +91,18 @@ export async function transcriptCwdCollision(
   // is `-srv-app-` and `/srv/app` is `-srv-app` — and one directory would pass
   // the guard as two, which is the bypass this closes.
   const mine = normalizeSystemPath(candidate.cwd);
-  const encoded = encodeCwd(mine);
+  const myDir = directoryFor(candidate, mine);
   for (const held of places ?? await registeredPlaces()) {
     if (held.project === candidate.project && held.worktree === candidate.worktree) continue;
     const theirs = normalizeSystemPath(held.cwd);
-    if (encodeCwd(theirs) === encoded) return { ...held, samePath: theirs === mine };
+    if (directoryFor(held, theirs) === myDir) return { ...held, samePath: theirs === mine };
   }
   return null;
+}
+
+// The transcript directory a place's sessions land in, from the NORMALISED cwd.
+function directoryFor(place: TranscriptPlace, normalisedCwd: string): string {
+  return path.join(transcriptRoot({ ...place, cwd: normalisedCwd }), encodeCwd(normalisedCwd));
 }
 
 // The refusal sentence, in ONE shape for all three creation paths, naming both
@@ -102,7 +117,9 @@ export function transcriptCollisionReason(
   // Named only when it is not this one's, because "on system 'local'" in the
   // ordinary all-local case is noise; when the two differ it is the whole
   // explanation for why two paths that look unrelated are not.
-  const where = hit.system === candidate.system ? '' : ` on system '${hit.system}'`;
+  const where = hit.system === candidate.system && hit.remoteId === candidate.remoteId
+    ? ''
+    : ` on ${hit.remoteId === null ? `system '${hit.system}'` : `remote '${hit.remoteId}' of system '${hit.system}'`}`;
   // BOTH HALVES BRANCH ON `samePath`, not just the first. In the encode-only
   // branch the two places are genuinely different directories, so the flat
   // one-directory harm would be a plain falsehood two clauses after saying the

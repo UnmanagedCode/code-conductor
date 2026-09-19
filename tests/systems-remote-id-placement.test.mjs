@@ -25,8 +25,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import {
   createProject, deleteProject, adoptProject, getProject, listProjects,
-  readProjectMeta, writeProjectMeta, resolveProjectDir, projectStoreDir,
-} from '../src/projects.ts';
+  readProjectMeta, writeProjectMeta, resolveProjectDir, projectStoreDir, transcriptRoot } from '../src/projects.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, disposeSystemHandles, placementOf, projectPlacement,
 } from '../src/systems/registry.ts';
@@ -166,23 +165,26 @@ describe('remoteId in the project record', () => {
   });
 
   // PINS A CONSEQUENCE OF THE FUSE GEOMETRY, and it is a NARROWING: the same
-  // absolute path on two targets of one system is still two different trees,
-  // and adopting both is REFUSED, because the CLI's working directory is that
-  // path on both — so the two would name ONE transcript directory and their
-  // sessions would interleave in it, with findSessionLocation unable to tell
-  // them apart.
+  // absolute path on two targets of one system is two different trees, and
+  // adopting both is now ALLOWED: each target gets a CLI config directory of
+  // its own, keyed on (system, remoteId), so the transcript directory the CLI
+  // derives from that one cwd sits under a different root on each.
   //
-  // The refusal is the honest answer rather than the harm; the reason names the
-  // holder so the operator can pick another path on one of the two targets.
-  test('adopt refuses the same path on ANOTHER target, on the transcript directory', async () => {
+  // This is the inversion card 2026-0447 makes. The refusal it replaces was
+  // honest about a real harm, but it refused the configuration the operator
+  // wanted rather than fixing it.
+  test('adopt ALLOWS the same path on ANOTHER target, with separate transcript directories', async () => {
     const shared = await seedRepo(path.join(sandbox, 'shared'));
     assert.equal((await adoptProject('one', shared, { system: remote.id, remoteId: 'a' })).ok, true);
 
     const otherTarget = await adoptProject('two', shared, { system: remote.id, remoteId: 'b' });
-    assert.equal(otherTarget.ok, false, 'two places at one path share one transcript directory');
-    assert.equal(otherTarget.code, 'TRANSCRIPT_DIR_COLLISION');
-    assert.match(otherTarget.reason, /'one'/, 'the refusal names the holder');
-    assert.match(otherTarget.reason, /transcript directory/);
+    assert.equal(otherTarget.ok, true, JSON.stringify(otherTarget));
+
+    // Separate directories, not merely separate records — the records are what
+    // the old refusal already allowed to differ.
+    assert.notEqual(
+      transcriptRoot({ system: remote.id, remoteId: 'a', cwd: shared }),
+      transcriptRoot({ system: remote.id, remoteId: 'b', cwd: shared }));
   });
 
   // PINS: the mechanism the "a worktree can only re-derive to the target it was

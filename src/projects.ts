@@ -962,10 +962,12 @@ export async function renameWorkspace(oldName: string, newName: string): Promise
 //
 // Lazy import for the projects.ts ↔ systems/transcriptKey.ts circular edge:
 // that module enumerates places through listProjects, which lives here.
-async function projectKeyCollisionReason(systemId: string, name: string, cwd: string): Promise<string | null> {
+async function projectKeyCollisionReason(
+  systemId: string, remoteId: string | null, name: string, cwd: string,
+): Promise<string | null> {
   const { transcriptCollisionReason, transcriptCwdCollision } =
     await import('./systems/transcriptKey.ts');
-  const candidate = { project: name, worktree: null, system: systemId, cwd };
+  const candidate = { project: name, worktree: null, system: systemId, remoteId, cwd };
   const hit = await transcriptCwdCollision(candidate);
   return hit === null ? null : transcriptCollisionReason(`project '${name}'`, candidate, hit);
 }
@@ -1009,7 +1011,8 @@ export async function createProject(
   // system rather than something under cc's store, so it can collide with a
   // local project's path.
   {
-    const why = await projectKeyCollisionReason(placement?.system ?? LOCAL_SYSTEM_ID, name, full);
+    const why = await projectKeyCollisionReason(
+      placement?.system ?? LOCAL_SYSTEM_ID, placement?.remoteId ?? null, name, full);
     if (why) throw httpError(409, why, { code: 'TRANSCRIPT_DIR_COLLISION' });
   }
   try {
@@ -1649,7 +1652,7 @@ export async function adoptProject(
   // and BEFORE writeProjectRecord below so a refused adopt writes nothing.
   {
     const why = await projectKeyCollisionReason(
-      placement?.system ?? LOCAL_SYSTEM_ID, name, real);
+      placement?.system ?? LOCAL_SYSTEM_ID, placement?.remoteId ?? null, name, real);
     if (why) return { ok: false, code: 'TRANSCRIPT_DIR_COLLISION', reason: why };
   }
 
