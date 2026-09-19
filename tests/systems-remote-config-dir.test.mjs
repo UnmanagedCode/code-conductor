@@ -195,6 +195,39 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     assert.equal(await fsp.readFile(path.join(cfg, 'settings.json'), 'utf8'), '{"local":true}');
   });
 
+  // PINS "cc NEVER DESTROYS WHAT IT DID NOT CREATE" ON THE CREATE PATH.
+  //
+  // The CLI creates real files inside a config dir it is handed, and it can do
+  // so between cc's `lstat` and cc's write. A `rename`-based create would
+  // silently clobber the arrival; `symlink` + EEXIST re-evaluates and lands it
+  // on the leave-alone rule instead. Simulated by letting the entry exist in
+  // the source but pre-creating the REAL file in the farm first, which is the
+  // state that write would have had to survive.
+  test('a real file occupying the name is never clobbered by the create path', async () => {
+    const cfg = remoteConfigDir(place);
+    await fsp.mkdir(cfg, { recursive: true });
+    await fsp.writeFile(path.join(cfg, 'settings.json'), '{"written-by":"the CLI"}');
+
+    await ensureRemoteConfigDir(place, { log: { warn() {} } });
+
+    const snap = await snapshot(cfg);
+    assert.equal(snap['settings.json'], 'file', 'cc replaced a real file with its own link');
+    assert.equal(await fsp.readFile(path.join(cfg, 'settings.json'), 'utf8'), '{"written-by":"the CLI"}');
+  });
+
+  // Same invariant for a real DIRECTORY, which is what `backups/` and
+  // `sessions/` arrive as.
+  test('a real directory occupying the name is never clobbered', async () => {
+    const cfg = remoteConfigDir(place);
+    await fsp.mkdir(path.join(cfg, 'plans', 'mine'), { recursive: true });
+    await fsp.writeFile(path.join(cfg, 'plans', 'mine', 'p.md'), '# plan\n');
+
+    await ensureRemoteConfigDir(place, { log: { warn() {} } });
+
+    assert.equal((await snapshot(cfg))['plans'], 'dir');
+    assert.equal(await fsp.readFile(path.join(cfg, 'plans', 'mine', 'p.md'), 'utf8'), '# plan\n');
+  });
+
   // The real config dir moved (the host set CLAUDE_CONFIG_DIR, or changed it).
   // A link still pointing at the old one would serve stale settings forever.
   test('a link to a different target is repointed', async () => {
@@ -287,8 +320,21 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
   // it silently at the next spawn.
   test('no member of the global-config class is ever linked', async () => {
     const members = [
+      // The anchored names.
       '.claude.json', '.claude.json.backup', '.claude-dev.json', '.claude-staging.json',
-      '.config.json', '.claude.json.lock', '.claude.json.tmp.1234.abcdef',
+      '.config.json',
+      // THE WRITE DANCE'S SIBLINGS, which need the PREFIX rule rather than the
+      // anchored one: `.lock` is a DIRECTORY that outlives the write it guards,
+      // and sharing one across remotes makes them serialise against each other
+      // while writing different files.
+      '.claude.json.lock', '.claude.json.tmp.1234.abcdef',
+      // The legacy spelling's siblings. On a host that has `.config.json` it is
+      // the ACTIVE global config, because the CLI's resolver prefers it.
+      '.config.json.lock', '.config.json.tmp.5678.beefcafe',
+      // The oauth-suffixed variants' siblings.
+      '.claude-dev.json.lock', '.claude-staging.json.tmp.99.aa',
+      // Credentials are not linked, so neither are their temp files.
+      '.credentials.json.tmp.4242.f00d',
     ];
     for (const m of members) await fsp.writeFile(path.join(source, m), '{}');
 
@@ -296,10 +342,26 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     for (const m of members) assert.equal(snap[m], undefined, `${m} was linked into the farm`);
   });
 
+  // The lock is a DIRECTORY on disk, not a file — the shape the CLI actually
+  // creates — so the exclusion must hold for a dirent too.
+  test('a lock DIRECTORY of the global-config class is not linked', async () => {
+    await fsp.mkdir(path.join(source, '.claude.json.lock'), { recursive: true });
+    await fsp.mkdir(path.join(source, '.config.json.lock'), { recursive: true });
+    const snap = await snapshot(await ensureRemoteConfigDir(place));
+    assert.equal(snap['.claude.json.lock'], undefined);
+    assert.equal(snap['.config.json.lock'], undefined);
+  });
+
   // The control that keeps the pattern from being an always-true predicate: a
   // name that merely LOOKS adjacent is still shared.
   test('a neighbouring name that is NOT the global config is still linked', async () => {
-    const shared = ['claude.json', 'settings.json.backup', 'claude-config.json', '.claudeignore'];
+    const shared = [
+      'claude.json', 'settings.json.backup', 'claude-config.json', '.claudeignore',
+      // Adjacent to the PREFIX rule specifically: a dot-leading name that
+      // merely starts with the same letters, and one whose prefix stops short
+      // of the `.json`. A rule matching either would stop sharing real config.
+      '.claude.jsonl', '.claudex.json.lock', '.config.jsonc', '.credentials.jsonx',
+    ];
     for (const n of shared) await fsp.writeFile(path.join(source, n), '{}');
 
     const snap = await snapshot(await ensureRemoteConfigDir(place));

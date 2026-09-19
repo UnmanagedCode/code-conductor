@@ -12,6 +12,13 @@
 // side is written, and keeping N copies current is a synchronisation problem
 // with no natural point to run at. A link has no such state.
 //
+// A CRASH BETWEEN `symlink(tmp)` AND `rename` LEAKS THE TEMP LINK, and that is
+// known and accepted rather than collected: the prune below skips the temp name
+// by construction (or it would race a live rename), so a leaked one survives
+// every later refresh. It is inert — it points at a real entry in the host's
+// config dir, the CLI never looks for that name, and the tier table denies a
+// file tool naming it exactly as it denies the final link. No cleanup pass.
+//
 // SAFE BECAUSE THE CLI RESOLVES LINKS BEFORE WRITING, measured against 2.1.263:
 // its single atomic-write helper either follows the link and writes the real
 // target (`allowSymlink`, logging "Writing through symlink"), or refuses by name
@@ -59,6 +66,18 @@ const NEVER_LINKED = new Set(['projects', '.credentials.json']);
 const GLOBAL_CONFIG_RE = /^\.claude(-[a-z-]+)?\.json(\.backup)?$/;
 const LEGACY_GLOBAL_CONFIG = '.config.json';
 
+// THE SAME NAMES AS PREFIXES, because the write dance's siblings are not one
+// suffix. `<name>.lock` is a DIRECTORY that outlives the write it guards, and
+// `<name>.tmp.<pid>.<rand>` is the file being renamed over it — an anchored
+// match catches neither. Sharing a lock directory across remotes is the
+// divergent-lock problem from the other side: they would serialise against each
+// other while writing different files.
+//
+// `.config.json` needs this as much as `.claude.json` does: on a host that has
+// one it is the ACTIVE global config, because the CLI's resolver prefers it.
+// `.credentials.json` is not linked either, so neither are its temp files.
+const GLOBAL_CONFIG_PREFIX_RE = /^(\.claude(-[a-z-]+)?\.json|\.config\.json|\.credentials\.json)\./;
+
 // `placeLink`'s in-flight temp name. Skipped by the prune below so a concurrent
 // refresh cannot unlink another call's half-built link out from under its
 // `rename` — which would turn this module's own concurrency fix into a new race.
@@ -68,8 +87,7 @@ function neverLinked(name: string): boolean {
   return NEVER_LINKED.has(name)
     || name === LEGACY_GLOBAL_CONFIG
     || GLOBAL_CONFIG_RE.test(name)
-    // `.claude.json.lock` (a directory) and `.claude.json.tmp.<pid>.<rand>`.
-    || name.startsWith('.claude.json.');
+    || GLOBAL_CONFIG_PREFIX_RE.test(name);
 }
 
 export interface FarmLogger { warn(msg: string): void }
@@ -112,7 +130,19 @@ export async function ensureRemoteConfigDir(
     let held: Awaited<ReturnType<typeof fs.lstat>> | null = null;
     try { held = await fs.lstat(link); }
     catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
-    if (held === null) { await placeLink(target, link); continue; }
+    // CREATE: plain `symlink`, and EEXIST is "something arrived since the
+    // lstat" rather than an error. NOT `rename` here — rename would silently
+    // clobber whatever arrived, and what arrives is exactly the class cc must
+    // not destroy: the CLI creates real files inside a config dir it is handed
+    // (measured: `.claude.json`, `policy-limits.json`, `remote-settings.json`,
+    // `backups/`, `sessions/`). An `lstat` immediately before the rename would
+    // only narrow the window, not close it. Re-evaluating instead lands the
+    // arrival on the leave-alone rule below, which is where it belongs.
+    if (held === null) {
+      if (await tryCreateLink(target, link)) continue;
+      held = await fs.lstat(link).catch(() => null);
+      if (held === null) continue; // vanished again; the next spawn settles it
+    }
     if (!held.isSymbolicLink()) {
       if (!reported.has(link)) {
         reported.add(link);
@@ -120,8 +150,10 @@ export async function ensureRemoteConfigDir(
       }
       continue;
     }
-    // A link to somewhere else means the real config dir moved. Repoint it, or
-    // this remote serves stale settings for the rest of the install's life.
+    // REPOINT: the real config dir moved. `rename` here, where cc knows it owns
+    // the thing being replaced — it is already cc's own link — so there is no
+    // window in which a reader sees no link at all, and a concurrent refresh
+    // simply overwrites an identical one.
     if (await fs.readlink(link) !== target) await placeLink(target, link);
   }
 
@@ -153,19 +185,35 @@ async function pruneVanishedLinks(cfg: string, source: string, live: Set<string>
   }
 }
 
-// CREATE-OR-REPOINT, ATOMICALLY AND IDEMPOTENTLY — build the link under a
-// unique temp name and `rename` it into place.
+// CREATE — true if the link is now ours, false if something already occupies
+// the name and the caller must re-evaluate.
 //
-// THE OBVIOUS SHAPE IS A RACE. `ensureRemoteConfigDir` runs before every spawn
-// and nothing serialises launches across sessions on one remote — the create
-// lock is per-session — so two `spawn_instance` calls fanning out onto a fresh
-// remote (an ordinary conductor pattern) both see ENOENT and both create. With
-// a bare `symlink` the loser throws EEXIST out of `launch()` and the spawn dies
-// with a raw errno; with `unlink`+`symlink` on the repoint path the loser gets
-// ENOENT instead, and there is a window where the link is absent entirely.
+// `ensureRemoteConfigDir` runs before every spawn and nothing serialises
+// launches across sessions on one remote — the create lock is per-session — so
+// two `spawn_instance` calls fanning out onto a fresh remote (an ordinary
+// conductor pattern) both see ENOENT and both create. Letting EEXIST escape is
+// what made the loser's spawn die with a raw errno out of `launch()`; swallowing
+// it converges, and costs nothing, because the winner wrote the identical link.
+async function tryCreateLink(target: string, link: string): Promise<boolean> {
+  try {
+    await fs.symlink(target, link);
+    return true;
+  } catch (e) {
+    if (errCode(e) === 'EEXIST') return false;
+    throw e;
+  }
+}
+
+// REPOINT, ATOMICALLY — build the link under a unique temp name and `rename` it
+// into place.
 //
-// `rename` has neither problem: it replaces the destination atomically, so the
-// loser simply overwrites an identical link and both callers converge.
+// `unlink`+`symlink` would give a concurrent refresh an ENOENT and, worse, a
+// window in which the link is absent entirely — a reader in that window gets
+// ENOENT on a settings file that exists. `rename` replaces the destination in
+// one step, so the loser simply overwrites an identical link.
+//
+// SAFE TO CLOBBER HERE and not on the create path: what it replaces is already
+// known to be cc's own symlink.
 async function placeLink(target: string, link: string): Promise<void> {
   const tmp = `${link}.cc-tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   await fs.symlink(target, tmp);
