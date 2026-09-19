@@ -6101,9 +6101,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 }
 
-// Everything the redirection policy needs to address the system, and everything
-// a relaunch needs to re-check the mirror advertisement. Held on the Instance
-// because launch() runs long after create() resolved the handle.
 // Two placements name ONE transcript directory. All three fields, because
 // dropping any one of them is how two remotes at a shared absolute path, or two
 // targets of one system, would read as the same place.
@@ -6111,6 +6108,9 @@ function samePlace(a: TranscriptPlacement, b: TranscriptPlacement): boolean {
   return a.system === b.system && a.remoteId === b.remoteId && a.cwd === b.cwd;
 }
 
+// Everything the redirection policy needs to address the system, and everything
+// a relaunch needs to re-check the mirror advertisement. Held on the Instance
+// because launch() runs long after create() resolved the handle.
 export interface RedirectPlacement {
   system: RedirectableSystem;
   systemId: string;

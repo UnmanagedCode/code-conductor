@@ -1787,7 +1787,7 @@ export async function listSessionsForCwdWithCounts(
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
     // The exclusion filter runs BEFORE the projection, deliberately: both
-    // tempSessionIdsForCwd and liveBackingIdsForCwd yield backing ids, because
+    // tempSessionIdsForPlace and liveBackingIdsForPlace yield backing ids, because
     // what they exclude is a FILE. Projecting first would make every set miss.
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
     const isArchived = archived.has(sid);

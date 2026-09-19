@@ -500,7 +500,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     .sort(compareInstanceRows);
   // NOT built from `live` above: those rows carry PUBLIC ids, and the exclusion
   // set below is matched against transcript filenames (backing ids). Resolved
-  // per-target-cwd inside the group loop via instances.liveBackingIdsForCwd.
+  // per-target-PLACE inside the group loop via instances.liveBackingIdsForPlace.
 
   // Inactive rows come off disk, from the one function that already owns "which
   // sessions exist for a cwd, and which of them are archived"
