@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
+import { encodeCwd, orchStoreRoot, localPlace} from '../src/projects.ts';
 import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
@@ -70,7 +70,7 @@ test('deleting an archived MID-CHAIN segment drops it from the lineage, leaving 
     'precondition: the lazily-created row promotes the public id to its initial segment');
 
   // Settings → Archived → Delete on the mid-chain segment.
-  assert.equal(await deleteSessionForCwd(cwd, mid), true);
+  assert.equal(await deleteSessionForCwd( localPlace(cwd), mid), true);
   await assert.rejects(fs.access(path.join(dir, `${mid}.jsonl`)), 'the transcript is gone');
 
   // The chain dropped it and never points at a missing file.
@@ -98,7 +98,7 @@ test('deleting CURRENT falls the chain back to the newest survivor', async () =>
   await recordRotation(publicId, first, 'initial');
   await recordRotation(publicId, current, 'prune');
 
-  assert.equal(await deleteSessionForCwd(cwd, current), true);
+  assert.equal(await deleteSessionForCwd( localPlace(cwd), current), true);
   assert.deepEqual((await segmentsFor(publicId)).map(g => g.id), [publicId, first]);
   assert.equal(await resolveBacking(publicId), first,
     'current retreats to the newest surviving segment, so the public id still opens something');
@@ -298,7 +298,7 @@ test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
     await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    writePendingTempCleanup([{ cwd, sessionId: sid }]);
+    writePendingTempCleanup([{ place: localPlace(cwd), sessionId: sid }]);
     const manifest = pendingTempCleanupPath();
     await fs.access(manifest);
     // Atomic write: valid JSON, and no orphan tmp file left in the store dir.
@@ -318,6 +318,26 @@ test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
   }
 });
 
+test('sweepPendingTempCleanup archives a PLACELESS entry but leaves its subagent dir', async () => {
+  {
+    const cwd = '/tmp/cc-placeless-sweep-' + Math.random().toString(36).slice(2);
+    const sid = 'cccccccc-dddd-eeee-ffff-000000000001';
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(path.join(dir, sid), { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    await fs.writeFile(path.join(dir, sid, 'a.jsonl'), '{}\n');
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writePendingTempCleanup([{ place: null, sessionId: sid }]);
+
+    const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
+    assert.equal(result.swept, 1);
+    // Bookkeeping happens; the directory does not, because a placeless entry
+    // names no directory and guessing one could delete another remote's.
+    await waitFor(async () => (await isArchived(sid)));
+    await fs.access(path.join(dir, sid, 'a.jsonl'));
+  }
+});
+
 test('sweepPendingTempCleanup archives from a hand-written manifest with only entries', async () => {
   {
     const cwd = '/tmp/cc-legacy-sweep-' + Math.random().toString(36).slice(2);
@@ -332,7 +352,7 @@ test('sweepPendingTempCleanup archives from a hand-written manifest with only en
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     const file = pendingTempCleanupPath();
-    const payload = { writtenAt: new Date().toISOString(), entries: [{ cwd, sessionId: sid }] };
+    const payload = { writtenAt: new Date().toISOString(), entries: [{ place: localPlace(cwd), sessionId: sid }] };
     const { writeFileSync } = await import('node:fs');
     writeFileSync(file, JSON.stringify(payload));
 

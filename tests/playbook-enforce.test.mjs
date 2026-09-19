@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
-import { orchStoreRoot } from '../src/projects.ts';
+import { orchStoreRoot, localPlace} from '../src/projects.ts';
 import { listWorktrees } from '../src/worktrees.ts';
 // (foldProjection is used by the resume tests below to assert the un-retire.)
 import {
@@ -604,7 +604,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     const firstBacking = inst.backingSessionId;
     assert.notEqual(firstBacking, publicId, 'precondition: the two ids have diverged');
     // The fake engine writes no transcript, so give the prune something to cut.
-    await seedSessionJsonl(t.claudeProjectsRoot, inst.cwd, firstBacking, [
+    await seedSessionJsonl(inst.transcriptPlace, firstBacking, [
       { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
       { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
       { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
@@ -1141,7 +1141,7 @@ async function killedBoundWorker(t) {
   // is unreadable afterwards — which is itself why the ordinary resume target is
   // a session the in-memory prefix universe no longer holds.
   const backingSessionId = instForSession(t.instances, w.sessionId).backingSessionId;
-  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), backingSessionId);
+  await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
   // The retire lands off the status stream, asynchronously from the kill's reply.
@@ -1205,7 +1205,7 @@ async function killedPinnedWorker(t) {
   const { backingSessionId, cwd } = inst;
   assert.notEqual(cwd, path.join(t.projectsRoot, 'demo'),
     'premise: the pinned stage really did put this worker in a worktree');
-  await seedSessionJsonl(t.claudeProjectsRoot, cwd, backingSessionId);
+  await seedSessionJsonl(localPlace(cwd), backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
   await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
@@ -1578,7 +1578,7 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
     // the ledger projection — exactly the shape §A9 flagged.
     for (const w of [denied, allowed]) {
       const inst = instForSession(t.instances, w.sessionId);
-      await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), inst.backingSessionId, [
+      await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), inst.backingSessionId, [
         { type: 'user', message: { role: 'user', content: 'go' } },
         { type: 'assistant', message: { id: `m-${w.sessionId}`, role: 'assistant', content: [
           { type: 'text', text: `findings from ${w.sessionId}` },

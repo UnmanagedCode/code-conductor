@@ -17,6 +17,7 @@
 
 import type { UiEvent } from './parser.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
+import type { TranscriptPlacement } from './projects.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { PlaybookEnforcement } from './playbooks.ts';
 import type { SessionRedirect } from './systems/toolRedirect.ts';
@@ -77,6 +78,11 @@ export interface InstanceLike {
   readonly backend: string;
   readonly callerInstanceId: string | null;
   readonly cwd: string;
+  // WHERE THIS SESSION'S TRANSCRIPT LIVES — the cwd plus the machine coordinate
+  // that tells two remotes at one absolute path apart. Frozen at create; every
+  // transcript read/write for this instance resolves through it rather than
+  // re-deriving from `cwd`, which alone cannot name a directory.
+  readonly transcriptPlace: TranscriptPlacement;
   readonly _userEchoCount: number;
   readonly proc: unknown;
   // Overage auto-resume state — mutated by OverageResumeController (and the
@@ -297,6 +303,6 @@ export interface InstanceManagerLike {
   // pass the manager to scheduleRestart/drainAndScheduleRestart as the
   // RestartManagerLike subset.
   shutdownTempSync(): void;
-  tempCleanupSnapshot(): Array<{ cwd: string; sessionId: string }>;
+  tempCleanupSnapshot(): Array<{ place: TranscriptPlacement; sessionId: string }>;
   shutdown(): Promise<unknown>;
 }

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl } from './helpers.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
 import { isDeadStatus } from '../src/instances.ts';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -649,7 +650,7 @@ test('describe_session describes a RETIRED session and carries no runtime fields
   const inst = instances.get(created.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   const sid = inst.sessionId;
-  await seedSessionJsonl(claudeProjectsRoot, path.join(projectsRoot, 'a'), inst.backingSessionId);
+  await seedSessionJsonl(localPlace(path.join(projectsRoot, 'a')), inst.backingSessionId);
   // Kill the SUBPROCESS, not the registration: both `kill_instance` and
   // DELETE /api/instances/:id call instances.remove(), and what this test needs
   // is the dead row a non-temp exit RETAINS in byId.
@@ -702,8 +703,7 @@ test('describe_session still describes an ARCHIVED session', async () => {
   const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
   const sid = spawn.sessionId;
   await waitFor(() => instForSession(instances, sid)?.status === 'idle');
-  await seedSessionJsonl(claudeProjectsRoot, path.join(projectsRoot, 'a'),
-    instForSession(instances, sid).backingSessionId);
+  await seedSessionJsonl(localPlace(path.join(projectsRoot, 'a')), instForSession(instances, sid).backingSessionId);
   const backingId = instForSession(instances, sid).backingSessionId;
   unwrap(await callTool(baseUrl, 'kill_instance', { sessionId: sid }));
   await waitFor(() => instances.idsForSession(sid).length === 0);

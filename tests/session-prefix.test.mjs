@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { InstanceManager, SESSION_PREFIX_MIN } from '../src/instances.ts';
-import { orchStoreRoot } from '../src/projects.ts';
+import { orchStoreRoot, localPlace} from '../src/projects.ts';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn,
          seedSessionJsonl } from './helpers.mjs';
 
@@ -275,8 +275,7 @@ async function project(name = 'a') {
 // derived â€” without it every resume below refuses SESSION_UNKNOWN and the case
 // proves nothing about resolution.
 async function seedTranscript(sessionId, cwd) {
-  await seedSessionJsonl(claudeProjectsRoot, cwd,
-    instForSession(instances, sessionId).backingSessionId);
+  await seedSessionJsonl(localPlace(cwd), instForSession(instances, sessionId).backingSessionId);
 }
 
 // Hand-write a lineage row for a session this process never ran. That is the
@@ -378,7 +377,7 @@ test('a resume prefix resolves for a session this process never ran (the post-re
   const publicId = 'ba5eba11';
   const backing = 'ba5eba11-1111-4111-8111-111111111111';
   await seedLineageRow(publicId, backing);
-  await seedSessionJsonl(claudeProjectsRoot, cwd, backing);
+  await seedSessionJsonl(localPlace(cwd), backing);
   assert.equal(instances.anyForSession(publicId), null, 'premise: no byId entry for it');
 
   const back = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: 'ba5eb' }));
@@ -418,8 +417,8 @@ test('a resume naming a NON-CURRENT segment opens THAT segment, not the newest â
   const older = 'deadbeef-1111-4111-8111-111111111111';
   const current = 'deadbeef-2222-4222-8222-222222222222';
   await seedLineageRow(publicId, older, current);
-  await seedSessionJsonl(claudeProjectsRoot, cwd, older);
-  await seedSessionJsonl(claudeProjectsRoot, cwd, current);
+  await seedSessionJsonl(localPlace(cwd), older);
+  await seedSessionJsonl(localPlace(cwd), current);
 
   // One resume at a time: two live instances on one public id is a 409 by design.
   async function resumeVia(fn) {

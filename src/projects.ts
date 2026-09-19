@@ -234,13 +234,58 @@ export function assertBackingId(id: string, where: string): void {
   }
 }
 
+// WHERE A PLACE'S TRANSCRIPTS LIVE — the coordinate every transcript path is
+// built from.
+//
+// A CWD ALONE CANNOT NAME A DIRECTORY ANY MORE. Under the FUSE union a
+// remote-backed worker runs at the remote's own path spelling, so `/root/app3`
+// is the same cwd on two different machines. The machine coordinate is what
+// tells them apart, and it is carried here rather than re-derived, so no reader
+// can accidentally resolve a remote place against the local root.
+export interface TranscriptPlacement {
+  system: string;
+  remoteId: string | null;
+  // The CLI's working directory for this place: the project's or worktree's
+  // path on whatever machine it lives on.
+  cwd: string;
+}
+
+// The explicit spelling of a place on THIS machine. Callers that are local by
+// construction — `.conduct`, the summariser's scratch dir, a test fixture —
+// say so with this rather than letting a default decide for them: a silent
+// local default is precisely how a remote place would resolve against the
+// wrong root.
+export function localPlace(cwd: string): TranscriptPlacement {
+  return { system: LOCAL_SYSTEM_ID, remoteId: null, cwd };
+}
+
+// The transcript placement of a path on the SAME machine as an already-resolved
+// project or worktree. The machine coordinate comes from the project record; the
+// cwd is whichever tree path the caller is asking about.
+export function placeOf(p: { system: string; remoteId: string | null }, cwd: string): TranscriptPlacement {
+  return { system: p.system, remoteId: p.remoteId, cwd };
+}
+
+// The transcript ROOT for a place: the directory whose `<encodeCwd(cwd)>`
+// subdirectory holds its session jsonls.
+//
+// `encodeCwd` IS UNCHANGED FOR EVERY PLACE, local and remote — what differs is
+// the root it is joined to. For a local place that root is exactly what it
+// always was, which is the control tests/systems-remote-config-dir.test.mjs T5
+// pins byte-identically.
+export function transcriptRoot(p: TranscriptPlacement): string {
+  return p.system === LOCAL_SYSTEM_ID
+    ? claudeProjectsRoot()
+    : path.join(remoteConfigDir(p), 'projects');
+}
+
 // THE chokepoint for a persisted transcript path. Every read, write, append, copy
 // and unlink of a session jsonl resolves its path here — enforced by
 // tests/session-lineage-chokepoint.test.mjs, which fails on any other
 // `${…}.jsonl` construction outside this file.
-export function sessionFilePath(absCwd: string, backingId: string): string {
+export function sessionFilePath(place: TranscriptPlacement, backingId: string): string {
   assertBackingId(backingId, 'sessionFilePath');
-  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), sessionFileName(backingId));
+  return path.join(transcriptRoot(place), encodeCwd(place.cwd), sessionFileName(backingId));
 }
 
 // The transcript FILENAME a backing id maps to. Split out of sessionFilePath so
@@ -254,9 +299,9 @@ function sessionFileName(backingId: string): string {
 // The CLI's sibling sub-agent directory for a session — sidechain transcripts
 // live at `<this dir>/subagents/agent-<agentId>.jsonl`. Keyed to the transcript,
 // so it is a backing-id path under the same rule as sessionFilePath.
-export function subAgentDirPath(absCwd: string, backingId: string): string {
+export function subAgentDirPath(place: TranscriptPlacement, backingId: string): string {
   assertBackingId(backingId, 'subAgentDirPath');
-  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), backingId);
+  return path.join(transcriptRoot(place), encodeCwd(place.cwd), backingId);
 }
 
 // Resolve a caller-supplied session id to the BACKING id that names a transcript,
@@ -1710,12 +1755,11 @@ export interface SessionRow {
 // the same either way — but their `firstPrompt` is only read when they are
 // actually being listed, which is where the per-transcript cost lives.
 export async function listSessionsForCwdWithCounts(
-  absCwd: string,
+  place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
   { includeArchived = true }: { includeArchived?: boolean } = {},
 ): Promise<{ rows: SessionRow[]; archivedCount: number }> {
-  const encoded = encodeCwd(absCwd);
-  const dir = path.join(claudeProjectsRoot(), encoded);
+  const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -1776,16 +1820,24 @@ export async function listSessionsForCwdWithCounts(
 }
 
 export async function listSessionsForCwd(
-  absCwd: string,
+  place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
   opts: { includeArchived?: boolean } = {},
 ): Promise<SessionRow[]> {
-  return (await listSessionsForCwdWithCounts(absCwd, excludeSessionIds, opts)).rows;
+  return (await listSessionsForCwdWithCounts(place, excludeSessionIds, opts)).rows;
 }
 
 export async function listSessions(projectName: string, excludeSessionIds: Set<string> | null = null): Promise<SessionRow[]> {
   const proj = await getProject(projectName);
-  return listSessionsForCwd(proj.path, excludeSessionIds);
+  return listSessionsForCwd(await projectRootPlace(projectName, proj.path), excludeSessionIds);
+}
+
+// The transcript placement of a project's OWN tree (not a worktree's): the
+// record's machine coordinate, with the resolved path as the cwd. One home for
+// the join, so a caller cannot pair a project's path with another's placement.
+export async function projectRootPlace(projectName: string, treePath: string): Promise<TranscriptPlacement> {
+  const { system, remoteId, systemPath } = await projectPlacement(projectName);
+  return { system, remoteId, cwd: systemPath ?? treePath };
 }
 
 // Archive the session at the conventional path: keep the jsonl (so it
@@ -1794,10 +1846,10 @@ export async function listSessions(projectName: string, excludeSessionIds: Set<s
 // brings the session back intact. Returns true on success, false if the
 // jsonl didn't exist (404 path from the route). This is the single
 // "remove from the normal list" action — it never deletes from disk.
-export async function archiveSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
+export async function archiveSessionForCwd(place: TranscriptPlacement, sessionId: string): Promise<boolean> {
   const backingId = await resolveToBackingId(sessionId);
   if (backingId === null) return false; // unknown session — the route's 404
-  const file = sessionFilePath(absCwd, backingId);
+  const file = sessionFilePath(place, backingId);
   try {
     await fs.access(file);
   } catch (e) {
@@ -1815,10 +1867,10 @@ export async function archiveSessionForCwd(absCwd: string, sessionId: string): P
 // per-session Delete on the Settings → Archived page. Caller is
 // responsible for killing any running instance attached to this
 // sessionId first.
-export async function deleteSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
+export async function deleteSessionForCwd(place: TranscriptPlacement, sessionId: string): Promise<boolean> {
   const backingId = await resolveToBackingId(sessionId);
   if (backingId === null) return false; // unknown session — the route's 404
-  const file = sessionFilePath(absCwd, backingId);
+  const file = sessionFilePath(place, backingId);
   try {
     await fs.unlink(file);
     try { await deleteSessionTitle(backingId); } catch { /* sidecar cleanup is best-effort */ }
@@ -1853,14 +1905,24 @@ async function loadWorktreesFor(projectName: string): Promise<WorktreeMeta[]> {
 interface SessionPlace {
   project: string;
   worktreeName: string | null;
-  primary: string[];
+  primary: TranscriptPlacement[];
+}
+
+// What a hit reports. `place` is the full coordinate the transcript was found
+// at — a caller that goes on to READ that transcript needs it, because `cwd`
+// alone no longer names a directory.
+export interface SessionLocation {
+  project: string;
+  worktreeName: string | null;
+  cwd: string;
+  place: TranscriptPlacement;
 }
 
 // Look up which project (and optionally which worktree) owns a given
 // sessionId, and the cwd its transcript was actually found at, by probing the
-// conventional `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` path against
-// every cwd every known project + worktree admits. Returns
-// { project, worktreeName: string|null, cwd } on hit, null when nothing matches.
+// conventional `<transcriptRoot(place)>/<encoded-cwd>/<sid>.jsonl` path against
+// every place every known project + worktree admits. Returns a SessionLocation
+// on hit, null when nothing matches.
 // `encodeCwd` is one-way (lossy: '_' and '/' both collapse to '-'), so
 // we can't reverse-map a directory name back to a project — enumerating
 // known paths and probing is the only correct approach.
@@ -1901,7 +1963,7 @@ interface SessionPlace {
 //     measured. Bounded, not removed.
 // The lazy composition below is what keeps both off a lookup that a nearer
 // place already answers.
-export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {
+export async function findSessionLocation(sessionId: string): Promise<SessionLocation | null> {
   // Permissive validation: sessionIds are UUIDs in practice but we accept
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
@@ -1935,10 +1997,15 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   // a remote session runs at the project's real path on its system, and a remote
   // row's `path` IS that path (listProjects) — so local and remote compose
   // identically and there is no search space to enumerate any more.
+  //
+  // THE MACHINE COORDINATE TRAVELS WITH THE CWD. `/root/app3` is the same cwd on
+  // two different boxes, so a place that carried only its path would probe one
+  // remote's transcripts for another remote's session and answer with the wrong
+  // project.
   const compose = async (
     proj: ProjectInfo, worktreeName: string | null, treePath: string, sysPath: string | null,
   ): Promise<SessionPlace> => ({
-    project: proj.name, worktreeName, primary: [sysPath ?? treePath],
+    project: proj.name, worktreeName, primary: [placeOf(proj, sysPath ?? treePath)],
   });
 
   // THE PLACE LIST IS COMPOSED LAZILY, IN PROBE ORDER, AND MEMOISED — and the
@@ -1980,18 +2047,20 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     return built;
   };
 
-  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> => {
-    const holds = async (cwd: string): Promise<boolean> => {
+  const probe = async (id: string): Promise<SessionLocation | null> => {
+    const holds = async (at: TranscriptPlacement): Promise<boolean> => {
       try {
-        return (await fs.stat(sessionFilePath(cwd, id))).isFile();
+        return (await fs.stat(sessionFilePath(at, id))).isFile();
       } catch (e) {
         if (errCode(e) !== 'ENOENT') throw e;
         return false;
       }
     };
-    const first = async (place: SessionPlace, cwds: string[]) => {
-      for (const cwd of cwds) {
-        if (await holds(cwd)) return { project: place.project, worktreeName: place.worktreeName, cwd };
+    const first = async (place: SessionPlace, ats: TranscriptPlacement[]) => {
+      for (const at of ats) {
+        if (await holds(at)) {
+          return { project: place.project, worktreeName: place.worktreeName, cwd: at.cwd, place: at };
+        }
       }
       return null;
     };
@@ -2033,9 +2102,10 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   return null;
 }
 
-// Does a transcript for `sessionId` exist ANYWHERE under the Claude projects
-// root, including under an encoded-cwd directory no registered project or
-// worktree owns? Returns the absolute path on hit, null otherwise.
+// Does a transcript for `sessionId` exist ANYWHERE under any transcript root cc
+// knows about — the local one or any registered remote's — including under an
+// encoded-cwd directory no registered project or worktree owns? Returns the
+// absolute path on hit, null otherwise.
 //
 // Existence only — deliberately NOT a route to the content. `encodeCwd` is
 // one-way (see its note above: '_' and '/' both collapse to '-'), so the
@@ -2050,21 +2120,39 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
 export async function findOrphanedTranscript(sessionId: string): Promise<string | null> {
   const backingId = await resolveToBackingId(sessionId);
   if (backingId === null) return null;
-  const root = claudeProjectsRoot();
-  let dirs: Dirent[];
-  try { dirs = await fs.readdir(root, { withFileTypes: true }); }
-  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const file = path.join(root, d.name, sessionFileName(backingId));
-    try {
-      const stat = await fs.stat(file);
-      if (stat.isFile()) return file;
-    } catch (e) {
-      if (errCode(e) !== 'ENOENT') throw e;
+  for (const root of await transcriptRoots()) {
+    let dirs: Dirent[];
+    try { dirs = await fs.readdir(root, { withFileTypes: true }); }
+    catch (e) { if (errCode(e) === 'ENOENT') continue; throw e; }
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const file = path.join(root, d.name, sessionFileName(backingId));
+      try {
+        const stat = await fs.stat(file);
+        if (stat.isFile()) return file;
+      } catch (e) {
+        if (errCode(e) !== 'ENOENT') throw e;
+      }
     }
   }
   return null;
+}
+
+// EVERY transcript root cc knows about: the local one, plus one per registered
+// remote. There is no single root any more, so the reverse scanner above has to
+// be told where to look — left local-only it would answer "no such session" for
+// every remote session, turning the informative SESSION_NOT_LIVE refusal into a
+// bare SESSION_UNKNOWN exactly where a transcript does exist.
+//
+// Store reads only, like `registeredPlaces`: no System handle is taken, so a box
+// being down cannot stop a refusal from being composed.
+async function transcriptRoots(): Promise<string[]> {
+  const roots = new Set<string>([claudeProjectsRoot()]);
+  for (const proj of await listProjects()) {
+    if (proj.system === LOCAL_SYSTEM_ID) continue;
+    roots.add(transcriptRoot(placeOf(proj, proj.systemPath ?? proj.path)));
+  }
+  return [...roots];
 }
 
 export interface ArchivedSessionRow {
@@ -2112,7 +2200,7 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
   const groups: { project: string; sessions: ArchivedSessionRow[] }[] = [];
   for (const proj of projects) {
     const sessions: ArchivedSessionRow[] = [];
-    const projRows = (await listSessionsForCwd(proj.path)).filter(s => s.archived);
+    const projRows = (await listSessionsForCwd(placeOf(proj, proj.systemPath ?? proj.path))).filter(s => s.archived);
     for (const s of projRows) {
       sessions.push({
         sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
@@ -2122,7 +2210,7 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
     let wts: WorktreeMeta[] = [];
     try { wts = await loadWorktreesFor(proj.name); } catch { /* not a git repo, skip */ }
     for (const wt of wts) {
-      const wtRows = (await listSessionsForCwd(wt.worktreePath)).filter(s => s.archived);
+      const wtRows = (await listSessionsForCwd(placeOf(proj, wt.worktreePath))).filter(s => s.archived);
       for (const s of wtRows) {
         sessions.push({
           sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
@@ -2149,10 +2237,10 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
 // does) — so the steady-state fan-out across every project stays readdir +
 // stat, which is the property this walk has always been protecting.
 export async function summarizeSessions(
-  absCwd: string,
+  place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
 ): Promise<{ count: number; archivedCount: number; lastActivity: number }> {
-  const dir = path.join(claudeProjectsRoot(), encodeCwd(absCwd));
+  const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   let entries: string[];
   try { entries = await fs.readdir(dir); }
   catch (e) { if (errCode(e) === 'ENOENT') return { count: 0, archivedCount: 0, lastActivity: 0 }; throw e; }

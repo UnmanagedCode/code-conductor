@@ -10,7 +10,7 @@ import {
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, writeProjectMeta, projectsBySystem, setProjectRemote,
   addWorkspace, removeWorkspace, renameWorkspace,
-  summarizeWorkspaces, validateName,
+  summarizeWorkspaces, validateName, placeOf, projectRootPlace, type TranscriptPlacement,
 } from './projects.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
@@ -457,7 +457,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           const wtTempSids = instances ? instances.tempSessionIdsForCwd(w.worktreePath) : null;
           return {
             ...w,
-            sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+            sessions: await summarizeSessions(placeOf(p, w.worktreePath), wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           };
         }));
         const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
@@ -471,7 +471,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+          sessions: await summarizeSessions(placeOf(p, p.systemPath ?? p.path), projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
         };
       }));
@@ -705,7 +705,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     try {
       const proj = await getProject(req.params.name);
       const tempSids = instances ? instances.tempSessionIdsForCwd(proj.path) : null;
-      const sessions = await listSessionsForCwd(proj.path, tempSids, { includeArchived: !!req.query.includeArchived });
+      const place = await projectRootPlace(req.params.name, proj.path);
+      const sessions = await listSessionsForCwd(place, tempSids, { includeArchived: !!req.query.includeArchived });
       res.json(sessions);
     } catch (e) { next(e); }
   });
@@ -752,9 +753,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
   }
 
-  async function deleteSessionAtCwd({ cwd, sessionId, force }: { cwd: string; sessionId: string; force: boolean }): Promise<void> {
+  async function deleteSessionAtCwd({ place, sessionId, force }: { place: TranscriptPlacement; sessionId: string; force: boolean }): Promise<void> {
     await detachInstancesForSession({ sessionId, force, verb: 'kill it first' });
-    const removed = await deleteSessionForCwd(cwd, sessionId);
+    const removed = await deleteSessionForCwd(place, sessionId);
     if (!removed) {
       throw httpError(404, `session ${sessionId} not found`);
     }
@@ -768,7 +769,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       assertValidSid(sid);
       const proj = await getProject(req.params.name);
       const force = req.query.force === '1' || req.query.force === 'true';
-      await deleteSessionAtCwd({ cwd: proj.path, sessionId: sid, force });
+      await deleteSessionAtCwd({ place: await projectRootPlace(req.params.name, proj.path), sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -780,7 +781,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw httpError(404, 'worktree not found');
       const force = req.query.force === '1' || req.query.force === 'true';
-      await deleteSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
+      await deleteSessionAtCwd({ place: await projectRootPlace(req.params.name, wt.worktreePath), sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -791,9 +792,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // instance first (so the archived session leaves the sidebar cleanly).
   // Unlike delete, this keeps the jsonl — it only records the sessionId
   // in the global archived set.
-  async function archiveSessionAtCwd({ cwd, sessionId, force }: { cwd: string; sessionId: string; force: boolean }): Promise<void> {
+  async function archiveSessionAtCwd({ place, sessionId, force }: { place: TranscriptPlacement; sessionId: string; force: boolean }): Promise<void> {
     await detachInstancesForSession({ sessionId, force, verb: 'stop it first' });
-    const archived = await archiveSessionForCwd(cwd, sessionId);
+    const archived = await archiveSessionForCwd(place, sessionId);
     if (!archived) {
       throw httpError(404, `session ${sessionId} not found`);
     }
@@ -805,7 +806,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       assertValidSid(sid);
       const proj = await getProject(req.params.name);
       const force = req.query.force === '1' || req.query.force === 'true';
-      await archiveSessionAtCwd({ cwd: proj.path, sessionId: sid, force });
+      await archiveSessionAtCwd({ place: await projectRootPlace(req.params.name, proj.path), sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -817,7 +818,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw httpError(404, 'worktree not found');
       const force = req.query.force === '1' || req.query.force === 'true';
-      await archiveSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
+      await archiveSessionAtCwd({ place: await projectRootPlace(req.params.name, wt.worktreePath), sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -856,7 +857,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw httpError(404, 'worktree not found');
       const tempSids = instances ? instances.tempSessionIdsForCwd(wt.worktreePath) : null;
-      const wtSessions = await listSessionsForCwd(wt.worktreePath, tempSids, { includeArchived: !!req.query.includeArchived });
+      const wtPlace = await projectRootPlace(req.params.name, wt.worktreePath);
+      const wtSessions = await listSessionsForCwd(wtPlace, tempSids, { includeArchived: !!req.query.includeArchived });
       res.json(wtSessions);
     } catch (e) { next(e); }
   });
@@ -1070,7 +1072,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // project's tree — that tree is a path on another machine for a project
         // on a system, where the count would silently be 0 (card 2026-0292).
         const hit = await findSessionLocation(sid);
-        if (hit) currentCount = await countMessages(backing, hit.cwd).catch(() => 0);
+        if (hit) currentCount = await countMessages(backing, hit.place).catch(() => 0);
       }
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
     } catch (e) { next(e); }
@@ -1101,13 +1103,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // 404 would refuse a read that works.
       // The transcript reads take the backing id; the summaries store keeps the
       // caller's id (cc-owned, not filename-keyed — see the GET above).
-      const cwd = hit.cwd;
-      const { summary, messageCount, costUsd } = await generateSummary(backing, cwd, length as SummaryLength);
+      const place = hit.place;
+      const { summary, messageCount, costUsd } = await generateSummary(backing, place, length as SummaryLength);
       await setSummary(sid, length as SummaryLength, { summary, generatedAt: Date.now(), messageCount });
       broadcastProjects();
       // Re-fetch all tiers so the response mirrors the GET shape.
       const tiers = await getSummaries(sid);
-      const currentCount = await countMessages(backing, cwd).catch(() => 0);
+      const currentCount = await countMessages(backing, place).catch(() => 0);
       // costUsd is ephemeral: what THIS generation cost. Deliberately not persisted
       // (no field on TierRecord) and absent from the GET response.
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount), costUsd });
@@ -1125,9 +1127,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // resume-from-archived stays allowed — this only feeds the automatic path.
       //
       // PROJECTED EXPLICITLY, not spread: findSessionLocation also returns the
-      // `cwd` it found the transcript at, which is internal — a local absolute
-      // path, and for a project on a system one inside cc's own store. This body
-      // is the wire contract and must not grow a field (card 2026-0292).
+      // `cwd` it found the transcript at and the full `place` coordinate, both
+      // internal — for a project on a system the cwd is a path on ANOTHER
+      // machine, and the place names cc's own store. This body is the wire
+      // contract and must not grow a field (card 2026-0292).
       res.json({ project: hit.project, worktreeName: hit.worktreeName, archived: await isArchived(backing) });
     } catch (e) { next(e); }
   });
@@ -1355,7 +1358,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           throw httpError(400, 'no sessionId — instance has not yet received a turn');
         }
         const { analyzeSessionForPrune } = await import('./sessionPrune.ts');
-        res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.backingSessionId }));
+        res.json(await analyzeSessionForPrune({ place: inst.transcriptPlace, sessionId: inst.backingSessionId }));
       } catch (e) { next(e); }
     });
 

@@ -19,6 +19,7 @@ import {
   bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader,
   seedSessionJsonl, driveTurn,
 } from './helpers.mjs';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -348,7 +349,7 @@ test('forward: an unreachable (orphaned-transcript) source still soft-refuses FO
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const targetSid = await spawnReady('p');
   const orphanSid = '22222222-3333-4444-5555-666666666666';
-  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(home, 'never-registered'), orphanSid);
+  await seedSessionJsonl(localPlace(path.join(home, 'never-registered')), orphanSid);
 
   const res = unwrap(await callTool('send_prompt', {
     sessionId: targetSid, forward: { sessionId: orphanSid }, text: 'go',
@@ -518,8 +519,7 @@ test('forward: a fully retired source is relayed from disk, verbatim, with its o
 
   // The transcript the CLI would have written (the fake engine writes none),
   // named by the BACKING id — the id that actually names a file on disk.
-  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(roots.projectsRoot, 'p'),
-    instForSession(instances, sourceSid).backingSessionId, [
+  await seedSessionJsonl(localPlace(path.join(roots.projectsRoot, 'p')), instForSession(instances, sourceSid).backingSessionId, [
       { type: 'user', message: { role: 'user', content: 'review it' } },
       { type: 'assistant', message: { id: 'm_rv', role: 'assistant', content: [{ type: 'text', text: 'retired reviewer findings' }] } },
     ]);
@@ -552,8 +552,7 @@ test('forward: a PREFIX of a retired source refuses FORWARD_SESSION_UNKNOWN rath
   const sourceSid = spawn.sessionId;
   await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
   const targetSid = await spawnReady('p');
-  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(roots.projectsRoot, 'p'),
-    instForSession(instances, sourceSid).backingSessionId, [
+  await seedSessionJsonl(localPlace(path.join(roots.projectsRoot, 'p')), instForSession(instances, sourceSid).backingSessionId, [
       { type: 'user', message: { role: 'user', content: 'review it' } },
       { type: 'assistant', message: { id: 'm_rv', role: 'assistant', content: [{ type: 'text', text: 'retired reviewer findings' }] } },
     ]);

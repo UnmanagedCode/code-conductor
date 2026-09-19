@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 import { buildArchive, pageInstanceEvents } from '../src/eventArchive.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -437,7 +437,7 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
     // archive is cut below `trimmedBefore`, so at least one seq exists in
     // neither array and a range-based expectation would be wrong.
     const arch = await buildArchive({
-      cwd: inst.cwd, sessionId: inst.backingSessionId, ring: inst.ringSnapshot(),
+      place: inst.transcriptPlace, sessionId: inst.backingSessionId, ring: inst.ringSnapshot(),
       trimmedBefore: inst.ring.trimmedBefore, userEchoCount: inst._userEchoCount,
     });
     const universe = arch.events.slice(0, arch.cut).concat(inst.ringSnapshot());
@@ -541,7 +541,7 @@ test('archive-side Agent head reunites with its ring-side children on one page',
   // Replay shape, pinned so the seq arithmetic below stays honest: 16 events,
   // the Agent head at index 8, 5 outer echoes (#0..#4).
   const probe = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 5,
+    place: localPlace(projectPath), sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 5,
   });
   assert.equal(probe.events.length, 16);
   assert.equal(probe.events[8].kind, 'tool_use');
@@ -566,7 +566,7 @@ test('archive-side Agent head reunites with its ring-side children on one page',
     { kind: 'turn_end', subtype: 'success', _seq: 26 },
   ];
   const stubInst = {
-    cwd: projectPath, backingSessionId: sid, _userEchoCount: 7,
+    cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 7,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -634,7 +634,7 @@ test('a window whose sub-agent children all have ring-side heads triggers no arc
   ] });
 
   const probe = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 3,
+    place: localPlace(projectPath), sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 3,
   });
   assert.ok(probe.events.some(e => e.kind === 'tool_use' && e.name === 'TaskCreate'),
     'the batch is created archive-side only');
@@ -668,7 +668,7 @@ test('a window whose sub-agent children all have ring-side heads triggers no arc
     ring.push({ kind: 'turn_end', subtype: 'success', _seq: seq() });
   }
   const stubInst = {
-    cwd: projectPath, backingSessionId: sid, _userEchoCount: 8,
+    cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 8,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -727,7 +727,7 @@ test('a rejected window is served, and coverage is total', async () => {
   }
   const tb = 100;
   const stubInst = {
-    cwd: '/fake', backingSessionId: null, _userEchoCount: 5,
+    cwd: '/fake', transcriptPlace: localPlace('/fake'), backingSessionId: null, _userEchoCount: 5,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -800,7 +800,7 @@ test('an archive-side headless component is served and the cursor strictly progr
   // Replay shape, pinned so the arithmetic below stays honest: 17 events, the
   // headless component at 4..9, its tool_result at 10, echo #2 at 11.
   const probe = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 4,
+    place: localPlace(projectPath), sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 4,
   });
   assert.equal(probe.events.length, 17);
   assert.equal(probe.events.filter(e => e.parentToolUseId === TU).length, 6);
@@ -820,7 +820,7 @@ test('an archive-side headless component is served and the cursor strictly progr
     { kind: 'text_end', msgId: 'm_p3', blockIdx: 0, _seq: 16 },
   ];
   const stubInst = {
-    cwd: projectPath, backingSessionId: sid, _userEchoCount: 4,
+    cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 4,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -871,7 +871,7 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
   // Replay shape, pinned so the arithmetic below stays honest: 5 plain turns →
   // 15 events, echo #4 at index 12.
   const probe = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 5,
+    place: localPlace(projectPath), sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 5,
   });
   assert.equal(probe.events.length, 15);
   assert.equal(probe.events[12].kind, 'user_echo');
@@ -886,13 +886,13 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
     { kind: 'text_delta', msgId: 'mG', blockIdx: i, text: `g${i}`, _seq: tb + i }
   ));
   const stubInst = {
-    cwd: projectPath, backingSessionId: sid, _userEchoCount: 5,
+    cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 5,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
 
   const arch = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 5,
+    place: localPlace(projectPath), sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 5,
   });
   assert.equal(arch.cut, tb, 'archive is cut just after turn 4\'s echo, level with the ring head');
   assert.equal(arch.gap, true, 'mid-turn head means a real gap — the fixture is not vacuous');
@@ -972,13 +972,13 @@ test('a window straddling the seam is served whole, with exactly one gap marker 
     return ev;
   });
   const stubInst = {
-    cwd: projectPath, backingSessionId: sid, _userEchoCount: 5,
+    cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 5,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
 
   const arch = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 5,
+    place: localPlace(projectPath), sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 5,
   });
   assert.equal(arch.cut, tb);
   assert.equal(arch.gap, true, 'mid-turn head means a real gap — the fixture is not vacuous');
@@ -1066,7 +1066,7 @@ test('T3 (Step 4): buildArchive marks a gap when the trimmedBefore clamp discard
   // trimmedBefore (2) sits BELOW the anchor echo's archive index (3): the
   // clamp discards flat[2] (turn 0's text_end) without the fix, silently.
   const clamped = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring: [head], trimmedBefore: 2, userEchoCount: 2,
+    place: localPlace(projectPath), sessionId: sid, ring: [head], trimmedBefore: 2, userEchoCount: 2,
   });
   assert.equal(clamped.cut, 2, 'cut is clamped down to trimmedBefore');
   assert.equal(clamped.gap, true, 'clamp discarding real archive content must mark gap (Step 4)');
@@ -1074,7 +1074,7 @@ test('T3 (Step 4): buildArchive marks a gap when the trimmedBefore clamp discard
   // trimmedBefore (3) matches the anchor cut exactly — the normal
   // turn-aligned case — and must NOT be marked as a gap.
   const aligned = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring: [head], trimmedBefore: 3, userEchoCount: 2,
+    place: localPlace(projectPath), sessionId: sid, ring: [head], trimmedBefore: 3, userEchoCount: 2,
   });
   assert.equal(aligned.cut, 3);
   assert.equal(aligned.gap, false, 'cut === trimmedBefore is the healthy turn-aligned case, no gap');
@@ -1086,7 +1086,7 @@ test('T3 (Step 5): pageInstanceEvents marks a gap for a trimmed ring with no ses
     { kind: 'text_delta', msgId: 'm', blockIdx: 1, text: 'e1', _seq: 6 },
   ];
   const stubInst = {
-    cwd: '/fake', backingSessionId: null, _userEchoCount: 0,
+    cwd: '/fake', transcriptPlace: localPlace('/fake'), backingSessionId: null, _userEchoCount: 0,
     ring: { get trimmedBefore() { return 5; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -1111,7 +1111,7 @@ test('a terminal forward page above the seam still surfaces the gap marker', asy
     { kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}`, _seq: 5 + i }
   ));
   const stubInst = {
-    cwd: '/fake', backingSessionId: null, _userEchoCount: 0,
+    cwd: '/fake', transcriptPlace: localPlace('/fake'), backingSessionId: null, _userEchoCount: 0,
     ring: { get trimmedBefore() { return 5; } },
     ringSnapshot: () => ring.slice(),
   };

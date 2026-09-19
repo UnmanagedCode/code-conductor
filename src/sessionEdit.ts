@@ -16,7 +16,7 @@
 
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { sessionFilePath, writeFileAtomic } from './projects.ts';
+import { sessionFilePath, writeFileAtomic, type TranscriptPlacement } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { extractAttachedMarkers, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
@@ -65,15 +65,15 @@ function extractUserPromptText(obj: PersistedLine | null | undefined): string {
 //   - droppedText: the prompt text of the target user message
 //   - lastSurvivingUuid: uuid of the last prefix line, or null
 // Throws { statusCode: 400 } if the target index isn't found.
-async function readAndSplit({ cwd, sessionId, userMessageIndex }: {
-  cwd: string; sessionId: string; userMessageIndex: number;
+async function readAndSplit({ place, sessionId, userMessageIndex }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number;
 }): Promise<{
   prefix: Array<{ raw: string; obj: PersistedLine | null }>;
   dropped: Array<{ raw: string; obj: PersistedLine | null }>;
   droppedText: string;
   lastSurvivingUuid: string | null;
 }> {
-  const file = sessionFilePath(cwd, sessionId);
+  const file = sessionFilePath(place, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) {
@@ -145,17 +145,17 @@ function joinLines(entries: Array<{ raw: string }>): string {
 // After the rewrite, appends a fresh last-prompt / permission-mode metadata
 // pair pointing at lastSurvivingUuid (skipped when N==0 — the empty-history
 // case where no leaf exists to anchor the picker).
-export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessageIndex, mode }: {
-  cwd: string; sessionId: string; userMessageIndex: number; mode: string;
+export async function truncateSessionAtUserMessage({ place, sessionId, userMessageIndex, mode }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; mode: string;
 }): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null }> {
-  if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
+  if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, dropped, droppedText, lastSurvivingUuid } =
-    await readAndSplit({ cwd, sessionId, userMessageIndex });
+    await readAndSplit({ place, sessionId, userMessageIndex });
 
-  const file = sessionFilePath(cwd, sessionId);
+  const file = sessionFilePath(place, sessionId);
   await writeFileAtomic(file, joinLines(prefix));
 
   // Append fresh resume-picker metadata for the new tail. Best-effort —
@@ -163,7 +163,7 @@ export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessage
   // picker line requires a leafUuid.
   if (lastSurvivingUuid) {
     await writeSessionMetadata({
-      cwd, sessionId,
+      place, sessionId,
       leafUuid: lastSurvivingUuid,
       mode,
     });
@@ -183,18 +183,18 @@ export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessage
 // copied line to the new id — purely cosmetic (the filename is what
 // `--resume` reads) but keeps the file self-consistent for any downstream
 // tooling. Returns { newSessionId, droppedText, lastSurvivingUuid }.
-export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageIndex, mode, newSessionId }: {
-  cwd: string; sessionId: string; userMessageIndex: number; mode: string; newSessionId?: string;
+export async function forkSessionAtUserMessage({ place, sessionId, userMessageIndex, mode, newSessionId }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; mode: string; newSessionId?: string;
 }): Promise<{ newSessionId: string; droppedText: string; lastSurvivingUuid: string | null }> {
-  if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
+  if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, droppedText, lastSurvivingUuid } =
-    await readAndSplit({ cwd, sessionId, userMessageIndex });
+    await readAndSplit({ place, sessionId, userMessageIndex });
 
   const newSid = newSessionId ?? randomUUID();
-  const newFile = sessionFilePath(cwd, newSid);
+  const newFile = sessionFilePath(place, newSid);
 
   // Rewrite each line's `sessionId` field (when present) to the new id.
   // Lines we couldn't parse are passed through verbatim.
@@ -212,7 +212,7 @@ export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageInde
   // sessionId no one has driven yet).
   if (lastSurvivingUuid) {
     await writeSessionMetadata({
-      cwd, sessionId: newSid,
+      place, sessionId: newSid,
       leafUuid: lastSurvivingUuid,
       mode,
     });

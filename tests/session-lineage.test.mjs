@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { localPlace } from '../src/projects.ts';
 
 // Isolate the central store under a tmp PROJECTS_ROOT. projectsRoot() reads the
 // env at call time, so setting it before importing is enough.
@@ -284,7 +285,7 @@ test('a vanished segment file: reads still succeed, and NOTHING is written on a 
   for (const id of [older, current]) {
     await fs.writeFile(path.join(dir, `${id}.jsonl`), '{"type":"user","uuid":"u1"}\n');
   }
-  assert.deepEqual((await findSessionLocation(publicId)), { project: 'vanish', worktreeName: null, cwd });
+  assert.deepEqual((await findSessionLocation(publicId)), { project: 'vanish', worktreeName: null, cwd, place: localPlace(cwd) });
 
   // Claude's own cleanup removes CURRENT's file out of band — no delete path of
   // ours ran, so nothing pruned the chain.
@@ -292,9 +293,9 @@ test('a vanished segment file: reads still succeed, and NOTHING is written on a 
   const rowBefore = await segmentsFor(publicId);
 
   // The read still resolves, via the newest-first walk over surviving segments.
-  assert.deepEqual(await findSessionLocation(publicId), { project: 'vanish', worktreeName: null, cwd },
+  assert.deepEqual(await findSessionLocation(publicId), { project: 'vanish', worktreeName: null, cwd, place: localPlace(cwd) },
     'the public id still locates its session through an older surviving segment');
-  assert.deepEqual(await findSessionLocation(older), { project: 'vanish', worktreeName: null, cwd });
+  assert.deepEqual(await findSessionLocation(older), { project: 'vanish', worktreeName: null, cwd, place: localPlace(cwd) });
 
   // …and the read wrote NOTHING. This is the deviation from the design's
   // "self-prunes on read": a write inside a hot read path races concurrent
@@ -333,7 +334,7 @@ test('crash safety: a rotation lost before its persist still resolves to a real 
   // transcript. That is the honest answer and it is a real, readable file; the
   // alternative (an unresolvable id) would strand the session entirely.
   assert.equal(await resolveBacking(publicId), first);
-  assert.deepEqual(await findSessionLocation(publicId), { project: 'crashy', worktreeName: null, cwd });
+  assert.deepEqual(await findSessionLocation(publicId), { project: 'crashy', worktreeName: null, cwd, place: localPlace(cwd) });
   assert.equal(await publicIdFor(rotatedButUnrecorded), rotatedButUnrecorded,
     'the unrecorded segment is simply unknown — it never claims to belong');
 

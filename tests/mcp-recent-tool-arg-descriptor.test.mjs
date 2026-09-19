@@ -14,6 +14,7 @@ import { capBlockInput, TOOL_ARG_VALUE_CAP, MSG_TEXT_CAP } from '../src/mcp/mess
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
 import { InstanceManager } from '../src/instances.ts';
 import { buildRecentMessages } from '../src/mcp/handlers.ts';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -167,7 +168,7 @@ async function retiredWorkerWithLines(ctx, projectName, lines) {
     callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'go' }));
 
   const projectPath = path.join(ctx.projectsRoot, projectName);
-  await seedSessionJsonl(ctx.claudeProjectsRoot, projectPath, instForSession(ctx.instances, sid).backingSessionId, lines);
+  await seedSessionJsonl(localPlace(projectPath), instForSession(ctx.instances, sid).backingSessionId, lines);
 
   const killed = unwrap(await callTool(ctx.baseUrl, 'kill_instance', { sessionId: sid }));
   assert.notEqual(killed.ok, false, `kill_instance refused: ${JSON.stringify(killed)}`);

@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { localPlace } from '../src/projects.ts';
 
 const CWD = '/tmp/prune-fixture-project';
 
@@ -84,7 +85,7 @@ test('prune stubs the pruned region and leaves the newest turn verbatim', async 
     const originalBytes = await fs.readFile(path.join(dir, `${sid}.jsonl`));
 
     const { newSessionId, saved } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate', mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate', mode: 'bypassPermissions',
     });
     const out = await readOut(dir, newSessionId);
 
@@ -132,7 +133,7 @@ test('a Read tool_use keeps file_path, and its result becomes a block array', as
     const { dir, sid } = await seed(scenario());
     for (const inputMode of ['truncate', 'minimal']) {
       const { newSessionId } = await pruneSessionToNewId({
-        cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode, mode: 'bypassPermissions',
+        place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode, mode: 'bypassPermissions',
       });
       const out = await readOut(dir, newSessionId);
       const byUuid = Object.fromEntries(out.map(o => [o.uuid, o]));
@@ -157,7 +158,7 @@ test('toolUseResult, timestamps, is_error and sidechain lines are never touched'
     lines[5].message.content[0].is_error = true;
     const { dir, sid } = await seed(lines);
     const { newSessionId } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'minimal', mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'minimal', mode: 'bypassPermissions',
     });
     const out = await readOut(dir, newSessionId);
     const byUuid = Object.fromEntries(out.map(o => [o.uuid, o]));
@@ -200,7 +201,7 @@ test('thinking in an entry with an unresolved tool_use is exempt', async () => {
       ] } },
     ]);
     const { newSessionId } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate', mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate', mode: 'bypassPermissions',
     });
     const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
     assert.equal(byUuid.a1.message.content[0].thinking, '[pruned: thinking]');
@@ -221,13 +222,13 @@ test('a stub that would be larger than the original is skipped', async () => {
         message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
       { type: 'user', uuid: 'u3', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'next' }] } },
     ]);
-    const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
     for (const t of analysis.turns) {
       assert.ok(t.thinking >= 0 && t.toolOutput >= 0 && t.toolInputTruncatable >= 0 && t.toolInputMinimal >= 0,
         'savings are never negative — pruning must not inflate the context');
     }
     const { newSessionId, saved } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'minimal', mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode: 'minimal', mode: 'bypassPermissions',
     });
     assert.deepEqual(saved, { thinking: 0, toolInputs: 0, toolOutputs: 0 });
     const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
@@ -240,7 +241,7 @@ test('analysis excludes sidechain entries and toolUseResult bytes', async () => 
   await withStore(async () => {
     const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
-    const a = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
     assert.equal(a.turnCount, 2);
     assert.equal(a.turns[1].total, 3, 'the newest turn is just "second" + "done"');
     // The sidechain line alone carries ~2000 tokens (4k of thinking + 4k of
@@ -259,7 +260,7 @@ test('sub-agent transcripts follow the session to its new id', async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { dir, sid } = await seed(scenario(), { subAgents: '{"type":"assistant"}\n' });
     const { newSessionId } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate', mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate', mode: 'bypassPermissions',
     });
     // Without this copy every sidechain silently vanishes from the pruned
     // session's transcript view (loadSubAgentTranscript keys off the sessionId).
@@ -291,7 +292,7 @@ test('truncate mode never splits a surrogate pair', async () => {
       { type: 'user', uuid: 'u2', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'next' }] } },
     ]);
     const { newSessionId } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate', mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate', mode: 'bypassPermissions',
     });
 
     // `JSON.stringify` writes a well-formed astral character as literal UTF-8
@@ -334,7 +335,7 @@ test('the savings preview equals what the transform actually saves', async () =>
   await withStore(async () => {
     const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
-    const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
 
     for (const inputMode of ['truncate', 'minimal']) {
       for (const pruneThinking of [true, false]) {
@@ -343,7 +344,7 @@ test('the savings preview equals what the transform actually saves', async () =>
         // the prefix covers every turn.
         for (let cut = 0; cut <= analysis.turnCount; cut++) {
           const { saved } = await pruneSessionToNewId({
-            cwd: CWD, sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode, mode: 'bypassPermissions',
+            place: localPlace(CWD), sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode, mode: 'bypassPermissions',
           });
           // Same arithmetic the dialog does: sum the selected prefix per
           // category, with thinking summed over ALL turns (it is global).
@@ -372,7 +373,7 @@ test('the savings denominator counts attachments, which are in context', async (
       attachment: { type: 'nested_memory', path: '/CLAUDE.md', content: 'z'.repeat(4000) },
     });
     const { sid } = await seed(lines);
-    const a = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
     assert.ok(a.totalTokens > 5000,
       `attachment excluded from the denominator (${a.totalTokens})`);
   });
@@ -387,11 +388,11 @@ test('the cut is capped at turnCount — one past a full prune is refused', asyn
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
     await assert.rejects(
-      () => pruneSessionToNewId({ cwd: CWD, sessionId: sid, cutTurnIndex: 3 }),
+      () => pruneSessionToNewId({ place: localPlace(CWD), sessionId: sid, cutTurnIndex: 3 }),
       /cutTurnIndex must be an integer in 0…2/,
     );
     await assert.rejects(
-      () => pruneSessionToNewId({ cwd: CWD, sessionId: sid, cutTurnIndex: 1, inputMode: 'nope' }),
+      () => pruneSessionToNewId({ place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'nope' }),
       /inputMode must be/,
     );
   });
@@ -433,7 +434,7 @@ test('a full cut reaches the newest turn, which a capped cut leaves verbatim', a
     const { dir, sid } = await seed(newestTurnPayloadScenario());
 
     const capped = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: false, mode: 'bypassPermissions',
     });
     const cappedOut = Object.fromEntries((await readOut(dir, capped.newSessionId)).map(o => [o.uuid, o]));
     assert.equal(cappedOut.a6.message.content[0].input.command, `echo ${bigText}`,
@@ -441,7 +442,7 @@ test('a full cut reaches the newest turn, which a capped cut leaves verbatim', a
     assert.equal(cappedOut.u5.message.content[0].content, bigText);
 
     const full = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 2, pruneThinking: false, mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 2, pruneThinking: false, mode: 'bypassPermissions',
     });
     assert.equal(full.turnCount, 2);
     assert.equal(full.cutTurnIndex, 2, 'the resolved cut is reported back');
@@ -465,7 +466,7 @@ test('a full cut never eats the conversation\'s own prose', async () => {
     const lines = newestTurnPayloadScenario();
     const { dir, sid } = await seed(lines);
     const { newSessionId } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 2, pruneThinking: true,
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 2, pruneThinking: true,
       inputMode: 'minimal', mode: 'bypassPermissions',
     });
     const out = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
@@ -504,7 +505,7 @@ test('a full cut keeps the thinking of an UNRESOLVED tool_use in the newest turn
 
     const { dir, sid } = await seed(lines);
     const { newSessionId } = await pruneSessionToNewId({
-      cwd: CWD, sessionId: sid, cutTurnIndex: 2, pruneThinking: true, mode: 'bypassPermissions',
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 2, pruneThinking: true, mode: 'bypassPermissions',
     });
     const out = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
     assert.equal(out.a6.message.content[0].thinking, bigText,
@@ -525,8 +526,8 @@ test('a full cut keeps the thinking of an UNRESOLVED tool_use in the newest turn
 // construction).
 async function assertSameCut(dir, sid, a, b, label) {
   const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
-  const ra = await pruneSessionToNewId({ cwd: CWD, sessionId: sid, mode: 'bypassPermissions', ...a });
-  const rb = await pruneSessionToNewId({ cwd: CWD, sessionId: sid, mode: 'bypassPermissions', ...b });
+  const ra = await pruneSessionToNewId({ place: localPlace(CWD), sessionId: sid, mode: 'bypassPermissions', ...a });
+  const rb = await pruneSessionToNewId({ place: localPlace(CWD), sessionId: sid, mode: 'bypassPermissions', ...b });
   assert.deepEqual(rb.saved, ra.saved, `${label}: savings differ`);
   assert.equal(rb.cutTurnIndex, ra.cutTurnIndex, `${label}: resolved cut differs`);
   const strip = (lines, newSid) =>
@@ -563,7 +564,7 @@ test('cutTurnIndex and keepLatestTurns are exclusive, and one is required', asyn
   await withStore(async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
-    const base = { cwd: CWD, sessionId: sid, mode: 'bypassPermissions' };
+    const base = { place: localPlace(CWD), sessionId: sid, mode: 'bypassPermissions' };
     await assert.rejects(
       () => pruneSessionToNewId({ ...base, cutTurnIndex: 1, keepLatestTurns: 1 }),
       /exactly one of cutTurnIndex or keepLatestTurns/);
@@ -643,7 +644,7 @@ async function pruneExemptFixture(inputMode) {
   const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
   const { dir, sid } = await seed(exemptScenario());
   const { newSessionId, saved } = await pruneSessionToNewId({
-    cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode, mode: 'bypassPermissions',
+    place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode, mode: 'bypassPermissions',
   });
   const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
   const use = (tag) => byUuid[`a_${tag}`].message.content[0];
@@ -750,12 +751,12 @@ test('the savings preview accounts for the exemption too', async () => {
   await withStore(async () => {
     const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(exemptScenario());
-    const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
 
     for (const inputMode of ['truncate', 'minimal']) {
       for (let cut = 0; cut <= analysis.turnCount - 1; cut++) {
         const { saved } = await pruneSessionToNewId({
-          cwd: CWD, sessionId: sid, cutTurnIndex: cut, pruneThinking: false, inputMode, mode: 'bypassPermissions',
+          place: localPlace(CWD), sessionId: sid, cutTurnIndex: cut, pruneThinking: false, inputMode, mode: 'bypassPermissions',
         });
         const prefix = analysis.turns.slice(0, cut);
         assert.deepEqual(saved, {

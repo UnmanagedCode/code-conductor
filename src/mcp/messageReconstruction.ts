@@ -7,6 +7,7 @@
 // rendering, and oldest-first ordering are a documented MCP contract; keep
 // them identical.
 
+import type { TranscriptPlacement } from '../projects.ts';
 import { loadPersistedTranscript } from '../transcript.ts';
 // One-directional edge into the archive stamper (eventArchive.ts imports
 // nothing from this module), so the disk-replay seq space is stamped in exactly
@@ -136,7 +137,7 @@ export function reconstructMessages(events: UiEvent[], includeThinking: boolean)
 // caller degrades gracefully to ring-only.
 export async function mergeRecentWithDisk(inst: InstanceLike, ringMessages: ReconMessage[], includeThinking: boolean): Promise<ReconMessage[] | null> {
   const result = await loadPersistedTranscript({
-    cwd: inst.cwd, sessionId: inst.backingSessionId as string, seqHint: 0,
+    place: inst.transcriptPlace, sessionId: inst.backingSessionId as string, seqHint: 0,
   }).catch(() => null);
   if (!result) return null;
   let diskEvents: UiEvent[] = [];
@@ -294,10 +295,10 @@ export function diskTurnIndex(events: ReconEvent[]): TurnIndex {
 // bondTrailingTurn compares. (Truncating away the echo that opened the last
 // turn is possible only for a turn longer than the cap; bonding then safely
 // degrades to last-message-only.)
-export async function loadDiskSelection({ cwd, backingSessionId, includeThinking }: {
-  cwd: string; backingSessionId: string; includeThinking: boolean;
+export async function loadDiskSelection({ place, backingSessionId, includeThinking }: {
+  place: TranscriptPlacement; backingSessionId: string; includeThinking: boolean;
 }): Promise<{ messages: ReconMessage[]; turnIndex: TurnIndex } | null> {
-  const result = await loadPersistedTranscript({ cwd, sessionId: backingSessionId, seqHint: 0 }).catch(() => null);
+  const result = await loadPersistedTranscript({ place, sessionId: backingSessionId, seqHint: 0 }).catch(() => null);
   if (!result) return null;
   let events: ReconEvent[] = stampArchiveEvents(result.lines) as ReconEvent[];
   if (events.length > DISK_REPLAY_TAIL_CAP) events = events.slice(-DISK_REPLAY_TAIL_CAP);

@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, findSessionLocation, orchStoreRoot } from '../src/projects.ts';
+import { adoptProject, findSessionLocation, orchStoreRoot} from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 
@@ -71,7 +71,7 @@ describe('a cold resume of a remote session', () => {
     // The in-process launcher writes no transcript, and findSessionLocation
     // probes for one — seeded at the cwd the session actually has, so a locator
     // that looked anywhere else would find nothing rather than agree by luck.
-    await seedSessionJsonl(claudeProjectsRoot, inst.cwd, inst.backingSessionId);
+    await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId);
     return { id, project, box, projPath, mirrorFile, inst };
   }
 

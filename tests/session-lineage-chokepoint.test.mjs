@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -114,9 +115,9 @@ test('the helpers throw on a minted PUBLIC id and pass everything else', () => {
   const cwd = '/tmp/demo';
   // Both minted forms are refused, at both helpers.
   for (const publicId of ['12345678', 'deadbeef', '12345678-90ab']) {
-    assert.throws(() => sessionFilePath(cwd, publicId), /public session id/,
+    assert.throws(() => sessionFilePath( localPlace(cwd), publicId), /public session id/,
       `sessionFilePath must refuse ${publicId}`);
-    assert.throws(() => subAgentDirPath(cwd, publicId), /public session id/,
+    assert.throws(() => subAgentDirPath( localPlace(cwd), publicId), /public session id/,
       `subAgentDirPath must refuse ${publicId}`);
     assert.throws(() => assertBackingId(publicId, 'here'), /^Error: here: /);
   }
@@ -131,8 +132,8 @@ test('the helpers throw on a minted PUBLIC id and pass everything else', () => {
     '1234567', '123456789',                  // wrong base length
     'DEADBEEF',                              // uppercase is not a minted form
   ]) {
-    assert.doesNotThrow(() => sessionFilePath(cwd, backingId), `${backingId} must pass`);
-    assert.doesNotThrow(() => subAgentDirPath(cwd, backingId), `${backingId} must pass`);
+    assert.doesNotThrow(() => sessionFilePath( localPlace(cwd), backingId), `${backingId} must pass`);
+    assert.doesNotThrow(() => subAgentDirPath( localPlace(cwd), backingId), `${backingId} must pass`);
   }
 });
 
@@ -140,8 +141,8 @@ test('the helpers build exactly the conventional CLI paths', () => {
   const cwd = '/tmp/demo_worktree_x';
   const sid = 'c0000000-0000-4000-8000-000000000001';
   const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
-  assert.equal(sessionFilePath(cwd, sid), path.join(dir, `${sid}.jsonl`));
-  assert.equal(subAgentDirPath(cwd, sid), path.join(dir, sid));
+  assert.equal(sessionFilePath( localPlace(cwd), sid), path.join(dir, `${sid}.jsonl`));
+  assert.equal(subAgentDirPath( localPlace(cwd), sid), path.join(dir, sid));
 });
 
 test('the gate fails on a planted violation (vacuity guard)', () => {

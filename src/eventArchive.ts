@@ -42,6 +42,7 @@
 // anchor-derived cut (denser replay than the live evicted span), and a
 // trimmed ring with no sessionId to replay from at all.
 
+import type { TranscriptPlacement } from './projects.ts';
 import { loadPersistedTranscript } from './transcript.ts';
 import { hasHeadlessChildIn, isOuterUserEcho, lastQuiescentAtOrBefore, snapStartToQuiescent, type UiEvent } from './parser.ts';
 import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
@@ -198,10 +199,10 @@ function cutFromEchoAnchor(flat: SeqEvent[], anchor: number, includeAnchorEcho: 
 // (the fallback echo anchor can't reach the exact cut): the turn's content
 // between the cut and the ring head was evicted and cannot be recovered —
 // pageInstanceEvents marks the seam with a `history_gap` event.
-export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEchoCount }: {
-  cwd: string; sessionId: string; ring: SeqEvent[]; trimmedBefore: number; userEchoCount: number;
+export async function buildArchive({ place, sessionId, ring, trimmedBefore, userEchoCount }: {
+  place: TranscriptPlacement; sessionId: string; ring: SeqEvent[]; trimmedBefore: number; userEchoCount: number;
 }): Promise<{ events: SeqEvent[]; cut: number; gap: boolean }> {
-  const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
+  const result = await loadPersistedTranscript({ place, sessionId, seqHint: 0 });
   if (!result) return { events: [], cut: 0, gap: trimmedBefore > 0 };
 
   const flat = stampArchiveEvents(result.lines);
@@ -301,7 +302,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   let gap = tb > 0 && !inst.backingSessionId;
   if (needArchive) {
     const archive = await buildArchive({
-      cwd: inst.cwd, sessionId: inst.backingSessionId as string,
+      place: inst.transcriptPlace, sessionId: inst.backingSessionId as string,
       ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount,
     });
     combined = archive.events.slice(0, archive.cut).concat(ring);
@@ -432,11 +433,11 @@ function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, 
 // archive/ring seam (`seamIdx: -1`, its existing "no scan-opaque boundary"
 // meaning) and nothing was evicted-and-unreconstructable (`gap: false`,
 // `trimmedBefore: 0`).
-export async function pagePersistedEvents({ cwd, sessionId, before = null, after = null, limit }: {
-  cwd: string; sessionId: string; before?: number | null; after?: number | null; limit?: number;
+export async function pagePersistedEvents({ place, sessionId, before = null, after = null, limit }: {
+  place: TranscriptPlacement; sessionId: string; before?: number | null; after?: number | null; limit?: number;
 }): Promise<{ events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }> {
   const max = clampLimit(limit);
-  const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
+  const result = await loadPersistedTranscript({ place, sessionId, seqHint: 0 });
   if (!result) return { events: [], hasMore: false, nextBefore: 0, trimmedBefore: 0, lastSeq: -1 };
   const flat = stampArchiveEvents(result.lines);
   const lastSeq = flat.length - 1;

@@ -14,7 +14,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,7 +56,7 @@ function flatEvents(result) {
 
 test('loadPersistedTranscript: blocks of a fragmented msgId replay with distinct, monotonic blockIdx', async () => {
   await seedTranscript(splitBlockLines(), `${SID}.jsonl`);
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   assert.ok(result, 'transcript loaded');
   const events = flatEvents(result);
 
@@ -82,7 +82,7 @@ test('loadSubAgentTranscript: fragmented sub-agent messages get the same per-msg
   const agentId = 'a0ffee';
   await seedTranscript(splitBlockLines(), path.join(SID, 'subagents', `agent-${agentId}.jsonl`));
   const events = await loadSubAgentTranscript({
-    cwd: CWD, sessionId: SID, agentId, parentToolUseId: 'tu_outer',
+    place: localPlace(CWD), sessionId: SID, agentId, parentToolUseId: 'tu_outer',
   });
   const thinkStarts = events.filter(ev => ev.msgId === 'm_frag' && ev.kind === 'thinking_start');
   assert.deepEqual(thinkStarts.map(ev => ev.blockIdx), [0, 1]);
@@ -95,7 +95,7 @@ test('loadSubAgentTranscript: fragmented sub-agent messages get the same per-msg
 // rendered two.
 test('DOM: replayed fragmented message renders two thinking blocks, not one merged block', async () => {
   await seedTranscript(splitBlockLines(), `${SID}.jsonl`);
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const events = flatEvents(result);
 
   const window = new Window({ url: 'http://localhost/' });

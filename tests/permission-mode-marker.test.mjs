@@ -20,7 +20,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 import { markerPermissionMode, MODES } from '../src/sessionModes.ts';
 import { writeSessionMetadata } from '../src/transcript.ts';
 
@@ -265,7 +265,7 @@ test('writeSessionMetadata maps the orchestrator mode itself', async () => {
     const cwd = path.join(home, 'proj');
     for (const mode of MODES) {
       const sid = `aaaaaaaa-bbbb-4ccc-8ddd-${mode.slice(0, 12).padEnd(12, '0')}`;
-      await writeSessionMetadata({ cwd, sessionId: sid, leafUuid: 'leaf-1', mode });
+      await writeSessionMetadata({ place: localPlace(cwd), sessionId: sid, leafUuid: 'leaf-1', mode });
       const text = await fs.readFile(path.join(root, encodeCwd(cwd), `${sid}.jsonl`), 'utf8');
       const marker = text.split('\n').filter(Boolean).map(l => JSON.parse(l))
         .find(o => o.type === 'permission-mode');

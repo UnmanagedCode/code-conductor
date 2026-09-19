@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadPersistedTranscript } from '../src/transcript.ts';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 
 const SID = 'aaaaaaaa-1111-2222-3333-555555555555';
 
@@ -31,7 +31,7 @@ async function replay(lines, planFileContent) {
       path.join(sessionDir, `${SID}.jsonl`),
       lines(planFile).map(l => JSON.stringify(l)).join('\n') + '\n',
     );
-    const result = await loadPersistedTranscript({ cwd, sessionId: SID });
+    const result = await loadPersistedTranscript({ place: localPlace(cwd), sessionId: SID });
     assert.ok(result, 'transcript loaded');
     const events = result.lines.flatMap(l => l.events);
     return { planRequests: events.filter(e => e.kind === 'plan_request'), planFile };

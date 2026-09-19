@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { sessionFilePath, orchStoreRoot, findSessionLocation } from './projects.ts'; // sessionFilePath used by countMessages/flattenTranscript
+import { sessionFilePath, orchStoreRoot, findSessionLocation, type TranscriptPlacement } from './projects.ts'; // sessionFilePath used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
@@ -66,8 +66,8 @@ interface TranscriptLine {
 // messageCount = number of type:'user' + type:'assistant' lines.
 // conversationText is formatted as "User: ...\nAssistant: ...\n\n" turns,
 // capped at INPUT_CAP chars.
-export async function flattenTranscript(sessionId: string, cwd: string): Promise<{ conversationText: string; messageCount: number }> {
-  const file = sessionFilePath(cwd, sessionId);
+export async function flattenTranscript(sessionId: string, place: TranscriptPlacement): Promise<{ conversationText: string; messageCount: number }> {
+  const file = sessionFilePath(place, sessionId);
   let raw: string;
   try { raw = await fs.readFile(file, 'utf8'); }
   catch (e) {
@@ -123,8 +123,8 @@ export async function flattenTranscript(sessionId: string, cwd: string): Promise
 // Count user+assistant message lines in a session jsonl. Used by the GET
 // summary endpoint to detect staleness without loading the full transcript.
 // Returns 0 if the file is missing (archived/deleted session).
-export async function countMessages(sessionId: string, cwd: string): Promise<number> {
-  const file = sessionFilePath(cwd, sessionId);
+export async function countMessages(sessionId: string, place: TranscriptPlacement): Promise<number> {
+  const file = sessionFilePath(place, sessionId);
   let raw: string;
   try { raw = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return 0; throw e; }
@@ -212,12 +212,12 @@ async function projectNameHint(sessionId: string): Promise<string | null> {
 
 // Generate a summary (or title) of a session by running `claude -p` as a
 // one-shot subprocess. Returns { summary, messageCount, durationMs, costUsd }.
-export async function generateSummary(sessionId: string, cwd: string, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
+export async function generateSummary(sessionId: string, place: TranscriptPlacement, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
   if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
     throw httpError(400, `invalid length: ${length}`);
   }
 
-  const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
+  const { conversationText, messageCount } = await flattenTranscript(sessionId, place);
   const prompt = length === 'title'
     ? titlePrompt(conversationText, await projectNameHint(sessionId))
     : summaryPrompt(LENGTH_INSTRUCTIONS[length], conversationText);

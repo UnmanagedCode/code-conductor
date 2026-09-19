@@ -203,7 +203,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   const manifest = path.join(storeDir, 'pending-temp-cleanup.json');
   await fs.writeFile(manifest, JSON.stringify({
     writtenAt: new Date().toISOString(),
-    entries: [{ cwd: fakeCwd, sessionId: sid }],
+    entries: [{ place: { system: 'local', remoteId: null, cwd: fakeCwd }, sessionId: sid }],
   }));
 
   const captured = { stdout: '', stderr: '' };
@@ -232,7 +232,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   await fs.mkdir(subagents, { recursive: true });
   await fs.writeFile(manifest, JSON.stringify({
     writtenAt: new Date().toISOString(),
-    entries: [{ cwd: fakeCwd, sessionId: sid }],
+    entries: [{ place: { system: 'local', remoteId: null, cwd: fakeCwd }, sessionId: sid }],
   }));
 
   // Ownership check before the destructive POST — alive AND holding, see above

@@ -21,7 +21,7 @@ import { bootServer, api, freshProjectsRoot, rmrf, waitFor, seedSessionJsonl } f
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, orchStoreRoot } from '../src/projects.ts';
+import { adoptProject, orchStoreRoot} from '../src/projects.ts';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
@@ -977,7 +977,7 @@ describe('a RESUME whose launcher does not resolve', () => {
     // The fake engine writes no transcript, and the resume pre-flight wants
     // one: seeded so the resume below is refused by the LAUNCHER guard and not
     // by a missing conversation.
-    await seedSessionJsonl(claudeProjectsRoot, husk.cwd, husk.backingSessionId);
+    await seedSessionJsonl(husk.transcriptPlace, husk.backingSessionId);
     await husk.kill({ graceMs: 50 });
     await waitFor(() => !husk.proc && (husk.status === 'exited' || husk.status === 'crashed'));
     assert.equal(instances.get(husk.id), husk, 'premise: a non-temp exit is RETAINED in byId');

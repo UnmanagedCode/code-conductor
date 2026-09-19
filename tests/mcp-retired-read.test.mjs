@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
-import { orchStoreRoot } from '../src/projects.ts';
+import { orchStoreRoot, localPlace} from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -59,7 +59,7 @@ async function retiredTempWorker(ctx, projectName, lines) {
   // Seed at the BACKING id — the id that actually names a transcript on disk;
   // `sid` is the public handle a conductor addresses it by.
   const projectPath = path.join(ctx.projectsRoot, projectName);
-  await seedSessionJsonl(ctx.claudeProjectsRoot, projectPath, instForSession(ctx.instances, sid).backingSessionId, lines);
+  await seedSessionJsonl(localPlace(projectPath), instForSession(ctx.instances, sid).backingSessionId, lines);
 
   const killed = unwrap(await callTool(ctx.baseUrl, 'kill_instance', { sessionId: sid }));
   assert.notEqual(killed.ok, false, `kill_instance refused: ${JSON.stringify(killed)}`);
@@ -210,7 +210,7 @@ test('an orphaned transcript refuses SESSION_NOT_LIVE naming its unregistered ow
     const bogusSid = '99999999-8888-7777-6666-555555555555';
     // A cwd no project or worktree is registered at — findSessionLocation
     // cannot see it, only the orphan scan can.
-    await seedSessionJsonl(ctx.claudeProjectsRoot, path.join(ctx.tmpHome, 'never-registered'), orphanSid);
+    await seedSessionJsonl(localPlace(path.join(ctx.tmpHome, 'never-registered')), orphanSid);
 
     const orphan = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: orphanSid }));
     assert.equal(orphan.ok, false);
@@ -281,8 +281,7 @@ test('a stage that denies get_recent_messages still denies it for a retired work
 
     // Retire it: seed the transcript, then kill the subprocess directly so the
     // ledger subject survives while the process does not.
-    await seedSessionJsonl(ctx.claudeProjectsRoot, path.join(ctx.projectsRoot, 'p'),
-      instForSession(ctx.instances, sid).backingSessionId, ONE_TURN);
+    await seedSessionJsonl(localPlace(path.join(ctx.projectsRoot, 'p')), instForSession(ctx.instances, sid).backingSessionId, ONE_TURN);
     await instForSession(ctx.instances, sid).kill({ graceMs: 200 });
     await waitFor(() => !instForSession(ctx.instances, sid)?.proc);
 
@@ -317,8 +316,7 @@ test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker 
     await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
     await instForSession(ctx.instances, sid).promoteToNormal();
 
-    await seedSessionJsonl(ctx.claudeProjectsRoot, path.join(ctx.projectsRoot, 'retainednontemp'),
-      instForSession(ctx.instances, sid).backingSessionId, [
+    await seedSessionJsonl(localPlace(path.join(ctx.projectsRoot, 'retainednontemp')), instForSession(ctx.instances, sid).backingSessionId, [
         { type: 'user', uuid: 'u0', message: { role: 'user', content: 'audit it' } },
         { type: 'assistant', uuid: 'a0', message: { id: 'm_nt', role: 'assistant', content: [
           { type: 'text', text: 'retained non-temp findings' },

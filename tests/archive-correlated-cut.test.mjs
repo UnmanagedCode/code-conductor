@@ -15,14 +15,14 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import { sessionFilePath } from '../src/projects.ts';
+import { sessionFilePath, localPlace} from '../src/projects.ts';
 import { buildArchive } from '../src/eventArchive.ts';
 import { replayPersistedLine } from '../src/transcript.ts';
 
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
 async function writeJsonl(cwd, sessionId, lines) {
-  const file = sessionFilePath(cwd, sessionId);
+  const file = sessionFilePath( localPlace(cwd), sessionId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
 }
@@ -48,7 +48,7 @@ test('T15: a mid-turn head is correlated by content', async () => {
     // seq spaces are non-identity, so a test that happened to compute its
     // expectation the same way the implementation does would pin nothing.
     const ring = [{ kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 }];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     assert.equal(arch.events.length, 25, 'flat archive: 1 echo + 12 blocks * 2 events');
     assert.equal(arch.cut, 16, 'cut lands exactly on block 7\'s text_end, correlated by content');
     assert.equal(arch.gap, false, 'a correlated cut is an exact stitch — no gap');
@@ -70,7 +70,7 @@ test('T16: replay-absent kinds (message_start/turn_end/assistant_message) are sk
       { kind: 'turn_end', _seq: 59 },
       { kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 },
     ];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     assert.equal(arch.cut, 16, 'still correlates via the first replay-producible ring event');
     assert.equal(arch.gap, false);
   } finally {
@@ -96,7 +96,7 @@ test('B-2: a ring LEADING with assistant_message alone is skipped, not treated a
       { kind: 'assistant_message', msgId: 'mLive', message: { id: 'mLive', role: 'assistant', content: [] }, _seq: 58 },
       { kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 },
     ];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     assert.equal(arch.cut, 16, 'still correlates via the text_end below the leading assistant_message');
     assert.equal(arch.gap, false);
   } finally {
@@ -118,7 +118,7 @@ test('T17: a tool_result head correlates by toolUseId', async () => {
       ] } },
     ]);
     const ring = [{ kind: 'tool_result', toolUseId: 'tu1', content: 'done', isError: false, _seq: 70 }];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 70, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 70, userEchoCount: 1 });
     assert.equal(arch.events.length, 28, 'flat archive: 25 (T15 shape) + tool_use_start + tool_use + tool_result');
     assert.equal(arch.cut, 27, 'cut lands on the tool_result, correlated by toolUseId, not by msgId/blockIdx');
     assert.equal(arch.gap, false);
@@ -139,7 +139,7 @@ test('T18: a miss abandons correlation outright — it does not keep scanning th
       { kind: 'text_delta', msgId: 'mLive', blockIdx: 0, text: 'live', _seq: 59 },
       { kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 },
     ];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     // Fallback echo anchor: userEchoCount(1) - 1 = anchor 0, includeAnchorEcho
     // true → cut = the 0th echo's index (0) + 1 = 1.
     assert.equal(arch.cut, 1, 'falls back to the echo-ordinal anchor, not the ring[1] correlator hit');
@@ -167,7 +167,7 @@ test('B-3: cutFromEchoAnchor with a negative anchor clamps to 0, not "no match f
     const ring = [
       { kind: 'text_delta', msgId: 'mLive', blockIdx: 0, text: 'live', _seq: 5 },
     ];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 100, userEchoCount: 0 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 100, userEchoCount: 0 });
     assert.equal(arch.events.length, 25, 'flat archive: 1 echo + 12 blocks * 2 events');
     assert.equal(arch.cut, 0, 'anchor<0 clamps to 0 — nothing is safe to serve, not "serve everything"');
   } finally {
@@ -182,11 +182,11 @@ test('T19: the trimmedBefore clamp stays strict — cut === trimmedBefore is hea
     await writeJsonl(cwd, SID, textBlockLines());
     const ring = [{ kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 }];
     // cut (16) === trimmedBefore (16): the healthy, turn-aligned case.
-    const healthy = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 16, userEchoCount: 1 });
+    const healthy = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 16, userEchoCount: 1 });
     assert.equal(healthy.cut, 16);
     assert.equal(healthy.gap, false, 'cut === trimmedBefore must NOT mark a spurious gap');
     // cut (16) > trimmedBefore (10): the clamp genuinely discards content.
-    const clamped = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 10, userEchoCount: 1 });
+    const clamped = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 10, userEchoCount: 1 });
     assert.equal(clamped.cut, 10);
     assert.equal(clamped.gap, true, 'cut > trimmedBefore is a real, markable loss');
   } finally {
@@ -252,7 +252,7 @@ for (const [label, head] of SKIPPABLE_HEADS) {
       const cwd = '/fake/t20';
       await writeJsonl(cwd, SID, textBlockLines());
       const ring = head ? [head, RING_TAIL] : [RING_TAIL];
-      const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+      const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
       assert.equal(arch.cut, 16, `head=${label}: must correlate on the tail's block-7 text_end`);
       assert.equal(arch.gap, false, `head=${label}: a correlated cut is an exact stitch — no gap`);
       assertNoDuplication(arch, ring, `head=${label}`);
@@ -284,7 +284,7 @@ for (const [label, head] of ABANDONING_HEADS) {
       const cwd = '/fake/t21';
       await writeJsonl(cwd, SID, textBlockLines());
       const ring = [head, RING_TAIL];
-      const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+      const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
       assert.equal(arch.cut, 1, `head=${label}: must fall back to the echo anchor, not skip to the tail`);
       assert.equal(arch.gap, true, `head=${label}: the fallback path always marks a gap`);
       assertNoDuplication(arch, ring, `head=${label}`);
@@ -317,7 +317,7 @@ test('T22: a system[soft_interrupted] head abandons — replay emits that one su
       { kind: 'system', subtype: 'soft_interrupted', _seq: 59 },
       { kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 },
     ];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     assert.equal(arch.events[1].kind, 'system', 'fixture check: replay emits a system event at flat index 1');
     assert.equal(arch.events[17].kind, 'text_end', 'fixture check: block 7\'s text_end moved to flat index 17');
     assert.equal(arch.cut, 1, 'a soft_interrupted head may be in the archive — abandon, do not skip');
@@ -355,7 +355,7 @@ test('T24: a correlated hit at archive index 0 is a hit, not a miss', async () =
       { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
     ]);
     const ring = [{ kind: 'text_delta', msgId: 'm0', blockIdx: 0, text: 'block 0', _seq: 60 }];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     assert.equal(arch.events.length, 27, 'fixture check: 12 blocks * 2 + echo + 1 block * 2');
     assert.equal(arch.events[0].kind, 'text_delta', 'fixture check: flat[0] is the event the ring head names');
     assert.equal(arch.events[0].blockIdx, 0, 'fixture check: flat[0] is block 0');
@@ -392,7 +392,7 @@ test('T25: a ring of only never-persisted events abandons to the echo fallback',
       { kind: 'system', subtype: 'hook_pending', _seq: 59 },
       { kind: 'overage_message_queued', _seq: 60 },
     ];
-    const arch = await buildArchive({ cwd, sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
     assert.equal(arch.events.length, 25, 'fixture check: 1 echo + 12 blocks * 2');
     assert.equal(arch.cut, 1, 'exhausting the scan falls back to the echo anchor (echo 0 + 1), not to a cut of its own');
     assert.equal(arch.gap, true, 'nothing correlated, so the seam is unknowable — the page MUST be marked as gapped');

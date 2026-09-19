@@ -29,7 +29,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
-import { projectStoreDir, projectsRoot, createProject } from '../src/projects.ts';
+import { projectStoreDir, projectsRoot, createProject, projectRootPlace } from '../src/projects.ts';
 
 const REMOTE = { system: 'prod-box', systemPath: '/app' };
 
@@ -56,7 +56,7 @@ async function seedThree({ withSessions = false } = {}) {
   await writeRecord('beta', REMOTE);
   if (withSessions) {
     for (const name of ['alpha', 'beta', 'gamma']) {
-      await seedSessionJsonl(process.env.CLAUDE_PROJECTS_ROOT, treeOf(name), `sid-${name}`);
+      await seedSessionJsonl(await projectRootPlace(name, treeOf(name)), `sid-${name}`);
     }
   }
 }

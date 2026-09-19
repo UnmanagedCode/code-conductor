@@ -23,7 +23,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 import { loadPersistedTranscript } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -52,7 +52,7 @@ async function seed(lines) {
   const file = path.join(rootDir, encodeCwd(CWD), `${SID}.jsonl`);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
-  return loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  return loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
 }
 
 // ── the scan ────────────────────────────────────────────────────────────────
