@@ -9,6 +9,7 @@
 // click handlers keep working because they close over app.js callbacks.
 
 import { Conversation, isHistoryGapNode } from './conversation.js';
+import { isActionGroupNode, mergeActionGroupInto } from './blocks.js';
 import { apiFetch } from './http.js';
 
 // A correct server never hands back an empty backward page while `hasMore`
@@ -112,8 +113,27 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
         && batch.trailingOpenWrap !== oldestLeadingWrap) {
       const dst = oldestLeadingWrap.body;
       const src = batch.trailingOpenWrap.body;
+      const lowerFirst = dst.firstElementChild; // captured BEFORE the move
+      // SEAM ADJACENCY, read at root level. `trailingOpenWrap` being non-null
+      // does NOT mean the batch ended mid-run: a run-ender that closes the
+      // group without closing the segment (a `turn_end` line, a soft-interrupt
+      // note) leaves the wrap pointer alive and renders at ROOT level, landing
+      // between the two bubbles. Requiring them to be immediate siblings is
+      // what reads that boundary — in either orientation, since a ring-only
+      // `turn_end` can fall on either side of the cut. Anything else rendered
+      // between the halves is likewise content the live view placed there, so
+      // refusing is the conservative answer.
+      const seamAdjacent = batch.trailingOpenWrap.node.nextElementSibling === oldestLeadingWrap.node;
       const ref = dst.firstChild;
       while (src.firstChild) dst.insertBefore(src.firstChild, ref);
+      // A run the seam cut in half would otherwise show two headers: fold the
+      // older half into the newer one, whose node the live Conversation may
+      // still hold as its open group. A half that starts or ends with prose
+      // fails a check and the groups stay separate — prose is a run boundary.
+      const upper = lowerFirst ? lowerFirst.previousElementSibling : dst.lastElementChild;
+      if (seamAdjacent && isActionGroupNode(upper) && isActionGroupNode(lowerFirst)) {
+        mergeActionGroupInto(lowerFirst, upper);
+      }
       batch.trailingOpenWrap.node.remove();
       merged = true;
     }

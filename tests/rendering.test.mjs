@@ -32,6 +32,24 @@ async function setupDOM() {
   return { window, document, root, Parser, Conversation };
 }
 
+// A contiguous run of machinery blocks is wrapped in one collapsible action
+// group (public/blocks.js), so a scan over `.blocks`'s DIRECT children sees the
+// wrapper instead of the blocks it holds. Yield the group's own body children
+// in its place — the assertions below reason about BLOCKS, and a group is a
+// wrapper, not a block that renders.
+function flattenActionGroups(container) {
+  const out = [];
+  for (const child of container.children) {
+    if (child.classList.contains('action-group')) {
+      const body = [...child.children].find(c => c.classList.contains('ag-body'));
+      out.push(...body.children);
+    } else {
+      out.push(child);
+    }
+  }
+  return out;
+}
+
 function feed(parser, conversation, lines) {
   for (const line of lines) {
     const obj = typeof line === 'string' ? JSON.parse(line) : line;
@@ -1077,11 +1095,12 @@ test('DOM: sequential outer-turn tool_uses sharing one msgId all render with the
   ]);
 
   // All three tool blocks must render at the outer (assistant) level.
-  const toolBlocks = root.querySelectorAll('.msg.assistant > .blocks > .block.tool');
+  const outerBlocks = flattenActionGroups(root.querySelector('.msg.assistant > .blocks'));
+  const toolBlocks = outerBlocks.filter(n => n.classList.contains('tool'));
   assert.equal(toolBlocks.length, 3, 'all three sequential tool_use blocks must render');
 
   // No orphan tool_result floating at the assistant body level.
-  const orphans = root.querySelectorAll('.msg.assistant > .blocks > .block.tool-result');
+  const orphans = outerBlocks.filter(n => n.classList.contains('tool-result'));
   assert.equal(orphans.length, 0, 'no tool_result should float at the assistant body level');
 
   // Each tool block carries its own attached result with the right content.
@@ -1214,7 +1233,7 @@ test('DOM: async-worker per-block envelopes with a mid-message tool_result rende
   // Exactly the streamed blocks, in stream order — no duplicates from the
   // per-block envelopes, no dropped blocks.
   const body = root.querySelector('.msg.assistant .blocks');
-  const kinds = [...body.children].map(n =>
+  const kinds = flattenActionGroups(body).map(n =>
     n.classList.contains('text') ? 'text' : n.classList.contains('tool') ? 'tool' : n.className);
   assert.deepEqual(kinds, ['text', 'tool', 'tool'], 'blocks render once each, in stream order');
   // Each result nests under its OWN tool block regardless of arrival timing.

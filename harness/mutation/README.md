@@ -87,8 +87,12 @@ implementer at the time the construct lands, so anyone re-running mutants waives
 re-discovering and re-filing them every round. State the waiver — and its condition — in the
 round's report; do not silently drop it.
 
-**No construct currently carries a declared waiver.** When one is added, give it a row here with
-its condition, in the shape RATIONALE.md §5.1d uses.
+**A row states the CONDITION under which the mutation is equivalent, not a past verdict.** When a
+condition stops holding, the row's mutant becomes killable and the row goes.
+
+| construct | mutation | why it is equivalent, and under what condition |
+|---|---|---|
+| `agBody` in `public/blocks.js` | its direct-children scan replaced by `groupNode.querySelector('.ag-body')` | **EQUIVALENT WHILE EVERY ACTION GROUP CARRIES ITS OWN `.ag-body` AS A DIRECT CHILD** — `createActionGroup` is the only producer of a group and always builds one. A direct child precedes every descendant in tree order, so `querySelector` returns this group's own body even when the group holds a sub-agent conversation with a group (and a body) of its own: no DOM a test can build tells the two forms apart. **If a group is ever built without a body of its own** — a second wrapper shape, or a body a merge removes — the forms diverge and this row goes. Do not write a test for it; there is none to write. |
 
 And the standing one, which is not a construct but a test: **`A16`'s sha256 latch
 (`tests/fuse-lifecycle.test.mjs`) is a deliberate-edit disclosure, not coverage.** A C mutant whose

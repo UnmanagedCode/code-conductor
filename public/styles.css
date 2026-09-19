@@ -675,6 +675,36 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   font-family: ui-monospace, monospace; font-size: 11px;
 }
 
+/* One contiguous run of machinery (tool calls, thinking) between two assistant
+   text blocks, folded behind a scannable header. Caret mirrors
+   .block.tool/.block.wake.
+
+   NO `display` on .action-group or .ag-body, ever. The collapsed state is the
+   <details> `open` attribute, which the UA hides via ::details-content — a rule
+   no author declaration on a light-DOM child can reach. The tempting
+   `.ag-body { display: flex; gap: 6px }` (to reproduce the gap .msg .blocks
+   gives between blocks) would put this sheet back in the position the
+   .quick-spawn-models and .composer-attachments comments warn about, where an
+   author `display` outranks a UA hiding rule. Intra-group spacing is a margin
+   instead. The summary's own `display: flex` is fine and matches
+   .block.wake > summary: a group summary is never `hidden`. */
+.action-group { border-left: 3px solid var(--border); padding: 2px 0 2px 8px; }
+.action-group > summary {
+  cursor: pointer; list-style: none; color: var(--muted); font-size: 12px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0; word-break: break-word;
+}
+.action-group > summary::-webkit-details-marker { display: none; }
+.action-group > summary::before {
+  content: "▸"; display: inline-block; color: var(--muted);
+  margin-right: 6px; transition: transform .12s;
+}
+.action-group[open] > summary::before { transform: rotate(90deg); }
+.action-group > summary .ag-count { color: var(--text); font-weight: 600; }
+.action-group > summary .ag-names { margin-left: 6px; }
+.action-group > summary .ag-errors { margin-left: 6px; color: var(--red); }
+.action-group[open] > .ag-body { padding-top: 4px; }
+.action-group > .ag-body > * + * { margin-top: 6px; }
+
 /* Skill-content injection bubble. The CLI dumps the invoked skill's SKILL.md
    back as a plain user message; the server correlates it with the preceding
    Skill tool_use (see attachSkillLoad in src/parser.js) and the client

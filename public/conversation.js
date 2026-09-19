@@ -4,7 +4,8 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
-  shouldRenderSystem, parseUserQuestionAnswers, isUserQuestionAnswerText } from './blocks.js';
+  shouldRenderSystem, parseUserQuestionAnswers, isUserQuestionAnswerText,
+  createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 
@@ -13,6 +14,15 @@ import { parseWakeCallback } from './wakeCallback.js';
 // NB `.history-divider` alone is shared with the history_replayed divider —
 // the gap dedupe must key on `history-gap` only.
 const HISTORY_GAP_CLASS = 'history-gap';
+
+// System annotations that END the machinery run: the turn was interrupted or
+// the process died, so whatever was accumulating will never continue. They fold
+// the group without closing the segment, exactly as a turn end does.
+// `exit` alone covers every death: `_handleExit` (src/instances.ts) emits it
+// unconditionally — commanded kill, crash and backend launch failure alike. The
+// `launch_failed` that can follow it carries the stderr, and is a description of
+// the same death rather than a second one, so it is deliberately not listed.
+const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
 
 export function isHistoryGapNode(node) {
   return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
@@ -173,8 +183,49 @@ export class Conversation {
   }
 
   _closeAssistantSegment() {
+    this._closeAllActionGroups();
     this._activeAssistantWrap = null;
     this._sawSegmentCloser = true;
+  }
+
+  // Every assistant block reaches the DOM through here. A text block lands
+  // directly in the message body and ENDS the machinery run; everything else
+  // accumulates inside one collapsible group, born open so an in-flight run is
+  // watchable.
+  //
+  // The open group hangs off the WRAP object, not off `this`: a wrap outlives
+  // `_activeAssistantWrap` in the messageWraps cache, and per-wrap state keeps
+  // the group aligned with the bubble it is in.
+  _appendBlockToWrap(wrap, node, { grouped }) {
+    if (!grouped) { this._closeActionGroup(wrap); wrap.body.appendChild(node); return; }
+    if (!wrap.actionGroup || wrap.actionGroup.parentNode !== wrap.body) {
+      wrap.actionGroup = createActionGroup();
+      wrap.body.appendChild(wrap.actionGroup);
+    }
+    appendToActionGroup(wrap.actionGroup, node);
+  }
+
+  _closeActionGroup(wrap) {
+    if (!wrap?.actionGroup) return;
+    closeActionGroup(wrap.actionGroup);
+    wrap.actionGroup = null;
+  }
+
+  // Every run-ender goes through here, NOT through `_activeAssistantWrap`: a
+  // wrap can hold an open group without being the active one. `_ensureMessageWrap`
+  // arms that pointer only when it CREATES a wrap, so an orphan tool_result
+  // landing on an already-cached wrap (the shared '__floating__' key) opens a
+  // group the pointer does not name — and a closer keyed on it cannot reach
+  // that group, which then stays expanded for the rest of the session.
+  // Only wraps actually holding a group are touched, and closing is idempotent.
+  //
+  // RECURSES into the sub-agent panels, which have no run-ender of their own: a
+  // `turn_end` is emitted for top-level result envelopes only, and the Agent's
+  // own `tool_result` just attaches to the parent tool block. Without this a
+  // sub-agent's machinery stays expanded for the rest of the session.
+  _closeAllActionGroups() {
+    for (const w of this.messageWraps.values()) this._closeActionGroup(w);
+    for (const sub of this.subConvs.values()) sub._closeAllActionGroups();
   }
 
   // Finalize every block that is still visually streaming. For STATIC batches
@@ -188,6 +239,9 @@ export class Conversation {
   finalizeDanglingBlocks() {
     for (const block of this.blocksByKey.values()) block.finalize?.();
     for (const block of this.toolBlocks.values()) block.markIncomplete?.();
+    // The static-batch hook: a lazy-history page ending in a tool run arrives
+    // collapsed.
+    this._closeAllActionGroups();
     for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
   }
 
@@ -348,6 +402,7 @@ export class Conversation {
           break;
         }
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
+        if (RUN_ENDING_SYSTEM_SUBTYPES.has(ev.subtype)) this._closeAllActionGroups();
         // Resume fired: collapse the ghost queued bubbles — they're folding into
         // the single delivered turn that follows.
         if (ev.subtype === 'auto_resume') {
@@ -410,7 +465,7 @@ export class Conversation {
     const block = new ThinkingBlock();
     this.blocksByKey.set(key, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-    wrap.body.appendChild(block.node);
+    this._appendBlockToWrap(wrap, block.node, { grouped: true });
     this._activeThinkingKey = key;
   }
 
@@ -421,7 +476,7 @@ export class Conversation {
       block = new ThinkingBlock();
       this.blocksByKey.set(key, block);
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-      wrap.body.appendChild(block.node);
+      this._appendBlockToWrap(wrap, block.node, { grouped: true });
     }
     block.markRedacted(ev.estimatedTokens ?? null);
   }
@@ -552,7 +607,7 @@ export class Conversation {
       block = new BlockClass();
       this.blocksByKey.set(key, block);
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-      wrap.body.appendChild(block.node);
+      this._appendBlockToWrap(wrap, block.node, { grouped: type !== 'text' });
     }
     block.appendDelta(deltaText);
   }
@@ -593,7 +648,7 @@ export class Conversation {
     this.blocksByKey.set(key, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-    wrap.body.appendChild(block.node);
+    this._appendBlockToWrap(wrap, block.node, { grouped: true });
   }
 
   _renderToolInputDelta(ev) {
@@ -610,16 +665,23 @@ export class Conversation {
     if (block) {
       block.setName(ev.name);
       block.finalizeInput(ev.input, ev.startedAt);
+      // setName can change the name the group header tallies.
+      const g = block.node.closest('.action-group');
+      if (g) refreshActionGroupSummary(g);
     }
   }
 
   _renderToolResult(ev) {
     const block = this.toolBlocks.get(ev.toolUseId);
     const result = new ToolResultBlock(ev);
-    if (block) block.attachResult(result, ev.finishedAt);
-    else {
+    if (block) {
+      block.attachResult(result, ev.finishedAt);
+      // An attached result can be the group's first error.
+      const g = block.node.closest('.action-group');
+      if (g) refreshActionGroupSummary(g);
+    } else {
       const wrap = this._ensureMessageWrap(null, 'assistant');
-      wrap.body.appendChild(result.node);
+      this._appendBlockToWrap(wrap, result.node, { grouped: true });
     }
     // When the result is for an unanswered AskUserQuestion block, the
     // following user_echo carries the formatted answer text. Record the
@@ -763,6 +825,9 @@ export class Conversation {
   }
 
   _renderTurnEnd(ev) {
+    // The turn's end ends the machinery run. NOT _closeAssistantSegment() —
+    // that would change the existing bubble-merge behaviour.
+    this._closeAllActionGroups();
     const wrap = el('div', {});
     wrap.appendChild(new TurnEndBlock(ev).node);
     this.root.appendChild(wrap);
