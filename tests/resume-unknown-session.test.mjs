@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
 import { listWorktrees, createWorktree } from '../src/worktrees.ts';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -43,10 +44,10 @@ test('hasResumableConversation: true when the jsonl has a user record', async ()
   await withTmpClaudeRoot(async ({ tmpDir, claudeProjects }) => {
     const cwd = path.join(tmpDir, 'proj');
     const sessionId = 'aaaaaaaa-1111-2222-3333-444444444444';
-    await seedJsonl(claudeProjects, cwd, sessionId, [
+    await seedJsonl(localPlace(cwd), sessionId, [
       { type: 'user', message: { role: 'user', content: 'hi' } },
     ]);
-    assert.equal(await hasResumableConversation({ cwd, sessionId }), true);
+    assert.equal(await hasResumableConversation({ place: localPlace(cwd), sessionId }), true);
   });
 });
 
@@ -54,10 +55,10 @@ test('hasResumableConversation: true when the jsonl has an assistant record', as
   await withTmpClaudeRoot(async ({ tmpDir, claudeProjects }) => {
     const cwd = path.join(tmpDir, 'proj');
     const sessionId = 'bbbbbbbb-1111-2222-3333-444444444444';
-    await seedJsonl(claudeProjects, cwd, sessionId, [
+    await seedJsonl(localPlace(cwd), sessionId, [
       { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8' } },
     ]);
-    assert.equal(await hasResumableConversation({ cwd, sessionId }), true);
+    assert.equal(await hasResumableConversation({ place: localPlace(cwd), sessionId }), true);
   });
 });
 
@@ -68,9 +69,9 @@ test('hasResumableConversation: false for a marker-only crash stub (no conversat
     // Exactly the shape a crash-during-resume leaves behind: our best-effort
     // markers, no user/assistant lines. This is the real -4470 stub shape.
     await writeSessionMetadata({
-      cwd, sessionId, leafUuid: 'leaf-x', mode: 'bypassPermissions',
+      place: localPlace(cwd), sessionId, leafUuid: 'leaf-x', mode: 'bypassPermissions',
     });
-    assert.equal(await hasResumableConversation({ cwd, sessionId }), false);
+    assert.equal(await hasResumableConversation({ place: localPlace(cwd), sessionId }), false);
   });
 });
 
@@ -78,7 +79,7 @@ test('hasResumableConversation: false when the jsonl does not exist (ENOENT)', a
   await withTmpClaudeRoot(async ({ tmpDir }) => {
     const cwd = path.join(tmpDir, 'proj');
     assert.equal(
-      await hasResumableConversation({ cwd, sessionId: 'dddddddd-1111-2222-3333-444444444444' }),
+      await hasResumableConversation({ place: localPlace(cwd), sessionId: 'dddddddd-1111-2222-3333-444444444444' }),
       false,
     );
   });
@@ -146,7 +147,7 @@ test('spawn_instance({resume:<marker-only stub>, project}) soft-refuses SESSION_
     const projectPath = path.join(ctx.projectsRoot, 'demo');
     // A crash stub: markers only, no user/assistant records.
     await writeSessionMetadata({
-      cwd: projectPath, sessionId: stubId, leafUuid: 'leaf-y', mode: 'bypassPermissions',
+      place: localPlace(projectPath), sessionId: stubId, leafUuid: 'leaf-y', mode: 'bypassPermissions',
     });
 
     const res = await spawnInstance({ resume: stubId, project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });
@@ -166,7 +167,7 @@ test('spawn_instance({resume:<real transcript>, project}) still spawns normally 
     const goodId = 'beefcafe-1111-2222-3333-444444444444';
     const projectPath = path.join(ctx.projectsRoot, 'demo');
     // A real (resumable) transcript: at least one user + one assistant record.
-    await seedJsonl(ctx.claudeProjectsRoot, projectPath, goodId, [
+    await seedJsonl(localPlace(projectPath), goodId, [
       { type: 'user', message: { role: 'user', content: 'do the thing' } },
       { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8' } },
     ]);
@@ -301,7 +302,7 @@ test('a resume into a worktree the session did not run in is refused; its OWN wo
     assert.ok(w.sessionId, JSON.stringify(w));
     const inst = ctx.instances.anyForSession(w.sessionId);
     const own = (await listWorktrees('demo'))[0].worktreeName;
-    await seedJsonl(ctx.claudeProjectsRoot, inst.cwd, inst.backingSessionId);
+    await seedJsonl(inst.transcriptPlace, inst.backingSessionId);
     await ctx.instances.remove(inst.id);
 
     // …and a second worktree it has nothing to do with.

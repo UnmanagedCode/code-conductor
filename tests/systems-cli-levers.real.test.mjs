@@ -21,6 +21,8 @@
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { encodeCwd } from '../src/projects.ts';
 import { allow, fixture, hookServer, run, runClaude, runClaudeEnv, settingsJSON, t } from './cliContractCase.mjs';
 
 // PINS: `disableAllHooks: true` really does suppress the injected hooks — the
@@ -125,4 +127,70 @@ t('includeGitInstructions:false still suppresses the CLI git instructions', asyn
     // CLI did still use git for its other startup work.
     assert.ok(off.trim().length > 0, 'the shim was reached at all');
   } finally { await hooks.close(); await clean(); }
+});
+
+// PINS THE TWO LEVERS card 2026-0447's per-remote config directory rests on,
+// and the one property that makes the symlink farm safe rather than lucky.
+//
+// Each failure mode here is silent:
+//   * `CLAUDE_CONFIG_DIR` stops relocating `projects/` → every remote's
+//     transcripts collapse back into `~/.claude/projects/<encodeCwd(cwd)>`, and
+//     two boxes at one absolute path share one directory again. The defect
+//     returns with nothing in cc failing.
+//   * The CLI stops resolving symlinks before writing → it replaces a farm link
+//     with a real file, and that remote silently stops sharing the host's
+//     settings, plugins and skills from then on.
+//   * `CLAUDE_SECURESTORAGE_CONFIG_DIR=''` stops meaning "the default" → the
+//     worker cannot authenticate at all, because credentials are deliberately
+//     NOT linked into the farm.
+t('CLAUDE_CONFIG_DIR relocates the transcript dir, and the farm survives the run', async () => {
+  const { dir, clean } = await fixture();
+  try {
+    // A farm shaped exactly like ensureRemoteConfigDir builds: a real private
+    // `projects/`, links for everything shared, and NO `.credentials.json`.
+    const source = path.join(dir, 'real-claude');
+    const cfg = path.join(dir, 'farm', 'boxa-0123456789ab', '.claude');
+    await fs.mkdir(path.join(source, 'plans'), { recursive: true });
+    await fs.writeFile(path.join(source, 'settings.json'), '{}\n');
+    await fs.mkdir(path.join(cfg, 'projects'), { recursive: true });
+    for (const entry of ['plans', 'settings.json']) {
+      await fs.symlink(path.join(source, entry), path.join(cfg, entry));
+    }
+
+    const work = path.join(dir, 'work');
+    await fs.mkdir(work, { recursive: true });
+    const hooks = await hookServer(() => ({}));
+    let r;
+    try {
+      r = await runClaudeEnv(work, settingsJSON(hooks.url, {}), 'Reply with exactly: PROBE_OK', {
+        CLAUDE_CONFIG_DIR: cfg,
+        // The EMPTY-STRING form: credentials come from the real `~/.claude`
+        // without being linked into the farm. If this stopped resolving to the
+        // default the run would fail to authenticate and reject above.
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+      });
+    } finally { await hooks.close(); }
+    assert.match(r.result, /PROBE_OK/);
+
+    // 1. The transcript landed under the RELOCATED root, keyed by the cwd as
+    //    always — the root moved, `encodeCwd` did not.
+    const landed = path.join(cfg, 'projects', encodeCwd(work));
+    const jsonls = (await fs.readdir(landed)).filter(n => n.endsWith('.jsonl'));
+    assert.ok(jsonls.length >= 1, `no transcript under ${landed}`);
+
+    // 2. And NOT under the host's own root, which is what the relocation means.
+    const hostRoot = path.join(os.homedir(), '.claude', 'projects', encodeCwd(work));
+    await assert.rejects(() => fs.access(hostRoot),
+      `the CLI also wrote ${hostRoot} — CLAUDE_CONFIG_DIR did not relocate the transcript dir`);
+
+    // 3. EVERY LINK SURVIVED. The CLI resolves a symlink before writing (or
+    //    refuses by name); if it ever starts replacing one with a real file,
+    //    this remote forks its config from the host's silently.
+    for (const entry of ['plans', 'settings.json']) {
+      assert.ok((await fs.lstat(path.join(cfg, entry))).isSymbolicLink(),
+        `${entry} is no longer a symlink — the farm forked`);
+    }
+    // 4. And `projects/` stayed a real directory, never replaced by a link.
+    assert.equal((await fs.lstat(path.join(cfg, 'projects'))).isSymbolicLink(), false);
+  } finally { await clean(); }
 });

@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.ts';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, transcriptRoot, localPlace } from '../src/projects.ts';
 import { getSessionBackend } from '../src/sessionBackends.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
@@ -152,11 +152,15 @@ export async function freshProjectsRoot() {
 // no transcript, so any test that needs a session to be RESUMABLE has to seed one:
 // the pre-flight in _doCreate requires the file to hold >= 1 user/assistant record
 // (a marker-only stub does not qualify), and `records` defaults to that minimum.
-export async function seedSessionJsonl(claudeProjectsRoot, cwd, sessionId, records = [
+export async function seedSessionJsonl(place, sessionId, records = [
   { type: 'user', message: { role: 'user', content: 'do the thing' } },
   { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8' } },
 ]) {
-  const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+  // Resolved through the SAME chokepoint production uses, so a remote place's
+  // seed lands where cc will look for it. A helper that joined
+  // `claudeProjectsRoot` itself would write every remote fixture into the local
+  // root and make every remote assertion vacuous.
+  const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${sessionId}.jsonl`), records.map(r => JSON.stringify(r)).join('\n') + '\n');
 }

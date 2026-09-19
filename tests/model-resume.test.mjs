@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +40,7 @@ test('writeSessionMetadata writes only last-prompt + permission-mode (no orchest
     const cwd = path.join(tmpDir, 'proj');
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     await writeSessionMetadata({
-      cwd, sessionId, leafUuid: 'leaf-1', mode: 'bypassPermissions',
+      place: localPlace(cwd), sessionId, leafUuid: 'leaf-1', mode: 'bypassPermissions',
     });
     const sessionDir = path.join(claudeProjects, encodeCwd(cwd));
     const text = await fs.readFile(path.join(sessionDir, `${sessionId}.jsonl`), 'utf8');
@@ -62,7 +62,7 @@ test('readLastSessionModel returns the bare assistant message model', async () =
       path.join(sessionDir, `${sessionId}.jsonl`),
       JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-4-6' } }) + '\n',
     );
-    const result = await readLastSessionModel({ cwd, sessionId });
+    const result = await readLastSessionModel({ place: localPlace(cwd), sessionId });
     assert.equal(result, 'claude-sonnet-4-6');
   });
 });
@@ -72,9 +72,9 @@ test('readLastSessionModel returns null when no assistant line is present', asyn
     const cwd = path.join(tmpDir, 'proj');
     const sessionId = 'cccccccc-dddd-eeee-ffff-000000000000';
     await writeSessionMetadata({
-      cwd, sessionId, leafUuid: 'leaf-2', mode: 'bypassPermissions',
+      place: localPlace(cwd), sessionId, leafUuid: 'leaf-2', mode: 'bypassPermissions',
     });
-    const result = await readLastSessionModel({ cwd, sessionId });
+    const result = await readLastSessionModel({ place: localPlace(cwd), sessionId });
     assert.equal(result, null);
   });
 });
@@ -92,7 +92,7 @@ test('readLastSessionModel skips <synthetic> entries and returns the preceding r
         JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } }),
       ].join('\n') + '\n',
     );
-    const result = await readLastSessionModel({ cwd, sessionId });
+    const result = await readLastSessionModel({ place: localPlace(cwd), sessionId });
     assert.equal(result, 'claude-sonnet-4-6');
   });
 });
@@ -107,7 +107,7 @@ test('readLastSessionModel returns null when all assistant lines are <synthetic>
       path.join(sessionDir, `${sessionId}.jsonl`),
       JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } }) + '\n',
     );
-    const result = await readLastSessionModel({ cwd, sessionId });
+    const result = await readLastSessionModel({ place: localPlace(cwd), sessionId });
     assert.equal(result, null);
   });
 });

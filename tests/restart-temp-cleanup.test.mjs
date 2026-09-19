@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
+import { encodeCwd, orchStoreRoot, localPlace} from '../src/projects.ts';
 import { isTemp, markTemp, orphanedTempIdsSync } from '../src/tempSessions.ts';
 import { isArchived } from '../src/archivedSessions.ts';
 import {
@@ -94,7 +94,7 @@ test('tempCleanupSnapshot only includes live temp instances with a sessionId', a
 
   const snap = instances.tempCleanupSnapshot();
   assert.equal(snap.length, 1);
-  assert.deepEqual(snap[0], { cwd: tempInst.cwd, sessionId: tempInst.backingSessionId });
+  assert.deepEqual(snap[0], { place: tempInst.transcriptPlace, sessionId: tempInst.backingSessionId });
 });
 
 test('writePendingTempCleanup + sweepPendingTempCleanup round-trip archives sessions (jsonl kept, subagents removed)', async () => {
@@ -110,7 +110,7 @@ test('writePendingTempCleanup + sweepPendingTempCleanup round-trip archives sess
 
   // Manifest dir must exist (orchStoreRoot lives under projectsRoot).
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  writePendingTempCleanup([{ cwd, sessionId: sid }]);
+  writePendingTempCleanup([{ place: localPlace(cwd), sessionId: sid }]);
 
   const manifest = pendingTempCleanupPath();
   await fs.access(manifest);
@@ -134,7 +134,7 @@ test('sweepPendingTempCleanup keeps any surviving .jsonl and removes subagent di
   const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
 
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  writePendingTempCleanup([{ cwd, sessionId: sid }]);
+  writePendingTempCleanup([{ place: localPlace(cwd), sessionId: sid }]);
 
   // Simulate a .jsonl that survived (either was never deleted or reappeared).
   await fs.mkdir(dir, { recursive: true });

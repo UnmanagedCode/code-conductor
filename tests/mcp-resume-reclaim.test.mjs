@@ -45,6 +45,7 @@ import { spawnInstance } from '../src/mcp/handlers.ts';
 import {
   bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl, instForSession,
 } from './helpers.mjs';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_RESUME = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -214,7 +215,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
     const sessionId = inst.sessionId;
     // The fake engine writes no transcript, and the resume pre-flight requires
     // one, so seed the jsonl the CLI would have written under this cwd.
-    await seedSessionJsonl(claudeProjectsRoot, path.join(projectsRoot, project), inst.backingSessionId);
+    await seedSessionJsonl(localPlace(path.join(projectsRoot, project)), inst.backingSessionId);
     await inst.kill({ graceMs: 50 });
     await waitFor(() => !inst.proc && (inst.status === 'exited' || inst.status === 'crashed'));
     assert.equal(instances.get(inst.id), inst, 'premise: a non-temp exit is RETAINED in byId');
@@ -271,7 +272,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const inst = instances.get(created.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    await seedSessionJsonl(claudeProjectsRoot, path.join(projectsRoot, project), inst.backingSessionId);
+    await seedSessionJsonl(localPlace(path.join(projectsRoot, project)), inst.backingSessionId);
 
     await assert.rejects(
       // `async` so create()'s SYNCHRONOUS prefix throw reads as a rejection here.

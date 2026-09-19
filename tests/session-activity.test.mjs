@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createLastActivityCache, TAIL_BYTES } from '../src/sessionActivity.ts';
-import { encodeCwd, listSessionsForCwd, summarizeSessions } from '../src/projects.ts';
+import { encodeCwd, listSessionsForCwd, summarizeSessions, localPlace} from '../src/projects.ts';
 
 async function withTmp(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-activity-'));
@@ -204,7 +204,7 @@ test('listSessionsForCwd orders on real activity, not on a mass-exit mtime', asy
         timestamp: '2026-08-07T06:10:51.000Z', mtimeMs: Date.parse('2026-08-09T09:12:40.800Z'),
       });
 
-      const rows = await listSessionsForCwd(cwd);
+      const rows = await listSessionsForCwd( localPlace(cwd));
       assert.deepEqual(rows.map(r => r.sessionId), [newer, older],
         'the session that actually ran last must lead');
     } finally {
@@ -258,14 +258,14 @@ test('summarizeSessions reports real activity, not the newest mtime', async () =
         timestamp: '2026-08-07T06:10:51.000Z', mtimeMs: bogusNewestMtime,
       });
 
-      const summary = await summarizeSessions(cwd);
+      const summary = await summarizeSessions( localPlace(cwd));
       assert.equal(summary.count, 2);
       assert.equal(summary.lastActivity, realNewest);
       assert.notEqual(summary.lastActivity, bogusNewestMtime,
         'the project number must not be the mass-exit mtime either');
 
       // And it must agree with the rows the sidebar renders underneath it.
-      const rows = await listSessionsForCwd(cwd);
+      const rows = await listSessionsForCwd( localPlace(cwd));
       assert.equal(summary.lastActivity, Math.max(...rows.map(r => r.lastActivity)),
         'project summary and session rows must be one definition of recency');
     } finally {

@@ -57,8 +57,7 @@ import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } f
 import { bindRemoteSystem, flakyLaunch, referenceLaunch, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import {
-  adoptProject, findSessionLocation, getProject, projectStoreDir,
-} from '../src/projects.ts';
+  adoptProject, findSessionLocation, getProject, projectStoreDir, projectRootPlace } from '../src/projects.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { getWorktree, createWorktree } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
@@ -125,10 +124,10 @@ describe('a session on a project on a system', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.sessionId && inst.backingSessionId);
-    const { sessionId, backingSessionId, cwd } = inst;
-    await seedSessionJsonl(claudeProjectsRoot, cwd, backingSessionId);
+    const { sessionId, backingSessionId, cwd, transcriptPlace: place } = inst;
+    await seedSessionJsonl(place, backingSessionId);
     assert.equal((await api(baseUrl, 'DELETE', `/api/instances/${r.body.id}`)).status, 200);
-    return { sessionId, backingSessionId, cwd };
+    return { sessionId, backingSessionId, cwd, place };
   }
 
   // A registered system whose provider advertises a mirror root WIDER than the
@@ -184,7 +183,7 @@ describe('a session on a project on a system', () => {
     assert.equal(s.cwd, w.tree, 'a wide mirror root moved the cwd');
 
     const hit = await findSessionLocation(s.sessionId);
-    assert.deepEqual(hit, { project: 'app', worktreeName: null, cwd: s.cwd });
+    assert.deepEqual(hit, { project: 'app', worktreeName: null, cwd: s.cwd, place: s.place });
     const r = await api(baseUrl, 'POST', '/api/instances', { resume: s.sessionId });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.equal(instances.get(r.body.id).cwd, s.cwd);
@@ -206,7 +205,7 @@ describe('a session on a project on a system', () => {
     assert.equal(s.cwd, wt.worktreePath);
 
     assert.deepEqual(await findSessionLocation(s.sessionId),
-      { project: 'app', worktreeName: wtName, cwd: s.cwd });
+      { project: 'app', worktreeName: wtName, cwd: s.cwd, place: s.place });
     const r = await api(baseUrl, 'POST', '/api/instances', { resume: s.sessionId });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.equal(instances.get(r.body.id).cwd, s.cwd);
@@ -215,32 +214,86 @@ describe('a session on a project on a system', () => {
 
 
   // ── T6 ──────────────────────────────────────────────────────────────
-  // PINS: the RE-PLACEMENT state survives — a project adopted locally at P that
-  // accrued sessions in that tree, was unregistered, and was re-adopted on a
-  // system whose path is also P, still resolves those older sessions to itself.
-  // Nothing but the raw remote-tree probe finds them, so this is the test that
-  // forbids deleting pass 2.
+  // PINS: re-placing a project onto a DIFFERENT placement STRANDS the sessions
+  // it accrued under the old one. A project adopted locally at P, which ran
+  // sessions in that tree, was unregistered, and was re-adopted on a system
+  // whose path is also P, no longer resolves those older sessions to itself —
+  // they sit under the local transcript root, and the project now reads the
+  // remote's own.
+  //
+  // THE PLACEMENT IS PART OF THE COORDINATE, so changing it changes the
+  // directory. That is the whole mechanism of this card, seen from the side
+  // where it costs something. T6b below is the other side: re-registering at
+  // the SAME placement lands in the same directory and the transcripts are the
+  // project's again — which is what narrows card 2026-0302 rather than leaving
+  // it untouched.
+  //
   // NOT claiming the state is supported, or reachable by mutating a placement
   // in place (no route does that) — only that unregister-then-re-register
-  // reaches it.
-  test('T6: an old local session survives the project being re-placed onto a system', async () => {
+  // reaches it, and that cc neither papers over it nor silently shares one
+  // directory to hide it.
+  test('T6: re-placing a project onto a system strands its old local sessions', async () => {
     const remote = await bindRemoteSystem();
     // P is OUTSIDE the projects root and on the reference provider's own path
     // space (which is this machine), so one string names both placements.
     const tree = await seedRepo(path.join(remote.root, 'shared'));
     assert.equal((await adoptProject('shared', tree, {})).ok, true);
     const oldSid = 'bbbbbbbb-2222-4222-8222-222222222222';
-    await seedSessionJsonl(claudeProjectsRoot, tree, oldSid);
+    await seedSessionJsonl(await projectRootPlace('shared', tree), oldSid);
     assert.deepEqual(await findSessionLocation(oldSid),
-      { project: 'shared', worktreeName: null, cwd: tree });
+      { project: 'shared', worktreeName: null, cwd: tree, place: await projectRootPlace('shared', tree) });
 
     const del = await api(baseUrl, 'DELETE', '/api/projects/shared');
     assert.equal(del.status, 200, JSON.stringify(del.body));
     assert.equal((await adoptProject('shared', tree, { system: remote.id })).ok, true);
 
-    assert.deepEqual(await findSessionLocation(oldSid),
-      { project: 'shared', worktreeName: null, cwd: tree },
-      'the old local transcript is still this project\'s, found by the fallback pass');
+    // INVERTED, AND THE INVERSION IS THE FIX. This assertion used to find the
+    // old transcript, and it could only do so because a local place and a
+    // remote place at one path resolved to ONE directory — the defect this
+    // card closes. A project on a remote now reads its own config directory,
+    // so a transcript written while it was local is stranded under the local
+    // root, exactly as every other pre-upgrade remote transcript is.
+    //
+    // NOT RECOVERABLE BY PROBING BOTH ROOTS: that is the compatibility
+    // dual-read this change deliberately does not have. T6b is the case that
+    // DOES still resolve, and T10 is the control that local places are
+    // untouched.
+    assert.equal(await findSessionLocation(oldSid), null,
+      'the pre-re-placement local transcript is stranded, not silently shared with the remote');
+  });
+
+  // ── T6b ─────────────────────────────────────────────────────────────
+  // PINS THE CLAIM THAT NARROWS CARD 2026-0302, and it is load-bearing rather
+  // than a mirror of T6: the directory is keyed on (system, remoteId, cwd) and
+  // on NOTHING ELSE, so unregistering and re-registering at the SAME placement
+  // lands in the SAME directory and the old transcripts are correctly the
+  // project's again. Without this the card would have to stay open in full.
+  //
+  // A key that folded in anything transient — a connection generation, the
+  // mirror advertisement, a registration timestamp, the cc project NAME — would
+  // pass T6 and fail here.
+  test('T6b: re-registering at the SAME placement recovers its sessions', async () => {
+    const remote = await bindRemoteSystem();
+    const tree = await seedRepo(path.join(remote.root, 'samesame'));
+    assert.equal((await adoptProject('samesame', tree, { system: remote.id })).ok, true);
+
+    const sid = 'dddddddd-4444-4444-8444-444444444444';
+    const place = await projectRootPlace('samesame', tree);
+    await seedSessionJsonl(place, sid);
+    assert.deepEqual(await findSessionLocation(sid),
+      { project: 'samesame', worktreeName: null, cwd: tree, place });
+
+    assert.equal((await api(baseUrl, 'DELETE', '/api/projects/samesame')).status, 200);
+    // Unregistered: nothing owns the directory, so nothing resolves.
+    assert.equal(await findSessionLocation(sid), null);
+
+    // Re-registered at the same (system, remoteId, systemPath) — and under a
+    // DIFFERENT cc project name, so the name is proven not to be part of the
+    // key. A rename must not strand a project's history.
+    assert.equal((await adoptProject('renamed', tree, { system: remote.id })).ok, true);
+    assert.deepEqual(await findSessionLocation(sid),
+      { project: 'renamed', worktreeName: null, cwd: tree, place: await projectRootPlace('renamed', tree) },
+      'the same placement did not land in the same transcript directory');
   });
 
   // ── T7 ──────────────────────────────────────────────────────────────
@@ -325,7 +378,7 @@ describe('a session on a project on a system', () => {
     assert.ok(await updateSystem(remote.id, { launch: null }));
     disposeSystemHandles();
     assert.deepEqual(await findSessionLocation(s.sessionId),
-      { project: 'app', worktreeName: null, cwd: s.cwd });
+      { project: 'app', worktreeName: null, cwd: s.cwd, place: s.place });
 
     const r = await api(baseUrl, 'POST', '/api/instances', { resume: s.sessionId });
     assert.equal(r.status, 501, JSON.stringify(r.body));
@@ -343,9 +396,9 @@ describe('a session on a project on a system', () => {
     // and no registry row needed to derive it.
     const cwd = '/app';
     const sid = '11111111-2222-4333-8444-555555555555';
-    await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
+    await seedSessionJsonl(await projectRootPlace('beta', cwd), sid);
 
-    assert.deepEqual(await findSessionLocation(sid), { project: 'beta', worktreeName: null, cwd });
+    assert.deepEqual(await findSessionLocation(sid), { project: 'beta', worktreeName: null, cwd, place: await projectRootPlace('beta', cwd) });
     const r2 = await api(baseUrl, 'POST', '/api/instances', { resume: sid });
     assert.equal(r2.status, 501, JSON.stringify(r2.body));
     assert.match(String(r2.body.error), /prod-box/);
@@ -415,14 +468,14 @@ describe('a session on a project on a system', () => {
     // broadcast, putting frames on the wire this test cannot attribute.
     const cwd = hitTree;
     const sid = 'eeeeeeee-1111-4111-8111-aaaaaaaaaaaa';
-    await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
+    await seedSessionJsonl(await projectRootPlace('aaa', cwd), sid);
 
     // Everything above has already talked to both boxes. Start the recording
     // from empty, so what follows is attributable to the lookup alone.
     await fs.writeFile(rec, '');
 
     // (a) the hit is at 'aaa's own path — the first place in probe order.
-    assert.deepEqual(await findSessionLocation(sid), { project: 'aaa', worktreeName: null, cwd });
+    assert.deepEqual(await findSessionLocation(sid), { project: 'aaa', worktreeName: null, cwd, place: await projectRootPlace('aaa', cwd) });
     assert.deepEqual(await wireFrames(rec), [],
       "a hit must contact no system ordered after it — not the hit project's own "
       + 'worktree walk, and not a later project at all');
@@ -472,14 +525,15 @@ describe('a session on a project on a system', () => {
     const projPath = (await getProject('host')).path;
     const p = await retiredSession({ project: 'host' });
     assert.deepEqual(await findSessionLocation(p.sessionId),
-      { project: 'host', worktreeName: null, cwd: projPath });
+      { project: 'host', worktreeName: null, cwd: projPath, place: await projectRootPlace('host', projPath) });
 
     // A worktree branches off HEAD, so the project needs a first commit.
     await seedRepo(projPath);
     const wt = await createWorktree('host', { name: 'wt1' });
     const w = await retiredSession({ project: 'host', worktree: wt.worktreeName });
     assert.deepEqual(await findSessionLocation(w.sessionId),
-      { project: 'host', worktreeName: wt.worktreeName, cwd: (await getWorktree('host', wt.worktreeName)).worktreePath });
+      { project: 'host', worktreeName: wt.worktreeName, cwd: (await getWorktree('host', wt.worktreeName)).worktreePath,
+        place: await projectRootPlace('host', (await getWorktree('host', wt.worktreeName)).worktreePath) });
 
     const r = await api(baseUrl, 'POST', '/api/instances', { resume: UNKNOWN_ID });
     assert.equal(r.status, 400);
@@ -500,10 +554,10 @@ describe('a session on a project on a system', () => {
     // A renew takes the lineage to two segments and advances `current`, so the
     // lookup resolves to `newer` and only the loop can reach `older`.
     await recordRotation(older, newer, 'renew');
-    await seedSessionJsonl(claudeProjectsRoot, projPath, older);
+    await seedSessionJsonl(await projectRootPlace('host', projPath), older);
 
     assert.deepEqual(await findSessionLocation(older),
-      { project: 'host', worktreeName: null, cwd: projPath });
+      { project: 'host', worktreeName: null, cwd: projPath, place: await projectRootPlace('host', projPath) });
   });
 
   // ── T12 ─────────────────────────────────────────────────────────────

@@ -46,7 +46,7 @@
 
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { sessionFilePath, subAgentDirPath, writeFileAtomic } from './projects.ts';
+import { sessionFilePath, subAgentDirPath, writeFileAtomic, type TranscriptPlacement } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import type { WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
@@ -395,12 +395,12 @@ function unresolvedThinkingMessageIds(objs: Array<PersistedLine | null | undefin
 // use (`isPureUserPromptLine`) and the same `userIndex` the conversation view
 // stamps on user bubbles, which is what makes the slider snap to turn boundaries
 // structurally rather than cosmetically. Lines before the first prompt ride turn 0.
-async function readRecords({ cwd, sessionId }: { cwd: string; sessionId: string }): Promise<{
+async function readRecords({ place, sessionId }: { place: TranscriptPlacement; sessionId: string }): Promise<{
   file: string;
   records: Array<{ raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }>;
   turnCount: number;
 }> {
-  const file = sessionFilePath(cwd, sessionId);
+  const file = sessionFilePath(place, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) {
@@ -443,13 +443,13 @@ async function readRecords({ cwd, sessionId }: { cwd: string; sessionId: string 
 // Counted over in-context entries ONLY: sidechain lines are skipped (a sub-agent's
 // transcript is not in the parent's context — only the Task tool_result carrying
 // its report is), and `toolUseResult` bytes are never counted (disk-only sidecar).
-export async function analyzeSessionForPrune({ cwd, sessionId }: { cwd: string; sessionId: string }): Promise<{
+export async function analyzeSessionForPrune({ place, sessionId }: { place: TranscriptPlacement; sessionId: string }): Promise<{
   turnCount: number;
   turns: Array<{ index: number; preview: string; thinking: number; toolInputTruncatable: number; toolInputMinimal: number; toolOutput: number; total: number }>;
   totalTokens: number;
 }> {
-  if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
-  const { records, turnCount } = await readRecords({ cwd, sessionId });
+  if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
+  const { records, turnCount } = await readRecords({ place, sessionId });
   const exemptThinking = unresolvedThinkingMessageIds(records.map(r => r.obj));
   const toolNames = toolNamesById(records.map(r => r.obj));
 
@@ -505,9 +505,9 @@ export async function analyzeSessionForPrune({ cwd, sessionId }: { cwd: string; 
 // transcript.ts:loadSubAgentTranscript). Minting a new sessionId would therefore
 // make every sidechain silently vanish from the pruned session's transcript view
 // — copy the directory across. Best-effort: a session with no sub-agents has none.
-async function copySubAgentDir({ cwd, sessionId, newSessionId }: { cwd: string; sessionId: string; newSessionId: string }): Promise<void> {
-  const src = subAgentDirPath(cwd, sessionId);
-  try { await fs.cp(src, subAgentDirPath(cwd, newSessionId), { recursive: true }); }
+async function copySubAgentDir({ place, sessionId, newSessionId }: { place: TranscriptPlacement; sessionId: string; newSessionId: string }): Promise<void> {
+  const src = subAgentDirPath(place, sessionId);
+  try { await fs.cp(src, subAgentDirPath(place, newSessionId), { recursive: true }); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 }
 
@@ -529,17 +529,17 @@ async function copySubAgentDir({ cwd, sessionId, newSessionId }: { cwd: string; 
 //
 // Returns { newSessionId, turnCount, cutTurnIndex, saved:{…}, lastSurvivingUuid }.
 export async function pruneSessionToNewId({
-  cwd, sessionId, cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate',
+  place, sessionId, cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate',
   mode, newSessionId,
 }: {
-  cwd: string; sessionId: string; cutTurnIndex?: number; keepLatestTurns?: number;
+  place: TranscriptPlacement; sessionId: string; cutTurnIndex?: number; keepLatestTurns?: number;
   pruneThinking?: boolean; inputMode?: InputMode;
   mode: string; newSessionId?: string;
 }): Promise<{
   newSessionId: string; turnCount: number; cutTurnIndex: number;
   saved: { thinking: number; toolInputs: number; toolOutputs: number }; lastSurvivingUuid: string | null;
 }> {
-  if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
+  if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!INPUT_MODES.has(inputMode)) {
     throw httpError(400, `inputMode must be one of ${[...INPUT_MODES].join('|')}`);
   }
@@ -551,7 +551,7 @@ export async function pruneSessionToNewId({
   if (keepLatestTurns !== undefined && (!Number.isInteger(keepLatestTurns) || keepLatestTurns < 0)) {
     throw httpError(400, 'keepLatestTurns must be a non-negative integer');
   }
-  const { records, turnCount } = await readRecords({ cwd, sessionId });
+  const { records, turnCount } = await readRecords({ place, sessionId });
   if (turnCount === 0) {
     throw httpError(400, 'session has no user turns to prune');
   }
@@ -603,12 +603,12 @@ export async function pruneSessionToNewId({
     }));
   }
 
-  await writeFileAtomic(sessionFilePath(cwd, newSid), out.join('\n') + '\n');
-  await copySubAgentDir({ cwd, sessionId, newSessionId: newSid });
+  await writeFileAtomic(sessionFilePath(place, newSid), out.join('\n') + '\n');
+  await copySubAgentDir({ place, sessionId, newSessionId: newSid });
 
   if (lastSurvivingUuid) {
     await writeSessionMetadata({
-      cwd, sessionId: newSid,
+      place, sessionId: newSid,
       leafUuid: lastSurvivingUuid,
       mode,
     });

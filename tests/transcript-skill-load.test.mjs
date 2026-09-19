@@ -19,7 +19,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { fileURLToPath } from 'node:url';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace} from '../src/projects.ts';
 import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,7 +79,7 @@ function flatEvents(result) {
 
 test('loadPersistedTranscript: isMeta content-injection line correlates with the Skill tool_use named by sourceToolUseID', async () => {
   await seedTranscript(skillSessionLines());
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   assert.ok(result, 'transcript loaded');
   const events = flatEvents(result);
 
@@ -104,7 +104,7 @@ test('loadPersistedTranscript: isMeta content-injection line correlates with the
 // — it resumed with zero live turns, so its whole event ring came from replay.
 test('loadPersistedTranscript: a REAL persisted session folds its Skill invocation into a skill bubble', async () => {
   await seedFixture('real-skill-load-parent.jsonl');
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   assert.ok(result, 'transcript loaded');
   const events = flatEvents(result);
 
@@ -125,7 +125,7 @@ test('loadPersistedTranscript: a REAL persisted session folds its Skill invocati
 test('loadSubAgentTranscript: a REAL persisted sub-agent transcript folds its Skill invocation', async () => {
   await seedFixture('real-skill-load-subagent.jsonl', { subagentId: 'ae6b9bdf4daf74ed1' });
   const events = await loadSubAgentTranscript({
-    cwd: CWD, sessionId: SID, agentId: 'ae6b9bdf4daf74ed1', parentToolUseId: 'call_outer_agent',
+    place: localPlace(CWD), sessionId: SID, agentId: 'ae6b9bdf4daf74ed1', parentToolUseId: 'call_outer_agent',
   });
   assert.ok(events.length, 'sub-agent transcript replayed');
 
@@ -172,7 +172,7 @@ function twoSkillsOutOfOrderLines() {
 
 test('loadPersistedTranscript: injections are matched by sourceToolUseID identity, not FIFO order', async () => {
   await seedTranscript(twoSkillsOutOfOrderLines());
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 3);
   assert.deepEqual(echoes[1].skillLoad, { skill: 'claude-api' },
@@ -209,7 +209,7 @@ function metaLineWithoutIdLines() {
 
 test('loadPersistedTranscript: an isMeta line with no sourceToolUseID neither claims nor consumes a pending Skill entry', async () => {
   await seedTranscript(metaLineWithoutIdLines());
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 3);
   assert.match(echoes[1].text, /being continued from a previous conversation/);
@@ -243,7 +243,7 @@ function unknownSourceIdLines() {
 
 test('loadPersistedTranscript: an injection whose sourceToolUseID names nothing pending claims nothing', async () => {
   await seedTranscript(unknownSourceIdLines());
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 3);
   assert.equal(echoes[1].skillLoad, undefined, 'an unmatched id must not fall back to the FIFO head');
@@ -273,7 +273,7 @@ function queuedPromptDuringSkillLines() {
 
 test('loadPersistedTranscript: a queued_command prompt is a real user turn, never tagged as a skill load', async () => {
   await seedTranscript(queuedPromptDuringSkillLines());
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 2);
   assert.equal(echoes[1].text, 'actually, hold on');
@@ -292,7 +292,7 @@ test('loadPersistedTranscript: a queued_command prompt expires the pending queue
       message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nreference' }] },
     },
   ]);
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 3);
   assert.equal(echoes[2].skillLoad, undefined,
@@ -323,7 +323,7 @@ test('loadPersistedTranscript: isVisibleInTranscriptOnly marks a line as CLI-inj
       message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nreference' }] },
     },
   ]);
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 3);
   assert.equal(echoes[1].skillLoad, undefined, 'the continuation line is not itself a skill load');
@@ -351,7 +351,7 @@ test('loadPersistedTranscript: a matched injection consumes its entry, so a repe
       message: { role: 'user', content: [{ type: 'text', text: 'trailing injected content for the same tool' }] },
     },
   ]);
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
   assert.equal(echoes.length, 3);
   assert.deepEqual(echoes[1].skillLoad, { skill: 'keybindings-help' });
@@ -393,7 +393,7 @@ function orphanedSkillSessionLines() {
 // where it is still load-bearing — the stdout/FIFO surface, in parser.test.mjs.
 test('loadPersistedTranscript: an orphaned Skill tool_use (errored, no content injection) does not mislabel a later unrelated injected message', async () => {
   await seedTranscript(orphanedSkillSessionLines());
-  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
   assert.ok(result, 'transcript loaded');
   const events = flatEvents(result);
 

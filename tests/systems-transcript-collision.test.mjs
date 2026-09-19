@@ -25,7 +25,7 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, createProject, encodeCwd, listProjects, normalizeSystemPath, projectsRoot } from '../src/projects.ts';
+import { adoptProject, createProject, encodeCwd, listProjects, normalizeSystemPath, projectsRoot, transcriptRoot } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
@@ -37,7 +37,7 @@ describe('the transcript-directory collision guard', () => {
   beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
   afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
 
-  const place = (over) => ({ project: 'cand', worktree: null, system: 'local', cwd: '/srv/app', ...over });
+  const place = (over) => ({ project: 'cand', worktree: null, system: 'local', remoteId: null, cwd: '/srv/app', ...over });
 
   // ── the predicate, over an injected place list ──────────────────────
   // Injected rather than registered, so the comparison itself is testable
@@ -66,21 +66,39 @@ describe('the transcript-directory collision guard', () => {
 
   // T3 PINS THE WIDENING: a LOCAL place and a REMOTE place at one path collide.
   // The old guard returned null for the local system and never compared them.
-  test('T3: a local place and a remote place at one path collide', async () => {
-    const hit = await transcriptCwdCollision(place({ system: 'local' }), [
-      { project: 'held', worktree: null, system: 'box', cwd: '/srv/app' },
-    ]);
-    assert.equal(hit?.project, 'held');
-    assert.equal(hit.system, 'box');
+  // T3 PINS THE INVERSION: a local place and a remote place at one path are no
+  // longer one directory. The remote reads its own CLI config directory, so
+  // `/srv/app` locally and `/srv/app` on `box` are two roots — which is the
+  // whole of card 2026-0447 and the configuration the owner wants registrable.
+  test('T3: a local place and a remote place at one path do NOT collide', async () => {
+    assert.equal(await transcriptCwdCollision(place({ system: 'local' }), [
+      { project: 'held', worktree: null, system: 'box', remoteId: null, cwd: '/srv/app' },
+    ]), null);
   });
 
-  // T4 PINS: two DIFFERENT systems at one path collide too — the transcript
-  // directory is keyed on the cwd alone, and the system is not part of it.
-  test('T4: two systems at one path collide', async () => {
-    const hit = await transcriptCwdCollision(place({ system: 'boxA' }), [
-      { project: 'held', worktree: null, system: 'boxB', cwd: '/srv/app' },
+  // T4 PINS THE INVERSION AND ITS LIMIT. Two different systems at one path are
+  // two directories now. Two places on the SAME target at one path still
+  // collide — that is genuinely one tree, one config dir, one directory — and
+  // the two remote targets of ONE system are separate too, because the config
+  // directory is keyed on (system, remoteId).
+  test('T4: two systems at one path do NOT collide', async () => {
+    assert.equal(await transcriptCwdCollision(place({ system: 'boxA' }), [
+      { project: 'held', worktree: null, system: 'boxB', remoteId: null, cwd: '/srv/app' },
+    ]), null);
+  });
+
+  test('T4b: two targets of ONE system at one path do NOT collide', async () => {
+    assert.equal(await transcriptCwdCollision(place({ system: 'box', remoteId: 'a' }), [
+      { project: 'held', worktree: null, system: 'box', remoteId: 'b', cwd: '/srv/app' },
+    ]), null);
+  });
+
+  test('T4c: two places on ONE target at one path DO collide', async () => {
+    const hit = await transcriptCwdCollision(place({ system: 'box', remoteId: 'a' }), [
+      { project: 'held', worktree: null, system: 'box', remoteId: 'a', cwd: '/srv/app' },
     ]);
-    assert.equal(hit?.system, 'boxB');
+    assert.equal(hit?.project, 'held');
+    assert.equal(hit.samePath, true);
   });
 
   // T5 PINS: a genuinely different path does NOT collide. The control that
@@ -237,13 +255,20 @@ describe('the transcript-directory collision guard', () => {
   // not. "on system 'local'" in the ordinary all-local case is noise; across
   // systems it is the whole explanation for why two unrelated-looking paths are
   // not.
-  test('T9: the refusal names the other system only when it differs', () => {
+  test('T9: the refusal names the other placement only when it differs', () => {
     const across = transcriptCollisionReason('project \'cand\'', place({ system: 'local' }),
-      { project: 'held', worktree: null, system: 'box', cwd: '/srv/app', samePath: true });
+      { project: 'held', worktree: null, system: 'box', remoteId: null, cwd: '/srv/app', samePath: true });
     assert.match(across, /on system 'box'/);
 
+    // WHICH TARGET, not just which system: two targets of one system are two
+    // transcript directories now, so "on system 'box'" would name the pair
+    // ambiguously where the remote ids are what differ.
+    const acrossTargets = transcriptCollisionReason('project \'cand\'', place({ system: 'box', remoteId: 'a' }),
+      { project: 'held', worktree: null, system: 'box', remoteId: 'b', cwd: '/srv/app', samePath: true });
+    assert.match(acrossTargets, /remote 'b' of system 'box'/);
+
     const within = transcriptCollisionReason('project \'cand\'', place({ system: 'local' }),
-      { project: 'held', worktree: null, system: 'local', cwd: '/srv/app', samePath: true });
+      { project: 'held', worktree: null, system: 'local', remoteId: null, cwd: '/srv/app', samePath: true });
     assert.doesNotMatch(within, /on system/);
   });
 
@@ -270,18 +295,24 @@ describe('the transcript-directory collision guard', () => {
   // T11 PINS THE WIDENING END TO END, at the path a user takes: adopting a
   // REMOTE project at the same path a LOCAL project already occupies is refused.
   // This is the case the old guard could not see at all.
-  test('T11: adopting a remote project onto a local project\'s path is refused', async () => {
+  // T11 PINS THE INVERSION END TO END, through the real adopt path: the
+  // configuration card 2026-0447 was filed about is now registrable, and the
+  // two projects get two transcript directories rather than sharing one.
+  test('T11: adopting a remote project onto a local project\'s path is ALLOWED', async () => {
     // OUT-OF-ROOT, so this is an ordinary adopt on both sides.
     const shared = await seedRepo(path.join(await mkdtemp('cc-shared-'), 'app'));
     assert.equal((await adoptProject('shared', shared)).ok, true);
 
     const remote = await bindRemoteSystem();
     // The reference provider IS this machine, so the SAME path is reachable on
-    // both — which is exactly the shape the widening exists for.
+    // both — which is exactly the shape the fix exists for.
     const r = await adoptProject('other', shared, { system: remote.id });
-    assert.equal(r.ok, false, 'a remote project took a local project\'s transcript directory');
-    assert.equal(r.code, 'TRANSCRIPT_DIR_COLLISION');
-    assert.match(r.reason, /'shared'/);
+    assert.equal(r.ok, true, JSON.stringify(r));
+
+    // And they are genuinely two directories, not merely two allowed records.
+    assert.notEqual(
+      transcriptRoot({ system: 'local', remoteId: null, cwd: shared }),
+      transcriptRoot({ system: remote.id, remoteId: null, cwd: shared }));
   });
 
   // T12 PINS: createWorktree asks the guard BEFORE touching git state, and the

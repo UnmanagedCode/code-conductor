@@ -15,8 +15,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   adoptProject, getProject, listProjects, deleteProject,
   encodeCwd, findSessionLocation, validateName, projectStoreDir,
-  externalLinkPath, externalDir, EXTERNAL_DIRNAME,
-} from '../src/projects.ts';
+  externalLinkPath, externalDir, EXTERNAL_DIRNAME, localPlace} from '../src/projects.ts';
 import { createWorktree, syncWorktree, mergeWorktreeIntoParent, removeWorktree } from '../src/worktrees.ts';
 import { localSystem } from '../src/systems/registry.ts';
 import { liveSystemProto } from './systemHandle.mjs';
@@ -150,7 +149,7 @@ test('a session under encodeCwd(realpath) is located; one under encodeCwd(linkPa
   // `cwd` is REQUIRED on the answer and is the directory the transcript was
   // found in — for an external project that is the target's REALPATH, which is
   // the same property this test is about (card 2026-0292).
-  assert.deepEqual(await findSessionLocation(sid), { project: 'ext', worktreeName: null, cwd: real });
+  assert.deepEqual(await findSessionLocation(sid), { project: 'ext', worktreeName: null, cwd: real, place: localPlace(real) });
 
   // The logical (symlink) path encodes to a different dir. The CLI never writes
   // there — it encodes from getcwd(), which is always the realpath — so a

@@ -8,7 +8,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.ts';
-import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.ts';
+import { orchStoreRoot, findSessionLocation, encodeCwd, localPlace} from '../src/projects.ts';
 import { summarySpawnDir } from '../src/summarize.ts';
 import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.ts';
 
@@ -467,7 +467,7 @@ test('findSessionLocation resolves a session under the hidden .conduct project',
   ]);
 
   const hit = await findSessionLocation(sid);
-  assert.deepEqual(hit, { project: '.conduct', worktreeName: null, cwd: conductPath });
+  assert.deepEqual(hit, { project: '.conduct', worktreeName: null, cwd: conductPath, place: localPlace(conductPath) });
 });
 
 test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async () => {

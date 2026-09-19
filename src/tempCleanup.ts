@@ -13,15 +13,19 @@
 // archives each entry (jsonl kept, subagents dir deleted), then unlinks the
 // manifest. Idempotent and crash-safe.
 //
-// Entries may omit `cwd` — crash-orphaned temps (recorded in
+// Entries may omit `place` — crash-orphaned temps (recorded in
 // temp-sessions.json with no live instance when the restart ran) have no
-// cwd on record. Those entries skip the dir cleanup and only get the
-// unmarkTemp/markArchived bookkeeping (a backup for the fire-and-forget
-// writes runTempCleanup already attempted in src/restart.ts).
+// placement on record, and migration 0036 clears the placement of any entry
+// written before the manifest carried one. Those entries skip the dir cleanup
+// and only get the unmarkTemp/markArchived bookkeeping (a backup for the
+// fire-and-forget writes runTempCleanup already attempted in src/restart.ts).
+//
+// THE PLACEMENT, NOT A BARE CWD: `subAgentDirPath` needs the machine coordinate
+// as well, because `/root/app3` names a different directory on each remote.
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';
-import { orchStoreRoot, subAgentDirPath } from './projects.ts';
+import { orchStoreRoot, subAgentDirPath, type TranscriptPlacement } from './projects.ts';
 import { unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 
@@ -32,7 +36,7 @@ export function pendingTempCleanupPath(): string {
 }
 
 interface PendingTempCleanupEntry {
-  cwd?: string | null;
+  place?: TranscriptPlacement | null;
   sessionId: string;
 }
 
@@ -49,7 +53,7 @@ export function writePendingTempCleanup(entries: PendingTempCleanupEntry[]): voi
   const file = pendingTempCleanupPath();
   const payload = {
     writtenAt: new Date().toISOString(),
-    entries: entries.map(({ cwd, sessionId }) => ({ cwd, sessionId })),
+    entries: entries.map(({ place, sessionId }) => ({ place, sessionId })),
   };
   // Atomic tmp-write + rename so an OOM/crash mid-write can't leave a torn
   // manifest (writeFileSync truncates in place). Sync — see header.
@@ -70,9 +74,9 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
     if (Array.isArray(rawList)) {
       for (const e of rawList) {
         if (typeof e !== 'object' || e === null) continue;
-        const rec = e as { cwd?: unknown; sessionId?: unknown };
+        const rec = e as { place?: unknown; sessionId?: unknown };
         if (typeof rec.sessionId !== 'string' || !rec.sessionId) continue;
-        entries.push({ cwd: typeof rec.cwd === 'string' ? rec.cwd : null, sessionId: rec.sessionId });
+        entries.push({ place: readPlace(rec.place), sessionId: rec.sessionId });
       }
     }
   } catch (e) {
@@ -82,16 +86,16 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
   }
 
   let swept = 0;
-  for (const { cwd, sessionId } of entries) {
+  for (const { place, sessionId } of entries) {
     if (!sessionId) continue;
     // Always archive — never delete the .jsonl. Only the ephemeral subagent
     // dir is cleaned up, so a temp session that exited during a restart is
     // recoverable from Settings → Archived. Sidecar updates are
-    // fire-and-forget from the sync boot context. cwd-less entries (crash-
-    // orphaned temps with no known cwd) have no dir to locate — bookkeeping
-    // only.
-    if (cwd) {
-      try { rmSync(subAgentDirPath(cwd, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+    // fire-and-forget from the sync boot context. place-less entries (crash-
+    // orphaned temps with no known placement, and every entry migration 0036
+    // cleared) have no dir to locate — bookkeeping only.
+    if (place) {
+      try { rmSync(subAgentDirPath(place, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
     }
     unmarkTemp(sessionId).catch(() => {});
     markArchived(sessionId).catch(() => {});
@@ -101,6 +105,18 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
   try { rmSync(file, { force: true }); } catch { /* ignore */ }
   if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} temp session(s) from previous run (archived)`);
   return { swept };
+}
+
+// A persisted placement, or null. Strict: a partial record is no placement at
+// all, because guessing the machine half is how a sweep would delete another
+// remote's subagent directory.
+function readPlace(v: unknown): TranscriptPlacement | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const p = v as { system?: unknown; remoteId?: unknown; cwd?: unknown };
+  if (typeof p.system !== 'string' || !p.system) return null;
+  if (typeof p.cwd !== 'string' || !p.cwd) return null;
+  if (p.remoteId !== null && typeof p.remoteId !== 'string') return null;
+  return { system: p.system, remoteId: p.remoteId ?? null, cwd: p.cwd };
 }
 
 function errMsg(e: unknown): string {

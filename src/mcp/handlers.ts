@@ -23,6 +23,9 @@ import {
   renameWorkspace as fsRenameWorkspace,
   writeProjectMeta,
   tryResolveProject,
+  placeOf,
+  projectRootPlace,
+  type TranscriptPlacement,
 } from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
@@ -256,7 +259,7 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
 
 // Where a retired session's transcript lives — enough for
 // loadPersistedTranscript / pagePersistedEvents to read it, and nothing more.
-interface DiskRef { sessionId: string; backingSessionId: string; cwd: string }
+interface DiskRef { sessionId: string; backingSessionId: string; cwd: string; place: TranscriptPlacement }
 
 // The READ-ONLY sibling of getInst, for the call sites that need a session's
 // BYTES rather than a subprocess: get_transcript, get_recent_messages, and
@@ -300,7 +303,7 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
   const known = instances.anyForSession(sessionId);
   if (known) {
     return known.backingSessionId
-      ? { disk: { sessionId: known.sessionId ?? sessionId, backingSessionId: known.backingSessionId, cwd: known.cwd } }
+      ? { disk: { sessionId: known.sessionId ?? sessionId, backingSessionId: known.backingSessionId, cwd: known.cwd, place: known.transcriptPlace } }
       : { soft: notLiveRefusal(sessionId) };
   }
 
@@ -318,7 +321,7 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
       // separate contract and is NOT "nothing" — findSessionLocation in
       // ../projects.ts is its one home; do not paraphrase it here
       // (card 2026-0292).
-      return { disk: { sessionId, backingSessionId, cwd: hit.cwd } };
+      return { disk: { sessionId, backingSessionId, cwd: hit.cwd, place: hit.place } };
     }
   }
 
@@ -356,7 +359,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
     const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
       ...w,
-      sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+      sessions: await summarizeSessions(placeOf(p, w.worktreePath)).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
       mergeStatus: system
         ? await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null }))
         : { ahead: null, behind: null },
@@ -390,7 +393,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       isGitRepo: projIsGitRepo,
       unbornHead: unborn,
       worktrees: worktreesWithSessions,
-      sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+      sessions: await summarizeSessions(placeOf(p, p.systemPath ?? p.path)).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
   }));
   return textResult(renderProjects(enriched));
@@ -424,9 +427,16 @@ export function compareInstanceRows(a: Record<string, unknown>, b: Record<string
 // unfiltered scan.
 async function sessionCwdsFor(p: { name: string; path: string }) {
   const wts = await fsListWorktrees(p.name).catch(() => []);
+  // ONE placement read per project, reused for its worktrees: they are all on
+  // the same machine by construction, and the coordinate is what tells this
+  // project's transcript directory from another remote's at the same path.
+  const root = await projectRootPlace(p.name, p.path);
   return [
-    { project: p.name, worktree: null as string | null, cwd: p.path, meta: null as WorktreeMeta | null },
-    ...wts.map(w => ({ project: p.name, worktree: w.worktreeName, cwd: w.worktreePath, meta: w })),
+    { project: p.name, worktree: null as string | null, cwd: root.cwd, place: root, meta: null as WorktreeMeta | null },
+    ...wts.map(w => ({
+      project: p.name, worktree: w.worktreeName, cwd: w.worktreePath,
+      place: placeOf(root, w.worktreePath), meta: w,
+    })),
   ];
 }
 
@@ -490,7 +500,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     .sort(compareInstanceRows);
   // NOT built from `live` above: those rows carry PUBLIC ids, and the exclusion
   // set below is matched against transcript filenames (backing ids). Resolved
-  // per-target-cwd inside the group loop via instances.liveBackingIdsForCwd.
+  // per-target-PLACE inside the group loop via instances.liveBackingIdsForPlace.
 
   // Inactive rows come off disk, from the one function that already owns "which
   // sessions exist for a cwd, and which of them are archived"
@@ -520,8 +530,8 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // archived outnumbers active ~25:1 and the per-transcript cost is the
     // first-prompt read, which the walk skips for archived rows it is not
     // listing — so the count for a `+N archived` line is effectively free.
-    const attached = instances ? instances.liveBackingIdsForCwd(t.cwd) : null;
-    const { rows, archivedCount } = await listSessionsForCwdWithCounts(t.cwd, attached, { includeArchived })
+    const attached = instances ? instances.liveBackingIdsForPlace(t.place) : null;
+    const { rows, archivedCount } = await listSessionsForCwdWithCounts(t.place, attached, { includeArchived })
       .catch(() => ({ rows: [], archivedCount: 0 }));
     const liveHere = live.filter(r => r.project === t.project
       && (r.worktree && typeof r.worktree === 'object'
@@ -815,7 +825,7 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
   // each transcript filename to its public id.
   const hit = await findSessionLocation(sessionId).catch(() => null);
   if (hit) {
-    const { rows } = await listSessionsForCwdWithCounts(hit.cwd, null, { includeArchived: true });
+    const { rows } = await listSessionsForCwdWithCounts(hit.place, null, { includeArchived: true });
     const row = rows.find(r => r.sessionId === sessionId);
     if (row) {
       const tracked = proj?.bySession.get(sessionId);
@@ -879,7 +889,7 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
   const { status, resolvedSessionId, source, page } = 'disk' in r
     ? {
       status: 'exited', resolvedSessionId: r.disk.sessionId, source: 'disk',
-      page: await pagePersistedEvents({ cwd: r.disk.cwd, sessionId: r.disk.backingSessionId, limit, ...after }),
+      page: await pagePersistedEvents({ place: r.disk.place, sessionId: r.disk.backingSessionId, limit, ...after }),
     }
     : {
       status: r.inst.status, resolvedSessionId: r.inst.sessionId, source: 'ring',
@@ -2248,7 +2258,7 @@ async function selectRecentMessages(
   const bondNeed = isDefaultCount ? n + 1 : n;
 
   if ('disk' in r) {
-    const sel = await loadDiskSelection({ cwd: r.disk.cwd, backingSessionId: r.disk.backingSessionId, includeThinking });
+    const sel = await loadDiskSelection({ place: r.disk.place, backingSessionId: r.disk.backingSessionId, includeThinking });
     const all = sel ? sel.messages : [];
     const filtered = includeToolCalls ? all : all.filter(isTextBearing);
     let messages = filtered.slice(-n);

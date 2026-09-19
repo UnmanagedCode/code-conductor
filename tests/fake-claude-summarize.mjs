@@ -51,8 +51,15 @@ if (process.env.FAKE_SUMMARIZE_CWD_OUT) {
 
 // Simulate the real CLI artifact jsonl so cleanup can be tested.
 if (process.env.FAKE_SUMMARIZE_WRITE_JSONL === '1' && sessionId) {
-  const claudeRoot = process.env.CLAUDE_PROJECTS_ROOT
-    ?? path.join(os.homedir(), '.claude', 'projects');
+  // RESOLVED THE WAY THE REAL CLI DOES: its projects root is
+  // `<CLAUDE_CONFIG_DIR ?? ~/.claude>/projects`, and it knows nothing about
+  // CLAUDE_PROJECTS_ROOT — that one is cc's own reader override, honoured here
+  // only when the config dir has not been pinned. A fake that let the override
+  // win would write into the LOCAL root while cc read a remote's private one,
+  // making every remote assertion vacuous.
+  const claudeRoot = process.env.CLAUDE_CONFIG_DIR
+    ? path.join(process.env.CLAUDE_CONFIG_DIR, 'projects')
+    : (process.env.CLAUDE_PROJECTS_ROOT ?? path.join(os.homedir(), '.claude', 'projects'));
   const encodedCwd = process.cwd().replace(/[^A-Za-z0-9-]/g, '-');
   const dir = path.join(claudeRoot, encodedCwd);
   await fs.mkdir(dir, { recursive: true });

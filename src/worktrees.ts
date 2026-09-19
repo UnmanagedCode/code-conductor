@@ -548,7 +548,10 @@ export async function createWorktree(
   // half of the same pair: a project named `<project>_worktree_<slug>` can
   // already hold it. `dirName`, not `id`: the stored worktreeName is the
   // directory name, and the cwd is built from that.
-  const candidate = { project: projectName, worktree: dirName, system: system.id, cwd: worktreePath };
+  const candidate = {
+    project: projectName, worktree: dirName, system: system.id,
+    remoteId: (await projectPlacement(projectName)).remoteId, cwd: worktreePath,
+  };
   const keyHit = await transcriptCwdCollision(candidate);
   if (keyHit) {
     throw httpError(

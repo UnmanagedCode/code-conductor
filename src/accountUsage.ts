@@ -2,7 +2,8 @@
 // the result for 180 s so the chip/popup don't hammer the API on every render
 // (the endpoint itself only replenishes ~once per 120 s and exposes no useful
 // ratelimit headers, so polling less often is the only lever that works).
-// Credentials are read from ~/.claude/.credentials.json (claudeAiOauth.accessToken).
+// Credentials are read from `<claudeConfigDir()>/.credentials.json`
+// (claudeAiOauth.accessToken).
 // Returns null on any error (missing file, 401, network) — never throws.
 //
 // Callers get strict fresh-or-null by default. Passing `allowStale: true`
@@ -17,8 +18,8 @@
 // beta (originally oauth-2025-04-20) and now rejects the stale header.
 
 import { promises as fsp } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { claudeConfigDir } from './projects.ts';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CACHE_TTL_MS  = 180_000;
@@ -66,8 +67,8 @@ function computeBackoff(failureCount: number, rand: number): number {
   return Math.max(BASE_RETRY_MS, Math.round(capped + jitter));
 }
 
-async function readOauthToken(home: string = os.homedir()): Promise<string | null> {
-  const credPath = path.join(home, '.claude', '.credentials.json');
+async function readOauthToken(configDir: string = claudeConfigDir()): Promise<string | null> {
+  const credPath = path.join(configDir, '.credentials.json');
   let raw: string;
   try {
     raw = await fsp.readFile(credPath, 'utf8');
@@ -138,10 +139,12 @@ export type AccountUsageResult = AccountUsageData | StaleResult | null;
 // GET /api/usage route opts in; every other caller must keep seeing the plain
 // strict shape.
 export async function getAccountUsage({
-  home, _now = Date.now, _random = Math.random,
+  configDir, _now = Date.now, _random = Math.random,
   allowStale = false, maxStaleMs = 15 * 60_000,
 }: {
-  home?: string;
+  // The CLI's config directory, not a home — see claudeConfigDir(). Injectable
+  // for tests; undefined takes the derivation inside readOauthToken.
+  configDir?: string;
   _now?: () => number;
   _random?: () => number;
   allowStale?: boolean;
@@ -160,7 +163,7 @@ export async function getAccountUsage({
   }
 
   try {
-    const token = await readOauthToken(home);
+    const token = await readOauthToken(configDir);
     if (!token) return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
     const { data, status, retryAfterHeader } = await fetchFromApi(token);

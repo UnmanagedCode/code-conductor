@@ -854,7 +854,7 @@ test('a live temp session (excluded from the on-disk list while alive) uses inst
     const base = 1_000_000_000_000;
     Date.now = () => base;
     // onLoadSessions returns [] — mirrors the server excluding a live temp
-    // session's jsonl from the on-disk list (tempSessionIdsForCwd), so this
+    // session's jsonl from the on-disk list (tempSessionIdsForPlace), so this
     // instance's sessionId is never in `onDisk` for as long as it's alive.
     const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
     sidebar.setProjects([{

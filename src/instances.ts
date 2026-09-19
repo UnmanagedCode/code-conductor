@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, projectsRoot, selfProjectDir } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, placeOf, type TranscriptPlacement } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -58,7 +58,7 @@ import {
   trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, assertRemoteLive, projectPlacement } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
 import { EVENT_LOG_NAME, buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
@@ -94,9 +94,10 @@ import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, res
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
-import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation,
-  relocateSessionTranscripts, TranscriptRelocationError } from './transcript.ts';
+import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
+import { cliEnvBase } from './cliEnv.ts';
+import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
@@ -199,6 +200,10 @@ interface InstanceConstructorInput {
   id: string;
   project: string;
   cwd: string;
+  // The machine coordinate `cwd` belongs to. Supplied by _doCreate, which is
+  // where the placement is already resolved — never re-derived here, because a
+  // second derivation is a second chance to disagree.
+  transcriptPlace: TranscriptPlacement;
   mode: string;
   effort: string | null;
   thinking: string;
@@ -560,6 +565,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _launcher: LauncherLike;
   project: string;
   cwd: string;
+  // WHERE THIS SESSION'S TRANSCRIPT LIVES. `cwd` alone cannot name a directory:
+  // under the FUSE union a remote worker runs at the remote's own path spelling,
+  // so `/root/app3` is the same cwd on two machines. Frozen at create.
+  transcriptPlace: TranscriptPlacement;
   mode: string;
   effort: string | null;
   thinking: string;
@@ -743,7 +752,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -751,6 +760,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._launcher = launcher;
     this.project = project;
     this.cwd = cwd;
+    this.transcriptPlace = transcriptPlace;
     this.mode = mode;
     this.effort = effort;
     this.thinking = thinking;
@@ -1320,7 +1330,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // pre-archive code always returned.
     try {
       const archive = await buildArchive({
-        cwd: this.cwd, sessionId: this.backingSessionId,
+        place: this.transcriptPlace, sessionId: this.backingSessionId,
         ring: this.ringSnapshot(), trimmedBefore: tb,
         userEchoCount: this._userEchoCount,
       });
@@ -1672,7 +1682,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   async loadHistory(backingId: string): Promise<void> {
     const result = await loadPersistedTranscript({
-      cwd: this.cwd, sessionId: backingId, seqHint: this.ring.nextSeq,
+      place: this.transcriptPlace, sessionId: backingId, seqHint: this.ring.nextSeq,
     });
     if (!result) {
       // ENOENT: the transcript this segment named is gone (Claude prunes its own
@@ -1795,6 +1805,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     // propagates deliberately: a role-less conductor is worse than a surfaced
     // error, and every caller is async and returns errors to REST/MCP.
     if (isConductorInstance(this)) await materializeCurrentConduct();
+    // BUILD OR REFRESH THIS REMOTE'S CLI CONFIG DIRECTORY before the process
+    // starts. Here rather than in spawn() for the same reason as the line
+    // above: it is I/O, spawn() is synchronous, and every relaunch entry point
+    // funnels through launch(). Re-run per launch deliberately — the CLI grows
+    // new top-level entries across versions, and a farm built once at
+    // registration would silently stop sharing whatever appeared afterwards.
+    if (this.transcriptPlace.system !== LOCAL_SYSTEM_ID) {
+      await ensureRemoteConfigDir(this.transcriptPlace);
+    }
     // A RE-ADVERTISEMENT IS SESSION-FATAL, and reported by name. `launch()` is
     // the only path every relaunch funnels through — rewind, respawn, resume
     // after a restart — so it is where a provider that changed its mirror root
@@ -2158,10 +2177,30 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the backend's own env, the substitution-backend native window, the
     // .conduct override) are allowed to set them, and they must run after this
     // strip so their values win.
-    const spawnEnv = { ...process.env };
-    delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-    delete spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
-    delete spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+    const spawnEnv = cliEnvBase();
+    // A REMOTE-BACKED WORKER GETS ITS REMOTE'S OWN CLI CONFIG DIRECTORY, so the
+    // transcript directory the CLI derives from its cwd is scoped by a root
+    // that already differs per machine. Two projects at `/root/app3` on two
+    // boxes stop being one directory. A LOCAL session is given neither
+    // variable: pinning CLAUDE_CONFIG_DIR even to its own default is NOT a
+    // no-op — the CLI's global config resolver is
+    // `join(CLAUDE_CONFIG_DIR ?? homedir(), '.claude.json')`, so setting it
+    // moves `~/.claude.json` to `<configDir>/.claude.json` and the session
+    // loses its projects map, trust acceptances and onboarding state.
+    //
+    // CREDENTIALS COME THROUGH THE SECOND LEVER, not through the farm: the
+    // EMPTY-STRING form resolves to `join(homedir(), '.claude')` — not to the
+    // config dir — and, because the secure-storage service name is suffixed on
+    // the variable's PRESENCE rather than its value, the empty form also keeps
+    // the unsuffixed name an unpinned CLI uses. It is therefore correct only
+    // while the host's real config dir is the default; the explicit path is
+    // what the other branch needs, at the cost of a suffixed service name that
+    // matters only to a host using OS secure storage.
+    if (this.transcriptPlace.system !== LOCAL_SYSTEM_ID) {
+      spawnEnv.CLAUDE_CONFIG_DIR = remoteConfigDir(this.transcriptPlace);
+      spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR =
+        claudeConfigDir() === path.join(os.homedir(), '.claude') ? '' : claudeConfigDir();
+    }
     // The backend's user-configured env pairs (Settings → Backends). Applied
     // BEFORE the cc-managed context vars below so those always win — they are
     // deliberately not exposed in the Backends UI.
@@ -2691,7 +2730,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (!this.backingSessionId || !this._lastLeafUuid) return;
     try {
       await writeSessionMetadata({
-        cwd: this.cwd,
+        place: this.transcriptPlace,
         sessionId: this.backingSessionId,
         leafUuid: this._lastLeafUuid,
         mode: this.mode,
@@ -2766,7 +2805,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // changes WHEN that archived marker appears, not WHETHER.
   async _archiveTempSession(): Promise<void> {
     if (!this.backingSessionId) return;
-    await fsp.rm(subAgentDirPath(this.cwd, this.backingSessionId), { recursive: true, force: true });
+    await fsp.rm(subAgentDirPath(this.transcriptPlace, this.backingSessionId), { recursive: true, force: true });
     try { await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
     try { await markArchived(this.backingSessionId); } catch { /* best-effort */ }
   }
@@ -3672,7 +3711,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
 
       const result = await truncateSessionAtUserMessage({
-        cwd: this.cwd,
+        place: this.transcriptPlace,
         sessionId: backingId,
         userMessageIndex,
         mode: this.mode,
@@ -3690,8 +3729,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // respawn with --session-id under the same id so the URL anchor stays
       // valid and the instance comes back ready for a fresh first turn.
       if (result.remainingLineCount === 0) {
-        await fsp.rm(sessionFilePath(this.cwd, backingId), { force: true });
-        await fsp.rm(subAgentDirPath(this.cwd, backingId), { recursive: true, force: true });
+        await fsp.rm(sessionFilePath(this.transcriptPlace, backingId), { force: true });
+        await fsp.rm(subAgentDirPath(this.transcriptPlace, backingId), { recursive: true, force: true });
         await this.launch({});
       } else {
         await this.launch({ resume: backingId });
@@ -3752,7 +3791,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // released if it throws.
       const { forkSessionAtUserMessage } = await import('./sessionEdit.ts');
       forked = await forkSessionAtUserMessage({
-        cwd: this.cwd,
+        place: this.transcriptPlace,
         sessionId: backingId,
         userMessageIndex,
         mode: this.mode,
@@ -3851,7 +3890,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
 
       const { saved, turnCount, cutTurnIndex: cut } = await pruneSessionToNewId({
-        cwd: this.cwd,
+        place: this.transcriptPlace,
         sessionId: oldSid,
         cutTurnIndex: cutTurnIndex as number | undefined,
         keepLatestTurns: keepLatestTurns as number | undefined,
@@ -4416,23 +4455,32 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions
   // list — otherwise clicking the row would 409 against the live instance.
-  // BACKING ids of every non-dead instance at this cwd — the exclusion set the
+  // BACKING ids of every non-dead instance at this PLACE — the exclusion set the
   // on-disk session walk needs. It MUST be backing ids: listSessionsForCwdWithCounts
   // / summarizeSessions match against transcript FILENAMES, so a set of public ids
   // would exclude nothing and every live worker would also be listed as an
   // inactive row off its own transcript. Dead instances are deliberately absent —
   // an exited session reappearing as an inactive row is how it stays resumable.
-  liveBackingIdsForCwd(cwd: string): Set<string> {
+  //
+  // KEYED ON THE PLACE, NOT THE CWD, for the same reason the walk it feeds is:
+  // `/root/app3` is one cwd on every box that has it, so a bare cwd match would
+  // exclude another remote's live worker from THIS place's listing — dropping a
+  // real row — while the walk itself looked in a different directory.
+  liveBackingIdsForPlace(place: TranscriptPlacement): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.cwd === cwd && !isDeadStatus(i.status) && i.backingSessionId) out.add(i.backingSessionId);
+      if (samePlace(i.transcriptPlace, place) && !isDeadStatus(i.status) && i.backingSessionId) {
+        out.add(i.backingSessionId);
+      }
     }
     return out;
   }
-  tempSessionIdsForCwd(cwd: string): Set<string> {
+  tempSessionIdsForPlace(place: TranscriptPlacement): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.temp && i.proc && i.cwd === cwd && i.backingSessionId) out.add(i.backingSessionId);
+      if (i.temp && i.proc && samePlace(i.transcriptPlace, place) && i.backingSessionId) {
+        out.add(i.backingSessionId);
+      }
     }
     return out;
   }
@@ -4727,6 +4775,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       cwd = worktreeMeta.worktreePath;
     }
 
+    // WHERE THIS SESSION'S TRANSCRIPT LIVES, resolved ONCE here and frozen onto
+    // the Instance. `cwd` is final by this point — project path or worktree path
+    // — and the record supplies the machine coordinate that tells two remotes at
+    // one absolute path apart. Every transcript read and write below, and every
+    // one the Instance makes later, goes through this rather than re-deriving:
+    // a second derivation is a second chance to disagree.
+    const transcriptPlace: TranscriptPlacement = placeOf(await projectPlacement(project), cwd);
+
     // A REMOTE PROJECT'S `cwd` IS ITS PATH ON ITS OWN SYSTEM, and that is the
     // whole of criterion 8: one spelling per path, whichever tool names it.
     //
@@ -4831,7 +4887,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // crash, repeatably. Bailing here means no phantom crashed Instance is
     // registered, so a retry of the same spawn_instance({resume}) soft-refuses
     // identically rather than resolving through a half-built instance.
-    if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
+    if (resume && !(await hasResumableConversation({ place: transcriptPlace, sessionId: resume }))) {
       // NO GEOMETRY FOLLOW, and nothing to follow to. A remote session's cwd
       // is the project's path on its system, fixed for the life of the
       // registration — there is no geometry to follow, so a moved mirror
@@ -4858,7 +4914,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // a session that was spawned with Sonnet/Haiku.
     if (resume && !finalModel) {
       try {
-        const prev = await readLastSessionModel({ cwd, sessionId: resume });
+        const prev = await readLastSessionModel({ place: transcriptPlace, sessionId: resume });
         if (prev) finalModel = prev;
       } catch { /* best-effort */ }
     }
@@ -4968,7 +5024,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // still holds the true first line, so this is reliable.
     let recoveredFirstPrompt: string | null = null;
     if (resume) {
-      try { recoveredFirstPrompt = await readFirstPrompt(sessionFilePath(cwd, resume)); }
+      try { recoveredFirstPrompt = await readFirstPrompt(sessionFilePath(transcriptPlace, resume)); }
       catch { /* best-effort */ }
     }
 
@@ -4981,7 +5037,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
     const id = randomUUID();
     const inst = new Instance({
-      id, project, cwd,
+      id, project, cwd, transcriptPlace,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
       contextWindowTokens: finalContextWindowTokens,
       backend,
@@ -5039,9 +5095,27 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // other sessions' plan files and cannot be narrowed to "its own" ahead
         // of the write, because the CLI chooses the filename. Longer than the
         // `~/.claude` deny below, so longest-prefix lets it through.
-        { prefix: path.join(os.homedir(), '.claude', 'plans'), access: 'allow',
-          why: "plan mode writes its plan file here" },
-        { prefix: path.join(os.homedir(), '.claude'), access: 'deny',
+        // THIS SESSION'S OWN CLI CONFIG DIRECTORY — the one it was launched
+        // against, which is NOT `~/.claude` for a remote-backed worker. The
+        // CLI resolves its plans directory as `<configDir>/plans`, so without
+        // the allow below plan mode is denied outright for every remote worker.
+        { prefix: path.join(remoteConfigDir(transcriptPlace), 'plans'), access: 'allow',
+          why: "plan mode writes its plan file here — this remote's own config dir" },
+        { prefix: remoteConfigDir(transcriptPlace), access: 'deny',
+          why: "this remote's CLI config and every session on it" },
+        // EVERY OTHER REMOTE'S. Shorter than the two above, so longest-prefix
+        // lets this session reach its own while refusing its neighbours'. The
+        // store prefix already denies these by tier; this entry exists so the
+        // refusal names what it is rather than saying "the projects root".
+        { prefix: claudeConfigFarmRoot(), access: 'deny',
+          why: "every other remote's CLI config and transcripts" },
+        // The HOST's config dir, still reachable by name through the farm's
+        // symlinks. Plan mode does not write here any more, but the
+        // orchestrator forwards plan paths under it between sessions, so the
+        // allow stays — with the residual recorded in docs/features.md.
+        { prefix: path.join(claudeConfigDir(), 'plans'), access: 'allow',
+          why: "a plan file forwarded from another session lives here" },
+        { prefix: claudeConfigDir(), access: 'deny',
           why: "the CLI's own settings, credentials, todos and shell snapshots" },
         // Every session on this machine's transcripts. A conductor that
         // legitimately needs one has `get_transcript`, which is not a file tool.
@@ -5869,11 +5943,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // on-disk jsonl: {cwd, sessionId}. Used by the restart path to write a
   // pending-cleanup manifest that the next boot can replay (defence in
   // depth against orphaned post-exit writes).
-  tempCleanupSnapshot(): Array<{ cwd: string; sessionId: string }> {
-    const out: Array<{ cwd: string; sessionId: string }> = [];
+  tempCleanupSnapshot(): Array<{ place: TranscriptPlacement; sessionId: string }> {
+    const out: Array<{ place: TranscriptPlacement; sessionId: string }> = [];
     for (const inst of this.byId.values()) {
       if (!inst.temp || !inst.backingSessionId) continue;
-      out.push({ cwd: inst.cwd, sessionId: inst.backingSessionId });
+      out.push({ place: inst.transcriptPlace, sessionId: inst.backingSessionId });
     }
     return out;
   }
@@ -5931,7 +6005,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const wipe = (): void => {
       for (const inst of temps) {
         if (!inst.backingSessionId) continue;
-        try { rmSync(subAgentDirPath(inst.cwd, inst.backingSessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+        try { rmSync(subAgentDirPath(inst.transcriptPlace, inst.backingSessionId), { recursive: true, force: true }); } catch { /* ignore */ }
       }
     };
     wipe();
@@ -6025,6 +6099,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     return out;
   }
+}
+
+// Two placements name ONE transcript directory. All three fields, because
+// dropping any one of them is how two remotes at a shared absolute path, or two
+// targets of one system, would read as the same place.
+function samePlace(a: TranscriptPlacement, b: TranscriptPlacement): boolean {
+  return a.system === b.system && a.remoteId === b.remoteId && a.cwd === b.cwd;
 }
 
 // Everything the redirection policy needs to address the system, and everything
