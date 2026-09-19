@@ -174,7 +174,7 @@ export class Conversation {
   }
 
   _closeAssistantSegment() {
-    this._closeActionGroup(this._activeAssistantWrap);
+    this._closeAllActionGroups();
     this._activeAssistantWrap = null;
     this._sawSegmentCloser = true;
   }
@@ -202,6 +202,17 @@ export class Conversation {
     wrap.actionGroup = null;
   }
 
+  // Every run-ender goes through here, NOT through `_activeAssistantWrap`: a
+  // wrap can hold an open group without being the active one. `_ensureMessageWrap`
+  // arms that pointer only when it CREATES a wrap, so an orphan tool_result
+  // landing on an already-cached wrap (the shared '__floating__' key) opens a
+  // group the pointer never names — and a closer keyed on it would fold a
+  // different wrap and leave that group expanded for the rest of the session.
+  // Only wraps actually holding a group are touched, and closing is idempotent.
+  _closeAllActionGroups() {
+    for (const w of this.messageWraps.values()) this._closeActionGroup(w);
+  }
+
   // Finalize every block that is still visually streaming. For STATIC batches
   // (lazy-history pages) only. Server pages are quiescent-aligned (whole
   // blocks, resolved tools), so this is NOT a seam patch — it covers content
@@ -214,9 +225,8 @@ export class Conversation {
     for (const block of this.blocksByKey.values()) block.finalize?.();
     for (const block of this.toolBlocks.values()) block.markIncomplete?.();
     // The static-batch hook: a lazy-history page ending in a tool run arrives
-    // collapsed. Several msgIds can map to one wrap; _closeActionGroup is
-    // idempotent.
-    for (const w of this.messageWraps.values()) this._closeActionGroup(w);
+    // collapsed.
+    this._closeAllActionGroups();
     for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
   }
 
@@ -377,6 +387,10 @@ export class Conversation {
           break;
         }
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
+        // The turn was interrupted or killed: the machinery that was
+        // accumulating will never continue, so the run is over. Closes the
+        // group but not the segment, exactly as a turn end does.
+        if (ev.subtype === 'soft_interrupted') this._closeAllActionGroups();
         // Resume fired: collapse the ghost queued bubbles — they're folding into
         // the single delivered turn that follows.
         if (ev.subtype === 'auto_resume') {
@@ -801,7 +815,7 @@ export class Conversation {
   _renderTurnEnd(ev) {
     // The turn's end ends the machinery run. NOT _closeAssistantSegment() —
     // that would change the existing bubble-merge behaviour.
-    this._closeActionGroup(this._activeAssistantWrap);
+    this._closeAllActionGroups();
     const wrap = el('div', {});
     wrap.appendChild(new TurnEndBlock(ev).node);
     this.root.appendChild(wrap);

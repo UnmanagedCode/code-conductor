@@ -444,10 +444,12 @@ export const ACTION_GROUP_CLASS = 'action-group';
 // At most this many distinct labels are named before the `+N more` tail.
 const AG_MAX_PARTS = 4;
 
-// The details' children are exactly [summary, .ag-body], and nothing else is
-// ever appended to the details itself. A `querySelector('.ag-body')` would
-// reach into a nested sub-agent conversation's own group, so scan direct
-// children instead.
+// The details' children are exactly [summary, .ag-body]. Scanning direct
+// children states that structure; it is NOT a guard against reaching a nested
+// sub-agent's group, because a direct child precedes every descendant in tree
+// order and `querySelector('.ag-body')` would return this group's own body
+// too. The two forms diverge only for a group built without a body of its own,
+// which createActionGroup never produces.
 function agBody(groupNode) {
   for (const c of groupNode.children) if (c.classList.contains('ag-body')) return c;
   return null;
@@ -515,13 +517,18 @@ function agLabelFor(kid) {
   return 'block';
 }
 
-// A failed tool: a DIRECT child carrying both `tool-result` and `error`. A
-// `querySelector` would count a failure inside a nested sub-agent against the
-// outer group.
-function agToolErrored(kid) {
-  for (const c of kid.children) {
-    if (c.classList.contains('tool-result') && c.classList.contains('error')) return true;
-  }
+function agIsErrorResult(n) {
+  return n.classList.contains('tool-result') && n.classList.contains('error');
+}
+
+// A failure the group must report: a tool whose own attached result errored, or
+// an orphan result (no parent tool_use) that did. The tool case scans DIRECT
+// children — a `querySelector` would count a failure inside a nested sub-agent
+// against the outer group, which has its own header for it.
+function agErrored(kid) {
+  if (agIsErrorResult(kid)) return true;
+  if (!kid.classList.contains('tool')) return false;
+  for (const c of kid.children) if (agIsErrorResult(c)) return true;
   return false;
 }
 
@@ -538,7 +545,7 @@ export function refreshActionGroupSummary(groupNode) {
     n += 1;
     const label = agLabelFor(kid);
     counts.set(label, (counts.get(label) ?? 0) + 1);
-    if (kid.classList.contains('tool') && agToolErrored(kid)) errors += 1;
+    if (agErrored(kid)) errors += 1;
   }
   const parts = [...counts].map(([label, k]) => (k > 1 ? `${label} ×${k}` : label));
   const shown = parts.slice(0, AG_MAX_PARTS);

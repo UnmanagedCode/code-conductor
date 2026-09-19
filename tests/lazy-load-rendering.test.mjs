@@ -672,8 +672,11 @@ test('12 pins: a run cut by a page seam merges into ONE group, in page order, wi
     'the header counts both halves');
 });
 
-test('13 pins: the seam coalescer keys on adjacency — prose on either side keeps the groups apart', async () => {
-  // Half A: the batch ends with PROSE, so the older group is not seam-adjacent.
+test('13 pins: prose at either edge of the seam keeps the two runs apart', async () => {
+  // Prose is a run boundary, so a half that ends (or begins) with a text block
+  // is not the same run as the half on the other side of the seam — even
+  // though the BUBBLES still merge.
+  // Half A: the batch's own run already ended at its trailing prose.
   {
     const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
     const main = new Conversation(root, {});
@@ -693,7 +696,7 @@ test('13 pins: the seam coalescer keys on adjacency — prose on either side kee
     assert.equal(root.querySelectorAll('.action-group').length, 2,
       'prose between them is a run boundary — two runs, two headers');
   }
-  // Half B: the chunk below STARTS with prose.
+  // Half B: the chunk below opens with prose, so its own run starts after it.
   {
     const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
     const main = new Conversation(root, {});
@@ -724,4 +727,67 @@ test('14 pins: a historical page ending in a tool run arrives collapsed', async 
   assert.equal(groups.length, 1, 'the page\'s trailing run is one group');
   assert.equal(groups[0].hasAttribute('open'), false,
     'finalizeDanglingBlocks folds a static page\'s trailing run');
+});
+
+// ---------------------------------------------------------------------------
+// A1 — pins: the coalescer refuses across a run boundary the live renderer
+// honours. `turn_end` closes the GROUP but deliberately not the SEGMENT, so
+// `trailingOpenWrap` survives it and "the batch ended mid-run" cannot be read
+// off that pointer. The turn-end line is rendered at ROOT level, so it lands
+// between the two bubbles at the seam — in either orientation, since a
+// `turn_end` is ring-only and the cut can fall on either side of it.
+//
+// Live, in one pass, the same events render as TWO groups; paging them in
+// must not produce one.
+// ---------------------------------------------------------------------------
+test('A1 pins: a turn_end between the halves refuses the coalesce, whichever side it lands on', async (t) => {
+  await t.test('live, in one pass, the two runs are two groups', async () => {
+    const { root, Conversation } = await setupDOM();
+    const main = new Conversation(root, {});
+    for (const e of seq([
+      ...toolRun('mA', 0, 'tuA', 'Bash'),
+      { kind: 'turn_end', subtype: 'success', parentToolUseId: null },
+      ...toolRun('mB', 1, 'tuB', 'Read'),
+    ])) main.apply(e);
+    assert.equal(root.querySelectorAll('.action-group').length, 2,
+      'the reference rendering: turn_end ends the run');
+  });
+
+  await t.test('the batch ends with the turn_end', async () => {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    // The live chunk begins mid-run.
+    main.apply({ kind: 'tool_use_start', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', _seq: 60, parentToolUseId: null });
+    main.apply({ kind: 'tool_use', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', input: {}, _seq: 61, parentToolUseId: null });
+
+    const batch = renderEventBatch(seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+      ...toolRun('mA', 0, 'tuA', 'Bash'),
+      { kind: 'turn_end', subtype: 'success', parentToolUseId: null },
+    ]));
+    assert.ok(batch.trailingOpenWrap, 'turn_end does not close the segment — the wrap survives it');
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+    assert.equal(root.querySelectorAll('.action-group').length, 2,
+      'turn N\'s machinery must not fold into turn N+1\'s group');
+  });
+
+  await t.test('the chunk below begins with the turn_end', async () => {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    // A ring page can open on the ring-only turn_end of the turn above it.
+    main.apply({ kind: 'turn_end', subtype: 'success', parentToolUseId: null });
+    main.apply({ kind: 'tool_use_start', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', _seq: 61, parentToolUseId: null });
+    main.apply({ kind: 'tool_use', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', input: {}, _seq: 62, parentToolUseId: null });
+    assert.ok(main.leadingAssistantWrap, 'the chunk still exposes a merge target');
+
+    const batch = renderEventBatch(seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+      ...toolRun('mA', 0, 'tuA', 'Bash'),
+    ]));
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+    assert.equal(root.querySelectorAll('.action-group').length, 2,
+      'the divider sits between the halves — they are not one run');
+  });
 });

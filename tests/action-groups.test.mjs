@@ -416,3 +416,231 @@ test('11 pins: the group is a <details>/<summary> whose collapse IS the open att
   assert.equal(group.hasAttribute('open'), false);
   assert.equal(group.open, false, 'collapsed ⇔ the open attribute is absent');
 });
+
+// ---------------------------------------------------------------------------
+// A2 — pins: every wrap that can hold an open group is reached by the closers.
+// `_ensureMessageWrap` serves a CACHED wrap (the shared '__floating__' key an
+// orphan tool_result lands on) without re-arming the active-wrap pointer, so a
+// closer keyed on that pointer alone folds a different wrap and leaves this
+// group open for the rest of the session.
+// ---------------------------------------------------------------------------
+test('A2 pins: a group on a reused floating wrap is folded by the run-enders', async (t) => {
+  const CLOSERS = [
+    ['turn_end', { kind: 'turn_end', subtype: 'success' }],
+    ['user_echo', { kind: 'user_echo', text: 'later prompt', userIndex: 2 }],
+  ];
+  for (const [name, closer] of CLOSERS) {
+    await t.test(`${name} folds a group on the re-served floating wrap`, async () => {
+      const { root, Conversation } = await setupDOM();
+      const conv = new Conversation(root, {});
+      feed(conv, [
+        { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Bash' },
+        { kind: 'turn_end', subtype: 'success' },
+        // First orphan: CREATES the floating wrap, which arms the active pointer.
+        { kind: 'tool_result', toolUseId: 'ghost1', content: 'first orphan' },
+        { kind: 'user_echo', text: 'next prompt', userIndex: 1 },
+        { kind: 'turn_end', subtype: 'success' },
+        // Second orphan: the same floating wrap is served FROM CACHE, so the
+        // active pointer stays null while a fresh group opens on it.
+        { kind: 'tool_result', toolUseId: 'ghost2', content: 'second orphan' },
+      ]);
+      const stranded = groupsIn(root).find(g => g.textContent.includes('second orphan'));
+      assert.ok(stranded, 'the second orphan opened a group of its own');
+      assert.equal(stranded.hasAttribute('open'), true, 'it is open while it is the live run');
+
+      conv.apply(closer);
+      assert.equal(stranded.hasAttribute('open'), false,
+        `${name} must fold it — a group no closer reaches stays open for the session`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A3 — pins: an interrupted turn's machinery does not stay expanded.
+// ---------------------------------------------------------------------------
+test('A3 pins: a soft interrupt ends the run and folds its group', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, [...tool('m1', 0, 'tu1', 'Bash'), ...thinking('m1', 1)]);
+  const group = groupsIn(root)[0];
+  assert.equal(group.hasAttribute('open'), true);
+
+  conv.apply({ kind: 'system', subtype: 'soft_interrupted', data: { text: 'user interrupt' } });
+  assert.equal(group.hasAttribute('open'), false,
+    'the machinery will never continue — the run is over');
+  // The interrupt annotation itself still renders, and the segment stays open
+  // (a soft interrupt is not a bubble boundary).
+  assert.ok(root.textContent.includes('Turn interrupted'), 'the annotation still renders');
+});
+
+// ---------------------------------------------------------------------------
+// A4 — pins: the header does not understate failures. docs/features.md states
+// the clause appears when a tool result came back as an error; an orphan
+// result (no parent tool_use) is one.
+// ---------------------------------------------------------------------------
+test('A4 pins: an errored orphan tool_result counts toward the error clause', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'tu1', 'Bash'),
+    { kind: 'tool_result', toolUseId: 'ghost', content: 'boom', isError: true },
+  ]);
+  assert.equal(summaryTextOf(groupsIn(root)[0]), '2 actions · Bash, tool_result · 1 error');
+});
+
+// ---------------------------------------------------------------------------
+// B1 — pins: first-appearance order, proven by a label that is later
+// OUT-COUNTED by one seen after it. A count-descending tally reads
+// `Read ×3, Bash` here.
+// ---------------------------------------------------------------------------
+test('B1 pins: labels keep first-appearance order even when a later one out-counts them', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'x1', 'Bash'),
+    ...tool('m1', 1, 'x2', 'Read'), ...tool('m1', 2, 'x3', 'Read'), ...tool('m1', 3, 'x4', 'Read'),
+  ]);
+  assert.equal(summaryTextOf(groupsIn(root)[0]), '4 actions · Bash, Read ×3',
+    'Bash was seen first, so it leads — the tally is not sorted by count');
+});
+
+// ---------------------------------------------------------------------------
+// B2 — pins the OTHER arm of the manual-toggle guard: a group the user opened
+// by hand is not folded when the run ends. (Test 5b covers the collapsed arm,
+// which holds trivially because nothing reopens a group.)
+// ---------------------------------------------------------------------------
+test('B2 pins: a group the user re-opened by hand survives the run ending', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, tool('m1', 0, 'tu1', 'Bash'));
+  const group = groupsIn(root)[0];
+  const summary = group.querySelector('.ag-summary');
+
+  summary.click();            // the user collapses it
+  summary.click();            // …and opens it again
+  assert.equal(group.hasAttribute('open'), true, 'sanity: the user\'s toggle left it open');
+
+  feed(conv, text('m1', 1, 'prose that ends the run'));
+  assert.equal(group.hasAttribute('open'), true,
+    'the auto-collapse must leave a group the user chose to keep open');
+});
+
+// ---------------------------------------------------------------------------
+// B3 — pins: the error tally is scoped to the group's own tools.
+// ---------------------------------------------------------------------------
+test('B3 pins: an errored tool inside a sub-agent does not count against the outer group', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: {} },
+    { kind: 'tool_use_start', msgId: 'ms', blockIdx: 0, toolUseId: 'ctu', name: 'Read', parentToolUseId: 'tuA' },
+    { kind: 'tool_use', msgId: 'ms', blockIdx: 0, toolUseId: 'ctu', name: 'Read', input: {}, parentToolUseId: 'tuA' },
+    { kind: 'tool_result', toolUseId: 'ctu', content: 'no such file', isError: true, parentToolUseId: 'tuA' },
+  ]);
+
+  const outerBlocks = root.querySelector('.msg.assistant > .blocks');
+  const outer = [...outerBlocks.children].find(n => n.classList.contains('action-group'));
+  const nested = [...root.querySelectorAll('.sub-conversation-body .msg.assistant > .blocks')][0]
+    .querySelector('.action-group');
+  assert.ok(nested, 'sanity: the sub-agent has a group of its own');
+  assert.equal(summaryTextOf(nested), '1 action · Read · 1 error',
+    'sanity: the failure really is inside the nested group');
+  assert.equal(summaryTextOf(outer), '1 action · Agent',
+    'the outer header reports the Agent call, not the sub-agent\'s failure');
+});
+
+// ---------------------------------------------------------------------------
+// B4 — pins: the append seam re-opens a group whose node has left the wrap
+// (the lazy-history seam merge removes a folded-away donor), instead of
+// appending into a node no longer in the document.
+// ---------------------------------------------------------------------------
+test('B4 pins: a detached group is replaced, not appended into', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, tool('m1', 0, 'tu1', 'Bash'));
+  const wrap = conv.messageWraps.get('m1');
+  const detached = wrap.actionGroup;
+  detached.remove(); // e.g. a seam merge folded this node away
+
+  feed(conv, tool('m1', 1, 'tu2', 'Read'));
+
+  const fresh = wrap.actionGroup;
+  assert.ok(fresh !== detached, 'a group that left the wrap is not reused');
+  assert.ok(fresh.parentNode === wrap.body, 'the fresh group is in the wrap body');
+  assert.equal(agBodyOf(fresh).children.length, 1, 'the new block went into the live group');
+  assert.equal(agBodyOf(detached).children.length, 1,
+    'the detached node received nothing — it would never have reached the document');
+});
+
+// ---------------------------------------------------------------------------
+// B5 — pins: an orphan tool_result is machinery and folds with the rest.
+// ---------------------------------------------------------------------------
+test('B5 pins: a tool_result with no parent tool_use is grouped like other machinery', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    { kind: 'tool_result', toolUseId: 'nobody', content: 'stray output' },
+  ]);
+  const blocks = root.querySelector('.msg.assistant > .blocks');
+  assert.equal([...blocks.children].filter(n => n.classList.contains('tool-result')).length, 0,
+    'an orphan result must not sit bare beside the prose');
+  const group = groupsIn(root)[0];
+  assert.ok(group, 'it opened a group');
+  assert.ok([...agBodyOf(group).children].some(n => n.classList.contains('tool-result')),
+    'the orphan result is inside the group');
+});
+
+// ---------------------------------------------------------------------------
+// B6 — pins: the non-text arm of _appendStreamingBlock's creation branch. It
+// is REACHABLE, not dead: Ring._trim's plain-cut last resort (src/instances.ts
+// — a single giant non-quiescent span) can leave the ring head mid-block, so a
+// thinking_delta arrives with its thinking_start already evicted.
+// ---------------------------------------------------------------------------
+test('B6 pins: a thinking block born from a bare thinking_delta still joins the group', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    { kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'cut off mid-block' },
+  ]);
+  const blocks = root.querySelector('.msg.assistant > .blocks');
+  assert.equal([...blocks.children].filter(n => n.classList.contains('thinking')).length, 0,
+    'a start-less thinking block must not sit bare beside the prose');
+  const group = groupsIn(root)[0];
+  assert.ok(group, 'it opened a group');
+  assert.ok([...agBodyOf(group).children].some(n => n.classList.contains('thinking')),
+    'the thinking block is inside the group');
+  assert.ok(group.textContent.includes('cut off mid-block'));
+});
+
+// ---------------------------------------------------------------------------
+// B7 — pins: only the group's OWN summary marks it user-toggled. A listener on
+// the group node instead would be reached by every nested <summary>'s click,
+// stamping the group the user never touched and suppressing its auto-collapse.
+// ---------------------------------------------------------------------------
+test('B7 pins: clicking a nested summary never marks the outer group user-toggled', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: {} },
+    { kind: 'text_delta', msgId: 'ms', blockIdx: 0, text: 'sub reply', parentToolUseId: 'tuA' },
+    { kind: 'text_end', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA' },
+    { kind: 'tool_result', toolUseId: 'tuA', content: 'done', isError: false },
+  ]);
+  const group = groupsIn(root).find(g => [...g.children].some(c => c.classList.contains('ag-body')
+    && [...c.children].some(k => k.classList.contains('tool'))));
+  const toolBlock = [...agBodyOf(group).children].find(n => n.classList.contains('tool'));
+
+  const nestedSummaries = [
+    toolBlock.firstElementChild,                                  // the tool's own summary
+    toolBlock.querySelector('.block.tool-result > summary'),      // the result's summary
+    toolBlock.querySelector('.sub-conversation > summary'),       // the sub-agent panel's summary
+  ];
+  for (const s of nestedSummaries) {
+    assert.ok(s, 'sanity: every nested summary the user can reach exists');
+    s.click();
+  }
+  assert.equal(group.hasAttribute('data-user-toggled'), false,
+    'a click inside the group is not a click on the group');
+
+  feed(conv, text('m1', 1, 'prose ends the run'));
+  assert.equal(group.hasAttribute('open'), false,
+    'the auto-collapse still fires — a nested click did not suppress it');
+});

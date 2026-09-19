@@ -114,16 +114,24 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
       const dst = oldestLeadingWrap.body;
       const src = batch.trailingOpenWrap.body;
       const lowerFirst = dst.firstElementChild; // captured BEFORE the move
+      // SEAM ADJACENCY, read at root level. `trailingOpenWrap` being non-null
+      // does NOT mean the batch ended mid-run: a run-ender that closes the
+      // group without closing the segment (a `turn_end` line, a soft-interrupt
+      // note) leaves the wrap pointer alive and renders at ROOT level, landing
+      // between the two bubbles. Requiring them to be immediate siblings is
+      // what reads that boundary — in either orientation, since a ring-only
+      // `turn_end` can fall on either side of the cut. Anything else rendered
+      // between the halves is likewise content the live view placed there, so
+      // refusing is the conservative answer.
+      const seamAdjacent = batch.trailingOpenWrap.node.nextElementSibling === oldestLeadingWrap.node;
       const ref = dst.firstChild;
       while (src.firstChild) dst.insertBefore(src.firstChild, ref);
-      // A run the seam cut in half would otherwise show two headers. The batch
-      // ending mid-run and the chunk below beginning mid-run means one run,
-      // not two: fold the older half into the newer one, whose node the live
-      // Conversation may still hold as its open group. Either half starting or
-      // ending with prose fails a check and the groups stay separate — prose
-      // is a run boundary.
+      // A run the seam cut in half would otherwise show two headers: fold the
+      // older half into the newer one, whose node the live Conversation may
+      // still hold as its open group. A half that starts or ends with prose
+      // fails a check and the groups stay separate — prose is a run boundary.
       const upper = lowerFirst ? lowerFirst.previousElementSibling : dst.lastElementChild;
-      if (isActionGroupNode(upper) && isActionGroupNode(lowerFirst)) {
+      if (seamAdjacent && isActionGroupNode(upper) && isActionGroupNode(lowerFirst)) {
         mergeActionGroupInto(lowerFirst, upper);
       }
       batch.trailingOpenWrap.node.remove();
