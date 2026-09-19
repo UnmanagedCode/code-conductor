@@ -425,7 +425,15 @@ export function compareInstanceRows(a: Record<string, unknown>, b: Record<string
 // worktrees costs a `git worktree list` per project — doing it a second time to
 // look the metadata back up was the single most expensive thing in an
 // unfiltered scan.
-async function sessionCwdsFor(p: { name: string; path: string }) {
+async function sessionCwdsFor(p: { name: string; path: string; degraded?: string }) {
+  // A DEGRADED ROW CONTRIBUTES NO TARGET. Its record could not be parsed, so it
+  // carries an empty path and there is nothing to scan — and the placement read
+  // below is exactly the read that threw. The unfiltered scope deliberately
+  // includes these rows (the listing contract keeps them visible so they stay
+  // deletable), and this scan is fanned out through one Promise.all, so a throw
+  // here rejects the whole batch and one unparseable file takes down the fleet
+  // view for every other project.
+  if (p.degraded) return [];
   const wts = await fsListWorktrees(p.name).catch(() => []);
   // ONE placement read per project, reused for its worktrees: they are all on
   // the same machine by construction, and the coordinate is what tells this

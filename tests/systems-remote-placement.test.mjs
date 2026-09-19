@@ -18,10 +18,11 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo, git, snapshotTree, assertTreeUnchanged } from './remoteSystem.mjs';
 import {
   createProject, deleteProject, adoptProject, getProject, listProjects,
-  resolveProjectDir, projectsRoot, projectStoreDir,
+  resolveProjectDir, projectsRoot, projectStoreDir, localWorktreesRoot,
 } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles, LOCAL_SYSTEM_ID } from '../src/systems/registry.ts';
@@ -337,6 +338,53 @@ describe('remote project placement', () => {
     assert.equal(refused.ok, false, JSON.stringify(refused));
     assert.equal(refused.code, 'PROJECT_PLACEMENT_IN_USE');
     assert.equal((await readRecord('app')).location.path, tree, 'and nothing was written');
+  });
+
+  // PINS THE CROSS-KIND DIRECTIONS, which are what make the predicate about the
+  // DERIVATION rather than about the destination. A local checkout is derived
+  // from cc's own `.worktrees` root and a remote one from `dirname(path)`, so
+  // the derivation is stable across a relocation only when BOTH ends are local.
+  // Either cross-kind move changes which rule applies while the checkout stays
+  // where it is — and one of them also sends `repairWorktreesAfterProjectMove`
+  // at the wrong machine, rewriting `parentPath` to a tree the checkout and its
+  // gitdir are not under.
+  test('a relocate from a REMOTE tree to a LOCAL one is refused while worktrees are registered', async () => {
+    const tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+    const wt = await createWorktree('app', { name: 'feature' });
+    assert.equal(wt.worktreePath,
+      path.posix.join(path.posix.dirname(tree), '.worktrees', 'app', 'feature'),
+      'premise: the checkout is derived from the remote parent and sits on the system');
+
+    await fs.rm(tree, { recursive: true, force: true });
+    // The destination is on cc's own machine, out of the projects root.
+    const local = await seedRepo(path.join(await mkdtemp('cc-relocate-'), 'app'));
+
+    const refused = await adoptProject('app', local, { onStaleRecord: 'relocate' });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(refused.code, 'PROJECT_PLACEMENT_IN_USE');
+    assert.match(refused.reason, /feature/, 'and the refusal names what has to be cleared');
+    assert.deepEqual((await readRecord('app')).location,
+      { kind: 'remote', system: remote.id, remoteId: null, path: tree },
+      'the refused relocation wrote nothing');
+  });
+
+  test('a relocate from a LOCAL tree to a REMOTE one is refused while worktrees are registered', async () => {
+    const local = await seedRepo(path.join(await mkdtemp('cc-relocate-'), 'app'));
+    assert.equal((await adoptProject('app', local)).ok, true);
+    const wt = await createWorktree('app', { name: 'feature' });
+    assert.equal(wt.worktreePath, path.join(localWorktreesRoot(), 'app', 'feature'),
+      'premise: the checkout is derived from cc\'s own worktrees root');
+
+    await rmrf(local);
+    const tree = await seedRepo(path.join(remote.root, 'app'));
+
+    const refused = await adoptProject('app', tree, { system: remote.id, onStaleRecord: 'relocate' });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(refused.code, 'PROJECT_PLACEMENT_IN_USE');
+    assert.match(refused.reason, /feature/);
+    assert.deepEqual((await readRecord('app')).location, { kind: 'local', path: local },
+      'the refused relocation wrote nothing');
   });
 
   // PINS: AC10 ON THE REMOTE RELOCATE ARM. The relocate branch passes the

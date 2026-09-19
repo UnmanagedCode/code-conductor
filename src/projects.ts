@@ -1591,21 +1591,28 @@ export async function adoptProject(
       // A WORKTREE RE-DERIVES ITS PATH FROM ITS PARENT, SO THE PARENT CANNOT
       // MOVE WHILE A REGISTRATION EXISTS — the same invariant, in the same
       // refusal shape, that `setProjectRemote` already enforces for a target
-      // change. It bites only for a REMOTE relocation: `worktreePathFor`
-      // derives a local checkout from cc's own `.worktrees` root, which does
-      // not depend on where the project's tree is, but a remote one from
-      // `dirname(location.path)`. The checkout itself does not move, so stored
-      // and derived would diverge permanently — and the transcript guard,
-      // which re-derives precisely so it cannot disagree with what it guards,
-      // would then check paths that hold nothing while the real checkout
-      // location went unprotected.
+      // change.
+      //
+      // THE PREDICATE IS OVER THE DERIVATION, NOT OVER EITHER ENDPOINT.
+      // `worktreePathFor` derives a LOCAL checkout from cc's own `.worktrees`
+      // root, which does not depend on where the project's tree is, and a
+      // REMOTE one from `dirname(location.path)`. So the derivation survives a
+      // relocation only when BOTH ends are local; every other combination
+      // changes where the checkout is derived to while the checkout itself
+      // stays put. Stored and derived then diverge permanently — and the
+      // transcript guard, which re-derives precisely so it cannot disagree with
+      // what it guards, checks paths that hold nothing while the real checkout
+      // goes unprotected. A remote→local move is worse still: the repair below
+      // would run `git worktree repair` through cc's own handle on paths that
+      // exist on another machine, and rewrite `parentPath` to a tree neither
+      // the checkout nor its gitdir is under.
       //
       // NOT narrowed to "only when the system has no `worktreesDir`": that
       // override can be cleared afterwards, and the divergence would appear
       // retroactively over a move nothing refused. `'replace'` needs no such
       // guard — it discards the registrations along with the store subtree,
       // which is what its `discards.worktrees` count tells the caller.
-      if (location.kind === 'remote') {
+      if (heldRecord.location.kind !== 'local' || location.kind !== 'local') {
         const { registeredWorktreeNames } = await import('./worktrees.ts');
         const held = await registeredWorktreeNames(name);
         if (held.length > 0) {

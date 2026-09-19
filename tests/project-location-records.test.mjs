@@ -13,7 +13,7 @@ import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject } from '
 import {
   listProjects, resolveProjectDir, getProject, adoptProject, createProject,
   readProjectRecord, projectStoreDir, projectsRoot as projectsRootFn,
-  localWorktreesRoot, pluginsRoot,
+  localWorktreesRoot, pluginsRoot, encodeCwd,
 } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import * as mcp from '../src/mcp/handlers.ts';
@@ -27,7 +27,7 @@ const git = (cwd, ...args) => new Promise((resolve, reject) => {
   });
 });
 
-let ctx, baseUrl, instances, home, projectsRoot;
+let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
 
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
 after(async () => { await ctx.close(); });
@@ -37,6 +37,7 @@ beforeEach(async () => {
   projectsRoot = r.projectsRoot;
   ctx.projectsRoot = r.projectsRoot;
   ctx.claudeProjectsRoot = r.claudeProjectsRoot;
+  claudeProjectsRoot = r.claudeProjectsRoot;
 });
 afterEach(async () => {
   await instances.shutdown();
@@ -176,6 +177,38 @@ test('a malformed record still LISTS, with a degraded marker and an empty path',
   assert.equal(broken.path, '');
   assert.ok(typeof broken.degraded === 'string' && broken.degraded.length > 0);
   assert.equal(rows.find(p => p.name === 'healthy').degraded, undefined);
+});
+
+// PINS THE SCAN HALF OF THE SAME CONTRACT. `list_sessions` with no `project`
+// scans EVERY registered project, and a degraded row has no path to scan — so
+// it must contribute no scan target rather than take the whole fleet view down.
+// The scan reads the record to get the machine coordinate, which is the read
+// that throws on a malformed one; with no per-item tolerance, one unparseable
+// file 500s a conductor's primary orientation tool until someone repairs it by
+// hand. The listing half already refuses to drop the row; this is the other
+// side of the same promise.
+test('a malformed record does not take down the unfiltered list_sessions scan', async () => {
+  const file = path.join(projectStoreDir('broken'), 'project.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, '{ "location": { "kind": "sideways" } }');
+  const healthy = path.join(projectsRoot, 'healthy');
+  await fs.mkdir(healthy, { recursive: true });
+  await registerLocalProject('healthy', healthy);
+  // A session on disk, so the healthy group is emitted at all — an empty group
+  // is dropped, and an empty result would satisfy "did not throw" vacuously.
+  const dir = path.join(claudeProjectsRoot, encodeCwd(await fs.realpath(healthy)));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.copyFile(path.join(__dirname, 'fixtures', 'session-sample.jsonl'),
+    path.join(dir, '11111111-2222-3333-4444-555555555555.jsonl'));
+
+  const res = await mcp.listSessions({}, { instances, playbookGate: null });
+  assert.notEqual(res?.ok, false, JSON.stringify(res));
+  assert.match(res.text, /▸ healthy/,
+    `the healthy project must still be scanned: ${res.text}`);
+  assert.match(res.text, /11111111-2222-3333-4444-555555555555/,
+    'and its session with it, so the pass is not an empty listing');
+  assert.ok(!/broken/.test(res.text),
+    'the degraded row contributes no scan target — it has no path to scan');
 });
 
 // ── creation ordering ──────────────────────────────────────────────────────

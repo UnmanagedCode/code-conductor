@@ -264,7 +264,7 @@ async function ledgerAdd(root, ledger, bucket, entry, log, why) {
 //                 to a crash between the store rename and the json rewrite,
 //                 where the key has no infix so the row reads DONE while the
 //                 json still names the vacated directory.
-//                 KNOWN VACUITY, recorded so nobody leans on it: C4 is also
+//                 KNOWN VACUITY, recorded so nobody leans on it: C3 is also
 //                 green on a fully un-migrated legacy store, because legacy rows
 //                 were written with `worktreeName` equal to their store key. It
 //                 is a TORN-ROW DETECTOR, not a "worktrees are migrated" signal;

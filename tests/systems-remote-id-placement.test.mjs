@@ -208,9 +208,9 @@ describe('remoteId in the project record', () => {
   // does not share.
   //
   // The holder is registered directly rather than adopted: this provider
-  // advertises remotes and so refuses a request naming none, while the guard
-  // itself is store reads only and never contacts a system — which is the
-  // other half of what this fixture shows.
+  // advertises remotes and so refuses a request naming none. That is legitimate
+  // rather than a shortcut — the guard reads records and contacts no system, so
+  // a place cc could not reach through the provider is still a registered one.
   test('a candidate on a named target does not collide with a holder on the DEFAULT target', async () => {
     const held = await seedRepo(path.join(sandbox, 'h_h'));
     await registerProject('holder', { kind: 'remote', system: remote.id, remoteId: null, path: held });
