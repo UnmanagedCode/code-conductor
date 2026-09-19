@@ -794,8 +794,8 @@ export function buildTools(): Tool[] {
         'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
         'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_IS_CC_STATE, ' +
         'TARGET_INSIDE_REPO, TARGET_NO_WORK_TREE, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, ' +
-        'INVALID_REMOTE_ID, INVALID_STALE_ACTION, PROJECT_EXISTS, PROJECT_EXISTS_STALE, ' +
-        'PROJECT_EXISTS_UNRESOLVABLE — not errors. PROJECT_EXISTS_STALE means the name is held by a ' +
+        'INVALID_REMOTE_ID, INVALID_STALE_ACTION, PROJECT_PLACEMENT_IN_USE, PROJECT_EXISTS, ' +
+        'PROJECT_EXISTS_STALE, PROJECT_EXISTS_UNRESOLVABLE — not errors. PROJECT_EXISTS_STALE means the name is held by a ' +
         'record whose path no longer exists; it carries `heldPath` and `discards`, and re-calling ' +
         'with `onStaleRecord` resolves it. PROJECT_EXISTS_UNRESOLVABLE means cc could not ask, so it ' +
         'cannot tell a moved project from a machine that is merely down. ' +

@@ -267,6 +267,74 @@ describe('remote project placement', () => {
     assert.equal((await getProject('existing')).path, tree);
   });
 
+  // PINS: A REMOTE RELOCATION IS REFUSED WHILE A WORKTREE IS REGISTERED, in the
+  // same shape and for the same reason `setProjectRemote` already refuses a
+  // target change: a worktree re-derives `(system, remoteId, path)` from its
+  // parent, so the parent cannot move while a registration exists.
+  //
+  // What breaks otherwise is the invariant `worktrees.ts`' own header states —
+  // the transcript guard derives every registered worktree's cwd with the same
+  // call `createWorktree` used, so the guard cannot disagree with the thing it
+  // guards. A remote checkout sits at `<dirname(old)>/.worktrees/…` and does not
+  // move; `worktreePathFor` would start deriving from `dirname(new)`. Stored and
+  // derived then diverge permanently, and the guard checks paths that hold
+  // nothing — so a later registration colliding with the REAL checkout is not
+  // refused and two places silently share one transcript directory.
+  //
+  // NOT narrowed to "only when `worktreesDir` is unset": that override can be
+  // cleared later, and the divergence would then appear retroactively over a
+  // move nothing refused.
+  test('a remote relocate is refused while the project has registered worktrees', async () => {
+    const tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+    const wt = await createWorktree('app', { name: 'feature' });
+    assert.equal(wt.worktreePath,
+      path.posix.join(path.posix.dirname(tree), '.worktrees', 'app', 'feature'),
+      'premise: the checkout is derived from the OLD project path');
+
+    await fs.rm(tree, { recursive: true, force: true });
+    const moved = await seedRepo(path.join(remote.root, 'app-moved'));
+
+    const refused = await adoptProject('app', moved, { system: remote.id, onStaleRecord: 'relocate' });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(refused.code, 'PROJECT_PLACEMENT_IN_USE');
+    assert.match(refused.reason, /feature/, 'and the refusal names what has to be cleared');
+    assert.equal((await readRecord('app')).location.path, tree, 'the refused relocation wrote nothing');
+
+    // POSITIVE CONTROL: clearing the registration is what unblocks it, so the
+    // refusal above is about the worktree and not about remoteness.
+    const { removeWorktree } = await import('../src/worktrees.ts');
+    await removeWorktree('app', 'feature', { force: true }).catch(() => {});
+    await fs.rm(path.join(projectStoreDir('app'), 'worktrees'), { recursive: true, force: true });
+    const ok = await adoptProject('app', moved, { system: remote.id, onStaleRecord: 'relocate' });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.equal((await readRecord('app')).location.path, moved);
+  });
+
+  // PINS: AC10 ON THE REMOTE RELOCATE ARM. The relocate branch passes the
+  // LOCATION's system to the transcript-key guard, and the guard compares
+  // across every system — the CLI names its transcript directory from the
+  // working directory and nothing else, so `/srv/a_b` on a box and `/srv/a-b`
+  // on the same box are one directory's worth of sessions. A guard that always
+  // passed `local` would still refuse local collisions while silently letting
+  // every cross-system one through, so the local arm alone cannot pin this.
+  test('a remote relocate is refused when its target collides on the transcript key', async () => {
+    const gone = await seedRepo(path.join(remote.root, 'r_gone'));
+    assert.equal((await adoptProject('app', gone, { system: remote.id })).ok, true);
+    await fs.rm(gone, { recursive: true, force: true });
+
+    const holder = await seedRepo(path.join(remote.root, 'h_h'));
+    assert.equal((await adoptProject('holder', holder, { system: remote.id })).ok, true);
+    const colliding = await seedRepo(path.join(remote.root, 'h-h'));
+    assert.notEqual(colliding, holder, 'premise: two different directories');
+
+    const res = await adoptProject('app', colliding, { system: remote.id, onStaleRecord: 'relocate' });
+    assert.equal(res.ok, false, JSON.stringify(res));
+    assert.equal(res.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(res.reason, /'holder'/);
+    assert.equal((await readRecord('app')).location.path, gone, 'the refused relocation wrote nothing');
+  });
+
   // PINS: duplicates compare (system, path), not path alone — the same path on
   // two different machines is two different trees.
   test('the duplicate check is on (system, path), not path', async () => {

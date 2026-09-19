@@ -274,10 +274,9 @@ test("onStaleRecord:'relocate' still refuses a path that collides on the transcr
     'the refused relocation wrote nothing');
 });
 
-// PINS: the guard above does not refuse a LEGITIMATE relocation — the candidate
-// skips its own identity, so the stale record being repointed cannot refuse its
-// own replacement, and a relocate onto a free path still succeeds.
-test("onStaleRecord:'relocate' is not refused by the record it is replacing", async () => {
+// PINS: the guard above does not refuse a legitimate relocation onto a FREE
+// path — the broad half, which any implementation of the guard satisfies.
+test("onStaleRecord:'relocate' onto a free path still succeeds", async () => {
   const gone = await makeOutsideRepo('self-gone');
   assert.equal((await adoptProject('app', gone.repoPath)).ok, true);
   await rmrf(gone.repoPath);
@@ -286,6 +285,27 @@ test("onStaleRecord:'relocate' is not refused by the record it is replacing", as
   const res = await adoptProject('app', fresh.repoPath, { onStaleRecord: 'relocate' });
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal((await readProjectRecord('app')).location.path, fresh.real);
+});
+
+// PINS: THE SELF-EXCLUSION, which is the only thing that lets this relocation
+// through. `transcriptCwdCollision` skips the candidate's own identity, so the
+// stale record being repointed cannot refuse its own replacement — and the
+// fixture is built so nothing else can do the letting-through: the target
+// encodes to the SAME transcript directory as the held path, which is exactly
+// what the guard added above refuses for any OTHER holder. A relocation from
+// `x_a` to `x-a` is the ordinary shape of it: a tree renamed in place.
+test("onStaleRecord:'relocate' is not refused by the record it is replacing", async () => {
+  const gone = await makeOutsideRepo('x_a');
+  assert.equal((await adoptProject('app', gone.repoPath)).ok, true);
+  await rmrf(gone.repoPath);
+  const renamed = await makeOutsideRepo('x-a');
+  assert.notEqual(renamed.real, gone.real, 'premise: two different paths');
+  assert.equal(encodeCwd(renamed.real), encodeCwd(gone.real),
+    'premise: they encode to ONE transcript directory, so only the self-skip lets this through');
+
+  const res = await adoptProject('app', renamed.repoPath, { onStaleRecord: 'relocate' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal((await readProjectRecord('app')).location.path, renamed.real);
 });
 
 // PINS: a project's tree moved and its WORKTREES did not — both directions of
@@ -316,6 +336,36 @@ test("onStaleRecord:'relocate' repairs the project's worktree back-references", 
   const meta = (await listWorktrees('app')).find(w => w.worktreeName === 'feature');
   assert.ok(meta, 'the worktree still lists');
   assert.equal(meta.parentPath, movedReal);
+});
+
+// PINS: THE REPAIR IS BEST-EFFORT, IN BOTH HALVES. The relocation is already
+// written when the repair runs, so a repair that cannot run must not turn a
+// successful relocation into a 500 — a retry would then answer an ordinary
+// PROJECT_EXISTS, because the name now resolves. And the STORE half must still
+// happen when the GIT half fails: `parentPath` is what removal, the merge
+// lifecycle and merge status all run git in, and leaving it naming the old
+// path is the very thing the repair exists to stop.
+test("onStaleRecord:'relocate' stands, and still rewrites parentPath, when the repair cannot run", async () => {
+  const gone = await makeOutsideRepo('repairfail-gone');
+  assert.equal((await adoptProject('app', gone.repoPath)).ok, true);
+  await createWorktree('app', { name: 'feature' });
+  await rmrf(gone.repoPath);
+
+  // A plain directory: adoptable (a non-git project is an ordinary project),
+  // but `git worktree repair` has no repository to run in.
+  const plain = path.join(home, 'repairfail-plain');
+  await fs.mkdir(plain, { recursive: true });
+  const plainReal = await fs.realpath(plain);
+  await assert.rejects(() => fs.access(path.join(plain, '.git')), 'premise: the target is not a repo');
+
+  const res = await adoptProject('app', plain, { onStaleRecord: 'relocate' });
+  assert.equal(res.ok, true, `the relocation must stand: ${JSON.stringify(res)}`);
+  assert.equal((await readProjectRecord('app')).location.path, plainReal);
+
+  const meta = (await listWorktrees('app')).find(w => w.worktreeName === 'feature');
+  assert.ok(meta, 'the registration survives');
+  assert.equal(meta.parentPath, plainReal,
+    'the store half of the repair ran even though the git half could not');
 });
 
 // PINS: replace is the other branch — the store subtree goes.

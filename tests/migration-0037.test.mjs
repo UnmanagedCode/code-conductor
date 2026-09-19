@@ -258,10 +258,11 @@ test('a directory whose name fails NAME_RE mints no record', async () => {
 });
 
 test('a non-NAME_RE directory holding a plugin manifest is neither moved nor left blocking the probe', async () => {
-  // INVARIANT: C3's scope AND step 3's enumeration scope. An unscoped clause
-  // and an unscoped enumeration fail DIFFERENT ones of these three, so all
-  // three are asserted: nothing at `.plugins/foo bar`, no record minted, and
-  // the second run is a no-op rather than a permanently-red probe.
+  // INVARIANT: step 3's enumeration scope, and step 1c's. Minting a record for
+  // a name the listing filters out produces a project registered nowhere and
+  // listed nowhere, and moving its tree into `.plugins/` would do that to a
+  // directory nobody adopted. All three symptoms are asserted, because an
+  // unscoped enumeration and an unscoped step 1c fail DIFFERENT ones.
   const { root } = await buildFixture();
   await m0037.run({ root, log: logs().log });
   assert.equal(await exists(path.join(root, '.plugins', 'foo bar')), false);
@@ -358,8 +359,9 @@ test('a run interrupted BETWEEN the plugin rename and the record write recovers'
   // STATE REPRODUCED: exactly the window between step 3's two fs calls — the
   // checkout sits at `.plugins/<name>`, nothing is at `<root>/<name>`, and NO
   // record exists (a plugin had none before this migration). Without source e
-  // this is unrecoverable AND the probe converges over it: C3 green because the
-  // directory moved, C1 vacuous because no project.json exists.
+  // this is unrecoverable: no clause sees it — a records clause is vacuous with
+  // no project.json on disk, and nothing about `<root>/<name>` is true of a
+  // directory that has already been renamed away from it.
   const root = await mkRoot();
   await fs.mkdir(path.join(root, '.plugins', 'code-share'), { recursive: true });
   await writeJson(path.join(root, '.plugins', 'code-share', 'conductor.plugin.json'), { id: 'code-share' });
@@ -417,11 +419,11 @@ test('a run interrupted mid-record-rewrite completes on the next run', async () 
 
 // ── ledger interactions ───────────────────────────────────────────────────
 
-test('a refused plugin move ledgers the name and C3 goes green', async () => {
+test('a refused plugin move ledgers the name and the probe still converges', async () => {
   // INVARIANT: step 3's registered-worktree refusal. Moving a main checkout
   // invalidates every worktree's gitdir back-reference, so the move is REFUSED
-  // about the input, ledgered, and excluded from C3 — which is what stops the
-  // probe being permanently red.
+  // about the input and ledgered — and the ledger entry is what stops step 3
+  // retrying it on every boot.
   const { root } = await buildFixture();
   await m0037.run({ root, log: logs().log });
   assert.ok(await exists(path.join(root, 'code-hub', 'conductor.plugin.json')),
@@ -430,7 +432,7 @@ test('a refused plugin move ledgers the name and C3 goes green', async () => {
   const ledger = await readJson(path.join(root, STORE, LEDGER));
   assert.ok(ledger.plugins.includes('code-hub'));
   const second = await m0037.run({ root, log: logs().log });
-  assert.equal(second.applied, false, 'C3 excludes the ledgered name');
+  assert.equal(second.applied, false, 'a ledgered refusal is a converged state');
 });
 
 test('a refused worktree move on an ADOPTED project leaves the checkout in .external/ and C2 still goes green', async () => {
@@ -691,6 +693,49 @@ test('a directory created under the projects root AFTER the migration completes 
   const second = await m0037.run({ root, log: logs().log });
   assert.equal(second.applied, false);
   assert.equal(await exists(path.join(storeDir(root, 'container'), 'project.json')), false);
+});
+
+test('a plugin repo cloned into the projects root AFTER the migration is left alone, for ever', async () => {
+  // STATE REPRODUCED: a completed migration, then a user clones a plugin repo to
+  // `<root>/someplugin`. Under the new model that is an unregistered directory —
+  // not a project and not a plugin until a human adopts it. A probe clause that
+  // goes red over a root `conductor.plugin.json` has NO step that can clear it:
+  // the only enumeration reaching a root-level manifest dir is the in-root scan,
+  // which is backfill-gated, so the directory is never moved, never ledgered and
+  // never excluded, and every boot re-runs the whole pipeline for ever.
+  const { root } = await buildFixture();
+  await m0037.run({ root, log: logs().log });
+
+  await fs.mkdir(path.join(root, 'someplugin'), { recursive: true });
+  await writeJson(path.join(root, 'someplugin', 'conductor.plugin.json'), { id: 'someplugin' });
+
+  for (const n of [1, 2, 3]) {
+    assert.equal((await m0037.run({ root, log: logs().log })).applied, false, `run ${n} must be a no-op`);
+  }
+  assert.equal(await exists(path.join(storeDir(root, 'someplugin'), 'project.json')), false,
+    'no record is minted for a directory nobody adopted');
+  assert.ok(await exists(path.join(root, 'someplugin', 'conductor.plugin.json')),
+    'and the directory is left exactly where the user put it');
+  assert.equal(await exists(path.join(root, '.plugins', 'someplugin')), false);
+});
+
+test("an in-root project that acquires a manifest is not relocated out from under its owner", async () => {
+  // STATE REPRODUCED: a migrated project whose tree sits in the root gains a
+  // `conductor.plugin.json` — a plugin repo adopted there, or a project that
+  // grew a manifest. A red clause here does not merely re-run the pipeline: the
+  // re-run's step 3 `fs.rename`s the user's own tree into `.plugins/<name>` and
+  // repoints the record at it. Relocating a user's directory is not something a
+  // migration may do on a boot after it has completed.
+  const { root, inroot } = await buildFixture();
+  await m0037.run({ root, log: logs().log });
+  const inode = (await fs.stat(inroot)).ino;
+
+  await writeJson(path.join(inroot, 'conductor.plugin.json'), { id: 'inroot-plug' });
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+  assert.equal((await fs.stat(inroot)).ino, inode, 'the tree did not move');
+  assert.deepEqual((await recordOf(root, 'inroot')).location, { kind: 'local', path: inroot });
+  assert.equal(await exists(path.join(root, '.plugins', 'inroot')), false);
 });
 
 test('a legacy store of bare in-root directories is migrated, not read as already converged', async () => {

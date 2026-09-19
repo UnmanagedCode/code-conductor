@@ -162,7 +162,7 @@ const ledgerPath = root => path.join(storeRoot(root), LEDGER_FILE);
 const markerPath = root => path.join(storeRoot(root), MARKER_FILE);
 
 // Store rows that could be a project: a `project.json` under a NAME_RE-passing
-// directory. The NAME_RE scope is the same one step 1c and clause C3 apply —
+// directory. The NAME_RE scope is the same one step 1c and step 3 apply —
 // a row cc's own listing filters out is not a project this migration can make
 // into one, so including it here would leave a clause permanently red.
 async function storeRowNames(root) {
@@ -220,6 +220,36 @@ async function ledgerAdd(root, ledger, bucket, entry, log, why) {
 
 // ── the convergence probe ──────────────────────────────────────────────────
 //
+// EVALUATED ONLY WHEN THE COMPLETION MARKER IS PRESENT — `run` short-circuits
+// on it — so every clause below answers one question: "is anything TORN in a
+// store this migration has already finished?" A clause whose red can only be
+// cleared by a BACKFILL source does not belong here, because the backfill is
+// gated off by the same marker that let the clause run at all.
+//
+// THAT IS WHY THERE IS NO PLUGIN CLAUSE. One was drafted — "no `<root>/<name>`
+// holds a root `conductor.plugin.json`" — to cover step 3, and it is wrong in
+// both directions:
+//   - It does not cover step 3's crash window. That window leaves the checkout
+//     at `.plugins/<name>` with no record and NOTHING at `<root>/<name>`, so a
+//     clause about `<root>/<name>` is green over it. Source e reads the
+//     destination side and is ungated precisely so it recovers on any run;
+//     `a run interrupted BETWEEN the plugin rename and the record write
+//     recovers` pins that.
+//   - It has no step that can clear it post-marker. The only enumeration that
+//     reaches a root-level manifest directory is the in-root scan, which is
+//     backfill-gated — so the directory is never moved, never ledgered and
+//     never excluded, and every boot re-runs the whole pipeline for ever: the
+//     permanently-red class this file's opening rule forbids, and the pattern
+//     0009 and 0017 were unregistered from the chain for.
+//   - Making the enumeration ungated instead would be worse: a
+//     `conductor.plugin.json` sitting in the projects root would become an
+//     authoritative on-disk declaration that cc relocates the user's directory
+//     over. Nothing on disk is authoritative here, and discovery is
+//     user-initiated.
+// Post-marker, a manifest-bearing directory in the projects root is an
+// unregistered directory — not a project and not a plugin until a human adopts
+// it. That is the correct answer, not a gap.
+//
 // C1 records    — every NAME_RE-passing `project.json` has a `location`.
 //                 A row no source can locate is MOVED ASIDE, which removes the
 //                 input, so this clause needs no exclusion list.
@@ -228,13 +258,7 @@ async function ledgerAdd(root, ledger, bucket, entry, log, why) {
 //                 INSIDE it, a ledgered move leaves a real directory there, and
 //                 `fs.rmdir` on a non-empty directory fails — so the absent-form
 //                 clause could never go green.
-// C3 plugins    — no `<root>/<name>` whose name passes NAME_RE holds a root
-//                 `conductor.plugin.json`, excluding `ledger.plugins`. The
-//                 NAME_RE scope matches step 1c's: such directories demonstrably
-//                 exist, and one holding a manifest is skipped by step 1c, not
-//                 moved by step 3, not ledgered, and — without the scope — not
-//                 excluded here either: permanently red.
-// C4 worktrees  — for every registration, `worktree.json`'s `worktreeName` ===
+// C3 worktrees  — for every registration, `worktree.json`'s `worktreeName` ===
 //                 its store key, excluding `ledger.worktrees`. This is the
 //                 json↔key equality, NOT an infix test: the infix test is blind
 //                 to a crash between the store rename and the json rewrite,
@@ -252,11 +276,6 @@ async function converged(root, ledger) {
   }
   for (const e of await dirEntries(path.join(root, EXTERNAL))) {
     if (e.isSymbolicLink()) return false;
-  }
-  for (const e of await dirEntries(root)) {
-    if (!e.isDirectory() || e.name.startsWith('.') || !NAME_RE.test(e.name)) continue;
-    if (ledger.plugins.includes(e.name)) continue;
-    if (await pathExists(path.join(root, e.name, PLUGIN_MANIFEST))) return false;
   }
   for (const e of await dirEntries(projectsStore(root))) {
     if (!e.isDirectory()) continue;
@@ -484,9 +503,10 @@ async function dropRemoteWorktrees(root, plan, log) {
 // registration). The window leaves the checkout at `.plugins/<name>`, no record,
 // and nothing at `<root>/<name>`. Source e sees exactly that and rebuilds the
 // location; step 5 then writes the record. WITHOUT SOURCE E that state is
-// unrecoverable AND the probe converges over it — C3 green because the directory
-// moved, C1 vacuous because no `project.json` exists — silently destroying a
-// registered plugin project.
+// unrecoverable AND no clause sees it — the records clause is vacuous with no
+// `project.json` on disk, and nothing about `<root>/<name>` is true of a
+// directory already renamed away from it — silently destroying a registered
+// plugin project.
 async function movePlugins(root, plan, ledger, log) {
   const moved = [];
   for (const [n, entry] of plan) {

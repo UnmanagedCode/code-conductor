@@ -1588,6 +1588,36 @@ export async function adoptProject(
       };
     }
     if (staleAction === 'relocate') {
+      // A WORKTREE RE-DERIVES ITS PATH FROM ITS PARENT, SO THE PARENT CANNOT
+      // MOVE WHILE A REGISTRATION EXISTS — the same invariant, in the same
+      // refusal shape, that `setProjectRemote` already enforces for a target
+      // change. It bites only for a REMOTE relocation: `worktreePathFor`
+      // derives a local checkout from cc's own `.worktrees` root, which does
+      // not depend on where the project's tree is, but a remote one from
+      // `dirname(location.path)`. The checkout itself does not move, so stored
+      // and derived would diverge permanently — and the transcript guard,
+      // which re-derives precisely so it cannot disagree with what it guards,
+      // would then check paths that hold nothing while the real checkout
+      // location went unprotected.
+      //
+      // NOT narrowed to "only when the system has no `worktreesDir`": that
+      // override can be cleared afterwards, and the divergence would appear
+      // retroactively over a move nothing refused. `'replace'` needs no such
+      // guard — it discards the registrations along with the store subtree,
+      // which is what its `discards.worktrees` count tells the caller.
+      if (location.kind === 'remote') {
+        const { registeredWorktreeNames } = await import('./worktrees.ts');
+        const held = await registeredWorktreeNames(name);
+        if (held.length > 0) {
+          return {
+            ok: false, code: 'PROJECT_PLACEMENT_IN_USE',
+            reason: `project '${name}' cannot be relocated while it has ${held.length} registered `
+              + `worktree(s): ${held.join(', ')}. A worktree on a system re-derives its path from this `
+              + `project's, and its checkout does not move — delete them first, or pass `
+              + `onStaleRecord:'replace' to discard them along with the rest of its stored state.`,
+          };
+        }
+      }
       // THE TRANSCRIPT-KEY GUARD RUNS HERE TOO. This is the one registration
       // path that cannot go through `registerProject` — the name is held, by
       // the very record being repointed — so the check it would have made is
@@ -1607,8 +1637,21 @@ export async function adoptProject(
       invalidate(name);
       // And so were its worktrees' back-references, in both directions. Lazy
       // import for the projects.ts ↔ worktrees.ts edge, as everywhere here.
-      const { repairWorktreesAfterProjectMove } = await import('./worktrees.ts');
-      await repairWorktreesAfterProjectMove(name);
+      //
+      // NON-FATAL, for the same reason deliverAdoptedConventions below is: the
+      // RECORD is what makes the relocation stand, and it is already written.
+      // Throwing here would answer a 500 for a relocation that succeeded — and
+      // the retry then gets an ordinary PROJECT_EXISTS, because the name now
+      // resolves. The git half already warns and continues on its own; this
+      // covers the two steps that are not git (resolving the project, and the
+      // store writes).
+      try {
+        const { repairWorktreesAfterProjectMove } = await import('./worktrees.ts');
+        await repairWorktreesAfterProjectMove(name);
+      } catch (e) {
+        console.warn(`adoptProject: '${name}' was relocated to '${real}', but its worktree `
+          + `back-references could not be repaired: ${errMsg(e)}`);
+      }
       await deliverAdoptedConventions(name, real);
       return { ok: true, name, path: real, system: location.kind === 'remote' ? location.system : LOCAL_SYSTEM_ID, remoteId: placement?.remoteId ?? null };
     }
