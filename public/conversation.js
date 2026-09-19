@@ -4,7 +4,8 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
-  shouldRenderSystem, parseUserQuestionAnswers, isUserQuestionAnswerText } from './blocks.js';
+  shouldRenderSystem, parseUserQuestionAnswers, isUserQuestionAnswerText,
+  createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 
@@ -173,8 +174,32 @@ export class Conversation {
   }
 
   _closeAssistantSegment() {
+    this._closeActionGroup(this._activeAssistantWrap);
     this._activeAssistantWrap = null;
     this._sawSegmentCloser = true;
+  }
+
+  // Every assistant block reaches the DOM through here. A text block lands
+  // directly in the message body and ENDS the machinery run; everything else
+  // accumulates inside one collapsible group, born open so an in-flight run is
+  // watchable.
+  //
+  // The open group hangs off the WRAP object, not off `this`: a wrap outlives
+  // `_activeAssistantWrap` in the messageWraps cache, and per-wrap state keeps
+  // the group aligned with the bubble it is in.
+  _appendBlockToWrap(wrap, node, { grouped }) {
+    if (!grouped) { this._closeActionGroup(wrap); wrap.body.appendChild(node); return; }
+    if (!wrap.actionGroup || wrap.actionGroup.parentNode !== wrap.body) {
+      wrap.actionGroup = createActionGroup();
+      wrap.body.appendChild(wrap.actionGroup);
+    }
+    appendToActionGroup(wrap.actionGroup, node);
+  }
+
+  _closeActionGroup(wrap) {
+    if (!wrap?.actionGroup) return;
+    closeActionGroup(wrap.actionGroup);
+    wrap.actionGroup = null;
   }
 
   // Finalize every block that is still visually streaming. For STATIC batches
@@ -188,6 +213,10 @@ export class Conversation {
   finalizeDanglingBlocks() {
     for (const block of this.blocksByKey.values()) block.finalize?.();
     for (const block of this.toolBlocks.values()) block.markIncomplete?.();
+    // The static-batch hook: a lazy-history page ending in a tool run arrives
+    // collapsed. Several msgIds can map to one wrap; _closeActionGroup is
+    // idempotent.
+    for (const w of this.messageWraps.values()) this._closeActionGroup(w);
     for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
   }
 
@@ -410,7 +439,7 @@ export class Conversation {
     const block = new ThinkingBlock();
     this.blocksByKey.set(key, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-    wrap.body.appendChild(block.node);
+    this._appendBlockToWrap(wrap, block.node, { grouped: true });
     this._activeThinkingKey = key;
   }
 
@@ -421,7 +450,7 @@ export class Conversation {
       block = new ThinkingBlock();
       this.blocksByKey.set(key, block);
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-      wrap.body.appendChild(block.node);
+      this._appendBlockToWrap(wrap, block.node, { grouped: true });
     }
     block.markRedacted(ev.estimatedTokens ?? null);
   }
@@ -552,7 +581,7 @@ export class Conversation {
       block = new BlockClass();
       this.blocksByKey.set(key, block);
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-      wrap.body.appendChild(block.node);
+      this._appendBlockToWrap(wrap, block.node, { grouped: type !== 'text' });
     }
     block.appendDelta(deltaText);
   }
@@ -593,7 +622,7 @@ export class Conversation {
     this.blocksByKey.set(key, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
-    wrap.body.appendChild(block.node);
+    this._appendBlockToWrap(wrap, block.node, { grouped: true });
   }
 
   _renderToolInputDelta(ev) {
@@ -610,16 +639,23 @@ export class Conversation {
     if (block) {
       block.setName(ev.name);
       block.finalizeInput(ev.input, ev.startedAt);
+      // setName can change the name the group header tallies.
+      const g = block.node.closest('.action-group');
+      if (g) refreshActionGroupSummary(g);
     }
   }
 
   _renderToolResult(ev) {
     const block = this.toolBlocks.get(ev.toolUseId);
     const result = new ToolResultBlock(ev);
-    if (block) block.attachResult(result, ev.finishedAt);
-    else {
+    if (block) {
+      block.attachResult(result, ev.finishedAt);
+      // An attached result can be the group's first error.
+      const g = block.node.closest('.action-group');
+      if (g) refreshActionGroupSummary(g);
+    } else {
       const wrap = this._ensureMessageWrap(null, 'assistant');
-      wrap.body.appendChild(result.node);
+      this._appendBlockToWrap(wrap, result.node, { grouped: true });
     }
     // When the result is for an unanswered AskUserQuestion block, the
     // following user_echo carries the formatted answer text. Record the
@@ -763,6 +799,9 @@ export class Conversation {
   }
 
   _renderTurnEnd(ev) {
+    // The turn's end ends the machinery run. NOT _closeAssistantSegment() —
+    // that would change the existing bubble-merge behaviour.
+    this._closeActionGroup(this._activeAssistantWrap);
     const wrap = el('div', {});
     wrap.appendChild(new TurnEndBlock(ev).node);
     this.root.appendChild(wrap);

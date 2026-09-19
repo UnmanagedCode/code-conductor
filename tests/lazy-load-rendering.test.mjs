@@ -153,7 +153,10 @@ test('sub-agent group: head and children in the same batch nest children under t
   const outerBlocks = holder.querySelector('.msg.assistant > .blocks');
   assert.ok(outerBlocks, 'outer assistant blocks container exists');
   let foundOrphaned = false;
-  for (const child of outerBlocks.children) {
+  // Flatten one level: the machinery run is wrapped in an action group, and a
+  // group DOES contain a .sub-conversation, so scanning the group itself would
+  // make the orphan arm below unreachable — the scan would pass vacuously.
+  for (const child of flattenActionGroups(outerBlocks)) {
     if (!child.classList.contains('sub-conversation') &&
         child.textContent.includes('sub-agent reply') &&
         !child.querySelector('.sub-conversation')) {
@@ -603,4 +606,122 @@ test('adopt-on-prepend renders a parked event under a non-Task head as ordinary 
   const attached = bashBlock.node.querySelector('.block.tool-result');
   assert.ok(attached, 'tool_result attaches under the Bash block itself, not dropped or nested');
   assert.match(attached.textContent, /# pass 45/);
+});
+
+// --- Action groups across a page seam --------------------------------------
+// A run the page boundary cut in half must read as ONE run: spliceBatchAbove
+// folds the older half's group into the newer half's (whose node identity the
+// live Conversation may still hold).
+
+// A group's blocks stand in for the group itself — the orphan/adjacency scans
+// above and below reason about BLOCKS, and a group is a wrapper.
+function flattenActionGroups(container) {
+  const out = [];
+  for (const child of container.children) {
+    if (child.classList.contains('action-group')) {
+      const body = [...child.children].find(c => c.classList.contains('ag-body'));
+      out.push(...body.children);
+    } else {
+      out.push(child);
+    }
+  }
+  return out;
+}
+
+function agBodyOf(group) {
+  return [...group.children].find(c => c.classList.contains('ag-body'));
+}
+
+// A whole tool call, oldest-first, ready for seq().
+function toolRun(msgId, blockIdx, id, name) {
+  return [
+    { kind: 'tool_use_start', msgId, blockIdx, toolUseId: id, name, parentToolUseId: null },
+    { kind: 'tool_use', msgId, blockIdx, toolUseId: id, name, input: { command: 'x' }, parentToolUseId: null },
+    { kind: 'tool_result', toolUseId: id, content: 'ok', isError: false, parentToolUseId: null },
+  ];
+}
+
+test('12 pins: a run cut by a page seam merges into ONE group, in page order, with one header', async () => {
+  const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+  const main = new Conversation(root, {});
+  // The live chunk BEGINS mid-run (its leading bubble is the merge target).
+  main.apply({ kind: 'tool_use_start', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', parentToolUseId: null });
+  main.apply({ kind: 'tool_use', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', input: {}, _seq: 51, parentToolUseId: null });
+  main.apply({ kind: 'text_delta', msgId: 'mB', blockIdx: 1, text: 'live prose', _seq: 52, parentToolUseId: null });
+  main.apply({ kind: 'text_end', msgId: 'mB', blockIdx: 1, _seq: 53, parentToolUseId: null });
+  assert.ok(main.leadingAssistantWrap, 'the live chunk exposes a merge target');
+
+  // The page above ENDS mid-run.
+  const batch = renderEventBatch(seq([
+    { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+    { kind: 'text_delta', msgId: 'mA', blockIdx: 0, text: 'older prose', parentToolUseId: null },
+    { kind: 'text_end', msgId: 'mA', blockIdx: 0, parentToolUseId: null },
+    ...toolRun('mA', 1, 'tuA', 'Bash'),
+  ]));
+  spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+  assert.equal(root.querySelectorAll('.msg.assistant').length, 1, 'the seam bubbles merged');
+  const groups = [...root.querySelectorAll('.action-group')];
+  assert.equal(groups.length, 1, 'one run, one header — not two');
+  assert.deepEqual(
+    [...agBodyOf(groups[0]).children].map(n => n.querySelector('.tool-name').textContent),
+    ['Bash', 'Read'],
+    'older half first: the merged group keeps page order',
+  );
+  assert.equal(groups[0].querySelector('.ag-summary').textContent, '2 actions · Bash, Read',
+    'the header counts both halves');
+});
+
+test('13 pins: the seam coalescer keys on adjacency — prose on either side keeps the groups apart', async () => {
+  // Half A: the batch ends with PROSE, so the older group is not seam-adjacent.
+  {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'tool_use_start', msgId: 'mB', blockIdx: 0, toolUseId: 'tuB', name: 'Read', parentToolUseId: null });
+    main.apply({ kind: 'text_delta', msgId: 'mB', blockIdx: 1, text: 'live prose', _seq: 52, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'mB', blockIdx: 1, _seq: 53, parentToolUseId: null });
+
+    const batch = renderEventBatch(seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+      ...toolRun('mA', 0, 'tuA', 'Bash'),
+      { kind: 'text_delta', msgId: 'mA', blockIdx: 1, text: 'older prose', parentToolUseId: null },
+      { kind: 'text_end', msgId: 'mA', blockIdx: 1, parentToolUseId: null },
+    ]));
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+    assert.equal(root.querySelectorAll('.msg.assistant').length, 1, 'the bubbles still merge');
+    assert.equal(root.querySelectorAll('.action-group').length, 2,
+      'prose between them is a run boundary — two runs, two headers');
+  }
+  // Half B: the chunk below STARTS with prose.
+  {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'text_delta', msgId: 'mB', blockIdx: 0, text: 'live prose', _seq: 50, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'mB', blockIdx: 0, _seq: 51, parentToolUseId: null });
+    main.apply({ kind: 'tool_use_start', msgId: 'mB', blockIdx: 1, toolUseId: 'tuB', name: 'Read', _seq: 52, parentToolUseId: null });
+
+    const batch = renderEventBatch(seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+      ...toolRun('mA', 0, 'tuA', 'Bash'),
+    ]));
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+    assert.equal(root.querySelectorAll('.msg.assistant').length, 1, 'the bubbles still merge');
+    assert.equal(root.querySelectorAll('.action-group').length, 2,
+      'the lower half begins with prose — the halves are different runs');
+  }
+});
+
+test('14 pins: a historical page ending in a tool run arrives collapsed', async () => {
+  const { renderEventBatch } = await setupDOM();
+  const batch = renderEventBatch(seq([
+    { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+    ...toolRun('mA', 0, 'tuA', 'Bash'),
+    ...toolRun('mA', 1, 'tuA2', 'Read'),
+  ]));
+  const groups = [...batch.holder.querySelectorAll('.action-group')];
+  assert.equal(groups.length, 1, 'the page\'s trailing run is one group');
+  assert.equal(groups[0].hasAttribute('open'), false,
+    'finalizeDanglingBlocks folds a static page\'s trailing run');
 });

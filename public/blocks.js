@@ -428,6 +428,129 @@ const TOOL_INPUT_RENDERERS = {
   'mcp__code-conductor__send_prompt': (input) => typeof input.text === 'string' ? renderSendPromptText(input) : null,
 };
 
+// --- Action group: one contiguous run of machinery, folded -----------------
+// A turn that fires twenty tools buries the prose on either side of it. The
+// run of non-prose blocks between two assistant text blocks is wrapped in one
+// collapsible <details> whose summary tallies what is inside. Sequencing (what
+// opens a group, what closes it) lives in conversation.js; this module owns the
+// element and its summary.
+//
+// Everything the summary reports is DERIVED FROM THE DOM, never from a JS
+// counter: a lazy-history page is rendered by a throwaway Conversation and then
+// transplanted, so only the nodes survive the seam.
+
+export const ACTION_GROUP_CLASS = 'action-group';
+
+// At most this many distinct labels are named before the `+N more` tail.
+const AG_MAX_PARTS = 4;
+
+// The details' children are exactly [summary, .ag-body], and nothing else is
+// ever appended to the details itself. A `querySelector('.ag-body')` would
+// reach into a nested sub-agent conversation's own group, so scan direct
+// children instead.
+function agBody(groupNode) {
+  for (const c of groupNode.children) if (c.classList.contains('ag-body')) return c;
+  return null;
+}
+
+export function isActionGroupNode(n) {
+  return !!n && n.nodeType === 1 && n.classList.contains(ACTION_GROUP_CLASS);
+}
+
+export function createActionGroup() {
+  const summary = el('summary', { class: 'ag-summary' });
+  const node = el('details', { class: `block ${ACTION_GROUP_CLASS}`, open: true },
+    summary,
+    el('div', { class: 'ag-body' }),
+  );
+  // Manual-toggle detection listens for `click` on the summary, NOT for the
+  // `toggle` event — `toggle` also fires for our own programmatic collapse,
+  // which would read as the user's choice. Keyboard Enter/Space on a <summary>
+  // dispatches a click, so keyboard toggling is covered. A click on a NESTED
+  // <summary> (a tool block's, a tool_result's) bubbles through that nested
+  // <details> and .ag-body — never through this sibling <summary>.
+  summary.addEventListener('click', () => { node.dataset.userToggled = '1'; });
+  refreshActionGroupSummary(node);
+  return node;
+}
+
+export function appendToActionGroup(groupNode, childNode) {
+  agBody(groupNode).appendChild(childNode);
+  refreshActionGroupSummary(groupNode);
+}
+
+// Idempotent. A group the user has already toggled by hand keeps whatever
+// state they chose.
+export function closeActionGroup(groupNode) {
+  refreshActionGroupSummary(groupNode);
+  if (groupNode.dataset.userToggled !== '1') groupNode.open = false;
+}
+
+// The lazy-history page seam: one run cut in half by a page boundary. The donor
+// is the OLDER half, so its blocks go to the front of the keeper's body. The
+// keeper's node identity (and its open / data-user-toggled state) survives
+// because the live Conversation may still hold it as its open group.
+export function mergeActionGroupInto(keeper, donor) {
+  const dst = agBody(keeper);
+  const src = agBody(donor);
+  const ref = dst.firstChild;
+  while (src.firstChild) dst.insertBefore(src.firstChild, ref);
+  donor.remove();
+  refreshActionGroupSummary(keeper);
+}
+
+// The tool name as the tool block itself renders it. `firstElementChild` is
+// that block's own <summary>, which keeps a nested sub-agent's tool names out
+// of the outer tally.
+function agToolLabel(kid) {
+  return kid.firstElementChild?.querySelector('.tool-name')?.textContent || 'tool';
+}
+
+function agLabelFor(kid) {
+  if (kid.classList.contains('tool')) return agToolLabel(kid);
+  // Covers both the <details> form and the flat div markRedacted() swaps in.
+  if (kid.classList.contains('thinking')) return 'thinking';
+  // The orphan case only — a result attached to its tool is that tool's child.
+  if (kid.classList.contains('tool-result')) return 'tool_result';
+  return 'block';
+}
+
+// A failed tool: a DIRECT child carrying both `tool-result` and `error`. A
+// `querySelector` would count a failure inside a nested sub-agent against the
+// outer group.
+function agToolErrored(kid) {
+  for (const c of kid.children) {
+    if (c.classList.contains('tool-result') && c.classList.contains('error')) return true;
+  }
+  return false;
+}
+
+export function refreshActionGroupSummary(groupNode) {
+  const body = agBody(groupNode);
+  const summary = groupNode.firstElementChild;
+  // FIRST-APPEARANCE order, never by descending count: the header must not
+  // reorder itself as tools stream in.
+  const counts = new Map();
+  let n = 0;
+  let errors = 0;
+  for (const kid of body.children) {
+    if (!kid.classList.contains('block')) continue;
+    n += 1;
+    const label = agLabelFor(kid);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+    if (kid.classList.contains('tool') && agToolErrored(kid)) errors += 1;
+  }
+  const parts = [...counts].map(([label, k]) => (k > 1 ? `${label} ×${k}` : label));
+  const shown = parts.slice(0, AG_MAX_PARTS);
+  if (parts.length > AG_MAX_PARTS) shown.push(`+${parts.length - AG_MAX_PARTS} more`);
+  summary.textContent = '';
+  summary.append(el('span', { class: 'ag-count' }, `${n} action${n === 1 ? '' : 's'}`));
+  if (shown.length) summary.append(el('span', { class: 'ag-names' }, ` · ${shown.join(', ')}`));
+  if (errors) {
+    summary.append(el('span', { class: 'ag-errors' }, ` · ${errors} error${errors === 1 ? '' : 's'}`));
+  }
+}
+
 function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     return navigator.clipboard.writeText(text);

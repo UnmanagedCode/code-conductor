@@ -9,6 +9,7 @@
 // click handlers keep working because they close over app.js callbacks.
 
 import { Conversation, isHistoryGapNode } from './conversation.js';
+import { isActionGroupNode, mergeActionGroupInto } from './blocks.js';
 import { apiFetch } from './http.js';
 
 // A correct server never hands back an empty backward page while `hasMore`
@@ -112,8 +113,19 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
         && batch.trailingOpenWrap !== oldestLeadingWrap) {
       const dst = oldestLeadingWrap.body;
       const src = batch.trailingOpenWrap.body;
+      const lowerFirst = dst.firstElementChild; // captured BEFORE the move
       const ref = dst.firstChild;
       while (src.firstChild) dst.insertBefore(src.firstChild, ref);
+      // A run the seam cut in half would otherwise show two headers. The batch
+      // ending mid-run and the chunk below beginning mid-run means one run,
+      // not two: fold the older half into the newer one, whose node the live
+      // Conversation may still hold as its open group. Either half starting or
+      // ending with prose fails a check and the groups stay separate — prose
+      // is a run boundary.
+      const upper = lowerFirst ? lowerFirst.previousElementSibling : dst.lastElementChild;
+      if (isActionGroupNode(upper) && isActionGroupNode(lowerFirst)) {
+        mergeActionGroupInto(lowerFirst, upper);
+      }
       batch.trailingOpenWrap.node.remove();
       merged = true;
     }
