@@ -65,8 +65,6 @@ describe('the transcript-directory collision guard', () => {
     assert.equal(hit.samePath, false);
   });
 
-  // T3 PINS THE WIDENING: a LOCAL place and a REMOTE place at one path collide.
-  // The old guard returned null for the local system and never compared them.
   // T3 PINS THE INVERSION: a local place and a remote place at one path are no
   // longer one directory. The remote reads its own CLI config directory, so
   // `/srv/app` locally and `/srv/app` on `box` are two roots — which is the
