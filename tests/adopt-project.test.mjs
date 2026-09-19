@@ -19,8 +19,8 @@ import {
   encodeCwd, findSessionLocation, validateName, projectStoreDir,
   readProjectRecord, orchStoreRoot, localWorktreesRoot, pluginsRoot, localPlace,
 } from '../src/projects.ts';
-import { createWorktree } from '../src/worktrees.ts';
-import { ensureProjectConventionsMd } from '../src/projectClaudeMd.ts';
+import { createWorktree, listWorktrees } from '../src/worktrees.ts';
+import { ensureProjectConventionsMd, regenerateAllProjectConventions } from '../src/projectClaudeMd.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
@@ -136,7 +136,9 @@ test('no .external directory is created, and no source file names EXTERNAL_DIRNA
       if (e.isDirectory()) { await walk(full); continue; }
       if (!/\.(ts|js|mjs)$/.test(e.name)) continue;
       const text = await fs.readFile(full, 'utf8');
-      if (/EXTERNAL_DIRNAME|externalLinkPath\(|\.external\//.test(text)) offenders.push(full);
+      // `\.external\b`, not `\.external/`: a trailing slash misses every prose
+      // mention of the mechanism, which is exactly where a stale comment lives.
+      if (/EXTERNAL_DIRNAME|externalLinkPath\(|\.external\b/.test(text)) offenders.push(full);
     }
   };
   await walk(SRC_DIR);
@@ -246,6 +248,74 @@ test("onStaleRecord:'relocate' repoints the record, keeps the store subtree, and
   } finally {
     cache._resetForTest(0);
   }
+});
+
+// PINS: AC10 ON THE RELOCATE PATH. `'relocate'` is the ONE registration that
+// cannot go through `registerProject` — the name is held, by the very record
+// being repointed — so the transcript-key guard it would have run has to be run
+// explicitly. The duplicate-target loop above compares paths EXACTLY and passes
+// here; `encodeCwd` folds `_` and `-` alike, so the two directories share one
+// CLI transcript directory and their sessions interleave in it.
+test("onStaleRecord:'relocate' still refuses a path that collides on the transcript key", async () => {
+  const gone = await makeOutsideRepo('relocate-gone');
+  assert.equal((await adoptProject('app', gone.repoPath)).ok, true);
+  await rmrf(gone.repoPath);
+  const holder = await makeOutsideRepo('a_b');
+  assert.equal((await adoptProject('holder', holder.repoPath)).ok, true);
+  const colliding = await makeOutsideRepo('a-b');
+  assert.notEqual(colliding.real, holder.real, 'premise: two different directories');
+  assert.equal(encodeCwd(colliding.real), encodeCwd(holder.real), 'premise: they encode alike');
+
+  const res = await adoptProject('app', colliding.repoPath, { onStaleRecord: 'relocate' });
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.code, 'TRANSCRIPT_DIR_COLLISION');
+  assert.match(res.reason, /'holder'/);
+  assert.equal((await readProjectRecord('app')).location.path, gone.real,
+    'the refused relocation wrote nothing');
+});
+
+// PINS: the guard above does not refuse a LEGITIMATE relocation — the candidate
+// skips its own identity, so the stale record being repointed cannot refuse its
+// own replacement, and a relocate onto a free path still succeeds.
+test("onStaleRecord:'relocate' is not refused by the record it is replacing", async () => {
+  const gone = await makeOutsideRepo('self-gone');
+  assert.equal((await adoptProject('app', gone.repoPath)).ok, true);
+  await rmrf(gone.repoPath);
+  const fresh = await makeOutsideRepo('self-fresh');
+
+  const res = await adoptProject('app', fresh.repoPath, { onStaleRecord: 'relocate' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal((await readProjectRecord('app')).location.path, fresh.real);
+});
+
+// PINS: a project's tree moved and its WORKTREES did not — both directions of
+// the back-reference between them are absolute paths into the old location.
+// `git worktree repair` fixes the checkout's `.git` gitdir and the repo's own
+// `worktrees/<id>/gitdir`; `parentPath` is the store's half, and it is what
+// removal, the merge lifecycle and merge status all run git in. Without both, a
+// relocated project's worktrees are broken while still listing as healthy.
+test("onStaleRecord:'relocate' repairs the project's worktree back-references", async () => {
+  const gone = await makeOutsideRepo('wt-gone');
+  assert.equal((await adoptProject('app', gone.repoPath)).ok, true);
+  const wt = await createWorktree('app', { name: 'feature' });
+  assert.equal((await git(wt.worktreePath, 'status', '--porcelain')).stdout, '',
+    'premise: the worktree is usable before the move');
+
+  // The tree MOVES: same repo, new path — which is what a relocation is for.
+  const moved = path.join(home, 'wt-moved');
+  await fs.rename(gone.real, moved);
+  const movedReal = await fs.realpath(moved);
+
+  const res = await adoptProject('app', moved, { onStaleRecord: 'relocate' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  // The git half: the checkout's gitdir back-reference now resolves.
+  await git(wt.worktreePath, 'status', '--porcelain');
+  // The store half: every surface that runs git in `parentPath` now reaches the
+  // tree rather than the path it left.
+  const meta = (await listWorktrees('app')).find(w => w.worktreeName === 'feature');
+  assert.ok(meta, 'the worktree still lists');
+  assert.equal(meta.parentPath, movedReal);
 });
 
 // PINS: replace is the other branch — the store subtree goes.
@@ -422,7 +492,35 @@ test('adopt_project adds no commit to the repo it adopts', async () => {
   assert.match((await git(repoPath, 'status', '--porcelain')).stdout, /^\?\? CONVENTIONS\.md$/m);
 });
 
-// PINS: the sweep degrades per project rather than failing wholesale.
+// PINS: an unregistered name is a DECLINE, not an error — the sweep's cheapest
+// path, and the one that must not be mistaken for a failure.
 test('ensureProjectConventionsMd declines cleanly for an unregistered name', async () => {
   assert.deepEqual(await ensureProjectConventionsMd('never-registered'), { skipped: 'no-project' });
+});
+
+// PINS: the sweep's PER-PROJECT catch. One project that throws must be recorded
+// as an error entry and the sweep must reach every project beside it — a single
+// unreadable record cannot be allowed to stop CONVENTIONS.md regenerating
+// everywhere else. Both halves matter: a sweep that aborted would fail the
+// second assertion, and one that swallowed the failure would fail the first.
+test('regenerateAllProjectConventions records a failing project and keeps going', async () => {
+  const before = await makeOutsideRepo('sweep-before');
+  const after = await makeOutsideRepo('sweep-after');
+  assert.equal((await adoptProject('aaa-before', before.repoPath)).ok, true);
+  assert.equal((await adoptProject('zzz-after', after.repoPath)).ok, true);
+  // Sorted between them, so an abort cannot be mistaken for "it ran first".
+  const broken = path.join(projectStoreDir('mmm-broken'), 'project.json');
+  await fs.mkdir(path.dirname(broken), { recursive: true });
+  await fs.writeFile(broken, '{ torn');
+
+  const warned = [];
+  const results = await regenerateAllProjectConventions({ log: { warn: (m) => warned.push(String(m)) } });
+  const by = Object.fromEntries(results.map(r => [r.name, r]));
+
+  assert.deepEqual(Object.keys(by).sort(), ['aaa-before', 'mmm-broken', 'zzz-after']);
+  assert.match(String(by['mmm-broken'].error), /malformed/);
+  assert.equal(by['mmm-broken'].regenerated, undefined, 'a failure must not report success');
+  assert.equal(by['aaa-before'].regenerated, true);
+  assert.equal(by['zzz-after'].regenerated, true, 'the sweep reached PAST the failing project');
+  assert.ok(warned.some(w => w.includes('mmm-broken')), 'and said which project failed');
 });

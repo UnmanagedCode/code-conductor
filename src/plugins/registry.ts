@@ -422,23 +422,32 @@ export function createPluginHost(opts: {
       if (await storeRootPresent()) return { kind: 'unregistered' };
       throw httpError(503, `project '${entry.project}' does not resolve and cc's own store root is not readable`);
     }
+    const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
+    const cwd = versionCwd(activeVersion, worktreeMeta, resolved.path);
     // THE CHECKOUT ITSELF, probed here and deliberately NOT in the resolver:
     // resolution is a record read, so a project whose tree is temporarily gone
     // (an unmounted volume, a checkout deleted out-of-band) still RESOLVES.
     // For a contributing plugin that is not the same as "contributes nothing" —
     // blanking a convention on a transient absence is the one direction this
     // design must not fail in — so it throws and the caller degrades.
-    if ((await resolved.system.stat(resolved.path))?.kind !== 'dir') {
-      throw httpError(404, `the checkout of project '${entry.project}' is not at ${resolved.path}, `
-        + `but cc still holds a record for it`);
+    //
+    // BOTH PATHS, AND `cwd` IS THE LOAD-BEARING ONE: every fragment and
+    // scaffold body is read from the ACTIVE VERSION's cwd, which is the
+    // worktree checkout whenever `activeVersion` is a worktree — the shape
+    // `worktreeManifestFallback` and `enable`'s `defaultVersion` routinely
+    // produce. A deleted worktree checkout is still reported by
+    // `git worktree list --porcelain` (as `prunable`, not pruned), so
+    // `reconcileActiveVersion` keeps a truthy `worktreePath` and a probe of the
+    // main checkout alone passes on a perfectly healthy directory nothing is
+    // being read from. `dir` is probed too: it is what `claudePluginDirs`
+    // resolves its `--plugin-dir` roots against.
+    for (const probe of cwd === resolved.path ? [resolved.path] : [resolved.path, cwd]) {
+      if ((await resolved.system.stat(probe))?.kind !== 'dir') {
+        throw httpError(404, `the checkout of project '${entry.project}' is not at ${probe}, `
+          + `but cc still holds a record for it`);
+      }
     }
-    const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
-    return {
-      kind: 'ok',
-      system: resolved.system,
-      dir: resolved.path,
-      cwd: versionCwd(activeVersion, worktreeMeta, resolved.path),
-    };
+    return { kind: 'ok', system: resolved.system, dir: resolved.path, cwd };
   }
 
   // ── lifecycle ───────────────────────────────────────────────────────

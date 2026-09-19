@@ -181,6 +181,36 @@ test('a worktree that is merely AHEAD does not refuse', async () => {
   assert.equal(await readProjectRecord('demo'), null);
 });
 
+// PINS: "COULD NOT ASK" IS NOT "NOTHING TO PROTECT". The discrimination that
+// keeps a vanished checkout deletable is a pair of probes — does the checkout
+// exist, is its parent still a repo — and the second one runs git. `runGit`
+// THROWS a system refusal when git could not be spawned or never answered, and
+// a catch that reads that as `false` drops the registration with every guard
+// (dirty, dirty-unknown, dependents) silently skipped: the delete succeeds
+// having measured nothing. That became reachable the moment this cascade
+// stopped passing `force: true`.
+//
+// The unspawnable argv is built out of the STORE's own `parentPath`, which is
+// what the probe feeds to `git -C` and nowhere else — the kernel really
+// refuses the spawn (E2BIG), `classifySpawnError` reads it as `EUNKNOWN`, and
+// `runGit` raises `GIT_DID_NOT_RUN`. No source is perturbed.
+test('a worktree whose parent could not be ASKED refuses, rather than being dropped', async () => {
+  await makeProject('demo');
+  const wt = await createWorktree('demo');
+  const metaFile = path.join(projectStoreDir('demo'), 'worktrees', wt.worktreeName, 'worktree.json');
+  const meta = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+  meta.parentPath = `/${'b'.repeat(3_000_000)}`;   // absolute, so it reaches the spawn
+  await fs.writeFile(metaFile, JSON.stringify(meta));
+
+  const r = await del('demo');
+  // The transport refusal itself, not a 409: "git could not be run here" is the
+  // honest diagnosis, and a 409 claiming the tree is dirty would assert
+  // something cc never measured.
+  assert.equal(r.status, 502, JSON.stringify(r.body).slice(0, 200));
+  assert.ok(await readProjectRecord('demo'), 'the project is still registered');
+  assert.ok((await fs.stat(wt.worktreePath)).isDirectory(), 'and its checkout is untouched');
+});
+
 // PINS: the gone-tree trap. Without the "nothing to protect" discrimination the
 // record resolves, `listWorktrees` gets no git filter so every registration
 // lists, every dirty check fails as dirty-unknown, and the project becomes

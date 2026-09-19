@@ -332,6 +332,98 @@ describe('a plugin fragment follows its project, live', () => {
     assert.equal(await fs.readFile(target, 'utf8'), doc, 'never blank a slug a degraded catalog cannot vouch for');
   });
 
+  // PINS: `claudePluginDirs` degrades PER ENTRY, like the conventions path one
+  // branch over. Its record read now THROWS on a record it cannot parse, and
+  // left outside the per-entry catch one bad `project.json` rejects the whole
+  // function — whose only consumer (`src/instances.ts`) catches with a bare
+  // warn and spawns with `claudePluginDirs: []`. One broken record would then
+  // silently strip EVERY plugin's `--plugin-dir` from every launch.
+  //
+  // The broken project sorts FIRST, so a function that aborts on it cannot be
+  // mistaken for one that simply reached the healthy entry earlier.
+  test('an unreadable record costs its own --plugin-dir, not every other plugin\'s', async () => {
+    const root = process.env.PROJECTS_ROOT;
+    const badDir = path.join(root, 'aaabad');
+    await fs.mkdir(badDir, { recursive: true });
+    await registerLocalProject('aaabad', badDir);
+    await seedPluginTree(badDir, 'aaa-bad', 'BAD CONTENT', { claudePlugin: 'claude' });
+
+    const goodDir = path.join(root, 'zzzgood');
+    await fs.mkdir(goodDir, { recursive: true });
+    await registerLocalProject('zzzgood', goodDir);
+    await seedPluginTree(goodDir, 'zzz-good', 'GOOD CONTENT', { claudePlugin: 'claude' });
+
+    await host.enable('aaa-bad');
+    await host.enable('zzz-good');
+    assert.deepEqual((await host.claudePluginDirs()).sort(),
+      [path.join(badDir, 'claude'), path.join(goodDir, 'claude')].sort(),
+      'premise: both contribute a --plugin-dir root before the record is torn');
+
+    // Torn AFTER discovery, which is the live-placement shape this file is
+    // about: a mutation reaches the contributions immediately, discovery does
+    // not until a rescan.
+    await fs.writeFile(path.join(projectStoreDir('aaabad'), 'project.json'), '{ "locat');
+
+    assert.deepEqual(await host.claudePluginDirs(), [path.join(goodDir, 'claude')],
+      'the healthy plugin still contributes its root');
+  });
+
+  // THE WORKTREE HALF of the test above, and a different code path: a plugin's
+  // ACTIVE VERSION can be a worktree — the shape `worktreeManifestFallback` and
+  // `enable`'s `defaultVersion` routinely produce — and then EVERY fragment and
+  // scaffold body is read from the worktree checkout, not the main one.
+  //
+  // A probe of the main checkout alone passes here on a perfectly healthy
+  // directory nothing is being read from: deleting only the worktree leaves the
+  // main tree intact, and `git worktree list --porcelain` still reports the
+  // worktree (as `prunable`, not pruned), so `reconcileActiveVersion` keeps a
+  // truthy `worktreePath` and never self-heals to main. The fragment read then
+  // ENOENTs into the per-fragment catch, which warns and continues — and the
+  // catalog reads HEALTHY while a referencing project regenerates without the
+  // slug. That is the silent-blanking direction, reached one branch over from
+  // the test above.
+  //
+  // NOT CLAIMING: that the plugin recovers when the checkout returns; that the
+  // active version self-heals back to main (it deliberately does not while git
+  // still lists the worktree).
+  test('a vanished WORKTREE checkout degrades when it is the ACTIVE VERSION', async () => {
+    const root = process.env.PROJECTS_ROOT;
+    const dir = path.join(root, 'wtplug');
+    await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('wtplug', dir);
+    await seedPluginTree(dir, 'wt-plug', 'MAIN CONTENT');
+    await seedGitRepo(dir);
+
+    const { createWorktree } = await import('../src/worktrees.ts');
+    const wt = await createWorktree('wtplug', { name: 'v2' });
+    await fs.writeFile(path.join(wt.worktreePath, FRAGMENT_REL), 'WORKTREE CONTENT');
+
+    await host.enable('wt-plug');
+    await host.setActiveVersion('wt-plug', { type: 'worktree', name: wt.worktreeName });
+    assert.equal(bodyOf(await host.conventions(), 'wt-plug/frag'), 'WORKTREE CONTENT',
+      'premise: bodies come from the WORKTREE checkout, not the main one');
+
+    setPluginConventionsProvider(async () => (await host.conventions()).project);
+    const doc = await composeProjectConventionsDoc(['wt-plug/frag', 'design-guidelines']);
+    await createProject('wtreferencer', { conventionsDoc: doc });
+    const target = conventionsTargetPath(path.join(root, 'wtreferencer'));
+
+    // The WORKTREE checkout only. The main checkout is untouched and healthy.
+    await fs.rm(wt.worktreePath, { recursive: true, force: true });
+    assert.equal(await fs.stat(dir).then(st => st.isDirectory(), () => false), true,
+      'the main checkout must survive, or this is the test above wearing a hat');
+
+    const degraded = await host.conventions();
+    assert.equal(degraded.project.degraded, true, 'the catalog cannot vouch for the absence');
+    assert.equal(bodyOf(degraded, 'wt-plug/frag'), null);
+    assert.ok(!JSON.stringify(degraded).includes('MAIN CONTENT'),
+      'and it must not silently fall back to the main checkout either');
+
+    const res = await ensureProjectConventionsMd('wtreferencer');
+    assert.equal(res.skipped, 'catalog-degraded');
+    assert.equal(await fs.readFile(target, 'utf8'), doc, 'the referencing project is frozen, not blanked');
+  });
+
   // T6 ─────────────────────────────────────────────────────────────────
   // THE INTERLEAVE. PINS: a fragment body cached under one placement/generation
   // is never served under another, EVEN IF a degraded compose happened in

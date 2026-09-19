@@ -57,6 +57,14 @@
 // `.conduct`) are enumerated only while the marker is absent, and the clauses
 // below are what still heals a TORN row after it is present.
 //
+// THE MARKER IS NOT USER-SERVICEABLE — the exact opposite of the ledger below.
+// Removing a ledger entry re-arms one item's retry, and that is its documented
+// repair. Removing the MARKER re-arms the in-root backfill against a projects
+// root that has moved on: every non-dot directory in it is minted as a project
+// again, grouping directories included. There is no reason to delete it; if a
+// store genuinely needs re-migrating, restore it from
+// `migrated-backup-0036/` first.
+//
 // ── THE LEDGER ─────────────────────────────────────────────────────────────
 // `<root>/.code-conductor/migration-0037-unresolved.json`:
 //   { "plugins": ["<name>", …], "worktrees": ["<project>/<key>", …] }
@@ -91,6 +99,22 @@ const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 async function readJson(p) {
   try { return JSON.parse(await fs.readFile(p, 'utf8')); }
   catch { return null; }
+}
+
+// ABSENT AND UNREADABLE ARE DIFFERENT INPUTS, and one value for both is what
+// wedges a probe. `writeMeta`/the old record writer were non-atomic, so a
+// record torn by a crash exists in the field: it is PRESENT, so no source
+// enumeration reaches past it, and unparseable, so the records clause reads it
+// as un-migrated — a reader that answers `null` to both skips the row while the
+// clause stays red, and the migration re-runs on every boot for ever. Returns
+// `{present, value}` so a caller can route an unreadable record to the SAME
+// terminal state an unlocatable one reaches.
+async function readRecordFile(root, name) {
+  let raw;
+  try { raw = await fs.readFile(recordPath(root, name), 'utf8'); }
+  catch (e) { if (e.code === 'ENOENT') return { present: false, value: null }; throw e; }
+  try { return { present: true, value: JSON.parse(raw) }; }
+  catch { return { present: true, value: null }; }
 }
 
 // tmp + rename, so a crash mid-write cannot leave a half-written record where a
@@ -264,9 +288,15 @@ async function snapshot(root) {
   await fs.rm(tmp, { recursive: true, force: true });
   await fs.mkdir(tmp, { recursive: true });
 
+  // THE RAW BYTES, never the parsed shape. A record this migration cannot parse
+  // is exactly the input the snapshot exists for — backing it up as `{}` would
+  // destroy the one thing nothing else holds (a workspace in its readable half,
+  // say), at precisely the input "never destroy data you can't reconstruct" is
+  // about.
   for (const n of await storeRowNames(root)) {
-    const rec = await readJson(recordPath(root, n));
-    await writeJsonAtomic(path.join(tmp, 'projects', n, 'project.json'), rec ?? {});
+    const dest = path.join(tmp, 'projects', n, 'project.json');
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.copyFile(recordPath(root, n), dest);
   }
   // Captured BEFORE any unlink: after step 6 the link targets exist nowhere
   // else but in the records step 5 writes.
@@ -283,7 +313,16 @@ async function snapshot(root) {
   for (const e of await dirEntries(projectsStore(root))) {
     if (!e.isDirectory()) continue;
     for (const key of await registrationKeys(root, e.name)) {
-      wts[`${e.name}/${key}`] = await readJson(path.join(wtStore(root, e.name, key), 'worktree.json'));
+      const src = path.join(wtStore(root, e.name, key), 'worktree.json');
+      wts[`${e.name}/${key}`] = await readJson(src);
+      // The raw file too, for the same reason as the records above: step 2
+      // REMOVES a remote registration, and a torn json's bytes exist nowhere
+      // else afterwards. The index above stays the parsed convenience shape.
+      const dest = path.join(tmp, 'projects', e.name, 'worktrees', key, 'worktree.json');
+      try {
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.copyFile(src, dest);
+      } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
   }
   await writeJsonAtomic(path.join(tmp, 'initial-worktrees.json'), wts);
@@ -356,12 +395,15 @@ async function buildPlan(root, log, { backfill }) {
   const plan = new Map();
   const orphaned = [];
   for (const n of [...candidates].sort()) {
-    const rec = await readJson(recordPath(root, n));
+    const { present, value: rec } = await readRecordFile(root, n);
     const location = await locate(root, n, rec, wtDirs);
     if (location) { plan.set(n, { location, workspace: typeof rec?.workspace === 'string' ? rec.workspace : null }); continue; }
-    // No source. Only a real store ROW can be moved aside; a bare candidate with
-    // nothing behind it simply is not a project.
-    if (!rec) continue;
+    // No source. A record that is PRESENT but unreadable reaches the same
+    // terminal state an unlocatable readable one does — moved aside, which
+    // removes the input — because the alternative is a row no source ever
+    // locates and no clause can ever go green over. A bare candidate with
+    // nothing behind it is simply not a project.
+    if (!present) continue;
     await moveAside(root, n, log);
     orphaned.push(n);
   }
@@ -525,9 +567,43 @@ async function moveWorktrees(root, plan, ledger, log) {
 
     for (const key of ordered) {
       const meta = metas.get(key);
-      if (!meta) continue;   // no json: nothing to move and nothing to repair
       const stripped = stripKey(project, key);
       const dest = path.join(root, WORKTREES, project, stripped);
+
+      // A REGISTRATION WITH NO `worktree.json` IS NOT A SKIP. `writeMeta` was a
+      // non-atomic mkdir + writeFile, so this row exists in the field — and
+      // leaving it alone leaves its LEGACY store key standing, which
+      // `registeredPlaces` re-derives the transcript guard's cwd from through
+      // `worktreePathFor`: the guard would then name a path under `.worktrees/`
+      // while the checkout sits where the legacy rule put it, the exact
+      // guard/reality divergence that re-derivation exists to prevent. So the
+      // path comes from the LEGACY RULE — what `worktreePathFor` computed for a
+      // local project before this change — and the row is moved and rekeyed
+      // like any other. NOTHING IS FABRICATED: no `worktree.json` is written,
+      // so `listWorktrees` keeps dropping the row exactly as it did; what is
+      // repaired is where its key points.
+      if (!meta) {
+        const src = await legacyLocalWorktreePath(root, project, location, key);
+        if (!(await pathExists(dest)) && src && await pathExists(src)) {
+          await fs.mkdir(path.dirname(dest), { recursive: true });
+          const r = await git(location.path, ['worktree', 'move', src, dest]);
+          if (r.code !== 0) {
+            await ledgerAdd(root, ledger, 'worktrees', `${project}/${key}`, log,
+              `it carries no worktree.json and git could not move the checkout the legacy rule `
+              + `locates at '${src}' (${(r.stderr || r.stdout || '').trim().split('\n')[0]})`);
+            continue;
+          }
+          movedCount++;
+        }
+        if (key !== stripped) {
+          await fs.rm(wtStore(root, project, stripped), { recursive: true, force: true });
+          await fs.rename(wtStore(root, project, key), wtStore(root, project, stripped));
+        }
+        log(`migration ${name}: worktree '${key}' of project '${project}' carries no worktree.json — `
+          + `its registration was rekeyed to '${stripped}' and any checkout moved to '${dest}'; `
+          + `cc cannot reconstruct its branch or base, so it stays invisible to the worktree listing.`);
+        continue;
+      }
 
       // PER-ROW COMPLETION PROBE, CHECKED FIRST. Both halves are needed: the key
       // must already be the bare one AND the json must agree with it. The json
@@ -545,13 +621,19 @@ async function moveWorktrees(root, plan, ledger, log) {
       const ledgerEntry = `${project}/${key}`;
       let refused = ledger.worktrees.includes(ledgerEntry);
 
-      if (!refused) {
+      // THE DESTINATION IS PROBED EVEN FOR A LEDGERED ROW, and that is the
+      // whole of this branch's placement. `git worktree move` can be killed or
+      // time out AFTER it moved the checkout and before its exit code was read,
+      // which ledgers an entry whose checkout is already at `dest`. Gating the
+      // probe on `!refused` then leaves the store key legacy and `worktreePath`
+      // naming a vacated directory — and the worktrees clause excludes ledgered
+      // rows, so it reads converged for ever. Adopt reality first; the ledger
+      // only decides whether a MOVE may be attempted.
+      if (await pathExists(dest)) {
+        finalKey = stripped; finalPath = dest; refused = false;
+      } else if (!refused) {
         const src = typeof meta.worktreePath === 'string' ? meta.worktreePath : '';
-        if (await pathExists(dest)) {
-          // A crash after the move, before the store rename: the destination is
-          // probed first, so an already-moved checkout is detected.
-          finalKey = stripped; finalPath = dest;
-        } else if (!src || !(await pathExists(src))) {
+        if (!src || !(await pathExists(src))) {
           // Nothing on disk to move — the registration is all there is.
           finalKey = stripped; finalPath = dest;
         } else {
@@ -594,6 +676,23 @@ function topological(keys, metas) {
   };
   for (const key of keys) visit(key, new Set());
   return out;
+}
+
+// WHERE THE LEGACY RULE PUT A LOCAL PROJECT'S WORKTREE, for a registration that
+// carries no `worktree.json` to read the path off. `worktreePathFor` before
+// this change was `<root>/<key>` for a project whose tree sat in the root and
+// `<root>/.external/<key>` for one reached through an adopted symlink — and the
+// project's own location is the discriminator between those two. Both are
+// probed anyway and whichever EXISTS wins: the derivation is a reconstruction,
+// so disk beats inference wherever disk can answer.
+async function legacyLocalWorktreePath(root, project, location, key) {
+  if (location.kind !== 'local') return null;
+  const wasInRoot = location.path === path.join(root, project);
+  const candidates = wasInRoot
+    ? [path.join(root, key), path.join(root, EXTERNAL, key)]
+    : [path.join(root, EXTERNAL, key), path.join(root, key)];
+  for (const c of candidates) if (await pathExists(c)) return c;
+  return candidates[0];
 }
 
 function stripKey(project, key) {
@@ -660,12 +759,22 @@ async function dropExternal(root, log) {
 // than "does the root have any directory": the store's own dotfolder is always
 // one, and snapshotting a fresh install would leave a backup directory that
 // backs up nothing.
+//
+// ANY NON-DOT DIRECTORY COUNTS, INCLUDING ONE WHOSE NAME FAILS `NAME_RE`. That
+// is deliberately WIDER than what step 1c will mint a record for, and the two
+// must not be reconciled by loosening the filter: a non-conforming name cannot
+// become a project, because the listing filters it out. What step 1c promises
+// is that such a directory is SKIPPED AND LOGGED — and before this migration it
+// was a first-class listed project, so the log is the only notice its owner
+// gets. A shortcut that read the root as empty took that away silently. Routing
+// it to the full path keeps ONE source for that message rather than a second
+// copy here.
 async function hasAnythingToMigrate(root) {
   if ((await storeRowNames(root)).length > 0) return true;
   for (const e of await dirEntries(root)) {
     if (!e.isDirectory()) continue;
     if (e.name === CONDUCT) return true;
-    if (!e.name.startsWith('.') && NAME_RE.test(e.name)) return true;
+    if (!e.name.startsWith('.')) return true;
   }
   if ((await dirEntries(path.join(root, EXTERNAL))).length > 0) return true;
   if ((await dirEntries(path.join(root, PLUGINS))).length > 0) return true;

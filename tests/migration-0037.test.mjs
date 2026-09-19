@@ -20,6 +20,7 @@ import * as m0037 from '../migrations/0037-project-location-records.mjs';
 const STORE = '.code-conductor';
 const BACKUP = 'migrated-backup-0037';
 const LEDGER = 'migration-0037-unresolved.json';
+const WORKTREES_DIR = '.worktrees';
 
 const git = (cwd, ...args) => new Promise((resolve, reject) => {
   execFileCb('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
@@ -499,6 +500,181 @@ test('re-running is a fast no-op', async () => {
   const { root } = await buildFixture();
   assert.equal((await m0037.run({ root, log: logs().log })).applied, true);
   assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+});
+
+// ── a record that is PRESENT and UNREADABLE ───────────────────────────────
+
+test('a TORN project.json with a locatable tree is healed, not skipped', async () => {
+  // STATE REPRODUCED: the old `writeMeta` was a non-atomic mkdir + writeFile, so
+  // a record half-written before a crash exists in the field. It is PRESENT and
+  // unparseable — a state a reader that returns the same value for "absent" and
+  // "unreadable" cannot tell from a row with no record at all, and therefore
+  // skips: never located, never moved aside, never healed, while the records
+  // clause reads it as red for ever.
+  const root = await mkRoot();
+  const tree = path.join(root, 'alpha');
+  await fs.mkdir(tree, { recursive: true });
+  await fs.mkdir(storeDir(root, 'alpha'), { recursive: true });
+  await fs.writeFile(path.join(storeDir(root, 'alpha'), 'project.json'), '{ "workspace": "Dev", "worksp');
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, true);
+  assert.deepEqual((await recordOf(root, 'alpha')).location, { kind: 'local', path: tree });
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false,
+    'the records clause goes green — a torn record cannot wedge the probe');
+});
+
+test('a TORN project.json with NO locatable tree is moved aside, and the probe converges', async () => {
+  // STATE REPRODUCED: the same torn write, for a legacy REMOTE record whose
+  // project has no directory under the root — so no source can locate it. It
+  // must reach the SAME terminal state an unlocatable readable row reaches
+  // (moved aside, which removes the input) rather than being skipped for ever.
+  const root = await mkRoot();
+  await fs.mkdir(storeDir(root, 'boxproj'), { recursive: true });
+  await fs.writeFile(path.join(storeDir(root, 'boxproj'), 'project.json'),
+    '{"system":"box","systemPa');
+
+  const r = await m0037.run({ root, log: logs().log });
+  assert.equal(r.applied, true);
+  assert.deepEqual(r.summary.orphanedRecords, ['boxproj']);
+  assert.equal(await exists(path.join(storeDir(root, 'boxproj'), 'project.json')), false);
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false,
+    'three runs would otherwise report applied:true with records:0 for ever');
+});
+
+test('the snapshot holds a torn record\'s RAW BYTES, not a parsed shape', async () => {
+  // STATE REPRODUCED: a torn record whose readable half carries a workspace the
+  // migration cannot recover. Backing it up as the PARSED shape stores `{}` —
+  // destroying the one input the snapshot exists for, at exactly the input
+  // "never destroy data you can't reconstruct" is about.
+  const root = await mkRoot();
+  await fs.mkdir(path.join(root, 'alpha'), { recursive: true });
+  await fs.mkdir(storeDir(root, 'alpha'), { recursive: true });
+  const torn = '{ "workspace": "Dev", "worksp';
+  await fs.writeFile(path.join(storeDir(root, 'alpha'), 'project.json'), torn);
+
+  await m0037.run({ root, log: logs().log });
+  assert.equal(
+    await fs.readFile(path.join(root, STORE, BACKUP, 'projects', 'alpha', 'project.json'), 'utf8'),
+    torn);
+});
+
+// ── the fresh-install shortcut ────────────────────────────────────────────
+
+test('a root holding ONLY a non-NAME_RE directory is not silently skipped', async () => {
+  // STATE REPRODUCED: the pre-migration listing had no name filter on its
+  // in-root loop, so `my proj` was a first-class listed project. It cannot be
+  // migrated (the new listing filters it out), and step 1c promises it is
+  // "skipped and logged" — but a shortcut that reads the root as EMPTY takes
+  // it away with no snapshot, no log and no record. The same shape beside any
+  // other project takes the full path and IS logged, so the silence is a
+  // property of the shortcut rather than of the directory.
+  const root = await mkRoot();
+  await fs.mkdir(path.join(root, 'my proj'), { recursive: true });
+
+  const l = logs();
+  await m0037.run({ root, log: l.log });
+  assert.ok(l.lines.some(x => x.includes('my proj')),
+    `a project that cannot be migrated must be named: ${l.lines.join(' | ')}`);
+});
+
+// ── a ledgered row whose checkout really did move ─────────────────────────
+
+test('a ledgered worktree whose checkout IS at the destination is adopted, not left legacy', async () => {
+  // STATE REPRODUCED: `git worktree move` killed or timed out after it moved
+  // the checkout but before its exit code was read, so the entry was ledgered
+  // AND the checkout is at the destination. Run 2 must probe the destination
+  // and adopt reality: a ledger entry that gates the dest-exists branch leaves
+  // the store key legacy and `worktreePath` naming a vacated directory, and the
+  // worktrees clause excludes ledgered rows, so it reads converged for ever.
+  const root = await mkRoot();
+  const repo = await makeRepo(path.join(root, 'inroot'));
+  await writeJson(path.join(storeDir(root, 'inroot'), 'project.json'),
+    { location: { kind: 'local', path: repo } });
+  const dest = path.join(root, WORKTREES_DIR, 'inroot', 'a');
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await git(repo, 'worktree', 'add', '-q', dest, '-b', 'code-conductor/a');
+  const legacyKey = 'inroot_worktree_a';
+  await writeJson(path.join(wtStore(root, 'inroot', legacyKey), 'worktree.json'), {
+    parentProject: 'inroot', parentPath: repo,
+    worktreeName: legacyKey, worktreePath: path.join(root, legacyKey),
+    branch: 'code-conductor/a', baseBranch: 'main', baseSha: '0'.repeat(40),
+    createdAt: new Date(2020, 0, 1).toISOString(),
+  });
+  await writeJson(path.join(root, STORE, LEDGER), { plugins: [], worktrees: [`inroot/${legacyKey}`] });
+
+  await m0037.run({ root, log: logs().log });
+  assert.ok(await exists(wtStore(root, 'inroot', 'a')), 'the store key follows the checkout');
+  assert.equal(await exists(wtStore(root, 'inroot', legacyKey)), false);
+  const meta = await readJson(path.join(wtStore(root, 'inroot', 'a'), 'worktree.json'));
+  assert.equal(meta.worktreeName, 'a');
+  assert.equal(meta.worktreePath, dest, 'and no longer names the vacated directory');
+});
+
+// ── a LOCAL registration with no worktree.json ────────────────────────────
+
+test('a LOCAL registration with NO worktree.json is derived from the legacy rule, not skipped', async () => {
+  // STATE REPRODUCED: `writeMeta` is a non-atomic mkdir + writeFile, so a
+  // registration directory with no json exists. Skipping the row leaves the
+  // LEGACY store key standing — and `registeredPlaces` re-derives the
+  // transcript guard's cwd from that key through `worktreePathFor`, so the
+  // guard would point into `.worktrees/` while the checkout sits at the legacy
+  // path: the exact guard/reality divergence the re-derivation exists to
+  // prevent. The path comes from the LEGACY RULE (`<root>/<key>` for a project
+  // whose tree is in the root), the checkout moves, and the store key follows.
+  // Nothing is fabricated: the row still has no json, so `listWorktrees` still
+  // drops it — what is repaired is WHERE its key points.
+  const root = await mkRoot();
+  const repo = await makeRepo(path.join(root, 'inroot'));
+  await writeJson(path.join(storeDir(root, 'inroot'), 'project.json'),
+    { location: { kind: 'local', path: repo } });
+  const legacyKey = 'inroot_worktree_nojson';
+  const legacyDir = path.join(root, legacyKey);
+  await git(repo, 'worktree', 'add', '-q', legacyDir, '-b', 'code-conductor/nojson');
+  await fs.mkdir(wtStore(root, 'inroot', legacyKey), { recursive: true });
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, true);
+  const dest = path.join(root, WORKTREES_DIR, 'inroot', 'nojson');
+  assert.ok(await exists(dest), 'the checkout moved to the new layout');
+  assert.equal(await exists(legacyDir), false);
+  assert.ok(await exists(wtStore(root, 'inroot', 'nojson')), 'and the store key followed it');
+  assert.equal(await exists(wtStore(root, 'inroot', legacyKey)), false);
+  assert.equal(await exists(path.join(wtStore(root, 'inroot', 'nojson'), 'worktree.json')), false,
+    'no metadata is fabricated for a row that had none');
+
+  // THE CONSEQUENCE: the transcript guard re-derives this row's cwd from its
+  // store key, and that derivation must now name where the checkout actually is.
+  process.env.PROJECTS_ROOT = root;
+  const { registeredPlaces } = await import('../src/systems/transcriptKey.ts');
+  const place = (await registeredPlaces()).find(pl => pl.worktree === 'nojson');
+  assert.ok(place, 'the registration is still a place the guard knows about');
+  assert.equal(place.cwd, dest);
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+});
+
+test('a LOCAL worktree whose checkout is GONE keeps its registration, rekeyed and repaired', async () => {
+  // STATE REPRODUCED: the checkout was removed out-of-band while its
+  // registration survived — step 4's "nothing to move" arm. The row must still
+  // be rekeyed and its json rewritten, or it holds a legacy key the transcript
+  // guard re-derives a cwd from while `worktree.json` names a directory that
+  // does not exist.
+  const root = await mkRoot();
+  const repo = await makeRepo(path.join(root, 'inroot'));
+  await writeJson(path.join(storeDir(root, 'inroot'), 'project.json'),
+    { location: { kind: 'local', path: repo } });
+  const legacyKey = 'inroot_worktree_gone';
+  await writeJson(path.join(wtStore(root, 'inroot', legacyKey), 'worktree.json'), {
+    parentProject: 'inroot', parentPath: repo,
+    worktreeName: legacyKey, worktreePath: path.join(root, legacyKey),
+    branch: 'code-conductor/gone', baseBranch: 'main', baseSha: '0'.repeat(40),
+    createdAt: new Date(2020, 0, 1).toISOString(),
+  });
+
+  await m0037.run({ root, log: logs().log });
+  const meta = await readJson(path.join(wtStore(root, 'inroot', 'gone'), 'worktree.json'));
+  assert.equal(meta.worktreeName, 'gone');
+  assert.equal(meta.worktreePath, path.join(root, WORKTREES_DIR, 'inroot', 'gone'));
   assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
 });
 

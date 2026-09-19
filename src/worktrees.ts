@@ -703,6 +703,51 @@ export async function resolveProjectCwd(projectName: string, worktreeName?: stri
   return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path, system: proj.system };
 }
 
+// A PROJECT'S TREE MOVED; ITS WORKTREES DID NOT. Both directions of the
+// back-reference between them are absolute paths into the OLD location, and
+// both break silently:
+//   - each checkout's `.git` file holds `gitdir: <old main>/.git/worktrees/<id>`
+//     and the repo's own `worktrees/<id>/gitdir` points back at the checkout, so
+//     `git -C <worktree> status` dies while `git worktree list` still lists it;
+//   - `worktree.json`'s `parentPath` names the old main checkout, which is what
+//     removal, the whole merge lifecycle and merge status all run git in.
+// `git worktree repair` fixes the first pair from the new main checkout — the
+// checkouts live in cc's own `.worktrees/` and have not moved — and the second
+// is a local store write. BEST-EFFORT: the relocation itself already stands,
+// and a new path that is a different repository (or no repository) is a state
+// the user chose, so this warns rather than undoing it.
+//
+// Only a ROOT-based row's `parentPath` is rewritten: a derived worktree's names
+// its BASE's checkout, which did not move.
+export async function repairWorktreesAfterProjectMove(projectName: string): Promise<void> {
+  const keys = await registeredWorktreeNames(projectName);
+  if (keys.length === 0) return;
+  const proj = await getProject(projectName);
+  const metas: WorktreeMeta[] = [];
+  for (const key of keys) {
+    const meta = await readMeta(projectName, key).catch(() => null);
+    if (meta) metas.push(meta);
+  }
+  const paths = metas.map(m => m.worktreePath).filter((p): p is string => typeof p === 'string' && p !== '');
+  if (paths.length > 0) {
+    try {
+      const r = await runGit(proj.system, proj.path, ['worktree', 'repair', ...paths]);
+      if (r.code !== 0) {
+        console.warn(`repairWorktreesAfterProjectMove: git could not repair '${projectName}' worktree `
+          + `back-references from ${proj.path}: ${r.stderr.trim() || r.stdout.trim()}`);
+      }
+    } catch (e) {
+      console.warn(`repairWorktreesAfterProjectMove: git could not be run in ${proj.path}: `
+        + `${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  for (const meta of metas) {
+    if (meta.baseWorktree !== undefined) continue;
+    if (meta.parentPath === proj.path) continue;
+    await writeMeta(projectName, meta.worktreeName, { ...meta, parentPath: proj.path });
+  }
+}
+
 // Every worktree that descends from this one — the whole subtree, DEEPEST FIRST.
 // The predicate is over worktree RECORDS, not live instances: killing a worker is
 // not enough — a surviving child whose base sha was rewritten under it is
@@ -1358,8 +1403,19 @@ export function buildRebasePrompt(meta: WorktreeMeta, blocker: 'dirty' | 'confli
 // project. Used by the project-delete cascade — failures are swallowed
 // because the caller is about to `rm -rf` the parent anyway.
 export async function removeAllWorktreesForProject(projectName: string): Promise<void> {
+  // A SYSTEM REFUSAL HERE IS NOT AN EMPTY WORKTREE LIST. `listWorktrees` is
+  // store-derived and swallows git's own refusal to answer, so the only things
+  // that reach this catch are a project that does not resolve (its record is
+  // gone or unreadable — deleting it is the repair, and there is nothing to
+  // guard) and a `runGit` system refusal: git could not be RUN, or never
+  // answered. The second must not read as "no worktrees": every dirty,
+  // dirty-unknown and dependents guard below is driven off this list, so
+  // swallowing it skips all of them silently and deletes a project whose
+  // worktrees cc never measured. That became reachable the moment this cascade
+  // stopped passing `force: true`.
   let known: WorktreeMeta[] = [];
-  try { known = await listWorktrees(projectName); } catch { /* repo may be gone */ }
+  try { known = await listWorktrees(projectName); }
+  catch (e) { if (isSystemRefusal(e)) throw e; /* the project itself is gone */ }
   // D11 REACHES THE CASCADE. Deleting a project on a non-local system
   // unregisters it and never touches the tree — and `git worktree remove
   // --force` plus `git branch -D` are exactly touching it: they delete a
@@ -1422,11 +1478,19 @@ export async function removeAllWorktreesForProject(projectName: string): Promise
 // Is there anything here a dirty check could be about? Both halves are needed:
 // a vanished checkout holds no uncommitted work, and a parent that is no longer
 // a repo cannot be asked about one (nor can `git worktree remove` run in it).
+//
+// "COULD NOT ASK" IS NOT "NOTHING TO PROTECT", and the difference is the whole
+// of this function's safety. `system.stat` ANSWERS absence with `null` and
+// throws only on a real fault; `isGitRepo` runs git, and `runGit` THROWS a
+// system refusal when git could not be spawned or never answered. Reading
+// either throw as `false` would drop the registration with the dirty,
+// dirty-unknown and dependents guards all skipped — a delete that succeeded
+// having measured nothing, which is exactly what `force: false` exists to stop.
+// So a fault PROPAGATES and the cascade refuses; only a measured absence
+// returns false.
 async function checkoutIsProtectable(system: System, wt: WorktreeMeta): Promise<boolean> {
-  try {
-    if ((await system.stat(wt.worktreePath))?.kind !== 'dir') return false;
-    return await isGitRepo(system, wt.parentPath);
-  } catch { return false; }
+  if ((await system.stat(wt.worktreePath))?.kind !== 'dir') return false;
+  return isGitRepo(system, wt.parentPath);
 }
 
 // The central-store entry for one worktree (metadata + attachments + debug).

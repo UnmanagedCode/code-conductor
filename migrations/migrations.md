@@ -67,6 +67,12 @@ on server startup** via `migrations/index.mjs`, which is invoked by
   changed. It writes `migration-<n>-complete.json` as its last act and
   enumerates those one-time sources only while the marker is absent; the
   structural clauses still run, and are what heals a torn row afterwards.
+  **A completion marker is NOT user-serviceable, and that is the opposite of
+  the ledger.** Removing a ledger entry re-arms one item's retry, which is the
+  documented repair. Removing the MARKER re-arms the one-time backfill against
+  a projects root that has moved on: every non-dot directory in it is minted as
+  a project again, including the grouping directories the new model exists to
+  allow. Say so wherever a marker is introduced.
 - **Respect `PROJECTS_ROOT`.** The runner passes `root` in — never hard-code
   an absolute projects-root path (e.g. a home-anchored `~/…`).
 

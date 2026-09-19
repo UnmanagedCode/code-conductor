@@ -1387,10 +1387,9 @@ export async function adoptProject(
   if (typeof target !== 'string' || target.trim() === '' || !path.isAbsolute(target)) {
     return { ok: false, code: 'INVALID_TARGET_PATH', reason: 'path must be a non-empty absolute path.' };
   }
-  // THE THIRD BRANCH. Adoption has no record yet to read a system from, so the
-  // CALLER names it; absent, the project is local and `.external` is its
-  // placement (a symlink under the projects root, which has no relationship to
-  // any system).
+  // WHICH MACHINE. Adoption has no record yet to read a system from, so the
+  // CALLER names it; absent, the tree is on cc's own machine and the location
+  // is `local`.
   //
   // Every check below then runs ON THE NAMED SYSTEM — the realpath, the stat and
   // the git-toplevel probe are all questions about the tree, and asking cc's own
@@ -1589,10 +1588,27 @@ export async function adoptProject(
       };
     }
     if (staleAction === 'relocate') {
+      // THE TRANSCRIPT-KEY GUARD RUNS HERE TOO. This is the one registration
+      // path that cannot go through `registerProject` — the name is held, by
+      // the very record being repointed — so the check it would have made is
+      // made explicitly. Without it a relocation writes a path that encodes to
+      // a CLI transcript directory another project already occupies, and the
+      // two interleave their sessions in it with nothing refusing: the
+      // duplicate-target loop above compares paths EXACTLY, and `encodeCwd`
+      // folds `/` and `-` alike, so `/srv/a-b` and `/srv/a/b` pass it.
+      // `transcriptCwdCollision` skips the candidate's own identity, so the
+      // stale record being replaced cannot refuse its own relocation.
+      const why = await projectKeyCollisionReason(
+        location.kind === 'remote' ? location.system : LOCAL_SYSTEM_ID, name, real);
+      if (why) return { ok: false, code: 'TRANSCRIPT_DIR_COLLISION', reason: why };
       await writeProjectRecord(name, { location });
       // The cached git facts were measured at the path the project just left.
       const { invalidate } = await import('./projectsCache.ts');
       invalidate(name);
+      // And so were its worktrees' back-references, in both directions. Lazy
+      // import for the projects.ts ↔ worktrees.ts edge, as everywhere here.
+      const { repairWorktreesAfterProjectMove } = await import('./worktrees.ts');
+      await repairWorktreesAfterProjectMove(name);
       await deliverAdoptedConventions(name, real);
       return { ok: true, name, path: real, system: location.kind === 'remote' ? location.system : LOCAL_SYSTEM_ID, remoteId: placement?.remoteId ?? null };
     }
