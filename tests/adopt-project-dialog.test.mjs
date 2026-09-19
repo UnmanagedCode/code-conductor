@@ -106,13 +106,16 @@ async function bootDialog({ scan = EMPTY_SCAN, posts = [] } = {}) {
     el, requests, messageFor: mod.messageFor, overrides: mod.REFUSAL_OVERRIDES,
     close,
     counts: () => ({ refreshed, overflowClosed }),
+    // The discard list read as ROWS. Reading its concatenated textContent
+    // would let a count/noun swap pass: "2 attachments, 5 debug captures" and
+    // "5 attachments, 2 debug captures" contain the same digits.
+    discardRows: () => [...el('apd-stale-discards').querySelectorAll('li')].map(li => li.textContent),
     state: () => ({
       formHidden: el('apd-form').hidden,
       staleHidden: el('apd-stale').hidden,
       error: el('apd-error').textContent,
       staleError: el('apd-stale-error').textContent,
       staleSummary: el('apd-stale-summary').textContent,
-      staleDiscards: el('apd-stale-discards').textContent,
     }),
   };
 }
@@ -184,9 +187,12 @@ test('PROJECT_EXISTS reopens the form and offers no relocate/replace pane', asyn
 });
 
 // PINS: the stale pane names WHERE the held record points and WHAT a Replace
-// would discard — all three counts, because a user authorising a discard has
-// to be told what is at stake.
-test('PROJECT_EXISTS_STALE shows the stale pane naming heldPath and every discard count', async () => {
+// would discard. This is AC4's whole substance — the user is authorising a
+// destructive action on the strength of this list — so each count is pinned
+// TO ITS NOUN, not merely present among the digits, and both grammatical
+// branches are exercised: a list that said "5 attachments" for 2 of them, or
+// "1 worktree registrations", would be lying about what is at stake.
+test('PROJECT_EXISTS_STALE shows the stale pane naming heldPath and pairing every discard count with what it counts', async () => {
   const d = await bootDialog({ posts: [{ status: 200, body: STALE_BODY }] });
   d.el('apd-name').value = 'api';
   d.el('apd-path').value = '/root/api';
@@ -195,9 +201,21 @@ test('PROJECT_EXISTS_STALE shows the stale pane naming heldPath and every discar
   assert.equal(s.staleHidden, false);
   assert.equal(s.formHidden, true);
   assert.match(s.staleSummary, /\/old\/api/);
-  assert.match(s.staleDiscards, /2/);
-  assert.match(s.staleDiscards, /5/);
-  assert.match(s.staleDiscards, /1/);
+  assert.deepEqual(d.discardRows(),
+    ['2 attachments', '5 debug captures', '1 worktree registration'],
+    'each count sits with the noun it counts, and 1 is singular');
+
+  // The complementary grammatical branch on each row, plus a zero — which
+  // must still be SHOWN: "0 worktree registrations" is the reassurance that
+  // nothing of that kind is at stake, and an omitted row says nothing at all.
+  const other = await bootDialog({
+    posts: [{ status: 200, body: { ...STALE_BODY, discards: { attachments: 1, debug: 0, worktrees: 2 } } }],
+  });
+  other.el('apd-name').value = 'api';
+  other.el('apd-path').value = '/root/api';
+  await other.close('adopt');
+  assert.deepEqual(other.discardRows(),
+    ['1 attachment', '0 debug captures', '2 worktree registrations']);
 });
 
 // PINS: the dialog WIRES TO the server's stale branch rather than
@@ -324,17 +342,25 @@ test('a non-2xx {error} body is shown and the form reopens', async () => {
 // PINS: a truncated or partly-unreadable scan SAYS SO. Without it, "the
 // directory is not in the list" would read as "cc looked and it is not
 // adoptable", which a capped walk does not entitle the user to conclude.
-test('the scan note reports truncation and unreadable directories', async () => {
-  const quiet = await bootDialog();
-  assert.ok(!/truncat/i.test(quiet.el('apd-scan-note').textContent),
-    'a complete scan does not warn');
+test('the scan note reports truncation and the unreadable count', async () => {
+  const candidates = [{ path: '/root/a', relPath: 'a', depth: 1, isGitRepo: false, suggestedName: 'a' }];
+  const quiet = await bootDialog({ scan: { ...EMPTY_SCAN, candidates } });
+  const quietNote = quiet.el('apd-scan-note').textContent;
+  assert.ok(!/truncat/i.test(quietNote), 'a complete scan does not warn');
+  assert.ok(!/could not be read/.test(quietNote), 'nor does it mention unreadable directories');
 
+  // Candidates are present here deliberately: a bare digit match would
+  // otherwise be discriminating only by accident of the empty-list wording.
+  // The count is pinned to the clause it belongs to, and to its own plural.
   const noisy = await bootDialog({
-    scan: { ...EMPTY_SCAN, truncated: true, unreadable: 3 },
+    scan: { ...EMPTY_SCAN, candidates, truncated: true, unreadable: 3 },
   });
   const note = noisy.el('apd-scan-note').textContent;
   assert.match(note, /truncat/i);
-  assert.match(note, /3/);
+  assert.match(note, /3 directories could not be read/);
+
+  const one = await bootDialog({ scan: { ...EMPTY_SCAN, candidates, unreadable: 1 } });
+  assert.match(one.el('apd-scan-note').textContent, /1 directory could not be read/);
 });
 
 // PINS: THE OVERRIDE CANNOT ROT SILENTLY. Both replacements are keyed on a
@@ -356,8 +382,16 @@ test('the overridden refusals still end with the exact tails the dialog strips',
   const transcriptTail = tailFor('TRANSCRIPT_DIR_COLLISION');
   assert.ok(real.endsWith(transcriptTail),
     `the dialog strips ${JSON.stringify(transcriptTail)} but the server now says ${JSON.stringify(real)}`);
-  assert.ok(!mod.messageFor({ code: 'TRANSCRIPT_DIR_COLLISION', reason: real }).endsWith(transcriptTail),
-    'and the override actually fires on the real sentence');
+  // What the user is SHOWN for the real sentence — not merely that the tail is
+  // gone. A remedy that stripped and replaced with nothing would satisfy the
+  // endsWith check alone while leaving the user no next action at all.
+  const shownTranscript = mod.messageFor({ code: 'TRANSCRIPT_DIR_COLLISION', reason: real });
+  assert.ok(!shownTranscript.includes('Pick another name'),
+    'the server remedy is gone from the real sentence');
+  assert.match(shownTranscript, /Pick a different directory/,
+    'and the replacement is what stands in its place');
+  assert.ok(shownTranscript.startsWith(real.slice(0, -transcriptTail.length)),
+    'everything the server said before the remedy survives verbatim');
 
   // ── PROJECT_PLACEMENT_IN_USE, from a real refused relocate. It needs a
   // CROSS-KIND move of a project whose record is stale and whose worktrees are

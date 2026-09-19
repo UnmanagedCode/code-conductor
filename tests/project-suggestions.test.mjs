@@ -16,13 +16,16 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import dc from 'node:diagnostics_channel';
 import { execFile as execFileCb } from 'node:child_process';
 import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject } from './helpers.mjs';
-import { suggestAdoptableDirs, suggestedNameFor, SUGGEST_MAX_DEPTH } from '../src/projectSuggestions.ts';
+import { suggestAdoptableDirs, suggestedNameFor, SUGGEST_MAX_DEPTH, SUGGEST_MAX_DIRS } from '../src/projectSuggestions.ts';
 import {
   adoptProject, listProjects, projectStoreDir, registerProject,
   getProjectForDelete, removeProjectStoreDir,
 } from '../src/projects.ts';
+import { runGit } from '../src/worktrees.ts';
+import { localSystem } from '../src/systems/registry.ts';
 
 const git = (cwd, ...args) => new Promise((resolve, reject) => {
   execFileCb('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
@@ -241,6 +244,10 @@ test('the visited-directory cap truncates and says so', async () => {
   }
   const full = await suggestAdoptableDirs();
   assert.equal(full.truncated, false, 'an uncapped walk of the same root is not truncated');
+  // The DEFAULT, not just the seam. Every assertion above drives `maxDirs`
+  // explicitly, so a default of 10 — which would truncate a real user's root
+  // on sight — would pass all of them.
+  assert.equal(SUGGEST_MAX_DIRS, 2000, 'the shipped breadth cap');
 });
 
 // PINS: a permission-denied subtree degrades ONE row, not the endpoint. A root
@@ -268,6 +275,57 @@ test('an unreadable directory is counted and the scan continues', async (t) => {
   } finally {
     await fs.chmod(path.join(projectsRoot, 'locked'), 0o700);
     void locked;
+  }
+});
+
+// PINS: "it runs no `git`" — a guarantee stated in docs/protocol.md and in the
+// module header, and one every other test in this file is blind to, because
+// `stat` and git agree on every fixture shape: a scan that shelled out to
+// `git rev-parse` per candidate would produce byte-identical output and pass
+// all of them. The only observable difference is the call, so that is what is
+// counted.
+//
+// COUNTED AT THE `System` HANDLE, not at the process. `localSystem()` returns
+// a module-level singleton, so a spy on its `exec` sees every caller that
+// reaches for it — including a regression inside the scan, which would have to
+// go through that same accessor to get a handle at all. It is also the ONE
+// seam that means the same thing in both configurations: under
+// `npm run gate:systems` the local system is a ProviderSystem, and a git run
+// there is a wire frame rather than a subprocess of this process.
+//
+// The subprocess count rides along, but only where the positive control proves
+// the channel can see a git run at all — under the gate it cannot, and
+// asserting zero there would be asserting nothing.
+test('the scan runs no git — not one exec, per candidate or otherwise', async () => {
+  await buildFixture();
+  const system = localSystem();
+  const hadOwnExec = Object.prototype.hasOwnProperty.call(system, 'exec');
+  const realExec = system.exec;
+  let execs = 0;
+  let spawns = 0;
+  const onSpawn = () => { spawns++; };
+  const channel = dc.channel('child_process');
+  channel.subscribe(onSpawn);
+  system.exec = function (...args) { execs++; return realExec.apply(this, args); };
+  try {
+    // POSITIVE CONTROL: a real git run through the handle the scan would have
+    // to use lands on both counters, so neither zero below is a blind read.
+    await runGit(system, projectsRoot, ['rev-parse', '--show-toplevel']);
+    assert.equal(execs, 1, 'positive control: a real git run is visible at the exec seam');
+    const channelSeesGit = spawns > 0; // false when the local system is a provider
+
+    execs = 0;
+    spawns = 0;
+    const s = await suggestAdoptableDirs();
+    assert.ok(s.candidates.length >= 4, 'premise: there was plenty for a git-running scan to probe');
+    assert.ok(s.candidates.some(c => c.isGitRepo), 'including a repo, which is what a probe would be for');
+    assert.equal(execs, 0, 'the scan must answer isGitRepo and stop-descend from a stat alone');
+    if (channelSeesGit) {
+      assert.equal(spawns, 0, 'and it must not reach around the handle to a bare subprocess either');
+    }
+  } finally {
+    if (hadOwnExec) system.exec = realExec; else delete system.exec;
+    channel.unsubscribe(onSpawn);
   }
 });
 
