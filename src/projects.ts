@@ -1,6 +1,7 @@
 import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.ts';
@@ -137,6 +138,55 @@ export function claudeConfigDir(): string {
 // honour it); unset, cc and the CLI agree by construction.
 export function claudeProjectsRoot(): string {
   return process.env.CLAUDE_PROJECTS_ROOT ?? path.join(claudeConfigDir(), 'projects');
+}
+
+// ── ONE CLI CONFIG DIRECTORY PER REMOTE ─────────────────────────────────────
+//
+// The CLI derives its transcript directory from its own cwd, and under the FUSE
+// union a remote-backed worker's cwd is the REMOTE's path spelling — so two
+// projects at one absolute path on two boxes derive ONE directory. cc does not
+// rename that directory; it gives each remote a config directory of its own, so
+// the cwd-derived name is scoped by a root that already differs.
+//
+// The farm lives under the store, which `buildTierTable` already host-pins whole
+// through `projectsRoot` — no tier-table entry is required to reach it.
+export const CLAUDE_CONFIG_FARM_DIRNAME = 'claude-config';
+
+export function claudeConfigFarmRoot(): string {
+  return path.join(orchStoreRoot(), CLAUDE_CONFIG_FARM_DIRNAME);
+}
+
+// A path component built from an arbitrary string: the CHARACTER SET is the
+// point, not the prettiness. Empty is a legitimate result and the caller drops
+// it — every name still carries the digest below.
+function configSlug(s: string): string {
+  return s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
+}
+
+// The directory name for one (system, remoteId) — the machine coordinate
+// `placementToken` already spells.
+//
+// NOT `remoteId` ITSELF. `validateRemoteId` deliberately permits `_`, `.`, `/`
+// and `..` — it refuses only empty, whitespace, control characters and >128
+// chars — so a raw remote id used as a directory name is a path-traversal
+// hazard. The 12-hex digest carries the whole uniqueness claim; the slugs are a
+// readability hint that truncation may eat down to nothing.
+export function remoteConfigDirName(system: string, remoteId: string | null): string {
+  const digest = createHash('sha256').update(`${system}\0${remoteId ?? ''}`).digest('hex').slice(0, 12);
+  const parts = [configSlug(system), configSlug(remoteId ?? '')].filter(Boolean);
+  return [...parts, digest].join('-');
+}
+
+// THE DIRECTORY `CLAUDE_CONFIG_DIR` POINTS AT for a worker on this remote.
+//
+// ITS LAST COMPONENT IS `.claude`, and that is load-bearing rather than
+// decorative: the CLI resolves its plans directory as `<configDir>/plans`, and
+// `planFileFromToolUse` (src/planFile.ts) recognises a plan file by the
+// `/.claude/plans/` fragment — home-agnostically, so it holds for a worker
+// whatever machine spelling its config dir has. Renaming this component breaks
+// plan-file detection for every remote-backed session.
+export function remoteConfigDir(p: { system: string; remoteId: string | null }): string {
+  return path.join(claudeConfigFarmRoot(), remoteConfigDirName(p.system, p.remoteId), '.claude');
 }
 
 export function encodeCwd(abs: string): string {
