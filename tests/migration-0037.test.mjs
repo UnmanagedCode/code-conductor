@@ -680,6 +680,102 @@ test('a LOCAL worktree whose checkout is GONE keeps its registration, rekeyed an
   assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
 });
 
+// ── THE PROBE, IN THE ONLY REGIME IT EVER RUNS IN ─────────────────────────
+//
+// `run` short-circuits on the completion marker — `if (completed && await
+// converged(...))` — so every clause in the probe is consulted ONLY after a
+// completed migration. A fixture that is pre-marker, or single-run, exercises
+// the pipeline with the probe bypassed: it can show a clause GREEN, never that
+// a clause is what noticed. These build the regime instead: migrate, break ONE
+// thing, and require the next boot to read not-converged AND act on it.
+//
+// Both assertions are needed on every one of them. `applied` alone would pass
+// for a probe that is red about something else; the repair alone would pass for
+// a pipeline that runs unconditionally.
+
+// Migrate a root to completion — the marker is what these tests are about, so
+// it is asserted rather than assumed.
+async function migrated(root) {
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, true, 'fixture must migrate');
+  assert.ok(await exists(path.join(root, STORE, 'migration-0037-complete.json')),
+    'fixture must be POST-marker, or the probe is bypassed and proves nothing');
+}
+
+test('post-marker: a record that lost its location makes the probe act, and is healed', async () => {
+  // STATE REPRODUCED: a completed store whose record was hand-edited, or half
+  // written by something else, back to a shape with no `location`. Nothing else
+  // is wrong — no `.external`, no torn worktree row — so the RECORDS clause is
+  // the only thing that can notice, and a boot that reads converged leaves the
+  // project unregistered for ever.
+  const root = await mkRoot();
+  const tree = path.join(root, 'alpha');
+  await fs.mkdir(tree, { recursive: true });
+  await migrated(root);
+  await writeJson(path.join(storeDir(root, 'alpha'), 'project.json'), { workspace: 'Keep' });
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, true,
+    'the records clause must read not-converged');
+  const rec = await recordOf(root, 'alpha');
+  assert.deepEqual(rec.location, { kind: 'local', path: tree }, 'and the next boot heals it');
+  assert.equal(rec.workspace, 'Keep', 'without losing what the record still carried');
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+});
+
+test('post-marker: a torn worktree row makes the probe act, and is repaired', async () => {
+  // STATE REPRODUCED: a completed store in which a `worktree.json` disagrees
+  // with its own store key and names a VACATED directory — the crash window
+  // between the store rename and the json rewrite, reached here through the
+  // probe rather than past it. Every record has a location, so the records
+  // clause is green and only the torn-row detector can notice.
+  const root = await mkRoot();
+  const repo = await makeRepo(path.join(root, 'inroot'));
+  const legacyDir = path.join(root, 'inroot_worktree_a');
+  await git(repo, 'worktree', 'add', '-q', legacyDir, '-b', 'code-conductor/a');
+  await writeJson(path.join(wtStore(root, 'inroot', 'inroot_worktree_a'), 'worktree.json'), {
+    parentProject: 'inroot', parentPath: repo,
+    worktreeName: 'inroot_worktree_a', worktreePath: legacyDir,
+    branch: 'code-conductor/a', baseBranch: 'main', baseSha: '0'.repeat(40),
+    createdAt: new Date(2020, 0, 1).toISOString(),
+  });
+  await migrated(root);
+  const dest = path.join(root, WORKTREES_DIR, 'inroot', 'a');
+  assert.ok(await exists(dest), 'fixture: the checkout is at the new layout after the first run');
+
+  // Tear it: the store key stays bare while the json reverts to naming the
+  // vacated directory. An infix-only detector reads this as DONE.
+  const metaPath = path.join(wtStore(root, 'inroot', 'a'), 'worktree.json');
+  await writeJson(metaPath, { ...(await readJson(metaPath)), worktreeName: 'inroot_worktree_a', worktreePath: legacyDir });
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, true,
+    'the torn-row detector must read not-converged');
+  const healed = await readJson(metaPath);
+  assert.equal(healed.worktreeName, 'a');
+  assert.equal(healed.worktreePath, dest, 'and no longer names the vacated directory');
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+});
+
+test('post-marker: a leftover .external symlink makes the probe act, and is unlinked', async () => {
+  // STATE REPRODUCED: step 6 unlinks one symlink at a time, so a crash inside
+  // it leaves symlinks behind in a store whose records were already written by
+  // step 5 — the one way a symlink exists post-marker, since nothing creates
+  // them any more. The `.external` clause is the only thing that can notice: a
+  // dangling registration mechanism would otherwise sit there for ever, and the
+  // resolver would keep disagreeing with what is on disk.
+  const root = await mkRoot();
+  await fs.mkdir(path.join(root, 'alpha'), { recursive: true });
+  await migrated(root);
+
+  const ext = path.join(root, '.external');
+  await fs.mkdir(ext, { recursive: true });
+  await fs.symlink(path.join(root, 'alpha'), path.join(ext, 'leftover'));
+
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, true,
+    'the .external clause must read not-converged');
+  assert.equal(await exists(path.join(ext, 'leftover')), false, 'and the next boot unlinks it');
+  assert.ok(await exists(path.join(root, 'alpha')), 'the link target is never followed');
+  assert.equal((await m0037.run({ root, log: logs().log })).applied, false);
+});
+
 test('a directory created under the projects root AFTER the migration completes does not become a project', async () => {
   // INVARIANT: the completion marker's reason for existing, from the side the
   // structural clauses cannot cover. The in-root backfill is a ONE-TIME source;

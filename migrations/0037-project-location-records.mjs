@@ -63,7 +63,7 @@
 // root that has moved on: every non-dot directory in it is minted as a project
 // again, grouping directories included. There is no reason to delete it; if a
 // store genuinely needs re-migrating, restore it from
-// `migrated-backup-0036/` first.
+// `migrated-backup-0037/` first.
 //
 // ── THE LEDGER ─────────────────────────────────────────────────────────────
 // `<root>/.code-conductor/migration-0037-unresolved.json`:

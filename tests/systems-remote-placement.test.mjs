@@ -311,6 +311,34 @@ describe('remote project placement', () => {
     assert.equal((await readRecord('app')).location.path, moved);
   });
 
+  // PINS: THE REFUSAL IS NOT EXEMPTED BY A CONFIGURED `worktreesDir`. With one
+  // set, the derivation is `<worktreesDir>/<project>/<key>` and does NOT depend
+  // on the project's path — so a narrowed guard that let this relocation
+  // through would look correct at the instant it ran. It is refused anyway,
+  // because the override is a mutable system-registry field: clearing it later
+  // switches the derivation back to `dirname(location.path)` and the divergence
+  // appears retroactively, over a move nothing refused and nothing recorded.
+  test('a remote relocate over registered worktrees is refused even with worktreesDir set', async () => {
+    const wtDir = path.join(remote.root, 'cc-worktrees');
+    await fs.mkdir(wtDir, { recursive: true });
+    const { updateSystem } = await import('../src/appSettings.ts');
+    await updateSystem(remote.id, { worktreesDir: wtDir });
+
+    const tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+    const wt = await createWorktree('app', { name: 'feature' });
+    assert.equal(wt.worktreePath, path.posix.join(wtDir, 'app', 'feature'),
+      'premise: with worktreesDir set the checkout does NOT sit under dirname(project path)');
+
+    await fs.rm(tree, { recursive: true, force: true });
+    const moved = await seedRepo(path.join(remote.root, 'app-moved'));
+
+    const refused = await adoptProject('app', moved, { system: remote.id, onStaleRecord: 'relocate' });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(refused.code, 'PROJECT_PLACEMENT_IN_USE');
+    assert.equal((await readRecord('app')).location.path, tree, 'and nothing was written');
+  });
+
   // PINS: AC10 ON THE REMOTE RELOCATE ARM. The relocate branch passes the
   // LOCATION's system to the transcript-key guard, and the guard compares
   // across every system — the CLI names its transcript directory from the
@@ -333,6 +361,37 @@ describe('remote project placement', () => {
     assert.equal(res.code, 'TRANSCRIPT_DIR_COLLISION');
     assert.match(res.reason, /'holder'/);
     assert.equal((await readRecord('app')).location.path, gone, 'the refused relocation wrote nothing');
+    // THE SYSTEM THE GUARD IS GIVEN IS THE LOCATION'S, NOT `local`. Detection
+    // is system-BLIND by design — the CLI names its transcript directory from
+    // the working directory and nothing else — so the observable is the
+    // refusal's where-clause, which is named only when the holder is on a
+    // DIFFERENT machine from the candidate. Both are on this system, so it must
+    // be silent; a hard-coded `local` candidate would make every same-system
+    // collision read as a cross-machine one.
+    assert.ok(!/on system/.test(res.reason),
+      `both places are on the same system, so the machine must not be named: ${res.reason}`);
+  });
+
+  // PINS the other half of that clause, so the absence asserted above is not
+  // satisfiable by a refusal that never names a machine at all: when the holder
+  // really IS on a different machine, the reason says which — that is the whole
+  // explanation for why two paths that look unrelated are not.
+  test('a cross-machine collision on the relocate path NAMES the other machine', async () => {
+    const gone = await seedRepo(path.join(remote.root, 'x_gone'));
+    assert.equal((await adoptProject('app', gone, { system: remote.id })).ok, true);
+    await fs.rm(gone, { recursive: true, force: true });
+
+    // The holder is LOCAL; the candidate is on the system. The reference
+    // provider is this same machine, so both paths are real and encode alike.
+    const holder = await seedRepo(path.join(remote.root, 'k_k'));
+    assert.equal((await adoptProject('holder', holder)).ok, true);
+    const colliding = await seedRepo(path.join(remote.root, 'k-k'));
+
+    const res = await adoptProject('app', colliding, { system: remote.id, onStaleRecord: 'relocate' });
+    assert.equal(res.ok, false, JSON.stringify(res));
+    assert.equal(res.code, 'TRANSCRIPT_DIR_COLLISION');
+    assert.match(res.reason, /on system 'local'/,
+      `the holder is on cc's own machine and the refusal must say so: ${res.reason}`);
   });
 
   // PINS: duplicates compare (system, path), not path alone — the same path on
