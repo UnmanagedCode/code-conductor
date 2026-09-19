@@ -421,8 +421,8 @@ test('11 pins: the group is a <details>/<summary> whose collapse IS the open att
 // A2 — pins: every wrap that can hold an open group is reached by the closers.
 // `_ensureMessageWrap` serves a CACHED wrap (the shared '__floating__' key an
 // orphan tool_result lands on) without re-arming the active-wrap pointer, so a
-// closer keyed on that pointer alone folds a different wrap and leaves this
-// group open for the rest of the session.
+// closer keyed on that pointer alone cannot reach the group that opens on it,
+// and it stays expanded for the rest of the session.
 // ---------------------------------------------------------------------------
 test('A2 pins: a group on a reused floating wrap is folded by the run-enders', async (t) => {
   const CLOSERS = [
@@ -437,14 +437,16 @@ test('A2 pins: a group on a reused floating wrap is folded by the run-enders', a
         { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Bash' },
         { kind: 'turn_end', subtype: 'success' },
         // First orphan: `turn_end` never nulls the active pointer, so the m1
-        // wrap is still active and '__floating__' is ALIASED onto it. Being
-        // the active wrap is what lets the user_echo below fold this group.
+        // wrap is still active and '__floating__' is ALIASED onto it — no wrap
+        // is created, and both orphans land in that same m1 wrap.
         { kind: 'tool_result', toolUseId: 'ghost1', content: 'first orphan' },
         { kind: 'user_echo', text: 'next prompt', userIndex: 1 },
         { kind: 'turn_end', subtype: 'success' },
         // Second orphan: '__floating__' is in the cache now, so the wrap is
         // served without re-arming the active pointer — which the user_echo
-        // has since nulled. The group opens on a wrap the pointer never names.
+        // has since nulled. The group below therefore opens on a wrap the
+        // active-wrap pointer does not name; only a sweep over every wrap
+        // reaches it, and reaching it is what this test reads.
         { kind: 'tool_result', toolUseId: 'ghost2', content: 'second orphan' },
       ]);
       const stranded = groupsIn(root).find(g => g.textContent.includes('second orphan'));
@@ -552,7 +554,12 @@ test('B3 pins: an errored tool inside a sub-agent does not count against the out
   assert.ok(nested, 'sanity: the sub-agent has a group of its own');
   assert.equal(summaryTextOf(nested), '1 action · Read · 1 error',
     'sanity: the failure really is inside the nested group');
-  assert.ok(agBodyOf(outer).children[0].querySelector('.block.tool-result'),
+  // A DIRECT child: attachResult appends the Agent's own result as a child of
+  // the tool block, while the sub-agent's errored result lives deeper inside
+  // the same subtree — a descendant query would be satisfied by that one and
+  // would not notice the re-tally trigger going missing from the fixture.
+  const agentBlock = agBodyOf(outer).children[0];
+  assert.ok([...agentBlock.children].some(n => n.classList.contains('tool-result')),
     'sanity: the Agent\'s own result attached, so the outer header was re-tallied');
   assert.equal(summaryTextOf(outer), '1 action · Agent',
     'the outer header reports the Agent call, not the sub-agent\'s failure');
@@ -710,14 +717,15 @@ test('D3 pins: a run-ender folds a sub-agent\'s group too', async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// D4 — pins: a killed process ends the run. `_handleExit` emits `system/exit`
-// on every process death and `crashed` carries the stderr; the machinery that
-// was accumulating can never continue.
+// D4 — pins: a dead process ends the run. `_handleExit` (src/instances.ts)
+// emits `system/exit` on EVERY process death — commanded kill, crash, backend
+// failure alike — so it is the one annotation that has to fold the group; the
+// machinery that was accumulating can never continue.
 // ---------------------------------------------------------------------------
-test('D4 pins: a process exit or crash folds the accumulating group', async (t) => {
+test('D4 pins: a process exit folds the accumulating group', async (t) => {
   const ENDERS = [
     ['exit', { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } }],
-    ['crashed', { kind: 'system', subtype: 'crashed', data: { message: 'backend died' } }],
+    ['exit (clean)', { kind: 'system', subtype: 'exit', data: { code: 0, signal: null } }],
   ];
   for (const [name, ev] of ENDERS) {
     await t.test(`${name} ends the run`, async () => {
@@ -734,20 +742,67 @@ test('D4 pins: a process exit or crash folds the accumulating group', async (t) 
 });
 
 // ---------------------------------------------------------------------------
-// D5 — the other arm of D4/A3: a system event that is NOT terminal must leave
-// the watchable run alone. `auto_resume` is mid-session housekeeping — the
-// turn continues, so its machinery keeps accumulating in an open group.
+// D5 — the other arm of D4/A3, and the only one there is: a system annotation
+// the turn SURVIVES must leave the watchable run alone. Each of these is a
+// shown subtype that arrives mid-turn with the process still running, so the
+// group must stay open AND keep accumulating. Behaviour, deliberately not the
+// set's membership — restating the literal would break on every legitimate
+// addition and prove nothing the code does not already say.
 // ---------------------------------------------------------------------------
-test('D5 pins: a non-terminal system note does not collapse an accumulating group', async () => {
+test('D5 pins: a system note the turn survives does not collapse the group', async (t) => {
+  const MID_RUN = [
+    ['auto_resume', { kind: 'system', subtype: 'auto_resume', data: { count: 2 } }],
+    ['compacting', { kind: 'system', subtype: 'compacting', data: {} }],
+    ['stderr', { kind: 'system', subtype: 'stderr', data: { line: 'a warning from the CLI' } }],
+    ['cache_miss', { kind: 'system', subtype: 'cache_miss', data: { cacheCreation: 10, cacheRead: 2 } }],
+  ];
+  for (const [name, ev] of MID_RUN) {
+    await t.test(`${name} leaves the run accumulating`, async () => {
+      const { root, Conversation } = await setupDOM();
+      const conv = new Conversation(root, {});
+      feed(conv, tool('m1', 0, 'tu1', 'Bash'));
+      const group = groupsIn(root)[0];
+
+      conv.apply(ev);
+      assert.equal(group.hasAttribute('open'), true,
+        `${name} does not end the run — the user must still be able to watch it`);
+
+      feed(conv, tool('m1', 1, 'tu2', 'Read'));
+      assert.equal(agBodyOf(group).children.length, 2,
+        `${name} must leave it the accumulating run, not just an open one`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E3 — pins: the sweep recurses TRANSITIVELY. D3's pair proves it reaches a
+// first-level panel and folds that sub's own wraps; a recursion that stopped
+// at depth 1 would satisfy both and still strand a sub-agent's sub-agent.
+// ---------------------------------------------------------------------------
+test('E3 pins: a run-ender folds a group two sub-agent levels down', async () => {
   const { root, Conversation } = await setupDOM();
   const conv = new Conversation(root, {});
-  feed(conv, tool('m1', 0, 'tu1', 'Bash'));
-  const group = groupsIn(root)[0];
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: {} },
+    // The first-level sub-agent spawns one of its own.
+    { kind: 'tool_use_start', msgId: 'ms', blockIdx: 0, toolUseId: 'tuB', name: 'Agent', parentToolUseId: 'tuA' },
+    { kind: 'tool_use', msgId: 'ms', blockIdx: 0, toolUseId: 'tuB', name: 'Agent', input: {}, parentToolUseId: 'tuA' },
+    // …whose own machinery is what must fold. Routed depth-2 by the outer
+    // level's fallback scan over its sub-conversations.
+    { kind: 'tool_use_start', msgId: 'mg', blockIdx: 0, toolUseId: 'ctu', name: 'Read', parentToolUseId: 'tuB' },
+    { kind: 'tool_use', msgId: 'mg', blockIdx: 0, toolUseId: 'ctu', name: 'Read', input: {}, parentToolUseId: 'tuB' },
+  ]);
 
-  conv.apply({ kind: 'system', subtype: 'auto_resume', data: { count: 2 } });
-  assert.equal(group.hasAttribute('open'), true,
-    'the run has not ended — the user must still be able to watch it');
+  const deep = groupsIn(root).find(g => summaryTextOf(g) === '1 action · Read');
+  assert.ok(deep, 'sanity: the grandchild sub-agent opened a group');
+  assert.equal(
+    [...root.querySelectorAll('.sub-conversation-body')].filter(b => b.contains(deep)).length, 2,
+    'sanity: it really sits inside two nested sub-agent panels',
+  );
+  assert.equal(deep.hasAttribute('open'), true, 'open while the grandchild is running');
 
-  feed(conv, tool('m1', 1, 'tu2', 'Read'));
-  assert.equal(agBodyOf(group).children.length, 2, 'and it is still the accumulating run');
+  conv.apply({ kind: 'turn_end', subtype: 'success' });
+  assert.equal(deep.hasAttribute('open'), false,
+    'the sweep must reach every depth, not only first-level panels');
 });

@@ -18,9 +18,11 @@ const HISTORY_GAP_CLASS = 'history-gap';
 // System annotations that END the machinery run: the turn was interrupted or
 // the process died, so whatever was accumulating will never continue. They fold
 // the group without closing the segment, exactly as a turn end does.
-// `_handleExit` (src/instances.ts) emits `exit` on every process death and
-// `crashed` alongside it when stderr explains why.
-const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit', 'crashed']);
+// `exit` alone covers every death: `_handleExit` (src/instances.ts) emits it
+// unconditionally — commanded kill, crash and backend launch failure alike. The
+// `launch_failed` that can follow it carries the stderr, and is a description of
+// the same death rather than a second one, so it is deliberately not listed.
+const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
 
 export function isHistoryGapNode(node) {
   return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
@@ -213,8 +215,8 @@ export class Conversation {
   // wrap can hold an open group without being the active one. `_ensureMessageWrap`
   // arms that pointer only when it CREATES a wrap, so an orphan tool_result
   // landing on an already-cached wrap (the shared '__floating__' key) opens a
-  // group the pointer never names — and a closer keyed on it would fold a
-  // different wrap and leave that group expanded for the rest of the session.
+  // group the pointer does not name — and a closer keyed on it cannot reach
+  // that group, which then stays expanded for the rest of the session.
   // Only wraps actually holding a group are touched, and closing is idempotent.
   //
   // RECURSES into the sub-agent panels, which have no run-ender of their own: a
