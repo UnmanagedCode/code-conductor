@@ -56,7 +56,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 // Boots the dialog against a real happy-dom document and a scripted server.
 // `posts` is consumed in order — one entry per POST the flow is expected to
 // make; the last entry repeats if the flow makes more.
-async function bootDialog({ scan = EMPTY_SCAN, posts = [] } = {}) {
+async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [] } = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
@@ -66,7 +66,7 @@ async function bootDialog({ scan = EMPTY_SCAN, posts = [] } = {}) {
   let postIdx = 0;
   globalThis.fetch = async (url, opts) => {
     if (String(url).includes('/api/projects/suggestions')) {
-      return { ok: true, status: 200, json: async () => scan };
+      return { ok: scanStatus < 400, status: scanStatus, json: async () => scan };
     }
     requests.push({ url: String(url), method: opts?.method, body: opts?.body ? JSON.parse(opts.body) : null });
     const next = posts[Math.min(postIdx++, posts.length - 1)] ?? { status: 201, body: { ok: true } };
@@ -361,6 +361,75 @@ test('the scan note reports truncation and the unreadable count', async () => {
 
   const one = await bootDialog({ scan: { ...EMPTY_SCAN, candidates, unreadable: 1 } });
   assert.match(one.el('apd-scan-note').textContent, /1 directory could not be read/);
+});
+
+// PINS (1) the empty-scan note POINTS AT THE FREE-TEXT FIELD, and says the
+// field reaches anywhere. When the scan finds nothing this sentence is the
+// ONLY thing on screen telling the user there is still a way in — and the way
+// it names is AC2's route to a directory outside the projects root, which the
+// scan structurally cannot offer. A note trimmed to "type a path below" leaves
+// the reader believing cc adopts only what it just failed to find.
+//
+// PINS (2) the count clause agrees with its count. "1 unregistered
+// directories" is the branch nothing else reads.
+test('the scan note names the free-text route when empty, and pluralises its count', async () => {
+  const empty = await bootDialog({ scan: { ...EMPTY_SCAN, root: '/root', candidates: [] } });
+  const emptyNote = empty.el('apd-scan-note').textContent;
+  assert.match(emptyNote, /No unregistered directories found under \/root/);
+  assert.match(emptyNote, /type a path below to adopt one from anywhere/,
+    'the empty note must still offer the field, and say it reaches anywhere');
+
+  const cand = n => Array.from({ length: n }, (_, i) => (
+    { path: `/root/d${i}`, relPath: `d${i}`, depth: 1, isGitRepo: false, suggestedName: `d${i}` }));
+
+  const one = await bootDialog({ scan: { ...EMPTY_SCAN, candidates: cand(1) } });
+  assert.match(one.el('apd-scan-note').textContent, /\b1 unregistered directory under\b/);
+
+  const two = await bootDialog({ scan: { ...EMPTY_SCAN, candidates: cand(2) } });
+  assert.match(two.el('apd-scan-note').textContent, /\b2 unregistered directories under\b/);
+});
+
+// PINS (3): a `.git`-bearing row WEARS its badge. The badge is the only
+// visible expression of the `.git`-first ranking — drop it and the order is
+// still correct while the user cannot see why the top rows are the top rows.
+// Both branches, so a badge on every row fails too.
+test('a git-bearing candidate renders its badge and a plain one does not', async () => {
+  const d = await bootDialog({
+    scan: scanWith(
+      { path: '/root/repo', relPath: 'repo', depth: 1, isGitRepo: true, suggestedName: 'repo' },
+      { path: '/root/plain', relPath: 'plain', depth: 1, isGitRepo: false, suggestedName: 'plain' },
+    ),
+  });
+  const rows = [...d.el('apd-suggestions').querySelectorAll('button.apd-suggestion')];
+  assert.equal(rows.length, 2);
+  const badgeOf = row => row.querySelector('.apd-suggestion-badge');
+  assert.equal(badgeOf(rows[0])?.textContent, 'git', 'the repo row is marked as one');
+  assert.equal(badgeOf(rows[1]), null, 'and the plain row carries no badge');
+  assert.match(rows[1].textContent, /plain/, 'which is not the same as rendering nothing');
+});
+
+// PINS (4): A SCAN THAT DID NOT RUN MUST NOT LOOK LIKE A SCAN THAT FOUND
+// NOTHING. Without the `!res.ok` throw the error body falls through to the
+// renderer, which finds no `candidates` and prints the ordinary empty-scan
+// note — telling the user "there is nothing here to adopt" when the truth is
+// "cc never looked". The note must say so, name the status, and still point at
+// the field, since the free-text route is unaffected by a failed scan.
+test('a failed suggestions fetch says the scan did not run, not that it found nothing', async () => {
+  const d = await bootDialog({ scanStatus: 500, scan: { error: 'boom' } });
+  const note = d.el('apd-scan-note').textContent;
+  assert.match(note, /Could not scan for directories/);
+  assert.match(note, /500/, 'and names what went wrong');
+  assert.ok(!/No unregistered directories found/.test(note),
+    'a scan that failed must never render as a scan that came back empty');
+  assert.match(note, /type a path below/, 'the free-text route survives a failed scan');
+  assert.equal(d.el('apd-suggestions').children.length, 0);
+
+  // The dialog still WORKS without its list — the failure costs the
+  // suggestions, never the affordance.
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = '/elsewhere/api';
+  await d.close('adopt');
+  assert.deepEqual(d.requests[0].body, { name: 'api', path: '/elsewhere/api' });
 });
 
 // PINS: THE OVERRIDE CANNOT ROT SILENTLY. Both replacements are keyed on a
