@@ -21,8 +21,9 @@ import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
   adoptProject, claudeConfigFarmRoot, claudeProjectsRoot, createProject, encodeCwd,
-  findSessionLocation, listSessionsForCwd, localPlace, projectRootPlace, remoteConfigDir,
-  remoteConfigDirName, sessionFilePath, subAgentDirPath, transcriptRoot,
+  findOrphanedTranscript, findSessionLocation, listSessionsForCwd, localPlace,
+  projectRootPlace, remoteConfigDir, remoteConfigDirName, sessionFilePath,
+  subAgentDirPath, transcriptRoot,
 } from '../src/projects.ts';
 import { ensureRemoteConfigDir } from '../src/claudeConfigFarm.ts';
 
@@ -226,6 +227,80 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
 
     assert.equal((await snapshot(cfg))['plans'], 'dir');
     assert.equal(await fsp.readFile(path.join(cfg, 'plans', 'mine', 'p.md'), 'utf8'), '# plan\n');
+  });
+
+  // PINS THE CREATE BRANCH SPECIFICALLY, and it needs scaffolding to reach.
+  //
+  // The two tests above pre-create the occupier, so `lstat` sees it and they
+  // exercise the REFRESH branch — the create branch runs only when the name is
+  // absent at check time, which is precisely the window the CLI's own writes
+  // land in. Nothing in an ordinary test can be inside that window, so the
+  // occupier's arrival is simulated by making the FIRST `lstat` of that one
+  // path report ENOENT while the real file is genuinely on disk.
+  //
+  // EVERYTHING AFTER THAT IS REAL: `symlink` gets a real EEXIST from the real
+  // filesystem, the re-`lstat` reads the real occupier, and the leave-alone
+  // rule does the rest. A create that replaced the name instead of
+  // re-evaluating — a `rename`, say — destroys the occupier here and nowhere
+  // else in the suite.
+  //
+  // THE FILE ARM IS THE ONE THAT CATCHES IT. A rename of a symlink ONTO a
+  // directory fails with ENOTDIR/EISDIR, so the directory arm below would
+  // survive such a create; it is here because `backups/` and `sessions/` arrive
+  // as directories and the rule has to hold for them, not because it discerns
+  // the two creates.
+  async function withFirstLstatMissing(target, body) {
+    const nodeFs = await import('node:fs');
+    const real = nodeFs.promises.lstat;
+    let lied = false;
+    nodeFs.promises.lstat = async (p, ...rest) => {
+      if (!lied && String(p) === target) {
+        lied = true;
+        throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${p}'`), { code: 'ENOENT' });
+      }
+      return real.call(nodeFs.promises, p, ...rest);
+    };
+    try { await body(); } finally { nodeFs.promises.lstat = real; }
+    assert.equal(lied, true, 'the create branch was never reached — the scaffolding did not fire');
+  }
+
+  test('a real FILE that arrives during the create window is not clobbered', async () => {
+    const cfg = remoteConfigDir(place);
+    const link = path.join(cfg, 'settings.json');
+    await fsp.mkdir(cfg, { recursive: true });
+    await fsp.writeFile(link, '{"written-by":"the CLI"}');
+
+    await withFirstLstatMissing(link, () => ensureRemoteConfigDir(place, { log: { warn() {} } }));
+
+    assert.equal((await fsp.lstat(link)).isSymbolicLink(), false,
+      'cc replaced a real file with its own link on the create path');
+    assert.equal(await fsp.readFile(link, 'utf8'), '{"written-by":"the CLI"}');
+  });
+
+  test('a real DIRECTORY that arrives during the create window is not clobbered', async () => {
+    const cfg = remoteConfigDir(place);
+    const link = path.join(cfg, 'plans');
+    await fsp.mkdir(path.join(link, 'mine'), { recursive: true });
+    await fsp.writeFile(path.join(link, 'mine', 'p.md'), '# plan\n');
+
+    await withFirstLstatMissing(link, () => ensureRemoteConfigDir(place, { log: { warn() {} } }));
+
+    assert.equal((await fsp.lstat(link)).isDirectory(), true);
+    assert.equal(await fsp.readFile(path.join(link, 'mine', 'p.md'), 'utf8'), '# plan\n');
+  });
+
+  // NON-VACUITY for the pair above: with the name genuinely absent in that same
+  // window, the create branch still does its job. Without this, a create that
+  // simply gave up on EEXIST — or never created anything at all — would satisfy
+  // both tests above.
+  test('the create branch still links when the name really is absent', async () => {
+    const cfg = remoteConfigDir(place);
+    const link = path.join(cfg, 'settings.json');
+    await fsp.mkdir(cfg, { recursive: true });
+
+    await withFirstLstatMissing(link, () => ensureRemoteConfigDir(place, { log: { warn() {} } }));
+
+    assert.equal(await fsp.readlink(link), path.join(source, 'settings.json'));
   });
 
   // The real config dir moved (the host set CLAUDE_CONFIG_DIR, or changed it).
@@ -608,5 +683,102 @@ describe('T5: CONTROL — local places are untouched', () => {
     delete process.env.CLAUDE_PROJECTS_ROOT;
     assert.equal(transcriptRoot(localPlace('/srv/app')), path.join('/opt/cfg', 'projects'));
     assert.equal(transcriptRoot(localPlace('/srv/app')).startsWith(claudeConfigFarmRoot()), false);
+  });
+});
+
+// ── F2: the orphan scan reaches a REMOTE's transcript root ────────────
+//
+// `findOrphanedTranscript` is the reverse scanner behind the SESSION_NOT_LIVE /
+// SESSION_UNKNOWN distinction — "this session is retired and unreachable" versus
+// "no such session". There is no single transcript root any more, so it must
+// sweep every registered remote's as well as the local one.
+//
+// LEFT LOCAL-ONLY IT DEGRADES SILENTLY: every remote session that ends up under
+// an unowned directory answers the bare SESSION_UNKNOWN, which tells a conductor
+// the session never existed when its bytes are on disk. Both pre-existing orphan
+// tests seed at a LOCAL place, so nothing else in the suite can see this.
+// The MCP transport, local to this file — the refusal CODE is the subject, so
+// the assertions have to read it off a real tools/call rather than a handler
+// return.
+let nextRpcId = 1;
+async function callTool(baseUrl, name, args) {
+  const res = await fetch(baseUrl + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const body = await res.json();
+  assert.ok(body?.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
+  return body.result;
+}
+const unwrap = (result) => JSON.parse(result.content[0].text);
+
+describe('F2: the orphan scan sweeps remote transcript roots', () => {
+  let home, baseUrl, instances, close, remote, tree;
+
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    ({ baseUrl, instances, close } = await bootServer());
+    remote = await bindRemoteSystem();
+    tree = await seedRepo(path.join(remote.root, 'orph'));
+  });
+  afterEach(async () => {
+    await instances?.shutdown();
+    await close?.();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  // THE ORPHAN STATE, at a REMOTE's root: one project keeps the remote
+  // registered — which is what puts its root in the sweep at all — while the
+  // transcript sits under a cwd on that same remote that no project or
+  // worktree is registered at. Directly analogous to the local orphan test's
+  // `never-registered` cwd, one root over.
+  //
+  // A BOUNDARY WORTH NAMING, since it is the shape one might reach for first:
+  // unregistering the LAST project on a remote takes that remote's root out of
+  // the sweep entirely, because `transcriptRoots()` enumerates registered
+  // projects. Such a transcript is unreachable rather than orphan-reported, and
+  // that is not what this test is about.
+  async function seedUnownedOnRemote(sid) {
+    assert.equal((await adoptProject('orph', tree, { system: remote.id })).ok, true);
+    const owned = await projectRootPlace('orph', tree);
+    const unowned = { ...owned, cwd: path.join(remote.root, 'never-registered') };
+    await seedSessionJsonl(unowned, sid);
+    const seeded = path.join(transcriptRoot(unowned), encodeCwd(unowned.cwd), `${sid}.jsonl`);
+    // The premise, asserted rather than assumed: the bytes are under the
+    // REMOTE's root and not under the local one.
+    await fsp.access(seeded);
+    assert.notEqual(transcriptRoot(unowned), claudeProjectsRoot());
+    return seeded;
+  }
+
+  test('findOrphanedTranscript finds a transcript under an unregistered remote root', async () => {
+    const sid = 'eeeeeeee-1111-4111-8111-eeeeeeeeeeee';
+    const seeded = await seedUnownedOnRemote(sid);
+
+    // Nothing owns it any more...
+    assert.equal(await findSessionLocation(sid), null);
+    // ...but the scan still reaches the root it is under.
+    assert.equal(await findOrphanedTranscript(sid), seeded);
+  });
+
+  // The consequence a conductor actually reads: the informative refusal, not
+  // the bare one. A local-only sweep answers SESSION_UNKNOWN here.
+  test('the read tools refuse it SESSION_NOT_LIVE, not SESSION_UNKNOWN', async () => {
+    const sid = 'eeeeeeee-2222-4222-8222-eeeeeeeeeeee';
+    await seedUnownedOnRemote(sid);
+
+    const orphan = unwrap(await callTool(baseUrl, 'get_recent_messages', { sessionId: sid }));
+    assert.equal(orphan.ok, false);
+    assert.equal(orphan.code, 'SESSION_NOT_LIVE',
+      'a remote session under an unowned directory read as never-existed');
+    assert.match(orphan.reason, /no registered project or worktree owns/);
+
+    // The control that keeps the above from passing on an always-NOT_LIVE
+    // answer: an id nothing on disk answers to is still SESSION_UNKNOWN.
+    const bogus = unwrap(await callTool(baseUrl, 'get_recent_messages',
+      { sessionId: '00000000-dead-dead-dead-000000000000' }));
+    assert.equal(bogus.code, 'SESSION_UNKNOWN');
   });
 });
