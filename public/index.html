@@ -35,6 +35,8 @@
                       title="Create a new workspace">+ New workspace</button>
               <button id="new-project-btn" type="button" role="menuitem"
                       title="Create a new project under ~/project/">+ New project</button>
+              <button id="adopt-project-btn" type="button" role="menuitem"
+                      title="Register a directory that already exists as a project">+ Adopt directory</button>
             </div>
           </div>
         </div>
@@ -562,6 +564,34 @@
       <textarea id="np-scaffold-text" readonly rows="8"></textarea>
       <menu>
         <button value="ack" autofocus>Done</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="adopt-project-dialog">
+    <form method="dialog" id="apd-form">
+      <h3>Adopt a directory</h3>
+      <p class="hint">Registers a directory that already exists. Nothing is copied or moved.</p>
+      <label>Name <input id="apd-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
+      <label>Directory <input id="apd-path" required placeholder="/absolute/path/to/directory" /></label>
+      <ul id="apd-suggestions" class="apd-suggestions"></ul>
+      <p class="hint" id="apd-scan-note"></p>
+      <p class="error" id="apd-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="apd-adopt" value="adopt">Adopt</button>
+      </menu>
+    </form>
+    <form method="dialog" id="apd-stale" hidden>
+      <h3>That name is registered elsewhere</h3>
+      <p id="apd-stale-summary"></p>
+      <p class="hint">Replace discards:</p>
+      <ul id="apd-stale-discards" class="apd-discards"></ul>
+      <p class="error" id="apd-stale-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="replace">Replace</button>
+        <button value="relocate" autofocus>Relocate</button>
       </menu>
     </form>
   </dialog>
