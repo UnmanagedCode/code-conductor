@@ -49,12 +49,12 @@
  *            row names the path. Unconditional because `fail` is a statement
  *            about cc's pin list rather than about a caller that was never going
  *            to be served the remote.
- *   synth    DERIVED, never written in the pins file. In `VIEW_CLI` it is the
- *            ancestors of every pin, so a pinned leaf is reachable without its
- *            parents being served from anywhere. In `VIEW_HOST` the ancestor
- *            table is not consulted at all — a scaffold node over a directory
- *            the orchestrator HAS would subtract it — and the enumerator carries
- *            the OVERLAY instead: a traverse-only node at a cwd component the
+ *   synth    DERIVED, never written in the pins file, from TWO sources. The
+ *            ANCESTORS of every pin, so a pinned leaf is reachable without its
+ *            parents being served from anywhere: `VIEW_CLI`'s alone, since in
+ *            `VIEW_HOST` a scaffold node over a directory the orchestrator HAS
+ *            would subtract it, so such a path falls to `fail` there. And the
+ *            OVERLAY, in BOTH views: a traverse-only node at a cwd component the
  *            orchestrator lacks, because `chdir` needs a node there and a floor
  *            cannot put a mode on a directory that does not exist. Read-only,
  *            fixed attributes, both ways.
@@ -771,11 +771,11 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		 * still read once above, for the substitution and for the log
 		 * row's identity columns.
 		 *
-		 * THE CWD CHAIN IS ANSWERED IN `VIEW_HOST` — by the
-		 * orchestrator's own directory floored to `--x`, or by the
-		 * overlay node where it has none. NO CONDITIONAL GRANT REACHES
-		 * THIS ARM, so there is no op allow-list and no traversal bound
-		 * here to get right. */
+		 * THE CWD CHAIN IS ANSWERED ELSEWHERE — by the orchestrator's
+		 * own directory floored to `--x` in `VIEW_HOST`, or, in either
+		 * view, by the overlay node where it has none. NO CONDITIONAL
+		 * GRANT REACHES THIS ARM, so there is no op allow-list and no
+		 * traversal bound here to get right. */
 		rc = policy_project_route(op, path, (pid_t)fuse_get_context()->pid, fop, cflags);
 		if (rc)
 			return rc;

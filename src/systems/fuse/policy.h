@@ -86,7 +86,9 @@
  *      subtraction — "a violation, not a rounding".
  *      Such a path falls to `fail`, and `fail` means host.
  *
- * The one thing this view ADDS is the OVERLAY: a traverse-only node at a
+ * THE OVERLAY IS NOT A DELTA OF THIS VIEW — it answers in BOTH, and
+ * `resolve_class` sits it below the view branch for that reason — but it is the
+ * one synthetic source the two views SHARE: a traverse-only node at a
  * component of the CLI's cwd the orchestrator does not have. It is irreducible,
  * and the reason is a MUST-HOLD-WHEN and not an always: WHEREVER the
  * orchestrator lacks `systemPath` a floor has no node to put a mode on, so
@@ -124,9 +126,9 @@ enum view { VIEW_CLI = 0, VIEW_HOST };
  *
  * T_SYNTH is DERIVED, never parsed from the pins file: `pins_load` rejects it
  * as an unknown kind. See the ancestor derivation below for why it has to
- * exist at all — and note the derivation is `VIEW_CLI`'s alone: in `VIEW_HOST`
- * the same enumerator carries the OVERLAY node instead, which is keyed on the
- * cwd chain and on nothing else.
+ * exist at all — and note the derivation is `VIEW_CLI`'s alone, while the same
+ * enumerator ALSO carries the OVERLAY node, in both views, keyed on the cwd
+ * chain and on nothing else.
  */
 enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH };
 
@@ -353,32 +355,60 @@ static inline void anc_build(void)
  * host. Its only synthetic nodes come from the OVERLAY below.
  *
  * THE OVERLAY: a traverse-only directory where the orchestrator has none and the
- * chroot cannot run without one. Its three conjuncts and the ORDER of the last
- * two are a correctness requirement rather than a style: `policy_cwd_component`
- * is a bounded string compare and `policy_host_absent` is a syscall, and this
- * function is called once PER DIRENT in readdir's real arm. Reverse them and a
- * listing of a large directory pays one fstatat per entry. The tier test leads
- * for the same reason — a dirent at any other tier short-circuits before the
- * string compare.
+ * chroot cannot run without one. IT ANSWERS IN BOTH VIEWS, which is why it sits
+ * below the view branch rather than inside `VIEW_HOST`'s arm. Its three
+ * conjuncts and the ORDER of the last two are a correctness requirement rather
+ * than a style: `policy_cwd_component` is a bounded string compare and
+ * `policy_host_absent` is a syscall, and this function is called once PER DIRENT
+ * in readdir's real arm — in either view. Reverse them and a listing of a large
+ * directory pays one fstatat per entry. The tier test leads for the same
+ * reason — a dirent at any other tier short-circuits before the string compare.
+ *
+ * `VIEW_CLI`'s ANCESTOR ARM IS ASKED FIRST, AND THE PRECEDENCE IS LOAD-BEARING:
+ * an explicit `fail` pin on an absent chain component is a REFUSAL, and it
+ * carries an exact pin, so `anc_build` strips it from the ancestor set and the
+ * arm returns `T_FAIL`. Ask the overlay first and that refusal becomes a
+ * traversable node for the CLI.
  *
  * THE TIER SET IS {T_FAIL, T_HOST} AND IS ENUMERATED RATHER THAN NEGATED, so
  * `T_HIDE`, `T_BIND` and `T_PROJECT` stay out BY CONSTRUCTION. T_HOST is in it
  * because a `host` pin routinely COVERS a chain component the orchestrator does
- * not have: `buildTierTable` pins the projects root, the home dir, cc's own
- * checkout and every plugin dir `host`, and a `project` pin nested under one of
- * those is STRUCK in this view (`tier_of`), which hands the contest to the
- * shorter `host` pin. Gate on `T_FAIL` alone and the overlay is unreachable at
- * exactly those paths — `route()`'s T_HOST arm hands the op the orchestrator's
- * own fd, `fstatat` answers its own ENOENT, and the chroot'd `cd` into the
- * CLI's cwd dies before execve. The floor cannot stand in: it mutates a
- * `struct stat` a nonexistent directory never produces.
+ * not have, and it does so in BOTH views for TWO distinct reasons:
+ *
+ *   IN `VIEW_HOST`, at the cwd LEAF. `buildTierTable` pins the projects root,
+ *   the home dir, cc's own checkout and every plugin dir `host`, and a `project`
+ *   pin nested under one of those is STRUCK in that view (`tier_of`), which
+ *   hands the contest to the shorter `host` pin.
+ *
+ *   IN BOTH VIEWS, at every INTERVENING component. A chain component between a
+ *   host pin and the cwd carries no pin of its own — `worktreePathFor` places a
+ *   non-local worktree two components below the project's own parent, so this is
+ *   the ordinary shape and not a corner — and the covering `host` pin therefore
+ *   wins in `VIEW_CLI` too, where it SHADOWS the ancestor promotion above: that
+ *   arm is gated on `T_FAIL` and the component is `T_HOST`.
+ *
+ * Gate on `T_FAIL` alone and the overlay is unreachable at exactly those paths —
+ * `route()`'s T_HOST arm hands the op the orchestrator's own fd, `fstatat`
+ * answers its own ENOENT, the chroot'd `cd` into the CLI's cwd dies before
+ * execve, and the marked CLI meets the same ENOENT at every absolute path under
+ * its cwd, because the mount caches nothing and each one is re-walked component
+ * by component. The floor cannot stand in: it mutates a `struct stat` a
+ * nonexistent directory never produces.
+ *
+ * `policy_tier_is_caller_sensitive` NEEDS NO CHANGE FOR ANY OF THIS, and that is
+ * the reason the widening is spelled here rather than there: T_SYNTH is already
+ * in its set, so classifying the component as the overlay node makes `route()`
+ * read the mark BY RULE — while a `T_HOST` path that is not an absent chain
+ * component still short-circuits before the /proc read.
  *
  * IT CANNOT REACH WHAT A `host` PIN PROTECTS, and that is structural rather
  * than argued: `policy_host_absent` fires it ONLY where the orchestrator has
  * nothing, so the store and the plugin dirs — which exist — are unreachable by
- * it. The node it produces is a fixed 0555 read-only directory in `VIEW_HOST`,
- * where this function cannot return T_PROJECT at all and
- * `policy_table_child_exists` drops every table name the orchestrator lacks.
+ * it, in either view. The node it produces is a fixed 0555 read-only directory.
+ * In `VIEW_HOST` this function cannot return T_PROJECT at all and
+ * `policy_table_child_exists` drops every table name the orchestrator lacks; in
+ * `VIEW_CLI` the node's listing comes from `policy_synth_children` alone, with
+ * no host merge, so neither view leaks a name off the orchestrator's own tree.
  *
  * The probe is deliberately PER-OP and not cached at mount. The set needing the
  * decision is `depth(cwd)` paths behind a string compare, so the cost is a
@@ -394,8 +424,8 @@ static inline enum tier resolve_class(const char *path, enum view v)
 {
 	enum tier t = tier_of(path, v);
 
-	if (v == VIEW_CLI)
-		return (t == T_FAIL && anc_find(path) >= 0) ? T_SYNTH : t;
+	if (v == VIEW_CLI && t == T_FAIL)
+		return anc_find(path) >= 0 ? T_SYNTH : T_FAIL;
 	if ((t == T_FAIL || t == T_HOST)
 	    && policy_cwd_component(path) && policy_host_absent(path))
 		return T_SYNTH;
@@ -439,9 +469,11 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
 }
 
 /*
- * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555. The overlay node sits in
- * `VIEW_HOST`, where the remote tier is struck, so its listing names nothing
- * remote — and a traverse-only 0111 node is not needed to keep it that way.
+ * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555. THE OVERLAY NODE'S LISTING NAMES
+ * NOTHING REMOTE IN EITHER VIEW, for a different reason per view: `VIEW_HOST`
+ * strikes the remote tier outright, and `VIEW_CLI` serves the node from
+ * `policy_synth_children` alone with no host merge. A traverse-only 0111 node is
+ * not needed to keep it that way.
  *
  * THE EMPTINESS COMES FROM THE EMIT, AND THE DISTINCTION IS LOAD-BEARING
  * BECAUSE THE FALSE REASON WOULD LET A READER DELETE THE CHECK THAT MAKES IT
@@ -459,6 +491,15 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
  * disjoint from the ancestor and exact-pin ranges precisely because the chain
  * covers intermediate components with NO exact pin, which `policy_bind_ino`
  * would collapse to one shared fallback; `b27` pins the disjointness.
+ *
+ * THE CHAIN ARM IS NOT SCOPED TO `VIEW_HOST`, BECAUSE IT WOULD DISAGREE WITH THE
+ * ROUTE IF IT WERE. A chain component the orchestrator lacks that carries an
+ * EXACT pin is stripped from the ancestor set by `anc_build`, so `VIEW_CLI`'s
+ * ancestor arm above cannot answer for it — while `resolve_class` routes it to
+ * the overlay in that view. Scope this arm to `VIEW_HOST` and getattr answers
+ * -ENOENT at a path `route()` has already called a node. For the ordinary
+ * unpinned component the ancestor arm still wins in `VIEW_CLI`, so the two views
+ * take their own sub-ranges and disagree on the inode, which is correct.
  */
 static inline int policy_synth_getattr(const char *path, struct stat *st, enum view v)
 {
@@ -469,7 +510,7 @@ static inline int policy_synth_getattr(const char *path, struct stat *st, enum v
 		ino = SYNTH_INO_BASE + (unsigned long long)idx;
 	else if (resolve_class(path, v) == T_BIND)
 		ino = policy_bind_ino(path);
-	else if (v == VIEW_HOST && resolve_class(path, v) == T_SYNTH)
+	else if (resolve_class(path, v) == T_SYNTH)
 		ino = policy_cwd_ino(path);
 	else
 		return -ENOENT;
@@ -537,7 +578,7 @@ static inline int policy_dirent_visible(const char *child, enum view v)
  * THE RULE IS ONE SENTENCE: a FIXED NODE exists by construction, and everything
  * else exists exactly where the orchestrator has it. What makes it view-shaped
  * is not the sentence but WHICH PATHS ARE FIXED NODES — the ancestor table in
- * `VIEW_CLI`, the cwd overlay in `VIEW_HOST` — so the same child can be a node
+ * `VIEW_CLI` alone, the cwd overlay in BOTH — so the same child can be a node
  * that certainly exists to one caller and a host question to the other.
  *
  * WHY THE PIN'S OWN TIER IS THE WRONG THING TO ASK, and this is the trap: a
@@ -1670,10 +1711,15 @@ static inline int policy_floor_mask(const char *path, int mask, enum view v)
  *   T_PROJECT  the `project` pins are struck in `VIEW_HOST`, so the answer moves
  *              to whatever shorter pin covers the path, or to `fail`.
  *   T_SYNTH    `VIEW_HOST` does not consult the ancestor table, so an
- *              ancestor-of-a-pin directory falls to `fail` there — and `fail`
- *              means host. Without this member nothing would ever ask, and an
- *              unmarked caller would keep meeting a 0555 scaffold node over a
- *              directory the orchestrator HAS: "a violation, not a rounding".
+ *              ancestor-of-a-pin directory is no scaffold node there. WHERE IT
+ *              LANDS INSTEAD IS ONE OF TWO, and the second is easy to miss:
+ *              `fail`, and `fail` means host; or, where it is ALSO a cwd
+ *              component the orchestrator lacks, the OVERLAY node — T_SYNTH
+ *              again, so that substitution is a no-op and the caller gets the
+ *              node rather than the host. Without this member nothing would
+ *              ever ask, and an unmarked caller would keep meeting a 0555
+ *              scaffold node over a directory the orchestrator HAS: "a
+ *              violation, not a rounding".
  *   T_FAIL     substituted to host UNCONDITIONALLY, and it may also become the
  *              OVERLAY node on the cwd chain.
  *
@@ -1763,9 +1809,16 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
 
 /* ── the cwd chain ──────────────────────────────────────────────────────── */
 /*
- * EACH COMPONENT OF THE CLI'S CWD IS MADE TRAVERSABLE FOR AN UNMARKED CALLER:
- * by the ORCHESTRATOR'S OWN DIRECTORY floored to `--x` where it has one, or by
- * the OVERLAY node where it has none. The chain is the whole domain of both, and
+ * EACH COMPONENT OF THE CLI'S CWD IS MADE TRAVERSABLE: by the ORCHESTRATOR'S OWN
+ * DIRECTORY floored to `--x` where it has one, or by the OVERLAY node where it
+ * has none. THE TWO HAVE DIFFERENT CALLERS. The floor serves an UNMARKED caller
+ * only — the marked CLI is shown the host's real mode. The overlay serves BOTH,
+ * because a component the orchestrator lacks has no host directory to floor and
+ * `VIEW_CLI`'s ancestor arm does not always reach it either. TWO DISTINCT
+ * MECHANISMS PUT IT OUT OF REACH, and the difference is the whole of this: a
+ * covering `host` pin SHADOWS the promotion — the arm is gated on `T_FAIL`,
+ * while the entry stays in the table — and an EXACT pin STRIPS the entry from
+ * the table outright (`anc_build`). The chain is the whole domain of both, and
  * this section owns the predicate they share.
  *
  * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
@@ -1782,7 +1835,9 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
  *
  * THERE IS NO CONDITIONAL GRANT HERE — no `T_CWD` tier, no op allow-list, no
  * 0111 node. An unmarked caller resolves in `VIEW_HOST`, where the chain is
- * answered by the host itself (floored) or by the overlay node. This section
+ * answered by the host itself (floored) or by the overlay node; a marked one
+ * resolves in `VIEW_CLI`, where it is answered by the tier table, the ancestor
+ * table or the overlay node. This section
  * owns three subjects: the injected cwd, the component predicate and the
  * chain's inode sub-range.
  */
