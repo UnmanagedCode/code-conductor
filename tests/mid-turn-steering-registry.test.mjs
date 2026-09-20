@@ -32,10 +32,10 @@ describe('resolveMidTurnSteering', () => {
   test('a curated preset declares the opt-out; every other preset stays steerable', () => {
     assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), false);
     assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'qwen3.5:cloud' }), true);
-    // Exactly one preset opts out.
+    // Exactly the DeepSeek Flash presets opt out.
     assert.deepEqual(
       OLLAMA_CLOUD_MODELS.filter(m => m.midTurnSteering === false).map(m => m.model),
-      ['deepseek-v4-flash:cloud'],
+      ['deepseek-v4-flash:cloud', 'deepseek-v4.1-flash:cloud'],
     );
   });
 
