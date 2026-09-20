@@ -198,10 +198,10 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     assert.equal((await snapshot(cfg))['plugins'], undefined);
   });
 
-  // The CLI creates its own entries inside the config dir it is handed
-  // (measured: .claude.json, policy-limits.json, remote-settings.json,
-  // sessions/). cc did not create them and destroying them is not cc's call —
-  // so a real entry wins over the link cc would otherwise make.
+  // The CLI creates its own files and directories at names cc would otherwise
+  // link (measured: policy-limits.json, remote-settings.json, sessions/). cc
+  // did not create them and destroying them is not cc's call — so a real entry
+  // wins over the link cc would otherwise make.
   test('a real entry cc did not create is left alone', async () => {
     const cfg = await ensureRemoteConfigDir(place);
     await fsp.rm(path.join(cfg, 'settings.json'));

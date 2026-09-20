@@ -40,18 +40,19 @@ import { claudeConfigDir, remoteConfigDir } from './projects.ts';
 //                        instead (see Instance.spawn), which pins credentials to
 //                        the real config dir without a link.
 //   `backups`          — where the CLI drops `.claude.json` backups, and it
-//                        holds nothing else: measured on a live host, 6 of 6
-//                        entries were `.claude.json.backup.<ms>` or
-//                        `.claude.json.corrupted.<ms>`. It is the class below
-//                        one level down, so the class's harm reaches it.
-//                        Shared, its entries are told apart only by epoch-ms
-//                        with no provenance, and one config's churn evicts
-//                        another's last backup. Sharper: the CLI's
+//                        holds nothing else: every entry is a
+//                        `.claude.json.backup.<ms>` or a
+//                        `.claude.json.corrupted.<ms>`, verified against a live
+//                        host's backups directory. It is the class below one
+//                        level down, so the class's harm reaches it. Shared,
+//                        its entries are told apart only by epoch-ms with no
+//                        provenance, and one config's churn evicts another's
+//                        last backup. Sharper, and measured against 2.1.263 as
+//                        the resolve-before-writing claim above is: the CLI's
 //                        missing-config recovery reads `<configDir>/backups/`
-//                        and offers a FOREIGN config for restore — measured on
-//                        a first spawn, a `cp` hint naming a 98,979-byte host
-//                        backup while that remote's own config was 41,466
-//                        bytes. Following it imports the host's cwd-keyed
+//                        and offers a FOREIGN config for restore — on a first
+//                        spawn, a `cp` hint naming a config that is not this
+//                        remote's. Following it imports the host's cwd-keyed
 //                        `projects` map, the leak the class exclusion exists to
 //                        prevent. Not filed with the class because it is not a
 //                        member of it but a directory of them. Left for the CLI
@@ -122,7 +123,7 @@ const reported = new Set<string>();
 //
 // NEVER DESTRUCTIVE TOWARDS WHAT IT DID NOT CREATE. A real file or directory
 // where cc would have put a link is left alone and reported — the CLI creates
-// several of these inside a config dir it is handed (measured: `.claude.json`,
+// several of these at names cc would otherwise link (measured:
 // `policy-limits.json`, `remote-settings.json`, `sessions/`), and deleting them
 // is not cc's call.
 export async function ensureRemoteConfigDir(
@@ -150,8 +151,8 @@ export async function ensureRemoteConfigDir(
     // CREATE: plain `symlink`, and EEXIST is "something arrived since the
     // lstat" rather than an error. NOT `rename` here — rename would silently
     // clobber whatever arrived, and what arrives is exactly the class cc must
-    // not destroy: the CLI creates real files inside a config dir it is handed
-    // (measured: `.claude.json`, `policy-limits.json`, `remote-settings.json`,
+    // not destroy: the CLI creates real files and directories at names cc would
+    // otherwise link (measured: `policy-limits.json`, `remote-settings.json`,
     // `sessions/`). An `lstat` immediately before the rename would only narrow
     // the window, not close it. Re-evaluating instead lands the arrival on the
     // leave-alone rule below, which is where it belongs.
