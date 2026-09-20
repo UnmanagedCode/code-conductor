@@ -1229,12 +1229,17 @@ static void b22_cwd_chain_extent(void)
 	      "and its prefix-sharing sibling does NOT — it falls to fail, which is host");
 	CHECK(resolve_class("/root/srv2/sub", VIEW_HOST) == T_FAIL,
 	      "nor does a child of the cwd: the chain is upward only");
-	/* The overlay answers in VIEW_CLI too, so this is a statement about THIS
-	 * pin set and not about the view: /root is an ancestor of the project pin,
-	 * which is where its VIEW_CLI T_SYNTH comes from. `b51` drives the
-	 * geometry where the overlay is the CLI's only source of one. */
-	CHECK(resolve_class("/root", VIEW_CLI) != T_SYNTH || anc_find("/root") >= 0,
-	      "with this pin set VIEW_CLI's T_SYNTH at /root comes from the ancestor table");
+	/* ── AND THIS GEOMETRY HANDS THE CLI NO SYNTHETIC NODE AT ALL, which is
+	 *    the ROOT PIN's doing rather than the chain's. `tier_of` matches a pin
+	 *    of length 1 against EVERY absolute path — it is the one prefix whose
+	 *    component boundary cannot be spelled as `path[len]`, so it carries its
+	 *    own arm — and `project /` therefore covers the intermediate. The
+	 *    ancestor arm sees no `fail` to promote, and the overlay's enumerated
+	 *    tier set excludes T_PROJECT. `b51` drives the geometry where the
+	 *    overlay IS the CLI's source of a synthetic node. */
+	CHECK(resolve_class("/root", VIEW_CLI) == T_PROJECT,
+	      "the root `project` pin covers the intermediate for the CLI (%s)",
+	      tier_name(resolve_class("/root", VIEW_CLI)));
 
 	/* ── NO CWD AT ALL IS FAIL-CLOSED, and union.c refuses to mount on it
 	 *    precisely because this is what it would mean: no floor, no overlay

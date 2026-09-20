@@ -88,7 +88,7 @@
  *
  * THE OVERLAY IS NOT A DELTA OF THIS VIEW — it answers in BOTH, and
  * `resolve_class` sits it below the view branch for that reason — but it is the
- * one thing either view ADDS: a traverse-only node at a
+ * one synthetic source the two views SHARE: a traverse-only node at a
  * component of the CLI's cwd the orchestrator does not have. It is irreducible,
  * and the reason is a MUST-HOLD-WHEN and not an always: WHEREVER the
  * orchestrator lacks `systemPath` a floor has no node to put a mode on, so
@@ -1711,10 +1711,15 @@ static inline int policy_floor_mask(const char *path, int mask, enum view v)
  *   T_PROJECT  the `project` pins are struck in `VIEW_HOST`, so the answer moves
  *              to whatever shorter pin covers the path, or to `fail`.
  *   T_SYNTH    `VIEW_HOST` does not consult the ancestor table, so an
- *              ancestor-of-a-pin directory falls to `fail` there — and `fail`
- *              means host. Without this member nothing would ever ask, and an
- *              unmarked caller would keep meeting a 0555 scaffold node over a
- *              directory the orchestrator HAS: "a violation, not a rounding".
+ *              ancestor-of-a-pin directory is no scaffold node there. WHERE IT
+ *              LANDS INSTEAD IS ONE OF TWO, and the second is easy to miss:
+ *              `fail`, and `fail` means host; or, where it is ALSO a cwd
+ *              component the orchestrator lacks, the OVERLAY node — T_SYNTH
+ *              again, so that substitution is a no-op and the caller gets the
+ *              node rather than the host. Without this member nothing would
+ *              ever ask, and an unmarked caller would keep meeting a 0555
+ *              scaffold node over a directory the orchestrator HAS: "a
+ *              violation, not a rounding".
  *   T_FAIL     substituted to host UNCONDITIONALLY, and it may also become the
  *              OVERLAY node on the cwd chain.
  *
@@ -1809,8 +1814,12 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
  * has none. THE TWO HAVE DIFFERENT CALLERS. The floor serves an UNMARKED caller
  * only — the marked CLI is shown the host's real mode. The overlay serves BOTH,
  * because a component the orchestrator lacks has no host directory to floor and
- * no ancestor-table entry either wherever a `host` pin covers it. The chain is
- * the whole domain of both, and this section owns the predicate they share.
+ * `VIEW_CLI`'s ancestor arm does not always reach it either. TWO DISTINCT
+ * MECHANISMS PUT IT OUT OF REACH, and the difference is the whole of this: a
+ * covering `host` pin SHADOWS the promotion — the arm is gated on `T_FAIL`,
+ * while the entry stays in the table — and an EXACT pin STRIPS the entry from
+ * the table outright (`anc_build`). The chain is the whole domain of both, and
+ * this section owns the predicate they share.
  *
  * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
  * before it execs — so the caller is a new, unmarked thread group, and a denial
