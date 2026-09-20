@@ -14,6 +14,8 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, settledSessionBackend } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.ts';
+import { isTemp, markTemp } from '../src/tempSessions.ts';
+import { isArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -220,18 +222,170 @@ test('fork prefill rides the new instance\'s first snapshot frame, consumed once
   } finally { await ctx.close(); }
 });
 
-test('fork on a temp session is refused 400', async () => {
+// ── temp sessions ────────────────────────────────────────────────────────
+// A fork of a temp session is itself temp, and the source is left alone. The
+// two footprints are disjoint by construction: the fork READS the source jsonl
+// and writes only the new id's jsonl + metadata, while a temp source's on-exit
+// archive touches only the sub-agent dir and the marker stores, both keyed on
+// the SOURCE id — and no temp jsonl is ever deleted.
+
+// The temp marker lands via a fire-and-forget `markTemp()` in spawn(), so a
+// NEGATIVE assertion ("this id is not temp") has to be ordered after any write
+// the store already has queued. Every mutation runs on one per-process write
+// chain, so awaiting a mutation enqueued now resolves only once the ones ahead
+// of it have written. A positive assertion can just waitFor the marker.
+const FLUSH_SENTINEL = 'f1u5hf1u-5hf1-u5hf-1u5h-f1u5hf1u5hf1';
+async function flushTempStore() { await markTemp(FLUSH_SENTINEL); }
+
+// Two user prompts so a fork at index 1 copies a non-trivial prefix.
+const TEMP_SEED_LINES = [
+  { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+  { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+    { type: 'text', text: 'first reply' },
+  ] } },
+  { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+  { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [
+    { type: 'text', text: 'second reply' },
+  ] } },
+];
+// The transcript half of what forkSessionAtUserMessage writes for
+// `userMessageIndex: 1` over the seed above: the first two lines verbatim
+// (neither carries a `sessionId` field to rewrite). The resume-picker metadata
+// appended after them is asserted separately — its shape belongs to
+// writeSessionMetadata, not to what a fork copies.
+const TEMP_SEED_PREFIX = TEMP_SEED_LINES.slice(0, 2).map(l => JSON.stringify(l));
+const SESSION_METADATA_TYPES = new Set(['last-prompt', 'permission-mode']);
+
+test('fork on a temp session succeeds, and the fork is itself temp', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'tempfork' });
+    const sid = 'fffffff9-2222-3333-4444-555555555555';
+    const { file } = await seedSession({
+      ctx, projectName: 'tempfork', sid, lines: TEMP_SEED_LINES,
+    });
+    const originalBytes = await fs.readFile(file);
+
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'tempfork', temp: true,
+      project: 'tempfork', temp: true, resume: sid,
     });
     const id = r.body.id;
-    await waitFor(() => ctx.instances.get(id).status === 'idle' && ctx.instances.get(id).sessionId);
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
-    assert.equal(fk.status, 400);
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201, 'a temp session is forkable');
+    assert.ok(fk.body.newSessionId && fk.body.newSessionId !== sid);
+    assert.equal(fk.body.instance.temp, true, 'the fork summary reports temp');
+
+    // …and durably, not just on the summary: spawn() persists the marker.
+    await waitFor(() => isTemp(fk.body.newSessionId));
+
+    // The source is untouched — still temp, not archived, byte-identical.
+    assert.equal(await isTemp(sid), true, 'source stays temp');
+    assert.equal(await isArchived(sid), false, 'source is not archived by the fork');
+    assert.equal((await fs.readFile(file)).toString(), originalBytes.toString(),
+      'source jsonl is byte-identical');
+  } finally { await ctx.close(); }
+});
+
+test('a fork of a non-temp session is not temp', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffffa-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'persistfork', sid, lines: TEMP_SEED_LINES });
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'persistfork', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    assert.equal(fk.body.instance.temp, false, 'temp-ness is inherited, not asserted');
+
+    await flushTempStore();
+    assert.equal(await isTemp(fk.body.newSessionId), false,
+      'no temp marker is written for a fork of a persistent session');
+  } finally { await ctx.close(); }
+});
+
+test('the fork of a temp session is archived on its own exit, like any other temp session', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffffb-2222-3333-4444-555555555555';
+    const { sessionDir } = await seedSession({
+      ctx, projectName: 'tempforklife', sid, lines: TEMP_SEED_LINES,
+    });
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'tempforklife', temp: true, resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    const newSid = fk.body.newSessionId;
+    const newId = fk.body.instance.id;
+    await waitFor(() => ctx.instances.get(newId) && ctx.instances.get(newId).status === 'idle');
+
+    const del = await api(ctx.baseUrl, 'DELETE', `/api/instances/${newId}`);
+    assert.equal(del.status, 200);
+
+    // The child runs the whole temp lifecycle, not just the flag: unmarked
+    // temp, marked archived, jsonl retained (archived sessions stay resumable),
+    // and dropped from byId so no ghost row survives.
+    await waitFor(() => isArchived(newSid));
+    assert.equal(await isTemp(newSid), false, 'the fork is unmarked temp on exit');
+    await fs.access(path.join(sessionDir, `${newSid}.jsonl`));
+    assert.equal(ctx.instances.get(newId), undefined, 'the fork is evicted from byId');
+  } finally { await ctx.close(); }
+});
+
+test('a temp source killed mid-fork does not corrupt the copy, and archives only itself', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffffc-2222-3333-4444-555555555555';
+    const { sessionDir, file } = await seedSession({
+      ctx, projectName: 'tempforkrace', sid, lines: TEMP_SEED_LINES,
+    });
+    const originalBytes = await fs.readFile(file);
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'tempforkrace', temp: true, resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    // Hold the instance: a temp session is evicted from byId the moment its
+    // subprocess exits, which is exactly what this test provokes.
+    const inst = ctx.instances.get(id);
+    // Overlap the two on purpose — no await between them, so the source's
+    // on-exit archive lands somewhere inside the fork's read/write window.
+    const forking = inst.forkAtUserMessage(1);
+    const killing = inst.kill({ graceMs: 0 });
+    const [forked] = await Promise.all([forking, killing]);
+
+    // Every assertion below holds under EVERY interleaving — none of them says
+    // which operation landed first. That is the claim being pinned.
+    const newFile = path.join(sessionDir, `${forked.newSessionId}.jsonl`);
+    const copied = (await fs.readFile(newFile, 'utf8')).split('\n').filter(l => l.trim());
+    assert.deepEqual(copied.slice(0, TEMP_SEED_PREFIX.length), TEMP_SEED_PREFIX,
+      'the copy is the exact prefix, whatever the source subprocess was doing');
+    // Nothing of the source's dying turn is folded in behind it — the only
+    // lines past the prefix are the resume-picker anchor fork writes itself.
+    assert.deepEqual(
+      copied.slice(TEMP_SEED_PREFIX.length).map(l => JSON.parse(l).type).sort(),
+      [...SESSION_METADATA_TYPES].sort(),
+      'the copy carries nothing past the prefix but its own picker metadata');
+    assert.equal((await fs.readFile(file)).toString(), originalBytes.toString(),
+      'the source jsonl is byte-identical — the archive never deletes it');
+
+    // Only the SOURCE moves: the archive's writes are keyed on the source id.
+    await waitFor(() => isArchived(sid));
+    assert.equal(await isTemp(sid), false, 'the source is unmarked temp by its own exit');
+    assert.equal(await isArchived(forked.newSessionId), false,
+      'the copy is not archived by the source\'s exit');
   } finally { await ctx.close(); }
 });
 
