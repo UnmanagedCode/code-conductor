@@ -33,6 +33,7 @@ export interface OllamaCloudModel {
 
 export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash',         contextWindow: 1_000_000, midTurnSteering: false },
+  { model: 'deepseek-v4.1-flash:cloud',  label: 'DeepSeek V4.1 Flash',       contextWindow: 1_000_000, midTurnSteering: false },
   { model: 'qwen3.5:cloud',              label: 'Qwen3.5',                  contextWindow:   256_000 },
   { model: 'glm-5.2:cloud',              label: 'GLM-5.2',                  contextWindow: 1_000_000 },
   { model: 'glm-5.3:cloud',              label: 'GLM-5.3',                  contextWindow: 1_000_000 },
