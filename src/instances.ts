@@ -3832,7 +3832,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         // archive — and that archive's writes (sub-agent dir + the
         // temp/archived marker stores, all keyed on the SOURCE id) are disjoint
         // from this fork's (source jsonl read-only, new id's jsonl + metadata
-        // written); no temp jsonl is ever deleted.
+        // written).
         temp: this.temp,
         prefill: forked.droppedText,
       },

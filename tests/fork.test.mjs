@@ -227,7 +227,7 @@ test('fork prefill rides the new instance\'s first snapshot frame, consumed once
 // two footprints are disjoint by construction: the fork READS the source jsonl
 // and writes only the new id's jsonl + metadata, while a temp source's on-exit
 // archive touches only the sub-agent dir and the marker stores, both keyed on
-// the SOURCE id — and no temp jsonl is ever deleted.
+// the SOURCE id. `_archiveTempSession` itself deletes no jsonl.
 
 // The temp marker lands via a fire-and-forget `markTemp()` in spawn(), so a
 // NEGATIVE assertion ("this id is not temp") has to be ordered after any write
