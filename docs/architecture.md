@@ -536,15 +536,18 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   │                                       # resolves plans at `<configDir>/plans`, and planFile.ts
 │   │                                       # recognises a plan file by the `/.claude/plans/` fragment.
 │   │                                       # Every top-level entry is a SYMLINK into the host's real
-│   │                                       # config dir except three: `projects/` (a real, private
+│   │                                       # config dir except these: `projects/` (a real, private
 │   │                                       # transcript root), `.claude.json` (left for the CLI to
 │   │                                       # create — its lock is not realpath-resolved, so sharing it
 │   │                                       # loses writes, and its cwd-keyed `projects` map would leak
-│   │                                       # allowed tools and trust acceptance between remotes) and
+│   │                                       # allowed tools and trust acceptance between remotes),
 │   │                                       # `.credentials.json` (CLAUDE_SECURESTORAGE_CONFIG_DIR
-│   │                                       # instead). Rebuilt before every spawn by
-│   │                                       # `ensureRemoteConfigDir` (src/claudeConfigFarm.ts); never
-│   │                                       # deleted on unregister — it holds transcripts.
+│   │                                       # instead) and `backups/` (nothing but `.claude.json`
+│   │                                       # backups, which the CLI's missing-config recovery would
+│   │                                       # otherwise offer for restore across configs). Rebuilt
+│   │                                       # before every spawn by `ensureRemoteConfigDir`
+│   │                                       # (src/claudeConfigFarm.ts); never deleted on unregister —
+│   │                                       # it holds transcripts.
 │   ├── systems/fuse/                         # the FUSE-union chroot (remote-backed workers only)
 │   │   ├── bin/union-<sha256>                # the compiled daemon, content-addressed on union.c + policy.h + compiler flags
 │   │   ├── events.log                        # THE STORE-WIDE POLICY EVENT LOG (`fuseEventStore()`), a SIBLING of run/
