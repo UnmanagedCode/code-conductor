@@ -86,7 +86,9 @@
  *      subtraction — "a violation, not a rounding".
  *      Such a path falls to `fail`, and `fail` means host.
  *
- * The one thing this view ADDS is the OVERLAY: a traverse-only node at a
+ * THE OVERLAY IS NOT A DELTA OF THIS VIEW — it answers in BOTH, and
+ * `resolve_class` sits it below the view branch for that reason — but it is the
+ * one thing either view ADDS: a traverse-only node at a
  * component of the CLI's cwd the orchestrator does not have. It is irreducible,
  * and the reason is a MUST-HOLD-WHEN and not an always: WHEREVER the
  * orchestrator lacks `systemPath` a floor has no node to put a mode on, so
@@ -124,9 +126,9 @@ enum view { VIEW_CLI = 0, VIEW_HOST };
  *
  * T_SYNTH is DERIVED, never parsed from the pins file: `pins_load` rejects it
  * as an unknown kind. See the ancestor derivation below for why it has to
- * exist at all — and note the derivation is `VIEW_CLI`'s alone: in `VIEW_HOST`
- * the same enumerator carries the OVERLAY node instead, which is keyed on the
- * cwd chain and on nothing else.
+ * exist at all — and note the derivation is `VIEW_CLI`'s alone, while the same
+ * enumerator ALSO carries the OVERLAY node, in both views, keyed on the cwd
+ * chain and on nothing else.
  */
 enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH };
 
@@ -467,9 +469,11 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
 }
 
 /*
- * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555. The overlay node sits in
- * `VIEW_HOST`, where the remote tier is struck, so its listing names nothing
- * remote — and a traverse-only 0111 node is not needed to keep it that way.
+ * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555. THE OVERLAY NODE'S LISTING NAMES
+ * NOTHING REMOTE IN EITHER VIEW, for a different reason per view: `VIEW_HOST`
+ * strikes the remote tier outright, and `VIEW_CLI` serves the node from
+ * `policy_synth_children` alone with no host merge. A traverse-only 0111 node is
+ * not needed to keep it that way.
  *
  * THE EMPTINESS COMES FROM THE EMIT, AND THE DISTINCTION IS LOAD-BEARING
  * BECAUSE THE FALSE REASON WOULD LET A READER DELETE THE CHECK THAT MAKES IT
@@ -574,7 +578,7 @@ static inline int policy_dirent_visible(const char *child, enum view v)
  * THE RULE IS ONE SENTENCE: a FIXED NODE exists by construction, and everything
  * else exists exactly where the orchestrator has it. What makes it view-shaped
  * is not the sentence but WHICH PATHS ARE FIXED NODES — the ancestor table in
- * `VIEW_CLI`, the cwd overlay in `VIEW_HOST` — so the same child can be a node
+ * `VIEW_CLI` alone, the cwd overlay in BOTH — so the same child can be a node
  * that certainly exists to one caller and a host question to the other.
  *
  * WHY THE PIN'S OWN TIER IS THE WRONG THING TO ASK, and this is the trap: a
@@ -1800,10 +1804,13 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
 
 /* ── the cwd chain ──────────────────────────────────────────────────────── */
 /*
- * EACH COMPONENT OF THE CLI'S CWD IS MADE TRAVERSABLE FOR AN UNMARKED CALLER:
- * by the ORCHESTRATOR'S OWN DIRECTORY floored to `--x` where it has one, or by
- * the OVERLAY node where it has none. The chain is the whole domain of both, and
- * this section owns the predicate they share.
+ * EACH COMPONENT OF THE CLI'S CWD IS MADE TRAVERSABLE: by the ORCHESTRATOR'S OWN
+ * DIRECTORY floored to `--x` where it has one, or by the OVERLAY node where it
+ * has none. THE TWO HAVE DIFFERENT CALLERS. The floor serves an UNMARKED caller
+ * only — the marked CLI is shown the host's real mode. The overlay serves BOTH,
+ * because a component the orchestrator lacks has no host directory to floor and
+ * no ancestor-table entry either wherever a `host` pin covers it. The chain is
+ * the whole domain of both, and this section owns the predicate they share.
  *
  * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
  * before it execs — so the caller is a new, unmarked thread group, and a denial
@@ -1819,7 +1826,9 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
  *
  * THERE IS NO CONDITIONAL GRANT HERE — no `T_CWD` tier, no op allow-list, no
  * 0111 node. An unmarked caller resolves in `VIEW_HOST`, where the chain is
- * answered by the host itself (floored) or by the overlay node. This section
+ * answered by the host itself (floored) or by the overlay node; a marked one
+ * resolves in `VIEW_CLI`, where it is answered by the tier table, the ancestor
+ * table or the overlay node. This section
  * owns three subjects: the injected cwd, the component predicate and the
  * chain's inode sub-range.
  */

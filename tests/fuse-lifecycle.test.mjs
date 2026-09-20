@@ -2079,7 +2079,7 @@ describe('the mount literals', () => {
   //
   // THE `cd` IS NOT WHAT NEEDED THE MARK. Each component of the CLI's cwd is
   // traversable to an unmarked caller — `policy_cwd_component` plus
-  // `resolve_class`'s `VIEW_HOST` overlay clause (policy.h), driven by
+  // `resolve_class`'s overlay clause (policy.h), driven by
   // `b-cwd-unmarked` in tests/fuse-union-policy.test.mjs.
   //
   // DIES UNDER: re-adding any statement above the `cd`; a mark path reaching the

@@ -1229,8 +1229,12 @@ static void b22_cwd_chain_extent(void)
 	      "and its prefix-sharing sibling does NOT — it falls to fail, which is host");
 	CHECK(resolve_class("/root/srv2/sub", VIEW_HOST) == T_FAIL,
 	      "nor does a child of the cwd: the chain is upward only");
+	/* The overlay answers in VIEW_CLI too, so this is a statement about THIS
+	 * pin set and not about the view: /root is an ancestor of the project pin,
+	 * which is where its VIEW_CLI T_SYNTH comes from. `b51` drives the
+	 * geometry where the overlay is the CLI's only source of one. */
 	CHECK(resolve_class("/root", VIEW_CLI) != T_SYNTH || anc_find("/root") >= 0,
-	      "and VIEW_CLI reaches T_SYNTH only through the ancestor table, never the overlay");
+	      "with this pin set VIEW_CLI's T_SYNTH at /root comes from the ancestor table");
 
 	/* ── NO CWD AT ALL IS FAIL-CLOSED, and union.c refuses to mount on it
 	 *    precisely because this is what it would mean: no floor, no overlay
@@ -2764,7 +2768,7 @@ static void b48_probe_falls_not_absent(void)
  * THE RULE IS ONE SENTENCE: a fixed node exists by construction, and everything
  * else exists exactly where the orchestrator has it. What makes it view-shaped
  * is that WHICH paths are fixed nodes differs between the views — the ancestor
- * table in VIEW_CLI, the cwd overlay in VIEW_HOST.
+ * table in VIEW_CLI alone, the cwd overlay in both (policy.h states the rule).
  */
 static void b49_table_child_exists(void)
 {
@@ -3114,8 +3118,10 @@ static void b51_cwd_chain_intermediate_under_a_host_pin(void)
 {
 	char box[] = "/tmp/cc-policy-b51XXXXXX";
 	char wt[PATH_MAX], wtp[PATH_MAX], leaf[PATH_MAX];
-	char sib[PATH_MAX], off[PATH_MAX], line[PATH_MAX + 32];
-	const char *mid[2];
+	char sib[PATH_MAX], off[PATH_MAX], other[PATH_MAX];
+	char d1[PATH_MAX], d2[PATH_MAX], d3[PATH_MAX], dleaf[PATH_MAX];
+	char line[PATH_MAX + 32];
+	const char *mid[2], *deep[3];
 	struct stat st;
 	size_t i;
 
@@ -3211,6 +3217,46 @@ static void b51_cwd_chain_intermediate_under_a_host_pin(void)
 	CHECK(policy_synth_getattr(leaf, &st, VIEW_HOST) == 0 && st.st_ino == policy_cwd_ino(leaf),
 	      "on the chain's own sub-range, like every component above it");
 
+	/* ── THE EMIT, WHICH IS `resolve_class`'s OTHER CONSUMER. The classifier
+	 *    does not only feed `route()`: `policy_table_child_exists` asks it
+	 *    whether a table-derived dirent name has anything behind it, and a
+	 *    fixed node exists by construction while everything else exists only
+	 *    where the orchestrator has it. So the intermediate flips from a name
+	 *    the MARKED CLI's listing drops to one it keeps — which is what stops
+	 *    `ls` of the worktrees root and `cd` into it from disagreeing. */
+	CHECK(policy_dirent_visible(wt, VIEW_CLI) == 1 && policy_dirent_visible(wt, VIEW_HOST) == 1,
+	      "the intermediate is a name either listing of its parent may see");
+	CHECK(policy_table_child_exists(wt, VIEW_CLI, 0) == 1,
+	      "and one the MARKED CLI may open — so its `ls` and its `cd` agree about it");
+	CHECK(policy_table_child_exists(wt, VIEW_HOST, 0) == 1, "as may an unmarked listing");
+	CHECK(policy_table_child_exists(wtp, VIEW_CLI, 0) == 1
+	      && policy_table_child_exists(wtp, VIEW_HOST, 0) == 1,
+	      "and the component below it, in both views");
+
+	/* ── CONTROL: THE EMIT'S HOST PROBE IS UNTOUCHED OFF THE CHAIN. A
+	 *    host-pinned name the orchestrator lacks is still dropped from both
+	 *    listings, and so is an unpinned child of the node itself — the flip is
+	 *    the chain's, not every absent name's. */
+	CHECK(policy_table_child_exists(off, VIEW_CLI, 0) == 0
+	      && policy_table_child_exists(off, VIEW_HOST, 0) == 0,
+	      "a host-pinned name the orchestrator lacks is still DROPPED from both listings");
+	hjoin(other, sizeof(other), box, "/.worktrees/other");
+	CHECK(policy_cwd_component(other) == 0 && policy_host_absent(other) == 1,
+	      "an unpinned sibling INSIDE the node is off the chain and equally absent");
+	CHECK(policy_table_child_exists(other, VIEW_CLI, 0) == 0
+	      && policy_table_child_exists(other, VIEW_HOST, 0) == 0,
+	      "and it is dropped from both listings too");
+
+	/* ── AND THE NODE'S OWN LISTING NAMES THE PIN WALK'S CHILDREN AND NOTHING
+	 *    OF THE HOST'S, in the view the clause newly reaches as much as in the
+	 *    other: `policy_synth_children` scans the pin and ancestor tables only. */
+	nlisted = 0;
+	CHECK(policy_synth_children(wt, VIEW_CLI, collect, NULL) == 1 && listed_has("p"),
+	      "the marked listing of the node is its one table child (%zu emitted)", nlisted);
+	nlisted = 0;
+	CHECK(policy_synth_children(wt, VIEW_HOST, collect, NULL) == 1 && listed_has("p"),
+	      "and the unmarked listing is the same (%zu emitted)", nlisted);
+
 	/* ── CONTROL: THE HOST-ABSENT CONJUNCT, NOW IN `VIEW_CLI` TOO. The box is
 	 *    on the chain and host-pinned, and the only thing keeping it off the
 	 *    overlay is that the orchestrator HAS it. Drop that conjunct and a real
@@ -3303,6 +3349,43 @@ static void b51_cwd_chain_intermediate_under_a_host_pin(void)
 	      "the `fail`-pinned chain component is T_FAIL and out of the ancestor set");
 	CHECK(resolve_class(wtp, VIEW_CLI) == T_FAIL,
 	      "and the CLI still meets the refusal there (%s)", tier_name(resolve_class(wtp, VIEW_CLI)));
+
+	/* ── THREE CONSECUTIVE ABSENT COMPONENTS, which is what the card's own
+	 *    geometry reaches: a remote `systemPath` itself two components under
+	 *    the covering `host` pin, plus the `.worktrees/<project>` pair
+	 *    `worktreePathFor` adds below it. Classification is per-component, so
+	 *    depth is not a new rule — but nothing else builds a chain this deep,
+	 *    and the claim that the clause generalises to any depth is the card's
+	 *    acceptance criterion rather than an inference to leave unmade. */
+	npins = 0;
+	hjoin(d1, sizeof(d1), box, "/w");
+	hjoin(d2, sizeof(d2), box, "/w/.worktrees");
+	hjoin(d3, sizeof(d3), box, "/w/.worktrees/p");
+	hjoin(dleaf, sizeof(dleaf), box, "/w/.worktrees/p/k");
+	deep[0] = d1; deep[1] = d2; deep[2] = d3;
+	cwd_path = dleaf;
+	snprintf(line, sizeof(line), "host\t%s", box);       pin(line);
+	snprintf(line, sizeof(line), "project\t%s", dleaf);  pin(line);
+	anc_build();
+	for (i = 0; i < 3; i++) {
+		CHECK(tier_of(deep[i], VIEW_CLI) == T_HOST && policy_host_absent(deep[i]) == 1,
+		      "%s is covered by the `host` pin and absent on the orchestrator", deep[i]);
+		CHECK(resolve_class(deep[i], VIEW_CLI) == T_SYNTH
+		      && resolve_class(deep[i], VIEW_HOST) == T_SYNTH,
+		      "and is the overlay node in both views at depth %zu (%s / %s)", i + 1,
+		      tier_name(resolve_class(deep[i], VIEW_CLI)),
+		      tier_name(resolve_class(deep[i], VIEW_HOST)));
+		CHECK(policy_caller_tier("getattr", deep[i], resolve_class(deep[i], VIEW_CLI), 0, 700)
+		      == T_SYNTH
+		      && policy_caller_tier("getattr", deep[i], resolve_class(deep[i], VIEW_CLI), 1, 600)
+		      == T_SYNTH,
+		      "and both whole routes land there, so neither caller stops at depth %zu", i + 1);
+	}
+	CHECK(policy_cwd_ino(d1) != policy_cwd_ino(d2) && policy_cwd_ino(d2) != policy_cwd_ino(d3)
+	      && policy_cwd_ino(d1) != policy_cwd_ino(d3),
+	      "the three consecutive components take three DISTINCT chain inodes");
+	CHECK(policy_caller_tier("getattr", dleaf, resolve_class(dleaf, VIEW_CLI), 1, 600) == T_PROJECT,
+	      "and the leaf four levels down is still the remote tier to the marked CLI");
 
 	/* ── CONTROL: THE OVERLAY'S WHOLE DOMAIN IS THE CHAIN. With no cwd
 	 *    injected nothing is synthesized at an intermediate either, in either
