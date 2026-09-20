@@ -53,7 +53,7 @@ export function installDeleteProjectDialog({ dom, deleteProject }) {
     dom.dirRow.hidden = !!remoteSystem;
     dom.deleteDir.checked = false;
     dom.dirLabel.textContent =
-      `Also delete the directory ${project.path} — if you adopted this project, that is your own tree.`;
+      `Also delete the directory ${project.path} — if you added this project from an existing directory, that is your own tree.`;
 
     dom.confirm.value = '';
     dom.error.textContent = '';
