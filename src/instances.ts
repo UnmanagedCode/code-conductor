@@ -3752,7 +3752,6 @@ export class Instance extends EventEmitter implements InstanceLike {
   async forkAtUserMessage(userMessageIndex: number): Promise<{
     newSessionId: string; droppedText: string; createArgs: CreateInstanceInput;
   }> {
-    if (this.temp) throw httpError(400, 'temp sessions cannot be forked');
     // A rewind/prune on the SAME instance rewrites (or truncates) the very
     // jsonl this fork is about to read. Refuse rather than read a file
     // mid-rewrite — the mirror of the `_mutating` check those two already do.
@@ -3820,6 +3819,21 @@ export class Instance extends EventEmitter implements InstanceLike {
         model: this.model,
         contextWindowTokens: this.contextWindowTokens,
         worktree: this.worktree?.worktreeName ?? null,
+        // EXPLICIT, not inferable: forkSessionAtUserMessage writes no temp
+        // marker for the new id, and create()'s sidecar recovery only ORs temp
+        // in when the flag is already falsy AND the resumed id is marked — so
+        // without this the fork of a temp session comes out silently
+        // persistent. Set, spawn() marks the new backing id and the child runs
+        // the whole temp lifecycle, archiving on its own exit.
+        // Fork deliberately takes no `_suppressTempDelete` the way rewind and
+        // prune do: those kill their source and respawn it, so the archive
+        // would fire on a session about to come back. Fork never kills
+        // anything, so a source exiting mid-fork is a REAL exit and must
+        // archive — and that archive's writes (sub-agent dir + the
+        // temp/archived marker stores, all keyed on the SOURCE id) are disjoint
+        // from this fork's (source jsonl read-only, new id's jsonl + metadata
+        // written).
+        temp: this.temp,
         prefill: forked.droppedText,
       },
     };
