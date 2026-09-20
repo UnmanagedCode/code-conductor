@@ -129,6 +129,8 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     await fsp.writeFile(path.join(source, '.credentials.json'), '{}');
     await fsp.writeFile(path.join(source, '.claude.json'), '{}');
     await fsp.mkdir(path.join(source, 'projects'), { recursive: true });
+    await fsp.mkdir(path.join(source, 'backups'), { recursive: true });
+    await fsp.writeFile(path.join(source, 'backups', '.claude.json.backup.1789899569616'), '{}');
     process.env.CLAUDE_CONFIG_DIR = source;
     place = { system: 'box', remoteId: 'r1' };
   });
@@ -146,15 +148,29 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     assert.equal(snap['projects'], 'dir');
   });
 
-  // The three carve-outs, each for its own reason: `projects` is the isolation
-  // itself, `.claude.json` is the cwd-keyed file whose divergent lock loses
-  // writes, and `.credentials.json` is reached through
-  // CLAUDE_SECURESTORAGE_CONFIG_DIR instead.
+  // Each carve-out for its own reason: `projects` is the isolation itself,
+  // `.claude.json` is the cwd-keyed file whose divergent lock loses writes, and
+  // `.credentials.json` is reached through CLAUDE_SECURESTORAGE_CONFIG_DIR
+  // instead.
   test('never links projects, .claude.json or .credentials.json', async () => {
     const snap = await snapshot(await ensureRemoteConfigDir(place));
     assert.equal(snap['.claude.json'], undefined);
     assert.equal(snap['.credentials.json'], undefined);
     assert.notEqual(snap['projects'], `link:${path.join(source, 'projects')}`);
+  });
+
+  // `backups/` holds the global-config class one level down — every entry in it
+  // is a `.claude.json` backup. Shared, the CLI's missing-config recovery reads
+  // it and offers ANOTHER config for restore, which is the cwd-keyed `projects`
+  // map leaking by a second route.
+  test('never links the backups directory, and never creates one', async () => {
+    // Anti-vacuity: the assertion below is only meaningful if the host dir has
+    // something to link.
+    assert.equal((await fsp.stat(path.join(source, 'backups'))).isDirectory(), true,
+      'fixture: the host config dir must have a backups dir');
+
+    const snap = await snapshot(await ensureRemoteConfigDir(place));
+    assert.equal(snap['backups'], undefined, 'backups was linked into the farm');
   });
 
   test('a second call changes nothing', async () => {
@@ -184,8 +200,8 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
 
   // The CLI creates its own entries inside the config dir it is handed
   // (measured: .claude.json, policy-limits.json, remote-settings.json,
-  // backups/, sessions/). cc did not create them and destroying them is not
-  // cc's call — so a real entry wins over the link cc would otherwise make.
+  // sessions/). cc did not create them and destroying them is not cc's call —
+  // so a real entry wins over the link cc would otherwise make.
   test('a real entry cc did not create is left alone', async () => {
     const cfg = await ensureRemoteConfigDir(place);
     await fsp.rm(path.join(cfg, 'settings.json'));
@@ -216,8 +232,7 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
     assert.equal(await fsp.readFile(path.join(cfg, 'settings.json'), 'utf8'), '{"written-by":"the CLI"}');
   });
 
-  // Same invariant for a real DIRECTORY, which is what `backups/` and
-  // `sessions/` arrive as.
+  // Same invariant for a real DIRECTORY, which is what `sessions/` arrives as.
   test('a real directory occupying the name is never clobbered', async () => {
     const cfg = remoteConfigDir(place);
     await fsp.mkdir(path.join(cfg, 'plans', 'mine'), { recursive: true });
@@ -246,9 +261,9 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
   //
   // THE FILE ARM IS THE ONE THAT CATCHES IT. A rename of a symlink ONTO a
   // directory fails with ENOTDIR/EISDIR, so the directory arm below would
-  // survive such a create; it is here because `backups/` and `sessions/` arrive
-  // as directories and the rule has to hold for them, not because it discerns
-  // the two creates.
+  // survive such a create; it is here because `sessions/` arrives as a
+  // directory and the rule has to hold for it, not because it discerns the two
+  // creates.
   async function withFirstLstatMissing(target, body) {
     const nodeFs = await import('node:fs');
     const real = nodeFs.promises.lstat;
@@ -436,6 +451,9 @@ describe('T3: ensureRemoteConfigDir builds and refreshes the symlink farm', () =
       // merely starts with the same letters, and one whose prefix stops short
       // of the `.json`. A rule matching either would stop sharing real config.
       '.claude.jsonl', '.claudex.json.lock', '.config.jsonc', '.credentials.jsonx',
+      // Adjacent to the `backups` exact-name exclusion: a name that extends it
+      // and a dot-leading near-miss. `backups` is an EXACT name, not a prefix.
+      'backups.json', '.backups',
     ];
     for (const n of shared) await fsp.writeFile(path.join(source, n), '{}');
 

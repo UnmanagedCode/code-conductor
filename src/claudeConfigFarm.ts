@@ -30,8 +30,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { claudeConfigDir, remoteConfigDir } from './projects.ts';
 
-// THE TWO EXACT NAMES that are never linked. The third exclusion is a CLASS,
-// not a name, and is below.
+// THE EXACT NAMES that are never linked. One further exclusion is a CLASS, not
+// a name, and is below.
 //
 //   `projects`         — the transcripts. Sharing them IS the defect this whole
 //                        mechanism exists to fix, so it is a real, private
@@ -39,7 +39,24 @@ import { claudeConfigDir, remoteConfigDir } from './projects.ts';
 //   `.credentials.json`— reached through `CLAUDE_SECURESTORAGE_CONFIG_DIR`
 //                        instead (see Instance.spawn), which pins credentials to
 //                        the real config dir without a link.
-const NEVER_LINKED = new Set(['projects', '.credentials.json']);
+//   `backups`          — where the CLI drops `.claude.json` backups, and it
+//                        holds nothing else: measured on a live host, 6 of 6
+//                        entries were `.claude.json.backup.<ms>` or
+//                        `.claude.json.corrupted.<ms>`. It is the class below
+//                        one level down, so the class's harm reaches it.
+//                        Shared, its entries are told apart only by epoch-ms
+//                        with no provenance, and one config's churn evicts
+//                        another's last backup. Sharper: the CLI's
+//                        missing-config recovery reads `<configDir>/backups/`
+//                        and offers a FOREIGN config for restore — measured on
+//                        a first spawn, a `cp` hint naming a 98,979-byte host
+//                        backup while that remote's own config was 41,466
+//                        bytes. Following it imports the host's cwd-keyed
+//                        `projects` map, the leak the class exclusion exists to
+//                        prevent. Not filed with the class because it is not a
+//                        member of it but a directory of them. Left for the CLI
+//                        to create.
+const NEVER_LINKED = new Set(['projects', '.credentials.json', 'backups']);
 
 // THE GLOBAL-CONFIG CLASS, matched as a PATTERN rather than by name.
 //
@@ -106,8 +123,8 @@ const reported = new Set<string>();
 // NEVER DESTRUCTIVE TOWARDS WHAT IT DID NOT CREATE. A real file or directory
 // where cc would have put a link is left alone and reported — the CLI creates
 // several of these inside a config dir it is handed (measured: `.claude.json`,
-// `policy-limits.json`, `remote-settings.json`, `backups/`, `sessions/`), and
-// deleting them is not cc's call.
+// `policy-limits.json`, `remote-settings.json`, `sessions/`), and deleting them
+// is not cc's call.
 export async function ensureRemoteConfigDir(
   place: { system: string; remoteId: string | null },
   { log = console as FarmLogger }: { log?: FarmLogger } = {},
@@ -135,9 +152,9 @@ export async function ensureRemoteConfigDir(
     // clobber whatever arrived, and what arrives is exactly the class cc must
     // not destroy: the CLI creates real files inside a config dir it is handed
     // (measured: `.claude.json`, `policy-limits.json`, `remote-settings.json`,
-    // `backups/`, `sessions/`). An `lstat` immediately before the rename would
-    // only narrow the window, not close it. Re-evaluating instead lands the
-    // arrival on the leave-alone rule below, which is where it belongs.
+    // `sessions/`). An `lstat` immediately before the rename would only narrow
+    // the window, not close it. Re-evaluating instead lands the arrival on the
+    // leave-alone rule below, which is where it belongs.
     if (held === null) {
       if (await tryCreateLink(target, link)) continue;
       held = await fs.lstat(link).catch(() => null);
