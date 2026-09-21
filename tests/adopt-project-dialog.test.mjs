@@ -32,8 +32,11 @@ const DIALOG_HTML = `
   <dialog id="adopt-project-dialog">
     <form method="dialog" id="apd-form">
       <input id="apd-name" />
+      <select id="apd-system"></select>
+      <p id="apd-system-note"></p>
+      <label id="apd-remote-row" hidden><input id="apd-remote" /></label>
       <input id="apd-path" />
-      <ul id="apd-suggestions"></ul>
+      <ul id="apd-suggestions" hidden></ul>
       <p id="apd-scan-note"></p>
       <p id="apd-error"></p>
       <menu><button value="cancel"></button><button value="adopt"></button></menu>
@@ -51,22 +54,38 @@ const DIALOG_HTML = `
   </dialog>`;
 
 const EMPTY_SCAN = { root: '/root', maxDepth: 3, truncated: false, unreadable: 0, candidates: [] };
+
+// Same three rows tests/new-project-placement.test.mjs uses, so both dialogs are
+// judged against one registry: the built-in local row, one reachable system, and
+// one with no provider command.
+const SYSTEMS = [
+  { id: 'local', label: 'This machine', managed: true },
+  { id: 'prod-box', label: 'Prod box', managed: false, launch: ['ssh', 'prod', 'p'] },
+  { id: 'namedonly', label: 'Named only', managed: false },
+];
 const tick = () => new Promise(r => setTimeout(r, 0));
 
 // Boots the dialog against a real happy-dom document and a scripted server.
 // `posts` is consumed in order — one entry per POST the flow is expected to
 // make; the last entry repeats if the flow makes more.
-async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [] } = {}) {
+async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], systems = SYSTEMS, systemsStatus = 200 } = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
   window.document.body.innerHTML = DIALOG_HTML;
 
   const requests = [];
+  let scans = 0;
   let postIdx = 0;
   globalThis.fetch = async (url, opts) => {
     if (String(url).includes('/api/projects/suggestions')) {
+      scans++;
       return { ok: scanStatus < 400, status: scanStatus, json: async () => scan };
+    }
+    // Before the catch-all: the registry is a GET, and recording it as a
+    // request would corrupt every POST-count assertion in this file.
+    if (String(url).includes('/api/settings/systems')) {
+      return { ok: systemsStatus < 400, status: systemsStatus, json: async () => ({ systems }) };
     }
     requests.push({ url: String(url), method: opts?.method, body: opts?.body ? JSON.parse(opts.body) : null });
     const next = posts[Math.min(postIdx++, posts.length - 1)] ?? { status: 201, body: { ok: true } };
@@ -86,6 +105,10 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [] } = 
       apdForm: el('apd-form'),
       apdStale: el('apd-stale'),
       apdName: el('apd-name'),
+      apdSystem: el('apd-system'),
+      apdSystemNote: el('apd-system-note'),
+      apdRemote: el('apd-remote'),
+      apdRemoteRow: el('apd-remote-row'),
       apdPath: el('apd-path'),
       apdSuggestions: el('apd-suggestions'),
       apdScanNote: el('apd-scan-note'),
@@ -102,9 +125,21 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [] } = 
   await tick();
 
   const close = async (value) => { el('adopt-project-dialog').close(value); await tick(); };
+  // Choosing a placement the way a user does — the module listens for `change`,
+  // not for the property write.
+  const pick = async (id) => {
+    el('apd-system').value = id;
+    el('apd-system').dispatchEvent(new window.Event('change'));
+    await tick();
+  };
+  const typeRemote = async (v) => {
+    el('apd-remote').value = v;
+    el('apd-remote').dispatchEvent(new window.Event('input'));
+    await tick();
+  };
   return {
-    el, requests, messageFor: mod.messageFor, overrides: mod.REFUSAL_OVERRIDES,
-    close,
+    el, window, requests, messageFor: mod.messageFor, overrides: mod.REFUSAL_OVERRIDES,
+    close, pick, typeRemote, scans: () => scans,
     counts: () => ({ refreshed, overflowClosed }),
     // The discard list read as ROWS. Reading its concatenated textContent
     // would let a count/noun swap pass: "2 attachments, 5 debug captures" and
@@ -307,6 +342,10 @@ test('the pass-through refusals render their reason and never a bare code', asyn
     { code: 'PROJECT_EXISTS_UNRESOLVABLE', reason: "project 'api' already exists at /srv/api, and cc could not ask its system whether that is still there. Fix the system, or delete the project to unregister the name." },
     { code: 'TARGET_INSIDE_REPO', reason: "'/root/api/src' is inside the git repository whose toplevel is '/root/api' — adopt that instead." },
     { code: 'TARGET_NOT_FOUND', reason: "cannot resolve '/nope': ENOENT" },
+    // The two the placement adds. Both already name their next action, which is
+    // why REFUSAL_OVERRIDES stays at two rows.
+    { code: 'SYSTEM_UNREACHABLE', reason: "could not resolve '/srv/api' on system 'prod-box': connect ECONNREFUSED" },
+    { code: 'INVALID_REMOTE_ID', reason: 'invalid remoteId "a b" — whitespace and control characters are not allowed' },
   ];
   for (const row of rows) {
     const d = await bootDialog({ posts: [{ status: 200, body: { ok: false, ...row } }] });
@@ -430,6 +469,164 @@ test('a failed suggestions fetch says the scan did not run, not that it found no
   d.el('apd-path').value = '/elsewhere/api';
   await d.close('adopt');
   assert.deepEqual(d.requests[0].body, { name: 'api', path: '/elsewhere/api' });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLACEMENT. The tree being adopted can already live on a registered system, so
+// the dialog chooses the machine before it asks for the path on it. Everything
+// below is about keeping one promise: what the dialog shows is about the machine
+// it is going to send.
+
+// PINS: only systems cc can actually reach are offered, and local is the
+// default. A registry row with no provider command would register a project
+// every later operation refuses.
+test('the system picker offers local plus reachable systems only, and defaults to local', async () => {
+  const d = await bootDialog();
+  assert.deepEqual([...d.el('apd-system').options].map(o => o.value), ['local', 'prod-box']);
+  assert.equal(d.el('apd-system').value, 'local');
+  assert.equal([...d.el('apd-system').options].find(o => o.value === 'prod-box').textContent,
+    'Prod box (prod-box)', 'a user row is named by label AND id, as the create dialog names it');
+});
+
+// PINS: a local adopt posts EXACTLY what it always did. The placement keys must
+// not leak onto a request that chose none — `system: null` is not the same
+// request as no `system` key, and the server keys its duplicate test on it.
+test('a local adopt posts exactly {name, path}', async () => {
+  const d = await bootDialog();
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = '/root/api';
+  await d.close('adopt');
+  assert.deepEqual(d.requests[0].body, { name: 'api', path: '/root/api' });
+});
+
+// PINS: the list is shown only for the placement it is ABOUT. It is a scan of
+// cc's own disk, so offering it while the path field means a path on another
+// machine would name directories that do not exist there — and coming back to
+// local must restore the note the scan produced, without scanning again.
+test('choosing a system hides the local list, reveals the target field, and retargets the hint — and going back restores both', async () => {
+  const d = await bootDialog({
+    scan: scanWith({ path: '/root/api', relPath: 'api', depth: 1, isGitRepo: false, suggestedName: 'api' }),
+  });
+  const localNote = d.el('apd-scan-note').textContent;
+  assert.match(localNote, /1 unregistered directory/, 'the local scan spoke first');
+  assert.equal(d.el('apd-suggestions').hidden, false);
+  assert.equal(d.el('apd-remote-row').hidden, true, 'this machine has no target to name');
+
+  await d.pick('prod-box');
+  assert.equal(d.el('apd-suggestions').hidden, true, 'a scan of cc\'s disk is not about prod-box');
+  assert.equal(d.el('apd-remote-row').hidden, false);
+  assert.match(d.el('apd-scan-note').textContent, /system 'prod-box'/);
+  assert.match(d.el('apd-scan-note').textContent, /cc cannot list directories there/);
+
+  await d.pick('local');
+  assert.equal(d.el('apd-suggestions').hidden, false, 'the list comes back');
+  assert.equal(d.el('apd-remote-row').hidden, true);
+  assert.equal(d.el('apd-scan-note').textContent, localNote,
+    'and the note the scan produced comes back verbatim');
+  assert.equal(d.scans(), 1, 'restoring the local view costs no second scan');
+});
+
+// PINS: the hint names the TARGET, not merely the system. On a system serving
+// many named targets, a hint naming only the system points at the wrong machine
+// — the same vocabulary the server uses in its own refusals.
+test('the placement hint names the target, not just the system', async () => {
+  const d = await bootDialog();
+  await d.pick('prod-box');
+  await d.typeRemote('ctr7');
+  assert.match(d.el('apd-scan-note').textContent, /remote 'ctr7' of system 'prod-box'/);
+});
+
+// PINS: the placement reaches the server as the two fields the route reads, and
+// the target is trimmed the way the create dialog trims it.
+test('a remote adopt posts system + remoteId, trimmed', async () => {
+  const d = await bootDialog();
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = '/srv/api';
+  await d.pick('prod-box');
+  await d.typeRemote(' ctr_7.a ');
+  await d.close('adopt');
+  assert.deepEqual(d.requests[0].body,
+    { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr_7.a' });
+});
+
+// PINS: absence stays absence. A blank target IS an answer — the provider's own
+// default — and posting `remoteId: ""` would name a target called nothing.
+test('a remote adopt with a blank target posts no remoteId', async () => {
+  const d = await bootDialog();
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = '/srv/api';
+  await d.pick('prod-box');
+  await d.typeRemote('   ');
+  await d.close('adopt');
+  assert.deepEqual(d.requests[0].body, { name: 'api', path: '/srv/api', system: 'prod-box' });
+});
+
+// PINS: the dialog refuses a relative path on a system ITSELF, without a round
+// trip — the server says the same thing, but only after the dialog has closed.
+test('a relative path on a system is refused in the dialog, before any request', async () => {
+  const d = await bootDialog();
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = 'srv/api';
+  await d.pick('prod-box');
+  await d.close('adopt');
+  assert.equal(d.requests.length, 0, 'nothing was posted');
+  assert.match(d.state().error, /absolute/i);
+  assert.match(d.state().error, /prod-box/, 'and names the machine the path is about');
+  assert.equal(d.state().formHidden, false, 'the form reopens so the user can fix it');
+});
+
+// PINS: the complement, and the reason the check is GATED. A local adopt still
+// surfaces exactly the refusals it did before — a blanket client-side check
+// would satisfy the test above while silently changing local behaviour.
+test('a relative path with no system still reaches the server', async () => {
+  const d = await bootDialog({
+    posts: [{ status: 200, body: { ok: false, code: 'INVALID_TARGET_PATH', reason: 'path must be a non-empty absolute path.' } }],
+  });
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = 'srv/api';
+  await d.close('adopt');
+  assert.deepEqual(d.requests[0].body, { name: 'api', path: 'srv/api' });
+  assert.match(d.state().error, /absolute path/, "and the server's own refusal is what is shown");
+});
+
+// PINS: the placement rides on `pending`. The relocate/replace buttons re-send
+// the target after the form pane is hidden, so a placement read off the form at
+// submit time would silently re-adopt LOCALLY on the second POST.
+test('the stale round-trip re-sends the placement', async () => {
+  const d = await bootDialog({ posts: [{ status: 200, body: STALE_BODY }, { status: 201, body: { ok: true } }] });
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = '/srv/api';
+  await d.pick('prod-box');
+  await d.typeRemote('ctr7');
+  await d.close('adopt');
+  await d.close('relocate');
+  assert.equal(d.requests.length, 2);
+  assert.deepEqual(d.requests[1].body,
+    { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr7', onStaleRecord: 'relocate' });
+});
+
+// PINS: an unreadable registry SAYS SO. Falling through silently to a local-only
+// picker makes "cc could not ask" indistinguishable from "nothing is
+// registered", and the user would read the missing system as one they never
+// added. The complement is the other half of that distinction: a registry that
+// answers with only the local row says nothing at all.
+test('an unreadable registry says so and still offers this machine', async () => {
+  const d = await bootDialog({ systemsStatus: 500 });
+  assert.deepEqual([...d.el('apd-system').options].map(o => o.value), ['local']);
+  assert.match(d.el('apd-system-note').textContent, /Could not read the systems registry/);
+  assert.match(d.el('apd-system-note').textContent, /500/, 'and names what went wrong');
+
+  // The failure costs the picker's extra rows, never the dialog.
+  d.el('apd-name').value = 'api';
+  d.el('apd-path').value = '/root/api';
+  await d.close('adopt');
+  assert.deepEqual(d.requests[0].body, { name: 'api', path: '/root/api' });
+
+  const quiet = await bootDialog({ systems: [{ id: 'local', label: 'This machine', managed: true }] });
+  assert.deepEqual([...quiet.el('apd-system').options].map(o => o.value), ['local']);
+  assert.equal(quiet.el('apd-system-note').textContent, '',
+    'a registry that answered, holding only this machine, has nothing to report');
 });
 
 // PINS: THE OVERRIDE CANNOT ROT SILENTLY. Both replacements are keyed on a

@@ -536,7 +536,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     catch (e) { next(e); }
   });
 
-  // Adopt an existing directory as a project. Body: {name, path, onStaleRecord?}.
+  // Adopt an existing directory as a project.
+  // Body: {name, path, system?, remoteId?, onStaleRecord?}.
   // Mounted before the `/projects/:name` param routes so `external` can't be
   // read as a project name. Soft refusals return 200 with {ok:false, code,
   // reason} — same contract as POST /instances/:id/merge — so a caller can

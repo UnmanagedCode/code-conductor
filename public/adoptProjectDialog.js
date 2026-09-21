@@ -6,7 +6,18 @@
 // single path field — a row's click fills the field (and the name), and the
 // submit always sends whatever is in it. There is no second code path for a
 // hand-typed path, which is what makes "the same action, not a separate flow"
-// true rather than merely claimed.
+// true rather than merely claimed. The list is SHOWN only for the local
+// placement, because it is a scan of cc's own disk; that changes which
+// placement it is offered for, not what it is.
+//
+// PLACEMENT. The tree may already live on a registered SYSTEM, so the machine
+// is chosen before the path on it — only systems cc can reach are offered,
+// since a project on an unreachable row is one every later operation refuses.
+// A non-local system also offers a `remoteId`, UNCONDITIONALLY rather than
+// gated on the provider's `remotes` capability: cc cannot know that without
+// connecting, and the server's named refusal at adopt time is what answers it.
+// Blank means the provider's own default target, so the field is omitted
+// rather than sent empty.
 //
 // BARE `fetch`, NOT `apiFetch`. `POST /api/projects/external` answers 200 +
 // {ok:false, code, reason} for every refusal, and `http.js`'s apiFetch would
@@ -17,7 +28,8 @@
 //
 // Injected interface:
 //   - dom: { adoptProjectBtn, adoptProjectDialog, apdForm, apdStale, apdName,
-//            apdPath, apdSuggestions, apdScanNote, apdError, apdStaleSummary,
+//            apdSystem, apdSystemNote, apdRemote, apdRemoteRow, apdPath,
+//            apdSuggestions, apdScanNote, apdError, apdStaleSummary,
 //            apdStaleDiscards, apdStaleError } els.
 //   - refreshProjects():      reloads the sidebar project list after an adopt.
 //   - closeSidebarOverflow(): dismisses the sidebar ≡ menu.
@@ -73,11 +85,76 @@ export function messageFor(result) {
 }
 
 export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOverflow }) {
-  // The {name, path} the open dialog is about. Module-local rather than
-  // captured per listener because it has to survive the stale round-trip: the
-  // relocate/replace buttons re-send the target the user already chose, and
-  // the form is hidden by then.
+  // The {name, path, system, remoteId} the open dialog is about. Module-local
+  // rather than captured per listener because it has to survive the stale
+  // round-trip: the relocate/replace buttons re-send the target the user
+  // already chose, and the form is hidden by then.
   let pending = null;
+
+  // The note the local scan produced. Kept here, not read back out of the DOM,
+  // because choosing a system overwrites the hint and coming back must restore
+  // it without re-scanning.
+  let lastLocalNote = '';
+
+  const chosenSystem = () => {
+    const v = dom.apdSystem.value;
+    return v && v !== 'local' ? v : null;
+  };
+
+  // Blank IS an answer — the provider's own default target — so it reads as
+  // null rather than as an empty target name.
+  const chosenRemote = () => dom.apdRemote.value.trim() || null;
+
+  // The same vocabulary the server uses in its own refusals, so the hint and
+  // the error that may follow it name one thing.
+  const describePlacement = (system, remote) =>
+    remote ? `remote '${remote}' of system '${system}'` : `system '${system}'`;
+
+  async function buildSystems() {
+    dom.apdSystem.innerHTML = '';
+    let systems = [{ id: 'local', label: 'This machine', managed: true }];
+    let note = '';
+    try {
+      const r = await fetch('/api/settings/systems');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      systems = (await r.json()).systems ?? systems;
+    } catch (e) {
+      // NOT SILENT: a local-only picker that cc never managed to fill looks
+      // exactly like one with nothing registered, and the user would read a
+      // missing system as one they never added.
+      note = `Could not read the systems registry (${e.message}) — only this machine is offered.`;
+    }
+    for (const sys of systems) {
+      // A row with no provider command cannot be reached, so a project put on
+      // it could never be opened. `local` is in-process and carries none.
+      if (!sys.managed && !(Array.isArray(sys.launch) && sys.launch.length)) continue;
+      const opt = document.createElement('option');
+      opt.value = sys.id;
+      opt.textContent = sys.managed ? sys.label : `${sys.label} (${sys.id})`;
+      dom.apdSystem.appendChild(opt);
+    }
+    dom.apdSystem.value = 'local';
+    dom.apdSystemNote.textContent = note;
+    syncPlacement();
+  }
+
+  // The one function that owns which placement the form is about. A list of
+  // directories on CC'S OWN DISK, offered while the path field means a path on
+  // another machine, would name directories that do not exist there.
+  function syncPlacement() {
+    const system = chosenSystem();
+    dom.apdRemoteRow.hidden = !system;
+    dom.apdSuggestions.hidden = !!system;
+    dom.apdScanNote.textContent = system
+      ? `Type an absolute path on ${describePlacement(system, chosenRemote())} — cc cannot list directories there.`
+      : lastLocalNote;
+  }
+
+  // The server refuses this too (INVALID_TARGET_PATH); checking here is what
+  // keeps the dialog open on the field the user has to fix. Gated on a chosen
+  // system so a LOCAL adopt surfaces exactly the refusals it did before.
+  const placementError = t =>
+    t.system && !t.path.startsWith('/') ? `the path on '${t.system}' must be absolute` : null;
 
   function showForm() {
     dom.apdForm.hidden = false;
@@ -115,7 +192,8 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
       li.appendChild(btn);
       dom.apdSuggestions.appendChild(li);
     }
-    dom.apdScanNote.textContent = scanNote(scan);
+    lastLocalNote = scanNote(scan);
+    syncPlacement();
   }
 
   // A capped or partly-unreadable walk has to SAY SO: otherwise "it is not in
@@ -142,7 +220,8 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
       // A failed scan costs the list, never the dialog — the free-text field
       // is the whole affordance without it.
       dom.apdSuggestions.innerHTML = '';
-      dom.apdScanNote.textContent = `Could not scan for directories (${e.message}) — type a path below.`;
+      lastLocalNote = `Could not scan for directories (${e.message}) — type a path below.`;
+      syncPlacement();
     }
   }
 
@@ -175,6 +254,10 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     dom.apdError.textContent = '';
     dom.apdStaleError.textContent = '';
     const body = { name: target.name, path: target.path };
+    if (target.system) {
+      body.system = target.system;
+      if (target.remoteId) body.remoteId = target.remoteId;
+    }
     if (onStaleRecord) body.onStaleRecord = onStaleRecord;
     let res, data;
     try {
@@ -221,19 +304,33 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     pending = null;
     dom.apdName.value = '';
     dom.apdPath.value = '';
+    dom.apdRemote.value = '';
+    dom.apdSystemNote.textContent = '';
     dom.apdError.textContent = '';
     dom.apdStaleError.textContent = '';
     dom.apdStaleSummary.textContent = '';
     dom.apdStaleDiscards.innerHTML = '';
     showForm();
-    await loadSuggestions();
+    // Both end in syncPlacement(), which reads current state — so the order
+    // they land in does not matter, and the dialog still opens after one trip.
+    await Promise.all([buildSystems(), loadSuggestions()]);
     dom.adoptProjectDialog.showModal();
   });
+
+  dom.apdSystem.addEventListener('change', syncPlacement);
+  dom.apdRemote.addEventListener('input', syncPlacement);
 
   dom.adoptProjectDialog.addEventListener('close', async () => {
     const action = dom.adoptProjectDialog.returnValue;
     if (action === 'adopt') {
-      pending = { name: dom.apdName.value.trim(), path: dom.apdPath.value.trim() };
+      pending = {
+        name: dom.apdName.value.trim(),
+        path: dom.apdPath.value.trim(),
+        system: chosenSystem(),
+        remoteId: chosenRemote(),
+      };
+      const bad = placementError(pending);
+      if (bad) { failForm(bad); return; }
       await submit(null);
       return;
     }
