@@ -67,6 +67,28 @@ test('describeToolInput: Bash prefers description over command, falls back witho
   assert.equal(describeToolInput('Bash', { command: 'ls -la', description: '   ' }), 'ls -la');
 });
 
+test('describeToolInput: project_bash prefers description over command, keeping the scope prefix', () => {
+  assert.equal(
+    describeToolInput('mcp__code-conductor__project_bash', { project: 'demo', command: 'rg foo', description: 'Search for foo' }),
+    '[demo] Search for foo',
+  );
+  assert.equal(
+    describeToolInput('mcp__code-conductor__project_bash', { project: 'demo', worktree: 'wt-1', command: 'rg foo', description: 'Search for foo' }),
+    '[demo/wt-1] Search for foo',
+  );
+});
+
+test('describeToolInput: project_bash without a description falls back to the command', () => {
+  assert.equal(
+    describeToolInput('mcp__code-conductor__project_bash', { project: 'demo', command: 'rg foo' }),
+    '[demo] rg foo',
+  );
+  assert.equal(
+    describeToolInput('mcp__code-conductor__project_bash', { project: 'demo', command: 'rg foo', description: '   ' }),
+    '[demo] rg foo',
+  );
+});
+
 test('describeToolInput: Edit/Write/Read → file_path', () => {
   assert.equal(describeToolInput('Edit',  { file_path: '/x/y.js' }), '/x/y.js');
   assert.equal(describeToolInput('Write', { file_path: '/x/y.js' }), '/x/y.js');
@@ -446,6 +468,20 @@ test('ToolUseBlock: Bash expanded body shows the command but not the description
   const pre = details.querySelector('pre.bash-cmd');
   assert.ok(pre, 'expected pre.bash-cmd');
   assert.equal(pre.textContent, 'ls -la');
+});
+
+test('ToolUseBlock: project_bash expanded body shows the command, summary shows the description', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'mcp__code-conductor__project_bash', toolUseId: 'tu_pbash' });
+  block.finalizeInput({ project: 'demo', command: 'rg foo', description: 'Search for foo' });
+  assert.match(block.summary.textContent, /Search for foo/);
+  assert.equal(block.summary.textContent.includes('rg foo'), false,
+    'summary must not show the raw command when a description is present');
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  const pre = details.querySelector('pre.bash-cmd');
+  assert.ok(pre, 'expected pre.bash-cmd');
+  assert.equal(pre.textContent, 'rg foo');
 });
 
 test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with JSON', () => {

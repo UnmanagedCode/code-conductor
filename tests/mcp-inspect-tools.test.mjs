@@ -241,13 +241,29 @@ describe('project_bash', () => {
     assert.match(body.result.content[0].text, /non-empty/i);
   });
 
-  test('project_bash description is an accepted no-op', async () => {
+  test('project_bash accepts a description without changing what runs or what comes back', async () => {
     await makeRealRepo('demo');
-    const r = unwrapBash(await callTool('project_bash', {
+    const withDesc = unwrapBash(await callTool('project_bash', {
       project: 'demo', command: 'echo still-sync', description: 'echo a marker',
     }));
-    assert.match(r.output, /still-sync/);
-    assert.equal(r.exitCode, 0);
+    const withoutDesc = unwrapBash(await callTool('project_bash', {
+      project: 'demo', command: 'echo still-sync',
+    }));
+    assert.match(withDesc.output, /still-sync/);
+    assert.equal(withDesc.exitCode, 0);
+    assert.equal(withDesc.exitCode, withoutDesc.exitCode);
+    assert.equal(withDesc.cwd, withoutDesc.cwd);
+    assert.equal(withDesc.output, withoutDesc.output);
+    assert.equal('description' in withDesc, false, 'description is not echoed back in the metadata');
+  });
+
+  test('project_bash rejects a non-string description', async () => {
+    await makeRealRepo('demo');
+    const { body } = await rpc('tools/call', {
+      name: 'project_bash', arguments: { project: 'demo', command: 'echo hi', description: 42 },
+    });
+    assert.equal(body.result.isError, true);
+    assert.match(body.result.content[0].text, /argument 'description' must be string/);
   });
 
   // The canonical-echo invariant (docs/protocol.md -> Input params): a response

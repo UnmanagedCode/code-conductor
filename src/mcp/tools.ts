@@ -1058,7 +1058,7 @@ export function buildTools(): Tool[] {
           project:  { type: 'string' },
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
           command:  { type: 'string', description: 'The bash command to run.' },
-          description: { type: 'string', description: 'Clear, concise description of what this command does in 5-10 words. Unused server-side; accepted for schema parity with the built-in Bash tool.' },
+          description: { type: 'string', description: 'Clear, concise description of what this command does in active voice. Shown in the transcript in place of the command, so it has to identify it. Brief (5-10 words) for a simple command — `git status` → "Show working tree status". For one that is hard to parse at a glance (piped commands, obscure flags, etc.), say enough to make it clear — `git reset --hard origin/main` → "Discard all local changes and match remote main".' },
           timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `bashProject` are clamped.' },
         },
         required: ['project', 'command'],
