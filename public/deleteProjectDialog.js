@@ -52,8 +52,7 @@ export function installDeleteProjectDialog({ dom, deleteProject }) {
     // No tick for a remote project: there is no directory of cc's to delete.
     dom.dirRow.hidden = !!remoteSystem;
     dom.deleteDir.checked = false;
-    dom.dirLabel.textContent =
-      `Also delete the directory ${project.path} — if you added this project from an existing directory, that is your own tree.`;
+    dom.dirLabel.textContent = `Also delete the directory ${project.path}`;
 
     dom.confirm.value = '';
     dom.error.textContent = '';

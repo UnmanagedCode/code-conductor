@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 
@@ -96,6 +97,34 @@ test('ticking the box sends deleteDirectory:true', async () => {
 test('the opt-in label names the directory it would remove', async () => {
   const { dirLabel } = await confirmDelete(base({ path: '/home/me/myrepo' }));
   assert.match(dirLabel, /\/home\/me\/myrepo/);
+});
+
+// PINS: the label is just the path, not the "that is your own tree" clause —
+// dropped as noise the checkbox and the effects list already cover.
+test('the opt-in label carries no trailing clause about the tree being the user\'s own', async () => {
+  const { dirLabel } = await confirmDelete(base({ path: '/home/me/myrepo' }));
+  assert.equal(dirLabel, 'Also delete the directory /home/me/myrepo');
+  assert.ok(!/your own tree/.test(dirLabel));
+});
+
+// PINS: the checkbox precedes its label text in DOM order, the same shape as
+// every other checkbox+label row in the UI (see .ni-worktree-row / .tt-toggle).
+test('the directory checkbox precedes its label text in the row', async () => {
+  await confirmDelete(base());
+  const row = globalThis.document.getElementById('dpd-dir-row');
+  const tags = [...row.children].map(el => el.tagName.toLowerCase());
+  assert.deepEqual(tags, ['input', 'span']);
+  assert.equal(row.children[0].type, 'checkbox');
+});
+
+// PINS: the row is styled as an inline flex row (checkbox left of label, same
+// line) rather than the dialog's default stacked/full-width block, which is
+// what a bare `dialog label` + `dialog input { width: 100% }` would produce.
+test('the delete-project directory row is styled inline, not stacked', () => {
+  const css = fs.readFileSync(path.join(PUB, 'styles.css'), 'utf8');
+  const rule = css.match(/\.dpd-dir-row\s*\{[^}]*\}/);
+  assert.ok(rule, 'expected a .dpd-dir-row rule in styles.css');
+  assert.match(rule[0], /flex/);
 });
 
 // PINS: a remote project gets NO opt-in at all. cc owns no area on another
