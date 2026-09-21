@@ -140,6 +140,7 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
   return {
     el, window, requests, messageFor: mod.messageFor, overrides: mod.REFUSAL_OVERRIDES,
     close, pick, typeRemote, scans: () => scans,
+    reopen: async () => { el('adopt-project-btn').click(); await tick(); },
     counts: () => ({ refreshed, overflowClosed }),
     // The discard list read as ROWS. Reading its concatenated textContent
     // would let a count/noun swap pass: "2 attachments, 5 debug captures" and
@@ -664,6 +665,42 @@ test('changing the placement clears the error the previous one raised', async ()
 
   await d.pick('local');
   assert.equal(d.state().error, '');
+});
+
+
+// PINS: REOPENING THE DIALOG CARRIES NOTHING OVER FROM THE PREVIOUS OPEN. Every
+// other test in this file opens it once, so the whole reset in the open handler
+// sits unexercised — and each field it forgets is one the user abandoned on a
+// previous attempt, silently riding out on the next POST. The Remote target is
+// the sharpest: nothing else in the module ever writes that field (buildSystems
+// resets the picker but not the target, syncPlacement only reads it), so a
+// dropped reset there is permanent for the life of the page.
+test('reopening the dialog resets every field the previous open left behind', async () => {
+  const d = await bootDialog({
+    posts: [{ status: 200, body: { ok: false, code: 'PROJECT_EXISTS', reason: "project 'api' already exists at /srv/api." } }],
+  });
+  d.el('apd-name').value = 'api';
+  await d.pick('prod-box');
+  await d.typeRemote('ctr7');
+  d.el('apd-path').value = '/srv/api';
+  await d.close('adopt');
+  assert.match(d.state().error, /already exists/, 'the first attempt left an error standing');
+  await d.close('cancel'); // the user gives up on that attempt
+
+  await d.reopen();
+  assert.equal(d.el('apd-name').value, '');
+  assert.equal(d.el('apd-path').value, '');
+  assert.equal(d.el('apd-remote').value, '', 'an abandoned target must not ride out on the next adopt');
+  assert.equal(d.el('apd-system').value, 'local');
+  assert.equal(d.state().error, '');
+  assert.equal(d.el('apd-remote-row').hidden, true, 'and the form is laid out for the placement it reset to');
+  assert.equal(d.el('apd-suggestions').hidden, false);
+
+  // The reset is what the POST is made of, not merely what the form shows.
+  d.el('apd-name').value = 'other';
+  d.el('apd-path').value = '/root/other';
+  await d.close('adopt');
+  assert.deepEqual(d.requests.at(-1).body, { name: 'other', path: '/root/other' });
 });
 
 // PINS: an unreadable registry SAYS SO. Falling through silently to a local-only
