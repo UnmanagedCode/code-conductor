@@ -411,6 +411,21 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.equal(result.content[1].text.trim(), '/');
   });
 
+  // PINS: an explicit `cwd: null` is accepted and means `/`, the same thing an
+  // omitted one means — the contract its sibling `remoteId` has, and the one the
+  // tool description advertises. Narrowing the schema back to a bare string
+  // would refuse it at validation with "argument 'cwd' must be string"; dropping
+  // the handler's default would carry the null into path.isAbsolute.
+  test('system_bash accepts an explicit null cwd and runs in /', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: 'pwd', cwd: null,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.cwd, '/', 'the metadata echoes the default');
+    assert.equal(result.content[1].text, '/', 'and that is where the shell actually ran');
+  });
+
   // PINS: an empty-string remoteId means the provider's own DEFAULT target, the
   // same normalisation set_project_remote uses and the same thing an omitted one
   // means. Without it `''` takes systemById's named-target path and this

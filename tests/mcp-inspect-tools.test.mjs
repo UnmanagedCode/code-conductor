@@ -466,10 +466,12 @@ test('project_diff summary:true adds uncommitted section', async () => {
 });
 
 // system_bash addresses a REGISTERED SYSTEM directly, with no project in play.
-// The three refusals below all fire BEFORE the system is resolved, so none of
-// them needs a live provider — which is the whole reason they are homed here
-// rather than in the systems suites.
-describe('system_bash refuses before it resolves a system', () => {
+// None of the refusals below needs a live provider, which is the whole reason
+// they are homed here rather than in the systems suites — but they do not all
+// fire at the same point: the two argument refusals are raised before the system
+// is resolved at all, while SYSTEM_NOT_REGISTERED comes from inside the registry
+// lookup itself, which is exactly what its own test asserts.
+describe('system_bash refuses without needing a live provider', () => {
   // PINS: system:'local' is refused by its own code rather than silently
   // running on cc's own machine. Asserting the exact code (not merely that a
   // code is present) is what distinguishes it from codeForStatus(400)'s generic

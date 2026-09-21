@@ -379,13 +379,14 @@ describe('remoteId: one system, many targets', () => {
     }
   });
 
-  // ── The same two refusals, reached by system_bash ────────────────────
+  // ── What `remoteId` means to system_bash ─────────────────────────────
   //
-  // Both pin that system_bash THREADS `remoteId` into systemById rather than
-  // dropping it. The failure they exclude is a tool that silently runs on the
-  // provider's default target and reports success — the misroute-as-success
-  // this whole file exists to prevent, reached through a tool that names no
-  // project at all.
+  // Every test below pins that system_bash THREADS `remoteId` into systemById
+  // rather than dropping it — two that a named target cc cannot serve is
+  // refused, one that an EMPTY one is no name at all but the provider's own
+  // default target. The failure they exclude is a tool that silently runs on
+  // that default and reports success — the misroute-as-success this whole file
+  // exists to prevent, reached through a tool that names no project at all.
 
   // PINS: naming a remote on a provider that does not serve remotes is
   // SYSTEM_NO_REMOTES (501) through system_bash. A dropped remoteId would

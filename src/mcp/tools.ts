@@ -1090,10 +1090,10 @@ export function buildTools(): Tool[] {
         'processes belongs in a spawned worker instead. Run a shell command on a REGISTERED SYSTEM ' +
         'addressed directly — no project in play, so a box can be inspected before anything is ' +
         'placed on it. `system` is a registry id and `remoteId` one of its named targets (omit for ' +
-        'the provider\'s own default target). There is no list_systems: list_projects names the ' +
-        'placement of a project already placed on a system, so a system in USE is nameable from ' +
-        'that listing — but nothing lists a system with nothing on it, which is the case this tool ' +
-        'exists for. Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
+        'the provider\'s own default target). There is no list_systems. list_projects names a ' +
+        'project\'s placement only when it is on a NON-LOCAL system, so nothing lists a system ' +
+        'with nothing on it — the case this tool exists for. ' +
+        'Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
         'cc\'s own machine. The command runs in a plain login shell on that system. ' +
         bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?'),
       inputSchema: {
