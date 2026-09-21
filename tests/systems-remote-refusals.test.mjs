@@ -26,7 +26,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, referenceLaunch } from './remoteSystem.mjs';
-import { adoptProject, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
+import { adoptProject, listProjects, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
 import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
@@ -41,6 +41,11 @@ async function callTool(baseUrl, name, args) {
   const body = await res.json();
   return body.result;
 }
+
+// The provider that is unreachable while a gate FILE exists — the only way to
+// register a system successfully (addSystem probes the launch command) and then
+// have it stop answering without changing anything cc can see.
+const GATED = path.join(import.meta.dirname, 'fixtures', 'gatedProvider.mjs');
 
 async function exists(p) {
   try { await fs.lstat(p); return true; } catch { return false; }
@@ -363,5 +368,84 @@ describe('a remote project refuses what it cannot do, by name', () => {
 
     const dirs = await ctx.pluginHost.claudePluginDirs();
     assert.deepEqual(dirs, [], 'no --plugin-dir root points at another machine');
+  });
+
+  // ── A system addressed DIRECTLY: system_bash, no project in play ─────
+  //
+  // Everything above reaches a system THROUGH a project placed on it. These
+  // reach the same system with nothing placed on it at all, which is the whole
+  // reason the tool exists — a box has to be inspectable before cc commits a
+  // project to it.
+
+  // PINS: a command runs on a registered system with no project registered
+  // anywhere. The empty project listing and the empty instance registry are the
+  // load-bearing half: without them this would only show "no project NAMED",
+  // which a project_bash with a default could also produce.
+  test('system_bash runs a command on a system with no project in play', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: 'echo hi', cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.system, remote.id);
+    assert.equal(meta.remoteId, null);
+    assert.equal(meta.cwd, remote.root);
+    assert.equal(meta.exitCode, 0, JSON.stringify(meta));
+    assert.equal(result.content[1].text.trim(), 'hi');
+    assert.deepEqual(await listProjects(), [], 'nothing was registered as a project');
+    assert.deepEqual(instances.list(), [], 'and no worker was spawned to carry the command');
+  });
+
+  // PINS: the default cwd is `/` — the one path docs/systems-protocol.md §7
+  // requires every conforming provider to accept. Both halves are asserted
+  // deliberately: the metadata echo (what the caller is told) and the body
+  // (what the shell on the far side actually saw).
+  test('system_bash defaults cwd to / when none is given', async () => {
+    const result = await callTool(baseUrl, 'system_bash', { system: remote.id, command: 'pwd' });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.cwd, '/');
+    assert.equal(result.content[1].text.trim(), '/');
+  });
+
+  // PINS: a non-zero exit is the command's ANSWER, not a tool failure — the
+  // caller reads exitCode rather than retrying.
+  test('system_bash reports a non-zero exit as a normal result', async () => {
+    const result = await callTool(baseUrl, 'system_bash', { system: remote.id, command: 'exit 3' });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.equal(JSON.parse(result.content[0].text).exitCode, 3);
+  });
+
+  // PINS: a system whose provider command was cleared refuses SYSTEM_NO_PROVIDER
+  // (501) through system_bash, carrying its own code — the same refusal a
+  // project on it would get, reached with no project involved.
+  test('system_bash refuses SYSTEM_NO_PROVIDER when the system has no launch command', async () => {
+    disposeSystemHandles();
+    await updateSystem(remote.id, { launch: null });
+    const result = await callTool(baseUrl, 'system_bash', { system: remote.id, command: 'echo hi' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_NO_PROVIDER', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 501);
+    assert.match(result.content[0].text, new RegExp(remote.id));
+  });
+
+  // PINS: a system that is registered and simply does not answer refuses
+  // SYSTEM_UNREACHABLE (502) through system_bash. Distinct from the 501 above
+  // because the repair is different — fix the box, not the registry row.
+  test('system_bash refuses SYSTEM_UNREACHABLE when the provider cannot be reached', async () => {
+    const gate = path.join(home, 'gate');
+    await addSystem({ id: 'gatedbox', label: 'Gated box', launch: ['node', GATED, '--gate', gate] });
+    // Registered while the box was up; it goes down with the registry row, the
+    // launch argv and the live handle all untouched.
+    await fs.writeFile(gate, '');
+    disposeSystemHandles();
+
+    const result = await callTool(baseUrl, 'system_bash', { system: 'gatedbox', command: 'echo hi' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_UNREACHABLE', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 502);
+    assert.match(result.content[0].text, /gatedbox/);
   });
 });

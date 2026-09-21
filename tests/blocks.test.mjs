@@ -89,6 +89,28 @@ test('describeToolInput: project_bash without a description falls back to the co
   );
 });
 
+test('describeToolInput: system_bash prefers description over command, keeping the system scope', () => {
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', command: 'git --version', description: 'Check the git version' }),
+    '[refbox] Check the git version',
+  );
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', remoteId: 'c1', command: 'git --version', description: 'Check the git version' }),
+    '[refbox/c1] Check the git version',
+  );
+});
+
+test('describeToolInput: system_bash without a description falls back to the command', () => {
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', command: 'uname -a' }),
+    '[refbox] uname -a',
+  );
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', command: 'uname -a', description: '   ' }),
+    '[refbox] uname -a',
+  );
+});
+
 test('describeToolInput: Edit/Write/Read → file_path', () => {
   assert.equal(describeToolInput('Edit',  { file_path: '/x/y.js' }), '/x/y.js');
   assert.equal(describeToolInput('Write', { file_path: '/x/y.js' }), '/x/y.js');

@@ -458,3 +458,61 @@ test('project_diff summary:true adds uncommitted section', async () => {
   assert.ok(Array.isArray(r.uncommitted.untracked));
   assert.ok(r.uncommitted.untracked.includes('new-file.txt'), 'new-file.txt should be untracked');
 });
+
+// system_bash addresses a REGISTERED SYSTEM directly, with no project in play.
+// The three refusals below all fire BEFORE the system is resolved, so none of
+// them needs a live provider — which is the whole reason they are homed here
+// rather than in the systems suites.
+describe('system_bash refuses before it resolves a system', () => {
+  // PINS: system:'local' is refused by its own code rather than silently
+  // running on cc's own machine. Asserting the exact code (not merely that a
+  // code is present) is what distinguishes it from codeForStatus(400)'s generic
+  // BAD_REQUEST — i.e. it pins that the handler raises a NAMED refusal.
+  test('system_bash refuses system:"local" by name', async () => {
+    const result = await callTool('system_bash', { system: 'local', command: 'echo hi' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_IS_LOCAL', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 400);
+    assert.match(result.content[0].text, /local/);
+  });
+
+  // PINS THE ORDERING, not merely the refusal: `refbox` is NOT registered in
+  // this suite, so a cwd check placed after systemById would answer
+  // SYSTEM_NOT_REGISTERED here. Asserting CWD_NOT_ABSOLUTE is therefore the
+  // proof that the argument is rejected before a provider process is launched.
+  // A later reorder fails this test rather than passing silently.
+  test('system_bash refuses a relative cwd before resolving the system', async () => {
+    const result = await callTool('system_bash', { system: 'refbox', command: 'pwd', cwd: 'sub/dir' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'CWD_NOT_ABSOLUTE', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 400);
+    assert.match(result.content[0].text, /sub\/dir/);
+  });
+
+  // PINS: systemById's refusal family reaches the caller UNFLATTENED — its own
+  // code and status, not a 500 or a reshaped message. bashSystem must not catch
+  // it: it has no structured refusal vocabulary of its own to convert it into.
+  test('system_bash surfaces SYSTEM_NOT_REGISTERED with its own code and status', async () => {
+    const result = await callTool('system_bash', { system: 'nope', command: 'echo hi' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_NOT_REGISTERED', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 501);
+    assert.match(result.content[0].text, /nope/);
+  });
+
+  // PINS: system_bash declares its OWN argument set — `system` is required and
+  // `project` is not a parameter — so it cannot have inherited project_bash's
+  // schema by copy-paste.
+  test('system_bash requires `system` and rejects a project argument', async () => {
+    const missing = await callTool('system_bash', { command: 'echo hi' });
+    assert.equal(missing.isError, true, JSON.stringify(missing));
+    assert.match(missing.content[0].text, /missing required argument: system/);
+
+    const extra = await callTool('system_bash', { system: 'x', command: 'y', project: 'demo' });
+    assert.equal(extra.isError, true, JSON.stringify(extra));
+    assert.match(extra.content[0].text, /unexpected argument 'project'/);
+  });
+});

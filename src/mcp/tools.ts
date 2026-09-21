@@ -27,6 +27,14 @@ const IDLE_TIMEOUT_SECONDS_PROP = {
   description: 'Heartbeat override for this dispatch, in whole seconds — same semantics as set_idle_timeout\'s timeoutSeconds.',
 };
 
+// The Bash `description` argument, shared verbatim by project_bash and
+// system_bash: it is the transcript's subject line for both (public/blocks.js),
+// so the guidance cannot differ between them.
+const BASH_DESCRIPTION_PROP = {
+  type: 'string',
+  description: 'Clear, concise description of what this command does in active voice. Shown in the transcript in place of the command, so it has to identify it. Brief (5-10 words) for a simple command — `git status` → "Show working tree status". For one that is hard to parse at a glance (piped commands, obscure flags, etc.), say enough to make it clear — `git reset --hard origin/main` → "Discard all local changes and match remote main".',
+};
+
 // The per-call context the MCP server injects next to the args (mcp/server.ts).
 interface ToolCtx {
   instances?: InstanceManagerLike | null;
@@ -1047,7 +1055,7 @@ export function buildTools(): Tool[] {
         'combined stdout+stderr output, in arrival order. A non-zero exitCode is a normal result, ' +
         'not a tool error. truncated:true means retained output was capped at the bash output cap (`BASH_OUTPUT_CAP`) — the command ' +
         'still ran to completion; assume later output beyond the cap was lost, not that the process ' +
-        'was killed. timeout is milliseconds (default per the schema, clamped to the max enforced in `bashProject` — larger values are ' +
+        'was killed. timeout is milliseconds (default per the schema, clamped to the max enforced in `clampBashTimeoutMs` — larger values are ' +
         'clamped); on timeout (the only hard kill) the whole process group is killed, exitCode is ' +
         'null, and timedOut:true — except that descendantsMaySurvive:true means only the direct ' +
         'child could be signalled, so what it started may still be running. stdin is not connected ' +
@@ -1058,13 +1066,52 @@ export function buildTools(): Tool[] {
           project:  { type: 'string' },
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
           command:  { type: 'string', description: 'The bash command to run.' },
-          description: { type: 'string', description: 'Clear, concise description of what this command does in active voice. Shown in the transcript in place of the command, so it has to identify it. Brief (5-10 words) for a simple command — `git status` → "Show working tree status". For one that is hard to parse at a glance (piped commands, obscure flags, etc.), say enough to make it clear — `git reset --hard origin/main` → "Discard all local changes and match remote main".' },
-          timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `bashProject` are clamped.' },
+          description: BASH_DESCRIPTION_PROP,
+          timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `clampBashTimeoutMs` are clamped.' },
         },
         required: ['project', 'command'],
       },
       handler: h.bashProject,
       // No readOnlyHint: doctrine-only — arbitrary bash isn't sandboxed, so a client shouldn't auto-approve it.
+    },
+    {
+      name: 'system_bash',
+      description:
+        'Read-only inspection only: run non-mutating commands (rg/grep/find, git log/diff, wc, jq, ' +
+        '…); anything that writes files, installs dependencies, commits, or starts long-lived ' +
+        'processes belongs in a spawned worker instead. Run a shell command on a REGISTERED SYSTEM ' +
+        'addressed directly — no project in play, so a box can be inspected before anything is ' +
+        'placed on it. `system` is a registry id and `remoteId` one of its named targets (omit for ' +
+        'the provider\'s own default target); nothing enumerates either, so both come from the ' +
+        'caller. Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
+        'cc\'s own machine. The command runs in a plain login shell on that system. OUTPUT: a ' +
+        'compact-JSON metadata block (content[0]) {system, remoteId, cwd, exitCode, durationMs, ' +
+        'truncated?, timedOut?, descendantsMaySurvive?, error?} PLUS a separate raw, un-escaped ' +
+        'text block (content[1]) carrying the combined stdout+stderr output, in arrival order. A ' +
+        'non-zero exitCode is a normal result, not a tool error. truncated:true means retained ' +
+        'output was capped at the bash output cap (`BASH_OUTPUT_CAP`) — the command still ran to ' +
+        'completion; assume later output beyond the cap was lost, not that the process was killed. ' +
+        'timeout is milliseconds (default per the schema, clamped to the max enforced in ' +
+        '`clampBashTimeoutMs` — larger values are clamped); on timeout (the only hard kill) the ' +
+        'whole process group is killed, exitCode is null, and timedOut:true — except that ' +
+        'descendantsMaySurvive:true means only the direct child could be signalled, so what it ' +
+        'started may still be running. stdin is not connected — an interactive command hangs until ' +
+        'timeout.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          system:   { type: 'string', description: 'The system registry id. `local` is refused.' },
+          remoteId: { type: ['string', 'null'], description: 'Which named target of that system; omit or null for the provider\'s own default target.' },
+          command:  { type: 'string', description: 'The shell command to run.' },
+          cwd:      { type: 'string', description: 'Absolute path ON THAT SYSTEM to run in. Defaults to `/`.' },
+          description: BASH_DESCRIPTION_PROP,
+          timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `clampBashTimeoutMs` are clamped.' },
+        },
+        required: ['system', 'command'],
+      },
+      handler: h.bashSystem,
+      // No readOnlyHint, for project_bash's reason: doctrine-only — arbitrary
+      // bash isn't sandboxed, so a client shouldn't auto-approve it.
     },
     {
       name: 'project_read',

@@ -101,13 +101,14 @@ const SEEDING_TOOLS = new Set(['Read', 'Write']);
 // tool and `<plugin-id>__<tool>` for a plugin-forwarded one.
 export const CONDUCTOR_MCP_PREFIX = 'mcp__code-conductor__';
 
-// The two core conductor tools that stay PRUNABLE. Their results are bulk file /
+// The core conductor tools that stay PRUNABLE. Their results are bulk file /
 // command output — precisely what Prune exists to shed — where every other core
 // tool's payload is orchestration record. Hardcoded rather than configurable:
-// which of the two a tool is, is a property of the tool, not a user preference.
+// which class a tool is in is a property of the tool, not a user preference.
 export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
   `${CONDUCTOR_MCP_PREFIX}project_read`,
   `${CONDUCTOR_MCP_PREFIX}project_bash`,
+  `${CONDUCTOR_MCP_PREFIX}system_bash`,
 ]);
 
 // INVARIANT 6. True for a tool whose `tool_use` — and the `tool_result` answering

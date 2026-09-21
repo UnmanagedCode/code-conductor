@@ -187,6 +187,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'set_project_remote',
     'set_idle_timeout',
     'spawn_instance', 'sync_worktree',
+    'system_bash',
   ].sort();
   assert.deepEqual(names, expected);
   // Every tool carries a schema.
