@@ -573,8 +573,11 @@
       <h3>Add a project</h3>
       <p class="hint">Registers a directory that already exists. Nothing is copied or moved.</p>
       <label>Name <input id="apd-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
+      <label>System <select id="apd-system"></select></label>
+      <p class="hint" id="apd-system-note"></p>
+      <label id="apd-remote-row" hidden>Remote <input id="apd-remote" placeholder="container / host / VM id — blank for the system's default" /></label>
       <label>Directory <input id="apd-path" required placeholder="/absolute/path/to/directory" /></label>
-      <ul id="apd-suggestions" class="apd-suggestions"></ul>
+      <ul id="apd-suggestions" class="apd-suggestions" hidden></ul>
       <p class="hint" id="apd-scan-note"></p>
       <p class="error" id="apd-error"></p>
       <menu>

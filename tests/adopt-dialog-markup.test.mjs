@@ -36,6 +36,10 @@ const WIRING = {
   apdForm: 'apd-form',
   apdStale: 'apd-stale',
   apdName: 'apd-name',
+  apdSystem: 'apd-system',
+  apdSystemNote: 'apd-system-note',
+  apdRemote: 'apd-remote',
+  apdRemoteRow: 'apd-remote-row',
   apdPath: 'apd-path',
   apdSuggestions: 'apd-suggestions',
   apdScanNote: 'apd-scan-note',
@@ -146,10 +150,17 @@ test('the real markup drives the real module end to end', async () => {
     { status: 200, body: { ok: false, code: 'PROJECT_EXISTS_STALE', reason: 'stale', heldPath: '/old/api', discards: { attachments: 0, debug: 0, worktrees: 0 } } },
     { status: 201, body: { ok: true } },
   ];
+  const systems = [
+    { id: 'local', label: 'This machine', managed: true },
+    { id: 'prod-box', label: 'Prod box', managed: false, launch: ['ssh', 'prod', 'p'] },
+  ];
   const requests = [];
   let postIdx = 0;
   globalThis.fetch = async (url, opts) => {
     if (String(url).includes('/api/projects/suggestions')) return { ok: true, status: 200, json: async () => scan };
+    // The registry is a GET the dialog makes on open; routing it into
+    // `requests` would count it as one of the POSTs asserted below.
+    if (String(url).includes('/api/settings/systems')) return { ok: true, status: 200, json: async () => ({ systems }) };
     requests.push({ url: String(url), body: JSON.parse(opts.body) });
     const next = posts[Math.min(postIdx++, posts.length - 1)];
     return { ok: next.status < 400, status: next.status, json: async () => next.body };
@@ -169,6 +180,8 @@ test('the real markup drives the real module end to end', async () => {
   dom.adoptProjectBtn.click();
   await tick();
   assert.equal(overflowClosed, 1, 'opening the dialog dismisses the ≡ menu');
+  assert.deepEqual([...dom.apdSystem.options].map(o => o.value), ['local', 'prod-box'],
+    'the real <select> was filled from the registry');
 
   const row = dom.apdSuggestions.querySelector('button.apd-suggestion');
   assert.ok(row, 'the scan rendered a clickable row into the real <ul>');
@@ -184,6 +197,8 @@ test('the real markup drives the real module end to end', async () => {
   dom.adoptProjectDialog.close('relocate');
   await tick();
   assert.equal(requests.length, 2);
+  // Through the REAL markup, a local adopt is still byte-identical: no
+  // placement key rides along when the picker was left on this machine.
   assert.deepEqual(requests[1].body,
     { name: 'api', path: '/root/work/api', onStaleRecord: 'relocate' });
   assert.equal(refreshed, 1);

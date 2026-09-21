@@ -20,10 +20,10 @@
 // WHY `node:fs` AND NOT A `System` HANDLE. The System seam is for
 // PROJECT-SCOPED I/O (docs/architecture.md → Conventions). A suggestion is not
 // a project and has no handle to take, and the question this scan asks is
-// about CC'S OWN MACHINE by construction: the dialog never names a system, and
-// a remote adopt's probes already run on the named system inside
-// `adoptProject`. Same standing as `listProjects`, which readdirs the store
-// with `node:fs`.
+// about CC'S OWN MACHINE by construction: the dialog names a system but
+// shows this list only for the local placement, and a remote adopt's probes
+// already run on the named system inside `adoptProject`. Same standing as
+// `listProjects`, which readdirs the store with `node:fs`.
 //
 // WHY THERE IS NO `node_modules` / `vendor` / `target` SKIP-LIST, and why one
 // must not be added: a hardcoded name list is inference about directory

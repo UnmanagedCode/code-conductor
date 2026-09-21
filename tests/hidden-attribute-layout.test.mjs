@@ -68,6 +68,8 @@ const displayOf = (window, el) => window.getComputedStyle(el).display;
 const REVEALED_BY_A_FLOW = [
   ['np-system-path-row', 'choosing a remote system must reveal the path field'],
   ['np-remote-row', 'choosing a remote system must reveal the target field'],
+  ['apd-suggestions', 'the local placement must reveal the scanned directory list'],
+  ['apd-remote-row', 'choosing a system must reveal the target field'],
 ];
 
 for (const [id, why] of REVEALED_BY_A_FLOW) {
