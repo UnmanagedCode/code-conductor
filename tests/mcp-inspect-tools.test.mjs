@@ -230,6 +230,12 @@ describe('project_bash', () => {
     assert.equal(r.truncated, true);
     assert.equal(r.exitCode, 0, 'command should run to completion, not be killed, on output cap');
     assert.ok(r.output.length < 500000, 'retained output should be capped well below the full 500000 bytes');
+    // The IN-BAND marker, not just the flag: a caller reading the text has to be
+    // able to see where the body was cut. Its twin on system_bash is in
+    // tests/systems-remote-refusals.test.mjs, so a regression in the one shared
+    // payload helper fails on both bash tools.
+    assert.ok(r.output.endsWith('… [truncated at the output cap]'),
+      `the capped body must carry the marker; ends with ${JSON.stringify(r.output.slice(-60))}`);
   });
 
   test('project_bash rejects an empty command', async () => {

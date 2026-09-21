@@ -391,7 +391,10 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.equal(meta.remoteId, null);
     assert.equal(meta.cwd, remote.root);
     assert.equal(meta.exitCode, 0, JSON.stringify(meta));
-    assert.equal(result.content[1].text.trim(), 'hi');
+    // EXACT, not trimmed: the body is trailing-trimmed once, by bashPayload. A
+    // test that trims its own side would accept a payload that shipped the raw
+    // `echo` newline through to the caller.
+    assert.equal(result.content[1].text, 'hi');
     assert.deepEqual(await listProjects(), [], 'nothing was registered as a project');
     assert.deepEqual(instances.list(), [], 'and no worker was spawned to carry the command');
   });
@@ -406,6 +409,40 @@ describe('a remote project refuses what it cannot do, by name', () => {
     const meta = JSON.parse(result.content[0].text);
     assert.equal(meta.cwd, '/');
     assert.equal(result.content[1].text.trim(), '/');
+  });
+
+  // PINS: an empty-string remoteId means the provider's own DEFAULT target, the
+  // same normalisation set_project_remote uses and the same thing an omitted one
+  // means. Without it `''` takes systemById's named-target path and this
+  // reference provider — which advertises no remotes — answers SYSTEM_NO_REMOTES
+  // instead of running the command: a misroute reported as a refusal.
+  test('system_bash treats an empty remoteId as the default target', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, remoteId: '', command: 'echo hi', cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.remoteId, null, 'the metadata reports the default target, not the empty string');
+    assert.equal(meta.exitCode, 0, JSON.stringify(meta));
+    assert.equal(result.content[1].text, 'hi');
+  });
+
+  // PINS: output past the cap is marked IN THE BODY, not only by the metadata
+  // flag — a caller reading the text has to be able to see where it was cut. The
+  // command still runs to completion (exitCode 0), so the marker means
+  // "truncated", never "killed". system_bash's own truncation path, so a
+  // regression in the one shared payload helper fails on both bash tools.
+  test('system_bash marks a capped body in the text, and lets the command finish', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: 'yes x | head -c 300000', cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.truncated, true, JSON.stringify(meta));
+    assert.equal(meta.exitCode, 0, 'drained to completion, not killed on the cap');
+    const body = result.content.slice(1).map(c => c.text).join('');
+    assert.ok(body.endsWith('… [truncated at the output cap]'),
+      `the capped body must carry the marker; ends with ${JSON.stringify(body.slice(-60))}`);
   });
 
   // PINS: a non-zero exit is the command's ANSWER, not a tool failure — the

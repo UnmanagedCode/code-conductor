@@ -2648,8 +2648,9 @@ async function claudeShellSpec(command: string): Promise<ExecSpec> {
 // The post-exec half of project_bash / system_bash: the spawn-error payload, the
 // truncation marker, and the metadata block. `place` is the identity fields the
 // calling tool names its target by — {project, worktree, cwd} or
-// {system, remoteId, cwd} — and is spread FIRST so each tool's metadata keys keep
-// the order its own callers already parse. Everything after it is placement-generic.
+// {system, remoteId, cwd} — and is spread FIRST so the block an LLM reads as
+// text leads with what the command ran against. Everything after it is
+// placement-generic.
 //
 // `meta` is a Record rather than an inline type because the key set genuinely
 // varies by caller; the fields this function itself sets are the typed half.
@@ -2723,7 +2724,7 @@ export async function bashProject({ project, worktree, command, timeout }: {
 // (see the tool description in mcp/tools.ts). `description` is a display-layer
 // field, rendered by the frontend (public/blocks.js) and never read here.
 export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
-  system: string; remoteId?: string | null; command: string; cwd?: string; timeout?: number;
+  system: string; remoteId?: string | null; command: string; cwd?: string | null; timeout?: number;
 }) {
   if (typeof system !== 'string' || !system.trim()) {
     throw new Error('system_bash requires a system id');

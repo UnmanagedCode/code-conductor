@@ -402,6 +402,24 @@ describe('remoteId: one system, many targets', () => {
     assert.match(r.content[0].text, /bare/);
   });
 
+  // PINS: `''` is the DEFAULT target even on a provider that does serve named
+  // ones — it is not a target name. Without the empty-string normalisation it
+  // reaches assertRemoteKnown, which this provider answers ENOREMOTE for, and
+  // the caller gets a REMOTE_NOT_FOUND refusal about a remote it never named.
+  // The far side still refuses the unbound exec itself (it serves only named
+  // targets), but that arrives as the command's own answer in the payload, not
+  // as cc refusing to resolve — which is exactly the distinction being pinned.
+  test('system_bash treats an empty remoteId as the default target, not a named one', async () => {
+    const remote = await bindRemoteSystem({ id: 'boxes', flags: ['--remote', `a=${rootA}`] });
+    const r = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, remoteId: '', command: 'echo hi', cwd: rootA,
+    });
+    assert.equal(r.isError, undefined,
+      `resolution must not refuse an empty remoteId: ${JSON.stringify(r)}`);
+    const meta = JSON.parse(r.content[0].text);
+    assert.equal(meta.remoteId, null, 'the metadata reports the default target, not the empty string');
+  });
+
   // PINS: an unknown remote on a remotes-serving provider is REMOTE_NOT_FOUND
   // (502) through system_bash, and — the positive control on the same system —
   // a VALID remoteId runs and is echoed back in the metadata. Without the

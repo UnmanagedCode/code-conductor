@@ -506,6 +506,21 @@ test('ToolUseBlock: project_bash expanded body shows the command, summary shows 
   assert.equal(pre.textContent, 'rg foo');
 });
 
+test('ToolUseBlock: system_bash expanded body shows the command, summary shows the description', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'mcp__code-conductor__system_bash', toolUseId: 'tu_sbash' });
+  block.finalizeInput({ system: 'refbox', command: 'git --version', description: 'Check the git version' });
+  assert.match(block.summary.textContent, /Check the git version/);
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  // The command box, not the raw-JSON fallback every unrecognised tool gets:
+  // this is the only reader of renderKindFor's system_bash branch, since
+  // describeToolInput answers from its own branch before reaching the switch.
+  const pre = details.querySelector('pre.bash-cmd');
+  assert.ok(pre, 'expected pre.bash-cmd — the args rendered as a JSON dump instead');
+  assert.equal(pre.textContent, 'git --version');
+});
+
 test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with JSON', () => {
   setupDOM();
   const block = new ToolUseBlock({ name: 'SomeFutureTool', toolUseId: 'tu_2' });

@@ -242,11 +242,12 @@ export function disposeSystemHandles(): void {
 // ("project 'x'", "system 'y'") so the refusal reads as an answer about the
 // caller's question rather than about an id it never mentioned.
 //
-// EVERY REFUSAL HERE IS NAMED AND DISTINCT, because the three are three
-// different repairs: register the system, give it a provider command, or fix
-// the system that is down. Falling back to `local` for any of them would run
-// the caller's operation against a path on the wrong machine and report
-// success — the worst failure this design has.
+// EVERY REFUSAL HERE IS NAMED AND DISTINCT, because each is a different repair:
+// register the system, give it a provider command, fix the system that is down,
+// or — when a `remoteId` is named — drop it / upgrade the provider, or correct
+// it. Falling back to `local` for any of them would run the caller's operation
+// against a path on the wrong machine and report success — the worst failure
+// this design has.
 export async function systemById(id: string, remoteId: string | null, subject: string): Promise<System> {
   if (id === LOCAL_SYSTEM_ID) return LOCAL;
   // Dynamic: src/appSettings.ts imports this module for MANAGED_SYSTEMS, and a
