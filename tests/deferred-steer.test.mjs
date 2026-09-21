@@ -77,7 +77,7 @@ async function setupWorker({ flagged = true } = {}) {
     inst.backend = 'ollama';
     inst.model = FLAGGED_MODEL;
     inst._refreshModelCapabilities();
-    assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+    assert.equal(inst.acceptsMidTurnSteering, false, 'the controlled opt-out row resolved');
   } else {
     assert.equal(inst.acceptsMidTurnSteering, true, 'a claude-backed worker is steerable');
   }

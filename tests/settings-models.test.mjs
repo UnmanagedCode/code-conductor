@@ -93,11 +93,11 @@ test('modelVersions catalog: tiers, managed backend rows + default {backend,mode
 // ── Ollama cloud preset catalog ─────────────────────────────────────────
 // SHAPE ONLY, deliberately. Which models the catalog lists, how many there are,
 // and what each one's window is are configuration: a change to that list must
-// not red this suite. The resolution behaviour the rows feed — the window and
-// backend lookups, and the custom-row precedence over a preset — is pinned
-// against controlled models in tests/backend-registry.test.mjs and
-// tests/context-window.test.mjs. What is pinned here is the shape every row
-// needs before any of that can work.
+// not red this suite. What the rows FEED is pinned per row elsewhere, in both
+// directions — the CUSTOM arms against controlled models and the CURATED arms
+// against the rows themselves — in tests/backend-registry.test.mjs,
+// tests/context-window.test.mjs and tests/mid-turn-steering-registry.test.mjs.
+// What is pinned here is the shape every row needs before any of that can work.
 test('ollamaCloudModels: every curated row carries the shape the settings payload ships', () => {
   for (const m of OLLAMA_CLOUD_MODELS) {
     assert.ok(m.model && m.label, 'every row is a labelled, bindable id');

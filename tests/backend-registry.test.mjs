@@ -359,6 +359,15 @@ describe('backend registry data model', () => {
 
   test('custom models: add / list / remove keyed by model id, scoped to a backend', async () => {
     assert.deepEqual(getCustomModels(), []);
+    // A curated preset is bindable with NO "Add" step — the capability the
+    // Settings picker is built on. This does NOT share the custom arm below it
+    // (that one reads getCustomModels), so it needs its own coverage, and it
+    // diverges from the `false` fallback. Asserted per row, so a change to the
+    // model list cannot break it; the custom rows below are added only after.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      assert.equal(isKnownBackendModel('ollama', preset.model), true,
+        `${preset.model} is bindable on the ollama row with no custom row of its id`);
+    }
     const rec = await addCustomModel({ label: 'Local GPT', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
     // midTurnSteering defaults to true (opt-OUT flag) when the caller omits it.
     assert.deepEqual(rec, { label: 'Local GPT', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000, midTurnSteering: true });
@@ -369,6 +378,16 @@ describe('backend registry data model', () => {
     assert.equal(isKnownBackendModel('claude', 'gemma4:cloud'), false);
     await addBackend({ id: 'p', label: 'P', template: 'p --' });
     assert.equal(isKnownBackendModel('p', 'gemma4:cloud'), false);
+    // The curated arm is scoped by its OWN `backend === 'ollama' &&` conjunct, so a
+    // curated tag must not be bindable on a user-defined backend either. `p` is
+    // REGISTERED at this point and `p` is what the assertion must name: with an
+    // unknown id the guard's own isKnownBackend check returns false first, and the
+    // assertion would pass for the wrong reason while pinning nothing of the
+    // conjunct. Asserted per row, so a change to the model list cannot break it.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      assert.equal(isKnownBackendModel('p', preset.model), false,
+        `${preset.model} is not bindable on a user-defined backend`);
+    }
     // Re-adding the same model id updates the row (the id is the identity).
     await addCustomModel({ label: 'Renamed', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 64_000 });
     assert.equal(getCustomModels().length, 1);
@@ -396,6 +415,19 @@ describe('backend registry data model', () => {
     const big = await addCustomModel({ label: 'Big', model: 'big:cloud', backend: 'ollama', contextWindow: 512000.7 });
     assert.equal(big.contextWindow, 512001);
     assert.equal(getCustomModels().find(m => m.model === 'big:cloud').contextWindow, 512001);
+  });
+
+  test('contextWindowForModel: a curated preset resolves its own declared window with no custom row', () => {
+    // The catalog arm, reached only while NO custom row carries the id — the
+    // precedence test below shadows every row, so without this the arm is
+    // unreachable. It diverges from the `null` fallback: dropping it makes every
+    // curated session spawn with neither env var set, and the CLI silently assumes
+    // 200k. Asserted per row against the row's OWN window, so a change to the
+    // model list cannot break it.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      assert.equal(contextWindowForModel(preset.model), preset.contextWindow,
+        `${preset.model}: the catalog row's own window resolves with no custom row of its id`);
+    }
   });
 
   test('contextWindowForModel: a custom row wins over a curated preset, for every row; unknown → null', async () => {

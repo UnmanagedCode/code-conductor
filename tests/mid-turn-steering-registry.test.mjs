@@ -42,6 +42,28 @@ describe('resolveMidTurnSteering', () => {
     assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: FLAGGED_MODEL }), true);
   });
 
+  test('a curated row resolves its own declared steering polarity with no custom row of its id', () => {
+    // What this buys, and what it does NOT. It pins the ARM'S POLARITY: an
+    // inverted arm would defer every steer on every curated session, and this
+    // catches that. It cannot pin the arm's EXISTENCE — while no curated row
+    // declares the opt-out, deleting the arm is indistinguishable from the `true`
+    // fallback, and no assertion can tell those two apart. The opt-out half of the
+    // arm is covered through custom rows by the loop below. This test is where the
+    // rows are unshadowed; the loop registers one per row.
+    //
+    // The expectation is the row's OWN declared polarity, never a hardcoded `true`.
+    // `midTurnSteering` is a documented per-row field, so a hardcoded expectation
+    // would pin the CONFIGURATION — that no row opts out — instead of the resolver,
+    // and a catalog edit that only added a flagged row would red it while reporting
+    // backwards (the arm would have behaved correctly). Reading the row's own value
+    // makes a re-listing and a re-flag both inert.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: preset.model }),
+        preset.midTurnSteering !== false,
+        `${preset.model}: a catalog row resolves its own declared steering polarity`);
+    }
+  });
+
   test('unknown / empty ids resolve to steerable — the pre-flag behaviour', () => {
     assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'never-heard-of-it:cloud' }), true);
     assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: '' }), true);
