@@ -89,6 +89,35 @@ for (const [id, why] of REVEALED_BY_A_FLOW) {
   });
 }
 
+// The mirror image of REVEALED_BY_A_FLOW: elements that ship VISIBLE in markup
+// and get `.hidden` set true by a flow. An author `display` on these must still
+// yield to `[hidden]` once the flow hides them, or the row renders when it
+// shouldn't. #dpd-dir-row starts unhidden — a remote project has no directory
+// to delete, so deleteProjectDialog.js's `open()` sets
+// `dom.dirRow.hidden = !!remoteSystem` to hide the opt-in row; an `!important`
+// on `.dpd-dir-row`'s `display` would beat `dialog label[hidden]` and leave the
+// row (and its "Also delete the directory …" checkbox) showing for a remote
+// project — the tick that project has no server-side effect for.
+const HIDDEN_BY_A_FLOW = [
+  ['dpd-dir-row', 'a remote project must hide the directory opt-in row'],
+];
+
+for (const [id, why] of HIDDEN_BY_A_FLOW) {
+  test(`#${id} starts visible and is laid out per its hidden attribute once a flow sets it`, async () => {
+    const { window, document } = await renderIndex();
+    const row = document.getElementById(id);
+    assert.ok(row, `index.html must still carry #${id}`);
+    assert.equal(row.hasAttribute('hidden'), false, 'it ships visible, hidden only by a later flow');
+    assert.notEqual(displayOf(window, row), 'none', 'it renders before any flow hides it');
+
+    row.hidden = true;
+    assert.equal(
+      displayOf(window, row), 'none',
+      `${why}; an author \`display\` must not outrank the UA [hidden] rule`,
+    );
+  });
+}
+
 // Elements that must lay out while carrying `hidden`. An entry belongs here only
 // with a reason — the point of the sweep is that nothing opts out of `hidden`
 // silently. Empty is the intended state, and it is empty.
