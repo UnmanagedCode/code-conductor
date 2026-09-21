@@ -26,7 +26,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, referenceLaunch } from './remoteSystem.mjs';
-import { adoptProject, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
+import { adoptProject, listProjects, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
 import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
@@ -41,6 +41,11 @@ async function callTool(baseUrl, name, args) {
   const body = await res.json();
   return body.result;
 }
+
+// The provider that is unreachable while a gate FILE exists — the only way to
+// register a system successfully (addSystem probes the launch command) and then
+// have it stop answering without changing anything cc can see.
+const GATED = path.join(import.meta.dirname, 'fixtures', 'gatedProvider.mjs');
 
 async function exists(p) {
   try { await fs.lstat(p); return true; } catch { return false; }
@@ -363,5 +368,194 @@ describe('a remote project refuses what it cannot do, by name', () => {
 
     const dirs = await ctx.pluginHost.claudePluginDirs();
     assert.deepEqual(dirs, [], 'no --plugin-dir root points at another machine');
+  });
+
+  // ── A system addressed DIRECTLY: system_bash, no project in play ─────
+  //
+  // Everything above reaches a system THROUGH a project placed on it. These
+  // reach the same system with nothing placed on it at all, which is the whole
+  // reason the tool exists — a box has to be inspectable before cc commits a
+  // project to it.
+
+  // PINS: a command runs on a registered system with no project registered
+  // anywhere. The empty project listing and the empty instance registry are the
+  // load-bearing half: without them this would only show "no project NAMED",
+  // which a project_bash with a default could also produce.
+  test('system_bash runs a command on a system with no project in play', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: 'echo hi', cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.system, remote.id);
+    assert.equal(meta.remoteId, null);
+    assert.equal(meta.cwd, remote.root);
+    assert.equal(meta.exitCode, 0, JSON.stringify(meta));
+    // EXACT, not trimmed: the body is trailing-trimmed once, by bashPayload. A
+    // test that trims its own side would accept a payload that shipped the raw
+    // `echo` newline through to the caller.
+    assert.equal(result.content[1].text, 'hi');
+    assert.deepEqual(await listProjects(), [], 'nothing was registered as a project');
+    assert.deepEqual(instances.list(), [], 'and no worker was spawned to carry the command');
+  });
+
+  // PINS: the default cwd is `/` — the one path docs/systems-protocol.md §7
+  // requires every conforming provider to accept. Both halves are asserted
+  // deliberately: the metadata echo (what the caller is told) and the body
+  // (what the shell on the far side actually saw).
+  test('system_bash defaults cwd to / when none is given', async () => {
+    const result = await callTool(baseUrl, 'system_bash', { system: remote.id, command: 'pwd' });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.cwd, '/');
+    assert.equal(result.content[1].text.trim(), '/');
+  });
+
+  // PINS: an explicit `cwd: null` is accepted and means `/`, the same thing an
+  // omitted one means — the contract its sibling `remoteId` has, and the one the
+  // tool description advertises. Narrowing the schema back to a bare string
+  // would refuse it at validation with "argument 'cwd' must be string"; dropping
+  // the handler's default would carry the null into path.isAbsolute.
+  test('system_bash accepts an explicit null cwd and runs in /', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: 'pwd', cwd: null,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.cwd, '/', 'the metadata echoes the default');
+    assert.equal(result.content[1].text, '/', 'and that is where the shell actually ran');
+  });
+
+  // PINS: an empty-string remoteId means the provider's own DEFAULT target, the
+  // same normalisation set_project_remote uses and the same thing an omitted one
+  // means. Without it `''` takes systemById's named-target path and this
+  // reference provider — which advertises no remotes — answers SYSTEM_NO_REMOTES
+  // instead of running the command: a misroute reported as a refusal.
+  test('system_bash treats an empty remoteId as the default target', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, remoteId: '', command: 'echo hi', cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.remoteId, null, 'the metadata reports the default target, not the empty string');
+    assert.equal(meta.exitCode, 0, JSON.stringify(meta));
+    assert.equal(result.content[1].text, 'hi');
+  });
+
+  // PINS: the body is trimmed at its TRAILING end ONLY. `content[1]` is
+  // documented as the raw combined stdout+stderr, so leading whitespace is the
+  // command's output and has to survive — a trim of both ends would eat it, and
+  // an `echo hi` body cannot tell the two apart.
+  test('system_bash trims the trailing end of the body and nothing else', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: "printf '\\n  hi\\n'", cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.equal(result.content[1].text, '\n  hi');
+  });
+
+  // PINS: the metadata keys the tool DESCRIPTION advertises are the keys
+  // bashPayload actually emits. The description's key set is a hand-typed
+  // literal; tests/mcp.test.mjs pins the two tools' literals against each other,
+  // which cannot catch a rename in the payload that neither description follows.
+  //
+  // The emitted set is OBSERVED, never reflected out of the source: five calls
+  // cover every branch of bashPayload — the plain close, the output cap, a
+  // timeout, a timeout on a provider that cannot signal the group, and a command
+  // that never started. project_bash's half of the claim is covered elsewhere and
+  // not here: its shared keys ride on the cross-description equality in
+  // tests/mcp.test.mjs, and its two identity keys (`project`, `worktree`) are
+  // observed by the canonical-echo tests in tests/mcp-inspect-tools.test.mjs.
+  test('system_bash advertises exactly the metadata keys its payload emits', async () => {
+    const nopg = await bindRemoteSystem({ id: 'nopgbox', flags: ['--no-process-group-signal'] });
+    const keysOf = async (args) => {
+      const r = await callTool(baseUrl, 'system_bash', args);
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      return Object.keys(JSON.parse(r.content[0].text));
+    };
+    const observed = new Set([
+      ...await keysOf({ system: remote.id, command: 'echo hi', cwd: remote.root }),
+      ...await keysOf({ system: remote.id, command: 'yes x | head -c 300000', cwd: remote.root }),
+      ...await keysOf({ system: remote.id, command: 'sleep 2', cwd: remote.root, timeout: 300 }),
+      ...await keysOf({ system: nopg.id, command: 'sleep 2', cwd: nopg.root, timeout: 300 }),
+      // A cwd that is absolute and not there: the command never starts, which is
+      // the only way to reach the spawn-error payload.
+      ...await keysOf({ system: remote.id, command: 'echo hi', cwd: path.join(remote.root, 'no-such-dir') }),
+    ]);
+    for (const k of ['truncated', 'timedOut', 'descendantsMaySurvive', 'error']) {
+      assert.ok(observed.has(k), `the ${k} branch of bashPayload was never reached — the fixture is stale`);
+    }
+
+    const res = await fetch(baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 9001, method: 'tools/list' }),
+    });
+    const tool = (await res.json()).result.tools.find(t => t.name === 'system_bash');
+    const m = /metadata block \(content\[0\]\) \{([^}]*)\}/.exec(tool.description);
+    assert.ok(m, `the description states its metadata block: ${tool.description}`);
+    // `?` marks a key as optional in the description; it is not part of the name.
+    const advertised = m[1].split(',').map(k => k.trim().replace(/\?$/, ''));
+
+    assert.deepEqual([...observed].sort(), advertised.sort());
+  });
+
+  // PINS: output past the cap is marked IN THE BODY, not only by the metadata
+  // flag — a caller reading the text has to be able to see where it was cut. The
+  // command still runs to completion (exitCode 0), so the marker means
+  // "truncated", never "killed". system_bash's own truncation path, so a
+  // regression in the one shared payload helper fails on both bash tools.
+  test('system_bash marks a capped body in the text, and lets the command finish', async () => {
+    const result = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: 'yes x | head -c 300000', cwd: remote.root,
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const meta = JSON.parse(result.content[0].text);
+    assert.equal(meta.truncated, true, JSON.stringify(meta));
+    assert.equal(meta.exitCode, 0, 'drained to completion, not killed on the cap');
+    const body = result.content.slice(1).map(c => c.text).join('');
+    assert.ok(body.endsWith('… [truncated at the output cap]'),
+      `the capped body must carry the marker; ends with ${JSON.stringify(body.slice(-60))}`);
+  });
+
+  // PINS: a non-zero exit is the command's ANSWER, not a tool failure — the
+  // caller reads exitCode rather than retrying.
+  test('system_bash reports a non-zero exit as a normal result', async () => {
+    const result = await callTool(baseUrl, 'system_bash', { system: remote.id, command: 'exit 3' });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.equal(JSON.parse(result.content[0].text).exitCode, 3);
+  });
+
+  // PINS: a system whose provider command was cleared refuses SYSTEM_NO_PROVIDER
+  // (501) through system_bash, carrying its own code — the same refusal a
+  // project on it would get, reached with no project involved.
+  test('system_bash refuses SYSTEM_NO_PROVIDER when the system has no launch command', async () => {
+    disposeSystemHandles();
+    await updateSystem(remote.id, { launch: null });
+    const result = await callTool(baseUrl, 'system_bash', { system: remote.id, command: 'echo hi' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_NO_PROVIDER', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 501);
+    assert.match(result.content[0].text, new RegExp(remote.id));
+  });
+
+  // PINS: a system that is registered and simply does not answer refuses
+  // SYSTEM_UNREACHABLE (502) through system_bash. Distinct from the 501 above
+  // because the repair is different — fix the box, not the registry row.
+  test('system_bash refuses SYSTEM_UNREACHABLE when the provider cannot be reached', async () => {
+    const gate = path.join(home, 'gate');
+    await addSystem({ id: 'gatedbox', label: 'Gated box', launch: ['node', GATED, '--gate', gate] });
+    // Registered while the box was up; it goes down with the registry row, the
+    // launch argv and the live handle all untouched.
+    await fs.writeFile(gate, '');
+    disposeSystemHandles();
+
+    const result = await callTool(baseUrl, 'system_bash', { system: 'gatedbox', command: 'echo hi' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_UNREACHABLE', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 502);
+    assert.match(result.content[0].text, /gatedbox/);
   });
 });

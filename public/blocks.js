@@ -171,12 +171,14 @@ export function autoSpeakBlock(block) {
 // though its label keeps showing the full MCP name.
 function renderKindFor(name) {
   if (name === 'mcp__code-conductor__project_bash') return 'Bash';
+  if (name === 'mcp__code-conductor__system_bash') return 'Bash';
   return name;
 }
 
 // The Bash bubble's one-line subject: the caller's description when there is one,
-// else the command itself. Shared by Bash and project_bash, whose summary adds a
-// [project/worktree] scope prefix in front of it.
+// else the command itself. Shared by Bash, project_bash and system_bash — the
+// two MCP tools' summaries add a scope prefix in front of it ([project/worktree]
+// and [system/remoteId] respectively).
 function bashSubject(input) {
   const desc = typeof input.description === 'string' ? input.description.trim() : '';
   return desc || input.command;
@@ -203,6 +205,10 @@ export function describeToolInput(name, input, ctx = {}) {
   };
   if (name === 'mcp__code-conductor__project_bash') {
     const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
+    return trunc(`[${scope}] ${bashSubject(input)}`);
+  }
+  if (name === 'mcp__code-conductor__system_bash') {
+    const scope = input.remoteId ? `${input.system}/${input.remoteId}` : input.system;
     return trunc(`[${scope}] ${bashSubject(input)}`);
   }
   if (name === 'mcp__code-conductor__project_read') {

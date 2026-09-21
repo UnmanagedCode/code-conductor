@@ -620,6 +620,7 @@ function exemptScenario() {
     ...callPair('thirdparty', 'mcp__code-conductor__acme-tools__run', { script: bigText }),
     ...callPair('read', 'mcp__code-conductor__project_read', { path: 'src/a.js', pattern: bigText }),
     ...callPair('bash', 'mcp__code-conductor__project_bash', { command: bigText }),
+    ...callPair('sysbash', 'mcp__code-conductor__system_bash', { command: bigText }),
     ...callPair('other', 'mcp__otherserver__do_thing', { payload: bigText }),
     { type: 'user', uuid: 'u2', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'second' }] } },
     { type: 'assistant', uuid: 'a_done', sessionId: 'old', message: { id: 'm_done', role: 'assistant', content: [
@@ -717,7 +718,7 @@ test('prune stubs a plugin-namespaced call while the same-tail core call survive
   }
 });
 
-test('prune stubs project_read and project_bash despite the core namespace', async () => {
+test('prune stubs the bulk-output core tools despite the core namespace', async () => {
   // The deliberate carve-outs: bulk file / command output is exactly what Prune
   // exists to shed. Fails the moment PRUNABLE_CONDUCTOR_MCP_TOOLS stops applying.
   for (const inputMode of ['truncate', 'minimal']) {
@@ -728,6 +729,8 @@ test('prune stubs project_read and project_bash despite the core namespace', asy
       assert.equal(result('read'), STUBBED_RESULT, `project_read result survived (${inputMode})`);
       assertStubbedInput(use('bash').input.command, inputMode, `project_bash input (${inputMode})`);
       assert.equal(result('bash'), STUBBED_RESULT, `project_bash result survived (${inputMode})`);
+      assertStubbedInput(use('sysbash').input.command, inputMode, `system_bash input (${inputMode})`);
+      assert.equal(result('sysbash'), STUBBED_RESULT, `system_bash result survived (${inputMode})`);
     });
   }
 });
@@ -783,6 +786,7 @@ test('isPruneExemptTool draws the line at the segment boundary', async () => {
   for (const name of [
     'mcp__code-conductor__project_read',
     'mcp__code-conductor__project_bash',
+    'mcp__code-conductor__system_bash',
     'mcp__code-conductor__code-kanban__file_task',
     'mcp__code-conductor__code-hub__start_app',
     // Third-party plugin ids: no `code-` prefix, so these pin the `__` segment
@@ -793,5 +797,9 @@ test('isPruneExemptTool draws the line at the segment boundary', async () => {
     'mcp__otherserver__do_thing',
     'Read', 'Bash', '', undefined, null,
   ]) assert.equal(isPruneExemptTool(name), false, `${name} should be prunable`);
-  assert.equal(PRUNABLE_CONDUCTOR_MCP_TOOLS.size, 2, 'the denylist is exactly the two bulk-output tools');
+  assert.deepEqual([...PRUNABLE_CONDUCTOR_MCP_TOOLS].sort(), [
+    'mcp__code-conductor__project_bash',
+    'mcp__code-conductor__project_read',
+    'mcp__code-conductor__system_bash',
+  ], 'the denylist is exactly the bulk-output tools — a core tool added later is exempt by default');
 });

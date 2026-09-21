@@ -37,8 +37,8 @@ import {
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
-import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from '../systems/registry.ts';
-import type { ExecSpec, System } from '../systems/system.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
+import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
@@ -49,7 +49,7 @@ import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../pr
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
-import { textPayload, textResult } from './content.ts';
+import { textPayload, textResult, type TextPayload } from './content.ts';
 import {
   renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
   renderPlaybook,
@@ -2618,7 +2618,7 @@ export async function projectRead({ project, worktree, relativePath,
   return textPayload(meta, content);
 }
 
-// ---- project_bash ----
+// ---- project_bash / system_bash ----
 
 const BASH_OUTPUT_CAP = 200 * 1024; // matches the old grep content-mode cap (DIFF_BYTE_CAP)
 const BASH_DEFAULT_TIMEOUT_MS = 120_000; // matches the built-in Bash tool's default
@@ -2643,6 +2643,38 @@ async function claudeShellSpec(command: string): Promise<ExecSpec> {
   return bundleShellKind(bundlePath) === 'zsh'
     ? { argv: ['zsh', '--no-rcs', '-c', wrapped] }
     : { argv: ['bash', '--noprofile', '--norc', '-c', wrapped] };
+}
+
+// The post-exec half of project_bash / system_bash: the spawn-error payload, the
+// truncation marker, and the metadata block. `place` is the identity fields the
+// calling tool names its target by — {project, worktree, cwd} or
+// {system, remoteId, cwd} — and is spread FIRST so the block an LLM reads as
+// text leads with what the command ran against. Everything after it is
+// placement-generic.
+//
+// `meta` is a Record rather than an inline type because the key set genuinely
+// varies by caller; the fields this function itself sets are the typed half.
+function bashPayload(place: Record<string, string | null>, r: ExecResult): TextPayload {
+  if (r.spawnError) {
+    return textPayload(
+      { ...place, exitCode: null, durationMs: r.durationMs, error: true },
+      r.spawnError,
+    );
+  }
+  const output = r.truncated ? r.output + '\n… [truncated at the output cap]' : r.output;
+  const meta: Record<string, unknown> = {
+    ...place,
+    exitCode: r.timedOut ? null : r.code,
+    durationMs: r.durationMs,
+  };
+  if (r.truncated) meta.truncated = true;
+  if (r.timedOut) meta.timedOut = true;
+  // The command was killed on a system whose provider cannot signal a process
+  // GROUP, so only the direct child was reached. Surfaced because the caller's
+  // next move depends on it: the tree it just timed out may still be holding a
+  // lock, a port or the CPU, and nothing else will ever say so.
+  if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
+  return textPayload(meta, output.trimEnd());
 }
 
 // Run a shell command inside a project/worktree cwd, in claude's own
@@ -2682,31 +2714,61 @@ export async function bashProject({ project, worktree, command, timeout }: {
     cwd, timeoutMs, stdin: 'ignore', headCapBytes: BASH_OUTPUT_CAP,
   });
 
-  if (r.spawnError) {
-    return textPayload(
-      { project, worktree: wtName, cwd, exitCode: null, durationMs: r.durationMs, error: true },
-      r.spawnError,
-    );
-  }
+  return bashPayload({ project, worktree: wtName, cwd }, r);
+}
 
-  const output = r.truncated ? r.output + '\n… [truncated at the output cap]' : r.output;
-  const meta: {
-    project: string; worktree: string | null; cwd: string;
-    exitCode: number | null; durationMs: number;
-    truncated?: boolean; timedOut?: boolean; descendantsMaySurvive?: true;
-  } = {
-    project, worktree: wtName, cwd,
-    exitCode: r.timedOut ? null : r.code,
-    durationMs: r.durationMs,
-  };
-  if (r.truncated) meta.truncated = true;
-  if (r.timedOut) meta.timedOut = true;
-  // The command was killed on a system whose provider cannot signal a process
-  // GROUP, so only the direct child was reached. Surfaced because the caller's
-  // next move depends on it: the tree it just timed out may still be holding a
-  // lock, a port or the CPU, and nothing else will ever say so.
-  if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
-  return textPayload(meta, output.trimEnd());
+// Run a shell command on a registered system addressed DIRECTLY — no project in
+// play. `systemById` is the same resolution a project on that system goes
+// through, so its named refusals are identical; what differs is that the subject
+// is the system itself rather than a project on it. Read-only inspection only
+// (see the tool description in mcp/tools.ts). `description` is a display-layer
+// field, rendered by the frontend (public/blocks.js) and never read here.
+export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
+  system: string; remoteId?: string | null; command: string; cwd?: string | null; timeout?: number;
+}) {
+  if (typeof system !== 'string' || !system.trim()) {
+    throw new Error('system_bash requires a system id');
+  }
+  if (typeof command !== 'string' || !command.trim()) {
+    throw new Error('system_bash requires a non-empty command string');
+  }
+  // `local` is cc's own machine, where the caller already has its own Bash tool
+  // and this tool's whole reason — reaching a box nothing is placed on — does
+  // not apply. systemById RETURNS the local handle for it rather than refusing,
+  // so the refusal has to be here: without it a caller who meant a remote id and
+  // mistyped it would silently run the command on cc's host and be told it
+  // succeeded.
+  if (system === LOCAL_SYSTEM_ID) {
+    throw httpError(400,
+      `system_bash does not serve system '${LOCAL_SYSTEM_ID}' — that is cc's own machine; `
+      + 'use your own Bash tool for it',
+      { code: 'SYSTEM_IS_LOCAL' });
+  }
+  // Same normalisation as set_project_remote: '' and an omitted value both mean
+  // the provider's own default target.
+  const target = remoteId === '' || remoteId === undefined ? null : remoteId;
+  const runCwd = cwd ?? '/';
+  // NOT requireAbsolute: that helper's contract is that a relative path is cc's
+  // OWN bug (src/systems/system.ts), and this one is a caller's bad argument. It
+  // is checked HERE, before systemById, so a bad cwd is refused without first
+  // launching a provider process — and so the refusal is reachable in a test
+  // with no live system. System.exec's own requireAbsolute stays the backstop.
+  if (!path.isAbsolute(runCwd)) {
+    throw httpError(400,
+      `system_bash: cwd must be an absolute path on the system, got ${JSON.stringify(runCwd)}`,
+      { code: 'CWD_NOT_ABSOLUTE' });
+  }
+  const sys = await systemById(system, target, `system_bash on system '${system}'`);
+  // A plain login shell, never claudeShellSpec: the shell-env bundle is a file
+  // on cc's own machine, and this tool never runs there. Same `stdin:'ignore'`
+  // and HEAD cap as project_bash, for the same two reasons documented there.
+  const r = await sys.exec({ shell: command }, {
+    cwd: runCwd,
+    timeoutMs: clampBashTimeoutMs(timeout),
+    stdin: 'ignore',
+    headCapBytes: BASH_OUTPUT_CAP,
+  });
+  return bashPayload({ system, remoteId: target, cwd: runCwd }, r);
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

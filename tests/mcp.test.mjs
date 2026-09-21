@@ -187,6 +187,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'set_project_remote',
     'set_idle_timeout',
     'spawn_instance', 'sync_worktree',
+    'system_bash',
   ].sort();
   assert.deepEqual(names, expected);
   // Every tool carries a schema.
@@ -194,6 +195,29 @@ test('tools/list returns the full expected tool catalog', async () => {
     assert.equal(t.inputSchema.type, 'object');
     assert.ok(typeof t.description === 'string' && t.description.length > 0);
   }
+});
+
+// The metadata key set is the half of a bash tool's description a caller reads
+// to know which fields exist, and it is a hand-typed literal in each tool —
+// `bashOutputDescription` shares the prose AROUND the braces, not what is inside
+// them. Both lists are asserted here, together, so one cannot lose a key or
+// drift from the other silently: the only other description assertion in the
+// suite is that it is a non-empty string.
+test('both bash tools document exactly the metadata keys their shared payload sets', async () => {
+  const { body } = await rpc(baseUrl, 'tools/list');
+  const keysIn = (name) => {
+    const t = body.result.tools.find(x => x.name === name);
+    assert.ok(t, `${name} is in the catalog`);
+    const m = /metadata block \(content\[0\]\) \{([^}]*)\}/.exec(t.description);
+    assert.ok(m, `${name}'s description states its metadata block: ${t.description}`);
+    return m[1].split(',').map(k => k.trim());
+  };
+  // The identity keys each tool names its target by, then the payload-generic
+  // half every field `bashPayload` can set — the optionals marked `?` because
+  // each is absent unless it happened.
+  const SHARED = ['exitCode', 'durationMs', 'truncated?', 'timedOut?', 'descendantsMaySurvive?', 'error?'];
+  assert.deepEqual(keysIn('project_bash'), ['project', 'worktree', 'cwd', ...SHARED]);
+  assert.deepEqual(keysIn('system_bash'), ['system', 'remoteId', 'cwd', ...SHARED]);
 });
 
 test('unknown method yields a JSON-RPC error envelope', async () => {

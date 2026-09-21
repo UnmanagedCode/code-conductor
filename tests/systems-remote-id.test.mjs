@@ -14,12 +14,12 @@
 // capability gate asserted from cc's side would pass whether or not the field
 // stayed home.
 
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, flakyLaunch } from './remoteSystem.mjs';
 import { addSystem } from '../src/appSettings.ts';
@@ -46,14 +46,31 @@ async function settle(pred, ms = 3_000) {
   return pred();
 }
 
+// A real `tools/call` over POST /mcp — the boundary a remoteId refusal has to
+// survive to reach an MCP caller with its code intact.
+let nextRpcId = 1;
+async function callTool(baseUrl, name, args) {
+  const res = await fetch(baseUrl + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const body = await res.json();
+  assert.ok(body.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
+  return body.result;
+}
+
 describe('remoteId: one system, many targets', () => {
-  let home, rootA, rootB;
+  let ctx, baseUrl, home, rootA, rootB;
+  before(async () => { ctx = await bootServer(); ({ baseUrl } = ctx); });
+  after(async () => { await ctx.close(); });
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());
+    ctx.projectsRoot = process.env.PROJECTS_ROOT;
     rootA = await fs.realpath(await mkdtemp('cc-remote-a-'));
     rootB = await fs.realpath(await mkdtemp('cc-remote-b-'));
   });
-  afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
+  afterEach(async () => { await ctx.instances.shutdown(); disposeSystemHandles(); await rmrf(home); });
 
   // ── Capability negotiation ───────────────────────────────────────────
 
@@ -360,5 +377,74 @@ describe('remoteId: one system, many targets', () => {
     for (const f of execs) {
       assert.equal(f.remoteId, 'a', `an exec running ${JSON.stringify(f.argv)} must name its target`);
     }
+  });
+
+  // ── What `remoteId` means to system_bash ─────────────────────────────
+  //
+  // Every test below pins that system_bash THREADS `remoteId` into systemById
+  // rather than dropping it — two that a named target cc cannot serve is
+  // refused, one that an EMPTY one is no name at all but the provider's own
+  // default target. The failure they exclude is a tool that silently runs on
+  // that default and reports success — the misroute-as-success this whole file
+  // exists to prevent, reached through a tool that names no project at all.
+
+  // PINS: naming a remote on a provider that does not serve remotes is
+  // SYSTEM_NO_REMOTES (501) through system_bash. A dropped remoteId would
+  // instead run the command on the default target and answer exitCode 0.
+  test('system_bash with a remoteId on a remotes-less provider is SYSTEM_NO_REMOTES', async () => {
+    const bare = await bindRemoteSystem({ id: 'bare' });
+    const r = await callTool(baseUrl, 'system_bash', {
+      system: bare.id, remoteId: 'a', command: 'echo hi', cwd: '/',
+    });
+    assert.equal(r.isError, true, JSON.stringify(r));
+    const structured = JSON.parse(r.content[1].text);
+    assert.equal(structured.code, 'SYSTEM_NO_REMOTES', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 501);
+    assert.match(r.content[0].text, /bare/);
+  });
+
+  // PINS: `''` is the DEFAULT target even on a provider that does serve named
+  // ones — it is not a target name. Without the empty-string normalisation it
+  // reaches assertRemoteKnown, which this provider answers ENOREMOTE for, and
+  // the caller gets a REMOTE_NOT_FOUND refusal about a remote it never named.
+  // The far side still refuses the unbound exec itself (it serves only named
+  // targets), but that arrives as the command's own answer in the payload, not
+  // as cc refusing to resolve — which is exactly the distinction being pinned.
+  test('system_bash treats an empty remoteId as the default target, not a named one', async () => {
+    const remote = await bindRemoteSystem({ id: 'boxes', flags: ['--remote', `a=${rootA}`] });
+    const r = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, remoteId: '', command: 'echo hi', cwd: rootA,
+    });
+    assert.equal(r.isError, undefined,
+      `resolution must not refuse an empty remoteId: ${JSON.stringify(r)}`);
+    const meta = JSON.parse(r.content[0].text);
+    assert.equal(meta.remoteId, null, 'the metadata reports the default target, not the empty string');
+  });
+
+  // PINS: an unknown remote on a remotes-serving provider is REMOTE_NOT_FOUND
+  // (502) through system_bash, and — the positive control on the same system —
+  // a VALID remoteId runs and is echoed back in the metadata. Without the
+  // second half the first would pass on a tool that refuses every remoteId.
+  test('system_bash refuses an unknown remoteId and serves a known one', async () => {
+    const remote = await bindRemoteSystem({ id: 'boxes', flags: ['--remote', `a=${rootA}`] });
+
+    const bad = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, remoteId: 'typo', command: 'echo hi', cwd: rootA,
+    });
+    assert.equal(bad.isError, true, JSON.stringify(bad));
+    const structured = JSON.parse(bad.content[1].text);
+    assert.equal(structured.code, 'REMOTE_NOT_FOUND', JSON.stringify(structured));
+    assert.equal(structured.statusCode, 502);
+    assert.match(bad.content[0].text, /typo/);
+
+    const good = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, remoteId: 'a', command: 'echo $CC_REMOTE', cwd: rootA,
+    });
+    assert.equal(good.isError, undefined, JSON.stringify(good));
+    const meta = JSON.parse(good.content[0].text);
+    assert.equal(meta.remoteId, 'a', 'the metadata echoes the target that served it');
+    assert.equal(meta.exitCode, 0, JSON.stringify(meta));
+    // Positively addressed: only the intended remote's child carries CC_REMOTE=a.
+    assert.equal(good.content[1].text.trim(), 'a');
   });
 });

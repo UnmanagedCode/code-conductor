@@ -8,8 +8,8 @@
 //
 // A degraded path the user cannot see is not a fallback: the caller's next move
 // depends on knowing the tree it just timed out may still hold a lock, a port
-// or the CPU, and nothing else will ever tell them. So the flag reaches the two
-// places a user or a conductor reads a killed command's result — project_bash's
+// or the CPU, and nothing else will ever tell them. So the flag reaches every
+// place a user or a conductor reads a killed command's result — the bash tools'
 // metadata and the post-worktree hook's report.
 //
 // The assertion is on the FLAG, never on a race against real process death.
@@ -86,6 +86,33 @@ describe('descendantsMaySurvive reaches the surfaces a caller reads', () => {
     const meta = JSON.parse(r.content[0].text);
     assert.equal('descendantsMaySurvive' in meta, false);
     assert.equal(meta.exitCode, 0);
+  });
+
+  // PINS: system_bash reports the flag too — the metadata is computed once for
+  // both bash tools, so the pair below plus the project_bash pair above is what
+  // makes a regression in that shared half fail on both sides.
+  test('system_bash reports it when the provider cannot signal a process group', async () => {
+    remote = await bindRemoteSystem({ flags: ['--no-process-group-signal'] });
+    const r = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: SLEEPER, cwd: remote.root, timeout: 300,
+    });
+    const meta = JSON.parse(r.content[0].text);
+    assert.equal(meta.timedOut, true, JSON.stringify(meta));
+    assert.equal(meta.exitCode, null);
+    assert.equal(meta.descendantsMaySurvive, true,
+      'the caller is told the tree it killed may still be running');
+  });
+
+  // PINS: and omits it — not `false` — when the provider CAN signal the group,
+  // so its presence in a system_bash result always means something happened.
+  test('system_bash omits it when the provider can signal the group', async () => {
+    remote = await bindRemoteSystem({ flags: [] });
+    const r = await callTool(baseUrl, 'system_bash', {
+      system: remote.id, command: SLEEPER, cwd: remote.root, timeout: 300,
+    });
+    const meta = JSON.parse(r.content[0].text);
+    assert.equal(meta.timedOut, true, JSON.stringify(meta));
+    assert.equal('descendantsMaySurvive' in meta, false);
   });
 
   // PINS: the post-worktree hook's report carries it too. The hook is the other

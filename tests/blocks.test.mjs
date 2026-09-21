@@ -89,6 +89,28 @@ test('describeToolInput: project_bash without a description falls back to the co
   );
 });
 
+test('describeToolInput: system_bash prefers description over command, keeping the system scope', () => {
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', command: 'git --version', description: 'Check the git version' }),
+    '[refbox] Check the git version',
+  );
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', remoteId: 'c1', command: 'git --version', description: 'Check the git version' }),
+    '[refbox/c1] Check the git version',
+  );
+});
+
+test('describeToolInput: system_bash without a description falls back to the command', () => {
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', command: 'uname -a' }),
+    '[refbox] uname -a',
+  );
+  assert.equal(
+    describeToolInput('mcp__code-conductor__system_bash', { system: 'refbox', command: 'uname -a', description: '   ' }),
+    '[refbox] uname -a',
+  );
+});
+
 test('describeToolInput: Edit/Write/Read → file_path', () => {
   assert.equal(describeToolInput('Edit',  { file_path: '/x/y.js' }), '/x/y.js');
   assert.equal(describeToolInput('Write', { file_path: '/x/y.js' }), '/x/y.js');
@@ -482,6 +504,21 @@ test('ToolUseBlock: project_bash expanded body shows the command, summary shows 
   const pre = details.querySelector('pre.bash-cmd');
   assert.ok(pre, 'expected pre.bash-cmd');
   assert.equal(pre.textContent, 'rg foo');
+});
+
+test('ToolUseBlock: system_bash expanded body shows the command, summary shows the description', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'mcp__code-conductor__system_bash', toolUseId: 'tu_sbash' });
+  block.finalizeInput({ system: 'refbox', command: 'git --version', description: 'Check the git version' });
+  assert.match(block.summary.textContent, /Check the git version/);
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  // The command box, not the raw-JSON fallback every unrecognised tool gets:
+  // this is the only reader of renderKindFor's system_bash branch, since
+  // describeToolInput answers from its own branch before reaching the switch.
+  const pre = details.querySelector('pre.bash-cmd');
+  assert.ok(pre, 'expected pre.bash-cmd — the args rendered as a JSON dump instead');
+  assert.equal(pre.textContent, 'git --version');
 });
 
 test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with JSON', () => {
