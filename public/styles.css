@@ -1328,6 +1328,14 @@ dialog label { display: block; margin-bottom: 10px; font-size: 12px; }
    `hidden` attribute. Restore the expected behaviour explicitly. */
 dialog label[hidden] { display: none; }
 dialog input, dialog select { width: 100%; margin-top: 4px; }
+/* Delete-project dialog: checkbox sits inline to the left of its label text,
+   same shape as .ni-worktree-row / .tt-toggle, overriding the block/full-width
+   rules above. No `!important`: (0,1,0) and (0,1,1) already outrank the
+   `dialog label`/`dialog input` rules they override, and staying unimportant
+   keeps `dialog label[hidden] { display: none; }` (0,1,2) winning when a
+   remote project hides this row. */
+.dpd-dir-row { display: flex; align-items: flex-start; gap: 8px; }
+.dpd-dir-row input[type="checkbox"] { width: auto; margin: 2px 0 0 0; }
 dialog .hint { font-size: 11px; color: var(--muted); }
 dialog .error { color: var(--red); font-size: 12px; min-height: 1em; }
 dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 0; }
