@@ -2650,8 +2650,8 @@ async function claudeShellSpec(command: string): Promise<ExecSpec> {
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
 // shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
 // inspection only (see the tool description in mcp/tools.ts). `description`
-// is accepted for schema parity with the built-in Bash tool but is unused
-// server-side.
+// is a display-layer field, rendered by the frontend (public/blocks.js) and
+// never read here.
 export async function bashProject({ project, worktree, command, timeout }: {
   project: string; worktree?: string; command: string; timeout?: number;
 }) {

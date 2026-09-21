@@ -174,6 +174,14 @@ function renderKindFor(name) {
   return name;
 }
 
+// The Bash bubble's one-line subject: the caller's description when there is one,
+// else the command itself. Shared by Bash and project_bash, whose summary adds a
+// [project/worktree] scope prefix in front of it.
+function bashSubject(input) {
+  const desc = typeof input.description === 'string' ? input.description.trim() : '';
+  return desc || input.command;
+}
+
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
 export function describeToolInput(name, input, ctx = {}) {
@@ -195,7 +203,7 @@ export function describeToolInput(name, input, ctx = {}) {
   };
   if (name === 'mcp__code-conductor__project_bash') {
     const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
-    return trunc(`[${scope}] ${input.command}`);
+    return trunc(`[${scope}] ${bashSubject(input)}`);
   }
   if (name === 'mcp__code-conductor__project_read') {
     const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
@@ -219,10 +227,8 @@ export function describeToolInput(name, input, ctx = {}) {
     return out;
   }
   switch (renderKindFor(name)) {
-    case 'Bash': {
-      const desc = typeof input.description === 'string' ? input.description.trim() : '';
-      return trunc(desc || input.command);
-    }
+    case 'Bash':
+      return trunc(bashSubject(input));
     case 'Edit':
     case 'Write':
     case 'Read':
