@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { POST_STOP_STEER_NOTE } from '../src/instances.ts';
+import { addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 'open text' leaves a text block OPEN, so nothing can fire at a block edge until
@@ -27,7 +28,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // result (without it the session never leaves 'turn' and the test dies on the
 // runner's per-file timeout, reading as a flake).
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-steer-sites.json');
-const FLAGGED_MODEL = 'deepseek-v4-flash:cloud';
+// A controlled model carrying the opt-out, registered into the isolated settings
+// store by each flagged fixture below — deliberately NOT a curated preset, so a
+// change to the curated model list cannot break this test.
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
 let ctx, baseUrl, wsUrl, instances, home, transcriptPath;
@@ -43,6 +47,10 @@ beforeEach(async () => {
   ctx.projectsRoot = r.projectsRoot;
   transcriptPath = path.join(home, `ws-stdin-${++seq}.jsonl`);
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  await addCustomModel({
+    label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+    contextWindow: 256_000, midTurnSteering: false,
+  });
 });
 // Registered by flaggedMidBlockOverWs and closed here, NOT on each test's success
 // path: a leaked WS client keeps handles open, so `after`'s ctx.close() never
@@ -96,7 +104,7 @@ async function flaggedMidBlockOverWs() {
   inst.backend = 'ollama';
   inst.model = FLAGGED_MODEL;
   inst._refreshModelCapabilities();
-  assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+  assert.equal(inst.acceptsMidTurnSteering, false, 'the controlled opt-out row resolved');
 
   const c = await wsClient(wsUrl);
   openClients.push(c);

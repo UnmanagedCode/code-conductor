@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
+import { addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plan.json');
@@ -15,7 +16,15 @@ const SCENARIO_BYPASS_INIT = path.join(__dirname, 'fixtures', 'scenario-plan-byp
 let ctx, baseUrl, wsUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, wsUrl, instances } = ctx); });
 after(async () => { await ctx.close(); });
-beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+beforeEach(async () => {
+  ({ home } = await freshProjectsRoot());
+  // A controlled model carrying the opt-out, so this file's flagged fixtures do
+  // not depend on a curated preset existing.
+  await addCustomModel({
+    label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+    contextWindow: 256_000, midTurnSteering: false,
+  });
+});
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 function wsClient(url) {
@@ -210,7 +219,7 @@ test('flag does not fire auto-approve when instance is not in plan mode', async 
 // ---------------------------------------------------------------------------
 
 const SCENARIO_MID_TURN = path.join(__dirname, 'fixtures', 'scenario-plan-mid-turn.json');
-const FLAGGED_MODEL = 'deepseek-v4-flash:cloud';
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
 
 async function userStdin(transcriptPath) {
   try {
@@ -243,7 +252,7 @@ async function autoApproveMidTurn({ flagged }) {
     inst.backend = 'ollama';
     inst.model = FLAGGED_MODEL;
     inst._refreshModelCapabilities();
-    assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+    assert.equal(inst.acceptsMidTurnSteering, false, 'the controlled opt-out row resolved');
   }
   inst.setAutoApprovePlan(true);
   inst.prompt('plan something');

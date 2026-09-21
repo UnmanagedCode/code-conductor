@@ -23,6 +23,7 @@ import {
   MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
 } from '../src/modelVersions.ts';
 import { resolveBackendLaunch, backendEnv, resolveClaudeBin } from '../src/claudeLauncher.ts';
+import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import {
   hasSessionBackend, getSessionBackend, markSessionBackend, unmarkSessionBackend, loadAll,
 } from '../src/sessionBackends.ts';
@@ -397,23 +398,28 @@ describe('backend registry data model', () => {
     assert.equal(getCustomModels().find(m => m.model === 'big:cloud').contextWindow, 512001);
   });
 
-  test('contextWindowForModel: custom row wins over curated preset; unknown → null', async () => {
-    // Curated preset resolves with no prior add (scoped to the `ollama` row).
-    assert.equal(contextWindowForModel('deepseek-v4-flash:cloud'), 1_000_000);
-    assert.equal(contextWindowForModel('qwen3.5:cloud'), 256_000);
+  test('contextWindowForModel: a custom row wins over a curated preset, for every row; unknown → null', async () => {
     await addCustomModel({ label: 'Local', model: 'local:cloud', backend: 'ollama', contextWindow: 128_000 });
     assert.equal(contextWindowForModel('local:cloud'), 128_000);
-    // A custom override of a preset id takes precedence over the catalog value.
-    await addCustomModel({ label: 'Override', model: 'qwen3.5:cloud', backend: 'ollama', contextWindow: 300_000 });
-    assert.equal(contextWindowForModel('qwen3.5:cloud'), 300_000);
+    // A custom override of a preset id takes precedence over the catalog value —
+    // asserted for EVERY row the catalog holds, so a change to the model list
+    // cannot break this and an emptied catalog makes it vacuous, never red.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      const override = preset.contextWindow + 1_000;
+      await addCustomModel({ label: 'Override', model: preset.model, backend: 'ollama', contextWindow: override });
+      assert.equal(contextWindowForModel(preset.model), override,
+        `${preset.model}: the custom row's window wins over the catalog value`);
+    }
     // Unknown → null (this is the "leave both env vars unset" spawn path).
     assert.equal(contextWindowForModel('ghost:tag'), null);
     assert.equal(contextWindowForModel(''), null);
   });
 
   test('backendForModel resolves a bare model id to the backend serving it', async () => {
-    // Curated presets belong to the built-in ollama row.
-    assert.equal(backendForModel('deepseek-v4-flash:cloud'), 'ollama');
+    // Every curated preset belongs to the built-in ollama row.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      assert.equal(backendForModel(preset.model), 'ollama', `${preset.model} belongs to the ollama row`);
+    }
     await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
     await addCustomModel({ label: 'Mine', model: 'mine:v1', backend: 'p', contextWindow: 100_000 });
     assert.equal(backendForModel('mine:v1'), 'p');
@@ -642,6 +648,10 @@ describe('models + backends settings routes', () => {
   });
 
   test('plugin role: /prefs stores an override (beats manifest); GET reflects the effective binding', async () => {
+    // A controlled model on the built-in ollama row, registered first so the
+    // override below does not depend on a curated preset existing.
+    const overrideModel = 'cc-test-role-override:cloud';
+    await addCustomModel({ label: 'Override target (test)', model: overrideModel, backend: 'ollama', contextWindow: 256_000 });
     setPluginRolesProvider(() => [{ role: 'p/cap', label: 'Cap', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' }]);
     try {
       const g0 = await api(baseUrl, 'GET', '/api/settings/models');
@@ -656,10 +666,10 @@ describe('models + backends settings routes', () => {
 
       // A non-Claude override round-trips too: other backends are user-local so a
       // MANIFEST may not name one, but a user override may.
-      const custom = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'p/cap', backend: { backend: 'ollama', model: 'deepseek-v4-flash:cloud' } } });
+      const custom = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'p/cap', backend: { backend: 'ollama', model: overrideModel } } });
       assert.equal(custom.status, 200, JSON.stringify(custom.body));
-      assert.deepEqual(custom.body.roleBackend['p/cap'], { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
-      assert.deepEqual(resolveRoleBackend('p/cap'), { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
+      assert.deepEqual(custom.body.roleBackend['p/cap'], { backend: 'ollama', model: overrideModel });
+      assert.deepEqual(resolveRoleBackend('p/cap'), { backend: 'ollama', model: overrideModel });
 
       // Reverting is done by re-selecting the manifest tier in the picker.
       const revert = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'p/cap', backend: { kind: 'tier', tier: 'fast' } } });

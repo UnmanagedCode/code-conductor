@@ -1,6 +1,6 @@
 // The per-model "accepts mid-turn steering" capability flag: its resolver
 // (resolveMidTurnSteering — precedence, exact-id matching, opt-out polarity), the
-// curated preset that declares it, and the REST round-trip that must carry it
+// rows that may declare it, and the REST round-trip that must carry it
 // (addCustomModel rebuilds each row from scratch and getCustomModels re-projects
 // only known keys, so an unwired field is silently dropped on the next read).
 
@@ -11,6 +11,17 @@ import { addCustomModel, getCustomModels, resolveMidTurnSteering } from '../src/
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import { CLAUDE_BACKEND_ID } from '../src/modelVersions.ts';
 import { Instance } from '../src/instances.ts';
+
+// A controlled model carrying the opt-out, registered into the isolated settings
+// store by the tests below — deliberately NOT a curated preset, so a change to
+// the curated model list cannot break them.
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
+async function addFlaggedRow() {
+  await addCustomModel({
+    label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+    contextWindow: 256_000, midTurnSteering: false,
+  });
+}
 
 describe('resolveMidTurnSteering', () => {
   let ctx, baseUrl, home;
@@ -23,20 +34,12 @@ describe('resolveMidTurnSteering', () => {
   });
   afterEach(async () => { await ctx.instances.shutdown(); await rmrf(home); });
 
-  test('the identity backend is always steerable, whatever the model id says', () => {
+  test('the identity backend is always steerable, whatever the model id says', async () => {
+    await addFlaggedRow();
     assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'claude-opus-5' }), true);
-    // Even an id that a preset declares false for: the backend short-circuits.
-    assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'deepseek-v4-flash:cloud' }), true);
-  });
-
-  test('a curated preset declares the opt-out; every other preset stays steerable', () => {
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), false);
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'qwen3.5:cloud' }), true);
-    // Exactly the DeepSeek Flash presets opt out.
-    assert.deepEqual(
-      OLLAMA_CLOUD_MODELS.filter(m => m.midTurnSteering === false).map(m => m.model),
-      ['deepseek-v4-flash:cloud', 'deepseek-v4.1-flash:cloud'],
-    );
+    // Even an id that a row declares false for: the backend short-circuits BEFORE
+    // the row is consulted.
+    assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: FLAGGED_MODEL }), true);
   });
 
   test('unknown / empty ids resolve to steerable — the pre-flag behaviour', () => {
@@ -45,25 +48,29 @@ describe('resolveMidTurnSteering', () => {
     assert.equal(resolveMidTurnSteering({}), true);
   });
 
-  test('the match is EXACT: a stripped tag is a different model', () => {
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash' }), true,
+  test('the match is EXACT: a stripped tag is a different model', async () => {
+    await addFlaggedRow();
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: FLAGGED_MODEL }), false,
+      'the declared id is the flagged registry key');
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'cc-test-steer-optout' }), true,
       'the tagless id is not the flagged registry key');
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud ' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: `${FLAGGED_MODEL} ` }), true);
   });
 
-  test('a custom row wins over a curated preset, in both directions', async () => {
-    // Override the flagged preset back to steerable.
-    await addCustomModel({
-      label: 'Mine', model: 'deepseek-v4-flash:cloud', backend: 'ollama',
-      contextWindow: 1000, midTurnSteering: true,
-    });
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), true);
-    // …and opt an unflagged preset out.
-    await addCustomModel({
-      label: 'Other', model: 'qwen3.5:cloud', backend: 'ollama',
-      contextWindow: 1000, midTurnSteering: false,
-    });
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'qwen3.5:cloud' }), false);
+  test('a custom row opts a curated preset out, for every row', async () => {
+    // The other direction — a custom row overriding a FLAGGED preset back to
+    // steerable — is deliberately absent: no curated row declares the opt-out any
+    // more, so that direction has no subject. The resolver's preset arm reads
+    // `preset.midTurnSteering !== false`, which from the catalog is only ever
+    // reachable as `true`.
+    for (const preset of OLLAMA_CLOUD_MODELS) {
+      await addCustomModel({
+        label: 'Opt-out', model: preset.model, backend: 'ollama',
+        contextWindow: 1000, midTurnSteering: false,
+      });
+      assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: preset.model }), false,
+        `${preset.model}: the custom row's opt-out wins over the unflagged preset`);
+    }
   });
 
   test('addCustomModel stores the flag; only an explicit false opts out', async () => {

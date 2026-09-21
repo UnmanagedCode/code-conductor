@@ -122,6 +122,10 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
 // what keeps the fix uniform. Note the OUTCOME (the drain returns) is vacuous on
 // main for the unflagged half — the fake answered the wind-down message, so the
 // drain converged either way. The mechanism is what fails there.
+// A controlled model carrying the opt-out — deliberately NOT a curated preset,
+// so a change to the curated model list cannot break the flagged half below.
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
+
 for (const flagged of [false, true]) {
   test(`drainToManifest soft-interrupts a mid-turn session and writes no steer (flagged: ${flagged})`, async () => {
     const transcript = path.join(os.tmpdir(), `cc-drainstop-${randomUUID()}.log`);
@@ -135,10 +139,14 @@ for (const flagged of [false, true]) {
       const inst = instances.get(res.body.id);
       await waitFor(() => inst.status === 'idle' && inst.sessionId);
       if (flagged) {
+        await addCustomModel({
+          label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+          contextWindow: 256_000, midTurnSteering: false,
+        });
         inst.backend = 'ollama';
-        inst.model = 'deepseek-v4-flash:cloud';
+        inst.model = FLAGGED_MODEL;
         inst._refreshModelCapabilities();
-        assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+        assert.equal(inst.acceptsMidTurnSteering, false, 'the controlled opt-out row resolved');
       }
 
       await inst.prompt('go');

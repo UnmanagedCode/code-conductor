@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settle } from './helpers.mjs';
-import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
+import { setOnOverageAction, setOverageThreshold, addCustomModel } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { buildConductorResumePreamble, IDLE_PARKED_RESUME_TEXT } from '../src/overageResume.ts';
 import { sendPrompt, approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
@@ -444,18 +444,26 @@ async function createInst(opts) {
 // for ALL models by design — the one deliberate exception to card 2026-0182's
 // "unflagged stays byte-identical" pin.
 
+// A controlled model carrying the opt-out — deliberately NOT a curated preset,
+// so a change to the curated model list cannot break these tests.
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
+
 // Drive one overage trip against a mid-turn in-control conductor, capturing both
-// sessions' stdin. `flagged` binds the conductor to the curated preset that
-// declares midTurnSteering:false, through the real resolver.
+// sessions' stdin. `flagged` binds the conductor to a controlled row declaring
+// midTurnSteering:false, through the real resolver.
 async function tripMidTurnConductor({ flagged, action = 'stop', scenarioObj }) {
   await boot(scenarioObj ?? routingScenario(), action);
   const c = await createInstCapturing({}, `cond-${flagged ? 'f' : 'u'}`);
   const conductor = c.inst;
   if (flagged) {
+    await addCustomModel({
+      label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+      contextWindow: 256_000, midTurnSteering: false,
+    });
     conductor.backend = 'ollama';
-    conductor.model = 'deepseek-v4-flash:cloud';
+    conductor.model = FLAGGED_MODEL;
     conductor._refreshModelCapabilities();
-    assert.equal(conductor.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+    assert.equal(conductor.acceptsMidTurnSteering, false, 'the controlled opt-out row resolved');
   }
   const w = await createInstCapturing(
     { conducted: true, callerInstanceId: conductor.id }, `work-${flagged ? 'f' : 'u'}`);

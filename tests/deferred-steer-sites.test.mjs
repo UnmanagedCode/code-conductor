@@ -24,13 +24,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
+import { addCustomModel } from '../src/appSettings.ts';
 import { approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../src/planApproval.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-steer-sites.json');
-// The curated preset that declares midTurnSteering:false.
-const FLAGGED_MODEL = 'deepseek-v4-flash:cloud';
+// A controlled model carrying the opt-out, registered per-test into the isolated
+// settings store (see beforeEach) — deliberately NOT a curated preset, so a
+// change to the curated model list cannot break this test.
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
 const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
 
 let ctx, baseUrl, instances, home, transcriptPath;
@@ -48,6 +51,10 @@ beforeEach(async () => {
   ctx.projectsRoot = r.projectsRoot;
   transcriptPath = path.join(home, `stdin-${++seq}.jsonl`);
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  await addCustomModel({
+    label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+    contextWindow: 256_000, midTurnSteering: false,
+  });
 });
 afterEach(async () => {
   await instances.shutdown();

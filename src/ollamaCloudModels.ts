@@ -6,18 +6,18 @@
 // shipped to the client via `GET /api/settings/models` (see routes.ts
 // modelsSettingsState).
 //
-// Tags are verbatim from ollama.com and deliberately inconsistent: most use
-// the bare `:cloud` alias, but Mistral Large 3 has no bare alias and stays
-// size-pinned (`:675b-cloud`) — do not "normalize" it.
+// Tags are verbatim from ollama.com and deliberately not normalized: a row
+// carries whatever id that site serves, including a size-pinned
+// `<name>:<size>-cloud` form — do not rewrite it into a bare `:cloud` alias.
 //
 // `contextWindow` is the model's native window in raw tokens (round decimals).
 // This is the authoritative per-model size: resolveContextWindowTokens() in
 // src/appSettings.ts reads it (via contextWindowForModel) to produce the
 // session's `contextWindowTokens`, which drives the header context-usage bar and
 // both CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS at
-// spawn time. The client holds no capacity table of its own. MiniMax M3
-// is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
-// deliberately advertise the 1M ceiling here.
+// spawn time. The client holds no capacity table of its own. A row whose window
+// has a lower guaranteed minimum and a higher billed ceiling advertises the
+// ceiling.
 
 // `midTurnSteering` is an OPT-OUT capability flag: absent/true means the model
 // accepts a user message written INTO a running turn, `false` means it does not
@@ -32,16 +32,10 @@ export interface OllamaCloudModel {
 }
 
 export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
-  { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash',         contextWindow: 1_000_000, midTurnSteering: false },
-  { model: 'deepseek-v4.1-flash:cloud',  label: 'DeepSeek V4.1 Flash',       contextWindow: 1_000_000, midTurnSteering: false },
-  { model: 'qwen3.5:cloud',              label: 'Qwen3.5',                  contextWindow:   256_000 },
-  { model: 'glm-5.2:cloud',              label: 'GLM-5.2',                  contextWindow: 1_000_000 },
+  { model: 'deepseek-v4.1-flash:cloud',  label: 'DeepSeek V4.1 Flash',      contextWindow: 1_000_000 },
   { model: 'glm-5.3:cloud',              label: 'GLM-5.3',                  contextWindow: 1_000_000 },
   { model: 'glm-5.3-flash:cloud',        label: 'GLM-5.3 Flash',            contextWindow: 1_000_000 },
-  { model: 'deepseek-v4-pro:cloud',      label: 'DeepSeek V4 Pro',          contextWindow: 1_000_000 },
-  { model: 'kimi-k2.7-code:cloud',       label: 'Kimi K2.7 Code',                 contextWindow:   256_000 },
-  { model: 'minimax-m3:cloud',           label: 'MiniMax M3',               contextWindow: 1_000_000 },
-  { model: 'mistral-large-3:675b-cloud', label: 'Mistral Large 3',                contextWindow:   256_000 },
+  { model: 'kimi-k3:cloud',              label: 'Kimi K3',                  contextWindow: 1_000_000 },
 ];
 
 // Per-tier catalog default, used only as the auto-picked model when a user
@@ -50,9 +44,9 @@ export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
 // out-of-the-box tier default (DEFAULT_TIER_BACKEND in modelVersions.ts
 // stays all-Claude) — frontier intentionally has no catalog default.
 export const OLLAMA_CLOUD_TIER_DEFAULTS: Record<string, string> = {
-  fast: 'deepseek-v4-flash:cloud',
-  balanced: 'qwen3.5:cloud',
-  powerful: 'glm-5.2:cloud',
+  fast: 'deepseek-v4.1-flash:cloud',
+  balanced: 'deepseek-v4.1-flash:cloud',
+  powerful: 'deepseek-v4.1-flash:cloud',
 };
 
 export function isKnownOllamaCloudModel(tag: unknown): boolean {

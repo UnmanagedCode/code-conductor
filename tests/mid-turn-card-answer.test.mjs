@@ -23,10 +23,15 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, userStdinLines } from './helpers.mjs';
 import { promises as fs } from 'node:fs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
+import { addCustomModel } from '../src/appSettings.ts';
 import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-canusetool-question-continues.json');
+// A controlled model carrying the opt-out, registered into the booted server's
+// own settings store before the instance below binds to it — deliberately NOT a
+// curated preset, so a change to the curated model list cannot break this test.
+const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
 
 const QUESTIONS = [{
   question: 'Pick a fruit',
@@ -198,10 +203,14 @@ test('a card answer on a model that cannot take a mid-turn injection is deferred
     const id = r.body.id;
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
+    await addCustomModel({
+      label: 'Steer opt-out (test)', model: FLAGGED_MODEL, backend: 'ollama',
+      contextWindow: 256_000, midTurnSteering: false,
+    });
     inst.backend = 'ollama';
-    inst.model = 'deepseek-v4-flash:cloud';
+    inst.model = FLAGGED_MODEL;
     inst._refreshModelCapabilities();
-    assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+    assert.equal(inst.acceptsMidTurnSteering, false, 'the controlled opt-out row resolved');
 
     const c = client = await wsClient(ctx.wsUrl);
     c.instanceId = id;

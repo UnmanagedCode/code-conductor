@@ -422,15 +422,17 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
   });
 
   test('a role bound straight to a non-Claude model resolves to it (non-tier branch)', async () => {
-    // Bind reviewer directly to a curated cloud model on the ollama row,
-    // exercising resolveRoleBackend's non-tier branch.
-    await setRoleBinding('reviewer', { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
+    // Bind reviewer directly to a controlled model on the ollama row, exercising
+    // resolveRoleBackend's non-tier branch without depending on a curated preset.
+    const roleModel = 'cc-test-role-model:cloud';
+    await addCustomModel({ label: 'Role target (test)', model: roleModel, backend: 'ollama', contextWindow: 256_000 });
+    await setRoleBinding('reviewer', { backend: 'ollama', model: roleModel });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'reviewer' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
     assert.equal(inst.backend, 'ollama');
-    assert.equal(inst.model, 'deepseek-v4-flash:cloud');
+    assert.equal(inst.model, roleModel);
   });
 
   test('a user custom role resolves to its bound claude model', async () => {

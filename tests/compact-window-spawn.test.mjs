@@ -13,12 +13,17 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { setConductorCompactWindow } from '../src/appSettings.ts';
+import { setConductorCompactWindow, addCustomModel } from '../src/appSettings.ts';
 import { runMigrations } from '../migrations/index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
+// A controlled Ollama-backed model declaring a 256k window — deliberately NOT a
+// curated preset, so a change to the curated model list cannot break the two
+// .conduct ordering tests below. Registered into the booted server's own
+// settings store by each of them.
+const CONDUCT_WINDOW_MODEL = 'cc-test-conduct-256k:cloud';
 
 async function spawnAndGetEnv({ ctx, project, conductedWorker = false, model = 'claude-haiku-4-5', backend }) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cwspawn-'));
@@ -127,11 +132,12 @@ test('.conduct spawn does NOT receive CLAUDE_CODE_AUTO_COMPACT_WINDOW when featu
 test('ollama-backed .conduct spawn: knob overrides AUTO_COMPACT_WINDOW, native window still wins MAX_CONTEXT_TOKENS (knob above native)', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
+    await addCustomModel({ label: 'Conduct window 256k (test)', model: CONDUCT_WINDOW_MODEL, backend: 'ollama', contextWindow: 256_000 });
     await withEnv({ PROJECTS_ROOT: ctx.projectsRoot, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
       await setConductorCompactWindow({ enabled: true, value: 400 }); // 400k knob
     });
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
-    const env = await spawnAndGetEnv({ ctx, project: '.conduct', model: 'qwen3.5:cloud', backend: 'ollama' });
+    const env = await spawnAndGetEnv({ ctx, project: '.conduct', model: CONDUCT_WINDOW_MODEL, backend: 'ollama' });
     assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '400000',
       'the .conduct block must run after the ollama block and win — not the native 256k');
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000',
@@ -172,11 +178,12 @@ test('a stale pre-migration sub-100k persisted value is bumped to 100k before it
 test('ollama-backed .conduct spawn: knob below native window still wins the effective min', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
+    await addCustomModel({ label: 'Conduct window 256k (test)', model: CONDUCT_WINDOW_MODEL, backend: 'ollama', contextWindow: 256_000 });
     await withEnv({ PROJECTS_ROOT: ctx.projectsRoot, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
       await setConductorCompactWindow({ enabled: true, value: 200 }); // 200k knob, below the 256k native window
     });
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
-    const env = await spawnAndGetEnv({ ctx, project: '.conduct', model: 'qwen3.5:cloud', backend: 'ollama' });
+    const env = await spawnAndGetEnv({ ctx, project: '.conduct', model: CONDUCT_WINDOW_MODEL, backend: 'ollama' });
     assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000');
   } finally { await ctx.close(); }

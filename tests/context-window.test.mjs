@@ -270,17 +270,19 @@ test('_trackModel never adopts ANY report on a substitution backend, lossy or no
   });
 });
 
-test('a substitution-backend spawn sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to the curated model window (raw tokens, no ×1000)', async () => {
-  const { env, id } = await spawnAndDump('deepseek-v4-flash:cloud', { backend: 'ollama', project: 'ollama-a' });
+test('a substitution-backend spawn sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to the model\'s declared 1M window (raw tokens, no ×1000)', async () => {
+  await addCustomModel({ label: 'Window 1M (test)', model: 'cc-test-win-1m:cloud', backend: 'ollama', contextWindow: 1_000_000 });
+  const { env, id } = await spawnAndDump('cc-test-win-1m:cloud', { backend: 'ollama', project: 'ollama-a' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000',
-    'a 1M curated model sets the raw token count directly');
+    'a 1M model sets the raw token count directly');
   assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1000000',
     'MAX_CONTEXT_TOKENS must also be set — AUTO_COMPACT_WINDOW alone is clamped by the CLI to a 200k assumed window for unrecognized models');
   assert.equal(instances.get(id).backend, 'ollama');
 });
 
-test('a substitution-backend spawn honours a smaller curated window (256k)', async () => {
-  const { env } = await spawnAndDump('qwen3.5:cloud', { backend: 'ollama', project: 'ollama-b' });
+test('a substitution-backend spawn honours a smaller window (256k)', async () => {
+  await addCustomModel({ label: 'Window 256k (test)', model: 'cc-test-win-256k:cloud', backend: 'ollama', contextWindow: 256_000 });
+  const { env } = await spawnAndDump('cc-test-win-256k:cloud', { backend: 'ollama', project: 'ollama-b' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '256000');
   assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000');
 });

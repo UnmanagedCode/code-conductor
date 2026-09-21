@@ -195,8 +195,8 @@ purpose: each closes a distinct route, and none subsumes another.
 
 `src/ollamaCloudModels.ts` ships a read-only catalog of Ollama cloud coding models, each with its
 native `contextWindow` — bindable with no "Add" step. A preset may also carry
-`midTurnSteering: false` (optional there — absent means steerable); see the module
-for which rows declare it. **Scoped to the built-in
+`midTurnSteering: false` (optional there — absent means steerable); no row declares
+it today. **Scoped to the built-in
 `ollama` backend only**: `isKnownBackendModel(backend, model)` accepts a preset just
 for that row, and the picker renders the optgroup only there. A user-defined backend
 has no curated catalog. `OLLAMA_CLOUD_TIER_DEFAULTS` (a per-tier UI pre-selection only — see the module for which tiers carry one) applies when a tier switches
