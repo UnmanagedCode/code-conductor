@@ -317,7 +317,16 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     dom.adoptProjectDialog.showModal();
   });
 
-  dom.apdSystem.addEventListener('change', syncPlacement);
+  // The path field means "a path on the chosen machine", so changing machines
+  // invalidates whatever is in it — typed or deposited by the list alike — and
+  // any error that named the placement it was about. NOT inside syncPlacement():
+  // that also runs on every Remote keystroke, on open, and after a scan, where
+  // the path is still about the machine it was entered for.
+  dom.apdSystem.addEventListener('change', () => {
+    dom.apdPath.value = '';
+    dom.apdError.textContent = '';
+    syncPlacement();
+  });
   dom.apdRemote.addEventListener('input', syncPlacement);
 
   dom.adoptProjectDialog.addEventListener('close', async () => {

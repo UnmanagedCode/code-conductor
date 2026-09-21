@@ -489,9 +489,10 @@ test('the system picker offers local plus reachable systems only, and defaults t
     'Prod box (prod-box)', 'a user row is named by label AND id, as the create dialog names it');
 });
 
-// PINS: a local adopt posts EXACTLY what it always did. The placement keys must
-// not leak onto a request that chose none — `system: null` is not the same
-// request as no `system` key, and the server keys its duplicate test on it.
+// PINS: the local body, byte for byte. The placement keys must not leak onto a
+// request that chose none: `{name, path, system: null}` is a different request
+// on the wire from `{name, path}`, and the local adopt is the one flow this
+// change must leave untouched.
 test('a local adopt posts exactly {name, path}', async () => {
   const d = await bootDialog();
   d.el('apd-name').value = 'api';
@@ -542,9 +543,9 @@ test('the placement hint names the target, not just the system', async () => {
 test('a remote adopt posts system + remoteId, trimmed', async () => {
   const d = await bootDialog();
   d.el('apd-name').value = 'api';
-  d.el('apd-path').value = '/srv/api';
   await d.pick('prod-box');
   await d.typeRemote(' ctr_7.a ');
+  d.el('apd-path').value = '/srv/api';
   await d.close('adopt');
   assert.deepEqual(d.requests[0].body,
     { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr_7.a' });
@@ -555,9 +556,9 @@ test('a remote adopt posts system + remoteId, trimmed', async () => {
 test('a remote adopt with a blank target posts no remoteId', async () => {
   const d = await bootDialog();
   d.el('apd-name').value = 'api';
-  d.el('apd-path').value = '/srv/api';
   await d.pick('prod-box');
   await d.typeRemote('   ');
+  d.el('apd-path').value = '/srv/api';
   await d.close('adopt');
   assert.deepEqual(d.requests[0].body, { name: 'api', path: '/srv/api', system: 'prod-box' });
 });
@@ -567,8 +568,8 @@ test('a remote adopt with a blank target posts no remoteId', async () => {
 test('a relative path on a system is refused in the dialog, before any request', async () => {
   const d = await bootDialog();
   d.el('apd-name').value = 'api';
-  d.el('apd-path').value = 'srv/api';
   await d.pick('prod-box');
+  d.el('apd-path').value = 'srv/api';
   await d.close('adopt');
   assert.equal(d.requests.length, 0, 'nothing was posted');
   assert.match(d.state().error, /absolute/i);
@@ -590,20 +591,79 @@ test('a relative path with no system still reaches the server', async () => {
   assert.match(d.state().error, /absolute path/, "and the server's own refusal is what is shown");
 });
 
-// PINS: the placement rides on `pending`. The relocate/replace buttons re-send
-// the target after the form pane is hidden, so a placement read off the form at
-// submit time would silently re-adopt LOCALLY on the second POST.
-test('the stale round-trip re-sends the placement', async () => {
+// PINS: the whole target rides on `pending`. The relocate/replace buttons
+// re-send it after the form pane is hidden, so the picker is MOVED BACK TO
+// LOCAL between the two closes — which is what makes "carried on `pending`" and
+// "read off the form at submit time" produce different bodies. Reading the form
+// would re-adopt locally, at a path that switch also cleared.
+test('the stale round-trip re-sends the placement the first POST carried, not the form', async () => {
   const d = await bootDialog({ posts: [{ status: 200, body: STALE_BODY }, { status: 201, body: { ok: true } }] });
   d.el('apd-name').value = 'api';
-  d.el('apd-path').value = '/srv/api';
   await d.pick('prod-box');
   await d.typeRemote('ctr7');
+  d.el('apd-path').value = '/srv/api';
   await d.close('adopt');
+
+  await d.pick('local');
+  assert.equal(d.el('apd-path').value, '', 'the switch emptied the form the retry must not read');
+
   await d.close('relocate');
   assert.equal(d.requests.length, 2);
   assert.deepEqual(d.requests[1].body,
     { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr7', onStaleRecord: 'relocate' });
+});
+
+
+// PINS: A PATH IS ABOUT ONE MACHINE. Left standing across a placement switch it
+// is posted as a path on the other one — either a refusal naming a path the
+// user never typed, or a silent adoption of a different tree under that name.
+// Both directions, and a list-deposited path is no different from a typed one:
+// the rule is the field's meaning, not the value's provenance.
+test('changing the placement clears the path, whichever way it changes and however it got there', async () => {
+  const clicked = await bootDialog({
+    scan: scanWith({ path: '/root/work/api', relPath: 'work/api', depth: 2, isGitRepo: true, suggestedName: 'api' }),
+  });
+  clicked.el('apd-suggestions').querySelector('button').click();
+  assert.equal(clicked.el('apd-path').value, '/root/work/api');
+  await clicked.pick('prod-box');
+  assert.equal(clicked.el('apd-path').value, '',
+    'a directory the local scan found is not a path on prod-box');
+  await clicked.close('adopt');
+  assert.equal(clicked.requests.length, 0, 'and an empty path submits nothing');
+
+  const typed = await bootDialog();
+  await typed.pick('prod-box');
+  typed.el('apd-path').value = '/srv/api';
+  await typed.pick('local');
+  assert.equal(typed.el('apd-path').value, '',
+    'nor is a path on prod-box a path on this machine');
+});
+
+// PINS: the clear is keyed to the SYSTEM changing, not to syncPlacement running.
+// syncPlacement also runs on every Remote keystroke, on open, and after a scan —
+// wiring the clear inside it would empty the field under the user's hands while
+// they name a target for the placement the path already belongs to.
+test('naming a target does not disturb the path', async () => {
+  const d = await bootDialog();
+  await d.pick('prod-box');
+  d.el('apd-path').value = '/srv/api';
+  await d.typeRemote('ctr7');
+  assert.equal(d.el('apd-path').value, '/srv/api');
+  assert.match(d.el('apd-scan-note').textContent, /remote 'ctr7'/, 'the hint did track it');
+});
+
+// PINS: an error names a placement, and does not outlive it. Left standing it
+// accuses the field of a fault the machine it now refers to never had.
+test('changing the placement clears the error the previous one raised', async () => {
+  const d = await bootDialog();
+  d.el('apd-name').value = 'api';
+  await d.pick('prod-box');
+  d.el('apd-path').value = 'srv/api';
+  await d.close('adopt');
+  assert.match(d.state().error, /prod-box/);
+
+  await d.pick('local');
+  assert.equal(d.state().error, '');
 });
 
 // PINS: an unreadable registry SAYS SO. Falling through silently to a local-only
