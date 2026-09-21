@@ -596,7 +596,8 @@ test('a relative path with no system still reaches the server', async () => {
 // re-send it after the form pane is hidden, so the picker is MOVED BACK TO
 // LOCAL between the two closes — which is what makes "carried on `pending`" and
 // "read off the form at submit time" produce different bodies. Reading the form
-// would re-adopt locally, at a path that switch also cleared.
+// would not even get that far: the switch also cleared the path, so submit()
+// returns at its `!target.path` guard and no second POST is sent at all.
 test('the stale round-trip re-sends the placement the first POST carried, not the form', async () => {
   const d = await bootDialog({ posts: [{ status: 200, body: STALE_BODY }, { status: 201, body: { ok: true } }] });
   d.el('apd-name').value = 'api';
