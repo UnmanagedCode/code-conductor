@@ -29,23 +29,23 @@ export function buildUserText(text) {
   };
   showRendered();
 
+  // No aria-pressed here: the label names the view a click switches TO, not
+  // the current state, so a "pressed" state would contradict the label (a
+  // screen reader would announce "md, pressed" while raw text is showing).
   const toggleBtn = el('button', {
     type: 'button', class: 'user-view-btn user-view-toggle',
     title: 'Show raw text',
   }, 'raw');
-  toggleBtn.setAttribute('aria-pressed', 'false');
   toggleBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     if (body.dataset.view === 'raw') {
       showRendered();
       toggleBtn.textContent = 'raw';
       toggleBtn.title = 'Show raw text';
-      toggleBtn.setAttribute('aria-pressed', 'false');
     } else {
       showRaw();
       toggleBtn.textContent = 'md';
       toggleBtn.title = 'Show rendered markdown';
-      toggleBtn.setAttribute('aria-pressed', 'true');
     }
   });
 

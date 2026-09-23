@@ -148,20 +148,58 @@ test('the raw/md toggle switches between rendered and literal source', async () 
   const toggle = root.querySelector('.user-view-toggle');
   assert.ok(toggle, 'toggle button present');
   assert.ok(body.querySelector('strong'), 'starts rendered');
+  assert.equal(toggle.textContent, 'raw', 'label names the view a click switches to');
+  assert.equal(toggle.title, 'Show raw text');
+  assert.equal(toggle.hasAttribute('aria-pressed'), false,
+    'no aria-pressed — the label names the target view, not the current state, so "pressed" would contradict it');
 
   toggle.click();
   assert.equal(body.dataset.view, 'raw');
   assert.equal(body.classList.contains('md'), false);
   assert.equal(body.children.length, 0, 'raw view has no element children');
   assert.equal(body.textContent, src);
-  assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+  assert.equal(toggle.textContent, 'md', 'label now names rendered, the next click target');
+  assert.equal(toggle.title, 'Show rendered markdown');
+  assert.equal(toggle.hasAttribute('aria-pressed'), false);
 
   toggle.click();
   assert.equal(body.dataset.view, 'rendered');
   assert.ok(body.classList.contains('md'));
   assert.ok(body.querySelector('strong'), 'back to rendered');
   assert.ok(body.querySelector('h1'), 'heading re-renders');
-  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+  assert.equal(toggle.textContent, 'raw');
+  assert.equal(toggle.title, 'Show raw text');
+  assert.equal(toggle.hasAttribute('aria-pressed'), false);
+});
+
+test('clicks on the toggle and copy buttons never propagate out of the button', async () => {
+  setupDOM();
+  const { restore } = stubClipboard();
+  try {
+    const Conversation = await importConversation();
+    const root = document.createElement('div');
+    const conv = new Conversation(root, {});
+    conv.apply({ kind: 'user_echo', text: '**bold**', userIndex: 0 });
+
+    const bubble = root.querySelector('.msg.user');
+    const toggle = root.querySelector('.user-view-toggle');
+    const copyBtn = root.querySelector('.user-view-copy');
+
+    let bubbleClicks = 0;
+    let documentClicks = 0;
+    bubble.addEventListener('click', () => { bubbleClicks++; });
+    document.addEventListener('click', () => { documentClicks++; });
+
+    toggle.click(); // -> raw
+    copyBtn.click(); // copy while raw
+    toggle.click(); // -> rendered
+    copyBtn.click(); // copy while rendered
+
+    assert.equal(bubbleClicks, 0, 'no click reached the enclosing .msg.user bubble');
+    assert.equal(documentClicks, 0, 'no click reached document');
+  } finally {
+    restore();
+  }
 });
 
 test('copy always yields the exact raw source, in both views', async () => {
