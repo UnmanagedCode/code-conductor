@@ -21,8 +21,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { segmentsFor } from '../src/sessionLineage.ts';
-import { currentSegmentScope } from '../src/eventArchive.ts';
-import { adoptProject } from '../src/projects.ts';
+import { buildArchive, pagePersistedEvents } from '../src/eventArchive.ts';
+import { adoptProject, localPlace } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { seedRepo } from './remoteSystem.mjs';
@@ -52,6 +52,12 @@ const PRE = 'aaaa0471-0000-4000-8000-000000000001';
 const POST = 'bbbb0471-0000-4000-8000-000000000002';
 const THIRD = 'cccc0471-0000-4000-8000-000000000003';
 const PUBLIC = PRE.slice(0, 8);
+
+// Loaded per call, not statically: this file must link on a tree without the
+// export so every other test reds through its own assertions there.
+async function currentSegmentScope(inst) {
+  return (await import('../src/eventArchive.ts')).currentSegmentScope(inst);
+}
 
 const GAP = 'history_gap';
 const isGap = (e) => e.kind === GAP;
@@ -187,8 +193,19 @@ test('T1 case A backward: the ring head predates the renew — no other segment 
 });
 
 test('T2 case B backward: the current file is cut at the ring head with the offset measured from content', async () => {
-  const { inst, id } = await bootCaseB('t2');
+  const { inst, id, crossed } = await bootCaseB('t2');
   const { ring, k } = assertCaseBPreconditions(inst);
+  // Production live shape at the seam: the rotation init, then the first REAL
+  // prompt — the live ring never carries RENEW_HEAD's replay-only echoes, so the
+  // live ordinal of `post i` differs from its file ordinal and only a measured
+  // offset cuts the file at the ring head.
+  const headTexts = new Set(RENEW_HEAD.map(r => r.message?.content).filter(Boolean));
+  assert.equal(crossed[0][0].subtype, 'init', 'precondition: the crossing opens on the rotation init');
+  assert.equal(crossed[0][1].text, 'post prompt 0', 'precondition: directly followed by the first real prompt');
+  assert.ok(!crossed[0].some(e => headTexts.has(e.text)), 'precondition: no RENEW_HEAD echo reached the live ring');
+  const liveHead = ring[0].userIndex;
+  assert.equal(liveHead, 3 + k, 'precondition: live ordinal of post k counts the 3 pre echoes');
+  // Its file ordinal counts RENEW_HEAD's 2 echoes instead, so live ≠ file.
 
   const all = await pageAll(id);
   // Includes the evicted post turns, served from the file across RENEW_HEAD's
@@ -340,12 +357,17 @@ test('T5 case B, nothing calibratable: nothing is served from the file, one mark
   assert.equal(all[1]._seq, ring[0]._seq, 'directly before the ring head');
 });
 
+// jsonl record builders for the task fixtures (the shapes the real CLI persists).
+const userText = (uuid, text) => ({ type: 'user', uuid, message: { role: 'user', content: text } });
+const asstToolUse = (uuid, msgId, tid, name, input) =>
+  ({ type: 'assistant', uuid, message: { id: msgId, role: 'assistant', content: [{ type: 'tool_use', id: tid, name, input }] } });
+const asstText = (uuid, msgId, text) =>
+  ({ type: 'assistant', uuid, message: { id: msgId, role: 'assistant', content: [{ type: 'text', text }] } });
+const userToolResult = (uuid, toolUseId, content) =>
+  ({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: false }] } });
+const taskView = (tasks) => tasks.map(t => ({ id: t.id, status: t.status, subject: t.subject }));
+
 test('T6 reconstructActiveTasks, case A: no current-file task is folded into a pre-renew orphan update', async () => {
-  const userText = (uuid, text) => ({ type: 'user', uuid, message: { role: 'user', content: text } });
-  const asstToolUse = (uuid, msgId, tid, name, input) =>
-    ({ type: 'assistant', uuid, message: { id: msgId, role: 'assistant', content: [{ type: 'tool_use', id: tid, name, input }] } });
-  const userToolResult = (uuid, toolUseId, content) =>
-    ({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: false }] } });
   const pre = [
     userText('p0', 'start'),
     asstToolUse('pa0', 'pm0', 'ptc', 'TaskCreate', { subject: 'Pre batch' }),
@@ -354,18 +376,26 @@ test('T6 reconstructActiveTasks, case A: no current-file task is folded into a p
     userText('pF', 'please update'),
     asstToolUse('paF', 'pmF', 'ptu', 'TaskUpdate', { taskId: '1', status: 'in_progress' }),
   ];
+  // The current file opens with turns the live ring never replays (its first
+  // turn holds a TaskCreate), then one turn the ring does hold. That puts the
+  // create below a calibrated cut taken at the pre-renew ring head: reading
+  // this file for a head that predates it WOULD fold the create.
   const post = [
     userText('q0', 'post start'),
     asstToolUse('qa0', 'qm0', 'qtc', 'TaskCreate', { subject: 'Post batch' }),
     userToolResult('qr0', 'qtc', 'Task #1 created successfully: Post batch'),
+    ...segmentTurns('unreplayed', 3),
+    ...segmentTurns('post', 1),
   ];
+  const liveFrom = 3 + 6; // record index of the `post` turn, after RENEW_HEAD
   const { inst } = await bootLiveAcrossSeams({
     ctx, project: 't6', publicId: PUBLIC, ringCap: 8,
     segments: [{ id: PRE, reason: 'initial', records: pre }],
   });
   await writeSegmentFile(inst.transcriptPlace, { id: POST, reason: 'renew', records: post });
   const seamSeq = inst.ring.nextSeq;
-  await crossSeam(inst, { id: POST, place: inst.transcriptPlace });
+  await rotate(inst, POST);
+  await replaySlice(inst, inst.transcriptPlace, POST, { from: liveFrom });
 
   const ring = inst.ringSnapshot();
   const below = ring.filter(e => e._seq < seamSeq);
@@ -374,6 +404,15 @@ test('T6 reconstructActiveTasks, case A: no current-file task is folded into a p
   assert.ok(!ring.some(e => e.kind === 'tool_use' && e.toolUseId === 'ptc'), 'precondition: the pre TaskCreate was evicted');
   assert.ok(below.some(e => e.kind === 'tool_use' && e.toolUseId === 'ptu'), 'precondition: the pre TaskUpdate is ring-held below the seam');
   assert.equal(reconstructTasks(below).hadOrphanUpdate, true, 'precondition: the update is an orphan');
+  // Discriminating precondition: the SAME read reconstructActiveTasks makes,
+  // minus the case-A gate, folds the wrong segment's create into the update.
+  const wrong = await buildArchive({
+    place: inst.transcriptPlace, sessionId: POST, ring, trimmedBefore: inst.ring.trimmedBefore,
+    userEchoCount: inst._userEchoCount, segmentStartSeq: seamSeq,
+  });
+  assert.deepEqual(taskView(reconstructTasks(wrong.events.slice(0, wrong.cut).concat(below)).activeAtEnd),
+    [{ id: '1', status: 'in_progress', subject: 'Post batch' }],
+    'precondition: an ungated read of the current file would fold its create');
 
   const active = await inst.reconstructActiveTasks(seamSeq);
   assert.deepEqual(active, reconstructTasks(below).activeAtEnd,
@@ -406,6 +445,11 @@ test('T7 seams partition the ring\'s seq space across two renews', async () => {
   assert.ok(tb > s1 && tb < s2, `precondition: the ring head lies in [s1, s2) (tb=${tb}, s1=${s1}, s2=${s2})`);
   assert.deepEqual(inst.ring.seams, expected, 'one seam per segment, oldest first; s1 survives its own eviction');
   assert.equal(inst.ring.seams.at(-1).segmentId, inst.backingSessionId, 'the last seam names the current segment');
+  const scope = await currentSegmentScope(inst);
+  assert.equal(scope.segmentId, THIRD, 'the scope names the current segment (by the partition rule, backingSessionId)');
+  assert.equal(scope.startSeq, s2);
+  assert.equal(scope.archivable, false, 'a head in [s1, s2) predates the current segment');
+  assert.equal(scope.priorEvicted, true);
   assert.deepEqual((await segmentsFor(PUBLIC)).map(g => [g.id, g.reason]),
     [[PRE, 'initial'], [POST, 'renew'], [THIRD, 'renew']], 'the lineage row equals the chain');
 
@@ -546,7 +590,7 @@ test('T12 ring content emitted before the first spawn belongs to the fill segmen
 
     const backing = inst.backingSessionId;
     await writeSegmentFile(inst.transcriptPlace, { id: backing, reason: 'initial', records: segmentTurns('cur', 12) });
-    await replaySlice(inst, inst.transcriptPlace, backing);
+    await replaySlice(inst, inst.transcriptPlace, backing, { headSkip: false });
     assert.ok(inst.ring.trimmedBefore > 0, 'precondition: the ring trimmed');
     assert.ok(!inst.ringSnapshot().some(e => e.text === 'cur prompt 0'), 'precondition: early turns were evicted');
 
@@ -556,10 +600,102 @@ test('T12 ring content emitted before the first spawn belongs to the fill segmen
       'the evicted turns are served from the current file, each once, in order');
     assert.deepEqual(textsOf(all, 'text_delta'), Array.from({ length: 12 }, (_, i) => `cur reply ${i}`));
     assert.deepEqual(inst.ring.seams, [{ segmentId: backing, startSeq: 0 }], 'the first seam starts at 0');
-    const scope = currentSegmentScope(inst);
+    const scope = await currentSegmentScope(inst);
     assert.equal(scope.archivable, true, 'the current file is archivable');
+    assert.equal(scope.segmentId, backing, 'the scope names the fill segment');
     assert.equal(scope.priorEvicted, false);
   } finally {
     disposeSystemHandles();
   }
+});
+
+test('T13 a disk read (pagePersistedEvents) never marks a floor', async () => {
+  // A retired session has no ring and so no evicted earlier-segment history:
+  // even a renew-shaped file pages whole, with zero markers.
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 't13' });
+  const place = localPlace(path.join(ctx.projectsRoot, 't13'));
+  await writeSegmentFile(place, { id: POST, reason: 'renew', records: segmentTurns('post', 12) });
+  let all = [];
+  let cursor = null;
+  for (let i = 0; i < 100; i++) {
+    const page = await pagePersistedEvents({ place, sessionId: POST, before: cursor, limit: 7 });
+    all = page.events.concat(all);
+    if (!page.hasMore) break;
+    cursor = page.nextBefore;
+  }
+  assert.equal(gapCount(all), 0, 'no history_gap on a disk walk');
+  assert.deepEqual(textsOf(all, 'user_echo'),
+    [RENEW_HEAD[0].message.content, RENEW_HEAD[1].message.content, ...Array.from({ length: 12 }, (_, i) => `post prompt ${i}`)]);
+  assert.equal(all[0].text, RENEW_HEAD[0].message.content, 'the walk opens on the file\'s first event');
+});
+
+test('T14 reconstructActiveTasks, case B: the current file is cut with the calibrated offset', async () => {
+  // One pre echo against RENEW_HEAD's two: the file ordinal of every post turn
+  // is one ABOVE its live ordinal, so an uncalibrated cut stops one turn early —
+  // exactly at the turn holding the TaskCreate the ring evicted.
+  const post = [
+    ...segmentTurns('fill', 10),
+    userText('mk', 'make batch'),
+    asstToolUse('mka', 'mkm', 'qtc', 'TaskCreate', { subject: 'Post batch' }),
+    userToolResult('mkr', 'qtc', 'Task #1 created successfully: Post batch'),
+    userText('up', 'please update'),
+    asstToolUse('upa', 'upm', 'qtu', 'TaskUpdate', { taskId: '1', status: 'in_progress' }),
+    asstText('r0', 'upm0', 'working 0'), asstText('r1', 'upm1', 'working 1'), asstText('r2', 'upm2', 'working 2'),
+  ];
+  const { inst, crossed } = await bootLiveAcrossSeams({
+    ctx, project: 't14', publicId: PUBLIC, ringCap: 8,
+    segments: [
+      { id: PRE, reason: 'initial', records: segmentTurns('pre', 1) },
+      { id: POST, reason: 'renew', records: post },
+    ],
+  });
+  const ring = inst.ringSnapshot();
+  const tb = inst.ring.trimmedBefore;
+  assert.equal(ring[0].text, 'please update', 'precondition: the ring head is the update turn\'s echo');
+  assert.ok(!ring.some(e => e.kind === 'tool_use' && e.toolUseId === 'qtc'), 'precondition: the TaskCreate was evicted');
+  assert.equal(reconstructTasks(ring).hadOrphanUpdate, true, 'precondition: the update is a ring orphan');
+  const initSeq = crossed[0][0]._seq;
+  assert.equal(crossed[0][0].subtype, 'init');
+  assert.ok(tb > initSeq, 'precondition: the head is inside the current segment');
+  // Discriminating precondition: the aligned-ordinal cut misses the create.
+  const aligned = await buildArchive({
+    place: inst.transcriptPlace, sessionId: POST, ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount,
+  });
+  assert.deepEqual(reconstructTasks(aligned.events.slice(0, aligned.cut).concat(ring)).activeAtEnd, [],
+    'precondition: an uncalibrated cut stops before the create');
+
+  const active = await inst.reconstructActiveTasks(Number.MAX_SAFE_INTEGER);
+  assert.deepEqual(taskView(active), [{ id: '1', status: 'in_progress', subject: 'Post batch' }],
+    'the evicted create is recovered from the current file');
+});
+
+test('T15 buildArchive: no outer echo before the first correlatable event means no offset — cut 0, gap, no throw', async () => {
+  // A giant-turn trim can evict every echo: the ring is text blocks only.
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 't15' });
+  const place = localPlace(path.join(ctx.projectsRoot, 't15'));
+  await writeSegmentFile(place, { id: POST, reason: 'renew', records: segmentTurns('post', 4) });
+  const ring = [
+    { kind: 'text_delta', msgId: 'live-only', blockIdx: 0, text: 'x', parentToolUseId: null, _seq: 20 },
+    { kind: 'text_end', msgId: 'live-only', blockIdx: 0, parentToolUseId: null, _seq: 21 },
+    // Correlatable into the file, but no echo precedes it in the ring.
+    { kind: 'text_delta', msgId: 'post-m3', blockIdx: 0, text: 'post reply 3', parentToolUseId: null, _seq: 22 },
+    { kind: 'text_end', msgId: 'post-m3', blockIdx: 0, parentToolUseId: null, _seq: 23 },
+  ];
+  const archive = await buildArchive({ place, sessionId: POST, ring, trimmedBefore: 20, userEchoCount: 7, segmentStartSeq: 5 });
+  assert.equal(archive.cut, 0, 'nothing is served from the file');
+  assert.equal(archive.gap, true, 'the loss is marked');
+  assert.ok(archive.events.length > 0, 'the file itself was read');
+});
+
+test('T16 currentSegmentScope: the archivable boundary, and the segment named by the seams', async () => {
+  const scope = (seams, tb, backingSessionId) => currentSegmentScope({ ring: { trimmedBefore: tb, seams }, backingSessionId });
+  const seams = [{ segmentId: 'seg-a', startSeq: 0 }, { segmentId: 'seg-b', startSeq: 7 }];
+  // tb === startSeq: the ring head IS the rotation init, inside the segment.
+  assert.deepEqual(await scope(seams, 7, 'seg-b'), { segmentId: 'seg-b', startSeq: 7, archivable: true, priorEvicted: true });
+  assert.deepEqual(await scope(seams, 6, 'seg-b'), { segmentId: 'seg-b', startSeq: 7, archivable: false, priorEvicted: true });
+  // segmentId comes from the seams, not from backingSessionId.
+  assert.equal((await scope(seams, 7, 'other')).segmentId, 'seg-b');
+  // Before the first spawn: no seams — the backing id, from seq 0.
+  assert.deepEqual(await scope([], 0, 'seg-a'), { segmentId: 'seg-a', startSeq: 0, archivable: true, priorEvicted: false });
+  assert.equal((await scope(seams, 7, null)).archivable, false, 'no backing session, nothing to read');
 });

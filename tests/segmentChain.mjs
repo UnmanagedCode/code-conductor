@@ -76,20 +76,21 @@ export async function rotate(inst, id) {
 }
 
 // Emit, as live ring content, the replayed events of records [from, to) of
-// segment file `id` (record indices exclude a renew file's RENEW_HEAD).
-export async function replaySlice(inst, place, id, { from = 0, to = Infinity } = {}) {
+// segment file `id`. `headSkip` (on by default) is the production live shape at
+// a renew seam: the live ring never emits RENEW_HEAD's replay-only echoes, so
+// they are skipped and record indices start after them — the file MUST open
+// with RENEW_HEAD. Pass `headSkip: false` for a file without one.
+export async function replaySlice(inst, place, id, { from = 0, to = Infinity, headSkip = true } = {}) {
   const result = await loadPersistedTranscript({ place, sessionId: id, seqHint: 0 });
   assert.ok(result, `segment file ${id} exists`);
-  const head = result.lines.length && isRenewFile(result) ? RENEW_HEAD.length : 0;
+  if (headSkip) {
+    const firstEcho = result.lines[0]?.events[0];
+    assert.equal(firstEcho?.text, RENEW_HEAD[0].message.content, `headSkip: ${id} does not open with RENEW_HEAD`);
+  }
+  const head = headSkip ? RENEW_HEAD.length : 0;
   for (const line of result.lines.slice(head + from, head + to)) {
     for (const ev of line.events) inst._emitUi(ev);
   }
-}
-
-// A renew file's first replayed event is RENEW_HEAD's caveat echo.
-function isRenewFile(result) {
-  const first = result.lines[0]?.events[0];
-  return first?.kind === 'user_echo' && first.text === RENEW_HEAD[0].message.content;
 }
 
 // Live content no seeded file recorded: an optional outer echo, then `blocks`
@@ -103,9 +104,18 @@ export function emitLive(inst, { echo = null, msgId, blocks }) {
 }
 
 // Rotate onto segment `id`, then replay its whole file as live content.
+// Returns every event emitted while crossing, in emit order.
 export async function crossSeam(inst, { id, place }) {
-  await rotate(inst, id);
-  await replaySlice(inst, place, id);
+  const emitted = [];
+  const onEvent = (ev) => emitted.push(ev);
+  inst.on('event', onEvent);
+  try {
+    await rotate(inst, id);
+    await replaySlice(inst, place, id);
+  } finally {
+    inst.off('event', onEvent);
+  }
+  return emitted;
 }
 
 export async function withRingCap(ringCap, fn) {
@@ -118,7 +128,8 @@ export async function withRingCap(ringCap, fn) {
 }
 
 // Resume `publicId` live on segment `liveFrom`, then cross every later
-// (renew) segment's seam live. Returns { inst, id, place }.
+// (renew) segment's seam live. Returns { inst, id, place, crossed }, where
+// `crossed[i]` is every event emitted crossing the i-th later segment's seam.
 export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, liveFrom = 0, ringCap }) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: project });
   await seedSegmentChain({
@@ -134,9 +145,10 @@ export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, li
   const inst = ctx.instances.get(id);
   await waitFor(() => inst.status === 'idle');
   assert.equal(inst.backingSessionId, segments[liveFrom].id, 'resumed onto the live-from segment');
+  const crossed = [];
   for (const seg of segments.slice(liveFrom + 1)) {
     assert.equal(seg.reason, 'renew', 'only a renew seam can be crossed live (a prune wipes the ring)');
-    await crossSeam(inst, { id: seg.id, place: inst.transcriptPlace });
+    crossed.push(await crossSeam(inst, { id: seg.id, place: inst.transcriptPlace }));
   }
-  return { inst, id, place: inst.transcriptPlace };
+  return { inst, id, place: inst.transcriptPlace, crossed };
 }
