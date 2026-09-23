@@ -55,7 +55,10 @@ export function isTextResult(v: unknown): v is TextResult {
 // the wire: the compact-JSON metadata block followed by each raw body block, in
 // order — mirroring how the MCP server emits them as separate content[] blocks
 // (src/mcp/server.ts). Used to fold a default get_recent_messages result inline
-// into the idle-wake stub without re-deriving its shape.
+// into the idle-wake stub without re-deriving its shape. `renderWakeBodyInto`
+// (public/foldedText.js) treats line 1 of that stub's body as the whole
+// metadata block; without this being always a single line, a future
+// multi-line meta rendering would silently break the client.
 export function flattenPayload(meta: unknown, bodies: unknown): string {
   const arr = bodies == null ? [] : (Array.isArray(bodies) ? bodies : [bodies]);
   return [JSON.stringify(meta ?? null), ...arr.map(String)].join('\n\n');

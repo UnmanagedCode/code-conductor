@@ -14,12 +14,15 @@ import { el } from './dom.js';
 import { renderMarkdownInto } from './markdown.js';
 import { copyToClipboard } from './blocks.js';
 
-export function buildUserText(text) {
+// `renderInto` builds the rendered view; defaults to the markdown renderer.
+// Folded bubbles (wake/skill, see foldedText.js) pass a variant that splits
+// off a leading metadata line first.
+export function buildUserText(text, { renderInto = renderMarkdownInto } = {}) {
   const body = el('div', { class: 'block text user-text' });
 
   const showRendered = () => {
     body.classList.add('md');
-    renderMarkdownInto(body, text);
+    renderInto(body, text);
     body.dataset.view = 'rendered';
   };
   const showRaw = () => {
