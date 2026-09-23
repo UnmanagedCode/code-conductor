@@ -26,6 +26,15 @@
 // The reverse index (backing → public) is built in memory at load and NEVER
 // persisted: a second on-disk copy is a divergence surface.
 //
+// TOMBSTONES. A segment whose transcript is gone for good is not removed but
+// marked `dropped: true` in place (dropSegment), so the one reader that walks the
+// chain's SHAPE — the lineage scroll-back (src/lineagePager.ts, via chainFor) —
+// still sees where it was: which renew boundary it sat on, and whether it was the
+// original a later prune copied. Every other reader sees `liveSegments` only,
+// which is exactly the chain a removal would have left. Row invariant, kept by
+// every mutation: a persisted row has at least one live entry, and `current` is
+// live; a mutation that would leave none deletes the row.
+//
 // Atomic writes (write tmp + rename) and a cross-process advisory lockfile
 // around every mutation, mirroring `src/tempSessions.ts`. Missing file = empty.
 
@@ -40,11 +49,13 @@ export interface LineageSegment {
   id: string;
   reason: RotationReason;
   at: string;
+  dropped?: true;
 }
 
+// `chain` is the full chain, tombstones included (persisted under `segments`).
 export interface LineageRow {
   current: string;
-  segments: LineageSegment[];
+  chain: LineageSegment[];
 }
 
 export interface Lineage {
@@ -82,21 +93,27 @@ function parseLineageJson(raw: string): Map<string, LineageRow> {
     const rows: LineageSegment[] = [];
     for (const seg of segments) {
       if (typeof seg !== 'object' || seg === null) continue;
-      const { id, reason, at } = seg as { id?: unknown; reason?: unknown; at?: unknown };
+      const { id, reason, at, dropped } = seg as { id?: unknown; reason?: unknown; at?: unknown; dropped?: unknown };
       if (typeof id !== 'string' || !id) continue;
       if (typeof reason !== 'string' || !VALID_REASONS.has(reason as RotationReason)) continue;
-      rows.push({ id, reason: reason as RotationReason, at: typeof at === 'string' ? at : '' });
+      rows.push({ id, reason: reason as RotationReason, at: typeof at === 'string' ? at : '', ...(dropped === true ? { dropped: true as const } : {}) });
     }
-    if (rows.length === 0) continue;
-    out.set(publicId, { current, segments: rows });
+    const row = { current, chain: rows };
+    if (liveSegments(row).length === 0) continue;
+    out.set(publicId, row);
   }
   return out;
+}
+
+// The row's chain minus its tombstones — what every reader but chainFor sees.
+function liveSegments(row: LineageRow): LineageSegment[] {
+  return row.chain.filter(s => !s.dropped);
 }
 
 function indexBacking(byPublic: Map<string, LineageRow>): Map<string, string> {
   const byBacking = new Map<string, string>();
   for (const [publicId, row] of byPublic) {
-    for (const seg of row.segments) byBacking.set(seg.id, publicId);
+    for (const seg of liveSegments(row)) byBacking.set(seg.id, publicId);
   }
   return byBacking;
 }
@@ -199,9 +216,10 @@ async function writeStore(byPublic: Map<string, LineageRow>): Promise<void> {
     return;
   }
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  const sessions: Record<string, LineageRow> = {};
+  const sessions: Record<string, { current: string; segments: LineageSegment[] }> = {};
   for (const key of [...byPublic.keys()].sort((a, b) => a.localeCompare(b))) {
-    sessions[key] = byPublic.get(key) as LineageRow;
+    const row = byPublic.get(key) as LineageRow;
+    sessions[key] = { current: row.current, segments: row.chain };
   }
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(tmp, JSON.stringify({ sessions }, null, 2) + '\n');
@@ -243,7 +261,7 @@ export function mintPublicId(firstBackingId: string): Promise<string> {
     }
     byPublic.set(publicId, {
       current: firstBackingId,
-      segments: [{ id: firstBackingId, reason: 'initial', at: new Date().toISOString() }],
+      chain: [{ id: firstBackingId, reason: 'initial', at: new Date().toISOString() }],
     });
     await writeStore(byPublic);
     return publicId;
@@ -256,7 +274,7 @@ export function mintPublicId(firstBackingId: string): Promise<string> {
 // the public id IS its first backing id (the base case), so promoting it to an
 // `initial` segment costs nothing and is exact. Never mints.
 //
-// Idempotent: a no-op when `current` already is `backingId` and the trailing
+// Idempotent: a no-op when `current` already is `backingId` and the newest LIVE
 // segment already carries it, so a retried write cannot double-append.
 export function recordRotation(publicId: string, backingId: string, reason: RotationReason): Promise<void> {
   return serialize(() => withLock(lineageFile(), async () => {
@@ -265,19 +283,21 @@ export function recordRotation(publicId: string, backingId: string, reason: Rota
     const byPublic = await loadStrict(); // canonical re-read under lock
     const at = new Date().toISOString();
     const row = byPublic.get(publicId)
-      ?? { current: publicId, segments: [{ id: publicId, reason: 'initial' as RotationReason, at }] };
-    if (row.current === backingId && row.segments[row.segments.length - 1]?.id === backingId) return;
-    row.segments.push({ id: backingId, reason, at });
+      ?? { current: publicId, chain: [{ id: publicId, reason: 'initial' as RotationReason, at }] };
+    if (row.current === backingId && liveSegments(row).at(-1)?.id === backingId) return;
+    row.chain.push({ id: backingId, reason, at });
     row.current = backingId;
     byPublic.set(publicId, row);
     await writeStore(byPublic);
   }));
 }
 
-// Undo the trailing segment IFF it is `backingId`, restoring `current` to the new
-// last segment. A row that falls back to a single `initial` segment whose id
-// equals the public id is DELETED — restoring the base case exactly, so a rolled
-// back rotation leaves no trace.
+// Undo the newest LIVE segment IFF it is `backingId` (trailing tombstones stay),
+// restoring `current` to the newest live segment left. A row left with no live
+// segment, or whose live segments are exactly one `initial` segment whose id
+// equals the public id, is DELETED — restoring the base case exactly, so a rolled
+// back rotation leaves no trace. Any tombstone in such a row sits after its
+// initial entry, so none is older than a servable segment.
 //
 // Only caller: pruneSession's rollback catch, so a throw inside launch() cannot
 // leave a recorded segment the process never ran.
@@ -287,14 +307,16 @@ export function revertRotation(publicId: string, backingId: string): Promise<voi
     const byPublic = await loadStrict(); // canonical re-read under lock
     const row = byPublic.get(publicId);
     if (!row) return;
-    if (row.segments[row.segments.length - 1]?.id !== backingId) return;
-    row.segments.pop();
-    const last = row.segments[row.segments.length - 1];
+    const target = liveSegments(row).at(-1);
+    if (target?.id !== backingId) return;
+    row.chain.splice(row.chain.lastIndexOf(target), 1);
+    const live = liveSegments(row);
+    const last = live.at(-1);
     if (!last) {
       byPublic.delete(publicId);
     } else {
       row.current = last.id;
-      const baseCase = row.segments.length === 1 && last.reason === 'initial' && last.id === publicId;
+      const baseCase = live.length === 1 && last.reason === 'initial' && last.id === publicId;
       if (baseCase) byPublic.delete(publicId);
       else byPublic.set(publicId, row);
     }
@@ -326,29 +348,41 @@ export async function publicIdFor(id: string): Promise<string> {
   return byBacking.get(id) ?? id;
 }
 
-// The segment chain, oldest first. `[]` when there is no row.
+// The live segment chain, oldest first. `[]` when there is no row.
 export async function segmentsFor(publicId: string): Promise<LineageSegment[]> {
   if (!publicId) return [];
   const { byPublic } = await loadLineage();
-  return byPublic.get(publicId)?.segments ?? [];
+  const row = byPublic.get(publicId);
+  return row ? liveSegments(row) : [];
 }
 
-// Remove `backingId` from whichever row owns it. If it was `current`, `current`
-// falls back to the newest survivor; the row is deleted once empty. Called from
-// the two paths that KNOW a transcript is gone — the explicit archive delete and
-// loadHistory's ENOENT branch — so a chain never points at a missing file.
+// The FULL chain, tombstones included, oldest first. `[]` when there is no row.
+// Only the lineage scroll-back reads this; every other reader wants segmentsFor.
+export async function chainFor(publicId: string): Promise<LineageSegment[]> {
+  if (!publicId) return [];
+  const { byPublic } = await loadLineage();
+  return byPublic.get(publicId)?.chain ?? [];
+}
+
+// Tombstone `backingId` in whichever row owns it. If it was `current`, `current`
+// falls back to the newest live segment; the row is deleted once none is left.
+// An already-tombstoned id is a no-op with no write. Called from the two paths
+// that KNOW a transcript is gone — the explicit archive delete and loadHistory's
+// ENOENT branch — so no reader but chainFor sees a segment without a file.
 export function dropSegment(backingId: string): Promise<void> {
   return serialize(() => withLock(lineageFile(), async () => {
     if (!backingId) return;
     const byPublic = await loadStrict(); // canonical re-read under lock
     let ownerId: string | null = null;
     for (const [publicId, row] of byPublic) {
-      if (row.segments.some(s => s.id === backingId)) { ownerId = publicId; break; }
+      if (row.chain.some(s => s.id === backingId)) { ownerId = publicId; break; }
     }
     if (ownerId === null) return;
     const row = byPublic.get(ownerId) as LineageRow;
-    row.segments = row.segments.filter(s => s.id !== backingId);
-    const last = row.segments[row.segments.length - 1];
+    const entry = row.chain.find(s => s.id === backingId) as LineageSegment;
+    if (entry.dropped) return;
+    entry.dropped = true;
+    const last = liveSegments(row).at(-1);
     if (!last) byPublic.delete(ownerId);
     else {
       if (row.current === backingId) row.current = last.id;
