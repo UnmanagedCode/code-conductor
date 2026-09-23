@@ -917,6 +917,57 @@ wtest('W20 rendered end to end: a current-segment bubble served from the live sp
   });
 });
 
+wtest('W21 row #23: a rotation that never trimmed the ring stays in the live space — one page, no view', async () => {
+  const { inst, id } = await bootLiveAcrossSeams({
+    ctx, project: 'w21', publicId: PUBLIC,
+    segments: [
+      { id: PRE, reason: 'initial', records: segmentTurns('pre', 3) },
+      { id: POST, reason: 'renew', records: segmentTurns('post', 1) },
+    ],
+  });
+  assert.equal(inst.ring.trimmedBefore, 0, 'precondition: nothing was trimmed');
+  assert.deepEqual(inst.ring.seams.map(m => m.segmentId), [PRE, POST], 'precondition: a live rotation');
+  assert.equal(inst.ringSnapshot()[0]._seq < inst.ring.seams[1].startSeq, true, 'precondition: the ring head is in PRE');
+  const whole = await walkLineage(ctx, id, { limit: 500 });
+  assert.deepEqual(whole.cursors, [{ segment: null, before: null }], 'one request, in the live space');
+  assert.equal(whole.pages.length, 1);
+  assert.equal(whole.pages[0].segment, null, 'its cursor stays in the live space');
+  assert.equal(whole.pages[0].hasMore, false, 'and history ends there: PRE is initial, nothing older');
+  const paged = await walkLineage(ctx, id, { limit: 7 });
+  assert.ok(paged.pages.length > 1, 'precondition: several pages');
+  assert.ok(paged.cursors.every(c => c.segment === null), 'no view request: every request is in the live space');
+  assert.ok(paged.pages.every(p => p.segment === null), 'no page hands out another space');
+  assert.equal(render(paged.events, { [POST]: 'POST' }), '[pre] ‖POST [post]');
+  const view = await getLineage(id, `?segment=${PRE}`);
+  assert.equal(view.status, 400, 'the ring-head segment is not addressable as a view when nothing was trimmed');
+});
+
+wtest('W22 a segment frame precedes an OUTER init only: not a non-init event, not a sub-agent init', async () => {
+  const { inst, id } = await bootLiveAcrossSeams({
+    ctx, project: 'w22', publicId: PUBLIC, segments: [{ id: PRE, reason: 'initial', records: segmentTurns('pre', 3) }],
+  });
+  const c = await wsClient();
+  try {
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot' && m.id === id);
+    const mark = c.messages.length;
+    inst._emitUi({ kind: 'user_echo', text: 'live prompt', parentToolUseId: null });
+    inst._emitUi({ kind: 'text_delta', msgId: 'live-m', blockIdx: 0, text: 'live reply', parentToolUseId: null });
+    inst._emitUi({ kind: 'system', subtype: 'init', data: { session_id: 'sub-agent-session' }, parentToolUseId: 'toolu_sub' });
+    inst._emitUi({ kind: 'text_end', msgId: 'live-m', blockIdx: 0, parentToolUseId: null });
+    await rotate(inst, THIRD);
+    await c.wait(m => c.messages.indexOf(m) >= mark && isInitFrame(m, THIRD));
+    const frames = c.messages.slice(mark).filter(m => m.id === id && (m.t === 'event' || m.t === 'segment'));
+    const iInit = frames.findIndex(m => isInitFrame(m, THIRD));
+    const shape = frames.slice(0, iInit + 1).map(m => (m.t === 'segment' ? `segment:${m.currentSegmentId}`
+      : `event:${m.ev.kind}${m.ev.subtype ? `/${m.ev.subtype}` : ''}${m.ev.parentToolUseId ? '(sub)' : ''}`));
+    assert.deepEqual(shape, [
+      'event:user_echo', 'event:text_delta', 'event:system/init(sub)', 'event:text_end',
+      `segment:${THIRD}`, 'event:segment_seam', 'event:system/init',
+    ], 'exactly one segment frame, directly before the outer init');
+  } finally { await c.close(); }
+});
+
 // Render a lineage walk the way the browser does: the real Conversation and
 // lazy controller under happy-dom, fed the snapshot as public/wsRouter.js feeds
 // it, with the controller's fetches proxied to this server, paged until the

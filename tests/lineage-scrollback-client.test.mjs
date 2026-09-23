@@ -130,6 +130,7 @@ test('C2 the progress guard: a revisited segment, or a stalled same-segment curs
     await settle();
     assertLineageRoute(calls);
     assert.equal(calls.length, 2, 'a same-segment cursor that does not decrease ends the walk');
+    assertNull(dom.conversationEl.querySelector('.history-sentinel'), 'history is exhausted');
   });
 });
 
