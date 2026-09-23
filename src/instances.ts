@@ -104,13 +104,13 @@ import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from './planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
-import { buildArchive } from './eventArchive.ts';
+import { buildArchive, currentSegmentScope } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import type { CreateInstanceInput, InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
+import type { CreateInstanceInput, InstanceLike, InstanceManagerLike, InstanceSummary, RingSeam } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -466,6 +466,17 @@ export class EventLog {
   slack: number;
   buf: Array<UiEvent & { _seq: number }>;
   nextSeq: number;
+  // Which backing segment owns which seq range, oldest first: the segment of
+  // seq `s` is the last seam with `startSeq <= s`. Once the instance has
+  // spawned, `seams[0].startSeq === 0` and the last seam names
+  // `backingSessionId`. Written by markSeam at exactly two sites — the fill
+  // seam in Instance.spawn (every launch() runs on an empty ring) and the
+  // rotation seam in Instance._handleStdoutLine's rotation branch — and never
+  // touched by _trim, since seqs are never renumbered. Carries no echo
+  // ordinal: a post-`/clear` jsonl opens with a varying number of replay-only
+  // echoes, so ordinals are calibrated against a segment's own file whenever
+  // it is read (src/eventArchive.ts). In-memory only.
+  seams: RingSeam[];
 
   constructor({ cap }: { cap?: number } = {}) {
     const envCap = Number(process.env.ORCH_EVENT_RING_CAP);
@@ -475,6 +486,7 @@ export class EventLog {
     this.slack = Math.min(RING_TRIM_SLACK, this.cap);
     this.buf = [];
     this.nextSeq = 0;
+    this.seams = [];
   }
   // First retained `_seq` — everything below it was evicted (0 when
   // nothing was). Equals nextSeq for an empty ring.
@@ -554,7 +566,9 @@ export class EventLog {
   // the same `_seq` slot later expecting byte-stable text, or that merges/pages
   // by array position instead of by `_seq`.
   toArray(): Array<UiEvent & { _seq: number }> { return this.buf.slice(); }
-  clear(): void { this.buf.length = 0; this.nextSeq = 0; }
+  // The next pushed event is the first of segment `segmentId`.
+  markSeam(segmentId: string): void { this.seams.push({ segmentId, startSeq: this.nextSeq }); }
+  clear(): void { this.buf.length = 0; this.nextSeq = 0; this.seams = []; }
 }
 
 export class Instance extends EventEmitter implements InstanceLike {
@@ -1324,7 +1338,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     const events = this.ring.buf.filter(ev => ev._seq < beforeSeq);
     const { activeAtEnd, hadOrphanUpdate } = reconstructTasks(events);
     const tb = this.ring.trimmedBefore;
-    if (!hadOrphanUpdate || tb <= 0 || !this.backingSessionId) return activeAtEnd;
+    // Only the current segment's file can hold the evicted create, and only
+    // when the ring head is inside that segment — a head that predates a live
+    // renew must never fold the new file's tasks into an older update.
+    const scope = currentSegmentScope(this);
+    if (!hadOrphanUpdate || tb <= 0 || !scope.archivable || !this.backingSessionId) return activeAtEnd;
     // Best-effort widening: a non-ENOENT jsonl read error (EACCES/EIO/…) must
     // never abort the snapshot frame — fall back to the ring-only result the
     // pre-archive code always returned.
@@ -1332,7 +1350,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       const archive = await buildArchive({
         place: this.transcriptPlace, sessionId: this.backingSessionId,
         ring: this.ringSnapshot(), trimmedBefore: tb,
-        userEchoCount: this._userEchoCount,
+        userEchoCount: this._userEchoCount, segmentStartSeq: scope.startSeq,
       });
       const combined = archive.events.slice(0, archive.cut).concat(events);
       return reconstructTasks(combined).activeAtEnd;
@@ -2073,6 +2091,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and the transcript-keyed sidecar markers — is a backing-id consumer. One
     // assertion at the capture point covers all of them.
     assertBackingId(backingId, 'Instance.spawn');
+    // The fill seam. Every launch() caller runs on an empty ring (a new
+    // instance, or one _wipeForResume just cleared), so this is always
+    // `{ backingId, 0 }` and precedes the loadHistory replay below.
+    this.ring.markSeam(backingId);
     // Persist the temp marker at spawn time so it survives a SIGKILL that
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
@@ -2406,6 +2428,9 @@ export class Instance extends EventEmitter implements InstanceLike {
           const publicId = this.sessionId;
           this.backingSessionId = sid;
           this._segments.push(sid);
+          // The rotation seam: this init is emitted below, so it takes the
+          // seam's own startSeq.
+          this.ring.markSeam(sid);
           if (publicId) this._kickLineageWrite(() => recordRotation(publicId, sid, 'renew'));
           this._hydrateTitle().catch(() => {});
         }

@@ -23,6 +23,14 @@ import type { PlaybookEnforcement } from './playbooks.ts';
 import type { SessionRedirect } from './systems/toolRedirect.ts';
 import type { Response } from 'express';
 
+// One backing segment's claim on the ring's seq space: ring content with
+// `_seq >= startSeq` (and below the next seam's `startSeq`) belongs to backing
+// jsonl `segmentId`. See EventLog.seams in src/instances.ts.
+export interface RingSeam {
+  segmentId: string;
+  startSeq: number;
+}
+
 export interface InstanceSummary {
   id: string;
   project: string;
@@ -129,7 +137,7 @@ export interface InstanceLike {
   consumeTurnForceAborted(): boolean;
   readonly liveThinkingTokens: number | null;
   readonly lastContextUsage: unknown;
-  readonly ring: { trimmedBefore: number; nextSeq: number };
+  readonly ring: { trimmedBefore: number; nextSeq: number; readonly seams: readonly RingSeam[] };
   snapshotTail(): UiEvent[];
   ringSnapshot(): Array<UiEvent & { _seq: number }>;
   reconstructActiveTasks(beforeSeq: number): Promise<TaskRecord[]>;
