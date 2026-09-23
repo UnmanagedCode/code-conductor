@@ -1292,7 +1292,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
-  // lazy-loaded via GET /api/instances/:id/events. The window start is
+  // lazy-loaded via GET /api/instances/:id/lineage-events. The window start is
   // snapped to a QUIESCENT point (no open block, no unresolved tool — see
   // snapStartToQuiescent in parser.ts): the first one inside the window when
   // present, else the nearest one below it. A non-quiescent tail start would

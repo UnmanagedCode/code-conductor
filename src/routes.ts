@@ -33,6 +33,7 @@ import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
+import { pageLineageEvents } from './lineagePager.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
 import {
@@ -123,6 +124,15 @@ function assertValidSid(sid: string): void {
   if (!isSessionId(sid)) {
     throw httpError(400, 'invalid sessionId');
   }
+}
+
+// An optional integer query parameter of the paging routes; 400 when present
+// and not an integer.
+function intQueryParam(v: unknown, name: string): number | null {
+  if (v === undefined) return null;
+  const n = Number(v);
+  if (!Number.isInteger(n)) throw httpError(400, `${name} must be an integer`);
+  return n;
 }
 
 // THE shared read for every session-scoped route's `:sessionId` path param.
@@ -1285,7 +1295,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     // Paged event history, including events evicted from the capped ring
     // (reconstructed from the session jsonl — see src/eventArchive.ts).
     // `before=<seq>` pages backward (up to `limit` events immediately
-    // preceding that seq, oldest-first; the UI's scroll-up path — echo the
+    // preceding that seq, oldest-first — echo the
     // response's `nextBefore` cursor back to continue). `after=<seq>` pages
     // forward (first `limit` events with seq > after). Neither → trailing
     // `limit` events. `limit` clamped by `clampLimit` (default `LIMIT_DEFAULT`, max `LIMIT_MAX`). Responds
@@ -1294,19 +1304,29 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        const parseIntParam = (v: unknown, name: string): number | null => {
-          if (v === undefined) return null;
-          const n = Number(v);
-          if (!Number.isInteger(n)) {
-            throw httpError(400, `${name} must be an integer`);
-          }
-          return n;
-        };
-        const before = parseIntParam(req.query.before, 'before');
-        const after = parseIntParam(req.query.after, 'after');
-        const limit = parseIntParam(req.query.limit, 'limit') ?? undefined;
+        const before = intQueryParam(req.query.before, 'before');
+        const after = intQueryParam(req.query.after, 'after');
+        const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;
         const page = await pageInstanceEvents(inst, { before, after, limit });
         res.json({ id: inst.id, ...page });
+      } catch (e) { next(e); }
+    });
+
+    // The web UI's scroll-back across the session's WHOLE lineage — the live
+    // ring, then every earlier backing segment down to `initial` (see
+    // src/lineagePager.ts). Backward only: `segment=<id>` names the cursor space
+    // a previous page handed out (absent = the live space) and `before=<int>` the
+    // cursor in it (absent = that space's newest page). UI-only — no MCP tool
+    // reads it. Responds { id, events, hasMore, segment, nextBefore, pageSegment,
+    // currentSegmentId }; 400 for a `segment` the walk never hands out.
+    r.get('/instances/:id/lineage-events', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw httpError(404, 'instance not found');
+        const before = intQueryParam(req.query.before, 'before');
+        const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;
+        const segment = typeof req.query.segment === 'string' ? req.query.segment : null;
+        res.json({ id: inst.id, ...await pageLineageEvents(inst, { segment, before, limit }) });
       } catch (e) { next(e); }
     });
 

@@ -77,7 +77,13 @@ export function installWsRouter({
     // /api/usage fetch. globalRLTracker is fed ONLY by the live 'event'
     // handler below and by accountUsage.js's periodic refresh.
     const isActive = m.id === state.activeId;
-    if (isActive) conversation.clear();
+    if (isActive) {
+      conversation.clear();
+      // Rewind/fork provenance: the server's current segment, and the segment
+      // the tail starts in (its dividers advance it from there).
+      conversation.setCurrentSegment(m.currentSegmentId ?? null);
+      conversation.segmentId = m.tailSegmentId ?? null;
+    }
     if (isActive) conversation._replayMode = true;
     for (const ev of m.events ?? []) {
       const prevCount = tracker.completedBatches.length;
@@ -103,8 +109,8 @@ export function installWsRouter({
     }
     if (!isActive) return;
     headerHandle.update();
-    // Tail-only snapshot: arm the scroll-up lazy-load when older history
-    // exists below the rendered tail.
+    // Tail-only snapshot: arm the scroll-up lazy-load of everything older —
+    // the ring below the tail, then the session's earlier backing segments.
     lazyController.init(m);
     // Fork case: the newly-spawned instance's first snapshot carries the
     // dropped user prompt inline as `droppedText` (server consumes it once,
@@ -155,6 +161,17 @@ export function installWsRouter({
     if (typeof m.droppedText === 'string') {
       composer.prefill(m.droppedText);
     }
+  });
+
+  // Sent before every init the instance emits (its spawn's, and every
+  // rotation's): the segment it runs under now. Live events from here on come
+  // from it, and every bubble from another segment loses rewind/fork — whether
+  // or not a divider was drawn.
+  bus.addEventListener('segment', (e) => {
+    const m = e.detail;
+    if (m.id !== state.activeId) return;
+    conversation.segmentId = m.currentSegmentId ?? null;
+    conversation.setCurrentSegment(m.currentSegmentId ?? null);
   });
 
   bus.addEventListener('event', (e) => {

@@ -534,7 +534,7 @@ test('R1: the live drop and the reload drop agree', () => {
     getTracker: () => ({ completedBatches: [], reset: noop, seedActive: noop, apply: noop }),
     getUsage: () => usage,
     globalRLTracker: new RateLimitTracker(),
-    conversation: { clear: noop, reset: noop, apply: noop, _replayMode: false },
+    conversation: { clear: noop, reset: noop, apply: noop, setCurrentSegment: noop, _replayMode: false },
     headerHandle: { update: () => { updates += 1; } },
     lazyController: { init: noop, reset: noop },
     sessionActions: { resumeSession: async () => {} },
