@@ -233,7 +233,9 @@ function calibrateEchoOffset(ring: SeqEvent[], flat: SeqEvent[], flatIndex: Map<
 //   archivable — the ring head is inside the current segment, so its file can
 //              reconstruct history below the ring.
 //   priorEvicted — ring-held events of an EARLIER segment were evicted; this
-//              pager can never serve them.
+//              pager can never serve them. `startSeq > 0` names an earlier
+//              segment because the first seam always starts at 0
+//              (EventLog.markSeam).
 // With no live rotation (one seam at 0) this is `archivable = !!backingSessionId`
 // and `priorEvicted = false` — the pre-rotation behaviour exactly.
 export function currentSegmentScope(inst: Pick<InstanceLike, 'ring' | 'backingSessionId'>): {

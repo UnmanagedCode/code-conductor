@@ -16,10 +16,17 @@
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { segmentsFor } from '../src/sessionLineage.ts';
+import { currentSegmentScope } from '../src/eventArchive.ts';
+import { adoptProject } from '../src/projects.ts';
+import { addSystem } from '../src/appSettings.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { seedRepo } from './remoteSystem.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { reconstructTasks } from '../src/taskReconstruct.ts';
 import {
   RENEW_HEAD, segmentTurns, bootLiveAcrossSeams, rotate, replaySlice, emitLive, crossSeam,
@@ -28,6 +35,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+const MIRROR_FIXTURE = path.join(__dirname, 'fixtures', 'mirrorFixtureProvider.mjs');
 
 let ctx, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); });
@@ -505,4 +513,53 @@ test('T11 reachable forward shapes around a seam marker (T4 fixture)', async () 
   // (b) after = tb: above everything evicted, zero markers.
   const b = await forwardAll(id, { after: tb });
   assert.equal(gapCount(b), 0);
+});
+
+test('T12 ring content emitted before the first spawn belongs to the fill segment: seam at 0, no floor, file archivable', async () => {
+  // A remote project whose advertised excludes sit outside its mirror root: the
+  // create path reports each on the session stream BEFORE launch(), so the ring
+  // holds events before spawn() writes the fill seam. There is no earlier
+  // backing segment, so no floor marker may appear and the current file must
+  // stay archivable.
+  const sys = 'seam-remote';
+  try {
+    const box = await fs.realpath(await mkdtemp('cc-seam-remote-'));
+    const tree = await seedRepo(path.join(box, 'nest', 'app'));
+    const mirrorFile = path.join(box, '.mirror');
+    await fs.writeFile(mirrorFile, path.join(box, 'nest'));
+    const excludes = ['/var/lib/elsewhere-a', '/var/lib/elsewhere-b', '/var/lib/elsewhere-c'];
+    await addSystem({ id: sys, label: sys, launch: ['node', MIRROR_FIXTURE, '--mirror-file', mirrorFile,
+      ...excludes.flatMap(x => ['--advertise-exclude', x])] });
+    assert.equal((await adoptProject('app', tree, { system: sys })).ok, true);
+
+    const id = await withRingCap(10, async () => {
+      const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      return r.body.id;
+    });
+    const inst = ctx.instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    const head = inst.ringSnapshot()[0];
+    assert.equal(head._seq, 0, 'precondition: nothing trimmed yet');
+    assert.equal(head.subtype, 'stderr', 'precondition: the ring opens on a pre-spawn diagnostic');
+    assert.match(head.data.line, /no effect/);
+
+    const backing = inst.backingSessionId;
+    await writeSegmentFile(inst.transcriptPlace, { id: backing, reason: 'initial', records: segmentTurns('cur', 12) });
+    await replaySlice(inst, inst.transcriptPlace, backing);
+    assert.ok(inst.ring.trimmedBefore > 0, 'precondition: the ring trimmed');
+    assert.ok(!inst.ringSnapshot().some(e => e.text === 'cur prompt 0'), 'precondition: early turns were evicted');
+
+    const all = await pageAll(id);
+    assert.equal(gapCount(all), 0, 'no floor marker: there is no earlier segment');
+    assert.deepEqual(textsOf(all, 'user_echo'), Array.from({ length: 12 }, (_, i) => `cur prompt ${i}`),
+      'the evicted turns are served from the current file, each once, in order');
+    assert.deepEqual(textsOf(all, 'text_delta'), Array.from({ length: 12 }, (_, i) => `cur reply ${i}`));
+    assert.deepEqual(inst.ring.seams, [{ segmentId: backing, startSeq: 0 }], 'the first seam starts at 0');
+    const scope = currentSegmentScope(inst);
+    assert.equal(scope.archivable, true, 'the current file is archivable');
+    assert.equal(scope.priorEvicted, false);
+  } finally {
+    disposeSystemHandles();
+  }
 });

@@ -468,9 +468,9 @@ export class EventLog {
   nextSeq: number;
   // Which backing segment owns which seq range, oldest first: the segment of
   // seq `s` is the last seam with `startSeq <= s`. Once the instance has
-  // spawned, `seams[0].startSeq === 0` and the last seam names
-  // `backingSessionId`. Written by markSeam at exactly two sites — the fill
-  // seam in Instance.spawn (every launch() runs on an empty ring) and the
+  // spawned, `seams[0].startSeq === 0` (markSeam guarantees it) and the last
+  // seam names `backingSessionId`. Written by markSeam at exactly two sites —
+  // the fill seam in Instance.spawn and the
   // rotation seam in Instance._handleStdoutLine's rotation branch — and never
   // touched by _trim, since seqs are never renumbered. Carries no echo
   // ordinal: a post-`/clear` jsonl opens with a varying number of replay-only
@@ -566,8 +566,13 @@ export class EventLog {
   // the same `_seq` slot later expecting byte-stable text, or that merges/pages
   // by array position instead of by `_seq`.
   toArray(): Array<UiEvent & { _seq: number }> { return this.buf.slice(); }
-  // The next pushed event is the first of segment `segmentId`.
-  markSeam(segmentId: string): void { this.seams.push({ segmentId, startSeq: this.nextSeq }); }
+  // The next pushed event is the first of segment `segmentId`. The FIRST seam
+  // always claims seq 0: anything retained before it (the create path's
+  // pre-launch diagnostics) belongs to the segment the ring is filled from, so
+  // a seam with `startSeq > 0` only ever follows an earlier segment.
+  markSeam(segmentId: string): void {
+    this.seams.push({ segmentId, startSeq: this.seams.length ? this.nextSeq : 0 });
+  }
   clear(): void { this.buf.length = 0; this.nextSeq = 0; this.seams = []; }
 }
 
@@ -2091,9 +2096,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and the transcript-keyed sidecar markers — is a backing-id consumer. One
     // assertion at the capture point covers all of them.
     assertBackingId(backingId, 'Instance.spawn');
-    // The fill seam. Every launch() caller runs on an empty ring (a new
+    // The fill seam. Every launch() caller runs on a ring with no seams (a new
     // instance, or one _wipeForResume just cleared), so this is always
-    // `{ backingId, 0 }` and precedes the loadHistory replay below.
+    // `{ backingId, 0 }` — including over diagnostics the create path emitted
+    // before launch() — and precedes the loadHistory replay below.
     this.ring.markSeam(backingId);
     // Persist the temp marker at spawn time so it survives a SIGKILL that
     // happens before the first turn_end (where _writeSessionMetadata also
