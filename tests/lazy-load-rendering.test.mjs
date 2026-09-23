@@ -220,7 +220,7 @@ test('a turn straddling quiescent page seams merges back into ONE assistant bubb
   // archive branch never engages, no fs access).
   const inst = {
     ringSnapshot: () => ring,
-    ring: { trimmedBefore: 0 },
+    ring: { trimmedBefore: 0, seams: [] },
     sessionId: null, cwd: null, _userEchoCount: 3,
   };
 

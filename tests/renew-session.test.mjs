@@ -178,6 +178,15 @@ test('identity holds across a rotation: the public id is pinned, the backing id 
     assert.equal(await resolveBacking(publicId), NEW_SID, 'the public id resolves to the NEWEST segment');
     assert.equal(await publicIdFor(firstBacking), publicId, 'and the old segment still names its session');
     assert.deepEqual(inst._segments, [firstBacking, NEW_SID], 'in-memory chain mirrors the row');
+
+    // The ring's seq space is partitioned the same way: the fill seam at 0, and
+    // the rotation seam whose own first event is the new-sid system/init.
+    const seams = inst.ring.seams;
+    assert.deepEqual(seams, [{ segmentId: firstBacking, startSeq: 0 }, { segmentId: NEW_SID, startSeq: seams[1]?.startSeq }]);
+    const atSeam = inst.ringSnapshot().find(e => e._seq === seams[1].startSeq);
+    assert.equal(atSeam?.kind, 'system');
+    assert.equal(atSeam.subtype, 'init');
+    assert.equal(atSeam.data.session_id, NEW_SID, 'the rotation seam starts at the rotation init');
   } finally {
     await srv.close();
   }

@@ -41,6 +41,15 @@
 // the trimmedBefore clamp above discarding archive events past its own
 // anchor-derived cut (denser replay than the live evicted span), and a
 // trimmed ring with no sessionId to replay from at all.
+//
+// A live rotation (a managed renew or a typed `/clear`) keeps the instance, its
+// ring and its echo ordinals running while the backing jsonl changes, so the
+// archive is only ever the CURRENT segment's file (EventLog.seams names which
+// segment owns which ring seq range — see currentSegmentScope). A ring head that
+// predates the current segment loads no archive at all; a head inside it cuts
+// the file with a live→file ordinal offset measured from content
+// (calibrateEchoOffset). Evicted events of EARLIER segments are never servable
+// here and get one "floor" `history_gap` before the first servable event.
 
 import type { TranscriptPlacement } from './projects.ts';
 import { loadPersistedTranscript } from './transcript.ts';
@@ -191,6 +200,58 @@ function cutFromEchoAnchor(flat: SeqEvent[], anchor: number, includeAnchorEcho: 
   return includeAnchorEcho ? idx + 1 : idx;
 }
 
+// The live→file echo-ordinal offset for a ring that crossed a seam into the
+// file's segment: the live ordinals count every earlier segment's echoes, and
+// the file opens with a varying number of replay-only echoes the live ring
+// never emitted, so no constant offset exists. Walks the ring's outer events
+// remembering the latest echo E; at the first later outer event whose content
+// correlates into the file at index k, E's twin is the last outer echo in the
+// file at or before k. Returns twin − E, or null when no ring turn correlates.
+function calibrateEchoOffset(ring: SeqEvent[], flat: SeqEvent[], flatIndex: Map<string, number>): number | null {
+  let echo: SeqEvent | null = null;
+  for (const ev of ring) {
+    if (ev.parentToolUseId) continue;
+    if (isOuterUserEcho(ev)) {
+      if (typeof ev.userIndex === 'number') echo = ev;
+      continue;
+    }
+    if (!echo) continue;
+    const key = correlationKey(ev);
+    const k = key == null ? undefined : flatIndex.get(key);
+    if (k == null) continue;
+    for (let i = k; i >= 0; i--) {
+      if (isOuterUserEcho(flat[i])) return (flat[i].userIndex as number) - (echo.userIndex as number);
+    }
+    return null;
+  }
+  return null;
+}
+
+// Which backing segment this pager can serve, from the ring's seams:
+//   segmentId/startSeq — the current segment and where its ring content starts
+//              (backingSessionId and 0 before the first spawn wrote a seam).
+//   archivable — the ring head is inside the current segment, so its file can
+//              reconstruct history below the ring.
+//   priorEvicted — ring-held events of an EARLIER segment were evicted; this
+//              pager can never serve them. `startSeq > 0` names an earlier
+//              segment because the first seam always starts at 0
+//              (EventLog.markSeam).
+// With no live rotation (one seam at 0) this is `archivable = !!backingSessionId`
+// and `priorEvicted = false` — the pre-rotation behaviour exactly.
+export function currentSegmentScope(inst: Pick<InstanceLike, 'ring' | 'backingSessionId'>): {
+  segmentId: string | null; startSeq: number; archivable: boolean; priorEvicted: boolean;
+} {
+  const tb = inst.ring.trimmedBefore;
+  const last = inst.ring.seams.at(-1);
+  const startSeq = last ? last.startSeq : 0;
+  return {
+    segmentId: last ? last.segmentId : inst.backingSessionId,
+    startSeq,
+    archivable: !!inst.backingSessionId && tb >= startSeq,
+    priorEvicted: startSeq > 0 && tb > 0,
+  };
+}
+
 // Replay the persisted jsonl into a flat event list (dense `_seq` = array
 // index, absolute `userIndex` stamped on outer echoes — same ordinal
 // semantics as Instance._emitUi) and compute `cut`: the number of leading
@@ -199,13 +260,33 @@ function cutFromEchoAnchor(flat: SeqEvent[], anchor: number, includeAnchorEcho: 
 // (the fallback echo anchor can't reach the exact cut): the turn's content
 // between the cut and the ring head was evicted and cannot be recovered —
 // pageInstanceEvents marks the seam with a `history_gap` event.
-export async function buildArchive({ place, sessionId, ring, trimmedBefore, userEchoCount }: {
+//
+// `segmentStartSeq` is the ring seq where `sessionId`'s segment starts
+// (currentSegmentScope). 0 means the ring was filled from this file alone, so
+// live and file ordinals align. Above 0 every ordinal is shifted by the
+// calibrated offset, and when none can be measured nothing is served from the
+// file (`cut: 0`, gap marked) — an unmeasured ordinal is never guessed. The
+// precondition `ring[0]._seq >= segmentStartSeq` holds by construction: both
+// callers only get here when `archivable` (tb >= startSeq), tb IS ring[0]._seq
+// for a non-empty ring, and each reads the ring, tb and the scope in one
+// synchronous tick before its first await.
+export async function buildArchive({ place, sessionId, ring, trimmedBefore, userEchoCount, segmentStartSeq = 0 }: {
   place: TranscriptPlacement; sessionId: string; ring: SeqEvent[]; trimmedBefore: number; userEchoCount: number;
+  segmentStartSeq?: number;
 }): Promise<{ events: SeqEvent[]; cut: number; gap: boolean }> {
   const result = await loadPersistedTranscript({ place, sessionId, seqHint: 0 });
   if (!result) return { events: [], cut: 0, gap: trimmedBefore > 0 };
 
   const flat = stampArchiveEvents(result.lines);
+  let flatIndex: Map<string, number> | null = null;
+  const index = (): Map<string, number> => (flatIndex ??= buildFlatIndex(flat));
+  // Live ordinal → file ordinal; null when the offset can't be measured.
+  let offset: number | null | undefined = segmentStartSeq > 0 ? undefined : 0;
+  const fileOrdinal = (live: number): number | null => {
+    if (offset === undefined) offset = calibrateEchoOffset(ring, flat, index());
+    return offset === null ? null : live + offset;
+  };
+  const uncalibrated = { events: flat, cut: 0, gap: trimmedBefore > 0 };
 
   // Content anchor: which prompt ordinal marks the first turn that is (at
   // least partially) represented in the retained ring.
@@ -214,11 +295,15 @@ export async function buildArchive({ place, sessionId, ring, trimmedBefore, user
   let includeAnchorEcho: boolean;
   if (!head) {
     // Empty ring — everything the jsonl knows about is older than "now".
-    cut = cutFromEchoAnchor(flat, userEchoCount, false);
+    const anchor = fileOrdinal(userEchoCount);
+    if (anchor == null) return uncalibrated;
+    cut = cutFromEchoAnchor(flat, anchor, false);
     includeAnchorEcho = false;
   } else if (isOuterUserEcho(head) && typeof head.userIndex === 'number') {
     // Common case: trim snapped onto a turn boundary.
-    cut = cutFromEchoAnchor(flat, head.userIndex, false);
+    const anchor = fileOrdinal(head.userIndex);
+    if (anchor == null) return uncalibrated;
+    cut = cutFromEchoAnchor(flat, anchor, false);
     includeAnchorEcho = false;
   } else {
     // Head is mid-turn. Correlate its own content into the archive first —
@@ -227,14 +312,15 @@ export async function buildArchive({ place, sessionId, ring, trimmedBefore, user
     // echo-ordinal anchor: the turn containing the head started at the
     // prompt just before the first retained echo (or the last prompt
     // overall).
-    const correlated = correlateRingHead(ring, buildFlatIndex(flat));
+    const correlated = correlateRingHead(ring, index());
     if (correlated !== -1) {
       cut = correlated;
       includeAnchorEcho = false;
     } else {
       const firstEcho = ring.find(ev => isOuterUserEcho(ev) && typeof ev.userIndex === 'number');
-      const anchor = (firstEcho ? firstEcho.userIndex as number : userEchoCount) - 1;
-      cut = cutFromEchoAnchor(flat, anchor, true);
+      const anchor = fileOrdinal(firstEcho ? firstEcho.userIndex as number : userEchoCount);
+      if (anchor == null) return uncalibrated;
+      cut = cutFromEchoAnchor(flat, anchor - 1, true);
       includeAnchorEcho = true;
     }
   }
@@ -289,7 +375,12 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // guaranteed — a mid-turn `cut` can have sliced the head away too. That
   // costs one wasted replay in the degenerate case and changes nothing else.)
   const ringEnd = before != null ? firstIndexAtOrAbove(ring, before) : 0;
-  const needArchive = tb > 0 && !!inst.backingSessionId
+  //
+  // Only the CURRENT segment's file is ever read, and only when the ring head
+  // is inside that segment (`scope.archivable`); a head that predates it has
+  // no file here to reconstruct from — the ring is the whole servable history.
+  const scope = currentSegmentScope(inst);
+  const needArchive = tb > 0 && scope.archivable
     && (before != null
       ? (before - max < tb || hasHeadlessChildIn(ring, Math.max(0, ringEnd - max), ringEnd))
       : (after ?? 0) < tb);
@@ -300,22 +391,28 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // sessionId to replay from) — mark the gap even though needArchive is
   // false (it's gated on sessionId being present).
   let gap = tb > 0 && !inst.backingSessionId;
+  // Evicted events of an earlier segment sit below combined[0]: with no
+  // archive (head predates the current segment) combined[0] is the ring head;
+  // with one, it is the current file's first event.
+  let floorGap = !scope.archivable && tb > 0 && !!inst.backingSessionId;
   if (needArchive) {
     const archive = await buildArchive({
       place: inst.transcriptPlace, sessionId: inst.backingSessionId as string,
-      ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount,
+      ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount, segmentStartSeq: scope.startSeq,
     });
     combined = archive.events.slice(0, archive.cut).concat(ring);
     seamIdx = archive.cut;
     gap = archive.gap;
+    floorGap = scope.priorEvicted;
   }
 
   return pageCombined(combined, {
-    before, after, max, seamIdx, gap, trimmedBefore: tb, lastSeq,
+    before, after, max, seamIdx, gap, floorGap, trimmedBefore: tb, lastSeq,
     // Served down to the very start of what we have. With the archive loaded
     // that IS the beginning; without it, older events may still exist below
-    // the ring — optimistic, next page resolves.
-    optimisticMore: !needArchive && tb > 0 && !!inst.backingSessionId,
+    // the ring — optimistic, next page resolves. Never for a head that
+    // predates the current segment: nothing older is servable.
+    optimisticMore: !needArchive && tb > 0 && scope.archivable,
   });
 }
 
@@ -327,9 +424,11 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
 //              the scan-opaque `resetIdx`; -1 means "no such boundary".
 //   optimisticMore — the caller knows older events exist that this call did
 //              not load (ring-only page above an evicted range).
-function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, trimmedBefore, lastSeq, optimisticMore }: {
+//   floorGap — evicted history exists BELOW combined[0] that no page can serve
+//              (an earlier segment's evicted ring events).
+function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, floorGap, trimmedBefore, lastSeq, optimisticMore }: {
   before: number | null; after: number | null; max: number; seamIdx: number;
-  gap: boolean; trimmedBefore: number; lastSeq: number; optimisticMore: boolean;
+  gap: boolean; floorGap: boolean; trimmedBefore: number; lastSeq: number; optimisticMore: boolean;
 }): { events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number } {
   let events: UiEvent[];
   let hasMore: boolean;
@@ -415,6 +514,17 @@ function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, 
     if (at >= 0 && at <= events.length) events.splice(at, 0, { kind: 'history_gap' });
     else if (at < 0 && !hasMore) events.push({ kind: 'history_gap' });
   }
+  // The floor marker: before combined[0], only ever spliced at offset 0 and
+  // never appended by the backstop above. A backward page carries it when it
+  // starts at combined[0]; a forward page only when its requested window
+  // reaches the evicted seqs — `after < 0` (the walk starts at the floor), or
+  // `after + 1` below combined[0]'s seq (a no-archive ring head above an
+  // evicted range) — so an incremental poll from above never does. A seam
+  // marker already at offset 0 (`cut === 0`) marks the adjacent loss too.
+  if (floorGap && servedStart === 0 && events[0]?.kind !== 'history_gap'
+      && (before != null || (after as number) < 0 || (after as number) + 1 < (combined[0]?._seq ?? 0))) {
+    events.unshift({ kind: 'history_gap' });
+  }
   // Inject synthetic `task_completion` bubbles below the tail. Derived over the
   // full `combined` history (so batches spanning page boundaries are correct),
   // spliced into the served slice after the completing TaskUpdate. Completions
@@ -443,7 +553,7 @@ export async function pagePersistedEvents({ place, sessionId, before = null, aft
   const lastSeq = flat.length - 1;
   const w = normalizeWindow(before, after, lastSeq);
   return pageCombined(flat, {
-    before: w.before, after: w.after, max, seamIdx: -1, gap: false,
+    before: w.before, after: w.after, max, seamIdx: -1, gap: false, floorGap: false,
     trimmedBefore: 0, lastSeq, optimisticMore: false,
   });
 }

@@ -567,7 +567,7 @@ test('archive-side Agent head reunites with its ring-side children on one page',
   ];
   const stubInst = {
     cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 7,
-    ring: { get trimmedBefore() { return tb; } },
+    ring: { get trimmedBefore() { return tb; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
 
@@ -669,7 +669,7 @@ test('a window whose sub-agent children all have ring-side heads triggers no arc
   }
   const stubInst = {
     cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 8,
-    ring: { get trimmedBefore() { return tb; } },
+    ring: { get trimmedBefore() { return tb; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
 
@@ -728,7 +728,7 @@ test('a rejected window is served, and coverage is total', async () => {
   const tb = 100;
   const stubInst = {
     cwd: '/fake', transcriptPlace: localPlace('/fake'), backingSessionId: null, _userEchoCount: 5,
-    ring: { get trimmedBefore() { return tb; } },
+    ring: { get trimmedBefore() { return tb; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
 
@@ -821,7 +821,7 @@ test('an archive-side headless component is served and the cursor strictly progr
   ];
   const stubInst = {
     cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 4,
-    ring: { get trimmedBefore() { return tb; } },
+    ring: { get trimmedBefore() { return tb; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
 
@@ -887,7 +887,7 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
   ));
   const stubInst = {
     cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 5,
-    ring: { get trimmedBefore() { return tb; } },
+    ring: { get trimmedBefore() { return tb; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
 
@@ -973,7 +973,7 @@ test('a window straddling the seam is served whole, with exactly one gap marker 
   });
   const stubInst = {
     cwd: projectPath, transcriptPlace: localPlace(projectPath), backingSessionId: sid, _userEchoCount: 5,
-    ring: { get trimmedBefore() { return tb; } },
+    ring: { get trimmedBefore() { return tb; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
 
@@ -1087,7 +1087,7 @@ test('T3 (Step 5): pageInstanceEvents marks a gap for a trimmed ring with no ses
   ];
   const stubInst = {
     cwd: '/fake', transcriptPlace: localPlace('/fake'), backingSessionId: null, _userEchoCount: 0,
-    ring: { get trimmedBefore() { return 5; } },
+    ring: { get trimmedBefore() { return 5; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
   const page = await pageInstanceEvents(stubInst, { limit: 10 });
@@ -1112,7 +1112,7 @@ test('a terminal forward page above the seam still surfaces the gap marker', asy
   ));
   const stubInst = {
     cwd: '/fake', transcriptPlace: localPlace('/fake'), backingSessionId: null, _userEchoCount: 0,
-    ring: { get trimmedBefore() { return 5; } },
+    ring: { get trimmedBefore() { return 5; }, seams: [] },
     ringSnapshot: () => ring.slice(),
   };
   // after=7 starts the window at _seq 8, strictly above the seam (the ring head
