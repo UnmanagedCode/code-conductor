@@ -227,6 +227,12 @@ wtest('W1 segment parity: each served segment equals its own MCP read, _seq incl
   assert.deepEqual(unclocked(runs[0].events), unclocked(mcp.A.events), 'A equals get_transcript(A)');
   assert.deepEqual(unclocked(runs[1].events), unclocked(mcp.C.events), 'C equals get_transcript(C)');
   assert.deepEqual(unclocked(runs[2].events), unclocked(mcpD.events), 'D equals get_transcript(<public id>)');
+  assertOnceInOrder(walk.events, 'a', 3);
+  for (const [run, name] of [[runs[0], 'A'], [runs[1], 'C']]) {
+    const results = run.events.filter(e => e.kind === 'tool_result');
+    assert.ok(results.length > 0, `precondition: ${name} has tool results`);
+    for (const e of results) assert.equal(typeof e.finishedAt, 'number', `${name}'s served tool_result keeps its finishedAt`);
+  }
   assert.ok(!JSON.stringify(walk.events).includes('B-ORIGINAL-OUTPUT'), 'the pruned original is never read');
   assert.deepEqual(textsOf(walk.events, 'user_echo').filter(t => /^b prompt /.test(t)),
     ['b prompt 0', 'b prompt 1', 'b prompt 2'], 'B\'s prompts once, through C');
@@ -402,6 +408,16 @@ wtest('W2 MCP output is untouched: get_transcript, get_recent_messages and forwa
   const bySegment = await mcpTool(ctx, 'get_transcript', { sessionId: A });
   assert.equal(bySegment.source, 'ring', 'an older segment id of a live session serves the live pager');
   assert.deepEqual(bySegment.events, dflt.events);
+  // Both halves of that, each where it is enforced: the MCP dispatch chokepoint
+  // (src/mcp/server.ts) rewrites the segment id to the public id before any
+  // handler runs, and the handler's own resolver (getInstOrDisk) — reached here
+  // with the raw segment id, past the chokepoint — answers with the live
+  // instance, not the segment's file.
+  assert.equal((await ctx.instances.resolveSessionRef(A)).sessionId, P, 'the chokepoint maps segment A to the public id');
+  const { getTranscript } = await import('../src/mcp/handlers.ts');
+  const direct = await getTranscript({ sessionId: A, limit: 200 }, { instances: ctx.instances });
+  assert.equal(direct.source, 'ring', 'getInstOrDisk resolves segment A to the live instance');
+  assert.deepEqual(json(direct.events), dflt.events);
 });
 
 wtest('W3 structural pin: the lineage layer composes the pager\'s entry points and holds no cut logic', async () => {
@@ -494,7 +510,8 @@ wtest('W5 REST shapes: prune skips, tombstones, missing files and legacy rows', 
 });
 
 wtest('W6 live case A: the view serves the ring-head segment\'s file, a divider before the rotation init, no gap', async () => {
-  const { id } = await bootCaseA('w6');
+  const { inst, id } = await bootCaseA('w6');
+  const s = inst.ring.seams[1].startSeq;
   const walk = await walkLineage(ctx, id, { limit: 7 });
   assertOnceInOrder(walk.events, 'pre', 12);
   assertOnceInOrder(walk.events, 'post', 1);
@@ -506,10 +523,23 @@ wtest('W6 live case A: the view serves the ring-head segment\'s file, a divider 
   const viewPages = walk.pages.filter((_, i) => walk.cursors[i].segment === PRE);
   assert.ok(viewPages.length > 0, 'the view was paged');
   for (const p of viewPages) assert.equal(p.pageSegment, PRE, 'view pages name PRE as their provenance');
+  // A live page's provenance is the segment of its first seq'd event: here no
+  // archive is loaded, so it is the seam owning that ring seq.
+  const livePages = walk.pages.filter((_, i) => walk.cursors[i].segment === null);
+  for (const p of livePages) {
+    const first = p.events.find(e => typeof e._seq === 'number');
+    assert.equal(p.pageSegment, first._seq < s ? PRE : POST, `live page from seq ${first._seq}`);
+  }
+  assert.ok(livePages.some(p => p.pageSegment === PRE), 'a live page opening in PRE\'s ring slice names PRE');
+  for (const p of walk.pages) {
+    assert.ok('currentSegmentId' in p, 'every lineage page carries currentSegmentId');
+    assert.equal(p.currentSegmentId, POST);
+  }
 });
 
 wtest('W7 live case B: the earlier segment is read from its file above the current file\'s head, no floor', async () => {
-  const { id } = await bootCaseB('w7');
+  const { inst, id } = await bootCaseB('w7');
+  const tb = inst.ring.trimmedBefore;
   const walk = await walkLineage(ctx, id, { limit: 7 });
   assert.equal(render(walk.events, { [POST]: 'POST' }), '[pre] ‖POST [post]');
   const iS = walk.events.findIndex(e => e.kind === 'segment_seam');
@@ -517,6 +547,12 @@ wtest('W7 live case B: the earlier segment is read from its file above the curre
   assert.equal(gapCount(walk.events), 0, 'no floor marker: the earlier segment is served');
   assertOnceInOrder(walk.events, 'pre', 3);
   assertOnceInOrder(walk.events, 'post', 12);
+  // A live page dipping into the current file's archive (seqs below tb, which
+  // the seams would assign to PRE) names the current segment.
+  const livePages = walk.pages.filter((_, i) => walk.cursors[i].segment === null);
+  const dips = livePages.filter(p => p.events.find(e => typeof e._seq === 'number')._seq < tb);
+  assert.ok(dips.length > 0, 'precondition: a live page opens in POST\'s archive');
+  for (const p of livePages) assert.equal(p.pageSegment, POST, 'every live page names POST');
 });
 
 wtest('W8 three live segments: view of the middle one, then the oldest; and the two rows H is not a live step of', async (t) => {
@@ -582,6 +618,9 @@ wtest('W9 a rotation between requests: the saved live cursor continues in the vi
 });
 
 wtest('W10 segmentRingView: the instance as it stood just before the next rotation', async () => {
+  // The slice's LOWER bound is inert by construction — every retained seq is
+  // >= tb >= seams[k].startSeq, since k is the seam owning tb — so this fixture
+  // pins the UPPER bound (seams[k+1].startSeq), the load-bearing one.
   const segmentRingView = await newExport('src/lineagePager.ts', 'segmentRingView');
   const seams = [{ segmentId: 'sa', startSeq: 0 }, { segmentId: 'sb', startSeq: 10 }, { segmentId: 'sc', startSeq: 20 }];
   const ev = (seq, extra = {}) => ({ kind: 'text_delta', msgId: `m${seq}`, blockIdx: 0, text: 'x', parentToolUseId: null, _seq: seq, ...extra });
@@ -731,6 +770,9 @@ wtest('W15 validation: only the ring-head view and the walk\'s own steps are add
   assert.equal(bad.body.error, 'before must be an integer');
   assert.equal((await getLineage(id, '?limit=x')).status, 400);
   assert.equal((await api(ctx.baseUrl, 'GET', '/api/instances/nope/lineage-events')).status, 404);
+  const empty = await getLineage(id, '?segment=&limit=7');
+  assert.equal(empty.status, 200, 'an empty segment= is the live space');
+  assert.deepEqual(empty.body, (await getLineage(id, '?limit=7')).body);
 
   // A ring segment below H that the walk does not step to (the row calls POST a
   // prune of PRE, so PRE is skipped).
@@ -817,6 +859,69 @@ wtest('W18 tb === startSeq, reconnect: the snapshot, the rendered walk, and rewi
   assert.equal(snap.events.length, 1);
   assert.ok(isInitFrame({ t: 'event', ev: snap.events[0] }, THIRD), 'the tail is the init alone, no divider');
 
+  await renderLineageInDom(id, snap, async ({ el, conversation }) => {
+    const names = { [POST]: 'POST', [THIRD]: 'THIRD' };
+    const tokens = [];
+    for (const node of el.children) {
+      let tok = null;
+      if (node.classList.contains('segment-seam')) tok = `‖${names[node.getAttribute('data-segment-id')]}`;
+      else if (node.classList.contains('history-gap')) tok = '⋯';
+      else if (node.classList.contains('user')) {
+        const m = /^(\w+) prompt \d+$/.exec(node.querySelector('.block.text')?.textContent ?? '');
+        if (m) tok = `[${m[1]}]`;
+      }
+      if (tok && !(tok.startsWith('[') && tokens[tokens.length - 1] === tok)) tokens.push(tok);
+    }
+    assert.equal(tokens.join(' '), '[pre] ‖POST [post] ‖THIRD ⋯');
+    const bubbles = [...el.querySelectorAll('.msg.user')];
+    assert.ok(bubbles.length > 0);
+    for (const b of bubbles) assertNull(b.querySelector('.user-msg-actions'), 'no rewind/fork on an earlier segment');
+
+    // The §5c segment-frame lines, then a live THIRD echo.
+    conversation.segmentId = THIRD;
+    conversation.setCurrentSegment(THIRD);
+    conversation.apply({ kind: 'user_echo', text: 'third live', userIndex: 99, _seq: 1_000_000, parentToolUseId: null });
+    const live = [...el.querySelectorAll('.msg.user')].at(-1);
+    assert.ok(live.querySelector('.user-msg-actions') !== null, 'the current segment\'s bubble offers rewind/fork');
+  });
+});
+
+wtest('W19 an L1 row whose oldest entry is the current segment: the layer\'s one gap, never also the core\'s floor', async () => {
+  const { inst, id } = await bootCaseB('w19');
+  assert.ok(inst.ring.trimmedBefore > inst.ring.seams[1].startSeq, 'precondition: the ring head is inside the current segment');
+  assert.equal(currentSegmentScope(inst).priorEvicted, true, 'precondition: the core alone would mark a floor');
+  await writeLineageRow(PUBLIC, [{ id: POST, reason: 'renew' }]);
+  const walk = await walkLineage(ctx, id, { limit: 7 });
+  assert.equal(gapCount(walk.events), 1, 'exactly one raw gap');
+  assert.equal(walk.events[0].kind, GAP, 'above everything');
+  assertOnceInOrder(walk.events, 'post', 12);
+  assert.ok(!walk.events.some(e => /^pre /.test(e.text ?? '')), 'nothing older is walked');
+});
+
+wtest('W20 rendered end to end: a current-segment bubble served from the live space\'s archive offers rewind/fork', async () => {
+  const { inst, id } = await bootCaseB('w20');
+  assert.ok(!inst.ringSnapshot().some(e => e.text === 'post prompt 0'), 'precondition: post prompt 0 was evicted from the ring');
+  const c = await wsClient();
+  let snap;
+  try {
+    c.send({ t: 'subscribe', id });
+    snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+  } finally { await c.close(); }
+  assert.equal(snap.currentSegmentId, POST, 'the snapshot names the current segment');
+  await renderLineageInDom(id, snap, async ({ el }) => {
+    const bubble = (text) => [...el.querySelectorAll('.msg.user')].find(b => b.querySelector('.block.text')?.textContent === text);
+    assert.ok(bubble('post prompt 0'), 'the archive-backed live page rendered');
+    assert.ok(bubble('post prompt 0').querySelector('.user-msg-actions') !== null, 'the current segment\'s archive bubble offers rewind/fork');
+    assert.ok(bubble('pre prompt 0'), 'the older segment rendered');
+    assertNull(bubble('pre prompt 0').querySelector('.user-msg-actions'), 'the older segment\'s bubble does not');
+  });
+});
+
+// Render a lineage walk the way the browser does: the real Conversation and
+// lazy controller under happy-dom, fed the snapshot as public/wsRouter.js feeds
+// it, with the controller's fetches proxied to this server, paged until the
+// sentinel is gone. `fn` gets the conversation root and the live conversation.
+async function renderLineageInDom(id, snap, fn) {
   const { Window } = await import('happy-dom');
   const window = new Window({ url: 'http://localhost/' });
   const saved = { window: globalThis.window, document: globalThis.document, HTMLElement: globalThis.HTMLElement,
@@ -841,7 +946,7 @@ wtest('W18 tb === startSeq, reconnect: the snapshot, the rendered walk, and rewi
       conversationEl: el, conversation, conversationOptions: options,
       getActiveId: () => id, getInstances: () => [{ id, status: 'idle' }],
     });
-    // The snapshot handler's §5c lines, then its replay.
+    // The snapshot handler's lines, then its replay.
     conversation.clear();
     conversation.setCurrentSegment(snap.currentSegmentId ?? null);
     conversation.segmentId = snap.tailSegmentId ?? null;
@@ -850,32 +955,9 @@ wtest('W18 tb === startSeq, reconnect: the snapshot, the rendered walk, and rewi
     conversation._replayMode = false;
     controller.init(snap);
     await waitFor(() => fetches > 0 && !el.querySelector('.history-sentinel'));
-
-    const names = { [POST]: 'POST', [THIRD]: 'THIRD' };
-    const tokens = [];
-    for (const node of el.children) {
-      let tok = null;
-      if (node.classList.contains('segment-seam')) tok = `‖${names[node.getAttribute('data-segment-id')]}`;
-      else if (node.classList.contains('history-gap')) tok = '⋯';
-      else if (node.classList.contains('user')) {
-        const m = /^(\w+) prompt \d+$/.exec(node.querySelector('.block.text')?.textContent ?? '');
-        if (m) tok = `[${m[1]}]`;
-      }
-      if (tok && !(tok.startsWith('[') && tokens[tokens.length - 1] === tok)) tokens.push(tok);
-    }
-    assert.equal(tokens.join(' '), '[pre] ‖POST [post] ‖THIRD ⋯');
-    const bubbles = [...el.querySelectorAll('.msg.user')];
-    assert.ok(bubbles.length > 0);
-    for (const b of bubbles) assertNull(b.querySelector('.user-msg-actions'), 'no rewind/fork on an earlier segment');
-
-    // The §5c segment-frame lines, then a live THIRD echo.
-    conversation.segmentId = THIRD;
-    conversation.setCurrentSegment(THIRD);
-    conversation.apply({ kind: 'user_echo', text: 'third live', userIndex: 99, _seq: 1_000_000, parentToolUseId: null });
-    const live = [...el.querySelectorAll('.msg.user')].at(-1);
-    assert.ok(live.querySelector('.user-msg-actions') !== null, 'the current segment\'s bubble offers rewind/fork');
+    await fn({ el, conversation });
   } finally {
     Object.assign(globalThis, saved);
     await window.happyDOM?.close?.();
   }
-});
+}

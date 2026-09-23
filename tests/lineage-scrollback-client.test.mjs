@@ -275,3 +275,89 @@ test('C10 a segment frame with no divider moves current: every existing bubble l
   conversation.apply(echo('c one'));
   assert.ok(hasActions(bubbleByText(dom.conversationEl, 'c one')), 'the next live echo has them');
 });
+
+test('C11 while the live conversation knows no current segment, a batch keys its bubbles on the page\'s own currentSegmentId', async () => {
+  const dom = await setupDOM();
+  const calls = stubFetch([
+    page([echo('d old')], { segment: 'A', nextBefore: null, pageSegment: 'D', currentSegmentId: 'D' }),
+    page([echo('a old')], { hasMore: false, segment: 'A', nextBefore: 0, pageSegment: 'A', currentSegmentId: 'D' }),
+  ]);
+  const { controller, conversation } = install(dom);
+  assert.equal(conversation.currentSegmentId ?? null, null, 'precondition: no current segment on the live conversation');
+  controller.init({ tailStartSeq: 900 });
+  await settle();
+  assertLineageRoute(calls);
+  assert.ok(!hasActions(bubbleByText(dom.conversationEl, 'a old')), 'an earlier segment\'s bubble has none');
+  assert.ok(hasActions(bubbleByText(dom.conversationEl, 'd old')), 'the page\'s current segment keeps them');
+});
+
+test('C12 while no current segment is known at all, every bubble keeps rewind/fork, across dividers too', async () => {
+  const dom = await setupDOM();
+  const { conversation } = install(dom);
+  assert.equal(typeof conversation.setCurrentSegment, 'function');
+  const batch = dom.renderEventBatch([echo('x batch'), seam('B'), echo('y batch')], OPTIONS, { segmentId: 'A', currentSegmentId: () => null });
+  for (const b of batch.holder.querySelectorAll('.msg.user')) assert.ok(hasActions(b), 'a batch bubble keeps its actions');
+  conversation.segmentId = 'A';
+  for (const ev of [echo('x live'), seam('B'), echo('y live')]) conversation.apply(ev);
+  assert.ok(hasActions(bubbleByText(dom.conversationEl, 'x live')), 'a live bubble above a divider keeps its actions');
+  assert.ok(hasActions(bubbleByText(dom.conversationEl, 'y live')), 'and one below it');
+});
+
+test('C13 a silent probe still in flight when the view switches instance splices nothing and leaves the new sentinel live', async () => {
+  const dom = await setupDOM();
+  const { conversationEl, Conversation, installLazyHistoryController } = dom;
+  Object.defineProperty(conversationEl, 'clientHeight', { configurable: true, get: () => 800 });
+  Object.defineProperty(conversationEl, 'scrollHeight', { configurable: true, get: () => 5000 });
+  let active = 'inst1';
+  let release;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const u = new URL(url, 'http://localhost');
+    calls.push({ path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    await new Promise((r) => { release = r; });
+    const body = page([echo('stale probe')], { segment: 'C', nextBefore: null });
+    return { ok: true, status: 200, json: async () => body };
+  };
+  const conversation = new Conversation(conversationEl, OPTIONS);
+  const controller = installLazyHistoryController({
+    conversationEl, conversation, conversationOptions: OPTIONS,
+    getActiveId: () => active, getInstances: () => [{ id: active, status: 'idle' }],
+  });
+  controller.init({ tailStartSeq: 0 });
+  await flush();
+  assertLineageRoute(calls);
+  assert.equal(calls.length, 1, 'the probe is in flight');
+  active = 'inst2';
+  conversation.clear();
+  controller.init({ tailStartSeq: 900 });
+  assert.ok(conversationEl.querySelector('.history-sentinel') !== null, 'the new instance\'s sentinel is armed');
+  release();
+  await settle();
+  assert.ok(!bubbleByText(conversationEl, 'stale probe'), 'the stale probe splices nothing');
+  assert.ok(conversationEl.querySelector('.history-sentinel') !== null, 'and the new sentinel stays live');
+  assert.equal(calls.length, 1);
+});
+
+// What `seenSeq` does (Conversation.apply): a Conversation drops an event whose
+// `_seq` IT has already applied; seq-less events (task_completion, history_gap,
+// segment_seam) are never deduped. Each lazy page renders in its own fresh
+// Conversation, so the dedupe is per page: a `_seq` repeated inside one page
+// renders once, the same `_seq` on another page or in the live tail renders again.
+test('C14 page content renders verbatim: a server task_completion is kept, and page events dedupe only by seenSeq', async () => {
+  const dom = await setupDOM();
+  const tasks = [{ id: '1', subject: 'a batch', description: '', activeForm: null, status: 'completed' }];
+  const calls = stubFetch([
+    page([echo('p1 first', { _seq: 50 }), echo('p1 repeat', { _seq: 50 }), { kind: 'task_completion', tasks }],
+      { segment: null, nextBefore: 40 }),
+    page([echo('p2 same seq', { _seq: 50 })], { hasMore: false, segment: null, nextBefore: 0 }),
+  ]);
+  const { controller, conversation } = install(dom);
+  conversation.apply(echo('tail same seq', { _seq: 50 }));
+  controller.init({ tailStartSeq: 900 });
+  await settle();
+  assertLineageRoute(calls);
+  assert.deepEqual(tokens(dom.conversationEl), ['p2 same seq', 'p1 first', 'tail same seq'],
+    'a repeat inside one page is dropped; the same _seq on another page or in the tail is not');
+  const heads = [...dom.conversationEl.querySelectorAll('.task-panel-head')].map(n => n.textContent);
+  assert.deepEqual(heads, ['Tasks · 1/1 done'], 'the server-injected task_completion renders');
+});

@@ -170,8 +170,8 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             const tail = inst.snapshotTail();
             const tailStartSeq = tail.length ? Number(tail[0]._seq) : inst.ring.trimmedBefore;
             // Captured with the tail, before the await below.
-            const tailSegmentId = segmentOfSeq(inst.ring.seams, tailStartSeq) ?? inst.backingSessionId;
-            const currentSegmentId = currentSegmentScope(inst).segmentId;
+            const tailSegmentId = segmentOfSeq(inst.ring.seams, tailStartSeq) ?? inst.backingSessionId ?? null;
+            const currentSegmentId = currentSegmentScope(inst).segmentId ?? null;
             const events = insertRingSeamDividers(tail, inst.ring.seams, inst.ring.trimmedBefore);
             const tasksAtTailStart = await inst.reconstructActiveTasks(tailStartSeq);
             // Re-attach the ephemeral thinking-token counter when a block is

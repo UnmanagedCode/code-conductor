@@ -140,7 +140,7 @@ export async function pageLineageEvents(inst: InstanceLike, q: {
     ring: inst.ringSnapshot(), tb: inst.ring.trimmedBefore, seams: [...inst.ring.seams],
     echoCount: inst._userEchoCount, place: inst.transcriptPlace,
   };
-  const current = snap.seams.at(-1)?.segmentId ?? inst.backingSessionId;
+  const current = snap.seams.at(-1)?.segmentId ?? inst.backingSessionId ?? null;
   // The segment owning the ring head. An empty ring has tb === nextSeq, which
   // the last seam owns, so H is then current.
   const H = snap.seams.length ? segmentOfSeq(snap.seams, snap.tb) : inst.backingSessionId;

@@ -1325,7 +1325,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         if (!inst) throw httpError(404, 'instance not found');
         const before = intQueryParam(req.query.before, 'before');
         const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;
-        const segment = typeof req.query.segment === 'string' ? req.query.segment : null;
+        // An empty `segment=` is the live space, like an absent one.
+        const segment = typeof req.query.segment === 'string' && req.query.segment !== '' ? req.query.segment : null;
         res.json({ id: inst.id, ...await pageLineageEvents(inst, { segment, before, limit }) });
       } catch (e) { next(e); }
     });
