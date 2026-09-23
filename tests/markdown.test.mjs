@@ -469,6 +469,40 @@ test('markdown: ![alt](url) image does not collide with [text](url) link in same
   assert.equal(anchors[0].textContent, 'docs');
 });
 
+test('markdown: ordered list keeps a non-1 start number', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '3. a\n4. b');
+  const ol = root.querySelector('ol');
+  assert.ok(ol);
+  assert.equal(ol.getAttribute('start'), '3');
+  assert.equal(ol.querySelectorAll('li').length, 2);
+});
+
+test('markdown: ordered list starting at 1 carries no start attribute', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '1. a\n2. b');
+  const ol = root.querySelector('ol');
+  assert.ok(ol);
+  assert.equal(ol.hasAttribute('start'), false);
+});
+
+test('markdown: a list split by an indented line resumes at its own number', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = '--- questions ---\n1. Q one\n   - opt\n2. Q two';
+  const root = render(md, src);
+  const ols = root.querySelectorAll('ol');
+  assert.equal(ols.length, 2);
+  assert.equal(ols[0].hasAttribute('start'), false);
+  assert.equal(ols[1].getAttribute('start'), '2');
+  assertNull(root.querySelector('hr'), 'the --- questions --- line is not a horizontal rule');
+  const p = root.querySelector('p');
+  assert.ok(p);
+  assert.match(p.textContent, /--- questions ---/);
+});
+
 test('markdown: table terminates cleanly when followed by a heading', async () => {
   setupDOM();
   const md = await loadMarkdown();
