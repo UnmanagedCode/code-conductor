@@ -679,7 +679,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 
 /* Idle-subscription wake-callback bubble. Folded stub → a collapsed <details>
    whose summary (worker finished + what to do) stays visible and whose body
-   holds the folded get_recent_messages payload (caret mirrors .block.tool).
+   is built as markdown on first expand (caret mirrors .block.tool).
    Plain stub (timeout / mid-turn) → a body-less .plain summary line, no caret.
    Both carry the orchestrator badge. */
 .msg.user.wake-callback { border-style: dashed; }
@@ -696,11 +696,21 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   margin-right: 6px; transition: transform .12s;
 }
 .block.wake[open] > summary::before { transform: rotate(90deg); }
-.block.wake > .block.text {
-  margin-top: 6px; padding: 8px; border-radius: 4px;
-  background: #0a0c12; color: var(--text);
-  max-height: 360px; overflow-y: auto;
-  font-family: ui-monospace, monospace; font-size: 11px;
+
+/* Folded-body controls row (wake + skill, see foldedText.js): text-align, not
+   display, since these are <details> children and an author `display` there
+   would outrank the UA's own hiding rule for the collapsed state (see the
+   .action-group comment below for the fuller warning). */
+.fold-controls { margin-top: 4px; text-align: right; }
+.fold-controls .user-view-controls { margin-left: 0; }
+
+/* Wake body's metadata line (flattenPayload's line 1 — always the compact-JSON
+   meta block): plain textContent, never markdown, so a stray backtick/asterisk
+   in the JSON (e.g. a hint field) can't mangle into an element. */
+.wake-meta {
+  font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px dashed var(--border);
 }
 
 /* One contiguous run of machinery (tool calls, thinking) between two assistant
@@ -737,7 +747,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
    back as a plain user message; the server correlates it with the preceding
    Skill tool_use (see attachSkillLoad in src/parser.js) and the client
    renders it as a collapsed <details> named after the invoked skill, with
-   the raw content in an expandable body. Caret mirrors .block.wake/.block.tool. */
+   the body built as markdown on first expand. Caret mirrors .block.wake/.block.tool. */
 .block.skill { border-left: 3px solid var(--accent); padding: 2px 0 2px 8px; }
 .block.skill > summary {
   cursor: pointer; list-style: none; color: var(--accent);
@@ -750,11 +760,16 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 }
 .block.skill[open] > summary::before { transform: rotate(90deg); }
 .block.skill .skill-name { font-weight: 600; }
-.block.skill > pre.block.text {
-  margin: 6px 0 0 0; padding: 8px; border-radius: 4px;
+
+/* Fold box shared by wake and skill bodies: dark background, scroll-capped.
+   No font-family/font-size here — rendered markdown uses the normal body
+   font; raw view is already monospace via .user-text[data-view="raw"] (a
+   font-family here would win on specificity and force raw view monospace
+   too, since (0,3,0) beats (0,2,0)). */
+.block.wake > .block.text, .block.skill > .block.text {
+  margin-top: 6px; padding: 8px; border-radius: 4px;
   background: #0a0c12; color: var(--text);
-  max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
-  font-family: ui-monospace, monospace; font-size: 11px;
+  max-height: 360px; overflow-y: auto;
 }
 
 .block.tool { border-left: 3px solid var(--tool); padding: 4px 0 4px 8px; }

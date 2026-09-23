@@ -267,7 +267,7 @@ test('controls survive segment retirement and stay enabled during a running turn
   }
 });
 
-test('wake-callback and skill-load bubbles get no markdown body or controls', async () => {
+test('wake-callback and skill-load bubbles build no markdown body or controls while collapsed', async () => {
   setupDOM();
   const { buildWakeStub } = await import(pathToFileURL(path.join(PUB, 'wakeCallback.js')).href);
   const Conversation = await importConversation();

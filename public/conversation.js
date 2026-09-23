@@ -9,6 +9,7 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 import { buildUserText } from './userText.js';
+import { mountFoldedText, renderWakeBodyInto } from './foldedText.js';
 
 // The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
 // builds it and `lazyHistory.js` collapses a doubled one at a page seam.
@@ -532,20 +533,21 @@ export class Conversation {
     // attachSkillLoad in src/parser.js) — isSynthetic alone isn't reliable,
     // since the CLI reuses it for compaction-continuation and Stop-hook
     // feedback text too. Render a collapsed bubble named after the actual
-    // invoked skill; the raw content goes in an expandable body.
+    // invoked skill; the body is built as markdown on first expand.
     const skill = ev.skillLoad;
     if (skill) {
       const details = el('details', { class: 'block skill' },
         el('summary', {}, '📘 ', el('span', { class: 'skill-name' }, `Loading skill: ${skill.skill ?? 'skill'}`)),
-        el('pre', { class: 'block text' }, text),
       );
+      mountFoldedText(details, text);
       blocks.appendChild(details);
     }
 
     // Idle-subscription wake callback: the orchestrator folds the worker's
     // recent output into the injected prompt. Render a collapsed bubble — the
     // summary line stays visible, the folded get_recent_messages payload goes in
-    // an expandable body (default collapsed). Marker sentinels never render.
+    // an expandable body, built as markdown on first expand (default
+    // collapsed). Marker sentinels never render.
     const wake = skill ? null : parseWakeCallback(text);
     if (wake) {
       // Badge marks this as an orchestrator-injected wake, not a user message
@@ -555,8 +557,8 @@ export class Conversation {
         // Folded stub — collapsible <details> holding the get_recent_messages payload.
         const details = el('details', { class: 'block wake' },
           el('summary', {}, badge, wake.summary),
-          el('div', { class: 'block text' }, wake.body),
         );
+        mountFoldedText(details, wake.body, { renderInto: renderWakeBodyInto });
         blocks.appendChild(details);
       } else {
         // Body-less plain stub (timeout / mid-turn) — just the summary line, no caret.
