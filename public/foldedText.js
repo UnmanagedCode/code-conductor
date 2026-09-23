@@ -1,9 +1,12 @@
 // Folded bubble bodies (wake-callback and skill-load `<details>`): lazy
 // markdown rendering + raw/md toggle + copy, built on first expand and
-// reused after. Kept out of userText.js because that module is imported
-// server-side-adjacent code paths never touch, while this one is DOM-only;
-// kept out of wakeCallback.js because the server imports that module and it
-// must stay free of DOM dependencies.
+// reused after. Kept out of userText.js: that module's `buildUserText` is
+// the one generic, eagerly-built body shared by every user-text bubble —
+// the lazy build-on-first-expand mounting and the wake-specific metadata-line
+// split are concerns specific to these two collapsible kinds, so they live
+// here instead of forking userText.js's single responsibility. Kept out of
+// wakeCallback.js because the server imports that module and it must stay
+// free of DOM dependencies.
 
 import { el } from './dom.js';
 import { buildUserText } from './userText.js';

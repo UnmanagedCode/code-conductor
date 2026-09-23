@@ -763,9 +763,9 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 
 /* Fold box shared by wake and skill bodies: dark background, scroll-capped.
    No font-family/font-size here — rendered markdown uses the normal body
-   font; raw view is already monospace via .user-text[data-view="raw"] (a
-   font-family here would win on specificity and force raw view monospace
-   too, since (0,3,0) beats (0,2,0)). */
+   font. A font-family here would apply to BOTH views (this selector outranks
+   .user-text[data-view="raw"] on specificity), forcing the rendered view
+   monospace too, not just the raw view that already asks for it. */
 .block.wake > .block.text, .block.skill > .block.text {
   margin-top: 6px; padding: 8px; border-radius: 4px;
   background: #0a0c12; color: var(--text);

@@ -291,6 +291,39 @@ test('metadata line is a muted line, never markdown', async () => {
   assert.equal(body.querySelectorAll('li').length >= 2, true, 'prose list renders');
 });
 
+test('a wake body with no newline renders its whole text as the meta line (zero-body turn)', async () => {
+  // Pins: flattenPayload(meta, []) — reachable when a turn ends with zero
+  // assistant text messages — is a payload with no '\n' at all (no body to
+  // join in). renderWakeBodyInto's nl === -1 branch must still show the
+  // whole text as .wake-meta, not lose it or crash trying to slice a body
+  // that doesn't exist.
+  setupDOM();
+  const Conversation = await importConversation();
+  const root = document.createElement('div');
+  const conv = new Conversation(root, {});
+  const emptyBodyPayload = flattenPayload(META, []);
+  const stub = buildWakeStub({ targetSessionId: 'abc12345', payloadText: emptyBodyPayload });
+  conv.apply({ kind: 'user_echo', text: stub, userIndex: 0 });
+
+  const details = root.querySelector('details.block.wake');
+  expand(details);
+  const body = details.querySelector(':scope > .user-text');
+
+  assert.equal(body.children.length, 1, 'the meta line is the only child');
+  const metaLine = body.firstElementChild;
+  assert.ok(metaLine.classList.contains('wake-meta'), 'the whole text renders as .wake-meta');
+  assert.equal(metaLine.textContent, emptyBodyPayload, 'meta line textContent is the entire payload');
+
+  const { copied, restore } = stubClipboard();
+  try {
+    details.querySelector('.user-view-copy').click();
+    await Promise.resolve();
+    assert.equal(copied[0], emptyBodyPayload, 'copy returns exactly the payload');
+  } finally {
+    restore();
+  }
+});
+
 test('framing lines stay paragraphs (wake path goes through the shared renderer)', async () => {
   setupDOM();
   const Conversation = await importConversation();
