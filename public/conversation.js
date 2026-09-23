@@ -56,6 +56,12 @@ export class Conversation {
     // (text) -> called when an outer assistant text block finalizes (text_end).
     // Wired to TTS auto-speak in app.js. Sub-conversations don't fire it.
     onAssistantText = null,
+    // The backing segment the first rendered event came from (a lazy page's
+    // `pageSegment`); every `segment_seam` divider advances it.
+    segmentId = null,
+    // () -> the server's current segment, for a batch rendered off the live
+    // conversation; the live one holds its own (setCurrentSegment).
+    currentSegmentId = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
@@ -66,6 +72,14 @@ export class Conversation {
     this.onRewind = onRewind;
     this.onFork = onFork;
     this.onAssistantText = onAssistantText;
+    // Rewind/fork act on the CURRENT backing segment's transcript only, so a
+    // user bubble offers them iff its provenance (`segmentId` as it rendered)
+    // is the server's current segment. Provenance comes from the server
+    // (tailSegmentId / pageSegment, then each divider); so does current (the
+    // snapshot's currentSegmentId, then a `segment` frame before every init).
+    this.segmentId = segmentId;
+    this.currentSegmentId = null;
+    this._currentSegmentGetter = typeof currentSegmentId === 'function' ? currentSegmentId : null;
     // Rewind/fork anchoring: each outer user_echo arrives with a
     // server-stamped absolute `userIndex` (the Nth pure user-prompt line
     // in the jsonl). The bubble exposes it via `data-user-index`. We do
@@ -165,6 +179,8 @@ export class Conversation {
     this.orphanChildEvents.clear();
     this._pendingAnswerUQId = null;
     this.stickyBottom = true;
+    this.segmentId = null;
+    this.currentSegmentId = null;
     this._setEmpty();
   }
 
@@ -179,6 +195,29 @@ export class Conversation {
     this._userActionsEnabled = !!enabled && !this.isSub;
     for (const btn of this.root.querySelectorAll('.user-msg-action')) {
       btn.disabled = !this._userActionsEnabled;
+    }
+  }
+
+  // The server's current segment is now `id`: every user bubble from any other
+  // segment loses its rewind/fork affordance.
+  setCurrentSegment(id) {
+    this.currentSegmentId = id ?? null;
+    this.syncSegmentActions();
+  }
+
+  _currentSegment() {
+    return this._currentSegmentGetter ? this._currentSegmentGetter() : this.currentSegmentId;
+  }
+
+  // REMOVES (not disables) the affordance, so setUserActionsEnabled can never
+  // bring it back. Covers spliced lazy-history bubbles too — they share the root.
+  // A bubble without provenance (pre-spawn diagnostics) counts as not current.
+  syncSegmentActions() {
+    const cur = this._currentSegment();
+    if (cur == null) return;
+    for (const bubble of this.root.querySelectorAll('.msg.user')) {
+      if (bubble.getAttribute('data-segment-id') === cur) continue;
+      bubble.querySelector(':scope > .user-msg-actions')?.remove();
     }
   }
 
@@ -389,6 +428,7 @@ export class Conversation {
         this._maybeScroll();
         break;
       case 'history_gap':    this._renderHistoryGap(); break;
+      case 'segment_seam':   this._renderSegmentSeam(ev); break;
       case 'overage_message_queued':
         this.root.appendChild(new QueuedMessageBlock(ev).node);
         this._maybeScroll();
@@ -561,18 +601,17 @@ export class Conversation {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
     }
     const cls = wake ? 'msg user wake-callback' : 'msg user';
-    const wrap = el('div',
-      userIndex != null
-        ? { class: cls, 'data-user-index': String(userIndex) }
-        : { class: cls },
-      roleEl,
-      blocks,
-    );
+    const attrs = { class: cls };
+    if (userIndex != null) attrs['data-user-index'] = String(userIndex);
+    if (this.segmentId != null) attrs['data-segment-id'] = this.segmentId;
+    const wrap = el('div', attrs, roleEl, blocks);
+    const cur = this._currentSegment();
     // Hover-revealed rewind / fork affordances — only on the outer
     // conversation (sub-agent transcripts never get them). The buttons stay
     // visually hidden until the bubble is hovered; CSS lives in styles.css
     // under `.user-msg-actions` (mirrors the `.session-delete` pattern).
-    if (!this.isSub && userIndex != null && (this.onRewind || this.onFork)) {
+    if (!this.isSub && userIndex != null && (this.onRewind || this.onFork)
+        && (cur == null || this.segmentId === cur)) {
       const actions = el('div', { class: 'user-msg-actions' });
       if (this.onRewind) {
         const btn = el('button', {
@@ -805,6 +844,18 @@ export class Conversation {
     // already null and this close is a no-op. Keep it — the guard's condition
     // is what makes it redundant, so narrowing either one re-couples them.
     this._closeAssistantSegment();
+  }
+
+  // A context renewal between two backing segments (server-injected
+  // `segment_seam`, src/lineagePager.ts / src/wsHub.ts). A merge barrier like
+  // the gap divider, and the provenance boundary: everything rendered after it
+  // came from `ev.segmentId`.
+  _renderSegmentSeam(ev) {
+    this.root.appendChild(el('div', { class: 'history-divider segment-seam', 'data-segment-id': ev.segmentId ?? '' },
+      el('span', {}, '── context renewed ──')));
+    this._closeAssistantSegment();
+    this.segmentId = ev.segmentId ?? null;
+    this.syncSegmentActions();
   }
 
   _renderHistoryDivider(ev) {

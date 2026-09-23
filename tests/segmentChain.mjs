@@ -7,8 +7,9 @@
 // live-shaped content whose correlation keys match the file by construction) or
 // emitted as content no seeded file recorded (`emitLive`).
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { api, waitFor } from './helpers.mjs';
 import { encodeCwd, transcriptRoot, orchStoreRoot, localPlace } from '../src/projects.ts';
@@ -51,21 +52,51 @@ export async function writeSegmentFile(place, seg) {
     fileRecords(seg).map(r => JSON.stringify(r)).join('\n') + '\n');
 }
 
-// Write every segment's jsonl, and one lineage row for `publicId` holding
-// `segments[0..rowThrough]` (its `current` is the last of those).
+// The `at` stamp a fixture row gives its i-th entry.
+const atFor = (i) => `2026-09-${String(1 + i).padStart(2, '0')}T00:00:00Z`;
+
+// Write every segment's jsonl (except one marked `file: false` — a missing
+// transcript), and one lineage row for `publicId` holding
+// `segments[0..rowThrough]`. A segment marked `dropped: true` is written as a
+// tombstone; `current` is the newest entry without one.
 export async function seedSegmentChain({ place, publicId, segments, rowThrough = segments.length - 1 }) {
   assert.equal(segments[0].reason, 'initial', 'a chain opens on its initial segment');
-  for (const seg of segments) await writeSegmentFile(place, seg);
-  const row = segments.slice(0, rowThrough + 1);
+  for (const seg of segments) if (seg.file !== false) await writeSegmentFile(place, seg);
+  await writeLineageRow(publicId, segments.slice(0, rowThrough + 1));
+}
+
+// Write ONE `session-lineage.json` row, preserving every other row in the
+// store. No shape check on the chain: this is how a test writes a row the
+// production writers could not (a legacy row whose oldest entry is not
+// `initial`). `current` is derived — the newest entry without `dropped: true`
+// — and one must exist, as the store's row invariant requires.
+export async function writeLineageRow(publicId, segments) {
   const file = path.join(orchStoreRoot(), 'session-lineage.json');
   let sessions = {};
-  try { ({ sessions } = JSON.parse(await fs.readFile(file, 'utf8'))); } catch { /* first row */ }
+  try { ({ sessions } = JSON.parse(await fs.readFile(file, 'utf8'))); } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+  const live = segments.filter(s => s.dropped !== true);
+  assert.ok(live.length > 0, `writeLineageRow: row ${publicId} has no live entry`);
   sessions[publicId] = {
-    current: row[row.length - 1].id,
-    segments: row.map((s, i) => ({ id: s.id, reason: s.reason, at: `2026-09-0${1 + i}T00:00:00Z` })),
+    current: live[live.length - 1].id,
+    segments: segments.map((s, i) => ({
+      id: s.id, reason: s.reason, at: s.at ?? atFor(i), ...(s.dropped === true ? { dropped: true } : {}),
+    })),
   };
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   await fs.writeFile(file, JSON.stringify({ sessions }, null, 2) + '\n');
+}
+
+// A prune-style copy of `records`: every tool_result's content replaced by
+// `stub`, every uuid kept (src/sessionPrune.ts keeps the tree intact).
+export function stubbedCopy(records, stub) {
+  return records.map((r) => {
+    const content = r.type === 'user' ? r.message?.content : null;
+    if (!Array.isArray(content)) return r;
+    return { ...r, message: { ...r.message, content: content.map(b =>
+      b?.type === 'tool_result' ? { ...b, content: stub } : b) } };
+  });
 }
 
 // A live rotation onto backing id `id`, through the production rotation branch
@@ -130,11 +161,15 @@ export async function withRingCap(ringCap, fn) {
 // Resume `publicId` live on segment `liveFrom`, then cross every later
 // (renew) segment's seam live. Returns { inst, id, place, crossed }, where
 // `crossed[i]` is every event emitted crossing the i-th later segment's seam.
-export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, liveFrom = 0, ringCap }) {
+// `beforeResume` (optional) runs once the chain is seeded and before any
+// instance exists — the window in which a read of a segment id reaches that
+// segment's own file.
+export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, liveFrom = 0, ringCap, beforeResume = null }) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: project });
   await seedSegmentChain({
     place: localPlace(path.join(ctx.projectsRoot, project)), publicId, segments, rowThrough: liveFrom,
   });
+  if (beforeResume) await beforeResume();
   const id = await withRingCap(ringCap, async () => {
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
       project, mode: 'bypassPermissions', resume: publicId,
@@ -151,4 +186,83 @@ export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, li
     crossed.push(await crossSeam(inst, { id: seg.id, place: inst.transcriptPlace }));
   }
   return { inst, id, place: inst.transcriptPlace, crossed };
+}
+
+// One MCP tool call over JSON-RPC, unwrapped to the tool's JSON result.
+let nextRpcId = 1;
+export async function mcpTool(ctx, name, args) {
+  const res = await fetch(ctx.baseUrl + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const body = await res.json();
+  assert.ok(body?.result, `${name} returned no result; body=${JSON.stringify(body)}`);
+  return JSON.parse(body.result.content[0].text);
+}
+
+// Page GET /api/instances/:id/lineage-events backward until `hasMore` is false,
+// enforcing the client's progress rule (public/lazyHistory.js): a page is
+// accepted iff its segment is unchanged and its cursor strictly lower, or its
+// segment is one this walk has not visited. Returns `events` oldest-first, the
+// `cursors` each request used and the raw `pages` newest-first.
+export async function walkLineage(ctx, id, { limit = 7, before = null, segment = null } = {}) {
+  let events = [];
+  const cursors = [];
+  const pages = [];
+  const visited = new Set([segment]);
+  for (let i = 0; i < 400; i++) {
+    const q = [`limit=${limit}`];
+    if (before != null) q.push(`before=${before}`);
+    if (segment != null) q.push(`segment=${encodeURIComponent(segment)}`);
+    cursors.push({ segment, before });
+    const r = await api(ctx.baseUrl, 'GET', `/api/instances/${id}/lineage-events?${q.join('&')}`);
+    assert.equal(r.status, 200, `lineage-events ${q.join('&')}: ${JSON.stringify(r.body)}`);
+    pages.push(r.body);
+    events = r.body.events.concat(events);
+    if (!r.body.hasMore) return { events, cursors, pages };
+    const next = r.body.segment ?? null;
+    if (next === segment) {
+      assert.equal(typeof r.body.nextBefore, 'number', 'a same-segment continuation carries a numeric cursor');
+      if (before != null) assert.ok(r.body.nextBefore < before, `the cursor strictly decreases (${r.body.nextBefore} < ${before})`);
+    } else {
+      assert.ok(!visited.has(next), `segment ${next} is not revisited`);
+      visited.add(next);
+    }
+    segment = next;
+    before = r.body.nextBefore ?? null;
+  }
+  throw new Error('walkLineage: cursor never terminated');
+}
+
+// Split a walk at its `segment_seam` dividers, oldest first. The run before
+// the first divider has label null; each divider starts a run labelled with
+// its `segmentId`. Dividers themselves are in no run.
+export function splitAtSeams(events) {
+  const runs = [{ label: null, events: [] }];
+  for (const e of events) {
+    if (e.kind === 'segment_seam') runs.push({ label: e.segmentId, events: [] });
+    else runs[runs.length - 1].events.push(e);
+  }
+  return runs;
+}
+
+export const isGap = (e) => e.kind === 'history_gap';
+
+// The client's gap adjacency rule (public/conversation.js _renderHistoryGap,
+// public/lazyHistory.js spliceBatchAbove): two adjacent gap markers render as one.
+export function collapseGaps(evs) {
+  return evs.filter((e, i) => !(isGap(e) && i > 0 && isGap(evs[i - 1])));
+}
+
+// Load export `name` of repo-relative module `relPath`, asserting (not
+// throwing) when the module or the export does not exist — so a test that
+// needs a new export fails on an AssertionError rather than an import error.
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export async function newExport(relPath, name) {
+  const abs = path.join(REPO, relPath);
+  assert.ok(existsSync(abs), `${relPath} exists`);
+  const mod = await import(pathToFileURL(abs).href);
+  assert.equal(typeof mod[name], 'function', `${relPath} exports ${name}`);
+  return mod[name];
 }

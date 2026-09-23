@@ -55,7 +55,7 @@ import type { TranscriptPlacement } from './projects.ts';
 import { loadPersistedTranscript } from './transcript.ts';
 import { hasHeadlessChildIn, isOuterUserEcho, lastQuiescentAtOrBefore, snapStartToQuiescent, type UiEvent } from './parser.ts';
 import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
-import type { InstanceLike } from './instanceTypes.ts';
+import type { InstanceLike, RingSeam } from './instanceTypes.ts';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
@@ -83,6 +83,13 @@ export interface SeqEvent extends UiEvent {
   _seq: number;
   userIndex?: number;
 }
+
+// One page of history, as every entry point below returns it.
+export interface Page { events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }
+
+// What pageInstanceEvents reads off an instance — narrow, so the lineage
+// scroll-back can hand it a past view of one (src/lineagePager.ts).
+export type PagerSource = Pick<InstanceLike, 'ringSnapshot' | 'ring' | 'backingSessionId' | 'transcriptPlace' | '_userEchoCount'>;
 
 // Stamp a replayed transcript's lines into a flat archive event list: dense
 // `_seq` = array index, absolute `userIndex` on outer echoes — the same ordinal
@@ -252,6 +259,33 @@ export function currentSegmentScope(inst: Pick<InstanceLike, 'ring' | 'backingSe
   };
 }
 
+// The segment that owns ring seq `seq`: the last seam with `startSeq <= seq`
+// (EventLog.seams). null before the first spawn wrote a seam.
+export function segmentOfSeq(seams: readonly RingSeam[], seq: number): string | null {
+  return seams.findLast(s => s.startSeq <= seq)?.segmentId ?? null;
+}
+
+// Presentation of the ring's rotation boundaries for the web UI: a seq-less
+// `{kind:'segment_seam', segmentId}` divider before each event that is a later
+// seam's first (its rotation init). `ringFloor` is the `trimmedBefore` that goes
+// with `events`: a seam at or below it opens the served history rather than
+// splitting it, and its boundary is drawn by the lineage walk's own marker above
+// the older segment (src/lineagePager.ts), so it gets none here. Archive seqs are
+// below the floor, so only ring events can match. UI-only: never in /events or
+// an MCP read.
+export function insertRingSeamDividers(events: UiEvent[], seams: readonly RingSeam[], ringFloor: number): UiEvent[] {
+  const bySeq = new Map<number, string>();
+  for (const s of seams.slice(1)) if (s.startSeq > ringFloor) bySeq.set(s.startSeq, s.segmentId);
+  if (bySeq.size === 0) return events;
+  const out: UiEvent[] = [];
+  for (const ev of events) {
+    const segmentId = typeof ev._seq === 'number' ? bySeq.get(ev._seq) : undefined;
+    if (segmentId != null) out.push({ kind: 'segment_seam', segmentId });
+    out.push(ev);
+  }
+  return out;
+}
+
 // Replay the persisted jsonl into a flat event list (dense `_seq` = array
 // index, absolute `userIndex` stamped on outer echoes — same ordinal
 // semantics as Instance._emitUi) and compute `cut`: the number of leading
@@ -339,20 +373,24 @@ export async function buildArchive({ place, sessionId, ring, trimmedBefore, user
 
 // Page an instance's event history.
 //   before — backward paging: up to `limit` events immediately preceding
-//            seq `before`, oldest-first (the UI's scroll-up path). Wins
+//            seq `before`, oldest-first (the scroll-back path). Wins
 //            over `after` when both are given.
 //   after  — forward paging: the first `limit` events with seq > after,
 //            EXCLUSIVE (mirrors the REST `after=` cursor; get_transcript's
 //            own `fromSeq` is inclusive and translates to this at its
 //            boundary in src/mcp/handlers.ts, not here).
 //   neither — the trailing `limit` events.
+//   markFloor — whether to place the floor marker for evicted EARLIER-segment
+//            events (below). A caller that serves those earlier segments
+//            itself (the lineage scroll-back, src/lineagePager.ts) passes false;
+//            the seam marker for a current-segment loss is unaffected.
 // Returns { events, hasMore, nextBefore, trimmedBefore, lastSeq }.
 // `nextBefore` is an opaque cursor for the next backward page; `hasMore`
 // means older events than the first one served (may be optimistically true
 // exactly at the ring/archive boundary — the follow-up page resolves it).
-export async function pageInstanceEvents(inst: InstanceLike, { before = null, after = null, limit }: {
-  before?: number | null; after?: number | null; limit?: number;
-} = {}): Promise<{ events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }> {
+export async function pageInstanceEvents(inst: PagerSource, { before = null, after = null, limit, markFloor = true }: {
+  before?: number | null; after?: number | null; limit?: number; markFloor?: boolean;
+} = {}): Promise<Page> {
   const max = clampLimit(limit);
   const ring = inst.ringSnapshot();
   const tb = inst.ring.trimmedBefore;
@@ -394,7 +432,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // Evicted events of an earlier segment sit below combined[0]: with no
   // archive (head predates the current segment) combined[0] is the ring head;
   // with one, it is the current file's first event.
-  let floorGap = !scope.archivable && tb > 0 && !!inst.backingSessionId;
+  let floorGap = markFloor && (!scope.archivable && tb > 0 && !!inst.backingSessionId);
   if (needArchive) {
     const archive = await buildArchive({
       place: inst.transcriptPlace, sessionId: inst.backingSessionId as string,
@@ -403,7 +441,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
     combined = archive.events.slice(0, archive.cut).concat(ring);
     seamIdx = archive.cut;
     gap = archive.gap;
-    floorGap = scope.priorEvicted;
+    floorGap = markFloor && scope.priorEvicted;
   }
 
   return pageCombined(combined, {
@@ -429,7 +467,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
 function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, floorGap, trimmedBefore, lastSeq, optimisticMore }: {
   before: number | null; after: number | null; max: number; seamIdx: number;
   gap: boolean; floorGap: boolean; trimmedBefore: number; lastSeq: number; optimisticMore: boolean;
-}): { events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number } {
+}): Page {
   let events: UiEvent[];
   let hasMore: boolean;
   // Index in `combined` of this page's first served event, in BOTH directions
@@ -539,17 +577,33 @@ function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, 
 
 // Page a session's events straight off the persisted jsonl, with no instance
 // and no ring — the retired-session read path (src/mcp/handlers.ts
-// getInstOrDisk). The whole replayed transcript IS the history, so there is no
-// archive/ring seam (`seamIdx: -1`, its existing "no scan-opaque boundary"
-// meaning) and nothing was evicted-and-unreconstructable (`gap: false`,
-// `trimmedBefore: 0`).
-export async function pagePersistedEvents({ place, sessionId, before = null, after = null, limit }: {
+// getInstOrDisk). Its two halves are exported for the lineage scroll-back
+// (src/lineagePager.ts), which must tell a missing file from an empty one.
+export async function pagePersistedEvents(a: {
   place: TranscriptPlacement; sessionId: string; before?: number | null; after?: number | null; limit?: number;
-}): Promise<{ events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }> {
-  const max = clampLimit(limit);
+}): Promise<Page> {
+  const flat = await loadStampedTranscript(a);
+  if (!flat) return { events: [], hasMore: false, nextBefore: 0, trimmedBefore: 0, lastSeq: -1 };
+  return pageStampedTranscript(flat, a);
+}
+
+// A persisted transcript as a stamped archive event list; null when the file is
+// absent.
+export async function loadStampedTranscript({ place, sessionId }: {
+  place: TranscriptPlacement; sessionId: string;
+}): Promise<SeqEvent[] | null> {
   const result = await loadPersistedTranscript({ place, sessionId, seqHint: 0 });
-  if (!result) return { events: [], hasMore: false, nextBefore: 0, trimmedBefore: 0, lastSeq: -1 };
-  const flat = stampArchiveEvents(result.lines);
+  return result ? stampArchiveEvents(result.lines) : null;
+}
+
+// Page a stamped transcript. The whole replayed transcript IS the history, so
+// there is no archive/ring seam (`seamIdx: -1`, its existing "no scan-opaque
+// boundary" meaning) and nothing was evicted-and-unreconstructable (`gap: false`,
+// `trimmedBefore: 0`).
+export function pageStampedTranscript(flat: SeqEvent[], { before = null, after = null, limit }: {
+  before?: number | null; after?: number | null; limit?: number;
+}): Page {
+  const max = clampLimit(limit);
   const lastSeq = flat.length - 1;
   const w = normalizeWindow(before, after, lastSeq);
   return pageCombined(flat, {

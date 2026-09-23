@@ -1,5 +1,5 @@
 // Lazy-loaded older history: render a page of archived/evicted events
-// fetched from GET /api/instances/:id/events and splice it above the live
+// fetched from GET /api/instances/:id/lineage-events and splice it above the live
 // conversation. There is deliberately NO parallel renderer — each batch
 // runs through a fresh `Conversation` instance (the exact block-rendering
 // path the live view uses) mounted on a detached container, so its
@@ -29,10 +29,12 @@ const MAX_EMPTY_PAGES = 3;
 //                     sub-agent events whose parent head is in this batch
 // `options` should be the same callbacks the main conversation was built
 // with; `onAssistantText` is force-nulled — replaying old history must
-// never trigger TTS auto-speak.
-export function renderEventBatch(events, options = {}) {
+// never trigger TTS auto-speak. `segment` carries the page's provenance
+// (`segmentId`) and a getter for the server's current segment
+// (`currentSegmentId`) — see Conversation.
+export function renderEventBatch(events, options = {}, segment = {}) {
   const holder = document.createElement('div');
-  const batch = new Conversation(holder, { ...options, onAssistantText: null });
+  const batch = new Conversation(holder, { ...options, ...segment, onAssistantText: null });
   // Same answer-locking semantics as a snapshot replay (a user_echo right
   // after an AskUserQuestion tool_result marks the card answered).
   batch._replayMode = true;
@@ -91,7 +93,17 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
   let merged = false;
   // Captured before the move — afterwards the holder is empty.
   const batchTail = batch.holder.lastElementChild;
+  const batchSeams = [...batch.holder.children].filter(n => n.classList.contains('segment-seam'));
   prependBatch(root, batch.holder, anchorNode, () => {
+    // Same-label divider collapse: one renew boundary drawn by two responses
+    // (the tail's in-ring divider and the walk's own, when the ring floor
+    // crossed the seam between them). Keep the upper one — the batch's.
+    for (const seam of batchSeams) {
+      const id = seam.getAttribute('data-segment-id');
+      for (const other of root.querySelectorAll('.segment-seam')) {
+        if (other !== seam && other.getAttribute('data-segment-id') === id) other.remove();
+      }
+    }
     // Seam gap collapse (2026-0069): this batch ends with a gap divider and
     // the chunk below begins with one — the pager marked the same seam on
     // both pages (2026-0054). Drop the newly inserted one; the divider
@@ -156,12 +168,16 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
 }
 
 // --- Lazy-load of older history (scroll-to-top) controller ----------------
-// The WS snapshot carries only the ring TAIL (tailStartSeq > 0 ⇒ older
-// events exist); the user pages backward through
-// GET /api/instances/:id/events?before=<cursor> as they scroll up. `epoch`
-// guards against a fetch resolving after the view was cleared or switched
-// (its nodes would otherwise land in the wrong conversation) — bumped on
-// every snapshot / reset_snapshot / instance switch.
+// The WS snapshot carries only the ring TAIL; the user pages backward through
+// GET /api/instances/:id/lineage-events as they scroll up — the ring, then
+// every earlier backing segment of the session (src/lineagePager.ts). The
+// cursor is (segment, nextBefore): a page is accepted iff its segment is
+// unchanged with a strictly lower cursor, or is one this walk has not visited.
+// A tail with no older ring content (tailStartSeq 0) still has earlier
+// segments to probe, so init() asks once silently. `epoch` guards against a
+// fetch resolving after the view was cleared or switched (its nodes would
+// otherwise land in the wrong conversation) — bumped on every snapshot /
+// reset_snapshot / instance switch.
 //
 // Injected deps:
 //   conversationEl      — dom.conversation: scroll container + sentinel mount + prepend root
@@ -177,7 +193,10 @@ export function installLazyHistoryController({
   getActiveId,
   getInstances,
 }) {
-  const lazy = { epoch: 0, hasMore: false, nextBefore: 0, loading: false, emptyStreak: 0 };
+  const lazy = {
+    epoch: 0, hasMore: false, nextBefore: 0, segment: null, visited: new Set([null]),
+    loading: false, emptyStreak: 0, silent: false,
+  };
   let lazySentinel = null;
   // The current OLDEST chunk's leading assistant wrap (it begins mid-turn) —
   // the merge target for the next prepended page's trailing open bubble.
@@ -188,8 +207,11 @@ export function installLazyHistoryController({
     lazy.epoch += 1;
     lazy.hasMore = false;
     lazy.nextBefore = 0;
+    lazy.segment = null;
+    lazy.visited = new Set([null]);
     lazy.loading = false;
     lazy.emptyStreak = 0;
+    lazy.silent = false;
     lazySentinel = null; // the conversation DOM is cleared wholesale alongside
     oldestLeadingWrap = null;
   }
@@ -201,13 +223,25 @@ export function installLazyHistoryController({
     lazy.loading = false;
     lazy.nextBefore = frame.tailStartSeq
       ?? (frame.events?.length ? frame.events[0]._seq : 0);
-    lazy.hasMore = lazy.nextBefore > 0;
+    lazy.segment = null;
+    lazy.visited = new Set([null]);
+    lazy.emptyStreak = 0;
+    lazy.silent = false; // a probe a switch left stale must not hide this view's sentinel
     lazySentinel = null;
     // The tail is quiescent-aligned but can still begin mid-turn — its
     // leading bubble is then the first merge target.
     oldestLeadingWrap = conversation.leadingAssistantWrap ?? null;
-    if (lazy.hasMore) ensureSentinel();
-    autoFillViewport(); // fire-and-forget; self-guards on hasMore/layout
+    if (lazy.nextBefore > 0) {
+      lazy.hasMore = true;
+      ensureSentinel();
+      autoFillViewport(); // fire-and-forget; self-guards on hasMore/layout
+      return;
+    }
+    // The ring's whole content is in the tail: probe the earlier segments once,
+    // with no sentinel shown unless the probe finds history.
+    lazy.hasMore = true;
+    lazy.silent = true;
+    loadEarlier().then(() => autoFillViewport());
   }
 
   // "⋯ earlier messages" / "loading earlier…" affordance pinned above the
@@ -219,6 +253,7 @@ export function installLazyHistoryController({
       lazySentinel.className = 'history-sentinel';
       lazySentinel.addEventListener('click', () => loadEarlier());
     }
+    if (lazy.silent) return;
     if (lazySentinel.parentNode !== conversationEl) {
       conversationEl.insertBefore(lazySentinel, conversationEl.firstChild);
     }
@@ -230,18 +265,27 @@ export function installLazyHistoryController({
     const id = getActiveId();
     const epoch = lazy.epoch;
     const prevBefore = lazy.nextBefore;
+    const prevSegment = lazy.segment;
     lazy.loading = true;
     ensureSentinel();
     try {
-      const page = await apiFetch(
-        `/api/instances/${encodeURIComponent(id)}/events?before=${lazy.nextBefore}&limit=200`);
+      let q = 'limit=200';
+      if (lazy.nextBefore != null) q += `&before=${lazy.nextBefore}`;
+      if (lazy.segment != null) q += `&segment=${encodeURIComponent(lazy.segment)}`;
+      const page = await apiFetch(`/api/instances/${encodeURIComponent(id)}/lineage-events?${q}`);
       if (epoch !== lazy.epoch || id !== getActiveId()) return; // stale — view changed mid-fetch
+      lazy.silent = false;
       if (page.events.length) {
         // Render through the standard Conversation pipeline on a detached
         // node (isolated streaming/tool-pairing state), then splice above
         // the live content — merging the seam bubbles and adopting parked
-        // sub-agent events — preserving the viewport.
-        const batch = renderEventBatch(page.events, conversationOptions);
+        // sub-agent events — preserving the viewport. The batch keys its
+        // rewind/fork affordances on the page's provenance against the live
+        // conversation's current segment (the page's own until one is known).
+        const batch = renderEventBatch(page.events, conversationOptions, {
+          segmentId: page.pageSegment ?? null,
+          currentSegmentId: () => conversation.currentSegmentId ?? page.currentSegmentId ?? null,
+        });
         oldestLeadingWrap = spliceBatchAbove({
           root: conversationEl, batch, anchorNode: lazySentinel,
           conversation, oldestLeadingWrap,
@@ -251,14 +295,24 @@ export function installLazyHistoryController({
         const inst = getInstances().find(i => i.id === id);
         conversation.setUserActionsEnabled(inst?.status === 'idle');
       }
-      lazy.nextBefore = page.nextBefore;
+      const segment = page.segment ?? null;
+      // The cursor must make progress: strictly lower within a segment, or a
+      // move to a segment this walk has not visited.
+      const progressed = segment === prevSegment
+        ? page.nextBefore != null && (prevBefore == null || page.nextBefore < prevBefore)
+        : !lazy.visited.has(segment);
+      lazy.visited.add(segment);
+      lazy.segment = segment;
+      lazy.nextBefore = page.nextBefore ?? null;
       lazy.emptyStreak = page.events.length ? 0 : lazy.emptyStreak + 1;
       lazy.hasMore = !!page.hasMore
-        && page.nextBefore < prevBefore // cursor must strictly decrease
+        && progressed
         && lazy.emptyStreak < MAX_EMPTY_PAGES; // a pathological server cannot hot-loop
     } catch (e) {
       console.warn('load earlier failed:', e);
-      // keep hasMore — the sentinel stays tappable for a retry
+      // keep hasMore — the sentinel stays tappable for a retry (a failed
+      // silent probe offers one too)
+      lazy.silent = false;
     } finally {
       if (epoch === lazy.epoch) {
         lazy.loading = false;
@@ -282,8 +336,9 @@ export function installLazyHistoryController({
            && conversationEl.clientHeight > 0
            && conversationEl.scrollHeight <= conversationEl.clientHeight) {
       const before = lazy.nextBefore;
+      const segment = lazy.segment;
       await loadEarlier();
-      if (epoch !== lazy.epoch || lazy.nextBefore === before) break;
+      if (epoch !== lazy.epoch || (lazy.nextBefore === before && lazy.segment === segment)) break;
     }
   }
 

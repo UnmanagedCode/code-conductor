@@ -6,11 +6,15 @@
 // Server → client:
 //   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan, playbookEnforcement,
 //                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL; default DEFAULT_SNAPSHOT_TAIL)
-//                          tailStartSeq, trimmedBefore, // >0 ⇒ older history exists; page it via
-//                                                        // GET /api/instances/:id/events?before=<seq>
+//                          tailStartSeq, trimmedBefore, // >0 ⇒ older ring history exists
+//                          tailSegmentId,            // the backing segment the tail starts in
+//                          currentSegmentId,         // the backing segment the instance runs under now
 //                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
+//                          (older history — ring and earlier segments — is paged via
+//                          GET /api/instances/:id/lineage-events)
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
 //   { t: "event",          id, ev }
+//   { t: "segment",        id, currentSegmentId }  // before every forwarded outer system/init
 //   { t: "status",         id, status, sessionId, mode, autoApprovePlan, playbookEnforcement }
 //   { t: "closed",         id, code, signal }
 //   { t: "projects" }              // hint to re-fetch /api/projects
@@ -24,6 +28,7 @@ import { invalidateAll } from './projectsCache.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
+import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
 
 export interface WsHubOptions {
   wss: WebSocketServer;
@@ -42,8 +47,19 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
   instances.on('event', ({ id, ev }: { id: string; ev: UiEvent | null }) => {
     const subs = subscribers.get(id);
     if (subs) {
-      const msg = JSON.stringify({ t: 'event', id, ev });
-      for (const ws of subs) safeSend(ws, msg);
+      const inst = instances.get(id);
+      const frames: string[] = [];
+      // Every init — the spawn's and every rotation's — is preceded by the
+      // authoritative current segment, so the client never has to infer it from
+      // a divider (one is not drawn when the rotation init lands on the ring
+      // floor). The seams are already current here: markSeam runs before the
+      // init's emit.
+      if (inst && ev?.kind === 'system' && ev.subtype === 'init' && !ev.parentToolUseId) {
+        frames.push(JSON.stringify({ t: 'segment', id, currentSegmentId: currentSegmentScope(inst).segmentId }));
+      }
+      const out = inst && ev ? insertRingSeamDividers([ev], inst.ring.seams, inst.ring.trimmedBefore) : [ev];
+      for (const e of out) frames.push(JSON.stringify({ t: 'event', id, ev: e }));
+      for (const ws of subs) for (const msg of frames) safeSend(ws, msg);
     }
     // Turn-end notifications go to every connected client (not just
     // subscribers), so users get pings for background instances they aren't
@@ -151,8 +167,12 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             // trailing events, snapped to a turn boundary. tailStartSeq > 0
             // tells the client older history exists — it lazy-loads it via
             // GET /api/instances/:id/events?before=<seq>.
-            const events = inst.snapshotTail();
-            const tailStartSeq = events.length ? Number(events[0]._seq) : inst.ring.trimmedBefore;
+            const tail = inst.snapshotTail();
+            const tailStartSeq = tail.length ? Number(tail[0]._seq) : inst.ring.trimmedBefore;
+            // Captured with the tail, before the await below.
+            const tailSegmentId = segmentOfSeq(inst.ring.seams, tailStartSeq) ?? inst.backingSessionId ?? null;
+            const currentSegmentId = currentSegmentScope(inst).segmentId ?? null;
+            const events = insertRingSeamDividers(tail, inst.ring.seams, inst.ring.trimmedBefore);
             const tasksAtTailStart = await inst.reconstructActiveTasks(tailStartSeq);
             // Re-attach the ephemeral thinking-token counter when a block is
             // still streaming (the per-token events aren't retained in the ring
@@ -180,6 +200,10 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
               events,
               tailStartSeq,
               trimmedBefore: inst.ring.trimmedBefore,
+              // Provenance of the tail's first event, and the segment rewind/fork
+              // may act on — the client keys its user-bubble actions on the two.
+              tailSegmentId,
+              currentSegmentId,
               // In-flight task batch as of the tail start, so the client panel
               // reflects a batch whose TaskCreate is below the tail.
               tasksAtTailStart,
