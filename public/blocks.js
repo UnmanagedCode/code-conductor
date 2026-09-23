@@ -570,7 +570,7 @@ export function refreshActionGroupSummary(groupNode) {
   }
 }
 
-function copyToClipboard(text) {
+export function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     return navigator.clipboard.writeText(text);
   }

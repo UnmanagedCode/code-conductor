@@ -1,5 +1,6 @@
-// Tiny safe Markdown → DOM renderer used for plan bodies (and reusable
-// anywhere else we want to render a fixed markdown blob).
+// Tiny safe Markdown → DOM renderer used for assistant text, plan bodies,
+// summaries and user bubbles (and reusable anywhere else we want to render a
+// fixed markdown blob).
 //
 // Safety: every leaf piece of text is set via textContent. We never
 // touch innerHTML and we never trust user-supplied HTML. Links are
@@ -11,7 +12,7 @@
 //   **bold**, *italic*, _italic_, `inline code`
 //   ```fenced code blocks``` (with optional language tag)
 //   - / * / + unordered lists
-//   1. ordered lists
+//   1. ordered lists (the first item's number is kept as the list start)
 //   > blockquotes
 //   --- / *** / ___ horizontal rules
 //   [text](url) links
@@ -191,12 +192,13 @@ export function parseMarkdown(text) {
       continue;
     }
     if (startsOl(line)) {
+      const start = parseInt(line.match(/^(\d+)\./)[1], 10);
       const items = [];
       while (i < lines.length && startsOl(lines[i])) {
         items.push(lines[i].replace(/^\d+\.\s+/, ''));
         i++;
       }
-      blocks.push({ type: 'ol', items });
+      blocks.push({ type: 'ol', items, start });
       continue;
     }
     if (isTableStart(line, lines[i + 1])) {
@@ -275,6 +277,7 @@ function blockToNode(block) {
     case 'ul':
     case 'ol': {
       const list = document.createElement(block.type);
+      if (block.type === 'ol' && block.start !== 1) list.setAttribute('start', String(block.start));
       for (const item of block.items) {
         const li = el('li', {}, ...renderInline(item));
         list.appendChild(li);

@@ -8,6 +8,7 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
+import { buildUserText } from './userText.js';
 
 // The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
 // builds it and `lazyHistory.js` collapses a doubled one at a page seam.
@@ -569,7 +570,12 @@ export class Conversation {
     const isTranscribed = !skill && !wake && text.startsWith(TRANSCRIBED_PREFIX);
     if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
-    if (!skill && !wake && text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
+    let userTextControls = null;
+    if (!skill && !wake && text.length) {
+      const { body, controls } = buildUserText(text);
+      blocks.appendChild(body);
+      userTextControls = controls;
+    }
     for (const a of (ev.attachments ?? [])) {
       if (a?.kind === 'image') {
         if (typeof a.dataBase64 === 'string') {
@@ -600,6 +606,7 @@ export class Conversation {
     if (isTranscribed) {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
     }
+    if (userTextControls) roleEl.appendChild(userTextControls);
     const cls = wake ? 'msg user wake-callback' : 'msg user';
     const attrs = { class: cls };
     if (userIndex != null) attrs['data-user-index'] = String(userIndex);

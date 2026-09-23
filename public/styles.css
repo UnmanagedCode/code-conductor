@@ -643,8 +643,36 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .user-msg-action:disabled { cursor: not-allowed; opacity: 0.4; }
 .user-msg-action:disabled:hover { color: var(--muted); background: transparent; }
 
+/* Hover-revealed raw/rendered toggle + copy, in the "user" role row rather
+   than .user-msg-actions (that container is removed on segment retirement
+   and its buttons are disabled during a running turn — this control must
+   survive both). */
+.user-view-controls {
+  margin-left: 8px; display: inline-flex; gap: 2px;
+  text-transform: none; letter-spacing: normal;
+  opacity: 0; transition: opacity 120ms ease-out;
+}
+.msg.user:hover .user-view-controls, .user-view-controls:focus-within { opacity: 1; }
+@media (hover: none) {
+  .user-view-controls { opacity: 1; }
+}
+.user-view-btn {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 1px 5px; font-size: 11px; line-height: 1.4;
+  border-radius: 4px;
+}
+.user-view-btn:hover { color: var(--text); background: var(--panel); }
+.user-view-btn.copied { color: var(--green); }
+.user-view-btn.failed { color: var(--amber); }
+
 .block { font-size: 13px; }
 .block.text { white-space: pre-wrap; word-break: break-word; }
+.user-text[data-view="raw"] { font-family: ui-monospace, monospace; font-size: 12px; }
+.msg.user .user-text.md h1, .msg.user .user-text.md h2, .msg.user .user-text.md h3,
+.msg.user .user-text.md h4, .msg.user .user-text.md h5, .msg.user .user-text.md h6 {
+  font-size: 1em; font-weight: 600; margin: 8px 0 2px;
+  border-bottom: none; padding-bottom: 0; color: var(--text);
+}
 .block.thinking { color: var(--thinking); font-style: italic; opacity: .8; white-space: pre-wrap; word-break: break-word; }
 .block.thinking summary { font-style: normal; font-weight: 600; cursor: pointer; }
 .block.thinking .body { padding-top: 4px; }
