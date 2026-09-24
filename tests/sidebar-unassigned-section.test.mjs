@@ -106,7 +106,7 @@ test('unassigned project after the last workspace sits at top level, directly af
   const { list, sidebar } = await setupSidebar();
   await render(sidebar, FIXTURE);
   const li = topLi(list, 'binary-ninja');
-  assert.equal(li.parentElement, list, 'unassigned row is a direct child of the project list');
+  assert.ok(li.parentElement === list, 'unassigned row is a direct child of the project list');
   const prev = li.previousElementSibling;
   assert.ok(prev?.classList.contains('project-workspace-item'), 'preceded by a workspace item');
   assert.equal(prev.querySelector('.project-workspace-name').textContent, 'TTD');
@@ -274,4 +274,20 @@ test('workspace member rows and the Conduct row keep the base .project-row geome
   assert.deepEqual(rowGeometry(window, member), rowGeometry(window, refGit), 'member row geometry');
   const conduct = list.querySelector('.project-conduct > .project-row');
   assert.deepEqual(rowGeometry(window, conduct), rowGeometry(window, refPlain), 'Conduct row geometry');
+  // The reference sits in the same cascade, so an unscoped alignment rule would
+  // move it too; the top-level rows are the other side of that comparison.
+  const topGit = topLi(list, 'gitty').querySelector(':scope > .project-row');
+  const topPlain = topLi(list, 'binary-ninja').querySelector(':scope > .project-row');
+  assert.notDeepEqual(rowGeometry(window, member), rowGeometry(window, topGit),
+    'the top-level alignment does not reach workspace member rows');
+  assert.notDeepEqual(rowGeometry(window, conduct), rowGeometry(window, topPlain),
+    'the top-level alignment does not reach the Conduct row');
+});
+
+test('the workspace header caret does not shrink when the summary overflows', async () => {
+  const { window } = await setupSidebar();
+  // The top-level commit-log column is a fixed width; a caret that shrinks
+  // under a long workspace name or a narrow sidebar pulls the label left of it.
+  const caret = cssRule(window, '.project-workspace > .project-workspace-summary::before').style;
+  assert.equal(caret.getPropertyValue('flex-shrink'), '0', 'caret rule sets flex-shrink 0');
 });

@@ -129,7 +129,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .project-workspace > .project-workspace-summary::-webkit-details-marker { display: none; }
 .project-workspace > .project-workspace-summary::before {
   content: '▸';
-  display: inline-block; width: 12px;
+  display: inline-block; width: 12px; flex: none;
   color: var(--muted);
   transition: transform .12s;
 }
