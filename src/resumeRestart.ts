@@ -26,6 +26,7 @@ import {
   clearResumeManifest,
 } from './resumeManifest.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
+import { RESTART_NOTICE_TRUNK } from './injectedTurns.ts';
 import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 
@@ -45,7 +46,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // --- Message texts -------------------------------------------------------
 
 export const RESUME_TEXT =
-  '✅ CodeConductor has restarted successfully. You may resume activity now — ' +
+  `${RESTART_NOTICE_TRUNK} — ` +
   'pick up wherever you left off before the restart.';
 
 // A worker row in the conductor-resume list (from conductedWorkersOf).
@@ -62,7 +63,7 @@ export function buildConductorResumeText(workers: WorkerRow[] = []): string {
   });
   const list = lines.length ? lines.join('\n') : '- (none recorded)';
   return (
-    '✅ CodeConductor has restarted successfully. You may resume activity now, ' +
+    `${RESTART_NOTICE_TRUNK}, ` +
     'and you should resume conducting your workers.\n\n' +
     'Your previously-conducted workers are listed below; each session has been ' +
     'preserved and can be resumed with `mcp__code-conductor__spawn_instance` ' +

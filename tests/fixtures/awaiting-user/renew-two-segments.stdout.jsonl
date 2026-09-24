@@ -1,0 +1,32 @@
+{"cc": "prompt", "text": "Keep going on the migration."}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_00000000000000000000", "role": "assistant", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Step one is done. Do you want me to start step two now?"}}}
+{"type": "assistant", "message": {"id": "msg_00000000000000000000", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "Step one is done. Do you want me to start step two now?"}], "stop_reason": null}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+{"type": "stream_event", "event": {"type": "message_stop"}}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0}
+{"cc": "prompt", "text": "Your conductor is asking you to renew your context now (renew_session).\n\nOtherwise write your handoff summary…"}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_00000000000000000000", "role": "assistant", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_n1", "name": "mcp__code-conductor__renew_session", "input": {}}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"summary\": \"roster\"}"}}}
+{"type": "assistant", "message": {"id": "msg_00000000000000000000", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [{"type": "tool_use", "id": "toolu_n1", "name": "mcp__code-conductor__renew_session", "input": {"summary": "roster"}}], "stop_reason": null}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+{"type": "stream_event", "event": {"type": "message_stop"}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_n1", "content": "renewal armed", "is_error": false}]}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_00000000000000000000", "role": "assistant", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Summary recorded."}}}
+{"type": "assistant", "message": {"id": "msg_00000000000000000000", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "Summary recorded."}], "stop_reason": null}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+{"type": "stream_event", "event": {"type": "message_stop"}}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0}
+{"type": "system", "subtype": "init", "session_id": "5e0d1a2b-0000-4000-8000-000000000002", "cwd": "/workspace/demo", "permissionMode": "default"}
+{"cc": "prompt", "text": "Your context was just renewed (cleared) at your own request via renew_session. The section below is the handoff summary you wrote for yourself before the clear — treat it as your working memory and continue from it.\n\n--- HANDOFF SUMMARY ---\n## Live work roster\n- none"}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_00000000000000000000", "role": "assistant", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Resumed from the summary."}}}
+{"type": "assistant", "message": {"id": "msg_00000000000000000000", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "Resumed from the summary."}], "stop_reason": null}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+{"type": "stream_event", "event": {"type": "message_stop"}}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0}

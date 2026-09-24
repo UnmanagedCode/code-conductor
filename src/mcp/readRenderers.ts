@@ -183,6 +183,9 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'lastRotatedAt', default: null, label: 'rotated', fmt: ts },
   { key: 'rotationReason', default: null, label: 'rotated-by' },
   { key: 'segmentCount', default: 1, label: 'segments' },
+  { key: 'ownerSessionId', default: null, label: 'owner' },
+  { key: 'awaitingUser', default: null, label: 'awaiting-user' },
+  { key: 'awaitingUserSource', default: null, label: 'awaiting-user-via' },
 ];
 
 function instanceRows(rows: Row[]): Array<string | string[]> {
@@ -226,6 +229,8 @@ const SESSION_DEVIANT: DeviantSpec[] = [
   // with no record still flags, because resuming it still comes up hot. The
   // flag must never be absent on a resume that lands ungated.
   { key: 'resumesHot', default: false, label: 'resumes-hot' },
+  { key: 'awaitingUser', default: null, label: 'awaiting-user' },
+  { key: 'awaitingUserSource', default: null, label: 'awaiting-user-via' },
 ];
 
 function inactiveRows(rows: Row[]): string[] {

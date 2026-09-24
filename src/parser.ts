@@ -15,7 +15,7 @@
 //   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
 //   tool_use                { msgId, blockIdx, toolUseId, name, input }
 //   tool_result             { toolUseId, content, isError }
-//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill} }
+//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill}, cliInjected?: true }
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
@@ -553,11 +553,11 @@ export class Parser {
     // duplicate, and it never produced a user_echo live.
     if (isTaskNotificationContent(content)) return [];
     if (typeof content === 'string') {
-      return [{ kind: 'user_echo', text: content }];
+      return stampCliInjected([{ kind: 'user_echo', text: content }], obj);
     }
     if (!Array.isArray(content)) return [];
     const events = consolidateUserContent(content);
-    return attachSkillLoad(events, obj, this._pendingSkillLoads);
+    return stampCliInjected(attachSkillLoad(events, obj, this._pendingSkillLoads), obj);
   }
 
   _handleResult(obj: WireEnvelope): UiEvent[] {
@@ -778,6 +778,24 @@ function skillInjectionMarker(obj: WireEnvelope): { injected: boolean; sourceToo
     // jsonl-shaped: identity is the only legal correlation on this surface.
     identityOnly: persisted && !streamed,
   };
+}
+
+// True for a user line the CLI itself injected — a skill's content, a command
+// caveat, a compaction continuation (its `isCompactSummary` lines also carry
+// `isVisibleInTranscriptOnly`, so that field adds nothing), hook feedback. The
+// same line-level mark skillInjectionMarker reads, on both surfaces.
+export function isCliInjectedLine(obj: WireEnvelope): boolean {
+  return skillInjectionMarker(obj).injected;
+}
+
+// Stamp `cliInjected: true` on the user_echo a CLI-injected line produced,
+// whether or not a pending skill load matched it. Shared by the live path
+// (Parser._handleUser) and transcript.ts replay, so the awaiting-user
+// classifier (src/awaitingUser.ts) reads the same flag on both.
+export function stampCliInjected(events: UiEvent[], source: WireEnvelope): UiEvent[] {
+  if (!isCliInjectedLine(source)) return events;
+  for (const ev of events) if (ev.kind === 'user_echo') ev.cliInjected = true;
+  return events;
 }
 
 // `source` is the raw line: a stream-json stdout envelope live, a persisted
