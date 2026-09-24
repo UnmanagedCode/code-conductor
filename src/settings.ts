@@ -21,13 +21,13 @@
 
 // Message returned to the model when the orchestrator denies an interactive
 // tool's `can_use_tool` request — tells it the request was delivered despite
-// the is_error flag, and to end its turn.
+// the is_error flag, and to end its turn and wait for the reply.
 // Shared with the can_use_tool responder in instances.ts.
 export const AWAITING_INPUT_MESSAGE =
   'Delivered — the user can see your request in the orchestrator UI now. '
   + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
   + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
-  + "End your turn now with no further tool calls; the user's reply comes as a later message.";
+  + "End your turn now with no further tool calls and wait for the user's reply; it arrives as a new message.";
 
 // Destructive tools gated by the interactive PreToolUse http hook in
 // ask mode. Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated
