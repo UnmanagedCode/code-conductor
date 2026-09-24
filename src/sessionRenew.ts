@@ -32,6 +32,7 @@
 //              can never make us reseed into the wrong session.
 
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
+import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.js';
 
 // Defensive ceiling: if `/clear` never rotates the session (the real CLI always
 // does — this only guards a wedged/hung subprocess), abandon the pending
@@ -76,15 +77,18 @@ interface ManagerEvent {
 // The summary structure the worker is asked for. ONE home, two consumers: the
 // `summary` argument description in src/mcp/tools.ts (a worker renewing on its
 // own initiative reads it there) and buildRenewRequest below (a worker answering
-// a conductor's request reads it in the prompt).
+// a conductor's request reads it in the prompt). The heading titles themselves
+// are owned by RENEW_SUMMARY_SECTIONS (../public/renewSeed.js), which the client
+// reads back to split the rendered summary into labelled sections.
+const S = RENEW_SUMMARY_SECTIONS;
 export const RENEW_SUMMARY_TEMPLATE =
-  'Structure it in three sections: '
-  + '(1) Live work roster — per still-running worker: sessionId, project/worktree, task, state, '
-  + 'agreed sentinel, next action. '
-  + '(2) Completed work index — one line per landed job: outcome + pointers to where details live '
-  + '(merge sha, worktree name, worker sessionId — transcripts and diffs remain recoverable from '
-  + 'these). '
-  + '(3) User context — stated preferences, decisions made, pending promises. '
+  'Structure it under these headings: '
+  + `\`## ${S.roster}\` — per still-running worker: sessionId, project/worktree, task, state, `
+  + `agreed sentinel, next action. `
+  + `\`## ${S.completed}\` — one line per landed job: outcome + pointers to where details live `
+  + `(merge sha, worktree name, worker sessionId — transcripts and diffs remain recoverable from `
+  + `these). `
+  + `\`## ${S.userContext}\` — stated preferences, decisions made, pending promises. `
   + 'Write it as a note to your future self: everything not captured here is lost when the context '
   + 'clears.';
 
@@ -134,29 +138,6 @@ export function renewalDeferredBy(inst: InstanceLike): 'overage-queue' | 'subage
   return null;
 }
 
-// Compose the first-turn seed for the cleared session. Three sections, each in
-// its own fence so the worker can tell them apart: the summary it wrote for
-// itself, then — when a conductor requested this renewal with a `followUp` — that
-// post-renewal directive, then `stateBlock` (the mechanical state block, built
-// fresh at reseed time — see buildStateBlock()). Callers pass the whole opts
-// object through arm().
-export function buildRenewSeed({ summary, followUp = null, stateBlock = null }: RenewalOpts = {}): string {
-  const parts: string[] = [];
-  parts.push(
-    'Your context was just renewed (cleared) at your own request via '
-    + 'renew_session. The section below is the handoff summary you wrote for '
-    + 'yourself before the clear — treat it as your working memory and continue '
-    + 'from it.\n\n--- HANDOFF SUMMARY ---\n' + String(summary ?? '').trim(),
-  );
-  if (followUp && String(followUp).trim()) {
-    parts.push('--- YOUR CONDUCTOR\'S FOLLOW-UP DIRECTIVE ---\n' + String(followUp).trim());
-  }
-  if (stateBlock && String(stateBlock).trim()) {
-    parts.push(String(stateBlock).trim());
-  }
-  return parts.join('\n\n');
-}
-
 // The server-generated mechanical state block — a safety net for a degraded or
 // incomplete self-authored summary. Enumerates, from live manager state, every
 // instance the caller spawned (Instance.callerInstanceId, the same tracking
@@ -169,9 +150,7 @@ export function buildStateBlock(manager: InstanceManagerLike, callerInstanceId: 
   const workers = manager.liveOwnedBy(callerInstanceId);
   const subs = manager.ownedWakeTargetsOf(callerInstanceId);
   const lines = [
-    '--- MECHANICAL STATE (server-generated at renewal; safety net — if this '
-    + 'disagrees with your summary above, this list wins for EXISTENCE, the '
-    + 'summary wins for INTENT) ---',
+    MECHANICAL_STATE_HEADER,
     'Live instances you spawned:',
   ];
   lines.push(workers.length

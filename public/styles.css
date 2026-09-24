@@ -682,25 +682,26 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
    is built as markdown on first expand (caret mirrors .block.tool).
    Plain stub (timeout / mid-turn) → a body-less .plain summary line, no caret.
    Both carry the orchestrator badge. */
-.msg.user.wake-callback { border-style: dashed; }
-.wake-badge { display: inline-flex; align-items: center; font-size: 10px; padding: 1px 5px; margin-right: 6px; border-radius: 8px; background: var(--panel-2); color: var(--muted); vertical-align: middle; cursor: default; user-select: none; }
+.msg.user.wake-callback, .msg.user.renew-seed { border-style: dashed; }
+.wake-badge, .renew-badge { display: inline-flex; align-items: center; font-size: 10px; padding: 1px 5px; margin-right: 6px; border-radius: 8px; background: var(--panel-2); color: var(--muted); vertical-align: middle; cursor: default; user-select: none; }
 .block.wake { border-left: 3px solid var(--muted); padding: 2px 0 2px 8px; }
+.block.renew-seed { border-left: 3px solid var(--accent); padding: 2px 0 2px 8px; }
 .block.wake.plain { color: var(--muted); display: flex; align-items: baseline; gap: 0; word-break: break-word; }
-.block.wake > summary {
+.block.wake > summary, .block.renew-seed > summary {
   cursor: pointer; list-style: none; color: var(--muted);
   display: flex; align-items: baseline; gap: 0; word-break: break-word;
 }
-.block.wake > summary::-webkit-details-marker { display: none; }
-.block.wake > summary::before {
+.block.wake > summary::-webkit-details-marker, .block.renew-seed > summary::-webkit-details-marker { display: none; }
+.block.wake > summary::before, .block.renew-seed > summary::before {
   content: "▸"; display: inline-block; color: var(--muted);
   margin-right: 6px; transition: transform .12s;
 }
-.block.wake[open] > summary::before { transform: rotate(90deg); }
+.block.wake[open] > summary::before, .block.renew-seed[open] > summary::before { transform: rotate(90deg); }
 
-/* Folded-body controls row (wake + skill, see foldedText.js): text-align, not
-   display, since these are <details> children and an author `display` there
-   would outrank the UA's own hiding rule for the collapsed state (see the
-   .action-group comment below for the fuller warning). */
+/* Folded-body controls row (wake + skill + renew-seed, see foldedText.js):
+   text-align, not display, since these are <details> children and an author
+   `display` there would outrank the UA's own hiding rule for the collapsed
+   state (see the .action-group comment below for the fuller warning). */
 .fold-controls { margin-top: 4px; text-align: right; }
 .fold-controls .user-view-controls { margin-left: 0; }
 
@@ -761,15 +762,28 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .block.skill[open] > summary::before { transform: rotate(90deg); }
 .block.skill .skill-name { font-weight: 600; }
 
-/* Fold box shared by wake and skill bodies: dark background, scroll-capped.
-   No font-family/font-size here — rendered markdown uses the normal body
-   font. A font-family here would apply to BOTH views (this selector outranks
-   .user-text[data-view="raw"] on specificity), forcing the rendered view
-   monospace too, not just the raw view that already asks for it. */
-.block.wake > .block.text, .block.skill > .block.text {
+/* Fold box shared by wake, skill and renew-seed bodies: dark background,
+   scroll-capped. No font-family/font-size here — rendered markdown uses the
+   normal body font. A font-family here would apply to BOTH views (this
+   selector outranks .user-text[data-view="raw"] on specificity), forcing the
+   rendered view monospace too, not just the raw view that already asks for it. */
+.block.wake > .block.text, .block.skill > .block.text, .block.renew-seed > .block.text {
   margin-top: 6px; padding: 8px; border-radius: 4px;
   background: #0a0c12; color: var(--text);
   max-height: 360px; overflow-y: auto;
+}
+
+/* Renewal reseed bubble body: one labelled section per summary heading
+   (falling back to a single "Handoff summary" section), then the
+   conductor's follow-up and the mechanical state. */
+.renew-section + .renew-section { margin-top: 8px; }
+.renew-section-label { color: var(--muted); font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+/* Mechanical state: literal textContent, never markdown — same reasoning as
+   .wake-meta, since a `worktree=my_branch_name` line would otherwise mangle
+   into italics. */
+.renew-state {
+  font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
 .block.tool { border-left: 3px solid var(--tool); padding: 4px 0 4px 8px; }

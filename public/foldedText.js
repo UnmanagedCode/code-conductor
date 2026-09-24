@@ -1,16 +1,17 @@
-// Folded bubble bodies (wake-callback and skill-load `<details>`): lazy
-// markdown rendering + raw/md toggle + copy, built on first expand and
+// Folded bubble bodies (wake-callback, skill-load and renew-seed `<details>`):
+// lazy markdown rendering + raw/md toggle + copy, built on first expand and
 // reused after. Kept out of userText.js: that module's `buildUserText` is
 // the one generic, eagerly-built body shared by every user-text bubble —
-// the lazy build-on-first-expand mounting and the wake-specific metadata-line
-// split are concerns specific to these two collapsible kinds, so they live
-// here instead of forking userText.js's single responsibility. Kept out of
-// wakeCallback.js because the server imports that module and it must stay
-// free of DOM dependencies.
+// the lazy build-on-first-expand mounting and the wake/renew-specific
+// section splitting are concerns specific to these collapsible kinds, so they
+// live here instead of forking userText.js's single responsibility. Kept out
+// of wakeCallback.js/renewSeed.js because the server imports those modules
+// and they must stay free of DOM dependencies.
 
 import { el } from './dom.js';
 import { buildUserText } from './userText.js';
 import { renderMarkdownInto } from './markdown.js';
+import { parseRenewSeed, splitSummarySections } from './renewSeed.js';
 
 // Mounts a lazily-built body + controls into `details` on its first
 // toggle-to-open. Gated on `details.open`, not merely the event: real
@@ -40,4 +41,41 @@ export function renderWakeBodyInto(container, text) {
   const rest = nl === -1 ? '' : text.slice(nl + 1);
   renderMarkdownInto(container, rest);
   container.prepend(el('div', { class: 'wake-meta' }, meta));
+}
+
+// Renders a renew_session reseed's full text as labelled sections: one per
+// summary heading (falling back to a single "Handoff summary" section when
+// none matched), then the conductor's follow-up directive (if any), then the
+// mechanical state block. The state block renders as literal textContent,
+// never markdown — same reasoning as .wake-meta: `worktree=my_branch_name`
+// would otherwise mangle into italics.
+export function renderRenewSeedInto(container, text) {
+  container.textContent = '';
+  const parsed = parseRenewSeed(text);
+  if (!parsed) {
+    renderMarkdownInto(container, text);
+    return;
+  }
+  for (const { title, body } of splitSummarySections(parsed.summary)) {
+    const bodyDiv = el('div', { class: 'renew-section-body' });
+    renderMarkdownInto(bodyDiv, body);
+    container.appendChild(el('section', { class: 'renew-section' },
+      el('div', { class: 'renew-section-label' }, title ?? 'Handoff summary'),
+      bodyDiv,
+    ));
+  }
+  if (parsed.followUp) {
+    const bodyDiv = el('div', { class: 'renew-section-body' });
+    renderMarkdownInto(bodyDiv, parsed.followUp);
+    container.appendChild(el('section', { class: 'renew-section' },
+      el('div', { class: 'renew-section-label' }, 'Conductor\'s follow-up directive'),
+      bodyDiv,
+    ));
+  }
+  if (parsed.state) {
+    container.appendChild(el('section', { class: 'renew-section' },
+      el('div', { class: 'renew-section-label' }, 'Mechanical state (server-generated)'),
+      el('div', { class: 'renew-state' }, parsed.state),
+    ));
+  }
 }
