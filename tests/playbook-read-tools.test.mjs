@@ -15,7 +15,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, registerLocalProject} from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, registerLocalProject, seedSessionJsonl } from './helpers.mjs';
 import { ledgerFile } from '../src/playbookLedger.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { SEED_PLAYBOOK_IDS, DEFAULT_PLAYBOOK_ID } from '../src/playbooks.ts';
@@ -640,6 +640,58 @@ test('list_sessions carries playbook/stage for a tracked worker and null for an 
     // A dash, not a blank — "not in a playbook" must be distinguishable from
     // "this build does not report it".
     assert.equal(playbookLineFor(untracked.sessionId), 'playbook — / —');
+  } finally { await t.close(); }
+});
+
+test('list_sessions reports playbook/stage for a tracked worker that has gone INACTIVE — the inactive-row path, not conductorRowView', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
+    const inst = instForSession(t.instances, w.sessionId);
+    await waitFor(() => inst.status === 'idle');
+    // The fake engine writes no transcript on its own — give the disk-scanned
+    // inactive listing something to find, same seeding the prune tests use.
+    await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId);
+    await t.call('kill_instance', { sessionId: w.sessionId });
+    await waitFor(() => !t.instances.isSessionLive(w.sessionId));
+
+    // spawn_instance workers are always temp, so kill_instance's exit archives
+    // this one — includeArchived:true keeps the assertion independent of
+    // exactly when that fire-and-forget archive write lands.
+    const rendered = await waitFor(async () => {
+      const text = await t.callText('list_sessions', { includeArchived: true });
+      const line = text.split('\n').find(l => l.includes(w.sessionId));
+      return line && line.includes('gatelab/loose') ? line : false;
+    });
+    assert.match(rendered, /gatelab\/loose/,
+      'the inactive row (listSessionsForCwdWithCounts, not conductorRowView) must carry the SAME binding a live row would');
+  } finally { await t.close(); }
+});
+
+// ── describe_session on a retired, tracked worker ──────────────────────────
+
+test('describe_session\'s RETIRED branch reports playbook/stage for a tracked worker that is no longer live', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
+    const inst = instForSession(t.instances, w.sessionId);
+    await waitFor(() => inst.status === 'idle');
+    await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId);
+    await t.call('kill_instance', { sessionId: w.sessionId });
+    await waitFor(() => !t.instances.isSessionLive(w.sessionId));
+
+    // Poll describe_session itself: this is the same "did the archive write
+    // land yet" race as the inactive list_sessions row above — describe_session
+    // hardcodes includeArchived:true internally, but the retired branch only
+    // ever finds the session once findSessionLocation can see its file.
+    const rendered = await waitFor(async () => {
+      const text = await t.callText('describe_session', { sessionId: w.sessionId });
+      return /\bretired\b/.test(text) ? text : false;
+    });
+    assert.match(rendered, /\bretired\b/,
+      'premise: this must be answered off the RETIRED branch (renderSession\'s live:null arm), not the live one');
+    assert.match(rendered, /gatelab\/loose/,
+      'describe_session\'s retired branch reuses inactiveRows, so it must carry the same binding list_sessions\' inactive row does');
   } finally { await t.close(); }
 });
 

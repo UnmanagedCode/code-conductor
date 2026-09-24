@@ -118,6 +118,7 @@ import {
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { httpError } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
+import type { PlaybookGate } from './mcp/playbookGate.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -293,12 +294,13 @@ interface RoleBackendPatch { role: string; backend?: unknown }
 interface TierEffortPatch { tier: TierName; effort?: unknown }
 interface RoleEffortPatch { role: string; effort?: unknown }
 
-export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
+export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate }:
   {
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
     pluginHost?: PluginHostApiLike | null;
     pluginLibrary?: PluginLibraryApiLike | null;
+    playbookGate?: PlaybookGate | null;
   } = {}): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
@@ -1162,8 +1164,28 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   });
 
   if (instances) {
-    r.get('/instances', (req, res) => {
-      res.json(instances.list());
+    // A ledger read failure must not break the instance list this drives the
+    // whole UI from — it degrades EVERY row's playbook/stage to null instead,
+    // with one warning per request rather than one per row. One batch read
+    // through the gate's own lookup (never playbookLedger.ts directly — see
+    // tests/playbook-ledger-chokepoint.test.mjs), which is the SAME gate
+    // `createServer` hands the MCP router, so this list reflects whatever the
+    // MCP side just wrote.
+    async function playbookBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
+      if (!playbookGate) return sessionIds.map(() => ({ playbook: null, stage: null }));
+      try { return await playbookGate.readBindings(sessionIds); }
+      catch (e) {
+        console.warn('routes: playbook binding read failed:', e);
+        return sessionIds.map(() => ({ playbook: null, stage: null }));
+      }
+    }
+
+    r.get('/instances', async (req, res, next) => {
+      try {
+        const rows = instances.list();
+        const bindings = await playbookBindings(rows.map(row => row.sessionId));
+        res.json(rows.map((row, i) => ({ ...row, ...bindings[i] })));
+      } catch (e) { next(e); }
     });
 
     r.post('/instances', async (req, res, next) => {

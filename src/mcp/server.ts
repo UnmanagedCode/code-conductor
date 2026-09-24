@@ -12,7 +12,7 @@ import { buildTools } from './tools.ts';
 import { isTextPayload, isTextResult, codeForStatus } from './content.ts';
 import { validateArgs } from './argValidation.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
-import { createPlaybookGate, type PlaybookGate } from './playbookGate.ts';
+import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -357,14 +357,14 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
   }
 }
 
-export function buildMcpRouter({ instances, pluginHost }: { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null }): express.Router {
+export function buildMcpRouter(
+  { instances, pluginHost, playbookGate }:
+  { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate },
+): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '8mb' }));
 
   const coreTools = buildTools();
-  // One gate per router: it holds the folded ledger projection, and it subscribes
-  // to the manager's status stream for retire / enforcement-toggle events.
-  const playbookGate = createPlaybookGate({ instances });
 
   r.post('/', async (req, res) => {
     // Each spawned worker registers the MCP URL with its own stable INSTANCE id

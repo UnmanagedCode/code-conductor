@@ -1,7 +1,9 @@
 // Sub-agent panel: shows workers spawned by the active conductor instance
 // via MCP spawn_instance, using the same visual treatment as the task panel.
-// Populated from state.instances (callerInstanceId field) — no new WS type;
-// status updates arrive via the existing `instances` hint → refreshInstances().
+// Populated from state.instances (callerInstanceId field, plus playbook/stage
+// for a playbook-bound worker) — no new WS type; status and binding updates
+// both arrive via the existing `instances` hint → refreshInstances() (the hint
+// also fires on a ledger spawn/transition, not just a status flip).
 
 export class SubagentPanel {
   constructor(host) {
@@ -44,6 +46,8 @@ export class SubagentPanel {
       text.textContent = this._label(w);
 
       li.append(marker, text);
+      const playbookLabel = this._playbookLabel(w);
+      if (playbookLabel) li.append(playbookLabel);
 
       li.addEventListener('click', () => this.onNavigate?.(w.id));
 
@@ -52,6 +56,18 @@ export class SubagentPanel {
 
     this.host.hidden = false;
     this.host.replaceChildren(head, ul);
+  }
+
+  // null for a worker with no playbook binding — no element at all, not a
+  // hidden/empty one, so an unbound worker's row stays byte-identical to a
+  // build with no playbook feature.
+  _playbookLabel(w) {
+    if (!w.playbook || !w.stage) return null;
+    const span = document.createElement('span');
+    span.className = 'subagent-playbook';
+    span.textContent = `${w.playbook} · ${w.stage}`;
+    span.title = `playbook ${w.playbook}, stage ${w.stage}`;
+    return span;
   }
 
   _label(inst) {

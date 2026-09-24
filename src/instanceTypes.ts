@@ -248,6 +248,11 @@ export interface InstanceManagerLike {
   // for it to re-render the watcher count. Emitted with no payload shape beyond
   // the target id.
   emit(event: 'subscription_changed', arg: { targetId: string }): void;
+  // The playbook gate emits this after a `spawn`/`transition` ledger append
+  // has folded into its projection, so a refresh it triggers can never read a
+  // stale stage. wsHub turns it into the same `instances` hint a status flip
+  // does.
+  emit(event: 'playbook_changed', arg: { sessionId: string }): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;
   _maybeReleaseOverageLock(): void;
@@ -266,7 +271,7 @@ export interface InstanceManagerLike {
   shouldSuppressTurnNotification(instanceId: string): boolean;
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null }) => void): void;
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
-  on(event: 'list_changed' | 'subscription_changed', cb: () => void): void;
+  on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
   conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }>;
