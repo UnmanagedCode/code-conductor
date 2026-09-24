@@ -8,8 +8,9 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
+import { parseRenewSeed } from './renewSeed.js';
 import { buildUserText } from './userText.js';
-import { mountFoldedText, renderWakeBodyInto } from './foldedText.js';
+import { mountFoldedText, renderWakeBodyInto, renderRenewSeedInto } from './foldedText.js';
 
 // The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
 // builds it and `lazyHistory.js` collapses a doubled one at a page seam.
@@ -566,14 +567,28 @@ export class Conversation {
       }
     }
 
+    // Renewal reseed: the first user turn of a session a renew_session rotated.
+    // Render a collapsed bubble — the summary is split into its template
+    // sections (falling back to one body when the summary doesn't match the
+    // template), then the conductor's follow-up directive and the mechanical
+    // state block, built lazily on first expand like the wake/skill bodies.
+    const renew = (skill || wake) ? null : parseRenewSeed(text);
+    if (renew) {
+      const badge = el('span', { class: 'renew-badge', title: 'Context renewal handoff' }, '♻️');
+      const details = el('details', { class: 'block renew-seed' },
+        el('summary', {}, badge, 'Context renewed — handoff summary'));
+      mountFoldedText(details, text, { renderInto: renderRenewSeedInto });
+      blocks.appendChild(details);
+    }
+
     // Strip the <transcribed> marker for display — the agent still receives it
     // in the sent payload so it knows the message came from speech-to-text.
     const TRANSCRIBED_PREFIX = '<transcribed>\n';
-    const isTranscribed = !skill && !wake && text.startsWith(TRANSCRIBED_PREFIX);
+    const isTranscribed = !skill && !wake && !renew && text.startsWith(TRANSCRIBED_PREFIX);
     if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
     let userTextControls = null;
-    if (!skill && !wake && text.length) {
+    if (!skill && !wake && !renew && text.length) {
       const { body, controls } = buildUserText(text);
       blocks.appendChild(body);
       userTextControls = controls;
@@ -609,7 +624,7 @@ export class Conversation {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
     }
     if (userTextControls) roleEl.appendChild(userTextControls);
-    const cls = wake ? 'msg user wake-callback' : 'msg user';
+    const cls = wake ? 'msg user wake-callback' : renew ? 'msg user renew-seed' : 'msg user';
     const attrs = { class: cls };
     if (userIndex != null) attrs['data-user-index'] = String(userIndex);
     if (this.segmentId != null) attrs['data-segment-id'] = this.segmentId;

@@ -15,8 +15,9 @@ import { renderMarkdownInto } from './markdown.js';
 import { copyToClipboard } from './blocks.js';
 
 // `renderInto` builds the rendered view; defaults to the markdown renderer.
-// Folded bubbles (wake/skill, see foldedText.js) pass a variant that splits
-// off a leading metadata line first.
+// Folded bubbles (wake, skill and renew-seed, see foldedText.js) may pass a
+// variant instead: wake splits off a leading metadata line first, renew-seed
+// splits the summary into labelled sections; skill uses the default.
 export function buildUserText(text, { renderInto = renderMarkdownInto } = {}) {
   const body = el('div', { class: 'block text user-text' });
 
