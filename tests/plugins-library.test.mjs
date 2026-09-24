@@ -1084,7 +1084,9 @@ test('install/list/update: a git bundle mirror installs, reports behind and upda
   const C = await mkdtemp('lib-cat-');
   const seedDir = await mkdtemp('lib-seed-');
   try {
-    const bundle = path.join(C, 'repos', 'code-kanban.bundle');
+    // Uppercase suffix: the strip is case-insensitive, so this is still the
+    // same install as the GitHub `code-kanban` entry.
+    const bundle = path.join(C, 'repos', 'code-kanban.BUNDLE');
     await fs.mkdir(path.dirname(bundle), { recursive: true });
     await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
     await git(seedDir, 'config', 'user.email', 'test@test');
@@ -1095,10 +1097,10 @@ test('install/list/update: a git bundle mirror installs, reports behind and upda
     await git(seedDir, 'bundle', 'create', '-q', bundle, '--all');
 
     await seedSettings({ plugins: { libraryDirs: [C] } });
-    await dropEntryIn(C, 'code-kanban.json', { id: 'code-kanban', name: 'Kanban', repo: 'catalog:repos/code-kanban.bundle' });
+    await dropEntryIn(C, 'code-kanban.json', { id: 'code-kanban', name: 'Kanban', repo: 'catalog:repos/code-kanban.BUNDLE' });
     const lib = createPluginLibrary();
     const res = await lib.install('code-kanban');
-    assert.equal(res.name, 'code-kanban', 'the .bundle suffix is stripped like .git');
+    assert.equal(res.name, 'code-kanban', 'the .BUNDLE suffix is stripped like .git, case-insensitively');
     const target = path.join(env.root, '.plugins', 'code-kanban');
     assert.equal(await fs.readFile(path.join(target, 'file.txt'), 'utf8'), 'v1');
 
@@ -1118,6 +1120,26 @@ test('install/list/update: a git bundle mirror installs, reports behind and upda
     await env.restore();
     await rmrf(C);
     await rmrf(seedDir);
+  }
+});
+
+test('install(): the project name strips only a TERMINAL .git/.bundle, case-insensitively', async (t) => {
+  for (const [repo, expected] of [
+    ['catalog:repos/code-kanban.GIT', 'code-kanban'],
+    ['catalog:repos/code-kanban.git.bak', 'code-kanban.git.bak'],
+  ]) {
+    await t.test(`${repo} -> ${expected}`, async () => {
+      const env = await makePluginRoot();
+      try {
+        await dropLibraryEntry('x.json', { id: 'x', name: 'X', repo });
+        const lib = createPluginLibrary({
+          _cloneImpl: async (url, destDir) => { await fs.mkdir(destDir, { recursive: true }); return { code: 0, stdout: '', stderr: '' }; },
+        });
+        assert.equal((await lib.install('x')).name, expected);
+      } finally {
+        await env.restore();
+      }
+    });
   }
 });
 
