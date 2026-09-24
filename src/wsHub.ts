@@ -26,6 +26,8 @@ import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
+import { isKnownTier } from './modelVersions.ts';
+import { getTierBackend } from './appSettings.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
@@ -263,7 +265,21 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
           }
           case 'model': {
             if (!inst) { reply(false, 'unknown instance'); return; }
-            await inst.setModel(String(msg.model), msg.backend);
+            // The client names a TIER; the server resolves it against the CURRENT
+            // stored binding (Instance.setModel stays the validator and the
+            // BACKEND_LOCKED gate). A frame still carrying the legacy `model`/
+            // `backend` shape comes from a page that was never reloaded after this
+            // change shipped — refuse it rather than switching to a stale pair, and
+            // rather than silently ignoring the fields (there'd be no tier to fall
+            // back to resolving).
+            if ('model' in msg || 'backend' in msg) {
+              reply(false, "the model frame names a tier; the server resolves its model — reload the page");
+              return;
+            }
+            const tier = typeof msg.tier === 'string' ? msg.tier.trim() : '';
+            if (!isKnownTier(tier)) { reply(false, `unknown tier '${tier}'`); return; }
+            const { model, backend } = getTierBackend(tier);
+            await inst.setModel(model, backend);
             reply(true);
             return;
           }

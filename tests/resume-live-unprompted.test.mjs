@@ -28,6 +28,7 @@ import { promises as fs } from 'node:fs';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
+import { setTierBackend } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -118,12 +119,14 @@ test('a resumed, not-yet-prompted session appears live in GET /api/instances and
     await waitFor(() => ['idle', 'spawning'].includes(ctx.instances.get(id).status));
     assert.equal(ctx.instances.get(id).status === 'turn', false, 'no turn has run yet');
 
-    // (2) Drive the real 'model' WS message (what header.js's popover sends)
-    // against this pre-first-prompt resumed instance.
+    // (2) Drive the real 'model' WS message (what header.js's popover sends —
+    // a bare tier name, resolved server-side) against this pre-first-prompt
+    // resumed instance.
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
     const c = await wsClient(ctx.wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait((m) => m.t === 'snapshot');
-    c.send({ t: 'model', id, model: 'claude-opus-4-8', reqId: 'm1' });
+    c.send({ t: 'model', id, tier: 'powerful', reqId: 'm1' });
     const ack = await c.wait((m) => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true, 'the model switch must succeed on a live, pre-first-prompt resumed instance');
     assert.equal(ctx.instances.get(id).model, 'claude-opus-4-8');

@@ -1211,14 +1211,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
         // the string "false") must not force bypassPermissions — pinned by
         // tests/instances.test.mjs.
         const effectiveMode = (mode == null && temp === true) ? 'bypassPermissions' : mode;
-        // `tier`/`role` name which Settings → Models row the client resolved
-        // `model`+`backend` from; they exist so create() can resolve THAT row's
-        // default effort when `effort` is omitted (resolveSpawnEffort). The client
-        // never resolves effort itself — see public/spawnDialog.js.
+        // `tier`/`role` name the Settings → Models row this spawn resolves both
+        // `model`+`backend` AND (when `effort` is omitted) the default effort from
+        // (resolveSpawnEffort) — one resolution point, server-side. The web UI
+        // sends `tier`/`role` and no `model`/`backend`, so it always takes this
+        // named-row branch; a raw API client that omits both is the one that falls
+        // through to the default-spawn-tier branch below.
         // A fresh spawn that names no model runs on a Settings → Models ROW, never the
         // account default. Policy + the same-row mechanism: docs/models.md → Capability
-        // tiers & roles. The UI never reaches this (spawnDialog resolves the selected
-        // tier before POSTing); a raw API client does.
+        // tiers & roles.
         //
         // "Names no model" is tested on the TRIMMED value — `_doCreate` trims `model`
         // itself, so an untrimmed check would let `model:""` through to a bare `claude`
