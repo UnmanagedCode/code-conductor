@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
+import { setTitle, deleteTitle } from '../src/sessionTitles.ts';
 import { SOFT_INTERRUPT_MARKER } from '../src/parser.ts';
 import {
   resumeManifestPath,
@@ -634,6 +635,36 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
   assert.ok(newInst, 'new instance created for the restored temp session');
   assert.equal(newInst.firstPrompt, 'my first test prompt', 'firstPrompt restored on new instance');
   assert.equal(newInst.temp, true, 'temp flag preserved on restored instance');
+  clearResumeManifest();
+});
+
+test('drainToManifest captures a custom title; restoreFromResumeManifest restores it', async () => {
+  // Pins: the restart manifest carries summary().title and restore re-applies it
+  // via inst.setTitle. The sidecar entry is deleted before restore, so
+  // _hydrateTitle has nothing to find and the manifest is the only source.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'title-roundtrip' });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'title-roundtrip', temp: true });
+  const inst = instances.get(res.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  await setTitle(inst.backingSessionId, 'Restart survivor');
+  inst.setTitle('Restart survivor');
+
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  assert.equal(entries.length, 1, 'one entry in manifest');
+  assert.equal(entries[0].title, 'Restart survivor', 'title persisted to manifest');
+
+  await waitFor(() => inst.proc === null, { timeout: 20000 });
+  await deleteTitle(inst.backingSessionId);
+
+  const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+  assert.equal(restored, 1, 'one session restored');
+  const newInst = [...instances.byId.values()].find(i => i.sessionId === inst.sessionId && i.id !== inst.id);
+  assert.ok(newInst, 'new instance created for the restored session');
+  assert.equal(newInst.title, 'Restart survivor', 'title restored on new instance from the manifest');
   clearResumeManifest();
 });
 

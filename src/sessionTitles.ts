@@ -9,6 +9,8 @@
 import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
 import { createJsonStore } from './jsonStore.ts';
+import { resolveBacking } from './sessionLineage.ts';
+import type { InstanceManagerLike } from './instanceTypes.ts';
 
 export const MAX_TITLE_LEN = 100;
 
@@ -66,6 +68,27 @@ export function setTitle(sessionId: string, title: unknown): Promise<string | nu
     await write(map);
     return v;
   });
+}
+
+// THE title write behind both the REST rename and the MCP set_session_title.
+// Keyed to the TRANSCRIPT: listSessionsForCwdWithCounts looks titles up by
+// filename and Instance._hydrateTitle reads the backing id, so a title
+// written under the public id would reach neither. Every live instance
+// attached to the public id gets the stored value so its header re-renders
+// and a later renewal carries it (carryMarkersAcrossRenewal reads inst.title).
+export async function applySessionTitle(
+  instances: Pick<InstanceManagerLike, 'idsForSession' | 'get'> | null | undefined,
+  sid: string,
+  title: unknown,
+): Promise<string | null> {
+  const stored = await setTitle(await resolveBacking(sid), title);
+  if (instances) {
+    for (const id of instances.idsForSession(sid)) {
+      const inst = instances.get(id);
+      if (inst) inst.setTitle(stored);
+    }
+  }
+  return stored;
 }
 
 export function deleteTitle(sessionId: string): Promise<boolean> {

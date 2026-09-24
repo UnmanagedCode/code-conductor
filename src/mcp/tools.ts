@@ -14,6 +14,7 @@ import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // The summary structure has ONE home (src/sessionRenew.ts) — the request prompt a
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
+import { MAX_TITLE_LEN } from '../sessionTitles.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
@@ -444,6 +445,23 @@ export function buildTools(): Tool[] {
         required: ['sessionId', 'timeoutSeconds'],
       },
       handler: h.setIdleTimeout,
+      annotations: { idempotentHint: true },
+    },
+    {
+      name: 'set_session_title',
+      description:
+        'Name your own session: sets the display title that the sidebar, the session header and list_sessions ' +
+        'show in place of your first prompt. Choose a short phrase that tells this session apart from others ' +
+        'running at the same time. The title is kept across restart, resume and renew_session, so set it once ' +
+        'and again only when your task changes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', pattern: '\\S', maxLength: MAX_TITLE_LEN },
+        },
+        required: ['title'],
+      },
+      handler: h.setSessionTitle,
       annotations: { idempotentHint: true },
     },
     {
