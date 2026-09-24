@@ -126,6 +126,26 @@ test('a worker bound to a vanished plugin playbook is refused PLAYBOOK_UNKNOWN n
   }
 });
 
+// The reason builders see only the loaded map, so the same refusal covers a
+// failed plugin host — where the plugin is still enabled and "re-enable" alone
+// would be the wrong remedy. The text must route to list_playbooks' errors,
+// which carries the distinguishing `plugins` entry.
+test('with the plugin host failing, the refusal points at the host-unavailable cause and the error that carries it', async () => {
+  const events = [{ kind: 'spawn', sessionId: 'w-acme-002', playbook: 'acme/release', stage: 'plan' }];
+  setPluginPlaybooksProvider(async () => { throw new Error('init failed'); });
+  const { playbooks, errors } = await loadPlaybooks();
+  assert.deepEqual(errors.map(e => e.id), ['plugins']);
+  const res = decide({
+    toolName: 'send_prompt', args: { sessionId: 'w-acme-002', text: 'go', stage: 'plan' },
+    projection: proj(events), playbooks, isLive: isLiveFromEvents(events),
+  });
+  assert.equal(res.code, 'PLAYBOOK_UNKNOWN');
+  assert.match(res.reason, /list_playbooks' errors/);
+  assert.match(res.reason, /an entry under 'plugins' means the plugin host is unavailable/);
+  assert.match(res.reason, /the plugin is disabled \(re-enabling it/,
+    're-enable is offered as the remedy for the disabled case only, not asserted');
+});
+
 // ── model pins ──────────────────────────────────────────────────────────────
 
 test("a stage pinning its own plugin's role fills it in, and that role resolves while the plugin provides it", async () => {

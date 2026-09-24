@@ -677,13 +677,17 @@ export function pluginIdOfPlaybook(id: string): string | null {
 }
 
 // Why a playbook a binding names is not loaded, and what restores it — the one
-// wording every "no longer loaded" surface splices in.
+// wording every "no longer loaded" surface splices in. For a plugin id the
+// cause is NOT asserted: the reason builders see only the loaded map, which
+// cannot tell a disabled plugin from an unavailable plugin host or an invalid
+// body, so the text routes the reader to list_playbooks' errors, which can.
 export function missingPlaybookCause(id: string): string {
   const plugin = pluginIdOfPlaybook(id);
   if (plugin === null) return 'its definition was removed or renamed';
-  return `it is contributed by plugin '${plugin}', which is not currently providing it (the plugin is disabled or ` +
-    `removed, or its active version no longer ships a valid '${id}' — see list_playbooks' errors); re-enabling the ` +
-    'plugin in Settings → Plugins restores it with every binding intact';
+  return `it is contributed by plugin '${plugin}', which is not currently providing it. list_playbooks' errors ` +
+    `says why: an entry under 'plugins' means the plugin host is unavailable, one under '${id}' means the ` +
+    'plugin ships an invalid definition; with neither, the plugin is disabled (re-enabling it in Settings → ' +
+    'Plugins restores it with every binding intact), removed, or no longer declares it';
 }
 
 // ── the pure policy decision ────────────────────────────────────────────────
