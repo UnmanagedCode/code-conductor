@@ -185,6 +185,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
       const contribs = [];
       if (row.conventions?.length) contribs.push(`${row.conventions.length} project convention${row.conventions.length === 1 ? '' : 's'}`);
       if (row.roles?.length) contribs.push(`${row.roles.length} role${row.roles.length === 1 ? '' : 's'}`);
+      if (row.playbooks?.length) contribs.push(`${row.playbooks.length} playbook${row.playbooks.length === 1 ? '' : 's'}`);
       if (contribs.length) {
         const c = document.createElement('div');
         c.className = 'pl-contribs';

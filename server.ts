@@ -23,6 +23,7 @@ import { createPluginLibrary } from './src/plugins/library.ts';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
 import { setPluginConventionsProvider } from './src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
+import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,15 +47,16 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
   // ── The provider wiring block ───────────────────────────────────────────
   //
-  // FOUR module-global provider setters converge here, and this is the only src
+  // The module-global provider setters converge here, and this is the only src
   // site that calls any of them: `setPluginConventionsProvider`
   // (src/projectConventions.ts), `setPluginConductorConventionsProvider`
-  // (src/conductorConventions.ts), `setPluginRolesProvider` and
-  // `setLiveBackendsProvider` (both src/appSettings.ts). Measured, so a reader
-  // deciding to add a FIFTH doesn't have to re-derive it:
+  // (src/conductorConventions.ts), `setPluginPlaybooksProvider`
+  // (src/playbooks.ts), `setPluginRolesProvider` and `setLiveBackendsProvider`
+  // (both src/appSettings.ts). Measured, so a reader deciding to add another
+  // doesn't have to re-derive it:
   //
-  //  - The two pairs use divergent reset idioms — the conventions pair takes
-  //    `fn ?? default` with no runtime type guard; the appSettings pair takes
+  //  - They use divergent reset idioms — the conventions pair and the playbooks
+  //    setter take `fn ?? default` with no runtime type guard; the appSettings pair takes
   //    `typeof fn === 'function'` plus a try/Array.isArray wrapper at the read.
   //  - They are process-wide ACROSS createServer() calls. A torn-down test
   //    server leaves its dead closure installed for the next importer; nothing
@@ -62,7 +64,7 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   //  - `instances.setClaudePluginDirsResolver` below is the instance-scoped
   //    shape and the target end state.
   //
-  // Consolidating the four into one `setHostProviders({…})` object was
+  // Consolidating them into one `setHostProviders({…})` object was
   // considered and DECLINED: it is the same process-wide module-global state
   // under a new name, at ~40 mechanical test call sites across 8 files, for no
   // measurable win. The fix worth making is instance-scoping, not renaming.
@@ -83,6 +85,11 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
     // binding is inline in the manifest, no fragment file). This lets spawn
     // resolution recognise <plugin-id>/<slug> roles and drops them on disable.
     setPluginRolesProvider(() => pluginHost.roles());
+    // Plugin-contributed playbook graphs join the definition catalog here, so
+    // every governed call, resume and read tool sees them; disabling a plugin
+    // drops them. Async: it awaits discovery, so a call at boot cannot see an
+    // empty set and refuse a good binding.
+    setPluginPlaybooksProvider(() => pluginHost.playbooks());
     // Enabled plugins' Claude Code plugin roots (skills et al.) → one
     // `--plugin-dir` per root at every claude launch. Resolved + validated
     // (a missing .claude-plugin/plugin.json warns + drops the flag) in

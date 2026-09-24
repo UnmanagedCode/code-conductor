@@ -346,6 +346,28 @@ test('pluginManager: a corrupt-registry notice is surfaced in the plugins status
   assert.match(dom.status.textContent, /reset/, 'that enable/version state was lost');
 });
 
+test('pluginManager: a contributions-only row badges its playbooks beside its roles', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const row = {
+    id: 'acme', name: 'Acme', project: 'acme', system: 'local', localOnly: [], version: '1.0.0',
+    state: 'enabled', enabled: true, activeVersion: { type: 'main' }, manifestSource: { type: 'main' },
+    hasBackend: false, hasFrontend: false, navLabel: null, frontendPath: null, hasMcp: false,
+    conventions: [], roles: [{ slug: 'acme/captain', name: 'Captain' }],
+    playbooks: [{ slug: 'acme/release' }, { slug: 'acme/hotfix' }],
+    port: null, pid: null, startedAt: null, gitHead: null, stale: false, errors: [], crashTail: null,
+  };
+  globalThis.fetch = (url) => {
+    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => ({ rows: [row], notices: [] }) });
+    if (url === '/api/plugins/library') return Promise.resolve({ ok: true, json: async () => ({ entries: [], skipped: [] }) });
+    return Promise.resolve({ ok: true, json: async () => [] });
+  };
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+  const badges = [...dom.list.querySelectorAll('.pl-contrib')].map(el => el.textContent);
+  assert.deepEqual(badges, ['1 role', '2 playbooks']);
+});
+
 test('pluginManager: a skipped library drop-in is surfaced in the library status line', async () => {
   const window = makeWindow();
   const dom = buildPluginManagerDom(window.document);

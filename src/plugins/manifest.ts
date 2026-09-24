@@ -28,9 +28,9 @@ const PLANNED_CONVENTION_SCOPES = ['workspace'];
 const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 
 // `conventions` (project-convention fragments, optionally carrying a one-time
-// scaffold facet) is an active pluginApi:1 capability that requires no backend,
-// so a conventions-only plugin is valid.
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'claudePlugin']);
+// scaffold facet), `roles` and `playbooks` are active pluginApi:1 capabilities
+// that require no backend, so a contributions-only plugin is valid.
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin']);
 
 // ── Normalized manifest shapes ─────────────────────────────────────────────
 
@@ -47,6 +47,16 @@ export interface PluginRole {
   slug: string;
   name: string;
   binding: TierBinding | BackendBinding | null;
+}
+
+// A playbook graph file. `body` is the file's raw text, attached by
+// readManifest only — validateManifest stays pure and never sets it. It is not
+// parsed here: parsing and graph validation belong to the shared playbook
+// loader (loadPlaybooks in src/playbooks.ts).
+export interface PluginPlaybook {
+  slug: string;
+  file: string;
+  body?: string;
 }
 
 export interface PluginBackend {
@@ -82,6 +92,7 @@ export interface PluginManifest {
   mcp?: PluginMcp;
   conventions?: ConventionEntry[];
   roles?: PluginRole[];
+  playbooks?: PluginPlaybook[];
   claudePlugin?: string;
 }
 
@@ -120,8 +131,36 @@ export async function readManifest(system: System, dir: string): Promise<ReadMan
     // error, consistent with the module's strict-at-load stance.
     const fileErrors = await checkFragmentFiles(system, dir, result.manifest);
     if (fileErrors.length > 0) return { errors: fileErrors, id: result.manifest.id };
+    const withBodies = await readPlaybookBodies(system, dir, result.manifest);
+    if ('errors' in withBodies) return { errors: withBodies.errors, id: result.manifest.id };
+    return { manifest: withBodies.manifest };
   }
   return result;
+}
+
+// Playbook bodies are read HERE, once per manifest read, rather than lazily per
+// use like convention fragments: loadPlaybooks() runs on every governed MCP
+// call, so a per-call read through a remote System would cost a round trip each
+// time and would make a live run's playbook vanish during an outage. A body
+// read here stays coherent with the manifest that declared it, and refreshes
+// whenever the manifest is re-read.
+async function readPlaybookBodies(
+  system: System, dir: string, manifest: PluginManifest,
+): Promise<{ manifest: PluginManifest } | { errors: string[] }> {
+  if (!manifest.playbooks) return { manifest };
+  const errors: string[] = [];
+  const playbooks: PluginPlaybook[] = [];
+  for (const p of manifest.playbooks) {
+    try {
+      playbooks.push({ ...p, body: await system.readFile(path.join(dir, p.file)) });
+    } catch (e) {
+      errors.push((e as { code?: unknown }).code === 'ENOENT'
+        ? `playbooks '${p.slug}' file '${p.file}' not found`
+        : `playbooks '${p.slug}' file '${p.file}' unreadable: ${(e as Error).message}`);
+    }
+  }
+  if (errors.length > 0) return { errors };
+  return { manifest: { ...manifest, playbooks } };
 }
 
 // Verify every convention fragment / scaffold-facet `file` ref resolves to a
@@ -175,6 +214,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
   const mcp = validateMcp(raw.mcp, backend, errors);
   const conventions = validateConventions(raw.conventions, errors);
   const roles = validateRoles(raw.roles, errors);
+  const playbooks = validatePlaybooks(raw.playbooks, errors);
   const claudePlugin = validateClaudePlugin(raw.claudePlugin, errors);
 
   if (errors.length > 0) return { errors, id: displayId(raw) };
@@ -189,6 +229,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
       ...(mcp ? { mcp } : {}),
       ...(conventions ? { conventions } : {}),
       ...(roles ? { roles } : {}),
+      ...(playbooks ? { playbooks } : {}),
       ...(claudePlugin !== undefined ? { claudePlugin } : {}),
     },
   };
@@ -226,19 +267,20 @@ export function claudePluginPaths(manifest: PluginManifest | null | undefined): 
   return manifest?.claudePlugin ? [manifest.claudePlugin] : [];
 }
 
-// A plugin-relative fragment path: must be a relative `.md` path with no `..`
-// segment and no leading '/'. Resolved against the plugin checkout at read time.
-function validateFragmentPath(value: unknown, label: string, errors: string[]): boolean {
+// A plugin-relative fragment path: must be a relative path ending in `ext`
+// (`.md` for convention fragments, `.json` for playbooks) with no `..` segment
+// and no leading '/'. Resolved against the plugin checkout at read time.
+function validateFragmentPath(value: unknown, label: string, errors: string[], ext = '.md'): boolean {
   if (typeof value !== 'string' || value.trim() === '') {
-    errors.push(`'${label}' is required (relative .md path)`);
+    errors.push(`'${label}' is required (relative ${ext} path)`);
     return false;
   }
   if (value.startsWith('/') || value.includes('..') || path.isAbsolute(value)) {
     errors.push(`'${label}' must be a relative path with no '..' segment`);
     return false;
   }
-  if (!value.endsWith('.md')) {
-    errors.push(`'${label}' must end with '.md'`);
+  if (!value.endsWith(ext)) {
+    errors.push(`'${label}' must end with '${ext}'`);
     return false;
   }
   return true;
@@ -382,6 +424,46 @@ function validateRoles(roles: unknown, errors: string[]): PluginRole[] | null {
       slug: typeof e.slug === 'string' ? e.slug : '',
       name: typeof e.name === 'string' ? e.name.trim() : '',
       binding,
+    });
+  });
+  return out;
+}
+
+// playbooks: [{ slug, file }] — playbook graphs surfaced namespaced
+// <plugin-id>/<slug> by the shared loader. No `name`/`description` here: the
+// body owns them, as a built-in's does, and restating them would be a second
+// source. Shape-only; the file is read by readManifest, and the graph is
+// validated by loadPlaybooks (src/playbooks.ts), where a bad graph rejects only
+// that playbook. No backend required. Returns a normalized array or null.
+function validatePlaybooks(playbooks: unknown, errors: string[]): PluginPlaybook[] | null {
+  if (playbooks === undefined) return null;
+  if (!Array.isArray(playbooks) || playbooks.length === 0) {
+    errors.push("'playbooks' must be a non-empty array");
+    return null;
+  }
+  const out: PluginPlaybook[] = [];
+  const seen = new Set<string>();
+  playbooks.forEach((entry, i) => {
+    const label = `playbooks[${i}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push(`'${label}' must be an object`);
+      return;
+    }
+    const e = entry as Record<string, unknown>;
+    for (const k of Object.keys(e)) {
+      if (!['slug', 'file'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+    }
+    if (!isSlug(e.slug)) {
+      errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
+    } else if (seen.has(e.slug)) {
+      errors.push(`duplicate playbook slug '${e.slug}'`);
+    } else {
+      seen.add(e.slug);
+    }
+    validateFragmentPath(e.file, `${label}.file`, errors, '.json');
+    out.push({
+      slug: typeof e.slug === 'string' ? e.slug : '',
+      file: typeof e.file === 'string' ? e.file : '',
     });
   });
   return out;

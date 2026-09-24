@@ -61,7 +61,7 @@ import {
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, loadDiskSelection,
   type ReconMessage,
 } from './messageReconstruction.ts';
-import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } from '../playbooks.ts';
+import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
 import { runMembers, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
@@ -612,6 +612,7 @@ export async function listPlaybooks() {
       // nothing. Reporting it saves the caller re-deriving a rule it can get
       // wrong.
       spawnableStages: Object.keys(pb.stages).filter(s => isSpawnable(pb.stages[s])),
+      ...(pb.plugin !== undefined && { plugin: pb.plugin }),
     })),
     // Load-time rejections. Without this a hand-authored definition that fails
     // validation is simply absent, with no way to find out why.
@@ -728,7 +729,10 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
     nextMoves: pb ? nextMovesFor({ pb, worker: worker.sessionId, stage: worker.stage, proj, isLive: gate.isLive }) : [],
     // Definitions are not pinned to a live run (settled), so a worker can outlive
     // its playbook. Say so rather than returning a bare empty graph.
-    ...(pb ? {} : { playbookMissing: worker.playbook }),
+    ...(pb ? {} : {
+      playbookMissing: worker.playbook,
+      reason: `playbook '${worker.playbook}' is no longer loaded — ${missingPlaybookCause(worker.playbook)}.`,
+    }),
     history,
     historyTruncated: relevant.length > history.length,
     enforcement,

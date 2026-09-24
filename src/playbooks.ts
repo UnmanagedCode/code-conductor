@@ -176,6 +176,9 @@ export interface Playbook {
   entryStages: string[];
   stages: Record<string, Stage>;
   transitions: Transition[];
+  // The contributing plugin's id. Set by loadPlaybooks, never by the validator,
+  // and absent on a built-in or user-overlay playbook.
+  plugin?: string;
 }
 
 // The validator's allowlists. EXPORTED FOR SCHEMA-BINDING IN TESTS — do not
@@ -200,7 +203,10 @@ export type ValidateResult =
 
 // Pure and synchronous. `index` is the tool index (see loadToolIndex) — passed
 // in rather than fetched so this stays a pure function of its arguments.
-export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): ValidateResult {
+// `idSource` names where the expected `id` came from, for the mismatch message.
+export function validatePlaybook(
+  raw: unknown, id: string, index: ToolIndex, idSource = 'its filename id',
+): ValidateResult {
   const errors: string[] = [];
   const err = (m: string): void => { errors.push(m); };
 
@@ -212,7 +218,7 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
 
   // id must be a valid slug and must match the file it came from.
   try { validateSlug(String(raw.id)); } catch { err(`invalid id '${String(raw.id)}' (must match ^[a-z][a-z0-9-]*$, max 40 chars)`); }
-  if (raw.id !== id) err(`id '${String(raw.id)}' does not match its filename id '${id}'`);
+  if (raw.id !== id) err(`id '${String(raw.id)}' does not match ${idSource} '${id}'`);
   for (const field of ['name', 'description'] as const) {
     if (typeof raw[field] !== 'string' || !raw[field].trim()) err(`${field} is required and must be a non-empty string`);
   }
@@ -601,6 +607,22 @@ async function userPlaybookFiles(): Promise<ExtraEntry[]> {
   return out;
 }
 
+// The third definition source: enabled plugins' playbooks, as raw bodies. `id`
+// is namespaced `<plugin-id>/<slug>`; the body's own `id` must equal `slug`.
+// Injected after construction (server.ts wires it to the plugin host); the
+// default contributes nothing so plugin-less imports and tests work.
+//
+// THE `/` INVARIANT. Built-in and user-overlay ids are slugs, which cannot
+// contain `/`, so a plugin playbook can never collide with one — and an id
+// containing `/` is attributable to its plugin even when that plugin is no
+// longer loaded (pluginIdOfPlaybook), which is the only lookup left once it is
+// disabled.
+export interface PluginPlaybookRecord { id: string; slug: string; plugin: string; body: string }
+let pluginPlaybooksProvider: () => Promise<PluginPlaybookRecord[]> = async () => [];
+export function setPluginPlaybooksProvider(fn: (() => Promise<PluginPlaybookRecord[]>) | null | undefined): void {
+  pluginPlaybooksProvider = fn ?? (async () => []);
+}
+
 export interface LoadResult {
   playbooks: Map<string, Playbook>;
   errors: Array<{ id: string; message: string }>;
@@ -609,25 +631,70 @@ export interface LoadResult {
 // Load and validate every definition. A bad definition is REJECTED AT LOAD TIME
 // (excluded from the map and reported) rather than blowing up at spawn time. A
 // user-overlay file with the same id as a built-in overrides it.
+//
+// Plugin records are NOT routed through the catalog's extraProvider: a throw
+// there discards every extra entry, the user overlay included, and a plugin body
+// needs no file discovery. A throwing plugin provider costs only the plugin
+// playbooks, and says so under the `plugins` error id.
 export async function loadPlaybooks(): Promise<LoadResult> {
   const index = await loadToolIndex();
   const entries = await catalog.getCatalog();
   const playbooks = new Map<string, Playbook>();
   const errors: Array<{ id: string; message: string }> = [];
-  for (const entry of entries) {
-    const id = entry.slug;
+  const load = (id: string, body: string, check: (parsed: unknown) => ValidateResult, plugin?: string): void => {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(entry.body ?? '');
+      parsed = JSON.parse(body);
     } catch (e) {
       errors.push({ id, message: `not valid JSON: ${errMsg(e)}` });
-      continue;
+      return;
     }
-    const res = validatePlaybook(parsed, id, index);
-    if (res.ok) playbooks.set(id, res.playbook);
+    const res = check(parsed);
+    if (res.ok) playbooks.set(id, plugin === undefined ? res.playbook : { ...res.playbook, id, plugin });
     else for (const message of res.errors) errors.push({ id, message });
+  };
+  for (const entry of entries) {
+    load(entry.slug, entry.body ?? '', parsed => validatePlaybook(parsed, entry.slug, index));
+  }
+  let records: PluginPlaybookRecord[] = [];
+  try {
+    records = await pluginPlaybooksProvider();
+  } catch (e) {
+    errors.push({ id: 'plugins', message: `plugin playbooks unavailable: ${errMsg(e)}` });
+  }
+  for (const r of records) {
+    load(r.id, r.body, parsed => validatePlaybook(parsed, r.slug, index, 'its manifest slug'), r.plugin);
   }
   return { playbooks, errors };
+}
+
+// The owning plugin of a namespaced playbook id, or null for a built-in or
+// user-overlay one. Read off the id alone (see the `/` invariant above), so it
+// answers for a playbook that is not currently loaded.
+export function pluginIdOfPlaybook(id: string): string | null {
+  const i = id.indexOf('/');
+  return i > 0 ? id.slice(0, i) : null;
+}
+
+// Why a playbook a binding names is not loaded, and what restores it — the one
+// wording every "no longer loaded" surface splices in. For a plugin id the
+// cause is NOT asserted: the reason builders see only the loaded map, which
+// cannot tell a disabled plugin from an unavailable plugin host, an invalid
+// body, or a plugin whose whole manifest is invalid (a missing playbook file, a
+// bad role binding — enabled still, but dropped from contributors). The text
+// routes the reader to list_playbooks' errors for an unavailable host (a
+// `plugins` entry) and an invalid body (an entry under the id). A disabled
+// plugin and an invalid manifest both show there only as absence; the text
+// names both, sending the manifest case to the plugin's Settings → Plugins row,
+// where its errors live and re-enabling is refused.
+export function missingPlaybookCause(id: string): string {
+  const plugin = pluginIdOfPlaybook(id);
+  if (plugin === null) return 'its definition was removed or renamed';
+  return `it is contributed by plugin '${plugin}', which is not currently providing it. list_playbooks' errors ` +
+    `says why: an entry under 'plugins' means the plugin host is unavailable, one under '${id}' means the ` +
+    'plugin ships an invalid definition; with neither, the plugin is disabled (re-enabling it in Settings → ' +
+    'Plugins restores it with every binding intact), removed, no longer declares it, or its manifest is invalid ' +
+    'as a whole — its Settings → Plugins row carries the errors, and re-enabling is refused until it is fixed';
 }
 
 // ── the pure policy decision ────────────────────────────────────────────────
@@ -952,8 +1019,8 @@ function decideResume(
   // decideTargeted's STAGE_UNKNOWN, which explains the same cause.
   if (!playbook) {
     return refuse('PLAYBOOK_UNKNOWN',
-      `session ${short(resumeId)} is bound to playbook '${recorded.playbook}', which is no longer loaded — its ` +
-      'definition was removed or renamed. Playbook definitions are not pinned to a worker. ' +
+      `session ${short(resumeId)} is bound to playbook '${recorded.playbook}', which is no longer loaded — ` +
+      `${missingPlaybookCause(recorded.playbook)}. Playbook definitions are not pinned to a worker. ` +
       `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, moves);
   }
 
@@ -1017,8 +1084,9 @@ function decideTargeted(
     // outlive its definition. Say so plainly — this is not a caller error.
     return refuse('PLAYBOOK_UNKNOWN',
       `worker ${short(sessionId)} is bound to playbook '${subject.playbook}', which is no longer loaded — ` +
-      'its definition was removed or renamed while this worker was live. Playbook definitions are not pinned ' +
-      'to a running worker. Retire the worker, or restore the definition. ' +
+      `${missingPlaybookCause(subject.playbook)}` +
+      `${pluginIdOfPlaybook(subject.playbook) === null ? ' while this worker was live' : ''}. ` +
+      'Playbook definitions are not pinned to a running worker. Retire the worker, or restore the definition. ' +
       `Known playbooks: ${[...playbooks.keys()].sort().join(', ') || '(none)'}.`,
       { playbook: subject.playbook, stage: subject.stage, transitions: [] });
   }

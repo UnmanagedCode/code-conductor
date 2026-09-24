@@ -93,6 +93,7 @@ import {
   updateCustomConvention as updateConductorConvention,
   deleteCustomConvention as deleteConductorConvention,
   getDefaultPlaybookSelection,
+  defaultPlaybookMissing,
   setDefaultPlaybook,
   getDefaultPlaybookEnforcement,
   setDefaultPlaybookEnforcement,
@@ -2185,13 +2186,17 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // and nothing is committed from it.
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
-      const [conventions, enabled, catalog, defaultPlaybook, defaultPlaybookEnforcement] = await Promise.all([
+      const [conventions, enabled, catalog, defaultPlaybook, defaultPlaybookEnforcement, missing] = await Promise.all([
         getConductorConventionsCatalog(), getConductorSelection(), listPlaybooks(), getDefaultPlaybookSelection(),
-        getDefaultPlaybookEnforcement(),
+        getDefaultPlaybookEnforcement(), defaultPlaybookMissing(),
       ]);
       res.json({
         core: CONDUCT_CORE_META, conventions, enabled,
         playbooks: catalog.playbooks, playbookErrors: catalog.errors, defaultPlaybook,
+        // The stored selection when no loaded definition backs it, with the
+        // reason (naming the owning plugin for a plugin playbook), so the picker
+        // keeps showing it rather than going blank. Null otherwise.
+        defaultPlaybookMissing: missing,
         // What `{mode:'unset'}` resolves to, so the picker labels that row from
         // the shipped constant instead of a second copy of the id.
         defaultPlaybookFallback: DEFAULT_PLAYBOOK_ID,

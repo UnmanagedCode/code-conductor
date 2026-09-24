@@ -32,6 +32,7 @@ const ROW_FIELDS = [
   'name',
   'navLabel',
   'pid',
+  'playbooks',
   'port',
   'project',
   'roles',

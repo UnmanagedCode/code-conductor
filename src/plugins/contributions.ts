@@ -7,10 +7,11 @@ import { placementToken } from '../projects.ts';
 import type { System } from '../systems/system.ts';
 
 // What enabled plugins contribute to the conductor beyond an HTTP backend:
-// convention fragments, role bindings and Claude Code plugin roots. Composed by
-// the registry (src/plugins/registry.ts), which hands it narrow accessors over
-// its own discovery/persistence state and keeps the three public members
-// (conventions/roles/claudePluginDirs) pointing straight at this module.
+// convention fragments, role bindings, playbook graphs and Claude Code plugin
+// roots. Composed by the registry (src/plugins/registry.ts), which hands it
+// narrow accessors over its own discovery/persistence state and keeps the
+// matching public members (conventions/roles/playbooks/claudePluginDirs)
+// pointing straight at this module.
 //
 // Owns BOTH caches the registry used to hold — the fragment bodies and the
 // memoized conventions() result — and, with them, the generation counter that
@@ -431,6 +432,31 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     return out;
   }
 
+  // Playbook graphs contributed by enabled plugins, as raw bodies for the shared
+  // loader (loadPlaybooks in src/playbooks.ts) to parse and validate. Each entry:
+  // { id:'<plugin-id>/<slug>', slug, plugin:id, body }. The body was read with
+  // the manifest (readManifest), so there is no placement to resolve and nothing
+  // to cache here. Only enabled+ok plugins contribute, so disabling/removing a
+  // plugin drops its playbooks automatically (no purge, mirroring roles).
+  //
+  // ASYNC AND INIT-AWAITING, unlike roles(). Its consumer is already async, and
+  // it is read by every governed MCP call and every resume: one arriving at boot
+  // before discovery has run would otherwise see no plugin playbooks and refuse
+  // a perfectly good binding PLAYBOOK_UNKNOWN.
+  async function playbooks(): Promise<Array<{ id: string; slug: string; plugin: string; body: string }>> {
+    await ensureInit();
+    const out: Array<{ id: string; slug: string; plugin: string; body: string }> = [];
+    for (const entry of contributingEntries()) {
+      for (const p of entry.manifest.playbooks ?? []) {
+        // readManifest attaches every body or rejects the manifest; a manifest
+        // that reached here through validateManifest alone carries none.
+        if (p.body === undefined) continue;
+        out.push({ id: `${entry.id}/${p.slug}`, slug: p.slug, plugin: entry.id, body: p.body });
+      }
+    }
+    return out;
+  }
+
   // Claude Code plugin roots contributed by enabled + `ok` plugins whose manifest
   // declares `claudePlugin`. Each resolved root is validated HERE (at launch/
   // resolve time) — the target must directly contain `.claude-plugin/plugin.json`
@@ -486,7 +512,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     return out;
   }
 
-  return { conventions, roles, claudePluginDirs, invalidate, noteRegistryChange };
+  return { conventions, roles, playbooks, claudePluginDirs, invalidate, noteRegistryChange };
 }
 
 function errMsg(e: unknown): string {
