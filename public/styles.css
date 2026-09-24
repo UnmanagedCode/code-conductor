@@ -2154,6 +2154,17 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .project-row .commit-log { cursor: pointer; }
 .project-row .commit-log:hover { color: var(--tool); }
 .project-row .commit-log-spacer { visibility: hidden; }
+/* Top-level project rows (unassigned projects) start the name at the workspace
+   header label's x: the row's left padding is the summary's, the commit-log
+   column takes the caret's width, and the row gap already equals the summary's
+   (.project-workspace > .project-workspace-summary and its ::before). A fixed
+   width, not the glyph's advance, keeps git and non-git rows in step. Members
+   (inside .project-workspace-list) and the Conduct row keep the base geometry. */
+.project-list > li:not(.project-conduct) > .project-row { padding-left: 6px; }
+.project-list > li:not(.project-conduct) > .project-row > .commit-log,
+.project-list > li:not(.project-conduct) > .project-row > .commit-log-spacer {
+  flex: none; width: 12px; padding: 0; text-align: center;
+}
 
 /* Cost dashboard — full-page view opened from Settings → Models. */
 #costs-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }

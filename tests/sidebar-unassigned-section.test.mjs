@@ -34,6 +34,7 @@ async function setupSidebar() {
   document.head.appendChild(style);
   const list = document.getElementById('project-list');
 
+  const calls = { showCommits: [] };
   const sidebar = new Sidebar({
     rootList: list,
     onSelectInstance: () => {},
@@ -45,7 +46,8 @@ async function setupSidebar() {
     onEditWorkspace: () => {},
     onQuickSpawn: () => {},
   });
-  return { window, list, sidebar };
+  sidebar.onShowCommits = (name) => calls.showCommits.push(name);
+  return { window, list, sidebar, calls };
 }
 
 function project(name, workspace, isGitRepo) {
@@ -62,6 +64,10 @@ const FIXTURE = [
   project('binary-ninja', null, false),
   project('zeta', null, false),
 ];
+
+// FIXTURE plus a git unassigned project, so top-level rows come in both kinds
+// (visible ≡ button and invisible spacer).
+const MIXED = [...FIXTURE, project('gitty', null, true)];
 
 const CONDUCT_INSTANCE = {
   id: 'inst-c', project: '.conduct', sessionId: 'sid-c', status: 'idle',
@@ -156,4 +162,116 @@ test('no section rule when nothing precedes it — no workspaces, or the Conduct
     assert.ok(conduct, 'conduct row is rendered');
     assert.notEqual(ruleOf(window, conduct).style, 'dashed', 'Conduct row draws no rule');
   });
+});
+
+// ── Name alignment ──────────────────────────────────────────────────────────
+// happy-dom computes no layout, so x positions are summed from the computed box
+// model of the real rules. getComputedStyle ignores pseudo-elements in
+// happy-dom, so the header caret's width is read from its real CSSOM rule.
+
+const px = (v) => {
+  if (v === '' || v === '0') return 0;
+  const m = /^(-?\d+(?:\.\d+)?)px$/.exec(v);
+  assert.ok(m, `expected a px length, got ${JSON.stringify(v)}`);
+  return Number(m[1]);
+};
+
+function cssRule(window, selectorText) {
+  const rule = [...window.document.styleSheets].flatMap(sh => [...sh.cssRules])
+    .find(r => r.selectorText === selectorText);
+  assert.ok(rule, `styles.css has a rule for ${selectorText}`);
+  return rule;
+}
+
+// Left inset of an element's content edge inside its own margin box.
+function leadIn(cs) {
+  return px(cs.getPropertyValue('margin-left')) + px(cs.getPropertyValue('border-left-width'))
+    + px(cs.getPropertyValue('padding-left'));
+}
+
+// x of .project-workspace-name, relative to the workspace <li>'s border edge.
+function headerLabelX(window, list) {
+  const details = workspaceDetails(list, 'TTD');
+  const summary = details.querySelector(':scope > .project-workspace-summary');
+  const scs = window.getComputedStyle(summary);
+  const caret = cssRule(window, '.project-workspace > .project-workspace-summary::before').style;
+  const caretW = px(caret.getPropertyValue('width'))
+    + px(caret.getPropertyValue('padding-left')) + px(caret.getPropertyValue('padding-right'))
+    + px(caret.getPropertyValue('margin-left')) + px(caret.getPropertyValue('margin-right'));
+  return leadIn(window.getComputedStyle(details.closest('li')))
+    + leadIn(window.getComputedStyle(details))
+    + leadIn(scs) + caretW + px(scs.getPropertyValue('column-gap'));
+}
+
+// Outer width of the commit-log column, or a failure when CSS does not fix it —
+// an auto width is the ≡ glyph's advance, which depends on the font.
+function logColumnWidth(window, el) {
+  const cs = window.getComputedStyle(el);
+  const w = cs.getPropertyValue('width');
+  assert.match(w, /px$/, `${el.className} has a fixed CSS width (got ${JSON.stringify(w)}) — an auto width is the glyph's, font-dependent`);
+  assert.equal(cs.getPropertyValue('flex-shrink'), '0', `${el.className} must not shrink below its width`);
+  const inner = cs.getPropertyValue('box-sizing') === 'border-box' ? 0
+    : px(cs.getPropertyValue('padding-left')) + px(cs.getPropertyValue('padding-right'))
+      + px(cs.getPropertyValue('border-left-width')) + px(cs.getPropertyValue('border-right-width'));
+  return px(w) + inner + px(cs.getPropertyValue('margin-left')) + px(cs.getPropertyValue('margin-right'));
+}
+
+// x of .project-name in a row, relative to its <li>'s border edge.
+function rowNameX(window, li) {
+  const row = li.querySelector(':scope > .project-row');
+  const rcs = window.getComputedStyle(row);
+  const first = row.firstElementChild;
+  assert.ok(first.matches('.commit-log, .commit-log-spacer'), 'the commit-log column leads the row');
+  assert.ok(first.nextElementSibling.matches('.project-name'), 'the name follows the commit-log column');
+  return leadIn(window.getComputedStyle(li)) + leadIn(rcs)
+    + logColumnWidth(window, first) + px(rcs.getPropertyValue('column-gap'));
+}
+
+// The box-model properties that place a row's name, as a comparable record.
+function rowGeometry(window, row) {
+  const pick = (el, props) => Object.fromEntries(props.map(p => [p, window.getComputedStyle(el).getPropertyValue(p)]));
+  const box = ['padding-left', 'padding-right', 'margin-left', 'border-left-width', 'column-gap'];
+  const col = ['width', 'flex-shrink', 'padding-left', 'padding-right', 'margin-left', 'margin-right'];
+  return { row: pick(row, box), log: pick(row.firstElementChild, col) };
+}
+
+test('a top-level project name starts at the workspace label x — git and non-git rows alike', async () => {
+  const { window, list, sidebar } = await setupSidebar();
+  await render(sidebar, MIXED);
+  const want = headerLabelX(window, list);
+  const git = topLi(list, 'gitty');
+  const plain = topLi(list, 'binary-ninja');
+  assert.ok(git.querySelector(':scope > .project-row > .commit-log'), 'fixture: gitty shows the ≡ button');
+  assert.ok(plain.querySelector(':scope > .project-row > .commit-log-spacer'), 'fixture: binary-ninja shows the spacer');
+  assert.equal(rowNameX(window, git), want, 'git top-level name x = workspace label x');
+  assert.equal(rowNameX(window, plain), want, 'non-git top-level name x = workspace label x');
+});
+
+test('the ≡ commit-log button on a git top-level row stays visible and clickable', async () => {
+  const { window, list, sidebar, calls } = await setupSidebar();
+  await render(sidebar, MIXED);
+  const btn = topLi(list, 'gitty').querySelector(':scope > .project-row > .commit-log');
+  const cs = window.getComputedStyle(btn);
+  assert.notEqual(cs.getPropertyValue('visibility'), 'hidden');
+  assert.notEqual(cs.getPropertyValue('display'), 'none');
+  assert.notEqual(cs.getPropertyValue('pointer-events'), 'none');
+  btn.click();
+  assert.deepEqual(calls.showCommits, ['gitty']);
+});
+
+test('workspace member rows and the Conduct row keep the base .project-row geometry', async () => {
+  const { window, list, sidebar } = await setupSidebar();
+  await render(sidebar, MIXED, [CONDUCT_INSTANCE]);
+  // Reference: the same markup outside the project list, where only the base
+  // .project-row rules apply.
+  const ref = window.document.createElement('div');
+  ref.innerHTML = '<div class="project-row"><button class="commit-log">≡</button><span class="project-name">x</span></div>'
+    + '<div class="project-row"><span class="commit-log-spacer">≡</span><span class="project-name">x</span></div>';
+  window.document.body.appendChild(ref);
+  const [refGit, refPlain] = ref.children;
+  const member = topLi(list, 'recon').querySelector(':scope > .project-row');
+  assert.ok(member.closest('.project-workspace-list'), 'fixture: recon is a workspace member');
+  assert.deepEqual(rowGeometry(window, member), rowGeometry(window, refGit), 'member row geometry');
+  const conduct = list.querySelector('.project-conduct > .project-row');
+  assert.deepEqual(rowGeometry(window, conduct), rowGeometry(window, refPlain), 'Conduct row geometry');
 });
