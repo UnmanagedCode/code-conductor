@@ -166,13 +166,13 @@ One JSON object per file (any filename ending `.json`), registering an installab
   "id": "my-plugin",             // REQUIRED, unique catalog key — overrides an earlier layer's entry with the same id
   "name": "My Plugin",           // REQUIRED display name
   "description": "optional",     // OPTIONAL
-  "repo": "https://github.com/org/my-plugin", // REQUIRED — an http:/https:/git:/file: URL, or a path; a relative path resolves against the directory holding this JSON
+  "repo": "https://github.com/org/my-plugin", // REQUIRED — always a URL: http:/https:/git:, file:///<absolute path>, or catalog:<path relative to the directory holding this JSON>
   "postClone": "bash install.sh", // OPTIONAL shell command, run via `bash -lc`, cwd = the cloned project dir
   "postPull": "bash install.sh"   // OPTIONAL shell command, run via `bash -lc` after a successful Update pull
 }
 ```
 
-A set of built-in library entries (`DEFAULT_ENTRIES`, `src/plugins/library.ts`) is present even with no library dir, unless `plugins.builtinLibrary` is `false` (below). Malformed JSON or a file missing `id`/`name`/`repo` is skipped — never fatal to the list — and is also reported in the response's `skipped` array and shown in the Settings → Plugins Library status line, since a drop-in that silently never appears is indistinguishable from one that was never written. A file with a **wrong extension** (not `.json`) is ignored silently and is **not** reported. An unreadable store library directory (`<orchStoreRoot()>/plugins/library/`) stays a `console.warn`-only degradation, and its absence (ENOENT) is silent; an unreadable **configured** directory is different — see below. The install target project name is the last path segment of the **resolved** clone URL with a trailing `.git` stripped (e.g. `.../org/my-plugin(.git)` → `my-plugin`, `repos/code-kanban.git` → `code-kanban`), validated the same way as any other project name (`validateName`, 400). `list()` and `update()` derive the name the same way, so a mirror entry whose repo ends in `code-kanban.git` IS the install of the GitHub `code-kanban` entry. An entry whose `repo` is refused lists as not installed and logs a `pluginLibrary: entry '<id>' lists as not installed: …` warning.
+A set of built-in library entries (`DEFAULT_ENTRIES`, `src/plugins/library.ts`) is present even with no library dir, unless `plugins.builtinLibrary` is `false` (below). Malformed JSON or a file missing `id`/`name`/`repo` is skipped — never fatal to the list — and is also reported in the response's `skipped` array and shown in the Settings → Plugins Library status line, since a drop-in that silently never appears is indistinguishable from one that was never written. A file with a **wrong extension** (not `.json`) is ignored silently and is **not** reported. An unreadable store library directory (`<orchStoreRoot()>/plugins/library/`) stays a `console.warn`-only degradation, and its absence (ENOENT) is silent; an unreadable **configured** directory is different — see below. The install target project name is the last path segment of the **resolved** clone URL with a trailing `.git` or `.bundle` stripped (e.g. `.../org/my-plugin(.git)` → `my-plugin`, `catalog:repos/code-kanban.bundle` → `code-kanban`), validated the same way as any other project name (`validateName`, 400). `list()` and `update()` derive the name the same way, so a mirror entry whose repo ends in `code-kanban.git` (or `.bundle`) IS the install of the GitHub `code-kanban` entry. An entry whose `repo` is refused lists as not installed and logs a `pluginLibrary: entry '<id>' lists as not installed: …` warning.
 
 #### Local / offline catalogs
 
@@ -186,8 +186,11 @@ Example volume layout:
 
 ```
 /mnt/cc-plugins/catalog/
-├── code-kanban.json          # {"id":"code-kanban","name":"Code Kanban","repo":"repos/code-kanban.git","postClone":"npm install"}
-└── repos/code-kanban.git/    # a bare mirror
+├── code-kanban.json          # {"id":"code-kanban","name":"Code Kanban","repo":"catalog:repos/code-kanban.git","postClone":"npm install"}
+├── code-hub.json             # {"id":"code-hub","name":"Code Hub","repo":"catalog:repos/code-hub.bundle"}
+└── repos/
+    ├── code-kanban.git/      # a bare mirror
+    └── code-hub.bundle       # a git bundle (`git bundle create code-hub.bundle --all`)
 ```
 
 - **`plugins.libraryDirs`** — extra catalog directories, read after the store library dir. Each element must be an absolute path; a non-string, empty or relative element is dropped silently (never resolved against the cwd). Elements are trimmed, normalised (`path.resolve`: `..` collapsed, trailing `/` stripped) and de-duplicated keeping the first. Read by `getPluginLibrarySettings()` (`src/appSettings.ts`).
@@ -196,20 +199,24 @@ Example volume layout:
 - **An unreadable configured directory** (including one that doesn't exist — an unmounted volume) is reported in `skipped` as `{dir, file: null, reason: "library dir unreadable: <error>"}` and logged; the other layers still serve.
 - **Precedence.** Layers apply in the order built-ins → store library dir → `libraryDirs[0]` → `libraryDirs[1]` → …; within a directory, files apply in sorted filename order (code-unit order). **The last entry applied for an `id` wins.** An override keeps the list position of the first entry with that id. A rejected file never removes a lower layer's entry. A configured dir equal to the store dir is read once, as the store dir.
 
-**`repo` resolution** (`resolveRepoUrl(repo, sourceDir)`, `src/plugins/library.ts` — the only producer of the string handed to `git clone`; every refusal is a 400 raised before the streaming response starts). `sourceDir` is the directory the JSON was read from (store dir or configured dir); `null` for a built-in.
+**`repo` resolution** (`resolveRepoUrl(repo, sourceDir)`, `src/plugins/library.ts` — the only producer of a clone URL, typed `CloneUrl`; every refusal is a 400 raised before the streaming response starts). `repo` is always parsed as a URL with `new URL(repo)` (no base) — nothing is guessed from its shape. `sourceDir` is the directory the JSON was read from (store dir or configured dir); `null` for a built-in.
 
-| `repo` | Classified as | Clone URL |
-|---|---|---|
-| contains `:` before any `/` | URL-shaped | parsed with `new URL()` — failure → 400 `invalid repo URL` (catches scp-style `git@host:org/x.git`) |
-| `http://`, `https://`, `git://…` | URL | the string verbatim |
-| `file:///abs/x.git` | URL | normalised `href`. Must start `file:///` (400 otherwise — WHATWG would read `file:x.git` as the filesystem root) and have no host (`file://host/x` → 400) |
-| any other scheme (`ftp:`, a drive letter `C:`, `a:b`) | URL | 400 `unsupported repo URL scheme` |
-| `/abs/x.git` | path | `pathToFileURL(path.resolve(repo))` |
-| `x.git`, `./x.git`, `mirror/x.git`, `../repos/x.git`, `mirror/a:b.git` | relative path | `pathToFileURL(path.resolve(sourceDir, repo))`; `sourceDir === null` → 400. No `~` expansion, no search path |
+| `repo` | Clone URL / refusal |
+|---|---|
+| `http://…`, `https://…`, `git://…` | the string verbatim |
+| `file:///abs/x.git` | the canonical `href` (`..` collapsed, scheme lower-cased) |
+| `catalog:x.git`, `catalog:./x.git`, `catalog:repos/x.git`, `catalog:../repos/x.git` | `pathToFileURL(path.resolve(sourceDir, <path>))`. The path is percent-decoded (`catalog:my%20repos/x.git` = `catalog:my repos/x.git`); `..` may leave `sourceDir`; no `~` expansion |
+| unparseable — a bare path (`x.git`, `/abs/x.git`), scp-style ssh (`git@host:org/x.git`) | 400 `invalid repo URL`; for a string with no `:` the message names both fixes (`catalog:<path>`, `file:///<path>`) |
+| any other scheme (`ftp:`, a drive letter `C:\x`) | 400 `unsupported repo URL scheme` |
+| `file://host/x.git` | 400 `names a host` — only local paths are supported |
+| `file:x.git`, `file://localhost/x.git` | 400 `must be written file:///<absolute path>` (WHATWG reads `file:x.git` as the filesystem root) |
+| `catalog:/abs`, `catalog://h/x`, `catalog:` | 400 `catalog: repo must be a relative path` |
+| `catalog:x?y`, `catalog:x#y` | 400 — percent-encode `?`/`#` (they would split off the end of the path) |
+| `catalog:…` in a built-in (`sourceDir === null`) | 400 `no source directory` |
 
-A path always becomes a `file://` URL: `git clone /path/mirror.git` hardlinks the mirror's object files into the install, `git clone file:///path/mirror.git` transfers a fresh pack that shares nothing with the mirror. A last path segment that `pathToFileURL` percent-encodes (a space, `#`, `?`, `%`) can't form a valid project name and is refused by `validateName`. `update()` and the list's fetch/`behind` talk to the checkout's own `origin`, which is the `file://` URL it was cloned from — all of it works offline.
+A local repo may be a **bare repo directory** or a **git bundle** file. `cloneRepo` hands git a `file:` URL as its local path with `git clone --no-local`: git detects a bundle only on a path (`git clone file:///x.bundle` fails `invalid gitfile format`), and `--no-local` is what stops a path clone hardlinking a directory mirror's object files into the install. The install's `origin` is that path. A last path segment that `pathToFileURL` percent-encodes (a space, `#`, `?`, `%`) can't form a valid project name and is refused by `validateName`. `update()` and the list's fetch/`behind` talk to the checkout's own `origin` — all of it works offline; to update a bundle, regenerate it in place with the new commits.
 
-**`postClone`/`postPull` execution.** Run bounded (via `POST_HOOK_TIMEOUT_MS`) via a detached process group so a command that spawns children of its own (`npm install`, a browser-binary downloader) can be fully killed on timeout, not just its direct child; output is captured (bounded via `HOOK_OUTPUT_CAP`, with a tail surfaced in the response). This is a code-execution surface — acceptable because built-in entries are trusted and drop-in files come from trusted local tooling (the same trust stance that already applies to a plugin's own manifest `backend.start`). **Asymmetric failure handling is intentional:** a failed `git clone`/`git pull` is a hard failure (the request rejects; a failed clone is also rolled back) because the underlying operation itself didn't succeed, whereas a failed `postClone`/`postPull` is reported as a **soft warning on an otherwise-successful response** — the clone/pull already succeeded and is already discoverable, only the convenience command failed. The documented retry path for a failed `postClone` is hitting **Update** (which reruns `postPull`) rather than reinstalling — `code-playwright` sets both fields to the identical command specifically so Update is a true retry.
+**`postClone`/`postPull` execution.** Run bounded (via `POST_HOOK_TIMEOUT_MS`) via a detached process group so a command that spawns children of its own (`npm install`, a browser-binary downloader) can be fully killed on timeout, not just its direct child; output is captured (bounded via `HOOK_OUTPUT_CAP`, with a tail surfaced in the response). This is a code-execution surface: any catalog file — in the store library dir or in any configured `libraryDirs` directory, including a mounted volume — can name an arbitrary shell command that runs on Install/Update. It is acceptable because built-in entries are trusted and every catalog directory is one the operator put there or named in `settings.json`: whoever can write a file into one is trusted with the same power a plugin's own manifest `backend.start` already has. Only point `libraryDirs` at a volume whose contents you trust. **Asymmetric failure handling is intentional:** a failed `git clone`/`git pull` is a hard failure (the request rejects; a failed clone is also rolled back) because the underlying operation itself didn't succeed, whereas a failed `postClone`/`postPull` is reported as a **soft warning on an otherwise-successful response** — the clone/pull already succeeded and is already discoverable, only the convenience command failed. The documented retry path for a failed `postClone` is hitting **Update** (which reruns `postPull`) rather than reinstalling — `code-playwright` sets both fields to the identical command specifically so Update is a true retry.
 
 ### Plugin MCP forwarding — child wire contract (pinned)
 

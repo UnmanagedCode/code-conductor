@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import {
   projectsRoot, orchStoreRoot, pluginsRoot, validateName, resolveProjectDir,
   readProjectRecord, registerProject, removeProjectStoreDir,
@@ -30,21 +30,26 @@ import { getPluginLibrarySettings } from '../appSettings.ts';
 //   { "id": "...", "name": "...", "description": "...", "repo": "...",
 //     "postClone": "...", "postPull": "..." }
 // id/name/repo are required; description/postClone/postPull are optional.
-// `repo` is an http(s)/git/file URL or a filesystem path; a relative path
-// resolves against the directory holding that JSON (an offline mirror shipped
-// next to its catalog). resolveRepoUrl is the one producer of a clone URL.
+// `repo` is always a URL: http(s)/git, file:///<absolute path>, or
+// catalog:<relative path> — resolved against the directory holding that JSON
+// (an offline mirror shipped next to its catalog). A local repo may be a bare
+// repo directory or a git bundle. resolveRepoUrl is the one producer of a
+// clone URL.
 // Malformed/incomplete files are skipped with a warning — never crash the list.
 //
 // postClone/postPull are shell commands run (cwd = the project directory)
 // after a successful clone / pull respectively — e.g. to install the
-// plugin's own dependencies. This is a code-execution surface; acceptable
-// here because built-in entries are trusted and drop-in files come from
-// trusted local tooling (the same trust stance already applies to a
-// plugin's own manifest-declared `backend.start`). Execution stays simple
+// plugin's own dependencies. This is a code-execution surface: any catalog
+// file — in the store library dir or in any configured `libraryDirs`
+// directory, e.g. a mounted volume — can name an arbitrary shell command. It
+// is acceptable because built-in entries are trusted and every catalog
+// directory is one the operator put there or named in settings.json, so
+// whoever can write to one is trusted with the same power a plugin's own
+// manifest-declared `backend.start` already has. Execution stays simple
 // (`bash -lc`), bounded (timeout + output cap), and its full output is
 // always surfaced back to the caller, never silently swallowed.
 
-const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:', 'file:']);
+const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:', 'file:', 'catalog:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
 
@@ -148,7 +153,7 @@ interface GitCommandResult {
   stderr: string;
 }
 
-type CloneImpl = (url: string, destDir: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
+type CloneImpl = (url: CloneUrl, destDir: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
 type PullImpl = (cwd: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
 type RunHookImpl = (command: string, cwd: string, opts?: { timeoutMs?: number; onChunk?: (s: string) => void }) => Promise<{ code: number; output: string }>;
 
@@ -256,67 +261,83 @@ async function readCatalogDir(dir: string, { reportUnreadable }: { reportUnreada
   }
 }
 
-// Last non-empty path segment of the repo URL, `.git` suffix stripped —
-// e.g. https://github.com/org/foo(.git) -> "foo".
+// Last non-empty path segment of the repo URL, `.git`/`.bundle` suffix
+// stripped — e.g. https://github.com/org/foo(.git) -> "foo",
+// .../repos/foo.bundle -> "foo".
 function deriveProjectName(repoUrl: string): string | null {
   let u: URL;
   try { u = new URL(repoUrl); } catch { return null; }
   const last = u.pathname.split('/').filter(Boolean).pop() ?? '';
-  return last.replace(/\.git$/i, '');
+  return last.replace(/\.(git|bundle)$/i, '');
 }
 
-// THE choke point: the only producer of the string handed to git clone. Its
-// output is either a `new URL()`-validated string with an allowed scheme or
-// pathToFileURL output — never a bare path. A path becomes a file:// URL on
-// purpose: `git clone /path` hardlinks the mirror's object store into the
-// install, `git clone file:///path` transfers a fresh pack.
-//
-// URL-shaped = has a `:` before any `/`. That sends scp-style ssh
-// (`git@host:x`) and drive paths (`C:\x`) to a loud refusal rather than a
-// nonsense relative path. Everything else is a filesystem path; a relative one
-// resolves against `sourceDir` (all relative forms alike — no search path, no
-// `~` expansion).
-export function resolveRepoUrl(repo: string, sourceDir: string | null): string {
-  const colon = repo.indexOf(':');
-  const slash = repo.indexOf('/');
-  if (colon !== -1 && (slash === -1 || colon < slash)) {
-    let u: URL;
-    try { u = new URL(repo); }
-    catch { throw httpError(400, `invalid repo URL '${repo}'`); }
-    if (!ALLOWED_SCHEMES.has(u.protocol)) {
-      throw httpError(400, `unsupported repo URL scheme '${u.protocol}' — only http(s)/git/file are allowed`);
-    }
-    if (u.protocol !== 'file:') return repo;
-    // WHATWG turns `file:foo.git` into `file:///foo.git` — the filesystem root,
-    // not a relative path.
-    if (!/^file:\/\/\//i.test(repo)) {
-      throw httpError(400, `a file: repo URL must be absolute (file:///…); write a relative repo as a plain path`);
-    }
-    if (u.host !== '') throw httpError(400, `a file: repo URL must not name a host ('${repo}')`);
-    return u.href;
+// A resolved clone URL. Only resolveRepoUrl mints one, so a catalog's raw
+// `repo` string cannot reach cloneRepo without passing through it.
+type CloneUrl = string & { readonly __brand: 'CloneUrl' };
+
+// THE choke point: the only producer of a CloneUrl. `repo` is always a URL —
+// parsed with no base, never guessed at — and the output is an http(s)/git URL
+// verbatim or a canonical file:/// URL. `catalog:<relative path>` resolves
+// against `sourceDir`, the directory the entry was read from (`..` allowed, no
+// `~` expansion); a built-in has none.
+export function resolveRepoUrl(repo: string, sourceDir: string | null): CloneUrl {
+  let u: URL;
+  try { u = new URL(repo); }
+  catch {
+    // No `:` at all reads as a bare path — name both forms that express one.
+    const hint = repo.includes(':') ? ''
+      : ` — write a path relative to the catalog file as catalog:${repo}, an absolute one as file:///<path>`;
+    throw httpError(400, `invalid repo URL '${repo}'${hint}`);
   }
-  let abs: string;
-  if (path.isAbsolute(repo)) abs = path.resolve(repo);
-  else {
-    if (sourceDir === null) {
-      throw httpError(400, `repo '${repo}' is a relative path but its catalog entry has no source directory`);
-    }
-    abs = path.resolve(sourceDir, repo);
+  if (!ALLOWED_SCHEMES.has(u.protocol)) {
+    throw httpError(400, `unsupported repo URL scheme '${u.protocol}' — only http(s)/git/file/catalog are allowed`);
   }
-  return pathToFileURL(abs).href;
+  if (u.protocol === 'catalog:') return resolveCatalogPath(repo, u, sourceDir);
+  if (u.protocol !== 'file:') return repo as CloneUrl;
+  if (u.host !== '') {
+    throw httpError(400, `file: repo URL '${repo}' names a host '${u.host}' — only local paths are supported, written file:///<absolute path>`);
+  }
+  // WHATWG reads `file:foo.git` as `file:///foo.git` — the filesystem root.
+  if (!/^file:\/\/\//i.test(repo)) {
+    throw httpError(400, `file: repo URL '${repo}' must be written file:///<absolute path>; a path relative to the catalog file is catalog:<path>`);
+  }
+  return u.href as CloneUrl;
+}
+
+function resolveCatalogPath(repo: string, u: URL, sourceDir: string | null): CloneUrl {
+  // `?`/`#` would silently split off the end of the path.
+  if (u.search || u.hash) {
+    throw httpError(400, `catalog: repo '${repo}' contains '?' or '#' — percent-encode them in the path`);
+  }
+  let rel: string;
+  try { rel = decodeURIComponent(u.pathname); }
+  catch { throw httpError(400, `catalog: repo '${repo}' has a malformed percent-escape`); }
+  if (u.host !== '' || !rel || path.isAbsolute(rel)) {
+    throw httpError(400, `catalog: repo must be a relative path, e.g. catalog:repos/x.git (got '${repo}'); an absolute one is file:///<path>`);
+  }
+  if (sourceDir === null) {
+    throw httpError(400, `repo '${repo}' is relative but its catalog entry has no source directory`);
+  }
+  return pathToFileURL(path.resolve(sourceDir, rel)).href as CloneUrl;
 }
 
 // The clone URL and the project name an entry installs as — both from the
-// RESOLVED URL, so a relative repo still names its project. Throws 400.
-function projectNameFor(entry: CatalogEntry): { cloneUrl: string; name: string } {
+// RESOLVED URL, so a catalog: repo still names its project. Throws 400.
+function projectNameFor(entry: CatalogEntry): { cloneUrl: CloneUrl; name: string } {
   const cloneUrl = resolveRepoUrl(entry.repo, entry.sourceDir);
   const name = deriveProjectName(cloneUrl);
   if (!name) throw httpError(400, `could not derive a project name from repo URL '${cloneUrl}'`);
   return { cloneUrl, name };
 }
 
-function cloneRepo(url: string, destDir: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<GitCommandResult> {
-  return runGitLive(['clone', '--', url, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
+// A file: URL is handed to git as its local PATH: git detects a bundle only on
+// a path (`git clone file:///x.bundle` fails "invalid gitfile format").
+// `--no-local` is what stops a path clone hardlinking a directory mirror's
+// object files into the install; it applies to every URL and is ignored for a
+// remote one.
+function cloneRepo(url: CloneUrl, destDir: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<GitCommandResult> {
+  const source = new URL(url).protocol === 'file:' ? fileURLToPath(url) : url;
+  return runGitLive(['clone', '--no-local', '--', source, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
 }
 
 function pullRepo(cwd: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<GitCommandResult> {
