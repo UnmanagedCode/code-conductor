@@ -64,10 +64,10 @@ interface LibraryEntry {
   postPull?: string;
 }
 
-// An entry plus the directory it was read from — what a relative `repo`
-// resolves against. `null` for a built-in (it has no directory). Internal:
-// list() strips it from the wire row.
-type CatalogEntry = LibraryEntry & { sourceDir: string | null };
+// An entry plus the catalog file it was read from — its `dir` is what a
+// catalog: repo resolves against. `null` for a built-in. Internal: list()
+// strips it from the wire row.
+type CatalogEntry = LibraryEntry & { source: { dir: string; file: string } | null };
 
 // A rejected catalog input. `file` is null when a whole configured directory
 // could not be read.
@@ -203,7 +203,7 @@ function libraryDir(): string {
 async function readLibraryEntries(): Promise<{ entries: CatalogEntry[]; skipped: LibrarySkip[] }> {
   const { libraryDirs, builtinLibrary } = getPluginLibrarySettings();
   const byId = new Map<string, CatalogEntry>(
-    builtinLibrary ? DEFAULT_ENTRIES.map(e => [e.id, { ...e, sourceDir: null }]) : [],
+    builtinLibrary ? DEFAULT_ENTRIES.map(e => [e.id, { ...e, source: null }]) : [],
   );
   const skipped: LibrarySkip[] = [];
   const storeDir = libraryDir();
@@ -256,7 +256,7 @@ async function readCatalogDir(dir: string, { reportUnreadable }: { reportUnreada
       repo: rec.repo,
       ...(typeof rec.postClone === 'string' ? { postClone: rec.postClone } : {}),
       ...(typeof rec.postPull === 'string' ? { postPull: rec.postPull } : {}),
-      sourceDir: dir,
+      source: { dir, file: name },
     });
   }
 }
@@ -275,18 +275,22 @@ function deriveProjectName(repoUrl: string): string | null {
 // `repo` string cannot reach cloneRepo without passing through it.
 type CloneUrl = string & { readonly __brand: 'CloneUrl' };
 
-// THE choke point: the only producer of a CloneUrl. `repo` is always a URL —
-// parsed with no base, never guessed at — and the output is an http(s)/git URL
-// verbatim or a canonical file:/// URL. `catalog:<relative path>` resolves
-// against `sourceDir`, the directory the entry was read from (`..` allowed, no
-// `~` expansion); a built-in has none.
+// THE choke point: the only producer of a CloneUrl, and where every refusal
+// is raised — nothing derived from its output may fail once install/update
+// have started streaming. `repo` is always a URL, parsed with no base, never
+// guessed at. The output is an http(s)/git URL verbatim, or a file:/// URL
+// built by pathToFileURL from a NUL-free local path, so cloneRepo's
+// fileURLToPath cannot throw. `catalog:<relative path>` resolves against
+// `sourceDir`, the directory the entry was read from (`..` allowed, no `~`
+// expansion); a built-in has none.
 export function resolveRepoUrl(repo: string, sourceDir: string | null): CloneUrl {
   let u: URL;
   try { u = new URL(repo); }
   catch {
-    // No `:` at all reads as a bare path — name both forms that express one.
-    const hint = repo.includes(':') ? ''
-      : ` — write a path relative to the catalog file as catalog:${repo}, an absolute one as file:///<path>`;
+    // A bare path: suggest the URL that spells it.
+    const hint = path.isAbsolute(repo) ? ` — write it as ${pathToFileURL(repo).href}`
+      : repo.includes(':') ? ''
+      : ` — write it as catalog:${repo} (relative to the catalog file) or as an absolute file:///<path>`;
     throw httpError(400, `invalid repo URL '${repo}'${hint}`);
   }
   if (!ALLOWED_SCHEMES.has(u.protocol)) {
@@ -301,7 +305,26 @@ export function resolveRepoUrl(repo: string, sourceDir: string | null): CloneUrl
   if (!/^file:\/\/\//i.test(repo)) {
     throw httpError(400, `file: repo URL '${repo}' must be written file:///<absolute path>; a path relative to the catalog file is catalog:<path>`);
   }
-  return u.href as CloneUrl;
+  // new URL() accepts escapes fileURLToPath refuses; refuse them here, as a 400.
+  let p: string;
+  try { p = fileURLToPath(u); }
+  catch (e) {
+    if (e instanceof URIError) {
+      throw httpError(400, `file: repo URL '${repo}' has a malformed percent-escape — write a literal % as %25`);
+    }
+    if (errCode(e) === 'ERR_INVALID_FILE_URL_PATH') {
+      throw httpError(400, `file: repo URL '${repo}' contains an encoded '/' (%2F) — a path segment cannot contain '/'`);
+    }
+    throw e;
+  }
+  return localPathUrl(repo, p);
+}
+
+// A NUL-free path as the file:/// URL cloneRepo will turn back into it.
+function localPathUrl(repo: string, p: string): CloneUrl {
+  // spawn() refuses a NUL in an argument — after streaming has started.
+  if (p.includes('\0')) throw httpError(400, `repo '${repo}' contains a NUL byte (%00)`);
+  return pathToFileURL(p).href as CloneUrl;
 }
 
 function resolveCatalogPath(repo: string, u: URL, sourceDir: string | null): CloneUrl {
@@ -311,27 +334,28 @@ function resolveCatalogPath(repo: string, u: URL, sourceDir: string | null): Clo
   }
   let rel: string;
   try { rel = decodeURIComponent(u.pathname); }
-  catch { throw httpError(400, `catalog: repo '${repo}' has a malformed percent-escape`); }
+  catch { throw httpError(400, `catalog: repo '${repo}' has a malformed percent-escape — write a literal % as %25`); }
   if (u.host !== '' || !rel || path.isAbsolute(rel)) {
     throw httpError(400, `catalog: repo must be a relative path, e.g. catalog:repos/x.git (got '${repo}'); an absolute one is file:///<path>`);
   }
   if (sourceDir === null) {
     throw httpError(400, `repo '${repo}' is relative but its catalog entry has no source directory`);
   }
-  return pathToFileURL(path.resolve(sourceDir, rel)).href as CloneUrl;
+  return localPathUrl(repo, path.resolve(sourceDir, rel));
 }
 
-// The clone URL and the project name an entry installs as — both from the
-// RESOLVED URL, so a catalog: repo still names its project. Throws 400.
+// The clone URL and the (validated) project name an entry installs as — both
+// from the RESOLVED URL, so a catalog: repo still names its project. Throws 400.
 function projectNameFor(entry: CatalogEntry): { cloneUrl: CloneUrl; name: string } {
-  const cloneUrl = resolveRepoUrl(entry.repo, entry.sourceDir);
+  const cloneUrl = resolveRepoUrl(entry.repo, entry.source?.dir ?? null);
   const name = deriveProjectName(cloneUrl);
   if (!name) throw httpError(400, `could not derive a project name from repo URL '${cloneUrl}'`);
+  validateName(name);
   return { cloneUrl, name };
 }
 
-// A file: URL is handed to git as its local PATH: git detects a bundle only on
-// a path (`git clone file:///x.bundle` fails "invalid gitfile format").
+// A file: URL is handed to git as its local PATH (fileURLToPath is total over
+// a file: CloneUrl — see resolveRepoUrl): git detects a bundle only on a path (`git clone file:///x.bundle` fails "invalid gitfile format").
 // `--no-local` is what stops a path clone hardlinking a directory mirror's
 // object files into the install; it applies to every URL and is ignored for a
 // remote one.
@@ -387,24 +411,27 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     skipped: LibrarySkip[];
   }> {
     const { entries, skipped } = await readLibraryEntries();
-    const enriched = await Promise.all(entries.map(async (catalogEntry) => {
-      const { sourceDir: _sourceDir, ...entry } = catalogEntry;
-      // A refused repo lists as not installed — the list never throws on one
-      // bad entry — but only a refusal is caught, and it is logged.
-      let name: string | null = null;
-      try { name = projectNameFor(catalogEntry).name; }
+    // An entry whose repo or derived name is refused is not offered as
+    // installable: it joins the other rejected catalog inputs in `skipped`, so
+    // the reason shows before anyone clicks Install. It still owns its id —
+    // install/update answer the same 400. A built-in's refusal is a bug: thrown.
+    const installable: Array<{ entry: LibraryEntry; name: string }> = [];
+    for (const catalogEntry of entries) {
+      const { source, ...entry } = catalogEntry;
+      try { installable.push({ entry, name: projectNameFor(catalogEntry).name }); }
       catch (e) {
-        if ((e as { statusCode?: unknown }).statusCode !== 400) throw e;
-        console.warn(`pluginLibrary: entry '${entry.id}' lists as not installed: ${errMsg(e)}`);
+        if (!source || (e as { statusCode?: unknown }).statusCode !== 400) throw e;
+        console.warn(`pluginLibrary: skipping ${path.join(source.dir, source.file)}: ${errMsg(e)}`);
+        skipped.push({ dir: source.dir, file: source.file, reason: errMsg(e) });
       }
+    }
+    const enriched = await Promise.all(installable.map(async ({ entry, name }) => {
       // INSTALLED MEANS REGISTERED. The checkout's location is the record's,
       // not an assumed path — a plugin project relocated by an adopt is still
       // this entry's install.
       let target: string | null = null;
-      if (name) {
-        try { target = (await resolveProjectDir(name))?.path ?? null; }
-        catch { target = null; }
-      }
+      try { target = (await resolveProjectDir(name))?.path ?? null; }
+      catch { target = null; }
       const installed = target !== null;
       let updateAvailable = false;
       let behind: number | null = null;
@@ -428,7 +455,6 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
     const { cloneUrl, name } = projectNameFor(entry);
-    validateName(name);
 
     const target = path.join(pluginsRoot(), name);
     // THE RECORD, not a stat on `target`: a project of the same name holds the

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createPluginLibrary, resolveRepoUrl } from '../src/plugins/library.ts';
 import { getPluginLibrarySettings } from '../src/appSettings.ts';
 import { orchStoreRoot, adoptProject, listProjects, readProjectRecord } from '../src/projects.ts';
@@ -44,7 +44,7 @@ test('list(): default code-share entry present with no library dir', async () =>
     assert.equal(rows[0].installed, false);
     assert.equal(rows[0].installedAs, null);
     assert.deepEqual((await lib.list()).skipped, [], 'the store dir\'s absence is silent');
-    assert.equal(rows[0].sourceDir, undefined, 'the internal sourceDir is not leaked on the wire');
+    assert.equal(rows[0].source, undefined, 'the internal source is not leaked on the wire');
   } finally {
     await env.restore();
   }
@@ -835,11 +835,21 @@ function assertStatus(fn, statusCode, messageRe) {
 const fileUrl = (...segs) => pathToFileURL(path.join(...segs)).href;
 
 // The output invariant: whatever resolveRepoUrl accepts comes out as a URL a
-// clone can take — never a bare path, never an unresolved catalog: form.
+// clone can take — never a bare path, never an unresolved catalog: form — and
+// a file: output converts to a NUL-free local path, which is what cloneRepo
+// hands git after streaming has started.
 function resolved(repo, dir) {
   const out = resolveRepoUrl(repo, dir);
-  assert.ok(['http:', 'https:', 'git:', 'file:'].includes(new URL(out).protocol), `${repo} -> ${out}`);
+  const proto = new URL(out).protocol;
+  assert.ok(['http:', 'https:', 'git:', 'file:'].includes(proto), `${repo} -> ${out}`);
+  if (proto === 'file:') assert.ok(!fileURLToPath(out).includes('\0'), `${repo} -> ${out}`);
   return out;
+}
+
+// The fix a refusal message suggests, which must itself be accepted.
+function suggestion(fn) {
+  try { fn(); } catch (e) { return e.message.match(/write it as (\S+)/)?.[1] ?? null; }
+  assert.fail('expected a refusal');
 }
 
 test('resolveRepoUrl(): resolution table', async (t) => {
@@ -868,8 +878,18 @@ test('resolveRepoUrl(): resolution table', async (t) => {
     assert.equal(resolved('file:///abs/foo.git', null), 'file:///abs/foo.git');
     assertStatus(() => resolveRepoUrl('catalog:foo.git', null), 400, /no source directory/);
   });
-  await t.test('R8 a bare path is refused, and the message names both fixes', () => {
+  await t.test('R8 a bare relative path is refused; the message names both fixes and its suggestion resolves', () => {
     assertStatus(() => resolveRepoUrl('foo.git', dir), 400, /catalog:foo\.git[\s\S]*file:\/\/\//);
+    const fix = suggestion(() => resolveRepoUrl('foo.git', dir));
+    assert.equal(fix, 'catalog:foo.git');
+    assert.equal(resolved(fix, dir), fileUrl(dir, 'foo.git'));
+  });
+  await t.test('R8b a bare absolute path is told the file:/// spelling of itself, never catalog:', () => {
+    assertStatus(() => resolveRepoUrl('/abs/x.git', dir), 400, /file:\/\/\/abs\/x\.git/);
+    assert.throws(() => resolveRepoUrl('/abs/x.git', dir), (e) => !/catalog:/.test(e.message));
+    const fix = suggestion(() => resolveRepoUrl('/abs/x.git', dir));
+    assert.equal(fix, 'file:///abs/x.git');
+    assert.equal(resolved(fix, dir), 'file:///abs/x.git');
   });
   await t.test('R9 scp-style ssh fails URL parsing outright', () => {
     assertStatus(() => resolveRepoUrl('git@github.com:org/x.git', dir), 400, /invalid repo URL/);
@@ -897,9 +917,28 @@ test('resolveRepoUrl(): resolution table', async (t) => {
       assertStatus(() => resolveRepoUrl(bad, dir), 400, /percent-encode/);
     });
   }
-  await t.test('R15 a malformed percent-escape is a 400, not a crash', () => {
-    assertStatus(() => resolveRepoUrl('catalog:bad%zz.git', dir), 400);
+  await t.test('R15 a malformed percent-escape in catalog: teaches %25', () => {
+    assertStatus(() => resolveRepoUrl('catalog:bad%zz.git', dir), 400, /malformed percent-escape.*%25/);
   });
+  for (const bad of ['file:///mnt/vol/50%/code-kanban.git', 'file:///a%zz/x.git']) {
+    await t.test(`R16 ${bad}: a lone or malformed % in file: teaches %25`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /malformed percent-escape.*%25/);
+    });
+  }
+  await t.test('R16b the %25 spelling that message teaches is accepted and keeps the literal %', () => {
+    const out = resolved('file:///mnt/vol/50%25/code-kanban.git', dir);
+    assert.equal(fileURLToPath(out), '/mnt/vol/50%/code-kanban.git');
+  });
+  for (const bad of ['file:///a%2Fb/x.git', 'file:///a%2fb/x.git']) {
+    await t.test(`R17 ${bad}: an encoded / in file: is refused by name`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /encoded '\/' \(%2F\)/);
+    });
+  }
+  for (const bad of ['file:///a%00b/x.git', 'catalog:a%00b.git']) {
+    await t.test(`R18 ${bad}: a NUL byte is refused at resolve time`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /NUL/);
+    });
+  }
 });
 
 test('getPluginLibrarySettings(): sanitiser', async (t) => {
@@ -1245,33 +1284,71 @@ test('update(): a relative-repo entry pulls the project named by the resolved UR
   }
 });
 
-test('install(): a refused repo and an invalid derived name are both synchronous validation — onValidated never fires', async () => {
+test('install(): a refused repo, an unconvertible file: URL and an invalid derived name are all synchronous validation — onValidated never fires', async () => {
   const env = await makePluginRoot();
   try {
     await dropLibraryEntry('bad.json', { id: 'bad', name: 'Bad', repo: 'git@github.com:org/bad.git' });
     // Resolves fine, but the last segment `my%20repo` is not a valid project name.
     await dropLibraryEntry('ugly.json', { id: 'ugly', name: 'Ugly', repo: 'catalog:repos/my%20repo.git' });
+    // A literal % in a mount path: new URL() accepts it, fileURLToPath does not.
+    await dropLibraryEntry('pct.json', { id: 'pct', name: 'Pct', repo: 'file:///mnt/vol/50%/code-kanban.git' });
     let validated = 0;
-    const lib = createPluginLibrary({ _cloneImpl: async () => ({ code: 0, stdout: '', stderr: '' }) });
+    const cloneCalls = [];
+    const lib = createPluginLibrary({ _cloneImpl: async (url) => { cloneCalls.push(url); return { code: 0, stdout: '', stderr: '' }; } });
     await rejectsWithStatus(lib.install('bad', { onValidated: () => { validated++; } }), 400);
     await rejectsWithStatus(lib.install('ugly', { onValidated: () => { validated++; } }), 400);
+    const pct = await rejectsWithStatus(lib.install('pct', { onValidated: () => { validated++; } }), 400);
+    assert.match(pct.message, /malformed percent-escape.*%25/);
     assert.equal(validated, 0);
+    assert.deepEqual(cloneCalls, []);
   } finally {
     await env.restore();
   }
 });
 
-test('list(): an entry whose repo is refused lists as not installed, with a warning naming it', async () => {
+test('list(): an entry whose repo or derived name is refused is omitted from entries and reported in skipped', async () => {
   const env = await makePluginRoot();
-  const warns = [];
+  const C = await mkdtemp('lib-cat-');
   const origWarn = console.warn;
-  console.warn = (m) => warns.push(String(m));
+  console.warn = () => {};
   try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
     await dropLibraryEntry('bad.json', { id: 'bad-entry', name: 'Bad', repo: 'ftp://example.com/o/bad' });
-    const row = (await createPluginLibrary().list()).entries.find(r => r.id === 'bad-entry');
-    assert.equal(row.installed, false);
-    assert.equal(row.installedAs, null);
-    assert.ok(warns.some(w => w.includes('bad-entry')), `a warning names the entry: ${JSON.stringify(warns)}`);
+    await dropEntryIn(C, 'pct.json', { id: 'pct-entry', name: 'Pct', repo: 'file:///mnt/vol/50%/code-kanban.git' });
+    await dropEntryIn(C, 'ugly.json', { id: 'ugly-entry', name: 'Ugly', repo: 'catalog:repos/my%20repo.git' });
+    const { entries, skipped } = await createPluginLibrary().list();
+    const ids = entries.map(r => r.id);
+    for (const id of ['bad-entry', 'pct-entry', 'ugly-entry']) assert.ok(!ids.includes(id), `${id} has no installable row`);
+    const by = Object.fromEntries(skipped.map(sk => [sk.file, sk]));
+    assert.equal(by['bad.json'].dir, libraryDir());
+    assert.match(by['bad.json'].reason, /unsupported repo URL scheme/);
+    assert.equal(by['pct.json'].dir, C);
+    assert.match(by['pct.json'].reason, /%25/);
+    assert.equal(by['ugly.json'].dir, C);
+    assert.match(by['ugly.json'].reason, /invalid project name/);
+    assert.equal(skipped.length, 3);
+  } finally {
+    console.warn = origWarn;
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('list()/install(): a refused override still takes its id — no built-in row, and install is the override\'s 400', async () => {
+  const env = await makePluginRoot();
+  const origWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'Broken', repo: 'file:///a%2Fb/code-share.git' });
+    const cloneCalls = [];
+    const lib = createPluginLibrary({ _cloneImpl: async (url) => { cloneCalls.push(url); return { code: 0, stdout: '', stderr: '' }; } });
+    const { entries, skipped } = await lib.list();
+    assert.ok(!entries.some(r => r.id === 'code-share'), 'the list and install agree on which entry owns the id');
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].file, 'code-share.json');
+    const e = await rejectsWithStatus(lib.install('code-share'), 400);
+    assert.match(e.message, /encoded '\/'/);
+    assert.deepEqual(cloneCalls, []);
   } finally {
     console.warn = origWarn;
     await env.restore();
