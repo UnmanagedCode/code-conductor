@@ -367,3 +367,49 @@ test('claudePluginPaths: [] when absent, [str] when present', () => {
   assert.deepEqual(claudePluginPaths(validateManifest(base()).manifest), []);
   assert.deepEqual(claudePluginPaths(validateManifest(base({ claudePlugin: 'claude' })).manifest), ['claude']);
 });
+
+test('playbooks: contributions-only manifest (no backend) validates; validateManifest attaches no body', () => {
+  const playbooks = [{ slug: 'release', file: 'playbooks/release.json' }];
+  const r = validateManifest(base({ playbooks }));
+  assert.equal(r.errors, undefined);
+  assert.deepEqual(r.manifest.playbooks, playbooks);
+  assert.equal('body' in r.manifest.playbooks[0], false, 'validateManifest stays pure — only readManifest reads the file');
+});
+
+test('playbooks: invalid shapes rejected', () => {
+  const errs = (playbooks) => validateManifest(base({ playbooks })).errors ?? [];
+  assert.ok(errs([]).includes("'playbooks' must be a non-empty array"));
+  assert.ok(errs({ slug: 'x', file: 'x.json' }).includes("'playbooks' must be a non-empty array"));
+  assert.ok(errs(['x']).includes("'playbooks[0]' must be an object"));
+  assert.ok(errs([{ slug: 'x', file: 'x.json', name: 'X' }]).includes("unknown key 'playbooks[0].name'"),
+    'the body owns name/description; the manifest must not restate them');
+  assert.ok(errs([{ slug: 'Bad', file: 'x.json' }]).some(e => e.startsWith("'playbooks[0].slug' is required")));
+  assert.ok(errs([{ slug: 'a/b', file: 'x.json' }]).some(e => e.startsWith("'playbooks[0].slug' is required")),
+    'a slug may not carry the namespace separator');
+  assert.ok(errs([{ slug: 'x', file: 'a.json' }, { slug: 'x', file: 'b.json' }]).includes("duplicate playbook slug 'x'"));
+  assert.ok(errs([{ slug: 'x' }]).includes("'playbooks[0].file' is required (relative .json path)"));
+  assert.ok(errs([{ slug: 'x', file: 'x.md' }]).includes("'playbooks[0].file' must end with '.json'"));
+  assert.ok(errs([{ slug: 'x', file: '/abs/x.json' }]).includes("'playbooks[0].file' must be a relative path with no '..' segment"));
+  assert.ok(errs([{ slug: 'x', file: '../x.json' }]).includes("'playbooks[0].file' must be a relative path with no '..' segment"));
+});
+
+test('readManifest: a missing playbook file → invalid naming slug + file; a present one → body attached verbatim', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-pb-'));
+  try {
+    const manifest = base({ playbooks: [{ slug: 'release', file: 'playbooks/release.json' }] });
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
+    let r = await readManifest(sys(), dir);
+    assert.deepEqual(r.errors, ["playbooks 'release' file 'playbooks/release.json' not found"]);
+    assert.equal(r.id, 'my-plugin', 'the invalid manifest keeps its id for display');
+    // Deliberately NOT valid JSON: the manifest reader attaches the body
+    // verbatim and leaves parsing to the shared playbook loader.
+    const body = '{ not json, but the loader decides that\n';
+    await fs.mkdir(path.join(dir, 'playbooks'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'playbooks', 'release.json'), body);
+    r = await readManifest(sys(), dir);
+    assert.equal(r.errors, undefined);
+    assert.deepEqual(r.manifest.playbooks, [{ slug: 'release', file: 'playbooks/release.json', body }]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

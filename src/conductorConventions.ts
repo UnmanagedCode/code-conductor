@@ -27,7 +27,7 @@ import { createSelectionStore, disabledOf } from './conventionSelection.ts';
 // a cycle. By the time loadPlaybooks() resolves that registry, this module is
 // fully initialised.
 import {
-  loadPlaybooks, DEFAULT_PLAYBOOK_ID,
+  loadPlaybooks, missingPlaybookCause, DEFAULT_PLAYBOOK_ID,
   PLAYBOOK_ENFORCEMENT_MODES, normalizePlaybookEnforcement, type PlaybookEnforcement,
 } from './playbooks.ts';
 import { renderPlaybookConvention } from './playbookConvention.ts';
@@ -213,9 +213,11 @@ export async function resolveDefaultPlaybookId(): Promise<string | null> {
   return sel.mode === 'unset' ? DEFAULT_PLAYBOOK_ID : null;
 }
 
-// A `playbook` id is validated against the LOADED definitions — built-ins plus
-// the user overlay, through the one catalog in playbooks.ts. A selection that no
-// definition backs would silently render nothing.
+// A `playbook` id is validated against the LOADED definitions — built-ins, the
+// user overlay and enabled plugins' playbooks, through the one catalog in
+// playbooks.ts. A selection that no definition backs would silently render
+// nothing. Only the write is validated: a stored plugin playbook stays selected
+// through a disable and applies again on re-enable (defaultPlaybookMissing).
 export async function setDefaultPlaybook(sel: DefaultPlaybookSelection): Promise<DefaultPlaybookSelection> {
   const mode = (sel as { mode?: unknown } | null)?.mode;
   if (mode === 'unset') {
@@ -240,6 +242,17 @@ export async function setDefaultPlaybook(sel: DefaultPlaybookSelection): Promise
   }
   await catalog.patchState({ defaultPlaybook: { mode: 'playbook', id } });
   return { mode: 'playbook', id };
+}
+
+// The stored preferred playbook when it names an id no loaded definition backs,
+// with the reason — so Settings shows the retained choice instead of a blank
+// picker. Null when the selection resolves, or resolves to no playbook.
+export async function defaultPlaybookMissing(): Promise<{ id: string; reason: string } | null> {
+  const id = await resolveDefaultPlaybookId();
+  if (!id) return null;
+  const { playbooks } = await loadPlaybooks();
+  if (playbooks.has(id)) return null;
+  return { id, reason: `preferred playbook '${id}' is not loaded — ${missingPlaybookCause(id)}.` };
 }
 
 // ── Default playbook enforcement (same Settings block, same store) ──────────
@@ -278,7 +291,7 @@ export async function defaultPlaybookConvention(): Promise<string> {
     const { playbooks } = await loadPlaybooks();
     const pb = playbooks.get(id);
     if (!pb) {
-      console.warn(`conductorConventions: preferred playbook '${id}' is not loaded; omitting its convention`);
+      console.warn(`conductorConventions: preferred playbook '${id}' is not loaded — ${missingPlaybookCause(id)}; omitting its convention`);
       return '';
     }
     return renderPlaybookConvention(pb);

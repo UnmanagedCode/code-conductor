@@ -34,6 +34,8 @@ export interface PluginRow {
   hasMcp: boolean;
   conventions: Array<{ slug: string; name: string; description: string; hasScaffold: boolean }>;
   roles: Array<{ slug: string; name: string }>;
+  // Namespaced ids only: a playbook's name lives in its unparsed body.
+  playbooks: Array<{ slug: string }>;
   port: number | null;
   pid: number | null;
   startedAt: string | null;
@@ -114,6 +116,7 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
     // directive (returned by create_project) in addition to any fragment.
     conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description, hasScaffold: !!g.scaffold })),
     roles: (entry.manifest?.roles ?? []).map(r => ({ slug: `${id}/${r.slug}`, name: r.name })),
+    playbooks: (entry.manifest?.playbooks ?? []).map(p => ({ slug: `${id}/${p.slug}` })),
     port: record?.port ?? null,
     pid: record?.pid ?? null,
     startedAt: record?.startedAt ?? null,

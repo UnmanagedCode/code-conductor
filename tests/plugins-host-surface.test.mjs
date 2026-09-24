@@ -23,6 +23,7 @@ const PUBLIC_MEMBERS = [
   'init',
   'list',
   'notices',
+  'playbooks',
   'reportUpstreamFailure',
   'rescan',
   'restart',
@@ -65,6 +66,39 @@ test('roles() on a never-inited host is synchronous and returns []', () => {
   assert.equal(typeof out?.then, 'undefined', 'roles() must not return a Promise');
   assert.ok(Array.isArray(out));
   assert.deepEqual(out, []);
+});
+
+// playbooks() is the INVERSE of the roles() pin above: it must await discovery
+// itself. Its consumer (loadPlaybooks, via setPluginPlaybooksProvider) runs on
+// every governed MCP call and resume, and one landing at boot before anything
+// has called list() would otherwise see no plugin playbooks and refuse a good
+// binding PLAYBOOK_UNKNOWN.
+test('playbooks() on a never-inited host returns a Promise and resolves to the enabled plugin\'s records without a prior list()', async () => {
+  const { makePluginRoot } = await import('./plugin-helpers.mjs');
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('bootpb', {
+      manifest: { id: 'bootpb', name: 'Boot', version: '1.0.0', pluginApi: 1, playbooks: [{ slug: 'flow', file: 'flow.json' }] },
+      withFixtureFiles: false,
+    });
+    await fs.writeFile(path.join(dir, 'flow.json'), '{}');
+    // Enable through one host, then read through a FRESH one — the boot shape:
+    // the enable is persisted, discovery has not run in this process.
+    const first = createPluginHost();
+    await first.list();
+    await first.enable('bootpb');
+    await first.stopAll();
+
+    const host = createPluginHost();
+    const out = host.playbooks();
+    assert.equal(typeof out?.then, 'function', 'playbooks() must return a Promise');
+    assert.deepEqual((await out).map(r => r.id), ['bootpb/flow']);
+    await host.stopAll();
+  } finally {
+    await env.restore();
+  }
 });
 
 // notices() hands out a copy; the caller (GET /api/plugins) must not be able

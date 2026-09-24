@@ -10,8 +10,8 @@
 // so the two are separate rows.
 //
 // Fed by the conductor conventions panel's payload (`playbooks`,
-// `playbookErrors`, `defaultPlaybook`) rather than a fetch of its own — one GET
-// backs the whole block.
+// `playbookErrors`, `defaultPlaybook`, `defaultPlaybookMissing`) rather than a
+// fetch of its own — one GET backs the whole block.
 //
 // Element ids: dp-select, dp-status.
 
@@ -25,26 +25,37 @@ export function installDefaultPlaybook({ base }) {
     if (!selectEl) return;
     const playbooks = data.playbooks || [];
     selectEl.innerHTML = '';
-    const add = (value, text) => {
+    const add = (value, text, disabled = false) => {
       const opt = document.createElement('option');
       opt.value = value;
       opt.textContent = text;
+      opt.disabled = disabled;
       selectEl.appendChild(opt);
     };
     // The fallback id comes from the payload — the server constant is its one home.
     add('unset', `Unset — falls back to ${data.defaultPlaybookFallback}`);
     add('none', 'None — no playbook convention injected');
     // `playbook:` prefixed so an id of "none"/"unset" can't collide with a mode.
-    for (const pb of playbooks) add(`playbook:${pb.id}`, `${pb.id} — ${pb.name}`);
+    for (const pb of playbooks) {
+      add(`playbook:${pb.id}`, `${pb.id} — ${pb.name}${pb.plugin ? ` (plugin ${pb.plugin})` : ''}`);
+    }
+    // A stored choice no loaded definition backs (a disabled plugin's playbook,
+    // a deleted overlay file) stays selected server-side; show it as a disabled
+    // row so the select names it instead of going blank.
+    const missing = data.defaultPlaybookMissing;
+    if (missing) add(`playbook:${missing.id}`, `${missing.id} — not loaded`, true);
     const sel = data.defaultPlaybook || { mode: 'unset' };
     selectEl.value = sel.mode === 'playbook' ? `playbook:${sel.id}` : sel.mode;
     // A definition rejected at load is simply absent from the list; without this
     // the user has no way to find out why theirs never appeared.
     const errors = data.playbookErrors || [];
     if (statusEl) {
-      statusEl.textContent = errors.length
-        ? `${errors.length} playbook definition(s) rejected at load: ${errors.map(e => `${e.id}: ${e.message}`).join('; ')}`
-        : '';
+      statusEl.textContent = [
+        ...(missing ? [missing.reason] : []),
+        ...(errors.length
+          ? [`${errors.length} playbook definition(s) rejected at load: ${errors.map(e => `${e.id}: ${e.message}`).join('; ')}`]
+          : []),
+      ].join(' ');
     }
   }
 

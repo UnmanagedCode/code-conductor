@@ -1028,6 +1028,60 @@ test('roles(): only enabled+ok plugins contribute, namespaced; disable drops the
   }
 });
 
+test('playbooks(): only enabled+ok plugins contribute, namespaced records; disable drops, re-enable restores; describeRow carries them', async () => {
+  const env = await makePluginRoot();
+  try {
+    const manifest = {
+      id: 'pbplug', name: 'Playbook Plugin', version: '1.0.0', pluginApi: 1,
+      playbooks: [{ slug: 'release', file: 'playbooks/release.json' }],
+    };
+    const dir = await env.addPluginProject('pbplug', { manifest, withFixtureFiles: false });
+    await fs.mkdir(path.join(dir, 'playbooks'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'playbooks', 'release.json'), '{"id":"release","v":1}');
+    const host = createPluginHost();
+    await host.list();
+    assert.deepEqual(await host.playbooks(), [], 'a discovered-but-disabled plugin contributes nothing');
+    await host.enable('pbplug');
+    assert.deepEqual(await host.playbooks(),
+      [{ id: 'pbplug/release', slug: 'release', plugin: 'pbplug', body: '{"id":"release","v":1}' }]);
+    const row = (await host.list()).find(r => r.id === 'pbplug');
+    assert.deepEqual(row.playbooks, [{ slug: 'pbplug/release' }]);
+    await host.disable('pbplug');
+    assert.deepEqual(await host.playbooks(), [], 'disable drops them with no purge');
+    await host.enable('pbplug');
+    assert.equal((await host.playbooks()).length, 1, 're-enable restores them');
+  } finally {
+    await env.restore();
+  }
+});
+
+// Freshness equals roles': the body is read with the manifest, so an edit to
+// the file reaches playbooks() on a manifest re-read (Rescan) — and NOT on
+// enable, which re-reads nothing.
+test('playbooks(): a body edit is picked up by rescan, not by disable+enable', async () => {
+  const env = await makePluginRoot();
+  try {
+    const manifest = {
+      id: 'pbfresh', name: 'Fresh', version: '1.0.0', pluginApi: 1,
+      playbooks: [{ slug: 'flow', file: 'flow.json' }],
+    };
+    const dir = await env.addPluginProject('pbfresh', { manifest, withFixtureFiles: false });
+    await fs.writeFile(path.join(dir, 'flow.json'), 'v1');
+    const host = createPluginHost();
+    await host.list();
+    await host.enable('pbfresh');
+    assert.equal((await host.playbooks())[0].body, 'v1');
+    await fs.writeFile(path.join(dir, 'flow.json'), 'v2');
+    await host.disable('pbfresh');
+    await host.enable('pbfresh');
+    assert.equal((await host.playbooks())[0].body, 'v1', 'enable does not re-read the manifest');
+    await host.rescan();
+    assert.equal((await host.playbooks())[0].body, 'v2', 'rescan re-reads the manifest and its playbook bodies');
+  } finally {
+    await env.restore();
+  }
+});
+
 // Write a Claude Code plugin root (the dir --plugin-dir expects) at
 // <dir>/<rel>/.claude-plugin/plugin.json.
 async function writeClaudePluginRoot(dir, rel, name) {

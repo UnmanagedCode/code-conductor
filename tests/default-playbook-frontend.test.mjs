@@ -146,6 +146,44 @@ test('definitions rejected at load are surfaced, not swallowed into an empty lis
   assert.equal(window.document.getElementById('dp-select').options.length, 2, 'only the unset and None rows');
 });
 
+test('a plugin-contributed playbook is labelled with its owning plugin', async () => {
+  const { window } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  installDefaultPlaybook({ base: BASE }).render({
+    ...PAYLOAD,
+    playbooks: [...PAYLOAD.playbooks,
+      { id: 'acme/release', name: 'Acme release', description: 'd', entryStages: ['plan'], spawnableStages: ['plan'], plugin: 'acme' }],
+  });
+  const opts = optionsOf(window.document.getElementById('dp-select'));
+  assert.deepEqual(opts.at(-1), ['playbook:acme/release', 'acme/release — Acme release (plugin acme)']);
+  assert.deepEqual(opts.find(([v]) => v === 'playbook:relay'), ['playbook:relay', 'relay — Relay — plan and implement are distinct'],
+    'a built-in carries no plugin suffix');
+});
+
+// A stored choice no loaded definition backs must stay visible: without the
+// row, setting the select's value to an absent option leaves it blank and the
+// user cannot tell what the conductor is (not) getting.
+test('a stored choice that is not loaded renders as a disabled, selected row with the reason in the status', async () => {
+  const { window } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  const reason = "preferred playbook 'acme/release' is not loaded — it is contributed by plugin 'acme'.";
+  installDefaultPlaybook({ base: BASE }).render({
+    ...PAYLOAD,
+    defaultPlaybook: { mode: 'playbook', id: 'acme/release' },
+    defaultPlaybookMissing: { id: 'acme/release', reason },
+    playbookErrors: [{ id: 'mine', message: 'bad' }],
+  });
+  const sel = window.document.getElementById('dp-select');
+  const row = [...sel.options].find(o => o.value === 'playbook:acme/release');
+  assert.ok(row, 'the retained choice has a row');
+  assert.equal(row.textContent, 'acme/release — not loaded');
+  assert.equal(row.disabled, true, 'it cannot be re-picked while unloaded');
+  assert.equal(sel.value, 'playbook:acme/release', 'and it is what the select shows');
+  const status = window.document.getElementById('dp-status').textContent;
+  assert.ok(status.startsWith(reason), `the reason leads the status: ${status}`);
+  assert.match(status, /mine: bad/, 'rejected definitions are still reported after it');
+});
+
 test('conventionsPanel.load() feeds its onData consumer the whole payload', async () => {
   // The seam: one GET backs both widgets. Deleting `onData?.(data)` leaves every
   // server test green and the picker permanently empty.

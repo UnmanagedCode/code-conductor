@@ -26,7 +26,7 @@ import type { System } from '../systems/system.ts';
 // forwarding (src/plugins/mcpBridge.ts). Owns discovery, active-version
 // resolution, lifecycle state and lazy starts. Two more composed collaborators
 // own the rest:
-// src/plugins/contributions.ts (conventions/roles/claudePlugin roots, and the
+// src/plugins/contributions.ts (conventions/roles/playbooks/claudePlugin roots, and the
 // caches behind them) and src/plugins/store.ts (the persisted registry.json /
 // runtime.json, their load-notice policy, and the adopt pass) — the matching
 // public members point straight at them.
@@ -789,7 +789,7 @@ export function createPluginHost(opts: {
   // ── convention contributions ────────────────────────────────────────
   // The registry's half of the contributions collaborator: which plugins get to
   // contribute at all. Only enabled + `ok` plugins do — a crashed/disabled/
-  // invalid plugin never surfaces its conventions, roles or claudePlugin roots.
+  // invalid plugin never surfaces its conventions, roles, playbooks or claudePlugin roots.
   // Stays here because it reads BOTH the discovery catalog and the persisted
   // records, neither of which the collaborator owns.
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
@@ -856,6 +856,7 @@ export function createPluginHost(opts: {
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
     conventions: contributions.conventions,
     roles: contributions.roles,
+    playbooks: contributions.playbooks,
     claudePluginDirs: contributions.claudePluginDirs,
     reportUpstreamFailure, setServerPort, stopAll,
     notices: store.notices,

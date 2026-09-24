@@ -875,11 +875,12 @@ export function buildTools(): Tool[] {
       description:
         'List the available playbooks — the declarative workflow graphs a worker can be bound to. ' +
         'Returns {playbooks, errors}: each playbook is {id, name, description, entryStages, ' +
-        'spawnableStages}, and `errors` is [{id, message}] for definitions REJECTED at load time — ' +
+        'spawnableStages, plugin?}, and `errors` is [{id, message}] for definitions REJECTED at load time — ' +
         'check it when a playbook you authored does not appear. `entryStages` are the stages a run may ' +
         'start in; `spawnableStages` are every stage a worker can be created directly in (the rest are ' +
         'transition-only). Built-ins ship in-repo; author your own as JSON under ' +
-        '<projectsRoot>/.code-conductor/playbooks/. Call describe_playbook for a graph.',
+        '<projectsRoot>/.code-conductor/playbooks/; enabled plugins contribute more, ids ' +
+        '`<plugin-id>/<slug>`, with `plugin` naming the owner. Call describe_playbook for a graph.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listPlaybooks,
       annotations: { readOnlyHint: true },
