@@ -108,6 +108,17 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   border-top: 1px dashed var(--border);
   padding-top: 4px;
 }
+/* The unassigned projects after the last workspace are their own section:
+   open it with the same dashed rule a workspace section opens with
+   (.project-workspace), or the trailing rows read as members of the last
+   workspace. Drawn once, on the first top-level project after a workspace —
+   not between unassigned rows, and not on the Conduct row (it precedes the
+   workspaces). Declarations must match .project-workspace's rule. */
+.project-list > .project-workspace-item + li:not(.project-workspace-item) {
+  margin-top: 4px;
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+}
 .project-workspace > .project-workspace-summary {
   list-style: none; cursor: pointer;
   display: flex; align-items: center; gap: 6px;

@@ -929,7 +929,8 @@ export class Sidebar {
     }
 
     // Split into workspace-assigned (rendered first, nested under <details>)
-    // and unassigned (rendered flat underneath). Workspace order is
+    // and unassigned (rendered flat underneath, as their own section — see the
+    // `.project-workspace-item + li` rule in styles.css). Workspace order is
     // alphabetical. The set of rendered workspaces is the union of (registered
     // workspaces from GET /api/workspaces) and (workspaces referenced by any
     // project), so empty workspaces still appear.
