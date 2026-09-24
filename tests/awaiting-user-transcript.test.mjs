@@ -1,8 +1,8 @@
 // The disk feed of awaitingUser (src/awaitingUserTranscript.ts): what the
 // backward chunked scan reads, where it stops, how it walks segments, and what
 // its process-lifetime memo re-reads — plus the SessionRow cost bound
-// (archived / conducted rows are not derived unless `deriveAwaitingFor` names
-// the row).
+// (an archived non-conducted row is derived only when `deriveAwaitingFor`
+// names it; a conducted row never is).
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,8 +64,8 @@ test('an inline isSidechain record never contributes an end-of-turn text; the sa
   assert.deepEqual(await deriveAwaitingUser(p2, [b]), Q_TEXT);
 });
 
-test('only a run\'s FINAL record\'s stop_reason counts: earlier per-block records read absent, null or stale', async (t) => {
-  for (const [label, earlier] of [['absent', undefined], ['null', null], ['stale tool_use', 'tool_use']]) {
+test('only a run\'s FINAL record\'s stop_reason counts: earlier per-block records read absent, null or a different value', async (t) => {
+  for (const [label, earlier] of [['absent', undefined], ['null', null], ['a different value (tool_use)', 'tool_use']]) {
     await t.test(label, async () => {
       const p = place('final'); const s = sid();
       await seedSessionJsonl(p, s, [user('go'), asst('m1', [text('Want me to push?')], earlier), asst('m1', [{ type: 'thinking', thinking: 'x' }], 'end_turn')]);
@@ -175,7 +175,7 @@ test('memo: a trailing message extended after an intervening read gives the full
     return deriveAwaitingUser(p, [s]);
   };
   for (const [label, first, last, want] of [
-    ['a stale tool_use record, then the end_turn record → the ask appears', 'tool_use', 'end_turn', Q_TEXT],
+    ['a tool_use record, then a later end_turn record of the same message → the ask appears', 'tool_use', 'end_turn', Q_TEXT],
     ['an earlier end_turn record, then a final tool_use record → no false ask', 'end_turn', 'tool_use', null],
   ]) {
     await t.test(label, async () => {

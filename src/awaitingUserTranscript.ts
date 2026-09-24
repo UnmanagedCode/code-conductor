@@ -166,9 +166,9 @@ async function scanRegion(fh: ReadHandle, from: number, to: number): Promise<Reg
       const id = typeof msg.id === 'string' ? msg.id : null;
       if (id === null || id !== runId) {
         // The first line met for a run is its final record SO FAR; only its
-        // stop_reason says how the message ended. A trailing message is never
-        // taken as finished, whatever that value: a stale non-null stop_reason
-        // is written on per-block records too, and a later record can follow.
+        // stop_reason says how the message ended. Any trailing assistant
+        // message may still be extended by a later record of the same
+        // message.id, so it is always re-read from its first record.
         const stop = (msg as { stop_reason?: unknown }).stop_reason;
         if (phase === 'start') phase = 'tail';
         else if (phase === 'tail') phase = 'body';
