@@ -682,9 +682,11 @@ export function pluginIdOfPlaybook(id: string): string | null {
 // cannot tell a disabled plugin from an unavailable plugin host, an invalid
 // body, or a plugin whose whole manifest is invalid (a missing playbook file, a
 // bad role binding — enabled still, but dropped from contributors). The text
-// routes the reader to list_playbooks' errors for the first two, and to the
-// plugin's Settings → Plugins row for the manifest case, where list_playbooks
-// has nothing to show and re-enabling is refused.
+// routes the reader to list_playbooks' errors for an unavailable host (a
+// `plugins` entry) and an invalid body (an entry under the id). A disabled
+// plugin and an invalid manifest both show there only as absence; the text
+// names both, sending the manifest case to the plugin's Settings → Plugins row,
+// where its errors live and re-enabling is refused.
 export function missingPlaybookCause(id: string): string {
   const plugin = pluginIdOfPlaybook(id);
   if (plugin === null) return 'its definition was removed or renamed';
