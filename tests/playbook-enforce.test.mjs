@@ -1722,3 +1722,40 @@ test('forge: implement refuses a spawn whose provenance names no plan-verify wor
     assert.ok(dev.sessionId, `implement spawn refused once its need was satisfied: ${JSON.stringify(dev)}`);
   } finally { await t.close(); }
 });
+
+// ── the shared gate: REST reads the SAME projection MCP writes to ──────────
+//
+// `GET /api/instances`'s playbook/stage fields come from the one playbook gate
+// `createServer` builds and hands to both the MCP and REST routers (see
+// server.ts). A second, independently-folded gate on the REST side would never
+// see the MCP router's appends and this row would read stuck at `draft`
+// forever — that is the regression this test exists to catch.
+
+test('GET /api/instances carries the playbook binding the MCP gate writes, and it moves with approve_plan', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
+    assert.ok(w.sessionId, `spawn failed: ${JSON.stringify(w)}`);
+
+    const draftRow = await waitFor(async () => {
+      const { body } = await api(t.baseUrl, 'GET', '/api/instances');
+      const row = body.find(i => i.sessionId === w.sessionId);
+      return row && row.playbook != null ? row : false;
+    });
+    assert.deepEqual({ playbook: draftRow.playbook, stage: draftRow.stage },
+      { playbook: 'gatelab', stage: 'draft' });
+
+    const { body: rows } = await api(t.baseUrl, 'GET', '/api/instances');
+    const conductorRow = rows.find(i => i.sessionId === t.instances.get(t.conductorId).sessionId);
+    assert.deepEqual({ playbook: conductorRow.playbook, stage: conductorRow.stage },
+      { playbook: null, stage: null }, 'the conductor itself carries no binding');
+
+    await t.call('approve_plan', { sessionId: w.sessionId });
+    const buildRow = await waitFor(async () => {
+      const { body } = await api(t.baseUrl, 'GET', '/api/instances');
+      const row = body.find(i => i.sessionId === w.sessionId);
+      return row?.stage === 'build' ? row : false;
+    });
+    assert.equal(buildRow.playbook, 'gatelab');
+  } finally { await t.close(); }
+});

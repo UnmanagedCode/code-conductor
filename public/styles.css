@@ -1235,6 +1235,12 @@ body.lightbox-open { overflow: hidden; }
 .task-row.subagent-idle .task-marker { color: var(--muted); }
 .task-row.subagent-crashed .task-marker { color: var(--red); }
 .task-row.subagent-crashed .task-text { color: var(--red); opacity: .8; }
+.subagent-playbook {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, monospace; font-size: 11px;
+  color: var(--muted);
+}
 
 .block.task-completion {
   margin: 6px 0;

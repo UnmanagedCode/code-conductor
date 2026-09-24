@@ -6,6 +6,7 @@ import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
+import { createPlaybookGate } from './src/mcp/playbookGate.ts';
 import { InstanceManager, sweepSessionTmpDirs } from './src/instances.ts';
 import { sweepFuseSessions } from './src/systems/fuse/sweep.ts';
 import { attachWsHub } from './src/wsHub.ts';
@@ -101,8 +102,13 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
   const serverCtx: ServerCtx = {};
-  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }));
-  app.use('/mcp', buildMcpRouter({ instances, pluginHost }));
+  // ONE gate, shared by the MCP and REST routers: it holds the folded ledger
+  // projection and subscribes to the manager's status stream for
+  // retire/enforcement-toggle events, so a second instance would double-append
+  // those and read a projection the other router's writes never reach.
+  const playbookGate = createPlaybookGate({ instances });
+  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   app.use(express.static(path.join(__dirname, 'public')));

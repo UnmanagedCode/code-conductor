@@ -246,6 +246,19 @@ export function hasEverBeen(p: Projection, sessionId: string, stage: string): bo
   return !!p.bySession.get(sessionId)?.stageHistory.includes(stage);
 }
 
+// The one binding reader every surface that reports a worker's playbook/stage
+// goes through (MCP's conductorRowView/describeSession, REST's GET
+// /api/instances) — so they can never drift on what "untracked" means. Returns
+// null/null for an untracked worker, a null projection, or a non-string
+// sessionId — null (not absent) so a caller can tell "not in a playbook" from
+// "this build does not report it".
+export function playbookBinding(
+  p: Projection | null, sessionId: unknown,
+): { playbook: string | null; stage: string | null } {
+  const tracked = p && typeof sessionId === 'string' ? p.bySession.get(sessionId) : undefined;
+  return { playbook: tracked?.playbook ?? null, stage: tracked?.stage ?? null };
+}
+
 // ── the ledger itself ───────────────────────────────────────────────────────
 
 export interface PlaybookLedger {

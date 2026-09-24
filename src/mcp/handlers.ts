@@ -62,7 +62,7 @@ import {
   type ReconMessage,
 } from './messageReconstruction.ts';
 import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
-import { runMembers, type Projection } from '../playbookLedger.ts';
+import { runMembers, playbookBinding, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
 // The handle check describe_session enforces. Static import is safe here:
@@ -212,15 +212,10 @@ function conductorRowView(
   row: InstanceSummary & { awaitingWake: boolean },
   proj: Projection | null,
 ): Record<string, unknown> {
-  const tracked = proj && typeof row.sessionId === 'string'
-    ? proj.bySession.get(row.sessionId) : undefined;
   return {
     ...toConductorView(row),
     awaitingWake: row.awaitingWake,
-    // null (not absent) for an untracked worker, so a caller can tell "not in a
-    // playbook" from "this build does not report it".
-    playbook: tracked?.playbook ?? null,
-    stage: tracked?.stage ?? null,
+    ...playbookBinding(proj, row.sessionId),
   };
 }
 
@@ -835,13 +830,12 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
     const { rows } = await listSessionsForCwdWithCounts(hit.place, null, { includeArchived: true });
     const row = rows.find(r => r.sessionId === sessionId);
     if (row) {
-      const tracked = proj?.bySession.get(sessionId);
       return textResult(renderSession({
         sessionId,
         project: hit.project,
         worktree: hit.worktreeName ?? null,
         path: hit.cwd,
-        retired: { ...row, playbook: tracked?.playbook ?? null, stage: tracked?.stage ?? null },
+        retired: { ...row, ...playbookBinding(proj, sessionId) },
       }));
     }
     // Located but not listed (the transcript went away under us) — fall through

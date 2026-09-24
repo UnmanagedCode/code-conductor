@@ -125,6 +125,12 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     broadcastAll(JSON.stringify({ t: 'instances' }));
   });
 
+  // A worker's playbook binding just spawned or moved stage — same hint as a
+  // status flip, no `projects` companion since session lists don't change.
+  instances.on('playbook_changed', () => {
+    broadcastAll(JSON.stringify({ t: 'instances' }));
+  });
+
   // Rewind: server-side, the instance's ring buffer was just wiped and the
   // subprocess respawned against a truncated jsonl. Subscribers need to
   // drop their current conversation DOM before the replayed events from

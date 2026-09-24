@@ -41,7 +41,7 @@ import {
   type Move, type Playbook, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
 import {
-  createPlaybookLedger, ledgerFile, readEvents,
+  createPlaybookLedger, ledgerFile, readEvents, playbookBinding,
   type PlaybookLedger, type Projection, type LedgerEvent,
 } from '../playbookLedger.ts';
 import { isConductorInstance } from '../conduct.ts';
@@ -82,6 +82,12 @@ export interface PlaybookGate {
   // recorded without materialising the file.
   readProjection(): Promise<Projection>;
   readHistory(): Promise<LedgerEvent[]>;
+  // The one binding lookup for a surface that has no other reason to import
+  // playbookLedger.ts (src/routes.ts's GET /api/instances — see
+  // tests/playbook-ledger-chokepoint.test.mjs, which refuses that import
+  // directly). null/null for an untracked worker; never throws — same
+  // read-only-on-a-missing-ledger contract as readProjection.
+  readBinding(sessionId: unknown): Promise<{ playbook: string | null; stage: string | null }>;
   // THE liveness oracle this gate's decide() calls use — exposed so a read
   // surface (playbook_state, describe_playbook's dry-run) answers from the same
   // source as enforcement, rather than re-deriving its own.
@@ -155,9 +161,17 @@ export function createPlaybookGate(
     // earlier append has already folded into. Captured so the warn below can
     // still name the kind.
     let resolved: PendingEvent | null = null;
-    appendChain = appendChain.then(() => {
+    appendChain = appendChain.then(async () => {
       resolved = typeof ev === 'function' ? ev() : ev;
-      return ledger.append(resolved);
+      await ledger.append(resolved);
+      // AFTER the write has folded (ledger.append folds synchronously before
+      // resolving) — a refresh this hint triggers can never read the stage the
+      // append just replaced. Only spawn/transition move a worker's
+      // playbook/stage; refusal/retire/resume/enforcement fold to no binding
+      // change, so emitting for them would be noise with nothing to refresh.
+      if (resolved.kind === 'spawn' || resolved.kind === 'transition') {
+        instances?.emit('playbook_changed', { sessionId: resolved.sessionId });
+      }
     }).catch(e => {
       // The ledger is the audit trail, not the authority for THIS call's
       // outcome. A failed append must never turn a successful tool call into an
@@ -409,6 +423,10 @@ export function createPlaybookGate(
     return ledger.projection();
   }
 
+  async function readBinding(sessionId: unknown): Promise<{ playbook: string | null; stage: string | null }> {
+    return playbookBinding(await readProjection(), sessionId);
+  }
+
   // Raw events, for the backtrack surface. Re-read per call rather than kept
   // alongside the projection: history is asked for by a human-paced read tool,
   // and holding every event in memory forever to serve it would be a leak.
@@ -417,7 +435,7 @@ export function createPlaybookGate(
     return readEvents(ledger.file());
   }
 
-  return { check, readProjection, readHistory, isLive, ledger: () => ledger };
+  return { check, readProjection, readHistory, readBinding, isLive, ledger: () => ledger };
 }
 
 // The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the

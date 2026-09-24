@@ -64,6 +64,7 @@ function stubManager({ live = [], known = [] } = {}) {
   const caller = { project: CONDUCT_PROJECT_NAME, playbookEnforcement: 'enforce' };
   return {
     on() {}, // the gate subscribes to 'status'; nothing in these tests emits it
+    emit() {}, // the gate emits 'playbook_changed' after a spawn/transition fold
     liveForSession(sessionId) { return sessionId === CONDUCTOR_ID ? caller : null; },
     anyForSession(sessionId) { return knownSet.has(sessionId) ? { sessionId } : null; },
     isSessionLive(sessionId) { return liveSet.has(sessionId); },

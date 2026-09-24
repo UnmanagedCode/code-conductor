@@ -42,6 +42,7 @@ function stubManager() {
   const caller = { project: CONDUCT_PROJECT_NAME, playbookEnforcement: 'enforce' };
   return {
     on() {},
+    emit() {},
     liveForSession(sessionId) { return sessionId === CONDUCTOR_ID ? caller : null; },
     anyForSession() { return null; },
     isSessionLive() { return false; },
@@ -113,6 +114,102 @@ test('the same `spawn` move whose RESULT names an UNBOUND session still writes a
     assert.deepEqual(
       { playbook: st.playbook, stage: st.stage, history: st.stageHistory, project: st.project },
       { playbook: 'gatelab', stage: 'loose', history: ['loose'], project: 'demo' });
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+// ── playbook_changed: emitted after the fold, only for spawn/transition ────
+//
+// `emit` records, per call, whether the projection ALREADY holds the new stage
+// at the moment of the emit — the claim that matters is ordering (fold before
+// notify), not merely that an event fires.
+
+function stubManagerRecording({ live = [] } = {}) {
+  const caller = { project: CONDUCT_PROJECT_NAME, playbookEnforcement: 'enforce' };
+  const liveSet = new Set(live);
+  const emitted = [];
+  const mgr = {
+    gate: null, // set by the caller once the gate built over this manager exists
+    emitted,
+    on() {},
+    liveForSession(sessionId) { return sessionId === CONDUCTOR_ID ? caller : null; },
+    anyForSession() { return null; },
+    isSessionLive(sessionId) { return liveSet.has(sessionId); },
+    emit(event, arg) {
+      emitted.push({
+        event,
+        arg,
+        stageAtEmit: event === 'playbook_changed'
+          ? mgr.gate?.ledger().projection().bySession.get(arg.sessionId)?.stage
+          : undefined,
+      });
+    },
+  };
+  return mgr;
+}
+
+async function tmpLedgerRecording(events, { live } = {}) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbcommit-'));
+  const file = path.join(dir, 'playbook-ledger.jsonl');
+  await fs.writeFile(file, events.map((e, i) =>
+    JSON.stringify({ seq: i + 1, ts: `2026-09-06T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');
+  const instances = stubManagerRecording({ live });
+  const gate = createPlaybookGate({ instances, ledger: createPlaybookLedger({ file: () => file }) });
+  instances.gate = gate;
+  return { dir, file, gate, emitted: instances.emitted };
+}
+
+test('a committed spawn emits exactly one playbook_changed, AFTER the projection already holds the new stage', async () => {
+  const { dir, gate, emitted } = await tmpLedgerRecording(BOUND);
+  try {
+    const outcome = await spawnDecision(gate);
+    await outcome.commit({ sessionId: 'w2', project: 'demo' });
+
+    const changes = emitted.filter(e => e.event === 'playbook_changed');
+    assert.equal(changes.length, 1, 'exactly one playbook_changed for the spawn');
+    assert.deepEqual(changes[0].arg, { sessionId: 'w2' });
+    assert.equal(changes[0].stageAtEmit, 'loose',
+      'the emit follows the fold — the new binding is already readable when it fires');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a committed transition emits exactly one playbook_changed, with the new stage already folded', async () => {
+  const { dir, gate, emitted } = await tmpLedgerRecording(
+    [{ kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' }],
+    { live: ['w1'] },
+  );
+  try {
+    const outcome = await gate.check({
+      toolName: 'approve_plan', args: { sessionId: 'w1' }, callerId: CONDUCTOR_ID,
+    });
+    assert.ok(!('refusal' in outcome),
+      `premise: approve_plan must be legal from draft; got ${JSON.stringify(outcome.refusal)}`);
+    await outcome.commit({});
+
+    const changes = emitted.filter(e => e.event === 'playbook_changed');
+    assert.equal(changes.length, 1, 'exactly one playbook_changed for the transition');
+    assert.deepEqual(changes[0].arg, { sessionId: 'w1' });
+    assert.equal(changes[0].stageAtEmit, 'build',
+      'the emit follows the fold — the destination stage is already readable when it fires');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('the spawn->resume backstop and a refusal both emit no playbook_changed', async () => {
+  const { dir, gate, emitted } = await tmpLedgerRecording(BOUND);
+  try {
+    // Backstop: a `spawn` move whose RESULT names an already-bound session is
+    // ledgered as a `resume`, not a `spawn` — no binding actually changed.
+    const outcome = await spawnDecision(gate);
+    await outcome.commit({ sessionId: 'w1', project: 'demo' });
+    assert.equal(emitted.filter(e => e.event === 'playbook_changed').length, 0,
+      'a resume must not emit — nothing about the binding moved');
+
+    // A refusal: PLAYBOOK_UNKNOWN, recorded but nothing folds.
+    const refused = await gate.check({
+      toolName: 'spawn_instance', args: { project: 'demo', mode: 'plan' }, callerId: CONDUCTOR_ID,
+    });
+    assert.ok('refusal' in refused, `premise: this spawn must be refused; got ${JSON.stringify(refused)}`);
+    assert.equal(emitted.filter(e => e.event === 'playbook_changed').length, 0,
+      'a refusal must not emit either — the ledger row it writes is a `refusal`, not a binding change');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
