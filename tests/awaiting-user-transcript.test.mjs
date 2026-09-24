@@ -122,10 +122,11 @@ test('chainEndingAt appends the newest id once, wherever it sat', () => {
   assert.deepEqual(chainEndingAt([], 'c'), ['c']);
 });
 
-test('memo: an unchanged stat reads nothing; an append reads only the new bytes; a rewrite rescans', async (t) => {
+test('memo: an unchanged stat reads nothing; an append reads only the new bytes plus the trailing message; a rewrite rescans', async (t) => {
   const p = place('memo'); const s = sid();
   const file = sessionFilePath(p, s);
-  await seedSessionJsonl(p, s, [user('go ' + 'z'.repeat(20000)), asst('m1', [text('Done.')], 'end_turn')]);
+  const trailing = asst('m1', [text('Done.')], 'end_turn');
+  await seedSessionJsonl(p, s, [user('go ' + 'z'.repeat(20000)), trailing]);
   assert.equal(await deriveAwaitingUser(p, [s]), null);
 
   await t.test('unchanged stat → hit, zero bytes read', async () => {
@@ -134,12 +135,13 @@ test('memo: an unchanged stat reads nothing; an append reads only the new bytes;
     assert.equal(io.bytes, 0);
   });
 
-  await t.test('appended lines → only the appended bytes are read, and the composed result is right', async () => {
+  await t.test('appended lines → only the appended bytes plus the trailing message are read, and the composed result is right', async () => {
     const appended = jsonl([asst('m2', [text('Shall I tag it?')], 'end_turn')]);
     await fs.appendFile(file, appended);
     const io = countingIO();
     assert.deepEqual(await deriveAwaitingUser(p, [s], { io }), Q_TEXT);
-    assert.equal(io.bytes, Buffer.byteLength(appended));
+    // The trailing assistant message (m1) is re-read: a later record could have extended it.
+    assert.equal(io.bytes, Buffer.byteLength(jsonl([trailing])) + Buffer.byteLength(appended));
   });
 
   await t.test('a message still being written is re-read once its final record lands', async () => {
@@ -163,6 +165,33 @@ test('memo: an unchanged stat reads nothing; an append reads only the new bytes;
   });
 });
 
+// INVARIANT: an incremental read equals a full scan of the same bytes, whatever
+// stop_reason the newest record of the message still being written carries.
+test('memo: a trailing message extended after an intervening read gives the full-scan answer, both directions', async (t) => {
+  const fullScan = async (bytes) => {
+    const p = place('fresh'); const s = sid();
+    await seedSessionJsonl(p, s, []);
+    await fs.writeFile(sessionFilePath(p, s), bytes);
+    return deriveAwaitingUser(p, [s]);
+  };
+  for (const [label, first, last, want] of [
+    ['a stale tool_use record, then the end_turn record → the ask appears', 'tool_use', 'end_turn', Q_TEXT],
+    ['an earlier end_turn record, then a final tool_use record → no false ask', 'end_turn', 'tool_use', null],
+  ]) {
+    await t.test(label, async () => {
+      const p = place('extend'); const s = sid();
+      const file = sessionFilePath(p, s);
+      await seedSessionJsonl(p, s, [user('go'), asst('m1', [text('Want me to push?')], first)]);
+      await deriveAwaitingUser(p, [s]); // the intervening read that memoises the prefix
+      const finalBlock = last === 'end_turn' ? { type: 'thinking', thinking: 't' } : { type: 'tool_use', id: 'b', name: 'Bash', input: {} };
+      await fs.appendFile(file, jsonl([asst('m1', [finalBlock], last)]));
+      const incremental = await deriveAwaitingUser(p, [s]);
+      assert.deepEqual(incremental, await fullScan(await fs.readFile(file)), 'incremental == full scan');
+      assert.deepEqual(incremental, want);
+    });
+  }
+});
+
 test('SessionRow: list reads leave archived and conducted rows null; deriveAwaitingFor derives the named row', async () => {
   const p = place('rows');
   const [live, archived, conducted] = [sid(), sid(), sid()];
@@ -183,4 +212,18 @@ test('SessionRow: list reads leave archived and conducted rows null; deriveAwait
   const described = await rowsOf({ deriveAwaitingFor: archived });
   assert.equal(described.get(archived).awaitingUser, 'question');
   assert.equal(described.get(archived).awaitingUserSource, 'tool');
+});
+
+// INVARIANT: awaitingUser is null on a conducted session on every surface —
+// describe_session's deriveAwaitingFor exception included.
+test('deriveAwaitingFor on an archived CONDUCTED row with a pending tool ask reports null', async () => {
+  const p = place('conducted-archived');
+  const s = sid();
+  await seedSessionJsonl(p, s, [user('go'), asst('m1', [askTool('tq')], 'tool_use')]);
+  await markArchived(s);
+  await markConducted(s);
+  const row = (await listSessionsForCwdWithCounts(p, null, { includeArchived: true, deriveAwaitingFor: s })).rows
+    .find(r => r.sessionId === s);
+  assert.equal(row.awaitingUser, null);
+  assert.equal(row.awaitingUserSource, null);
 });

@@ -17,8 +17,9 @@
 //
 // Memo: process-lifetime, keyed by absolute path, not persisted. An unchanged
 // stat is a hit; the same inode grown is scanned only from where the last scan
-// stopped (re-reading at most an in-progress trailing message); anything else
-// — shrunk, new inode — is a full rescan.
+// stopped (re-reading the trailing assistant message, which a later record may
+// still extend); anything else — shrunk, new inode — is a full rescan. So an
+// incremental read always equals a full scan of the same bytes.
 
 import { promises as fs } from 'node:fs';
 import { sessionFilePath, type TranscriptPlacement } from './projects.ts';
@@ -44,8 +45,8 @@ const defaultIO: TranscriptIO = { stat: (p) => fs.stat(p), open: (p) => fs.open(
 
 interface MemoEntry {
   dev: number; ino: number; ctimeMs: number; mtimeMs: number; size: number;
-  // Offset the next incremental scan starts from: the end of the last complete
-  // line, or the start of a trailing message still being written.
+  // Offset the next incremental scan starts from: the start of the trailing
+  // assistant message, or the end of the last complete line when there is none.
   scannedTo: number;
   base: AskSummary; // summary of [0, scannedTo)
   full: AskSummary; // summary of every complete line
@@ -125,8 +126,8 @@ async function* linesBackward(fh: ReadHandle, from: number, to: number): AsyncGe
 }
 
 interface RegionScan {
-  // Summary of a trailing message whose final record carries no stop_reason yet
-  // (still being written) — re-read by the next incremental scan.
+  // Summary of the trailing assistant message — re-read by the next incremental
+  // scan, since a later record of the same message.id may still extend it.
   tail: AskSummary;
   body: AskSummary; // summary of [from, bodyEnd)
   bodyEnd: number;
@@ -139,7 +140,7 @@ async function scanRegion(fh: ReadHandle, from: number, to: number): Promise<Reg
   let completeEnd: number | null = null;
   let tailStart: number | null = null;
   // 'start' until the newest conversational line is met; 'tail' while inside a
-  // trailing message with no stop_reason yet; 'body' for everything older.
+  // trailing assistant message; 'body' for everything older.
   let phase: 'start' | 'tail' | 'body' = 'start';
   // The assistant run (one message) the scan is inside; its end-of-turn text is
   // still wanted until a text block is met.
@@ -164,10 +165,12 @@ async function scanRegion(fh: ReadHandle, from: number, to: number): Promise<Reg
       const msg = obj.message ?? {};
       const id = typeof msg.id === 'string' ? msg.id : null;
       if (id === null || id !== runId) {
-        // The first line met for a run is its FINAL record; only its
-        // stop_reason says how the message ended.
+        // The first line met for a run is its final record SO FAR; only its
+        // stop_reason says how the message ended. A trailing message is never
+        // taken as finished, whatever that value: a stale non-null stop_reason
+        // is written on per-block records too, and a later record can follow.
         const stop = (msg as { stop_reason?: unknown }).stop_reason;
-        if (phase === 'start') phase = stop == null ? 'tail' : 'body';
+        if (phase === 'start') phase = 'tail';
         else if (phase === 'tail') phase = 'body';
         runId = id;
         runWantsText = stop === 'end_turn';

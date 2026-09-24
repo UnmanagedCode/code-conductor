@@ -1849,10 +1849,11 @@ export async function listSessionsForCwdWithCounts(
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     const rowId = projectRowId(sid, lineage);
-    // Cost bound: archived rows (every exited conductor, being temp) and
-    // conducted ones (which never carry the flag) are not derived in a list read.
+    // Cost bound: archived rows (every exited conductor, being temp) are not
+    // derived in a list read unless `deriveAwaitingFor` names the row. A
+    // conducted row never is — it never carries the flag, on any surface.
     let ask: Awaited<ReturnType<typeof deriveAwaitingUser>> = null;
-    if ((!conducted.has(sid) && !isArchived) || rowId === deriveAwaitingFor) {
+    if (!conducted.has(sid) && (!isArchived || rowId === deriveAwaitingFor)) {
       const lineageRow = rowId === sid ? null : lineage.byPublic.get(rowId);
       const chain = lineageRow ? chainEndingAt(liveSegmentIdsOf(lineageRow), sid) : [sid];
       try { ask = await deriveAwaitingUser(place, chain); }
