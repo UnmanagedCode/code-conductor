@@ -563,16 +563,20 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
 // pin an old model.
 describe('a UI-shaped spawn (row named, no model) lands on the CURRENT binding', () => {
   test('a tier spawn follows a rebind made after the row was last read', async () => {
-    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    // Bound away from `fast`'s OWN default (claude-haiku-4-5): a resolver that
+    // fell back to DEFAULT_TIER_BACKEND instead of reading the stored binding
+    // would still pass the haiku case, so this has to differ from the tier's
+    // default to actually discriminate.
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-opus-4-8' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     let r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', tier: 'fast' });
     assert.equal(r.status, 201);
-    assert.equal(instances.get(r.body.id).model, 'claude-haiku-4-5');
+    assert.equal(instances.get(r.body.id).model, 'claude-opus-4-8');
 
-    await setTierBackend('fast', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-sonnet-5' });
     r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', tier: 'fast' });
     assert.equal(r.status, 201);
-    assert.equal(instances.get(r.body.id).model, 'claude-opus-4-8', 'the SECOND spawn sees the rebind, not a cached pair');
+    assert.equal(instances.get(r.body.id).model, 'claude-sonnet-5', 'the SECOND spawn sees the rebind, not a cached pair');
   });
 
   test('a role spawn follows a rebind made after the row was last read', async () => {
@@ -583,7 +587,6 @@ describe('a UI-shaped spawn (row named, no model) lands on the CURRENT binding',
     assert.equal(r.status, 201);
     assert.equal(instances.get(r.body.id).model, 'claude-haiku-4-5');
 
-    await setRoleBinding('conductor', { backend: 'claude', model: 'claude-haiku-4-5' });
     // Rebind to a wholly concrete binding this time (not a tier reference), so
     // the second half of resolveRoleBackend's branch is exercised too.
     await setRoleBinding('conductor', { backend: 'claude', model: 'claude-opus-4-8' });
@@ -614,6 +617,19 @@ describe('a UI-shaped spawn (row named, no model) lands on the CURRENT binding',
     assert.match(r.body.error, /the row this spawn resolves to is bound to backend 'ollama'/);
     const after = (await api(baseUrl, 'GET', '/api/instances')).body.length;
     assert.equal(after, before, 'the refused request must spawn nothing');
+  });
+
+  // Pins `takeSpawnRow`'s precedence — `role` checked before `tier`
+  // (src/routes.ts) — against two rows bound to visibly different models, so
+  // a swap in that order would fail this rather than pass it by coincidence.
+  test('naming both a resolvable role and a tier resolves the ROLE\'s row', async () => {
+    await setRoleBinding('reviewer', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'p', mode: 'bypassPermissions', role: 'reviewer', tier: 'fast' });
+    assert.equal(r.status, 201);
+    assert.equal(instances.get(r.body.id).model, 'claude-opus-4-8', 'the role\'s row wins, not the tier\'s');
   });
 });
 

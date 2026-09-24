@@ -32,19 +32,3 @@ test('the Conduct POST is exactly {project, role, temp, mode} — no model, no b
   assert.equal(spawns.length, 1);
   assert.deepEqual(spawns[0], { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' });
 });
-
-test('Conduct never short-circuits client-side, even when the payload has no roleBackend for it', async () => {
-  // The client no longer reads roleBackend at all (the role cache was
-  // deleted), so a payload that omits/mismatches it must not stop the spawn —
-  // and must not trigger the alert the old "no model configured" branch used
-  // to show. That branch is gone; this pins its absence.
-  const alerts = [];
-  const t = await setup({ fast: 'low', balanced: 'medium', powerful: 'high', frontier: 'max' });
-  globalThis.alert = (msg) => alerts.push(msg);
-
-  t.dom.conductBtn.dispatchEvent(new t.window.Event('click'));
-  await tick(20);
-
-  assert.equal(t.spawns.length, 1, 'Conduct must spawn regardless of any role-binding cache state');
-  assert.deepEqual(alerts, [], 'no alert — the silent server-side fallback is the accepted policy');
-});

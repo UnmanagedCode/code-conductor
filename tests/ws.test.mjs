@@ -559,7 +559,11 @@ test('model switch via WS resolves the tier\'s CURRENT binding and acks', async 
   const { baseUrl, wsUrl, instances, close } = await setup();
   let c = null;
   try {
-    await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-5' });
+    // Bound away from `balanced`'s OWN default (claude-sonnet-5): a resolver
+    // that fell back to DEFAULT_TIER_BACKEND instead of reading the stored
+    // binding would still pass the sonnet-5 case, so this has to differ from
+    // the tier's default to actually discriminate.
+    await setTierBackend('balanced', { backend: 'claude', model: 'claude-haiku-4-5' });
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
@@ -570,9 +574,8 @@ test('model switch via WS resolves the tier\'s CURRENT binding and acks', async 
     c.send({ t: 'model', id, tier: 'balanced', reqId: 'm1' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true);
-    // Sonnet 5 has no launch tag — it is natively 1M.
-    assert.equal(instances.get(id).model, 'claude-sonnet-5');
-    assert.equal(instances.get(id).contextWindowTokens, 1_000_000);
+    assert.equal(instances.get(id).model, 'claude-haiku-4-5');
+    assert.equal(instances.get(id).contextWindowTokens, 200_000);
 
     // Rebind, then switch again: the SECOND switch must see the NEW binding,
     // not a value cached from the first.

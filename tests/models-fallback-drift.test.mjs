@@ -2,8 +2,8 @@
 //
 // models.js keeps first-paint copies of catalog data it cannot have yet: the
 // boot fetch of /api/settings/models has not resolved on the first render, so
-// the tier pickers, role bindings, backend labels and effort label would be
-// blank without them. Every one of those copies mirrors a value owned by
+// the tier pickers, backend labels and effort label would be blank without
+// them. Every one of those copies mirrors a value owned by
 // src/modelVersions.ts or src/effortLevels.ts, and a mirror that silently
 // drifts shows the user a stale default until the fetch lands — or, for
 // familyOf, groups the Settings picker wrongly for good.
