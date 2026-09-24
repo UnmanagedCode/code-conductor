@@ -56,9 +56,10 @@ export function buildRenewSeed({ summary, followUp = null, stateBlock = null } =
 // Parse a user-echo text into its renew-seed parts, or null when it isn't
 // one. The mechanical state block is always the LAST part buildRenewSeed
 // appends, so its header is found via lastIndexOf and cut off the tail
-// first; the follow-up fence (only ever placed immediately before a real
-// state block — see the followUp comment below) is then found the same way
-// in what remains, leaving the summary as whatever is left.
+// first; the follow-up fence — only searched for when a real state block was
+// found, see the followUp comment below — is then found the same way (last
+// occurrence, so an earlier quote in the summary loses to a real one after
+// it) in what remains, leaving the summary as whatever is left.
 export function parseRenewSeed(text) {
   const prefix = RENEW_SEED_PREAMBLE + '\n\n' + HANDOFF_FENCE + '\n';
   if (typeof text !== 'string' || !text.startsWith(prefix)) return null;
@@ -73,14 +74,18 @@ export function parseRenewSeed(text) {
     rest = rest.slice(0, i);
   }
 
-  // A followUp is recognised only where buildRenewSeed could actually have
-  // placed one: immediately before a real mechanical-state block. Without a
-  // state block to anchor against, a real followUp and a summary that merely
-  // QUOTES the follow-up fence text are byte-identical — buildRenewSeed
-  // trims and joins both the same way — so there is no way to tell them
-  // apart from the text alone. That shape doesn't occur in production
-  // (buildStateBlock is always called before buildRenewSeed), so it's safe
-  // to never split there; a quoted fence stays part of the summary.
+  // A followUp is searched for only when a real state block was found. This
+  // guards exactly one shape, the state-less one: without a state block,
+  // ANY occurrence of the fence in the summary — even mid-summary — is
+  // indistinguishable from a real one, since buildRenewSeed's output is
+  // byte-identical either way (it trims and joins both the same way), and
+  // that shape never occurs in production (buildStateBlock is always called
+  // before buildRenewSeed). With a state block present the same ambiguity
+  // still exists for a lone occurrence — this only takes the LAST one, it
+  // performs no adjacency check — so a mid-summary quote there is still
+  // split off as if real; that residual case is accepted, not fixable from
+  // the text alone, since every position a match could occur at is equally
+  // consistent with being what buildRenewSeed actually built.
   let followUp = null;
   if (i >= 0) {
     const followUpMarker = '\n\n' + FOLLOWUP_FENCE + '\n';

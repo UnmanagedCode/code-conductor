@@ -58,14 +58,16 @@ test('parseRenewSeed returns null for an ordinary prompt, a wake stub and a forw
   const fakeQuote = '--- HANDOFF SUMMARY ---\nsomeone pasted this fence without the preamble';
   assert.equal(parseRenewSeed(fakeQuote), null, 'fence text with no leading preamble');
 
-  // A forward frame (send_prompt({forward})) prepends a header before the
-  // forwarded worker's own recent output, so a whole renew seed embedded
-  // inside it — as the forwarded worker's own reseed turn — sits at a
-  // non-zero index, never at offset 0 the way a real echo's text does.
-  const innerSeed = buildRenewSeed({ summary: 'the forwarded worker\'s own handoff summary' });
+  // Text carrying the seed prefix at a non-zero index — e.g. inside a
+  // send_prompt({forward}) frame's header-then-body shape — is never
+  // detected, since parseRenewSeed requires the prefix at offset 0. The
+  // `--- message 1/1 ---` line below is illustrative framing only:
+  // send_prompt({forward}) relays assistant messages, so this exact payload
+  // (a user-turn seed embedded inside it) cannot occur for real.
+  const innerSeed = buildRenewSeed({ summary: 'a handoff summary embedded mid-text' });
   const forwardFrame = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---\n'
     + '--- message 1/1 ---\n' + innerSeed + '\n--- END FORWARDED WORKER OUTPUT ---\n\nplease review this';
-  assert.equal(parseRenewSeed(forwardFrame), null, 'forward frame carrying an embedded seed at a non-zero index');
+  assert.equal(parseRenewSeed(forwardFrame), null, 'seed prefix at a non-zero index is not detected');
 
   assert.equal(parseRenewSeed(null), null, 'non-string input');
   assert.equal(parseRenewSeed(undefined), null, 'undefined input');
@@ -88,14 +90,17 @@ test('parseRenewSeed splits on the last mechanical-state header so a summary quo
   assert.equal(parsed.state, stateContentOf(stateBlock), 'the real (last) state block was split off correctly');
 });
 
-// A followUp is recognised only immediately before a real state block — never
+// A followUp is searched for only when a real state block was found — never
 // in a state-less seed, since there a real followUp and a summary that merely
 // quotes the fence text are byte-identical (buildRenewSeed trims and joins
 // both the same way), and a state-less seed with a real followUp does not
 // occur in production (buildStateBlock is always built before buildRenewSeed
-// is called). See public/renewSeed.js's parseRenewSeed comment for the with-
-// state case, which remains ambiguous by the same argument and is left
-// unresolved deliberately — see this test's title for the chosen tradeoff.
+// is called). This is the one shape that guard actually fixes: with a state
+// block present, a lone mid-summary quote is still indistinguishable from a
+// real followUp and still gets split off — every position a match could
+// occur at is equally consistent with buildRenewSeed's own output, so no
+// text-only check can tell them apart. That residual case is accepted, not
+// pinned by a test — see public/renewSeed.js's parseRenewSeed comment.
 test('parseRenewSeed never splits a follow-up out of a state-less seed, even when the summary quotes the fence verbatim', () => {
   const summaryQuotingFollowUp =
     'Notes: quoting the follow-up fence text below because that is what the conductor asked for:\n\n'

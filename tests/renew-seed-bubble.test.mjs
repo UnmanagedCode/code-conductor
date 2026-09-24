@@ -230,10 +230,13 @@ test('ordinary prompts and forward-framed prompts still render as plain user bub
   assert.ok(plainWrap.querySelector('.user-text'), 'plain prompt still gets a user-text body');
   assert.ok(!plainWrap.classList.contains('renew-seed'), 'wrap carries no renew-seed class');
 
-  // A forward frame embeds another worker's recent output — including,
-  // potentially, a renew seed it produced itself — after a header, so the
-  // embedded seed sits at a non-zero index and must not be detected.
-  const innerSeed = buildRenewSeed({ summary: 'the forwarded worker\'s own handoff summary' });
+  // Text carrying the seed prefix at a non-zero index — e.g. inside a
+  // send_prompt({forward}) frame's header-then-body shape — must not be
+  // detected, since parseRenewSeed requires the prefix at offset 0. The
+  // `--- message 1/1 ---` line below is illustrative framing only:
+  // send_prompt({forward}) relays assistant messages, so this exact payload
+  // (a user-turn seed embedded inside it) cannot occur for real.
+  const innerSeed = buildRenewSeed({ summary: 'a handoff summary embedded mid-text' });
   const forwardFrame = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---\n'
     + '--- message 1/1 ---\n' + innerSeed + '\n--- END FORWARDED WORKER OUTPUT ---\n\nplease review this';
   conv.apply({ kind: 'user_echo', text: forwardFrame, userIndex: 1 });
