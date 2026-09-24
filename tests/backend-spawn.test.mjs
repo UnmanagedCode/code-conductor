@@ -555,6 +555,68 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
   });
 });
 
+// Card 2026-0486 — the shape the WEB UI actually sends: `POST /api/instances`
+// with `tier`/`role` and NO `model`/`backend` key at all (the client no longer
+// resolves either). A spawn like this must land on whatever the row is bound
+// to RIGHT NOW, not a binding cached from an earlier page load — so a stale
+// client (another tab, another device, a Settings edit made elsewhere) can't
+// pin an old model.
+describe('a UI-shaped spawn (row named, no model) lands on the CURRENT binding', () => {
+  test('a tier spawn follows a rebind made after the row was last read', async () => {
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    let r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', tier: 'fast' });
+    assert.equal(r.status, 201);
+    assert.equal(instances.get(r.body.id).model, 'claude-haiku-4-5');
+
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-opus-4-8' });
+    r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', tier: 'fast' });
+    assert.equal(r.status, 201);
+    assert.equal(instances.get(r.body.id).model, 'claude-opus-4-8', 'the SECOND spawn sees the rebind, not a cached pair');
+  });
+
+  test('a role spawn follows a rebind made after the row was last read', async () => {
+    await setRoleBinding('conductor', { kind: 'tier', tier: 'fast' });
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    let r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', role: 'conductor' });
+    assert.equal(r.status, 201);
+    assert.equal(instances.get(r.body.id).model, 'claude-haiku-4-5');
+
+    await setRoleBinding('conductor', { backend: 'claude', model: 'claude-haiku-4-5' });
+    // Rebind to a wholly concrete binding this time (not a tier reference), so
+    // the second half of resolveRoleBackend's branch is exercised too.
+    await setRoleBinding('conductor', { backend: 'claude', model: 'claude-opus-4-8' });
+    r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', role: 'conductor' });
+    assert.equal(r.status, 201);
+    assert.equal(instances.get(r.body.id).model, 'claude-opus-4-8', 'the concrete rebind wins, not the old tier-ref binding');
+  });
+
+  test('naming neither model nor backend for a role bound to a substitution backend spawns there', async () => {
+    await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 200_000 });
+    await setRoleBinding('reviewer', { backend: 'ollama', model: 'gemma4:cloud' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', role: 'reviewer' });
+    assert.equal(r.status, 201);
+    const inst = instances.get(r.body.id);
+    assert.equal(inst.backend, 'ollama');
+    assert.equal(inst.model, 'gemma4:cloud');
+  });
+
+  test('naming `backend:"claude"` alongside a role bound to a substitution backend is refused — the UI must never send this', async () => {
+    await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 200_000 });
+    await setRoleBinding('reviewer', { backend: 'ollama', model: 'gemma4:cloud' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const before = (await api(baseUrl, 'GET', '/api/instances')).body.length;
+    const r = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'p', mode: 'bypassPermissions', role: 'reviewer', backend: 'claude' });
+    assert.equal(r.status, 422);
+    assert.match(r.body.error, /the row this spawn resolves to is bound to backend 'ollama'/);
+    const after = (await api(baseUrl, 'GET', '/api/instances')).body.length;
+    assert.equal(after, before, 'the refused request must spawn nothing');
+  });
+});
+
 describe('setModel live-switch gate', () => {
   test('blocks changing model on a session running on a substitution backend', async () => {
     const { inst } = await spawnOnBackend();

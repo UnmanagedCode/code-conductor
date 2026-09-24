@@ -64,7 +64,7 @@ test('picking an explicit level sends it as the override', async () => {
   await closeWithSpawn(window, dom);
 
   assert.equal(spawns[0].effort, 'xhigh');
-  assert.equal(spawns[0].tier, 'powerful', 'the tier still rides along (it also picks the model)');
+  assert.equal(spawns[0].tier, 'powerful', 'the tier still rides along — the server resolves its model from it');
 });
 
 test('the Conduct button sends role:conductor and no effort', async () => {

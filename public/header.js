@@ -46,7 +46,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getEffortLevels, CLAUDE_BACKEND } from './models.js';
+import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getEffortLevels, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted, muteSession } from './notifications.js';
 
 // The reserved project every conductor session lives in — mirrors
@@ -253,12 +253,16 @@ export function installHeader({
 
   // "Change model" popover: a tier picker anchored off the ⋮ trigger,
   // reusing the exact catalog + markup the spawn dialog uses (getTierList,
-  // getActiveTierEnabled, resolveSpawnModel, .quick-spawn-models/.qs-model)
-  // so switching a live session's model stays visually consistent with
-  // spawning one. Selecting a tier sends a live control_request over WS
-  // (subtype:set_model, via Instance.setModel) — no optimistic mutation of
-  // inst.model here; the status broadcast (wsRouter.js) is what actually
-  // flips it once the CLI acks.
+  // getActiveTierEnabled, .quick-spawn-models/.qs-model) so switching a live
+  // session's model stays visually consistent with spawning one. Selecting a
+  // tier sends only the TIER NAME over WS (`t:'model'`); the server resolves
+  // that tier's CURRENT binding and issues the control_request (subtype:
+  // set_model, via Instance.setModel) — no optimistic mutation of inst.model
+  // here; the status broadcast (wsRouter.js) is what actually flips it once
+  // the CLI acks. getActiveTierBackend/backendIdOf below are read for DISPLAY
+  // only (the blocked/disabled check and the .qs-selected highlight) — the
+  // cache they read can be stale, but the server refuses (`BACKEND_LOCKED`)
+  // rather than switching to whatever it's stale about.
   function closePicker() {
     if (!openPicker) return;
     const { node, anchor, ctl } = openPicker;
@@ -333,9 +337,8 @@ export function installHeader({
       btn.textContent = getTierLabel(tier);
       if (!blocked) {
         btn.addEventListener('click', async () => {
-          const { model, backend } = resolveSpawnModel(tier);
           try {
-            await send('model', { id: inst.id, model, backend }, { ack: true });
+            await send('model', { id: inst.id, tier }, { ack: true });
             closePicker();
             closeOverflow();
           } catch (e) {

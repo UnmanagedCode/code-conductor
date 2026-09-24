@@ -30,6 +30,7 @@ import { UsageTracker, RateLimitTracker } from '../public/usage.js';
 import { installWsRouter } from '../public/wsRouter.js';
 import { bus } from '../public/ws.js';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { setTierBackend } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -319,12 +320,17 @@ test('W1: a switch reaches a live client and blanks a later joiner\'s snapshot s
   const { id, inst } = await spawnTagged('w1');
   let a = null, b = null;
   try {
+    // The frame names a TIER; bind it to M2 first so the server resolves to
+    // the model this test needs (card 2026-0486 — the client never sends a
+    // resolved model/backend pair anymore).
+    await setTierBackend('fast', { backend: 'claude', model: M2 });
+
     a = await wsClient(wsUrl);
     a.send({ t: 'subscribe', id });
     const snapA = await a.wait(m => m.t === 'snapshot' && m.id === id);
     assert.deepEqual(snapA.lastContextUsage, OLD_USAGE, 'premise: the field carries the reading');
 
-    a.send({ t: 'model', id, model: M2, reqId: 'r1' });
+    a.send({ t: 'model', id, tier: 'fast', reqId: 'r1' });
     const changed = await a.wait(m => m.t === 'event'
       && m.ev?.kind === 'system' && m.ev?.subtype === 'model_changed');
     assert.equal(changed.ev.data.to, M2, 'the live client is told which model it is now on');

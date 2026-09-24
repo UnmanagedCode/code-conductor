@@ -14,10 +14,13 @@
 // node:test gives each file its own process, so the module's mutable state is
 // pristine here.
 //
-// Nine mirrors: DEFAULT_VERSIONS + DEFAULT_VERSION_LABELS, DEFAULT_TIER_BACKEND,
-// DEFAULT_TIER_LABELS (+ the tier list and its order), DEFAULT_ROLE_BINDING,
-// the `backends` first-paint registry, CLAUDE_BACKEND, defaultEffort,
-// EFFORT_LEVELS, familyOf.
+// The mirrors: DEFAULT_VERSIONS + DEFAULT_VERSION_LABELS, DEFAULT_TIER_BACKEND,
+// DEFAULT_TIER_LABELS (+ the tier list and its order), the `backends`
+// first-paint registry, CLAUDE_BACKEND, defaultEffort, EFFORT_LEVELS, familyOf.
+// There is no role-binding mirror: a role is never resolved client-side (the
+// spawn dialog's Conduct button and the WS `model` frame both send a bare
+// name and the server resolves the binding), so models.js keeps no
+// DEFAULT_ROLE_BINDING fallback to drift.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +31,6 @@ import {
   MODEL_FAMILIES,
   DEFAULT_VERSIONS,
   DEFAULT_TIER_BACKEND,
-  DEFAULT_ROLE_BINDING,
   CAPABILITY_TIERS,
   MANAGED_BACKENDS,
   CLAUDE_BACKEND_ID,
@@ -68,22 +70,6 @@ test('mirror: default tier→{backend,model} bindings match DEFAULT_TIER_BACKEND
     assert.deepEqual(client.getActiveTierBackend(t.tier), DEFAULT_TIER_BACKEND[t.tier],
       `default binding for tier ${t.tier}`);
   }
-});
-
-test('mirror: default role bindings match DEFAULT_ROLE_BINDING, key set included', async () => {
-  for (const [role, binding] of Object.entries(DEFAULT_ROLE_BINDING)) {
-    assert.deepEqual(client.getActiveRoleBinding(role), binding, `default binding for role ${role}`);
-  }
-  // Bidirectional: a one-way check would miss a role ADDED server-side, which
-  // is exactly the drift that leaves the client with no fallback for it.
-  const clientRoles = Object.keys(DEFAULT_ROLE_BINDING)
-    .filter(r => client.getActiveRoleBinding(r) !== undefined);
-  assert.deepEqual(clientRoles.sort(), Object.keys(DEFAULT_ROLE_BINDING).sort());
-  for (const role of Object.keys(DEFAULT_ROLE_BINDING)) {
-    assert.ok(client.getActiveRoleBinding(role), `client must know role ${role}`);
-  }
-  assert.equal(client.getActiveRoleBinding('no-such-role'), undefined,
-    'an unknown role has no fabricated binding');
 });
 
 test('mirror: backend first-paint labels match MANAGED_BACKENDS', async () => {

@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { Window } from 'happy-dom';
+import { installFakeSocket } from './fakeSocket.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -31,6 +32,7 @@ async function setup() {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
+  globalThis.location = window.location;
   window.document.documentElement.innerHTML = html;
   const document = window.document;
 
@@ -158,4 +160,42 @@ test('reselecting a live instance after a no-instance render re-enables the menu
   header.update();
   assert.equal(dom.overflowMenu.hidden, false);
   assert.equal(dom.changeModelBtn.disabled, false);
+});
+
+// ── the click: what actually goes on the wire (card 2026-0486) ─────────────
+//
+// Picking a tier in the popover must send ONLY the tier name — never a
+// resolved model/backend — so the server (not a stale client cache) is what
+// decides which model the switch lands on. Same harness shape as
+// tests/header-change-effort.test.mjs's clickSetup.
+
+async function clickSetup() {
+  const sent = [];
+  installFakeSocket(sent);
+  const t = await setup();
+  const { connect } = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+  connect();
+  return { ...t, sent, modelFrames: () => sent.filter(m => m.t === 'model') };
+}
+
+test('picking a tier sends only {id, tier} — no model, no backend key', async () => {
+  const t = await clickSetup();
+  t.setInstances([LIVE_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+
+  t.dom.changeModelBtn.click();
+  const popover = t.document.querySelector('.ih-usage-popover[aria-label="Change model"]');
+  assert.ok(popover, 'the popover opens');
+  const btn = popover.querySelector('.qs-model[data-tier="fast"]');
+  assert.ok(btn, 'the popover offers a fast tier button');
+  btn.click();
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(t.modelFrames().length, 1);
+  const frame = t.modelFrames()[0];
+  assert.deepEqual(Object.keys(frame).sort(), ['id', 'reqId', 't', 'tier'].sort(),
+    'exactly {t, id, tier, reqId} — no model/backend key survives the rewrite');
+  assert.equal(frame.tier, 'fast');
+  assert.equal(frame.id, LIVE_INSTANCE.id);
 });

@@ -21,7 +21,7 @@
 //
 // Returns { openSpawnDialog, syncTierModelLabels, syncTierVisibility } — the
 // only handles with external callers; defaultSpawnTier stays internal.
-import { resolveSpawnModel, resolveSpawnRole, getVersionLabel, backendIdOf, CLAUDE_BACKEND,
+import { getVersionLabel, backendIdOf, CLAUDE_BACKEND,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend,
   getActiveTierEffort } from './models.js';
 import { apiFetch } from './http.js';
@@ -198,10 +198,10 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
-    const { model, backend } = resolveSpawnModel(selectedSpawnTier);
-    // Send the TIER alongside the resolved model and omit `effort` unless the user
-    // picked a level: the server then resolves that tier's stored default effort.
-    // Deliberately NOT mirrored client-side — the precedence chain has one home.
+    // The tier NAMES the row; no model/backend is sent. The server resolves both
+    // the model and (unless the user picked an explicit level below) the default
+    // effort from that row's CURRENT binding — one resolution point, not a client
+    // mirror that can go stale.
     const effort   = dom.sdEffort.value || undefined;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
@@ -218,7 +218,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const inst = await apiFetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, mode, effort, tier: selectedSpawnTier, thinking, model, backend, worktree, temp, debug, autoApprovePlan }),
+        body: JSON.stringify({ project, mode, effort, tier: selectedSpawnTier, thinking, worktree, temp, debug, autoApprovePlan }),
       });
       await refreshProjects();
       await refreshInstances();
@@ -247,7 +247,9 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   // The 🎼 Conduct button spawns a temp Claude session directly in code mode
   // (bypassPermissions), no dialog. Ensures the hidden `.conduct` project
   // exists (lazy-created via POST /api/projects/.conduct/ensure), then spawns
-  // using the conductor role's resolved model (Settings → Models → Roles).
+  // with `role:'conductor'` and no model — the server resolves the Conductor
+  // role's CURRENT binding (Settings → Models → Roles), falling back to the
+  // default spawn tier if that binding has gone dead (docs/models.md → Roles).
   // Failures surface via alert(), matching the other direct-click actions
   // that have no dialog of their own (resumeBtn/syncBtn/mergeBtn/debugBtn).
   dom.conductBtn.addEventListener('click', async () => {
@@ -259,18 +261,13 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         const err = await r.json().catch(() => ({}));
         throw new Error(err.error || `ensure failed (${r.status})`);
       }
-      const { model, backend } = resolveSpawnRole('conductor');
-      if (!model) {
-        alert('Conduct session failed to start: the Conductor role has no model configured. Set one in Settings → Models → Roles.');
-        return;
-      }
       const inst = await apiFetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         // `role` carries the Conductor role so the server applies ITS default
         // effort (Settings → Models → Roles); no `effort` is sent, so there is
         // nothing to override it.
-        body: JSON.stringify({ project: '.conduct', model, backend, role: 'conductor', temp: true, mode: 'bypassPermissions' }),
+        body: JSON.stringify({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' }),
       });
       await refreshProjects();
       await refreshInstances();

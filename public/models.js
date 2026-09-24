@@ -1,9 +1,11 @@
-// Client-side cache + resolver for the model catalog (Settings → Models). The
-// spawn pickers carry only a `tier` (fast/balanced/powerful/frontier); a tier
-// resolves via its {backend, model} binding to the spawn args {model, backend}
-// — backend 'claude' (model = a MODEL_FAMILIES version id) or any other registry
-// id (model = one of that backend's custom models / curated presets). Catalog
-// fetched once at boot, refreshed on Settings changes.
+// Client-side DISPLAY cache for the model catalog (Settings → Models). The
+// spawn dialog, the Conduct button and the live "Change model" popover each
+// send only a `tier` or `role` name — never a resolved {model, backend} — and
+// the server resolves that name against the CURRENT stored binding at the
+// moment it acts. This module's job is limited to rendering: tier sublabels,
+// the Change-model highlight, the disabled pre-block, and the effort
+// `Default (…)` label. Catalog fetched once at boot, refreshed on Settings
+// changes.
 //
 // This module holds NO context-window policy. Every model has exactly one
 // native capacity, resolved server-side from {backend, model} and delivered as
@@ -42,15 +44,6 @@ const DEFAULT_TIER_BACKEND = {
 };
 const DEFAULT_TIER_LABELS = { fast: 'Fast', balanced: 'Balanced', powerful: 'Powerful', frontier: 'Frontier' };
 
-// Pre-fetch fallback role→binding (mirrors DEFAULT_ROLE_BINDING in
-// src/modelVersions.ts). A role binds to a tier ({kind:'tier',tier}) or a
-// concrete {backend,model}. Overwritten by the shipped catalog at boot.
-const DEFAULT_ROLE_BINDING = {
-  conductor: { kind: 'tier', tier: 'powerful' },
-  reviewer:  { kind: 'tier', tier: 'powerful' },
-  planner:   { kind: 'tier', tier: 'powerful' },
-};
-
 // First-paint seed for the end of the effort chain (mirrors DEFAULT_EFFORT in
 // src/effortLevels.ts) — replaced by the payload's `defaultEffort` on the boot
 // fetch, so the shipped value is the single source and this is only what a
@@ -71,7 +64,6 @@ let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
 let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
-let activeRoleBinding = { ...DEFAULT_ROLE_BINDING };
 // First-paint fallback of the backend REGISTRY — the two managed rows. A
 // fallback only; the server's registry (which also carries user rows) replaces it
 // on the boot fetch.
@@ -79,10 +71,6 @@ let backends = [{ id: CLAUDE_BACKEND, label: 'Claude', managed: true }, { id: 'o
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
-// Returns the role's binding (a tier binding {kind:'tier',tier} or a concrete
-// {backend,model}), falling back to the pre-fetch default.
-export function getActiveRoleBinding(role) { return activeRoleBinding[role] || DEFAULT_ROLE_BINDING[role]; }
-export function setActiveRoleBindings(map) { activeRoleBinding = { ...activeRoleBinding, ...(map || {}) }; }
 export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
 export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
 
@@ -147,29 +135,9 @@ export async function loadModelVersions() {
       setDefaultEffort(data.defaultEffort);
       setEffortLevels(data.efforts);
       if (data.tierEffort) setActiveTierEffort(data.tierEffort);
-      if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
     }
   } catch { /* keep defaults */ }
   return activeTierBackend;
-}
-
-// Resolve a tier to the spawn args {model, backend} — the binding's ids
-// verbatim. No launch tag is applied here: that is catalog policy, owned by
-// canonicalizeModel() server-side, which sees the authoritative `backend`.
-export function resolveSpawnModel(tier) {
-  const b = getActiveTierBackend(tier);
-  if (!b || !b.model) return { model: '', backend: CLAUDE_BACKEND };
-  return { model: b.model, backend: backendIdOf(b) };
-}
-
-// Resolve a role to the spawn args {model, backend}. A tier binding delegates to
-// resolveSpawnModel (mirrors the server's resolveRoleBackend); a concrete
-// binding resolves like a tier's own {backend, model}.
-export function resolveSpawnRole(role) {
-  const b = getActiveRoleBinding(role);
-  if (b && b.kind === 'tier') return resolveSpawnModel(b.tier);
-  if (!b || !b.model) return { model: '', backend: CLAUDE_BACKEND };
-  return { model: b.model, backend: backendIdOf(b) };
 }

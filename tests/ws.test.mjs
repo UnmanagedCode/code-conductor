@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
+import { setTierBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_NORMAL = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -550,10 +551,15 @@ test('mode switch via WS updates instance.mode and acks', async () => {
   }
 });
 
-test('model switch via WS updates instance.model and acks', async () => {
+// Card 2026-0486 — the WS `model` frame now names a TIER, not a resolved
+// {model, backend}: the server resolves that tier's CURRENT binding at the
+// moment the frame lands, so a rebind made after the page loaded is honored
+// rather than a client cache pinning the old pair.
+test('model switch via WS resolves the tier\'s CURRENT binding and acks', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   let c = null;
   try {
+    await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-5' });
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
@@ -561,20 +567,75 @@ test('model switch via WS updates instance.model and acks', async () => {
     c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
-    // The client sends a BARE version id; the server applies the catalog launch
-    // tag (Sonnet 5 has none — it is natively 1M).
-    c.send({ t: 'model', id, model: 'claude-sonnet-5', reqId: 'm1' });
+    c.send({ t: 'model', id, tier: 'balanced', reqId: 'm1' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true);
+    // Sonnet 5 has no launch tag — it is natively 1M.
     assert.equal(instances.get(id).model, 'claude-sonnet-5');
     assert.equal(instances.get(id).contextWindowTokens, 1_000_000);
+
+    // Rebind, then switch again: the SECOND switch must see the NEW binding,
+    // not a value cached from the first.
+    await setTierBackend('balanced', { backend: 'claude', model: 'claude-opus-4-8' });
+    c.send({ t: 'model', id, tier: 'balanced', reqId: 'm2' });
+    const ack2 = await c.wait(m => m.t === 'ack' && m.reqId === 'm2');
+    assert.equal(ack2.ok, true);
+    assert.equal(instances.get(id).model, 'claude-opus-4-8', 'the rebind is what the server resolves, not the first frame\'s pair');
   } finally {
     if (c) await c.close();
     await close();
   }
 });
 
-test('model switch via WS with an unknown model acks false', async () => {
+test('model switch via WS for a tier now on a non-Claude backend is refused BACKEND_LOCKED', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
+  try {
+    await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 200_000 });
+    await setTierBackend('fast', { backend: 'ollama', model: 'gemma4:cloud' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    const before = instances.get(id).model;
+    c.send({ t: 'model', id, tier: 'fast', reqId: 'm3' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm3');
+    assert.equal(ack.ok, false);
+    assert.match(ack.error, /non-Claude backend/);
+    assert.equal(instances.get(id).model, before, 'a refused switch must not mutate the session model');
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
+test('a legacy model/backend WS frame is refused — there is no verbatim path left', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+    const before = instances.get(id).model;
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'model', id, model: 'claude-sonnet-5', backend: 'claude', reqId: 'm4' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm4');
+    assert.equal(ack.ok, false);
+    assert.match(ack.error, /reload/, 'a stale, never-reloaded page must be told to reload — nothing is switched');
+    assert.equal(instances.get(id).model, before);
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
+test('model switch via WS with an unknown tier acks false', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   let c = null;
   try {
@@ -585,8 +646,8 @@ test('model switch via WS with an unknown model acks false', async () => {
     c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
-    c.send({ t: 'model', id, model: 'not-a-model', reqId: 'm2' });
-    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm2');
+    c.send({ t: 'model', id, tier: 'not-a-tier', reqId: 'm5' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm5');
     assert.equal(ack.ok, false);
   } finally {
     if (c) await c.close();
