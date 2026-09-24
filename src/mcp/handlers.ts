@@ -550,7 +550,6 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     const { branch, mergeStatus } = groupSystem
       ? await groupGit(groupSystem, t.cwd, t.meta)
       : { branch: null, mergeStatus: null };
-    const tracked = (sid: string) => (proj ? proj.bySession.get(sid) : undefined);
     return {
       project: t.project,
       worktree: t.worktree,
@@ -566,11 +565,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
       // sessionActivity.ts).
       inactive: [...rows]
         .sort((a, b) => b.lastActivity - a.lastActivity)
-        .map(s => ({
-          ...s,
-          playbook: tracked(s.sessionId)?.playbook ?? null,
-          stage: tracked(s.sessionId)?.stage ?? null,
-        })),
+        .map(s => ({ ...s, ...playbookBinding(proj, s.sessionId) })),
       archivedCount,
     };
   }));

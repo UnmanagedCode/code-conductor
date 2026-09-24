@@ -82,12 +82,16 @@ export interface PlaybookGate {
   // recorded without materialising the file.
   readProjection(): Promise<Projection>;
   readHistory(): Promise<LedgerEvent[]>;
-  // The one binding lookup for a surface that has no other reason to import
+  // The batch binding lookup for a surface that has no other reason to import
   // playbookLedger.ts (src/routes.ts's GET /api/instances — see
   // tests/playbook-ledger-chokepoint.test.mjs, which refuses that import
-  // directly). null/null for an untracked worker; never throws — same
-  // read-only-on-a-missing-ledger contract as readProjection.
-  readBinding(sessionId: unknown): Promise<{ playbook: string | null; stage: string | null }>;
+  // directly). One projection read for the whole list, in input order;
+  // null/null per id for an untracked worker. Same read-only-on-a-missing-
+  // ledger contract as readProjection — but NOT exception-free: a load
+  // failure (anything but ENOENT from the ledger file) still propagates, same
+  // as readProjection, so a caller that wants to degrade rather than throw
+  // still has to catch it.
+  readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>>;
   // THE liveness oracle this gate's decide() calls use — exposed so a read
   // surface (playbook_state, describe_playbook's dry-run) answers from the same
   // source as enforcement, rather than re-deriving its own.
@@ -423,8 +427,9 @@ export function createPlaybookGate(
     return ledger.projection();
   }
 
-  async function readBinding(sessionId: unknown): Promise<{ playbook: string | null; stage: string | null }> {
-    return playbookBinding(await readProjection(), sessionId);
+  async function readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
+    const proj = await readProjection();
+    return sessionIds.map(sid => playbookBinding(proj, sid));
   }
 
   // Raw events, for the backtrack surface. Re-read per call rather than kept
@@ -435,7 +440,7 @@ export function createPlaybookGate(
     return readEvents(ledger.file());
   }
 
-  return { check, readProjection, readHistory, readBinding, isLive, ledger: () => ledger };
+  return { check, readProjection, readHistory, readBindings, isLive, ledger: () => ledger };
 }
 
 // The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the

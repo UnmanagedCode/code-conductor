@@ -1165,21 +1165,25 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
 
   if (instances) {
     // A ledger read failure must not break the instance list this drives the
-    // whole UI from — it degrades that row's playbook/stage to null instead.
-    // Reads through the gate's own binding lookup (never playbookLedger.ts
-    // directly — see tests/playbook-ledger-chokepoint.test.mjs), which is the
-    // SAME gate `createServer` hands the MCP router, so this list reflects
-    // whatever the MCP side just wrote.
-    async function playbookRowBinding(sessionId: unknown): Promise<{ playbook: string | null; stage: string | null }> {
-      if (!playbookGate) return { playbook: null, stage: null };
-      try { return await playbookGate.readBinding(sessionId); }
-      catch (e) { console.warn('routes: playbook binding read failed:', e); return { playbook: null, stage: null }; }
+    // whole UI from — it degrades EVERY row's playbook/stage to null instead,
+    // with one warning per request rather than one per row. One batch read
+    // through the gate's own lookup (never playbookLedger.ts directly — see
+    // tests/playbook-ledger-chokepoint.test.mjs), which is the SAME gate
+    // `createServer` hands the MCP router, so this list reflects whatever the
+    // MCP side just wrote.
+    async function playbookBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
+      if (!playbookGate) return sessionIds.map(() => ({ playbook: null, stage: null }));
+      try { return await playbookGate.readBindings(sessionIds); }
+      catch (e) {
+        console.warn('routes: playbook binding read failed:', e);
+        return sessionIds.map(() => ({ playbook: null, stage: null }));
+      }
     }
 
     r.get('/instances', async (req, res, next) => {
       try {
         const rows = instances.list();
-        const bindings = await Promise.all(rows.map(row => playbookRowBinding(row.sessionId)));
+        const bindings = await playbookBindings(rows.map(row => row.sessionId));
         res.json(rows.map((row, i) => ({ ...row, ...bindings[i] })));
       } catch (e) { next(e); }
     });
