@@ -15,6 +15,7 @@ import { markPlainStub } from '../public/wakeCallback.js';
 import { buildRenewSeed } from '../public/renewSeed.js';
 import { RESUME_TEXT, buildConductorResumeText } from '../src/resumeRestart.ts';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
+import { mintPublicId, recordRotation } from '../src/sessionLineage.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fx = (f) => path.join(__dirname, 'fixtures', f);
@@ -235,6 +236,35 @@ test('a resume hydrates the ask from the transcript, and the history replay does
       await waitFor(() => ask(inst)[0] === null);
     });
   }
+});
+
+// INVARIANT: hydrate derives over the session's whole live segment chain, so an
+// ask in an OLDER segment survives a resume whose newest segment is undecided
+// (the renew shape: an injected reseed, then a non-ask reply).
+test('a resume hydrates an ask that sits in an older segment of the lineage chain', async () => {
+  const project = `au-live-${++n}`;
+  process.env.FAKE_CLAUDE_SCENARIO = TEXT_NO_ASK;
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: project });
+  const place = localPlace(path.join(ctx.projectsRoot, project));
+  const first = `cc00dd22-0000-4000-8000-${String(++n).padStart(12, '0')}`;
+  const second = `cc00dd22-0000-4000-8000-${String(++n).padStart(12, '0')}`;
+  await seedSessionJsonl(place, first, [
+    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'keep going' }] } },
+    { type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'Do you want me to start step two?' }], stop_reason: 'end_turn' } },
+  ]);
+  await seedSessionJsonl(place, second, [
+    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: buildRenewSeed({ summary: '## Live work roster\n- none' }) }] } },
+    { type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'Resumed from the summary.' }], stop_reason: 'end_turn' } },
+  ]);
+  const publicId = await mintPublicId(first);
+  await recordRotation(publicId, second, 'renew');
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', resume: publicId });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = ctx.instances.get(r.body.id);
+  await waitFor(() => inst.ringSnapshot().some(e => e.kind === 'system' && e.subtype === 'history_replayed'));
+  await waitFor(() => inst.status === 'idle');
+  assert.deepEqual(inst._segments, [first, second], 'premise: the instance holds the two-segment chain');
+  assert.deepEqual(ask(inst), ['question', 'text']);
 });
 
 // ── Surfaces ──────────────────────────────────────────────────────────────

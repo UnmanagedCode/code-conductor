@@ -204,6 +204,43 @@ test('LiveAskFacts: end_turn yields the last message\'s final text from either a
   assert.deepEqual(live.feed({ kind: 'turn_end', stopReason: 'end_turn', isError: true, parentToolUseId: null }), []);
 });
 
+// INVARIANT: only a turn that ends `end_turn` can produce a text ask — a turn
+// stopped at a tool call or interrupted is still working, whatever its text.
+test('LiveAskFacts: a turn_end with stopReason tool_use or interrupted yields no fact, even with ask-shaped text', async (t) => {
+  for (const stopReason of ['tool_use', 'interrupted']) {
+    await t.test(stopReason, () => {
+      const live = new LiveAskFacts(() => false);
+      live.feed({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'Let me check the logs first?', parentToolUseId: null });
+      assert.deepEqual(live.feed({ kind: 'turn_end', stopReason, isError: false, parentToolUseId: null }), []);
+    });
+  }
+});
+
+// INVARIANT: the live feed's end-of-turn text is the LAST text block of the
+// turn's last message — an ask in an earlier block of it does not count.
+test('LiveAskFacts: only the last text block of the last message is the final text, from either arm', async (t) => {
+  const endTurn = (live) => live.feed({ kind: 'turn_end', stopReason: 'end_turn', isError: false, parentToolUseId: null });
+  for (const [label, blocks, want] of [
+    ['ask first, statement last → no ask', ['Should I merge?', 'Merged nothing yet.'], null],
+    ['statement first, ask last → ask', ['Merged nothing yet.', 'Should I merge?'], { kind: 'question', source: 'text' }],
+  ]) {
+    await t.test(`envelope: ${label}`, () => {
+      const live = new LiveAskFacts(() => false);
+      live.feed(envelope(blocks.map(b => ({ type: 'text', text: b }))));
+      const facts = endTurn(live);
+      assert.deepEqual(facts, [{ t: 'endTurn', text: blocks[1] }]);
+      assert.deepEqual(facts.reduce(reduceAsk, null), want);
+    });
+    await t.test(`streamed deltas: ${label}`, () => {
+      const live = new LiveAskFacts(() => false);
+      blocks.forEach((b, i) => live.feed({ kind: 'text_delta', msgId: 'm1', blockIdx: i, text: b, parentToolUseId: null }));
+      const facts = endTurn(live);
+      assert.deepEqual(facts, [{ t: 'endTurn', text: blocks[1] }]);
+      assert.deepEqual(facts.reduce(reduceAsk, null), want);
+    });
+  }
+});
+
 // ── Acceptance 4: no playbook / stage / kanban logic ─────────────────────
 
 test('the new modules read no playbook, stage, ledger or kanban fact', async () => {

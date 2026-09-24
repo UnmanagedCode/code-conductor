@@ -13,6 +13,7 @@ import { localPlace, sessionFilePath, listSessionsForCwdWithCounts } from '../sr
 import { markArchived } from '../src/archivedSessions.ts';
 import { markConducted } from '../src/conductedSessions.ts';
 import { buildWakeStub } from '../public/wakeCallback.js';
+import { mintPublicId, recordRotation } from '../src/sessionLineage.ts';
 import { freshProjectsRoot, seedSessionJsonl, rmrf } from './helpers.mjs';
 
 let home;
@@ -190,6 +191,59 @@ test('memo: a trailing message extended after an intervening read gives the full
       assert.deepEqual(incremental, want);
     });
   }
+});
+
+// INVARIANT: an appended region that decides nothing (injected turns, non-ask
+// replies) leaves the memoised prefix's answer in place — and still equals a
+// full scan of the same bytes.
+test('memo: an undecided appended region keeps the memoised tool ask', async () => {
+  const p = place('keep'); const s = sid();
+  const file = sessionFilePath(p, s);
+  const toolResult = { type: 'user', isSidechain: false, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tq', content: 'delivered', is_error: true }] } };
+  await seedSessionJsonl(p, s, [user('go'), asst('m1', [askTool('tq')], 'tool_use'), toolResult, asst('m2', [text('Asked above.')], 'end_turn')]);
+  assert.deepEqual(await deriveAwaitingUser(p, [s]), Q_TOOL, 'premise');
+  await fs.appendFile(file, jsonl([user(buildWakeStub({ targetSessionId: 'w', payloadText: 'out' })), asst('m3', [text('Noted the worker.')], 'end_turn')]));
+  const incremental = await deriveAwaitingUser(p, [s]);
+  assert.deepEqual(incremental, Q_TOOL);
+  const q = place('keep-full'); const f = sid();
+  await seedSessionJsonl(q, f, []);
+  await fs.writeFile(sessionFilePath(q, f), await fs.readFile(file));
+  assert.deepEqual(await deriveAwaitingUser(q, [f]), incremental, 'incremental == full scan');
+});
+
+// INVARIANT: the disk scan's end-of-turn text is the LAST text block of the
+// message — an ask in an earlier block of the same record does not count.
+test('a record with two text blocks: only the last one is the final text', async (t) => {
+  for (const [label, blocks, want] of [
+    ['ask first, statement last → no ask', ['Should I merge?', 'Merged nothing yet.'], null],
+    ['statement first, ask last → ask', ['Merged nothing yet.', 'Should I merge?'], Q_TEXT],
+  ]) {
+    await t.test(label, async () => {
+      const p = place('twotext'); const s = sid();
+      await seedSessionJsonl(p, s, [user('go'), asst('m1', blocks.map(text), 'end_turn')]);
+      assert.deepEqual(await deriveAwaitingUser(p, [s]), want);
+    });
+  }
+});
+
+// INVARIANT: deriveAwaitingFor matches the row's PUBLIC id (what describe_session
+// is given), not its current backing sid, and derives over the whole live chain.
+test('deriveAwaitingFor names a renewed session by its public id and derives across its segments', async () => {
+  const p = place('lineage');
+  const first = sid(); const second = sid();
+  await seedSessionJsonl(p, first, [user('go'), asst('m1', [askTool('tq')], 'tool_use')]);
+  await seedSessionJsonl(p, second, [asst('m2', [text('Resumed from the summary.')], 'end_turn')]);
+  const publicId = await mintPublicId(first);
+  await recordRotation(publicId, second, 'renew');
+  assert.notEqual(publicId, second, 'premise: the public id is not the current backing sid');
+  await markArchived(second);
+  const rowOf = async (opts) => (await listSessionsForCwdWithCounts(p, null, { includeArchived: true, ...opts })).rows
+    .find(r => r.sessionId === publicId);
+  assert.equal((await rowOf({})).awaitingUser, null, 'premise: archived, so a plain list read does not derive it');
+  assert.equal((await rowOf({ deriveAwaitingFor: second })).awaitingUser, null, 'the backing sid names no row');
+  const row = await rowOf({ deriveAwaitingFor: publicId });
+  assert.equal(row.awaitingUser, 'question');
+  assert.equal(row.awaitingUserSource, 'tool', 'the ask sits in the OLDER segment');
 });
 
 test('SessionRow: list reads leave archived and conducted rows null; deriveAwaitingFor derives the named row', async () => {
