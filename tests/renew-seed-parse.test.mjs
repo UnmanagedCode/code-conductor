@@ -101,6 +101,27 @@ test('parseRenewSeed splits on the last mechanical-state header so a summary quo
 // occur at is equally consistent with buildRenewSeed's own output, so no
 // text-only check can tell them apart. That residual case is accepted, not
 // pinned by a test — see public/renewSeed.js's parseRenewSeed comment.
+test('parseRenewSeed splits the follow-up at the LAST fence, not the first, when the summary also quotes it', () => {
+  const stateBlock = '--- MECHANICAL STATE (server-generated at renewal; safety net — if this '
+    + 'disagrees with your summary above, this list wins for EXISTENCE, the summary wins for '
+    + 'INTENT) ---\nLive instances you spawned:\n  (none)\nWorkers you own (their next turn wakes '
+    + 'you):\n  (none)';
+  const summaryQuotingFollowUp =
+    'Earlier I quoted the fence format for reference:\n\n'
+    + '--- YOUR CONDUCTOR\'S FOLLOW-UP DIRECTIVE ---\n'
+    + 'This quoted example line should stay part of the summary, not be mistaken for the real one.';
+  const seed = buildRenewSeed({
+    summary: summaryQuotingFollowUp,
+    followUp: 'MARK-D: the real directive text',
+    stateBlock,
+  });
+  const parsed = parseRenewSeed(seed);
+  assert.ok(parsed);
+  assert.equal(parsed.summary, summaryQuotingFollowUp, 'the whole summary, quote included, stayed intact');
+  assert.equal(parsed.followUp, 'MARK-D: the real directive text', 'the LAST (real) fence was used, not the quoted first one');
+  assert.equal(parsed.state, stateContentOf(stateBlock));
+});
+
 test('parseRenewSeed never splits a follow-up out of a state-less seed, even when the summary quotes the fence verbatim', () => {
   const summaryQuotingFollowUp =
     'Notes: quoting the follow-up fence text below because that is what the conductor asked for:\n\n'
@@ -157,6 +178,27 @@ test('splitSummarySections rejects a title mentioned mid-sentence or followed by
     assert.equal(sections[0].title, null);
     assert.ok(sections[0].body.includes(S.roster));
   });
+  // The start anchor, isolated: lead-in prose before the title with nothing
+  // (but an allowed trailing colon) after it on the same line. The
+  // "mid-sentence" case above also has trailing prose, so the trailing-prose
+  // rule alone rejects it without ever exercising the start anchor; this one
+  // has no trailing prose to reject on, so only the start anchor can reject it.
+  await t.test('lead-in prose before the title, with nothing but the title after it', () => {
+    const summary = `Please complete the ${S.roster}:\nbody`;
+    const sections = splitSummarySections(summary);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].title, null, 'lead-in prose before the title is not an allowed prefix');
+    assert.ok(sections[0].body.includes(S.roster));
+  });
+});
+
+test('splitSummarySections titles a section with the catalog\'s canonical casing, not the line\'s', () => {
+  assert.notEqual(S.roster, S.roster.toLowerCase(), 'sanity: the catalog title actually has non-lowercase casing');
+  const summary = `## ${S.roster.toLowerCase()}\nworker A is on task 1`;
+  const sections = splitSummarySections(summary);
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].title, S.roster, 'title is the catalog\'s exact casing, not the lowercased line');
+  assert.equal(sections[0].body, 'worker A is on task 1');
 });
 
 test('splitSummarySections ignores a heading line inside a fenced code block', () => {
@@ -181,10 +223,25 @@ test('splitSummarySections keeps text before the first heading as a leading unti
   assert.equal(sections[1].title, S.userContext);
 });
 
-test('splitSummarySections falls back to one untitled body equal to the input when no heading matches', () => {
-  const summary = 'just some free-form prose the worker wrote with no headings at all.';
-  const sections = splitSummarySections(summary);
-  assert.deepEqual(sections, [{ title: null, body: summary }]);
+test('splitSummarySections falls back to one untitled body equal to the input when no heading matches', async (t) => {
+  await t.test('plain prose', () => {
+    const summary = 'just some free-form prose the worker wrote with no headings at all.';
+    assert.deepEqual(splitSummarySections(summary), [{ title: null, body: summary }]);
+  });
+  await t.test('leading and trailing blank lines are preserved exactly, not trimmed', () => {
+    const summary = '\n\nfree prose\n\n';
+    assert.deepEqual(splitSummarySections(summary), [{ title: null, body: summary }]);
+  });
+  // An all-blank summary must still yield exactly one untitled section — the
+  // early-return fallback (no heading matched) doesn't filter on content, so
+  // this never collapses to an empty array, which is what keeps the renew
+  // bubble from rendering nothing at all for a degenerate summary.
+  await t.test('an all-blank summary yields exactly one untitled section, never an empty array', () => {
+    const summary = '\n\n   \n';
+    const sections = splitSummarySections(summary);
+    assert.equal(sections.length, 1, 'never an empty array');
+    assert.deepEqual(sections, [{ title: null, body: summary }]);
+  });
 });
 
 test('splitSummarySections drops no non-heading line', () => {
