@@ -6,7 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createPluginLibrary } from '../src/plugins/library.ts';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { createPluginLibrary, resolveRepoUrl } from '../src/plugins/library.ts';
+import { getPluginLibrarySettings } from '../src/appSettings.ts';
 import { orchStoreRoot, adoptProject, listProjects, readProjectRecord } from '../src/projects.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -41,6 +43,8 @@ test('list(): default code-share entry present with no library dir', async () =>
     assert.equal(rows[0].repo, 'https://github.com/UnmanagedCode/code-share');
     assert.equal(rows[0].installed, false);
     assert.equal(rows[0].installedAs, null);
+    assert.deepEqual((await lib.list()).skipped, [], 'the store dir\'s absence is silent');
+    assert.equal(rows[0].source, undefined, 'the internal source is not leaked on the wire');
   } finally {
     await env.restore();
   }
@@ -85,6 +89,7 @@ test('list(): a dropped file adds an entry; malformed files are skipped, not fat
       'a wrong-extension file is a deliberate ignore, NOT a skip');
     assert.ok(skipped.every(s => s.reason && s.reason.length > 0), 'every skip carries a reason');
     assert.match(skipped.find(s => s.file === 'incomplete.json').reason, /id\/name\/repo/);
+    assert.ok(skipped.every(s => s.dir === libraryDir()), 'each skip names the store dir it was read from');
   } finally {
     await env.restore();
   }
@@ -266,10 +271,14 @@ test('install(): invalid/disallowed repo URL scheme -> 400', async () => {
   const env = await makePluginRoot();
   try {
     await dropLibraryEntry('bad.json', { id: 'bad', name: 'Bad', repo: 'ftp://example.com/org/bad' });
-    await dropLibraryEntry('worse.json', { id: 'worse', name: 'Worse', repo: 'not a url at all' });
-    const lib = createPluginLibrary();
+    await dropLibraryEntry('worse.json', { id: 'worse', name: 'Worse', repo: 'git@github.com:org/worse.git' });
+    await dropLibraryEntry('worst.json', { id: 'worst', name: 'Worst', repo: 'file:worst.git' });
+    const cloneCalls = [];
+    const lib = createPluginLibrary({ _cloneImpl: async (url) => { cloneCalls.push(url); return { code: 0, stdout: '', stderr: '' }; } });
     await rejectsWithStatus(lib.install('bad'), 400);
     await rejectsWithStatus(lib.install('worse'), 400);
+    await rejectsWithStatus(lib.install('worst'), 400);
+    assert.deepEqual(cloneCalls, [], 'every refusal lands before any clone');
   } finally {
     await env.restore();
   }
@@ -796,6 +805,574 @@ test('update(): a plugin backend that was never running is left stopped, not sta
     assert.equal(result.restarted, null, 'nothing running ⇒ nothing to restart');
     assert.deepEqual(restartCalls, [], 'update never starts a stopped backend');
   } finally {
+    await env.restore();
+  }
+});
+
+// ── Local / offline catalogs ─────────────────────────────────────────────
+
+// settings.json must be written BEFORE the first appSettings call under the
+// root — the module caches the parsed document (docs/architecture.md →
+// "Hand-editing `settings.json` in a test").
+async function seedSettings(obj) {
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  await fs.writeFile(path.join(orchStoreRoot(), 'settings.json'), JSON.stringify(obj));
+}
+
+async function dropEntryIn(dir, name, entry) {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, name), JSON.stringify(entry));
+}
+
+function assertStatus(fn, statusCode, messageRe) {
+  assert.throws(fn, (e) => {
+    assert.equal(e.statusCode, statusCode, `expected ${statusCode}, got ${e.statusCode}: ${e.message}`);
+    if (messageRe) assert.match(e.message, messageRe);
+    return true;
+  });
+}
+
+const fileUrl = (...segs) => pathToFileURL(path.join(...segs)).href;
+
+// The output invariant: whatever resolveRepoUrl accepts comes out as a URL a
+// clone can take — never a bare path, never an unresolved catalog: form — and
+// a file: output converts to a NUL-free local path, which is what cloneRepo
+// hands git after streaming has started.
+function resolved(repo, dir) {
+  const out = resolveRepoUrl(repo, dir);
+  const proto = new URL(out).protocol;
+  assert.ok(['http:', 'https:', 'git:', 'file:'].includes(proto), `${repo} -> ${out}`);
+  if (proto === 'file:') assert.ok(!fileURLToPath(out).includes('\0'), `${repo} -> ${out}`);
+  return out;
+}
+
+// The fix a refusal message suggests, which must itself be accepted.
+function suggestion(fn) {
+  try { fn(); } catch (e) { return e.message.match(/write it as (\S+)/)?.[1] ?? null; }
+  assert.fail('expected a refusal');
+}
+
+test('resolveRepoUrl(): resolution table', async (t) => {
+  const dir = '/srv/catalog';
+  await t.test('R1 http(s)/git pass through verbatim, not re-serialised', () => {
+    assert.equal(resolved('https://EXAMPLE.com:443/org/foo.git', dir), 'https://EXAMPLE.com:443/org/foo.git');
+  });
+  await t.test('R2 file:/// is canonicalised and never joined to sourceDir', () => {
+    assert.equal(resolved('FILE:///srv/m/../m/foo.git', dir), 'file:///srv/m/foo.git');
+  });
+  await t.test('R3 catalog:foo.git and catalog:./foo.git resolve identically against sourceDir', () => {
+    assert.equal(resolved('catalog:foo.git', dir), fileUrl(dir, 'foo.git'));
+    assert.equal(resolved('catalog:./foo.git', dir), fileUrl(dir, 'foo.git'));
+  });
+  await t.test('R4 a multi-segment catalog: path resolves under sourceDir', () => {
+    assert.equal(resolved('catalog:mirror/foo.git', dir), fileUrl(dir, 'mirror', 'foo.git'));
+  });
+  await t.test('R5 catalog: may climb out of sourceDir with ..', () => {
+    assert.equal(resolved('catalog:../repos/foo.git', dir), fileUrl('/srv', 'repos', 'foo.git'));
+  });
+  await t.test('R6 a catalog: path is percent-decoded like any URL path', () => {
+    assert.equal(resolved('catalog:my%20repos/foo.git', dir), fileUrl(dir, 'my repos', 'foo.git'));
+    assert.equal(resolved('catalog:my repos/foo.git', dir), fileUrl(dir, 'my repos', 'foo.git'));
+  });
+  await t.test('R7 catalog: needs a source dir; file:/// does not', () => {
+    assert.equal(resolved('file:///abs/foo.git', null), 'file:///abs/foo.git');
+    assertStatus(() => resolveRepoUrl('catalog:foo.git', null), 400, /no source directory/);
+  });
+  await t.test('R8 a bare relative path is refused; the message names both fixes and its suggestion resolves', () => {
+    assertStatus(() => resolveRepoUrl('foo.git', dir), 400, /catalog:foo\.git[\s\S]*file:\/\/\//);
+    const fix = suggestion(() => resolveRepoUrl('foo.git', dir));
+    assert.equal(fix, 'catalog:foo.git');
+    assert.equal(resolved(fix, dir), fileUrl(dir, 'foo.git'));
+  });
+  await t.test('R8b a bare absolute path is told the file:/// spelling of itself, never catalog:', () => {
+    assertStatus(() => resolveRepoUrl('/abs/x.git', dir), 400, /file:\/\/\/abs\/x\.git/);
+    assert.throws(() => resolveRepoUrl('/abs/x.git', dir), (e) => !/catalog:/.test(e.message));
+    const fix = suggestion(() => resolveRepoUrl('/abs/x.git', dir));
+    assert.equal(fix, 'file:///abs/x.git');
+    assert.equal(resolved(fix, dir), 'file:///abs/x.git');
+  });
+  await t.test('R9 scp-style ssh fails URL parsing outright', () => {
+    assertStatus(() => resolveRepoUrl('git@github.com:org/x.git', dir), 400, /invalid repo URL/);
+  });
+  for (const bad of ['ftp://h/x', 'C:\\x\\y.git']) {
+    await t.test(`R10 scheme allow-list refuses ${bad}`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /unsupported repo URL scheme/);
+    });
+  }
+  await t.test('R11 file: with a host is refused as a host, not as a relative path', () => {
+    assertStatus(() => resolveRepoUrl('file://host/x.git', dir), 400, /names a host 'host'/);
+  });
+  for (const bad of ['file:foo.git', 'file://localhost/x.git']) {
+    await t.test(`R12 ${bad} must be spelled file:///`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /must be written file:\/\/\/[\s\S]*catalog:/);
+    });
+  }
+  for (const bad of ['catalog:/abs/x.git', 'catalog://h/x.git', 'catalog:']) {
+    await t.test(`R13 ${JSON.stringify(bad)} is not a relative catalog path`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /catalog: repo must be a relative path/);
+    });
+  }
+  for (const bad of ['catalog:x.git?y', 'catalog:x.git#y']) {
+    await t.test(`R14 ${bad} would lose path text to a query/fragment`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /percent-encode/);
+    });
+  }
+  await t.test('R15 a malformed percent-escape in catalog: teaches %25', () => {
+    assertStatus(() => resolveRepoUrl('catalog:bad%zz.git', dir), 400, /malformed percent-escape.*%25/);
+  });
+  for (const bad of ['file:///mnt/vol/50%/code-kanban.git', 'file:///a%zz/x.git']) {
+    await t.test(`R16 ${bad}: a lone or malformed % in file: teaches %25`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /malformed percent-escape.*%25/);
+    });
+  }
+  await t.test('R16b the %25 spelling that message teaches is accepted and keeps the literal %', () => {
+    const out = resolved('file:///mnt/vol/50%25/code-kanban.git', dir);
+    assert.equal(fileURLToPath(out), '/mnt/vol/50%/code-kanban.git');
+  });
+  for (const bad of ['file:///a%2Fb/x.git', 'file:///a%2fb/x.git']) {
+    await t.test(`R17 ${bad}: an encoded / in file: is refused by name`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /encoded '\/' \(%2F\)/);
+    });
+  }
+  for (const bad of ['file:///a%00b/x.git', 'catalog:a%00b.git']) {
+    await t.test(`R18 ${bad}: a NUL byte is refused at resolve time`, () => {
+      assertStatus(() => resolveRepoUrl(bad, dir), 400, /NUL/);
+    });
+  }
+});
+
+test('getPluginLibrarySettings(): sanitiser', async (t) => {
+  async function withSeed(seed, fn) {
+    const env = await makePluginRoot();
+    try {
+      if (seed !== undefined) await seedSettings(seed);
+      await fn();
+    } finally { await env.restore(); }
+  }
+  await t.test('S1 no file -> defaults', () => withSeed(undefined, () => {
+    assert.deepEqual(getPluginLibrarySettings(), { libraryDirs: [], builtinLibrary: true });
+  }));
+  await t.test('S2 builtinLibrary:false opts out', () => withSeed({ plugins: { builtinLibrary: false } }, () => {
+    assert.equal(getPluginLibrarySettings().builtinLibrary, false);
+  }));
+  for (const v of ['false', 0, null]) {
+    await t.test(`S3 builtinLibrary ${JSON.stringify(v)} keeps the built-ins`, () => withSeed({ plugins: { builtinLibrary: v } }, () => {
+      assert.equal(getPluginLibrarySettings().builtinLibrary, true);
+    }));
+  }
+  for (const [label, seed] of [['plugins string', { plugins: 'garbage' }], ['plugins array', { plugins: [] }], ['libraryDirs string', { plugins: { libraryDirs: 'x' } }]]) {
+    await t.test(`S4 malformed ${label} -> defaults`, () => withSeed(seed, () => {
+      assert.deepEqual(getPluginLibrarySettings(), { libraryDirs: [], builtinLibrary: true });
+    }));
+  }
+  await t.test('S5 type/absolute filter, trim, normalise, dedupe keeping first', () => withSeed(
+    { plugins: { libraryDirs: ['relative/d', 42, '', '  ', '/a/b/', '/a/b', '/a/./c', ' /a/d '] } }, () => {
+      assert.deepEqual(getPluginLibrarySettings().libraryDirs, ['/a/b', '/a/c', '/a/d']);
+    }));
+});
+
+test('install(): a relative repo in a configured dir resolves against THAT dir, clones a file:// URL', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    await dropEntryIn(C, 'code-kanban.json', { id: 'code-kanban', name: 'Kanban', repo: 'catalog:repos/code-kanban.git' });
+    const calls = [];
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir) => { calls.push({ url, destDir }); await fs.mkdir(destDir, { recursive: true }); return { code: 0, stdout: '', stderr: '' }; },
+    });
+    const result = await lib.install('code-kanban');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, fileUrl(C, 'repos', 'code-kanban.git'));
+    assert.equal(calls[0].destDir, path.join(env.root, '.plugins', 'code-kanban'));
+    assert.equal(result.name, 'code-kanban');
+  } finally {
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('install(): a relative repo in the store library dir resolves against libraryDir()', async () => {
+  const env = await makePluginRoot();
+  try {
+    await dropLibraryEntry('code-kanban.json', { id: 'code-kanban', name: 'Kanban', repo: 'catalog:repos/code-kanban.git' });
+    const calls = [];
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir) => { calls.push(url); await fs.mkdir(destDir, { recursive: true }); return { code: 0, stdout: '', stderr: '' }; },
+    });
+    await lib.install('code-kanban');
+    assert.deepEqual(calls, [fileUrl(libraryDir(), 'repos', 'code-kanban.git')]);
+  } finally {
+    await env.restore();
+  }
+});
+
+async function walkFiles(dir) {
+  const out = [];
+  for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...await walkFiles(p));
+    else if (e.isFile()) out.push(p);
+  }
+  return out;
+}
+
+async function hardlinkedObjects(repoDir) {
+  const files = await walkFiles(path.join(repoDir, '.git', 'objects'));
+  const linked = [];
+  for (const f of files) if ((await fs.stat(f)).nlink > 1) linked.push(f);
+  return linked;
+}
+
+test('install/list/update: a real local mirror — no shared objects, fetch/upstream/pull all work offline', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  const seedDir = await mkdtemp('lib-seed-');
+  const scratch = await mkdtemp('lib-scratch-');
+  try {
+    const mirror = path.join(C, 'repos', 'code-kanban.git');
+    await fs.mkdir(mirror, { recursive: true });
+    await git(mirror, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
+    await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
+    await git(seedDir, 'config', 'user.email', 'test@test');
+    await git(seedDir, 'config', 'user.name', 'test');
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v1');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v1');
+    await git(seedDir, 'remote', 'add', 'origin', mirror);
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    // Precondition: this filesystem CAN hardlink a plain-path clone's objects,
+    // otherwise the no-shared-objects assertion below could never fail.
+    await git(scratch, 'clone', '-q', mirror, 'plain');
+    assert.ok((await hardlinkedObjects(path.join(scratch, 'plain'))).length > 0,
+      'precondition: a plain-path clone hardlinks objects here');
+
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    await dropEntryIn(C, 'code-kanban.json', { id: 'code-kanban', name: 'Kanban', repo: 'catalog:repos/code-kanban.git' });
+    const lib = createPluginLibrary();
+    const res = await lib.install('code-kanban');
+    const target = path.join(env.root, '.plugins', 'code-kanban');
+    assert.equal(res.path, target);
+    assert.deepEqual(await hardlinkedObjects(target), [], 'the install shares no object files with the mirror');
+    const { stdout: origin } = await run('git', ['-C', target, 'remote', 'get-url', 'origin']);
+    assert.equal(origin.trim(), mirror, 'git was handed the local path (with --no-local)');
+
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v2');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v2');
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    const row = (await lib.list()).entries.find(r => r.id === 'code-kanban');
+    assert.equal(row.installed, true);
+    assert.equal(row.installedAs, 'code-kanban');
+    assert.equal(row.behind, 1);
+    assert.equal(row.updateAvailable, true);
+
+    await lib.update('code-kanban');
+    assert.equal(await fs.readFile(path.join(target, 'file.txt'), 'utf8'), 'v2');
+  } finally {
+    await env.restore();
+    await rmrf(C);
+    await rmrf(seedDir);
+    await rmrf(scratch);
+  }
+});
+
+test('install/list/update: a git bundle mirror installs, reports behind and updates when the bundle is regenerated', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  const seedDir = await mkdtemp('lib-seed-');
+  try {
+    // Uppercase suffix: the strip is case-insensitive, so this is still the
+    // same install as the GitHub `code-kanban` entry.
+    const bundle = path.join(C, 'repos', 'code-kanban.BUNDLE');
+    await fs.mkdir(path.dirname(bundle), { recursive: true });
+    await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
+    await git(seedDir, 'config', 'user.email', 'test@test');
+    await git(seedDir, 'config', 'user.name', 'test');
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v1');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v1');
+    await git(seedDir, 'bundle', 'create', '-q', bundle, '--all');
+
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    await dropEntryIn(C, 'code-kanban.json', { id: 'code-kanban', name: 'Kanban', repo: 'catalog:repos/code-kanban.BUNDLE' });
+    const lib = createPluginLibrary();
+    const res = await lib.install('code-kanban');
+    assert.equal(res.name, 'code-kanban', 'the .BUNDLE suffix is stripped like .git, case-insensitively');
+    const target = path.join(env.root, '.plugins', 'code-kanban');
+    assert.equal(await fs.readFile(path.join(target, 'file.txt'), 'utf8'), 'v1');
+
+    // An offline operator "updates" a bundle by regenerating it.
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v2');
+    await git(seedDir, 'commit', '-q', '-am', 'v2');
+    await git(seedDir, 'bundle', 'create', '-q', bundle, '--all');
+
+    const row = (await lib.list()).entries.find(r => r.id === 'code-kanban');
+    assert.equal(row.installedAs, 'code-kanban');
+    assert.equal(row.behind, 1);
+    assert.equal(row.updateAvailable, true);
+
+    await lib.update('code-kanban');
+    assert.equal(await fs.readFile(path.join(target, 'file.txt'), 'utf8'), 'v2');
+  } finally {
+    await env.restore();
+    await rmrf(C);
+    await rmrf(seedDir);
+  }
+});
+
+test('install(): the project name strips only a TERMINAL .git/.bundle, case-insensitively', async (t) => {
+  for (const [repo, expected] of [
+    ['catalog:repos/code-kanban.GIT', 'code-kanban'],
+    ['catalog:repos/code-kanban.git.bak', 'code-kanban.git.bak'],
+  ]) {
+    await t.test(`${repo} -> ${expected}`, async () => {
+      const env = await makePluginRoot();
+      try {
+        await dropLibraryEntry('x.json', { id: 'x', name: 'X', repo });
+        const lib = createPluginLibrary({
+          _cloneImpl: async (url, destDir) => { await fs.mkdir(destDir, { recursive: true }); return { code: 0, stdout: '', stderr: '' }; },
+        });
+        assert.equal((await lib.install('x')).name, expected);
+      } finally {
+        await env.restore();
+      }
+    });
+  }
+});
+
+test('list(): precedence — configured dirs override the store dir, in array order', async (t) => {
+  // D1 sorts AFTER D2 by path, so array order and path order disagree.
+  async function scenario(order, expected, { withD2 = true } = {}) {
+    const env = await makePluginRoot();
+    const D1 = await mkdtemp('lib-z-');
+    const D2 = await mkdtemp('lib-a-');
+    try {
+      const dirs = { D1, D2 };
+      await seedSettings({ plugins: { libraryDirs: order.map(k => dirs[k]) } });
+      await dropLibraryEntry('x.json', { id: 'x', name: 'L', repo: 'https://example.com/o/x' });
+      await dropEntryIn(D1, 'x.json', { id: 'x', name: 'D1', repo: 'https://example.com/o/x' });
+      if (withD2) await dropEntryIn(D2, 'x.json', { id: 'x', name: 'D2', repo: 'https://example.com/o/x' });
+      const rows = (await createPluginLibrary().list()).entries.filter(r => r.id === 'x');
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].name, expected);
+    } finally {
+      await env.restore();
+      await rmrf(D1);
+      await rmrf(D2);
+    }
+  }
+  await t.test('a [D1, D2] -> D2', () => scenario(['D1', 'D2'], 'D2'));
+  await t.test('b [D2, D1] -> D1', () => scenario(['D2', 'D1'], 'D1'));
+  await t.test('c store + [D1] -> D1', () => scenario(['D1'], 'D1', { withD2: false }));
+});
+
+test('list(): duplicate ids within one dir — sorted filename order, last wins', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    for (let i = 0; i < 20; i++) {
+      const f = `d${String(i).padStart(2, '0')}.json`;
+      await dropEntryIn(C, f, { id: 'dup', name: f, repo: 'https://example.com/o/dup' });
+    }
+    const row = (await createPluginLibrary().list()).entries.find(r => r.id === 'dup');
+    assert.equal(row.name, 'd19.json');
+  } finally {
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('list(): builtinLibrary:false suppresses the built-ins; drop-ins still serve', async (t) => {
+  await t.test('a configured entry only', async () => {
+    const env = await makePluginRoot();
+    const C = await mkdtemp('lib-cat-');
+    try {
+      await seedSettings({ plugins: { libraryDirs: [C], builtinLibrary: false } });
+      await dropEntryIn(C, 'mine.json', { id: 'only-mine', name: 'Mine', repo: 'catalog:repos/mine.git' });
+      const ids = (await createPluginLibrary().list()).entries.map(r => r.id);
+      assert.deepEqual(ids, ['only-mine']);
+    } finally {
+      await env.restore();
+      await rmrf(C);
+    }
+  });
+  await t.test('b a store-dir override of a built-in id remains', async () => {
+    const env = await makePluginRoot();
+    const C = await mkdtemp('lib-cat-');
+    try {
+      await seedSettings({ plugins: { libraryDirs: [C], builtinLibrary: false } });
+      await dropEntryIn(C, 'mine.json', { id: 'only-mine', name: 'Mine', repo: 'catalog:repos/mine.git' });
+      await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'My CS', repo: 'https://example.com/fork/code-share' });
+      const rows = (await createPluginLibrary().list()).entries;
+      assert.deepEqual(rows.map(r => r.id).sort(), ['code-share', 'only-mine']);
+      assert.equal(rows.find(r => r.id === 'code-share').name, 'My CS');
+    } finally {
+      await env.restore();
+      await rmrf(C);
+    }
+  });
+});
+
+test('list(): a relative libraryDirs element is dropped, not resolved against the cwd', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  try {
+    await dropEntryIn(C, 'rel.json', { id: 'rel-entry', name: 'Rel', repo: 'https://example.com/o/rel' });
+    await seedSettings({ plugins: { libraryDirs: [path.relative(process.cwd(), C)] } });
+    const { entries, skipped } = await createPluginLibrary().list();
+    assert.ok(!entries.some(r => r.id === 'rel-entry'));
+    assert.deepEqual(skipped, []);
+  } finally {
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('list(): each skip names the directory it was read from', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    await fs.mkdir(libraryDir(), { recursive: true });
+    await fs.writeFile(path.join(libraryDir(), 'broken.json'), '{ not json');
+    await fs.writeFile(path.join(C, 'broken.json'), '{ not json');
+    const { skipped } = await createPluginLibrary().list();
+    assert.equal(skipped.length, 2);
+    assert.ok(skipped.every(s => s.file === 'broken.json' && s.reason.length > 0));
+    assert.deepEqual(skipped.map(s => s.dir).sort(), [libraryDir(), C].sort());
+  } finally {
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('list(): a missing configured dir is reported in skipped with file:null; built-ins still serve', async () => {
+  const env = await makePluginRoot();
+  const origWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const gone = path.join(env.root, 'not-mounted');
+    await seedSettings({ plugins: { libraryDirs: [gone] } });
+    const { entries, skipped } = await createPluginLibrary().list();
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].dir, gone);
+    assert.equal(skipped[0].file, null);
+    assert.match(skipped[0].reason, /unreadable/);
+    assert.equal(entries.length, 8);
+  } finally {
+    console.warn = origWarn;
+    await env.restore();
+  }
+});
+
+test('list()/install(): a mirror entry is the same install as the GitHub one (name from the resolved URL)', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    await env.addProject('code-kanban');
+    await dropEntryIn(C, 'kanban-mirror.json', { id: 'kanban-mirror', name: 'Mirror', repo: 'catalog:repos/code-kanban.git' });
+    const cloneCalls = [];
+    const lib = createPluginLibrary({ _cloneImpl: async (url) => { cloneCalls.push(url); return { code: 0, stdout: '', stderr: '' }; } });
+    const row = (await lib.list()).entries.find(r => r.id === 'kanban-mirror');
+    assert.equal(row.installed, true);
+    assert.equal(row.installedAs, 'code-kanban');
+    await rejectsWithStatus(lib.install('kanban-mirror'), 409);
+    assert.deepEqual(cloneCalls, []);
+  } finally {
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('update(): a relative-repo entry pulls the project named by the resolved URL', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    const registered = await env.addProject('code-kanban');
+    await dropEntryIn(C, 'kanban-mirror.json', { id: 'kanban-mirror', name: 'Mirror', repo: 'catalog:repos/code-kanban.git' });
+    const pulls = [];
+    const lib = createPluginLibrary({ _pullImpl: async (cwd) => { pulls.push(cwd); return { code: 0, stdout: '', stderr: '' }; } });
+    await lib.update('kanban-mirror');
+    assert.deepEqual(pulls, [registered]);
+  } finally {
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('install(): a refused repo, an unconvertible file: URL and an invalid derived name are all synchronous validation — onValidated never fires', async () => {
+  const env = await makePluginRoot();
+  try {
+    await dropLibraryEntry('bad.json', { id: 'bad', name: 'Bad', repo: 'git@github.com:org/bad.git' });
+    // Resolves fine, but the last segment `my%20repo` is not a valid project name.
+    await dropLibraryEntry('ugly.json', { id: 'ugly', name: 'Ugly', repo: 'catalog:repos/my%20repo.git' });
+    // A literal % in a mount path: new URL() accepts it, fileURLToPath does not.
+    await dropLibraryEntry('pct.json', { id: 'pct', name: 'Pct', repo: 'file:///mnt/vol/50%/code-kanban.git' });
+    let validated = 0;
+    const cloneCalls = [];
+    const lib = createPluginLibrary({ _cloneImpl: async (url) => { cloneCalls.push(url); return { code: 0, stdout: '', stderr: '' }; } });
+    await rejectsWithStatus(lib.install('bad', { onValidated: () => { validated++; } }), 400);
+    await rejectsWithStatus(lib.install('ugly', { onValidated: () => { validated++; } }), 400);
+    const pct = await rejectsWithStatus(lib.install('pct', { onValidated: () => { validated++; } }), 400);
+    assert.match(pct.message, /malformed percent-escape.*%25/);
+    assert.equal(validated, 0);
+    assert.deepEqual(cloneCalls, []);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('list(): an entry whose repo or derived name is refused is omitted from entries and reported in skipped', async () => {
+  const env = await makePluginRoot();
+  const C = await mkdtemp('lib-cat-');
+  const origWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await seedSettings({ plugins: { libraryDirs: [C] } });
+    await dropLibraryEntry('bad.json', { id: 'bad-entry', name: 'Bad', repo: 'ftp://example.com/o/bad' });
+    await dropEntryIn(C, 'pct.json', { id: 'pct-entry', name: 'Pct', repo: 'file:///mnt/vol/50%/code-kanban.git' });
+    await dropEntryIn(C, 'ugly.json', { id: 'ugly-entry', name: 'Ugly', repo: 'catalog:repos/my%20repo.git' });
+    const { entries, skipped } = await createPluginLibrary().list();
+    const ids = entries.map(r => r.id);
+    for (const id of ['bad-entry', 'pct-entry', 'ugly-entry']) assert.ok(!ids.includes(id), `${id} has no installable row`);
+    const by = Object.fromEntries(skipped.map(sk => [sk.file, sk]));
+    assert.equal(by['bad.json'].dir, libraryDir());
+    assert.match(by['bad.json'].reason, /unsupported repo URL scheme/);
+    assert.equal(by['pct.json'].dir, C);
+    assert.match(by['pct.json'].reason, /%25/);
+    assert.equal(by['ugly.json'].dir, C);
+    assert.match(by['ugly.json'].reason, /invalid project name/);
+    assert.equal(skipped.length, 3);
+  } finally {
+    console.warn = origWarn;
+    await env.restore();
+    await rmrf(C);
+  }
+});
+
+test('list()/install(): a refused override still takes its id — no built-in row, and install is the override\'s 400', async () => {
+  const env = await makePluginRoot();
+  const origWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'Broken', repo: 'file:///a%2Fb/code-share.git' });
+    const cloneCalls = [];
+    const lib = createPluginLibrary({ _cloneImpl: async (url) => { cloneCalls.push(url); return { code: 0, stdout: '', stderr: '' }; } });
+    const { entries, skipped } = await lib.list();
+    assert.ok(!entries.some(r => r.id === 'code-share'), 'the list and install agree on which entry owns the id');
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].file, 'code-share.json');
+    const e = await rejectsWithStatus(lib.install('code-share'), 400);
+    assert.match(e.message, /encoded '\/'/);
+    assert.deepEqual(cloneCalls, []);
+  } finally {
+    console.warn = origWarn;
     await env.restore();
   }
 });

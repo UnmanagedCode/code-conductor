@@ -377,7 +377,11 @@ test('pluginManager: a skipped library drop-in is surfaced in the library status
     }
     if (url === '/api/plugins/library') {
       return Promise.resolve({ ok: true, json: async () => ({
-        entries: [], skipped: [{ file: 'broken.json', reason: 'unexpected token' }],
+        entries: [], skipped: [
+          { dir: '/a', file: 'broken.json', reason: 'unexpected token' },
+          { dir: '/b', file: 'broken.json', reason: 'unexpected token' },
+          { dir: '/mnt/gone', file: null, reason: 'library dir unreadable: ENOENT' },
+        ],
       }) });
     }
     return Promise.resolve({ ok: true, json: async () => [] });
@@ -387,6 +391,9 @@ test('pluginManager: a skipped library drop-in is surfaced in the library status
 
   assert.match(dom.libStatus.textContent, /broken\.json/, 'the offending drop-in is named');
   assert.match(dom.libStatus.textContent, /unexpected token/, 'the reason is shown');
+  assert.ok(dom.libStatus.textContent.includes('/a/broken.json'), 'identical basenames are told apart by dir');
+  assert.ok(dom.libStatus.textContent.includes('/b/broken.json'), 'identical basenames are told apart by dir');
+  assert.ok(dom.libStatus.textContent.includes('/mnt/gone (library dir unreadable'), 'a directory-level skip is rendered');
 });
 
 test('pluginManager: renders a library entry with an Install button when not installed', async () => {
