@@ -14,6 +14,7 @@ import { installConventionsPanel } from './conventionsPanel.js';
 import { installDefaultPlaybook } from './defaultPlaybook.js';
 import { installDefaultEnforcement } from './defaultEnforcement.js';
 import { CLAUDE_BACKEND, backendIdOf } from './models.js';
+import { archivedSessionUrl, restoreArchivedSession } from './archivedSessions.js';
 
 const POLL_MS = 1500;
 
@@ -1745,18 +1746,9 @@ export function installSettings({
   // Lists every archived session grouped by project (collapsed by
   // default), each with Restore (back to the sidebar) and Delete
   // (permanent jsonl removal, confirmed). Backed by GET /api/archived.
-  function sessionUrl(project, worktreeName, sessionId, suffix) {
-    const enc = encodeURIComponent;
-    const base = worktreeName
-      ? `/api/projects/${enc(project)}/worktrees/${enc(worktreeName)}/sessions/${enc(sessionId)}`
-      : `/api/projects/${enc(project)}/sessions/${enc(sessionId)}`;
-    return base + suffix;
-  }
-
   async function restoreArchived(project, s) {
     try {
-      const r = await fetch(sessionUrl(project, s.worktreeName, s.sessionId, '/restore'), { method: 'POST' });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      await restoreArchivedSession({ project, worktreeName: s.worktreeName, sessionId: s.sessionId });
       onArchivedChanged?.();
       await loadArchived();
       onSessionRestored?.({ project, worktreeName: s.worktreeName, sessionId: s.sessionId });
@@ -1768,7 +1760,7 @@ export function installSettings({
   async function deleteArchived(project, s, label) {
     if (!confirm(`Permanently delete transcript for ${label}?\nThis removes the jsonl from disk and cannot be undone.`)) return;
     try {
-      const r = await fetch(sessionUrl(project, s.worktreeName, s.sessionId, ''), { method: 'DELETE' });
+      const r = await fetch(archivedSessionUrl(project, s.worktreeName, s.sessionId, ''), { method: 'DELETE' });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       onArchivedChanged?.();
       await loadArchived();

@@ -70,10 +70,48 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #sidebar-scrim.open { display: block; }
 #sidebar-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
 
-.sidebar-actions { margin-bottom: 10px; display: flex; gap: 6px; align-items: stretch; }
+.sidebar-actions { margin-bottom: 10px; display: flex; }
 .sidebar-actions > #conduct-btn { flex: 1; min-width: 0; }
-.sidebar-actions > .overflow-menu { flex: 0 0 auto; }
-#sidebar-overflow-toggle { padding: 6px 10px; }
+
+/* Missions / Projects lens (public/sidebarLens.js sets #sidebar[data-lens]).
+   Both lists are always rendered; the lens only decides which shows. The id +
+   attribute + class specificity outranks every lens-only element's own
+   `display` (e.g. .projects-lens-row's flex). */
+#sidebar[data-lens="missions"] .projects-lens-only,
+#sidebar[data-lens="projects"] .missions-lens-only { display: none; }
+.sidebar-lens {
+  display: flex; margin: 0 0 8px;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+.sidebar-lens button {
+  flex: 1; border: none; border-radius: 0; background: transparent;
+  color: var(--muted); padding: 6px 0; font-size: 12px; font-weight: 600;
+}
+.sidebar-lens button + button { border-left: 1px solid var(--border); }
+.sidebar-lens button[aria-pressed="true"] {
+  background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* Projects lens only: the conductor filter taking the remaining width, then
+   the project ≡ menu. The select and the ≡ toggle share one border-box height
+   so they line up top and bottom. */
+.projects-lens-row {
+  display: flex; align-items: center; gap: 6px; margin: 0 0 8px;
+  --sidebar-ctl-h: 28px;
+}
+.projects-lens-row > .overflow-menu { flex: 0 0 auto; }
+#conductor-filter { flex: 1 1 auto; min-width: 0; }
+.conductor-filter {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 0 0 6px; border-radius: 6px;
+}
+.conductor-filter label { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
+.conductor-filter select {
+  flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 0 4px;
+  height: var(--sidebar-ctl-h);
+}
+.conductor-filter.owned { box-shadow: inset 3px 0 0 var(--owner-color); }
+.projects-lens-row #sidebar-overflow-toggle { height: var(--sidebar-ctl-h); padding: 0 10px; line-height: 1; }
 
 /* Sidebar footer: pinned at the bottom of the column-flex sidebar.
    Hosts the "Restart server" button + a small connection-status line
@@ -112,8 +150,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
    open it with the same dashed rule a workspace section opens with
    (.project-workspace), or the trailing rows read as members of the last
    workspace. Drawn once, on the first top-level project after a workspace —
-   not between unassigned rows, and not on the Conduct row (it precedes the
-   workspaces). Declarations must match .project-workspace's rule. */
+   not between unassigned rows. Declarations must match .project-workspace's
+   rule. */
 .project-list > .project-workspace-item + li:not(.project-workspace-item) {
   margin-top: 4px;
   border-top: 1px dashed var(--border);
@@ -388,13 +426,21 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   font-size: 11px; color: var(--muted);
 }
 .session-row:hover { background: var(--panel-2); color: var(--text); }
-.session-row.active {
+/* Conductor ownership: one device, a 3px left bar in the owner's colour
+   (--owner-color, set inline by sidebar.js). A session row draws it as a border
+   and gives the width back in padding so the row does not widen; block rows
+   draw it inset. */
+.session-row.owned { border-left: 3px solid var(--owner-color); padding-left: 3px; }
+.worktree-row.owned, .mission { box-shadow: inset 3px 0 0 var(--owner-color); }
+/* Selected: fill + a neutral outline + a bold label — no colour, since the left
+   bar means ownership. Hover stays fill-only, and the outline sits over an
+   owner bar without replacing it. */
+.session-row.active, .mission-row.active {
   background: var(--panel-2);
   color: var(--text);
-  border-left: 3px solid var(--accent);
-  padding-left: 3px;
+  outline: 1px solid var(--muted);
+  outline-offset: -1px;
 }
-.session-row.active .session-preview { font-weight: 600; }
 .session-row.live .session-preview { color: var(--text); font-weight: 500; }
 .session-row .dot.offline { background: transparent; border: 1px solid var(--border); }
 .session-ago {
@@ -405,6 +451,55 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Missions tree worker rows: the label with the verbatim playbook · stage on
+   its own line underneath, wrapped rather than truncated away. */
+.session-label-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.session-stage {
+  font-family: ui-monospace, monospace; font-size: 10px; color: var(--thinking);
+  white-space: normal; overflow-wrap: anywhere;
+}
+
+/* Missions lens. */
+.mission-list { list-style: none; padding: 0; margin: 0; }
+.mission { list-style: none; margin-bottom: 4px; border-radius: 4px; }
+.mission.open { background: rgba(255, 255, 255, .02); padding-bottom: 4px; }
+.mission.inactive { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--owner-color) 45%, transparent); }
+.mission-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 6px 2px 8px; border-radius: 4px; cursor: pointer;
+}
+.mission-row:hover { background: var(--panel-2); }
+.mission-caret {
+  background: none; border: none; padding: 0 2px; color: var(--muted);
+  font-size: 11px; width: 16px; flex: 0 0 auto; transition: transform .12s;
+}
+.mission-caret:hover:not(:disabled) { background: none; color: var(--text); }
+.mission.open > .mission-row > .mission-caret { transform: rotate(90deg); }
+.mission-title {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mission-title.untitled { font-weight: 400; font-style: italic; color: var(--muted); }
+.mission.inactive .mission-title { color: var(--muted); }
+.mission-row .session-ago { min-width: 0; font-size: 11px; }
+.mission-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 6px 4px 46px; }
+/* Monochrome, in the .system-pill shape. */
+.mission-chip {
+  font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.4;
+  padding: 0 5px; border-radius: 8px; color: var(--muted);
+  border: 1px solid var(--border);
+}
+.mission-chip-none { font-style: italic; }
+.mission-tree { list-style: none; margin: 2px 0 0; padding: 0 4px 0 22px; }
+.mission-tree .project-row { padding: 3px 6px; }
+.mission-tree .project-name { font-size: 12px; }
+.mission-tree .worktree-list { padding-left: 10px; }
+.mission-tree .worktree-item > .sessions-list { padding-left: 14px; }
+.mission-tree .mission-direct { padding-left: 10px; }
+.mission-inactive-item { list-style: none; }
+.mission-inactive { margin: 8px 0 0; }
+.mission-inactive-list { list-style: none; padding: 0; margin: 4px 0 0; }
+.mission-empty { font-size: 11px; color: var(--muted); padding: 4px 6px; font-style: italic; }
 .session-unread {
   font-family: ui-monospace, monospace;
   font-size: 10px;
@@ -416,6 +511,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   line-height: 1.4;
 }
 .session-row.has-unread .session-preview { color: var(--text); font-weight: 600; }
+/* The selected label's bold, after the live / unread weights it must outrank.
+   It also overrides .mission-title.untitled's 400: a selected untitled mission
+   reads bold italic, since selected is bold by spec. */
+.session-row.active .session-preview, .mission-row.active .mission-title { font-weight: 700; }
 /* Overage auto-resume badge — shown on a stopped session awaiting resume. */
 .session-resume-badge {
   font-size: 10px;
@@ -2159,10 +2258,11 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
    column takes the caret's width, and the row gap already equals the summary's
    (.project-workspace > .project-workspace-summary and its ::before). A fixed
    width, not the glyph's advance, keeps git and non-git rows in step. Members
-   (inside .project-workspace-list) and the Conduct row keep the base geometry. */
-.project-list > li:not(.project-conduct) > .project-row { padding-left: 6px; }
-.project-list > li:not(.project-conduct) > .project-row > .commit-log,
-.project-list > li:not(.project-conduct) > .project-row > .commit-log-spacer {
+   (inside .project-workspace-list) and the Missions tree keep the base
+   geometry. */
+.project-list > li > .project-row { padding-left: 6px; }
+.project-list > li > .project-row > .commit-log,
+.project-list > li > .project-row > .commit-log-spacer {
   flex: none; width: 12px; padding: 0; text-align: center;
 }
 

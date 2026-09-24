@@ -42,6 +42,7 @@ import { setTtsAvailable, setTtsEnabled, setTtsRate, probeTtsStatus } from './tt
 import { createUnreadStore } from './unread.js';
 import { installAccountUsage } from './accountUsage.js';
 import { installSidebarChrome } from './sidebarChrome.js';
+import { installSidebarLens } from './sidebarLens.js';
 
 const state = {
   projects: [],
@@ -53,6 +54,9 @@ const state = {
 
 const dom = {
   projectList: document.getElementById('project-list'),
+  missionList: document.getElementById('mission-list'),
+  conductorFilter: document.getElementById('conductor-filter'),
+  sidebarLensButtons: document.querySelectorAll('.sidebar-lens button'),
   conversation: document.getElementById('conversation'),
   composerForm: document.getElementById('composer'),
   composerInput: document.getElementById('composer-input'),
@@ -177,6 +181,7 @@ const dom = {
 // Only the two navigation helpers are forwarded: every setSidebarOpen call
 // site moved into the module with the toggle and scrim listeners.
 const { closeSidebarOnMobile, closeSidebarOverflow } = installSidebarChrome({ dom });
+installSidebarLens({ dom, closeSidebarOverflow });
 
 // Per-instance task trackers — one TaskTracker is kept alive per
 // observed instance so switching tabs and back doesn't lose the
@@ -379,6 +384,8 @@ let spawnHandles = null;
 
 const sidebar = new Sidebar({
   rootList: dom.projectList,
+  missionList: dom.missionList,
+  filterRoot: dom.conductorFilter,
   onSelectInstance: selectInstance,
   onCreateInstanceClick: (projectName, opts) => spawnHandles.openSpawnDialog(projectName, opts),
   onRemoveWorktree: (...a) => sessionActions.removeWorktree(...a),
@@ -777,17 +784,15 @@ async function refreshProjects() {
   const [projects, workspaces, conductSessions] = await Promise.all([
     fetch('/api/projects').then(r => r.json()),
     fetch('/api/workspaces').then(r => r.json()).catch(() => []),
-    fetch('/api/projects/.conduct/sessions').then(r => r.ok ? r.json() : []).catch(() => []),
+    // includeArchived: a temp conductor is archived on exit, and it is still an
+    // inactive conductor the Missions lens lists.
+    fetch('/api/projects/.conduct/sessions?includeArchived=1').then(r => r.ok ? r.json() : []).catch(() => []),
   ]);
   state.projects = projects;
   sidebar.setProjects(projects);
   const names = Array.isArray(workspaces) ? workspaces.map(w => w.name).filter(Boolean) : [];
   sidebar.setWorkspaces(names);
-  const count = Array.isArray(conductSessions) ? conductSessions.length : 0;
-  const lastActivity = count > 0
-    ? conductSessions.reduce((max, s) => Math.max(max, s.lastActivity ?? 0), 0)
-    : 0;
-  sidebar.setConductSessions({ count, lastActivity });
+  sidebar.setConductSessions(Array.isArray(conductSessions) ? conductSessions : []);
 }
 const instancesGuard = latestOnly();
 async function refreshInstances() {

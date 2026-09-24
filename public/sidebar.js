@@ -1,5 +1,10 @@
 import { el } from './dom.js';
 import { formatAutoResumeTime } from './usage.js';
+import { conductorColor } from './conductorColor.js';
+import {
+  sessionFromInstance, deriveMissions, missionTitle, workersOf, missionProjects,
+  ownersByPlace, worktreeOwnership, ownerLabel, stageText,
+} from './missions.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
 // so the user can see at-a-glance which sessions are recent enough to
@@ -51,35 +56,21 @@ function mergeLive(onDisk, liveInstances) {
       // ⋮ Rename action without a refetch). Prefer it over a stale
       // on-disk-list entry from the last /api/projects round-trip.
       if (inst.title) row.title = inst.title;
+      // Live-only: a disk row never carries an owner.
+      row.ownerSessionId = inst.ownerSessionId ?? null;
     } else {
-      byId.set(inst.sessionId, {
-        sessionId: inst.sessionId,
-        firstPrompt: inst.firstPrompt ?? null,
-        title: inst.title ?? null,
-        // A live temp instance's jsonl is excluded from `onDisk` for as long
-        // as it's alive (see tempSessionIdsForCwd), so it lands in this
-        // synthetic branch on EVERY render, not just its first. Both fallbacks
-        // MUST be stable across renders: a per-render Date.now() here would
-        // re-stamp lastActivity to "now" on every render — freezing the "ago" label at
-        // ~0s and, worse, jumping every such row in lockstep to the exact
-        // timestamp of whichever session most recently completed a turn (its
-        // turn_end triggers the render). inst.lastResponseAt (set once per
-        // completed turn, same field header.js uses) covers post-first-turn;
-        // inst.createdAt (stamped once at spawn) covers the pre-first-turn case
-        // so a brand-new/idle session shows its true "created Xs ago" age.
-        lastActivity: inst.lastResponseAt ?? inst.createdAt,
-        size: 0,
-        instanceId: inst.id,
-        instanceStatus: inst.status,
-        instanceDisplayStatus: inst.displayStatus,
-        instanceMode: inst.mode,
-        instanceTemp: !!inst.temp,
-        instanceAwaitingWake: !!inst.awaitingWake,
-        autoResumeAt: inst.autoResumeAt ?? null,
-        queuedCount: inst.queuedCount ?? 0,
-        conducted: !!inst.conducted,
-        synthetic: true,
-      });
+      // A live temp instance's jsonl is excluded from `onDisk` for as long
+      // as it's alive (see tempSessionIdsForCwd), so it lands in this
+      // synthetic branch on EVERY render, not just its first. Its lastActivity
+      // fallbacks MUST be stable across renders: a per-render Date.now() would
+      // re-stamp lastActivity to "now" on every render — freezing the "ago"
+      // label at ~0s and, worse, jumping every such row in lockstep to the
+      // exact timestamp of whichever session most recently completed a turn
+      // (its turn_end triggers the render). inst.lastResponseAt (set once per
+      // completed turn, same field header.js uses) covers post-first-turn;
+      // inst.createdAt (stamped once at spawn) covers the pre-first-turn case
+      // so a brand-new/idle session shows its true "created Xs ago" age.
+      byId.set(inst.sessionId, sessionFromInstance(inst));
     }
   }
   const out = [...byId.values()];
@@ -148,12 +139,17 @@ function reconcileChildren(parent, keys, makeOrUpdate) {
 
 export class Sidebar {
   constructor({
-    rootList, onSelectInstance, onCreateInstanceClick,
+    rootList, missionList, filterRoot, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onPromoteSession,
     onReviewWorktree, onEditProjectRemote,
   }) {
     this.list = rootList;
+    // The Missions lens's list and the Projects lens's conductor filter. Both
+    // optional: without missionList the Missions render is skipped, without
+    // filterRoot the filter stays off.
+    this.missionList = missionList ?? null;
+    this.filterRoot = filterRoot ?? null;
     this.onSelectInstance = onSelectInstance;
     this.onCreateInstanceClick = onCreateInstanceClick;
     this.onRemoveWorktree = onRemoveWorktree;
@@ -195,8 +191,24 @@ export class Sidebar {
     // selectInstance. Keyed by sessionId so it survives crash + resume
     // (a new instance id for the same session).
     this.unreadBySessionId = new Map();
-    this.conductSessionCount = 0;
-    this.conductSessionLastActivity = 0;
+    // The `.conduct` disk rows (GET /api/projects/.conduct/sessions): the
+    // conductors that are not live, for the Missions *Inactive* group.
+    this.conductRows = [];
+    this.expandedMissions = new Set();    // key: conductor sessionId
+    this.inactiveOpen = false;
+    // Conductor filter: '' (all), 'hand' (hand-spawned only) or an owner
+    // sessionId.
+    this.filter = '';
+    this._filterSelect = this.filterRoot?.querySelector('select') ?? null;
+    if (this._filterSelect) {
+      this._filterSelect.addEventListener('change', () => {
+        this.filter = this._filterSelect.value;
+        this.render();
+      });
+    }
+    // Per-render derivations shared by the row builders (see render()).
+    this._owners = new Map();
+    this._missions = { live: [], inactive: [] };
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -206,9 +218,8 @@ export class Sidebar {
     this.render();
   }
   setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
-  setConductSessions({ count = 0, lastActivity = 0 } = {}) {
-    this.conductSessionCount = count;
-    this.conductSessionLastActivity = lastActivity;
+  setConductSessions(rows) {
+    this.conductRows = Array.isArray(rows) ? rows : [];
     this.render();
   }
   setInstances(instances) {
@@ -254,8 +265,11 @@ export class Sidebar {
   // identical "formatAgo is a snapshot, nothing re-ticks it" problem for the
   // turn-indicator's idle label.
   tickAgo() {
-    for (const node of this.list.querySelectorAll('.session-ago[data-activity]')) {
-      node.textContent = formatAgo(Number(node.dataset.activity));
+    for (const root of [this.list, this.missionList]) {
+      if (!root) continue;
+      for (const node of root.querySelectorAll('.session-ago[data-activity]')) {
+        node.textContent = formatAgo(Number(node.dataset.activity));
+      }
     }
     for (const node of this.list.querySelectorAll('.sessions-last-ago[data-activity]')) {
       node.textContent = ` · last ${formatAgo(Number(node.dataset.activity))}`;
@@ -288,6 +302,32 @@ export class Sidebar {
     return onDiskCount + extra;
   }
 
+  // The status dot shared by session rows and mission rows. `awaitingWake` is
+  // CALLER-side: this session is idle because it is waiting on a worker's
+  // running turn, not because it is done. The accent modifier is the only thing
+  // on the row that distinguishes those two, and it stays lit across a
+  // heartbeat (a heartbeat reports without consuming the wake), so a conductor
+  // whose worker is hung no longer reads as done.
+  _applyDot(dot, { status, awaitingWake }) {
+    const awaiting = status === 'idle' && !!awaitingWake;
+    dot.className = `dot ${status}${awaiting ? ' awaiting' : ''}`;
+    dot.title = awaiting ? 'idle — waiting on a worker' : status;
+    return dot;
+  }
+
+  // Mark (or unmark) a node as owned by a conductor: the `owned` class plus the
+  // --owner-color the stylesheet draws the bar in. Rows are reused in place, so
+  // an unowned pass must clear both.
+  _applyOwner(node, owner) {
+    node.classList.toggle('owned', !!owner);
+    if (owner) node.style.setProperty('--owner-color', conductorColor(owner));
+    else node.style.removeProperty('--owner-color');
+  }
+
+  _ownerLabel(sid) {
+    return ownerLabel(sid, { missions: this._missions, instances: this.instances });
+  }
+
   // Create-or-update one session row (an <li> wrapping the .session-row div).
   // Built once with create-only click/delete/promote handlers that read a
   // mutable `holder` so they always see the freshest session (its instanceId
@@ -295,7 +335,11 @@ export class Sidebar {
   // (status dot, active/live/unread classes, ago label, badges) in place. The
   // conditional badges/buttons are themselves keyed-reconciled so they slot in
   // at the right position without disturbing the always-present children.
-  _sessionRow(existing, { session, projectName, worktreeName }) {
+  //   showOwner — draw the conductor bar for a live conducted session (the
+  //               Projects lens, where no worktree row carries it instead).
+  //   readOnly  — no promote / archive buttons (the Missions tree).
+  //   showStage — the playbook · stage line under the label (Missions tree).
+  _sessionRow(existing, { session, projectName, worktreeName, showOwner = false, readOnly = false, showStage = false }) {
     let li = existing, row, holder;
     if (!li) {
       li = el('li', {});
@@ -332,28 +376,37 @@ export class Sidebar {
     const tooltipParts = [session.sessionId];
     if (customTitle && preview) tooltipParts.push(preview);
 
+    const owner = showOwner ? session.ownerSessionId ?? null : null;
+    if (owner) tooltipParts.push(`conductor: ${this._ownerLabel(owner)}`);
+
     row.className = 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (session.archived ? ' archived' : '') + (customTitle ? ' has-title' : '');
+    this._applyOwner(row, owner);
     row.title = tooltipParts.join('\n');
 
     const resumeLabel = session.autoResumeAt ? formatAutoResumeTime(session.autoResumeAt) : null;
-    const showPromote = session.instanceTemp && session.instanceId;
-    const keys = ['dot', 'ago', 'preview'];
+    const showPromote = !readOnly && session.instanceTemp && session.instanceId;
+    const stage = showStage ? stageText(session) : null;
+    const keys = ['dot', 'ago', showStage ? 'labelcol' : 'preview'];
     if (unread > 0) keys.push('unread');
     if (resumeLabel) keys.push('resume');
     if (showPromote) keys.push('promote');
-    keys.push('delete');
+    if (!readOnly) keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'dot') {
-        const dot = ex ?? el('span', { class: 'dot' });
-        // `awaitingWake` is CALLER-side: this session is idle because it is
-        // waiting on a worker's running turn, not because it is done. The accent
-        // modifier is the only thing on the row that distinguishes those two, and
-        // it stays lit across a heartbeat (a heartbeat reports without consuming
-        // the wake), so a conductor whose worker is hung no longer reads as done.
-        const awaiting = status === 'idle' && !!session.instanceAwaitingWake;
-        dot.className = `dot ${status}${awaiting ? ' awaiting' : ''}`;
-        dot.title = awaiting ? 'idle — waiting on a worker' : status;
-        return dot;
+        return this._applyDot(ex ?? el('span', { class: 'dot' }), {
+          status, awaitingWake: session.instanceAwaitingWake,
+        });
+      }
+      if (k === 'labelcol') {
+        // The preview plus, only for a bound worker, its verbatim
+        // playbook · stage on a second line.
+        const col = ex ?? el('span', { class: 'session-label-col' });
+        reconcileChildren(col, stage ? ['preview', 'stage'] : ['preview'], (ck, cex) => {
+          const node = cex ?? el('span', { class: ck === 'preview' ? 'session-preview' : 'session-stage' });
+          node.textContent = ck === 'preview' ? liveLabel : stage;
+          return node;
+        });
+        return col;
       }
       if (k === 'ago') {
         const ago = ex ?? el('span', { class: 'session-ago' });
@@ -418,7 +471,7 @@ export class Sidebar {
   // first time the subnode is expanded and cached. Rows are keyed-reconciled by
   // sessionId (with `— temp —` / `— conducted —` separators) so status dots
   // mutate in place instead of tearing the list down.
-  _sessionsNode(existing, { project, worktreeName, liveInstances, summary }) {
+  _sessionsNode(existing, { project, worktreeName, liveInstances, summary, showOwner = false }) {
     let det = existing;
     if (!det) {
       const key = worktreeName ? `${project.name}:${worktreeName}` : project.name;
@@ -439,7 +492,7 @@ export class Sidebar {
       det._summaryText = summaryText;
       det._listEl = listEl;
       det._lastAgoSpan = null;
-      det._live = { liveInstances, summary };
+      det._live = { liveInstances, summary, showOwner };
       det._loading = false;
 
       const setStatus = (text) => reconcileChildren(listEl, ['status'], (k, ex) => {
@@ -449,7 +502,14 @@ export class Sidebar {
       });
 
       det._renderList = (onDisk) => {
-        const merged = mergeLive(onDisk, det._live.liveInstances);
+        // The conductor filter narrows the rows, never the summary counts:
+        // a selected conductor keeps only its own sessions, Hand-spawned only
+        // drops every conducted one.
+        const filterOwner = this._filterOwner();
+        const merged = mergeLive(onDisk, det._live.liveInstances).filter(s =>
+          filterOwner ? s.ownerSessionId === filterOwner
+            : this.filter === 'hand' ? !s.conducted
+              : true);
         if (merged.length === 0) {
           reconcileChildren(listEl, ['empty'], (k, ex) => ex ?? el('li', { class: 'sessions-empty' }, 'no sessions'));
           return;
@@ -475,7 +535,9 @@ export class Sidebar {
         reconcileChildren(listEl, keys, (k, ex) => {
           if (k === 'sep:temp') return ex ?? el('li', { class: 'sessions-separator' }, '— temp —');
           if (k === 'sep:conducted') return ex ?? el('li', { class: 'sessions-separator' }, '— conducted —');
-          return this._sessionRow(ex, { session: byKey.get(k), projectName: project.name, worktreeName });
+          return this._sessionRow(ex, {
+            session: byKey.get(k), projectName: project.name, worktreeName, showOwner: det._live.showOwner,
+          });
         });
       };
 
@@ -499,8 +561,8 @@ export class Sidebar {
         }
       };
 
-      det._update = ({ liveInstances, summary }) => {
-        det._live = { liveInstances, summary };
+      det._update = ({ liveInstances, summary, showOwner }) => {
+        det._live = { liveInstances, summary, showOwner };
         const total = this._sessionsTotal({ project, worktreeName, liveInstances, summary });
         const liveSummary = liveInstances.length > 0 ? ` · ${liveInstances.length} live` : '';
         det._summaryText.nodeValue = `Sessions (${total})${liveSummary}`;
@@ -537,15 +599,16 @@ export class Sidebar {
       });
     }
 
-    det._update({ liveInstances, summary });
+    det._update({ liveInstances, summary, showOwner });
     return det;
   }
 
   // Create-or-update the head row of a worktree item (buttons + name + base +
   // the merge-status pill). Buttons capture stable strings, so they're built
   // create-only; the pill is inserted/removed at its fixed position (between
-  // name and base) on update.
-  _worktreeHead(existing, { project: p, wt }) {
+  // name and base) on update. `readOnly` (the Missions tree, fixed for the
+  // node's life) builds it without the spawn and remove buttons.
+  _worktreeHead(existing, { project: p, wt, readOnly = false }) {
     let head = existing;
     if (!head) {
       head = el('div', { class: 'worktree-row' });
@@ -561,14 +624,16 @@ export class Sidebar {
         class: 'wt-review', title: 'review changes',
         onclick: (e) => { e.stopPropagation(); this.onReviewWorktree?.(p.name, wt.worktreeName); },
       }, '±'));
-      head.appendChild(el('button', {
-        class: 'wt-spawn', title: 'new session in this worktree',
-        onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(p.name, { worktreeName: wt.worktreeName }); },
-      }, '+'));
-      head.appendChild(el('button', {
-        class: 'wt-remove', title: 'remove worktree',
-        onclick: (e) => { e.stopPropagation(); this.onRemoveWorktree(p.name, wt.worktreeName); },
-      }, '×'));
+      if (!readOnly) {
+        head.appendChild(el('button', {
+          class: 'wt-spawn', title: 'new session in this worktree',
+          onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(p.name, { worktreeName: wt.worktreeName }); },
+        }, '+'));
+        head.appendChild(el('button', {
+          class: 'wt-remove', title: 'remove worktree',
+          onclick: (e) => { e.stopPropagation(); this.onRemoveWorktree(p.name, wt.worktreeName); },
+        }, '×'));
+      }
       head._nameSpan = nameSpan;
       head._baseSpan = baseSpan;
       head._pill = el('span', { class: 'wt-unmerged' });
@@ -601,26 +666,46 @@ export class Sidebar {
   // Create-or-update one worktree item (<li> = head + optional Sessions
   // subnode). The Sessions subnode only exists when its total > 0, reconciled
   // as a keyed child so it appears/disappears without rebuilding the head.
+  // Ownership colour comes from every live instance in the worktree: one
+  // conductor → the head carries its bar and the rows none; several → the
+  // head stays plain and each conducted row carries its own.
   _worktreeNode(existing, { project: p, wt, liveInstances }) {
     const li = existing ?? el('li', { class: 'worktree-item' });
     const showSessions = this._sessionsTotal({ project: p, worktreeName: wt.worktreeName, liveInstances, summary: wt.sessions }) > 0;
+    const own = worktreeOwnership(this._owners.get(`${p.name}:${wt.worktreeName}`));
     const keys = ['head'];
     if (showSessions) keys.push('sessions');
     reconcileChildren(li, keys, (ck, ex) => {
-      if (ck === 'head') return this._worktreeHead(ex, { project: p, wt });
-      return this._sessionsNode(ex, { project: p, worktreeName: wt.worktreeName, liveInstances, summary: wt.sessions });
+      if (ck === 'head') {
+        const head = this._worktreeHead(ex, { project: p, wt });
+        const owner = own.kind === 'single' ? own.owner : null;
+        this._applyOwner(head, owner);
+        if (owner) head.title = `conductor: ${this._ownerLabel(owner)}`;
+        else head.removeAttribute('title');
+        return head;
+      }
+      return this._sessionsNode(ex, {
+        project: p, worktreeName: wt.worktreeName, liveInstances, summary: wt.sessions,
+        showOwner: own.kind !== 'single',
+      });
     });
     return li;
   }
 
   // Create-or-update the Worktrees subnode (stable <details>) — count in the
   // summary is patched, and the worktree items are keyed-reconciled by name.
+  // While a conductor filter is selected the group is forced open once per
+  // selection, and that forced state is never recorded as the user's own
+  // expansion; clearing the filter restores the recorded state.
   _worktreeGroup(existing, { project: p, worktrees, byWorktree }) {
+    const filterOwner = this._filterOwner();
     let det = existing;
     if (!det) {
       det = el('details', { class: 'worktree-group' });
       if (this.expandedWorktrees.has(p.name)) det.setAttribute('open', '');
+      det._forcedFor = null;
       det.addEventListener('toggle', () => {
+        if (this._filterOwner()) return;
         if (det.open) this.expandedWorktrees.add(p.name);
         else this.expandedWorktrees.delete(p.name);
       });
@@ -631,9 +716,19 @@ export class Sidebar {
       det._summaryEl = summaryEl;
       det._wtUl = wtUl;
     }
+    if (filterOwner && det._forcedFor !== filterOwner) {
+      det.open = true;
+      det._forcedFor = filterOwner;
+    } else if (!filterOwner && det._forcedFor) {
+      det.open = this.expandedWorktrees.has(p.name);
+      det._forcedFor = null;
+    }
     det._summaryEl.textContent = `Worktrees (${worktrees.length})`;
-    const wtByName = new Map(worktrees.map(wt => [wt.worktreeName, wt]));
-    const keys = worktrees.map(wt => `wt:${wt.worktreeName}`);
+    const listed = filterOwner
+      ? worktrees.filter(wt => this._owners.get(`${p.name}:${wt.worktreeName}`)?.has(filterOwner))
+      : worktrees;
+    const wtByName = new Map(listed.map(wt => [wt.worktreeName, wt]));
+    const keys = listed.map(wt => `wt:${wt.worktreeName}`);
     reconcileChildren(det._wtUl, keys, (k, ex) => {
       const wt = wtByName.get(k.slice(3));
       const attached = byWorktree.get(`${p.name}:${wt.worktreeName}`) ?? [];
@@ -646,14 +741,18 @@ export class Sidebar {
   // buttons). Buttons are create-only; delete-project reads a mutable holder
   // so it always deletes the current project object. The pill is inserted /
   // removed at its fixed position (between name and the action buttons).
-  _projectRow(existing, { project: p, isConduct }) {
+  // `readOnly` (the Missions tree, fixed for the row's life) builds it without
+  // the new-session and delete buttons and never makes the system pill a
+  // control.
+  _projectRow(existing, { project: p, readOnly = false }) {
     let row = existing;
     if (!row) {
-      row = el('div', { class: 'project-row' + (isConduct ? ' project-row-conduct' : '') });
+      row = el('div', { class: 'project-row' });
+      row._readOnly = readOnly;
       const holder = { p };
       // Commit-log button goes first (left of the name) for git projects.
-      // Non-git projects, an UNMEASURABLE one (its system could not be reached,
-      // so `isGitRepo` is absent rather than false) and the Conduct row get an
+      // Non-git projects and an UNMEASURABLE one (its system could not be
+      // reached, so `isGitRepo` is absent rather than false) get an
       // inert spacer of the same footprint so the name column stays aligned
       // across all row kinds. Both are built once and swapped per render — the
       // fact they depend on is live.
@@ -664,12 +763,9 @@ export class Sidebar {
       // Spacer glyph + box model must stay in sync with .commit-log button or alignment breaks.
       row._logSpacer = el('span', { class: 'commit-log-spacer', 'aria-hidden': 'true' }, '≡');
       row.appendChild(row._logSpacer);
-      const nameSpan = el('span', { class: 'project-name' }, isConduct ? '🎼 Conduct' : p.name);
+      const nameSpan = el('span', { class: 'project-name' }, p.name);
       row.appendChild(nameSpan);
-      // The synthetic Conduct row is read-only: no quick-spawn, no
-      // new-session button, no delete. Spawning is via the top-level 🎼
-      // button; deletion is blocked server-side.
-      if (!isConduct) {
+      if (!readOnly) {
         // Attached per render: a session starts on the machine cc runs on, so
         // this is not offered for a project whose tree is on another system —
         // a button that can only refuse is worse than no button.
@@ -724,7 +820,7 @@ export class Sidebar {
     const unreachable = p.systemUnreachable || null;
     // The log needs measured git facts; an unreachable system has none, and
     // `isGitRepo` is deliberately ABSENT there rather than false.
-    const showLog = !isConduct && p.isGitRepo === true;
+    const showLog = p.isGitRepo === true;
     const wantLog = showLog ? row._logBtn : row._logSpacer;
     if (row.firstChild !== wantLog) row.replaceChild(wantLog, row.firstChild);
     const ms = p.mergeStatus;
@@ -767,7 +863,7 @@ export class Sidebar {
           + ` — a worker session runs the claude CLI here and redirects its shell and file tools there.`
           + ` Click to change which target it is on.`;
       systemPill.classList.toggle('system-pill-unreachable', !!unreachable);
-      const clickable = remote && !unreachable && !!this.onEditProjectRemote;
+      const clickable = remote && !unreachable && !!this.onEditProjectRemote && !row._readOnly;
       if (clickable) {
         systemPill.setAttribute('role', 'button');
         systemPill.setAttribute('tabindex', '0');
@@ -798,26 +894,32 @@ export class Sidebar {
 
   // Create-or-update a project's list item (project row + optional Sessions
   // subnode + optional Worktrees subnode). Shared between top-level unassigned
-  // items, workspace-nested items, and the synthetic .conduct row. The <li>'s
-  // own children are keyed-reconciled so a Sessions subnode can appear/vanish
-  // (between the row and the Worktrees group) without a teardown.
+  // items and workspace-nested items. The <li>'s own children are
+  // keyed-reconciled so a Sessions subnode can appear/vanish (between the row
+  // and the Worktrees group) without a teardown. Under a selected conductor the
+  // Sessions subnode and the worktrees are listed only where it owns something.
   _projectItem(existing, { project: p, directByProject, byWorktree }) {
-    const isConduct = !!p.isConduct;
-    const li = existing ?? el('li', { class: isConduct ? 'project-conduct' : undefined });
+    const li = existing ?? el('li', {});
     const allDirects = directByProject.get(p.name) ?? [];
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
-    const showSessions = this._sessionsTotal({ project: p, worktreeName: null, liveInstances: allDirects, summary: p.sessions }) > 0;
+    const filterOwner = this._filterOwner();
+    let showSessions = this._sessionsTotal({ project: p, worktreeName: null, liveInstances: allDirects, summary: p.sessions }) > 0;
+    let showWorktrees = worktrees.length > 0;
+    if (filterOwner) {
+      showSessions = allDirects.some(i => i.ownerSessionId === filterOwner);
+      showWorktrees = worktrees.some(wt => this._owners.get(`${p.name}:${wt.worktreeName}`)?.has(filterOwner));
+    }
 
     const keys = ['row'];
     if (showSessions) keys.push('sessions');
     // Project with neither sessions nor worktrees — show a tiny hint so the
     // "+" button is discoverable.
-    else if (worktrees.length === 0) keys.push('hint');
-    if (worktrees.length > 0) keys.push('worktrees');
+    else if (worktrees.length === 0 && !filterOwner) keys.push('hint');
+    if (showWorktrees) keys.push('worktrees');
 
     reconcileChildren(li, keys, (ckey, ex) => {
-      if (ckey === 'row') return this._projectRow(ex, { project: p, isConduct });
-      if (ckey === 'sessions') return this._sessionsNode(ex, { project: p, worktreeName: null, liveInstances: allDirects, summary: p.sessions });
+      if (ckey === 'row') return this._projectRow(ex, { project: p });
+      if (ckey === 'sessions') return this._sessionsNode(ex, { project: p, worktreeName: null, liveInstances: allDirects, summary: p.sessions, showOwner: true });
       if (ckey === 'hint') return ex ?? el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap + to start');
       return this._worktreeGroup(ex, { project: p, worktrees, byWorktree });
     });
@@ -827,8 +929,9 @@ export class Sidebar {
   // Create-or-update a workspace container (<li> → stable <details>). Toggle
   // listener + edit button are create-only; the member project items are
   // keyed-reconciled by name (with an `empty` placeholder when the workspace
-  // has no members).
-  _workspaceItem(existing, { name, members, directByProject, byWorktree }) {
+  // has no members). `count` is the workspace's full membership, which a
+  // conductor filter narrowing `members` leaves unchanged.
+  _workspaceItem(existing, { name, members, count, directByProject, byWorktree }) {
     let li = existing;
     if (!li) {
       li = el('li', { class: 'project-workspace-item' });
@@ -863,7 +966,7 @@ export class Sidebar {
       li._ul = ul;
       li._countSpan = countSpan;
     }
-    li._countSpan.textContent = `(${members.length})`;
+    li._countSpan.textContent = `(${count})`;
     if (members.length === 0) {
       reconcileChildren(li._ul, ['empty'], (k, ex) => ex ?? el('li', { class: 'workspace-empty' },
         'no projects in this workspace — tap ✎ to add'));
@@ -877,7 +980,20 @@ export class Sidebar {
     return li;
   }
 
+  // The owner sessionId the Projects lens is filtered to, or null for All /
+  // Hand-spawned only.
+  _filterOwner() {
+    return this.filter && this.filter !== 'hand' ? this.filter : null;
+  }
+
   render() {
+    // A selected conductor that owns no live instance any more falls back to
+    // All: an empty tree would be a filter nothing can clear by itself.
+    const liveOwners = new Set(this.instances.map(i => i.ownerSessionId).filter(Boolean));
+    if (this._filterOwner() && !liveOwners.has(this.filter)) this.filter = '';
+    this._owners = ownersByPlace(this.instances);
+    this._missions = deriveMissions({ conductRows: this.conductRows, instances: this.instances });
+
     // Bucket live instances by (project, worktree?) so the per-subnode
     // merge into Sessions has only the relevant live overlay.
     const directByProject = new Map();
@@ -895,38 +1011,47 @@ export class Sidebar {
       }
     }
 
-    // Synthetic .conduct row — only appears while a Conduct instance is live
-    // (or on-disk conduct sessions exist). The project itself is hidden from
-    // listProjects() by the dot-prefix filter, so without this synthesis a
-    // conductor session would have no parent row and be unreachable.
-    const conductInstances = this.instances.filter(i => i.project === '.conduct');
-    const showConduct = conductInstances.length > 0 || this.conductSessionCount > 0;
-    if (showConduct) directByProject.set('.conduct', conductInstances);
-    const makeConduct = (existing) => this._projectItem(existing, {
-      project: {
-        name: '.conduct',
-        path: '(hidden)',
-        workspace: null,
-        isGitRepo: false,
-        unbornHead: false,
-        worktrees: [],
-        sessions: { count: this.conductSessionCount, lastActivity: this.conductSessionLastActivity },
-        mergeStatus: { ahead: null, behind: null, upstream: null },
-        sessionIds: conductInstances.map(i => i.sessionId),
-        isConduct: true,
-      },
-      directByProject, byWorktree,
-    });
+    this._renderFilter(liveOwners);
+    this._renderProjects({ directByProject, byWorktree });
+    if (this.missionList) this._renderMissions();
+  }
 
+  // Reconcile the conductor filter's options: All, Hand-spawned only, then one
+  // per live owner — live missions, inactive missions, then owners that are no
+  // mission at all (a hand-spawned session that spawned workers).
+  _renderFilter(liveOwners) {
+    const select = this._filterSelect;
+    if (!select) return;
+    const order = [];
+    for (const c of [...this._missions.live, ...this._missions.inactive]) {
+      if (liveOwners.has(c.sessionId)) order.push(c.sessionId);
+    }
+    for (const sid of liveOwners) if (!order.includes(sid)) order.push(sid);
+    const opts = [['', 'All sessions'], ['hand', 'Hand-spawned only'],
+      ...order.map(sid => [sid, this._ownerLabel(sid)])];
+    const labelOf = new Map(opts);
+    reconcileChildren(select, opts.map(([v]) => `opt:${v}`), (k, ex) => {
+      const value = k.slice(4);
+      const o = ex ?? el('option', { value });
+      o.textContent = labelOf.get(value);
+      return o;
+    });
+    select.value = this.filter;
+    this._applyOwner(this.filterRoot, this._filterOwner());
+  }
+
+  _renderProjects({ directByProject, byWorktree }) {
     if (this.projects.length === 0) {
-      const keys = showConduct ? ['conduct'] : ['empty'];
-      reconcileChildren(this.list, keys, (key, existing) => {
-        if (key === 'conduct') return makeConduct(existing);
-        return existing ?? el('li', { class: 'project-row' },
-          el('span', { class: 'project-name' }, 'no projects yet'));
-      });
+      reconcileChildren(this.list, ['empty'], (key, existing) => existing ?? el('li', { class: 'project-row' },
+        el('span', { class: 'project-name' }, 'no projects yet')));
       return;
     }
+
+    // Under a selected conductor only the projects holding one of its live
+    // sessions are listed.
+    const filterOwner = this._filterOwner();
+    const ownedProjects = new Set(this.instances.filter(i => filterOwner && i.ownerSessionId === filterOwner).map(i => i.project));
+    const visible = (p) => !filterOwner || ownedProjects.has(p.name);
 
     // Split into workspace-assigned (rendered first, nested under <details>)
     // and unassigned (rendered flat underneath, as their own section — see the
@@ -950,22 +1075,229 @@ export class Sidebar {
       if (!byWorkspace.has(name)) byWorkspace.set(name, []);
     }
 
-    const workspaceNames = [...byWorkspace.keys()].sort((a, b) => a.localeCompare(b));
-    const unassignedByName = new Map(unassigned.map(p => [p.name, p]));
+    const workspaceNames = [...byWorkspace.keys()].sort((a, b) => a.localeCompare(b))
+      .filter(name => !filterOwner || byWorkspace.get(name).some(visible));
+    const shownUnassigned = unassigned.filter(visible);
+    const unassignedByName = new Map(shownUnassigned.map(p => [p.name, p]));
 
     const keys = [];
-    if (showConduct) keys.push('conduct');
     for (const name of workspaceNames) keys.push(`ws:${name}`);
-    for (const p of unassigned) keys.push(`proj:${p.name}`);
+    for (const p of shownUnassigned) keys.push(`proj:${p.name}`);
 
     reconcileChildren(this.list, keys, (key, existing) => {
-      if (key === 'conduct') return makeConduct(existing);
       if (key.startsWith('ws:')) {
         const name = key.slice(3);
-        return this._workspaceItem(existing, { name, members: byWorkspace.get(name), directByProject, byWorktree });
+        const all = byWorkspace.get(name);
+        return this._workspaceItem(existing, {
+          name, members: all.filter(visible), count: all.length, directByProject, byWorktree,
+        });
       }
       const name = key.slice(5); // proj:
       return this._projectItem(existing, { project: unassignedByName.get(name), directByProject, byWorktree });
     });
+  }
+
+  // The Missions lens: live conductors newest first, then a collapsed
+  // *Inactive (n)* group of the rest, or an empty state when there are none.
+  _renderMissions() {
+    const { live, inactive } = this._missions;
+    const keys = live.map(c => `mission:${c.sessionId}`);
+    if (inactive.length > 0) keys.push('inactive');
+    if (keys.length === 0) keys.push('empty');
+    const liveBySid = new Map(live.map(c => [c.sessionId, c]));
+    reconcileChildren(this.missionList, keys, (k, ex) => {
+      if (k === 'empty') return ex ?? el('li', { class: 'mission-empty' }, 'no conductors yet — tap 🎼 Conduct');
+      if (k === 'inactive') return this._inactiveGroup(ex, inactive);
+      return this._missionItem(ex, liveBySid.get(k.slice(8)));
+    });
+  }
+
+  // Every archived conductor lands here, so the group grows without bound:
+  // while it is collapsed only its count is kept current and its item list is
+  // left empty; opening it renders the items.
+  _inactiveGroup(existing, inactive) {
+    let li = existing;
+    if (!li) {
+      li = el('li', { class: 'mission-inactive-item' });
+      const det = el('details', { class: 'worktree-group mission-inactive' });
+      if (this.inactiveOpen) det.setAttribute('open', '');
+      det.addEventListener('toggle', () => {
+        if (this.inactiveOpen === det.open) return;
+        this.inactiveOpen = det.open;
+        this.render();
+      });
+      const summaryEl = el('summary', { class: 'worktree-summary' });
+      const ul = el('ul', { class: 'mission-inactive-list' });
+      det.appendChild(summaryEl);
+      det.appendChild(ul);
+      li.appendChild(det);
+      li._summaryEl = summaryEl;
+      li._ul = ul;
+    }
+    li._summaryEl.textContent = `Inactive (${inactive.length})`;
+    const shown = this.inactiveOpen ? inactive : [];
+    const bySid = new Map(shown.map(c => [c.sessionId, c]));
+    reconcileChildren(li._ul, shown.map(c => `mission:${c.sessionId}`),
+      (k, ex) => this._missionItem(ex, bySid.get(k.slice(8))));
+    return li;
+  }
+
+  // Create-or-update one mission block: its row, its project chips, and —
+  // while expanded — the read-only tree of this conductor's live workers.
+  // The block alone carries the conductor's bar; nothing inside repeats it.
+  _missionItem(existing, conductor) {
+    let li = existing, holder;
+    if (!li) {
+      li = el('li', { class: 'mission' });
+      holder = { conductor };
+      li._holder = holder;
+    } else {
+      holder = li._holder;
+    }
+    holder.conductor = conductor;
+    const sid = conductor.sessionId;
+    const open = this.expandedMissions.has(sid);
+    li.className = 'mission' + (conductor.live ? '' : ' inactive') + (open ? ' open' : '');
+    li.style.setProperty('--owner-color', conductorColor(sid));
+    const workers = workersOf(sid, this.instances);
+    const projects = missionProjects(workers);
+
+    const keys = ['row', 'chips'];
+    if (open) keys.push('tree');
+    reconcileChildren(li, keys, (k, ex) => {
+      if (k === 'row') return this._missionRow(ex, holder, open);
+      if (k === 'chips') {
+        const chips = ex ?? el('div', { class: 'mission-chips' });
+        const ck = projects.length > 0 ? projects.map(p => `chip:${p}`) : ['none'];
+        reconcileChildren(chips, ck, (c, cex) => {
+          if (c === 'none') return cex ?? el('span', { class: 'mission-chip mission-chip-none' }, 'no live workers');
+          const chip = cex ?? el('span', { class: 'mission-chip' });
+          chip.textContent = c.slice(5);
+          return chip;
+        });
+        return chips;
+      }
+      return this._missionTree(ex, workers, projects);
+    });
+    return li;
+  }
+
+  _missionRow(existing, holder, open) {
+    let row = existing;
+    if (!row) {
+      row = el('div', {
+        class: 'mission-row',
+        onclick: () => {
+          const c = holder.conductor;
+          if (c.instanceId) this.onSelectInstance(c.instanceId);
+          // An archived conductor (a temp one that exited) is un-archived as it
+          // resumes; a plain disk row just resumes.
+          else if (this.onResumeSession) this.onResumeSession({
+            projectName: '.conduct', worktreeName: null, sessionId: c.sessionId, ...(c.archived ? { archived: true } : {}),
+          });
+        },
+      });
+      row._caret = el('button', {
+        type: 'button', class: 'mission-caret', 'aria-label': 'show workers',
+        onclick: (e) => {
+          e.stopPropagation();
+          const sid = holder.conductor.sessionId;
+          if (this.expandedMissions.has(sid)) this.expandedMissions.delete(sid);
+          else this.expandedMissions.add(sid);
+          this.render();
+        },
+      }, '▸');
+    }
+    const c = holder.conductor;
+    const { text, untitled } = missionTitle(c);
+    const unread = this.unreadBySessionId.get(c.sessionId) ?? 0;
+    row.className = 'mission-row' + (c.instanceId && c.instanceId === this.activeInstanceId ? ' active' : '');
+    row.title = c.sessionId;
+    row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const keys = ['caret', 'dot', 'title', 'ago'];
+    if (unread > 0) keys.push('unread');
+    reconcileChildren(row, keys, (k, ex) => {
+      if (k === 'caret') return row._caret;
+      if (k === 'dot') {
+        return this._applyDot(ex ?? el('span', { class: 'dot' }), {
+          status: c.instanceDisplayStatus ?? c.instanceStatus ?? 'offline',
+          awaitingWake: c.instanceAwaitingWake,
+        });
+      }
+      if (k === 'title') {
+        const t = ex ?? el('span', {});
+        t.className = 'mission-title' + (untitled ? ' untitled' : '');
+        t.textContent = text;
+        return t;
+      }
+      if (k === 'ago') {
+        const ago = ex ?? el('span', { class: 'session-ago' });
+        ago.textContent = formatAgo(c.lastActivity);
+        if (c.lastActivity) ago.dataset.activity = String(c.lastActivity);
+        else delete ago.dataset.activity;
+        return ago;
+      }
+      const b = ex ?? el('span', { class: 'session-unread' });
+      b.textContent = String(unread);
+      b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
+      return b;
+    });
+    return row;
+  }
+
+  // Expanded mission: per project (sorted), the project row, then the workers
+  // in its main checkout, then each worktree (sorted by name) holding one with
+  // its workers. Only this conductor's live workers, all read-only.
+  _missionTree(existing, workers, projects) {
+    const ul = existing ?? el('ul', { class: 'mission-tree' });
+    const projByName = new Map(this.projects.map(p => [p.name, p]));
+    reconcileChildren(ul, projects.map(n => `proj:${n}`), (k, ex) => {
+      const name = k.slice(5);
+      const p = projByName.get(name) ?? { name, worktrees: [] };
+      const mine = workers.filter(w => w.project === name);
+      const direct = mine.filter(w => !w.worktree?.worktreeName);
+      const byWt = new Map();
+      for (const w of mine) {
+        const wtName = w.worktree?.worktreeName;
+        if (!wtName) continue;
+        if (!byWt.has(wtName)) byWt.set(wtName, []);
+        byWt.get(wtName).push(w);
+      }
+      const wtNames = [...byWt.keys()].sort((a, b) => a.localeCompare(b));
+      const li = ex ?? el('li', {});
+      const keys = ['row'];
+      if (direct.length > 0) keys.push('direct');
+      if (wtNames.length > 0) keys.push('wts');
+      reconcileChildren(li, keys, (ck, cex) => {
+        if (ck === 'row') return this._projectRow(cex, { project: p, readOnly: true });
+        if (ck === 'direct') return this._workerList(cex ?? el('ul', { class: 'sessions-list mission-direct' }), direct, name, null);
+        const wtUl = cex ?? el('ul', { class: 'worktree-list' });
+        reconcileChildren(wtUl, wtNames.map(n => `wt:${n}`), (wk, wex) => {
+          const wtName = wk.slice(3);
+          const ws = byWt.get(wtName);
+          const wt = (Array.isArray(p.worktrees) ? p.worktrees : []).find(x => x.worktreeName === wtName)
+            ?? { ...ws[0].worktree, worktreeName: wtName };
+          const item = wex ?? el('li', { class: 'worktree-item' });
+          reconcileChildren(item, ['head', 'sessions'], (ik, iex) => {
+            if (ik === 'head') return this._worktreeHead(iex, { project: p, wt, readOnly: true });
+            return this._workerList(iex ?? el('ul', { class: 'sessions-list' }), ws, name, wtName);
+          });
+          return item;
+        });
+        return wtUl;
+      });
+      return li;
+    });
+    return ul;
+  }
+
+  _workerList(ul, workers, projectName, worktreeName) {
+    const rows = workers.filter(w => w.sessionId).map(sessionFromInstance)
+      .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
+    const bySid = new Map(rows.map(r => [r.sessionId, r]));
+    reconcileChildren(ul, rows.map(r => `sess:${r.sessionId}`), (k, ex) => this._sessionRow(ex, {
+      session: bySid.get(k.slice(5)), projectName, worktreeName, readOnly: true, showStage: true,
+    }));
+    return ul;
   }
 }
