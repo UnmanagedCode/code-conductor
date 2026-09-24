@@ -108,6 +108,17 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   border-top: 1px dashed var(--border);
   padding-top: 4px;
 }
+/* The unassigned projects after the last workspace are their own section:
+   open it with the same dashed rule a workspace section opens with
+   (.project-workspace), or the trailing rows read as members of the last
+   workspace. Drawn once, on the first top-level project after a workspace —
+   not between unassigned rows, and not on the Conduct row (it precedes the
+   workspaces). Declarations must match .project-workspace's rule. */
+.project-list > .project-workspace-item + li:not(.project-workspace-item) {
+  margin-top: 4px;
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+}
 .project-workspace > .project-workspace-summary {
   list-style: none; cursor: pointer;
   display: flex; align-items: center; gap: 6px;
@@ -118,7 +129,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .project-workspace > .project-workspace-summary::-webkit-details-marker { display: none; }
 .project-workspace > .project-workspace-summary::before {
   content: '▸';
-  display: inline-block; width: 12px;
+  display: inline-block; width: 12px; flex: none;
   color: var(--muted);
   transition: transform .12s;
 }
@@ -2143,6 +2154,17 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .project-row .commit-log { cursor: pointer; }
 .project-row .commit-log:hover { color: var(--tool); }
 .project-row .commit-log-spacer { visibility: hidden; }
+/* Top-level project rows (unassigned projects) start the name at the workspace
+   header label's x: the row's left padding is the summary's, the commit-log
+   column takes the caret's width, and the row gap already equals the summary's
+   (.project-workspace > .project-workspace-summary and its ::before). A fixed
+   width, not the glyph's advance, keeps git and non-git rows in step. Members
+   (inside .project-workspace-list) and the Conduct row keep the base geometry. */
+.project-list > li:not(.project-conduct) > .project-row { padding-left: 6px; }
+.project-list > li:not(.project-conduct) > .project-row > .commit-log,
+.project-list > li:not(.project-conduct) > .project-row > .commit-log-spacer {
+  flex: none; width: 12px; padding: 0; text-align: center;
+}
 
 /* Cost dashboard — full-page view opened from Settings → Models. */
 #costs-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
