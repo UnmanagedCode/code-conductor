@@ -51,6 +51,7 @@ interface StoredSettings {
   };
   spawn?: { debugByDefault?: unknown };
   systems?: { registry?: unknown };
+  plugins?: { libraryDirs?: unknown; builtinLibrary?: unknown };
 }
 
 function settingsPath(): string {
@@ -177,6 +178,28 @@ export async function setDebugByDefault(enabled: unknown): Promise<boolean> {
   const next = { ...cur, spawn: { ...(cur.spawn || {}), debugByDefault: !!enabled } };
   await writeSettings(next);
   return !!enabled;
+}
+
+// ── Plugin Library ───────────────────────────────────────────────────────
+// Local/offline catalogs (see docs/plugins.md → "Local / offline catalogs").
+// Hand-edited only — no setter, no UI. `libraryDirs` are extra drop-in catalog
+// directories read after the store's own; `builtinLibrary: false` hides the
+// built-in entries. Never throws: a malformed value is dropped, and anything but
+// a literal `false` keeps the built-ins, so a typo degrades to the default.
+export function getPluginLibrarySettings(): { libraryDirs: string[]; builtinLibrary: boolean } {
+  const s = loadSync();
+  const raw: unknown = s.plugins;
+  const p = (raw && typeof raw === 'object' && !Array.isArray(raw))
+    ? raw as { libraryDirs?: unknown; builtinLibrary?: unknown } : {};
+  const libraryDirs: string[] = [];
+  for (const d of Array.isArray(p.libraryDirs) ? p.libraryDirs : []) {
+    if (typeof d !== 'string') continue;
+    const t = d.trim();
+    if (!path.isAbsolute(t)) continue;
+    const norm = path.resolve(t);
+    if (!libraryDirs.includes(norm)) libraryDirs.push(norm);
+  }
+  return { libraryDirs, builtinLibrary: p.builtinLibrary !== false };
 }
 
 // Models group: per-tier visibility toggle. When a tier is false it is

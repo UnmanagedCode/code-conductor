@@ -187,6 +187,7 @@ test('GET /api/plugins/library reports a malformed drop-in in skipped', async ()
     assert.ok(r.body.entries.length > 0, 'the built-in entries still serve');
     assert.equal(r.body.skipped.length, 1);
     assert.equal(r.body.skipped[0].file, 'broken.json');
+    assert.equal(r.body.skipped[0].dir, libDir);
     assert.ok(r.body.skipped[0].reason.length > 0);
   } finally { await boot.close(); }
 });

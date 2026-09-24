@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   projectsRoot, orchStoreRoot, pluginsRoot, validateName, resolveProjectDir,
   readProjectRecord, registerProject, removeProjectStoreDir,
@@ -9,6 +10,7 @@ import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import { localSystem } from '../systems/registry.ts';
+import { getPluginLibrarySettings } from '../appSettings.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -19,12 +21,18 @@ import { localSystem } from '../systems/registry.ts';
 // start-neutral — a backend starts lazily on first use — so install never
 // launches a process; an invalid/conflicting manifest is left disabled.
 //
-// Catalog = DEFAULT_ENTRIES, overlaid by drop-in manifests read from
-// `<orchStoreRoot()>/plugins/library/*.json` (one JSON object per file):
-//   { "id": "...", "name": "...", "description": "...", "repo": "https://...",
+// Catalog layers, applied in order — the LAST entry applied for an id wins:
+//   1. DEFAULT_ENTRIES (omitted when settings `plugins.builtinLibrary` is false)
+//   2. drop-in manifests in `<orchStoreRoot()>/plugins/library/*.json`
+//   3. each settings `plugins.libraryDirs` directory, in array order
+// Within a directory, files apply in sorted filename order. One JSON object
+// per file:
+//   { "id": "...", "name": "...", "description": "...", "repo": "...",
 //     "postClone": "...", "postPull": "..." }
-// id/name/repo are required; description/postClone/postPull are optional. A
-// dropped file whose id matches a built-in entry overrides it.
+// id/name/repo are required; description/postClone/postPull are optional.
+// `repo` is an http(s)/git/file URL or a filesystem path; a relative path
+// resolves against the directory holding that JSON (an offline mirror shipped
+// next to its catalog). resolveRepoUrl is the one producer of a clone URL.
 // Malformed/incomplete files are skipped with a warning — never crash the list.
 //
 // postClone/postPull are shell commands run (cwd = the project directory)
@@ -36,7 +44,7 @@ import { localSystem } from '../systems/registry.ts';
 // (`bash -lc`), bounded (timeout + output cap), and its full output is
 // always surfaced back to the caller, never silently swallowed.
 
-const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:']);
+const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:', 'file:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
 
@@ -49,6 +57,19 @@ interface LibraryEntry {
   repo: string;
   postClone?: string;
   postPull?: string;
+}
+
+// An entry plus the directory it was read from — what a relative `repo`
+// resolves against. `null` for a built-in (it has no directory). Internal:
+// list() strips it from the wire row.
+type CatalogEntry = LibraryEntry & { sourceDir: string | null };
+
+// A rejected catalog input. `file` is null when a whole configured directory
+// could not be read.
+export interface LibrarySkip {
+  dir: string;
+  file: string | null;
+  reason: string;
 }
 
 const DEFAULT_ENTRIES: LibraryEntry[] = [
@@ -168,30 +189,50 @@ function libraryDir(): string {
   return path.join(orchStoreRoot(), 'plugins', 'library');
 }
 
-// `skipped` names the per-file drop-ins that were REJECTED — a malformed one, or
-// one missing a required field. Reported on GET /api/plugins/library and shown in
-// the Settings → Plugins Library status line, because a drop-in that silently
-// never appears is indistinguishable from one that was never written. A
-// wrong-extension file is a deliberate ignore, NOT a skip, and is never listed.
-async function readLibraryEntries(): Promise<{ entries: LibraryEntry[]; skipped: Array<{ file: string; reason: string }> }> {
-  const byId = new Map(DEFAULT_ENTRIES.map(e => [e.id, e]));
-  const skipped: Array<{ file: string; reason: string }> = [];
-  let names: string[];
-  try { names = await fs.readdir(libraryDir()); }
-  catch (e) {
-    // An unreadable library DIRECTORY stays a logged degradation: it has no
-    // per-file identity to report, and the built-in entries still serve.
-    if (errCode(e) !== 'ENOENT') console.warn(`pluginLibrary: failed to read library dir: ${errMsg(e)}`);
-    return { entries: [...byId.values()], skipped };
+// `skipped` names the drop-ins that were REJECTED — a malformed file, one
+// missing a required field, or a configured directory that could not be read.
+// Reported on GET /api/plugins/library and shown in the Settings → Plugins
+// Library status line, because a drop-in that silently never appears is
+// indistinguishable from one that was never written. A wrong-extension file is
+// a deliberate ignore, NOT a skip, and is never listed.
+async function readLibraryEntries(): Promise<{ entries: CatalogEntry[]; skipped: LibrarySkip[] }> {
+  const { libraryDirs, builtinLibrary } = getPluginLibrarySettings();
+  const byId = new Map<string, CatalogEntry>(
+    builtinLibrary ? DEFAULT_ENTRIES.map(e => [e.id, { ...e, sourceDir: null }]) : [],
+  );
+  const skipped: LibrarySkip[] = [];
+  const storeDir = libraryDir();
+  for (const dir of new Set([storeDir, ...libraryDirs])) {
+    await readCatalogDir(dir, { reportUnreadable: dir !== storeDir }, byId, skipped);
   }
+  return { entries: [...byId.values()], skipped };
+}
+
+async function readCatalogDir(dir: string, { reportUnreadable }: { reportUnreadable: boolean }, byId: Map<string, CatalogEntry>, skipped: LibrarySkip[]): Promise<void> {
+  let names: string[];
+  try { names = await fs.readdir(dir); }
+  catch (e) {
+    if (reportUnreadable) {
+      // The operator NAMED this directory as a catalog — an unmounted volume
+      // must not read as an empty Library with no explanation.
+      console.warn(`pluginLibrary: failed to read library dir ${dir}: ${errMsg(e)}`);
+      skipped.push({ dir, file: null, reason: `library dir unreadable: ${errMsg(e)}` });
+    } else if (errCode(e) !== 'ENOENT') {
+      // The store's own library dir stays a logged degradation: it is optional,
+      // and the rest of the catalog still serves.
+      console.warn(`pluginLibrary: failed to read library dir: ${errMsg(e)}`);
+    }
+    return;
+  }
+  names.sort();
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
-    const file = path.join(libraryDir(), name);
+    const file = path.join(dir, name);
     let entry: unknown;
     try { entry = JSON.parse(await fs.readFile(file, 'utf8')); }
     catch (e) {
       console.warn(`pluginLibrary: skipping malformed ${file}: ${errMsg(e)}`);
-      skipped.push({ file: name, reason: errMsg(e) });
+      skipped.push({ dir, file: name, reason: errMsg(e) });
       continue;
     }
     const rec = (entry && typeof entry === 'object' && !Array.isArray(entry))
@@ -201,7 +242,7 @@ async function readLibraryEntries(): Promise<{ entries: LibraryEntry[]; skipped:
       || typeof rec.name !== 'string' || !rec.name
       || typeof rec.repo !== 'string' || !rec.repo) {
       console.warn(`pluginLibrary: skipping ${file}: missing required id/name/repo`);
-      skipped.push({ file: name, reason: 'missing required id/name/repo' });
+      skipped.push({ dir, file: name, reason: 'missing required id/name/repo' });
       continue;
     }
     byId.set(rec.id, {
@@ -210,9 +251,9 @@ async function readLibraryEntries(): Promise<{ entries: LibraryEntry[]; skipped:
       repo: rec.repo,
       ...(typeof rec.postClone === 'string' ? { postClone: rec.postClone } : {}),
       ...(typeof rec.postPull === 'string' ? { postPull: rec.postPull } : {}),
+      sourceDir: dir,
     });
   }
-  return { entries: [...byId.values()], skipped };
 }
 
 // Last non-empty path segment of the repo URL, `.git` suffix stripped —
@@ -224,13 +265,54 @@ function deriveProjectName(repoUrl: string): string | null {
   return last.replace(/\.git$/i, '');
 }
 
-function validateRepoUrl(repoUrl: string): void {
-  let u: URL;
-  try { u = new URL(repoUrl); }
-  catch { throw httpError(400, `invalid repo URL '${repoUrl}'`); }
-  if (!ALLOWED_SCHEMES.has(u.protocol)) {
-    throw httpError(400, `unsupported repo URL scheme '${u.protocol}' — only http(s)/git are allowed`);
+// THE choke point: the only producer of the string handed to git clone. Its
+// output is either a `new URL()`-validated string with an allowed scheme or
+// pathToFileURL output — never a bare path. A path becomes a file:// URL on
+// purpose: `git clone /path` hardlinks the mirror's object store into the
+// install, `git clone file:///path` transfers a fresh pack.
+//
+// URL-shaped = has a `:` before any `/`. That sends scp-style ssh
+// (`git@host:x`) and drive paths (`C:\x`) to a loud refusal rather than a
+// nonsense relative path. Everything else is a filesystem path; a relative one
+// resolves against `sourceDir` (all relative forms alike — no search path, no
+// `~` expansion).
+export function resolveRepoUrl(repo: string, sourceDir: string | null): string {
+  const colon = repo.indexOf(':');
+  const slash = repo.indexOf('/');
+  if (colon !== -1 && (slash === -1 || colon < slash)) {
+    let u: URL;
+    try { u = new URL(repo); }
+    catch { throw httpError(400, `invalid repo URL '${repo}'`); }
+    if (!ALLOWED_SCHEMES.has(u.protocol)) {
+      throw httpError(400, `unsupported repo URL scheme '${u.protocol}' — only http(s)/git/file are allowed`);
+    }
+    if (u.protocol !== 'file:') return repo;
+    // WHATWG turns `file:foo.git` into `file:///foo.git` — the filesystem root,
+    // not a relative path.
+    if (!/^file:\/\/\//i.test(repo)) {
+      throw httpError(400, `a file: repo URL must be absolute (file:///…); write a relative repo as a plain path`);
+    }
+    if (u.host !== '') throw httpError(400, `a file: repo URL must not name a host ('${repo}')`);
+    return u.href;
   }
+  let abs: string;
+  if (path.isAbsolute(repo)) abs = path.resolve(repo);
+  else {
+    if (sourceDir === null) {
+      throw httpError(400, `repo '${repo}' is a relative path but its catalog entry has no source directory`);
+    }
+    abs = path.resolve(sourceDir, repo);
+  }
+  return pathToFileURL(abs).href;
+}
+
+// The clone URL and the project name an entry installs as — both from the
+// RESOLVED URL, so a relative repo still names its project. Throws 400.
+function projectNameFor(entry: CatalogEntry): { cloneUrl: string; name: string } {
+  const cloneUrl = resolveRepoUrl(entry.repo, entry.sourceDir);
+  const name = deriveProjectName(cloneUrl);
+  if (!name) throw httpError(400, `could not derive a project name from repo URL '${cloneUrl}'`);
+  return { cloneUrl, name };
 }
 
 function cloneRepo(url: string, destDir: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<GitCommandResult> {
@@ -261,7 +343,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
 } = {}): {
   list(): Promise<{
     entries: Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>;
-    skipped: Array<{ file: string; reason: string }>;
+    skipped: LibrarySkip[];
   }>;
   install(id: string, opts?: { onChunk?: (phase: 'clone' | 'hook', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postClone: { ran: boolean; ok: boolean; code: number; tail: string } | null }>;
   update(id: string, opts?: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: RestartOutcome | null }>;
@@ -281,11 +363,19 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
 
   async function list(): Promise<{
     entries: Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>;
-    skipped: Array<{ file: string; reason: string }>;
+    skipped: LibrarySkip[];
   }> {
     const { entries, skipped } = await readLibraryEntries();
-    const enriched = await Promise.all(entries.map(async (entry) => {
-      const name = deriveProjectName(entry.repo);
+    const enriched = await Promise.all(entries.map(async (catalogEntry) => {
+      const { sourceDir: _sourceDir, ...entry } = catalogEntry;
+      // A refused repo lists as not installed — the list never throws on one
+      // bad entry — but only a refusal is caught, and it is logged.
+      let name: string | null = null;
+      try { name = projectNameFor(catalogEntry).name; }
+      catch (e) {
+        if ((e as { statusCode?: unknown }).statusCode !== 400) throw e;
+        console.warn(`pluginLibrary: entry '${entry.id}' lists as not installed: ${errMsg(e)}`);
+      }
       // INSTALLED MEANS REGISTERED. The checkout's location is the record's,
       // not an assumed path — a plugin project relocated by an adopt is still
       // this entry's install.
@@ -316,9 +406,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     const { entries } = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
-    validateRepoUrl(entry.repo);
-    const name = deriveProjectName(entry.repo);
-    if (!name) throw httpError(400, `could not derive a project name from repo URL '${entry.repo}'`);
+    const { cloneUrl, name } = projectNameFor(entry);
     validateName(name);
 
     const target = path.join(pluginsRoot(), name);
@@ -334,13 +422,13 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     onValidated?.();
 
     await fs.mkdir(pluginsRoot(), { recursive: true });
-    const result = await clone(entry.repo, target, { onChunk: (text) => onChunk?.('clone', text) });
+    const result = await clone(cloneUrl, target, { onChunk: (text) => onChunk?.('clone', text) });
     if (result.code !== 0) {
       // A failed/timed-out clone can leave a partial dir — clear it so a
       // retry isn't permanently blocked by the "already installed" check.
       await fs.rm(target, { recursive: true, force: true }).catch(() => {});
       const tail = (result.stderr || result.stdout || '').slice(-4000);
-      throw httpError(502, `git clone failed for '${entry.repo}'`, { tail });
+      throw httpError(502, `git clone failed for '${cloneUrl}'`, { tail });
     }
 
     // THE RECORD IS WHAT MAKES IT A PROJECT. A refused registration leaves no
@@ -381,8 +469,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     const { entries } = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
-    const name = deriveProjectName(entry.repo);
-    if (!name) throw httpError(400, `could not derive a project name from repo URL '${entry.repo}'`);
+    const { name } = projectNameFor(entry);
 
     let target: string | null = null;
     try { target = (await resolveProjectDir(name))?.path ?? null; } catch { target = null; }

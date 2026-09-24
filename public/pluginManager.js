@@ -478,8 +478,10 @@ export function installPluginManager({ onCatalogChange } = {}) {
       }
       if (libraryData.skipped?.length) {
         setStatusEl(libraryStatusEl,
-          `Skipped ${libraryData.skipped.length} library drop-in file(s): `
-          + libraryData.skipped.map(s => `${s.file} (${s.reason})`).join(', '), true);
+          `Skipped ${libraryData.skipped.length} library drop-in(s): `
+          + libraryData.skipped.map(s => (s.file === null
+            ? `${s.dir} (${s.reason})`
+            : `${s.dir}/${s.file} (${s.reason})`)).join(', '), true);
       }
     } catch (e) {
       setStatus(`Failed to load plugins: ${e.message || e}`, true);
