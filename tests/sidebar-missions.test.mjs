@@ -159,6 +159,20 @@ test('Inactive (n) is a collapsed <details> after the live missions, newest firs
   assert.deepEqual(titles(det.querySelector('.mission-inactive-list')), ['Mid', 'Exited', 'Old']);
 });
 
+// The 🎼 Conduct button spawns temp conductors, archived on exit: they must
+// still be listed as inactive missions.
+test('an archived conduct row renders under Inactive', async () => {
+  const { missionList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    conductRows: [{ sessionId: 'T', title: 'Temp one', archived: true, lastActivity: 5 }],
+    instances: [conductor('L', { title: 'Live' })],
+  });
+  const det = missionList.querySelector('.mission-inactive');
+  assert.ok(det, 'the Inactive group is rendered');
+  assert.equal(det.querySelector('summary').textContent, 'Inactive (1)');
+  assert.deepEqual(titles(det.querySelector('.mission-inactive-list')), ['Temp one']);
+});
+
 test('no Inactive group when every conductor is live', async () => {
   const { missionList, sidebar } = await setupSidebar();
   await render(sidebar, { instances: [conductor('A'), conductor('B')] });

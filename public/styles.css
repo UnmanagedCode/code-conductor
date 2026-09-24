@@ -511,7 +511,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   line-height: 1.4;
 }
 .session-row.has-unread .session-preview { color: var(--text); font-weight: 600; }
-/* The selected label's bold, after the live / unread weights it must outrank. */
+/* The selected label's bold, after the live / unread weights it must outrank.
+   It also overrides .mission-title.untitled's 400: a selected untitled mission
+   reads bold italic, since selected is bold by spec. */
 .session-row.active .session-preview, .mission-row.active .mission-title { font-weight: 700; }
 /* Overage auto-resume badge — shown on a stopped session awaiting resume. */
 .session-resume-badge {

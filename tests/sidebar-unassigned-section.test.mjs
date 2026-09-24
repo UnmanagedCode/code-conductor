@@ -282,14 +282,22 @@ test('the top-level alignment does not reach .mission-tree project rows', async 
   const treeRow = missionList.querySelector('.mission-tree .project-row');
   assert.ok(treeRow, 'fixture: the expanded mission renders a project row');
   assert.ok(treeRow.querySelector(':scope > .commit-log'), 'fixture: gitty is a git project');
-  const topGit = topLi(list, 'gitty').querySelector(':scope > .project-row');
+  // The invariant: the tree row's commit-log column and the row's gap are the
+  // base .project-row ones (the reference sits outside #project-list, where the
+  // top-level rule cannot reach). The log column is what the top-level rule
+  // changes (a fixed 12px, no padding); the left padding cannot tell them
+  // apart, since the Missions tree's own rule also gives 6px.
   const ref = window.document.createElement('div');
   ref.innerHTML = '<div class="project-row"><button class="commit-log">≡</button><span class="project-name">x</span></div>';
   window.document.body.appendChild(ref);
-  assert.notDeepEqual(rowGeometry(window, treeRow), rowGeometry(window, topGit),
-    'a mission-tree project row does not take the top-level alignment');
-  assert.deepEqual(rowGeometry(window, treeRow).log, rowGeometry(window, ref.firstElementChild).log,
-    'its commit-log column keeps the base geometry');
+  const tree = rowGeometry(window, treeRow);
+  const base = rowGeometry(window, ref.firstElementChild);
+  assert.deepEqual(tree.log, base.log, 'its commit-log column keeps the base geometry, not the fixed 12px column');
+  assert.equal(tree.row['column-gap'], base.row['column-gap'], 'its gap is the base row gap');
+  // Control: the top-level rows do take the alignment in this same render.
+  const topGit = topLi(list, 'gitty').querySelector(':scope > .project-row');
+  assert.notDeepEqual(rowGeometry(window, topGit).log, base.log,
+    'control: the top-level rule does change the log column, so the equality above can tell');
 });
 
 test('the workspace header caret does not shrink when the summary overflows', async () => {

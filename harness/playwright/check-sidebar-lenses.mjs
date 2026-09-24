@@ -70,13 +70,20 @@ async function spawnWorker(caller, args) {
 }
 
 // Append one user line to an instance's session jsonl, where the orch reads
-// its on-disk session list from (Claude Code's cwd encoding).
+// its on-disk session list from (Claude Code's cwd encoding). The file is named
+// by the BACKING session id — the one the temp/archive markers are keyed by —
+// which the API withholds; the sandbox store's session-lineage.json maps the
+// public id to it.
 async function seedTranscript(instanceId, text) {
   const inst = (await insts()).find(i => i.id === instanceId);
+  const lineage = JSON.parse(await fs.readFile(
+    path.join(orch.sandbox.dirs.PROJECTS_ROOT, '.code-conductor', 'session-lineage.json'), 'utf8'));
+  const backing = lineage.sessions?.[inst.sessionId]?.current;
+  if (!backing) throw new Error(`no backing id recorded for session ${inst.sessionId}`);
   const dir = path.join(orch.sandbox.dirs.CLAUDE_PROJECTS_ROOT, inst.cwd.replace(/[^A-Za-z0-9-]/g, '-'));
   await fs.mkdir(dir, { recursive: true });
-  await fs.appendFile(path.join(dir, `${inst.sessionId}.jsonl`), JSON.stringify({
-    type: 'user', message: { role: 'user', content: text }, sessionId: inst.sessionId, timestamp: new Date().toISOString(),
+  await fs.appendFile(path.join(dir, `${backing}.jsonl`), JSON.stringify({
+    type: 'user', message: { role: 'user', content: text }, sessionId: backing, timestamp: new Date().toISOString(),
   }) + '\n');
 }
 
@@ -89,8 +96,13 @@ try {
   // under the default `enforce` every conductor spawn must name a playbook.
   const a = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'warn' })).body;
   const b = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: false, playbookEnforcement: 'warn' })).body;
+  // C takes the 🎼 Conduct button's own path — a temp conductor, archived on
+  // exit — to prove an exited temp conductor still lands under Inactive.
+  const c = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true })).body;
   await idle(i => i.id === a.id);
   await idle(i => i.id === b.id);
+  await idle(i => i.id === c.id);
+  const cSid = (await insts()).find(i => i.id === c.id).sessionId;
   const aSid = (await insts()).find(i => i.id === a.id).sessionId;
   const bSid = (await insts()).find(i => i.id === b.id).sessionId;
   await api('PUT', `/api/sessions/${aSid}/title`, { title: 'Alpha mission' });
@@ -98,13 +110,19 @@ try {
   // listed (as a disk row) under Inactive, and its first prompt becomes its
   // untitled label.
   await seedTranscript(b.id, 'bravo: sweep the docs');
+  await seedTranscript(c.id, 'charlie: temp conductor');
   await waitFor(async () => (await api('GET', '/api/projects/.conduct/sessions')).body?.some?.(r => r.sessionId === bSid));
 
   const aSolo = await spawnWorker(a.id, { project: 'uipass', createWorktree: true, name: 'solo-a' });
   const aMixed = await spawnWorker(a.id, { project: 'uipass', createWorktree: true, name: 'mixed' });
   const aMain = await spawnWorker(a.id, { project: 'uipass' });
-  await seedTranscript(aMain.id, 'alpha: main-checkout chore'); // so its row outlives the kill in check 10d
   const bMixed = await spawnWorker(b.id, { project: 'uipass', worktree: 'mixed' });
+  // Check 10d's victim. A conducted worker is temp, so killing it archives it
+  // and it leaves the Sessions list; the transcript makes that archive
+  // observable in the listing. (The in-place bar clearing of a row that stays
+  // is the happy-dom test "the bar clears in place when the worker dies".)
+  const bMain = await spawnWorker(b.id, { project: 'uipass' });
+  await seedTranscript(bMain.id, 'bravo: main-checkout chore');
   const handRes = (await api('POST', '/api/instances', { project: 'uipass', worktree: 'mixed', mode: 'bypassPermissions' })).body;
   await idle(i => i.id === handRes.id);
   const handSid = (await insts()).find(i => i.id === handRes.id).sessionId;
@@ -124,7 +142,7 @@ try {
 
   const owned = await waitFor(async () => {
     const all = await insts();
-    const want = [aSolo, aMixed, aMain, bMixed, bound].filter(Boolean).map(w => w.sessionId);
+    const want = [aSolo, aMixed, aMain, bMixed, bMain, bound].filter(Boolean).map(w => w.sessionId);
     return want.every(sid => all.find(i => i.sessionId === sid)?.ownerSessionId) ? all : false;
   });
   const expectedStage = bound
@@ -275,7 +293,7 @@ try {
       const h = [...document.querySelectorAll('#project-list .worktree-row')].find(x => x.querySelector('.worktree-name')?.textContent === w);
       return h ? getComputedStyle(h).boxShadow : null;
     }, wt);
-    await waitFor(async () => (await rowSel(handSid)) && (await rowSel(aSolo.sessionId)) && (await rowSel(aMain.sessionId)));
+    await waitFor(async () => (await rowSel(handSid)) && (await rowSel(aSolo.sessionId)) && (await rowSel(aMain.sessionId)) && (await rowSel(bMain.sessionId)));
     // 10 — ownership colour
     {
       const solo = await headSel('solo-a');
@@ -333,9 +351,15 @@ try {
     }
     // 10d — a worker killed loses its bar
     {
-      await api('DELETE', `/api/instances/${aMain.id}`);
-      const gone = await waitFor(async () => { const r = await rowSel(aMain.sessionId); return r && !r.owned ? r : false; }, { timeout: 10000 }).catch(async () => rowSel(aMain.sessionId));
-      check('10d a killed worker\'s row stays listed and loses its bar', !!gone && gone.bw === '0px' && !gone.owned, JSON.stringify(gone));
+      const before = await rowSel(bMain.sessionId);
+      await api('DELETE', `/api/instances/${bMain.id}`);
+      const archivedRow = await waitFor(async () => ((await api('GET', '/api/projects/uipass/sessions?includeArchived=1')).body ?? [])
+        .find(r => r.sessionId === bMain.sessionId && r.archived) ?? false, { timeout: 10000 }).catch(() => null);
+      const after = await waitFor(async () => ((await rowSel(bMain.sessionId)) === null ? 'gone' : false), { timeout: 10000 })
+        .catch(async () => rowSel(bMain.sessionId));
+      check('10d a killed conducted (temp) worker leaves no bar: archived, its row leaves the Sessions list',
+        bMain.temp === true && before?.bw === '3px' && !!archivedRow && after === 'gone',
+        `temp=${bMain.temp} before=${JSON.stringify(before)} archived=${!!archivedRow} after=${JSON.stringify(after)}`);
     }
     // 6 — kill B: Inactive (1), faded bar; B's live worker keeps colour B
     {
@@ -359,6 +383,26 @@ try {
         check('6b B\'s worker bar follows the server-reported owner', rb && (liveOwner ? rb.bc === (await colourOf(liveOwner)) : rb.bw === '0px'),
           `server ownerSessionId=${liveOwner} row=${JSON.stringify(rb)}`);
       }
+    }
+    // 6c — the default path: an exited TEMP conductor is archived, and must
+    // still be listed under Inactive (the sidebar fetches archived rows too).
+    {
+      await api('DELETE', `/api/instances/${c.id}`);
+      const archived = await waitFor(async () => {
+        const rows = (await api('GET', '/api/projects/.conduct/sessions?includeArchived=1')).body ?? [];
+        return rows.find(r => r.sessionId === cSid && r.archived) ?? false;
+      }, { timeout: 10000 }).catch(() => null);
+      await page.click('.sidebar-lens button[data-lens="missions"]');
+      const r = await waitFor(() => page.evaluate((s) => {
+        const m = document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`);
+        const det = document.querySelector('#mission-list details.mission-inactive');
+        return m ? { summary: det.querySelector('summary').textContent, inactive: m.classList.contains('inactive'),
+          title: m.querySelector('.mission-title').textContent } : false;
+      }, cSid), { timeout: 10000 }).catch(() => null);
+      const plain = ((await api('GET', '/api/projects/.conduct/sessions')).body ?? []).some(x => x.sessionId === cSid);
+      check('6c an exited temp conductor (archived on exit) is listed under Inactive',
+        !!archived && !plain && !!r && r.inactive && r.summary === 'Inactive (2)',
+        `server row archived=${!!archived} in plain listing=${plain} (must be false: only includeArchived finds it) sidebar=${JSON.stringify(r)}`);
     }
     // 13 — session view unchanged
     {

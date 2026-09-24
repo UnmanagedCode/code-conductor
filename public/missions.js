@@ -42,14 +42,15 @@ export function sessionFromInstance(inst) {
 
 const byActivityDesc = (a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
 
-// Every conductor — the non-archived `.conduct` disk rows unioned with the
-// `.conduct` instances, keyed by sessionId — split into live (an instance in a
-// live status) and inactive (disk-only, or an exited/crashed instance, which
-// keeps its instanceId so opening it behaves as it does for any dead session).
+// Every conductor — the `.conduct` disk rows (archived ones included: a temp
+// conductor is archived on exit) unioned with the `.conduct` instances, keyed
+// by sessionId — split into live (an instance in a live status) and inactive
+// (disk-only, or an exited/crashed instance, which keeps its instanceId so
+// opening it behaves as it does for any dead session).
 export function deriveMissions({ conductRows = [], instances = [] } = {}) {
   const bySid = new Map();
   for (const r of conductRows) {
-    if (!r?.sessionId || r.archived) continue;
+    if (!r?.sessionId) continue;
     bySid.set(r.sessionId, {
       sessionId: r.sessionId,
       title: r.title ?? null,
