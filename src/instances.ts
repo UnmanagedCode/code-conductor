@@ -95,6 +95,8 @@ import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
+import { LiveAskFacts, reduceAsk, type AskState } from './awaitingUser.ts';
+import { deriveAwaitingUser, chainEndingAt } from './awaitingUserTranscript.ts';
 import { PlanFileTracker } from './planFile.ts';
 import { cliEnvBase } from './cliEnv.ts';
 import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
@@ -216,6 +218,7 @@ interface InstanceConstructorInput {
   temp?: boolean;
   conducted?: boolean;
   callerInstanceId?: string | null;
+  rootOwnerSessionId?: string | null;
   debug?: boolean;
   claudePluginDirs?: string[];
   launcher?: LauncherLike;
@@ -340,6 +343,16 @@ export function softInterruptDeadlineMs(): number {
 // indefinitely, so respawn can resume them) is NOT a live worker.
 export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
+}
+
+// The root owner a new instance inherits from its spawner: a conducted caller
+// passes on its own root, anything else IS the root. Resolved once at create so a
+// grandchild stays attributed to its conductor after the intermediate worker has
+// exited and left byId. By induction the result is a non-conducted session's id,
+// or null.
+function rootOwnerOf(caller: Instance | undefined): string | null {
+  if (!caller) return null;
+  return caller.conducted ? caller.rootOwnerSessionId : caller.sessionId;
 }
 
 // An instance with a process attached, or inside a window where one is coming
@@ -624,6 +637,15 @@ export class Instance extends EventEmitter implements InstanceLike {
   temp: boolean;
   conducted: boolean;
   callerInstanceId: string | null;
+  // Public sessionId of the root of this instance's live spawn chain, resolved
+  // once at create (see _doCreateResolved) and never persisted. Reported as
+  // summary().ownerSessionId only while this conducted instance is live.
+  rootOwnerSessionId: string | null;
+  // The sticky ask this session is waiting on the user for (src/awaitingUser.ts),
+  // hydrated from the transcript at launch and reduced from live events after.
+  // Never set on a conducted worker; never persisted.
+  _awaitingUser: AskState;
+  _liveAsk: LiveAskFacts;
   debug: boolean;
   debugDir: string | null;
   _debugStreams: { stdin: WriteStream; stdout: WriteStream; stderr: WriteStream } | null;
@@ -771,7 +793,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -833,14 +855,17 @@ export class Instance extends EventEmitter implements InstanceLike {
     // `temp`. Persisted durably to the `<store>/conducted-sessions.json`
     // sidecar (see _writeSessionMetadata) so it survives exit / restart /
     // --resume; the sidebar groups these under a `— conducted —`
-    // separator. Purely a marker + display axis: no behavioural
-    // divergence vs a normal session.
+    // separator. A marker + display axis; its one behavioural divergence is
+    // that a conducted worker never carries `awaitingUser`.
     this.conducted = !!conducted;
     // Instance ID of the conductor that spawned this worker via
     // spawn_instance. Null for sessions created by the browser UI / HTTP
     // path. Surfaced in summary() so GET /api/instances lets the frontend
     // build a caller→workers map for the sub-agent panel.
     this.callerInstanceId = callerInstanceId ?? null;
+    this.rootOwnerSessionId = rootOwnerSessionId ?? null;
+    this._awaitingUser = null;
+    this._liveAsk = new LiveAskFacts(() => this._planAutoApproves());
     // When true, raw CLI stdin/stdout/stderr is mirrored to the
     // central store's debug dir for offline inspection. Streams + the
     // debug dir path are populated at spawn time.
@@ -1195,6 +1220,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       temp: this.temp,
       conducted: this.conducted,
       callerInstanceId: this.callerInstanceId,
+      // The root conductor's public id — for a live conducted worker only; a
+      // dead instance and a hand-spawned session report null.
+      ownerSessionId: this.conducted && !isDeadStatus(this.status) ? this.rootOwnerSessionId : null,
+      awaitingUser: this._awaitingUser?.kind ?? null,
+      awaitingUserSource: this._awaitingUser?.source ?? null,
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
@@ -1226,6 +1256,34 @@ export class Instance extends EventEmitter implements InstanceLike {
       overageStoppedUnarmed: !!this._overageStoppedUnarmed,
       overageResetsAt: gate.active ? gate.resetsAt : null,
     };
+  }
+
+  // The server-side plan auto-approve rule: read by the plan_request gate in
+  // _handleStdoutLine and by LiveAskFacts for the envelope arm, which arrives
+  // before the event that gate annotates.
+  _planAutoApproves(): boolean {
+    return this.autoApprovePlan && this.mode === 'plan' && !!this.proc;
+  }
+
+  _setAwaitingUser(next: AskState): void {
+    if (next?.kind === this._awaitingUser?.kind && next?.source === this._awaitingUser?.source) return;
+    this._awaitingUser = next;
+    this.emit('status', this.summary());
+  }
+
+  // Derive the pre-launch state from the transcript: `newest` is the segment
+  // this launch resumes, scanned after every other segment in the chain. A
+  // read failure degrades to "not waiting", logged on the session's stream.
+  async _hydrateAwaitingUser(newest: string): Promise<void> {
+    this._liveAsk.onTurnStart();
+    let next: AskState = null;
+    try {
+      next = await deriveAwaitingUser(this.transcriptPlace, chainEndingAt(this._segments, newest));
+    } catch (err) {
+      this._emitUi({ kind: 'system', subtype: 'stderr',
+        data: { line: `awaiting-user: transcript scan failed: ${(err as Error).message}` } });
+    }
+    this._setAwaitingUser(next);
   }
 
   setAutoApprovePlan(enabled: boolean): void {
@@ -1486,6 +1544,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
     if (next === 'turn') this._taskNotificationPending = false;
+    if (next === 'turn') this._liveAsk.onTurnStart();
     // A new turn starts: clear the per-turn cache-miss capture so the next
     // message_start is treated as this turn's first request (see the
     // constructor comment). Fires exactly once per turn start, for both
@@ -1509,7 +1568,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.emit('status', this.summary());
   }
 
-  _emitUi(ev: UiEvent): void {
+  // `replayed` is passed only by loadHistory's replay loop: the transcript scan
+  // at launch already owns everything before the process started, so replayed
+  // events must not reach the awaiting-user reducer (a replayed real user_echo
+  // would clear a hydrated ask that no replayed turn_end restores).
+  _emitUi(ev: UiEvent, { replayed = false }: { replayed?: boolean } = {}): void {
     // Track the ephemeral live thinking-token count for the OPEN thinking
     // block (the per-token thinking_tokens events are never retained — see
     // EventLog.push). Funneled here alongside userIndex so every emit path
@@ -1580,6 +1643,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // after emit() would miss the WS frame.
     this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
+    if (!replayed && !this.conducted) {
+      for (const fact of this._liveAsk.feed(wrapped)) this._setAwaitingUser(reduceAsk(this._awaitingUser, fact));
+    }
     // AFTER the emit: the boundary event that makes the stream quiescent must
     // reach subscribers (and the ring) before the abort is dispatched.
     this._maybeFireArmedInterrupt();
@@ -1718,7 +1784,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       return; // silent no-op for the replay itself
     }
     for (const line of result.lines) {
-      for (const ev of line.events) this._emitUi(ev);
+      for (const ev of line.events) this._emitUi(ev, { replayed: true });
     }
     if (result.lastLeafUuid) this._lastLeafUuid = result.lastLeafUuid;
     // One-shot, set by pruneSession(): the jsonl's newest assistant `usage` still
@@ -1819,6 +1885,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       this.backingSessionId = randomUUID();
       this.sessionId = await mintPublicId(this.backingSessionId);
       this._segments = [this.backingSessionId];
+    } else if (!this.conducted) {
+      await this._hydrateAwaitingUser((resume ?? this.backingSessionId) as string);
     }
     // Recompose the conductor's role doc into `.conduct/CONVENTIONS.md` before
     // the process starts, so it reflects the live convention selection. HERE and
@@ -2679,10 +2747,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // The event is annotated so the rendered card still shows the
       // "auto-approved" state on every subscribed client.
       let autoApproveFire = false;
-      if (ev.kind === 'plan_request'
-          && this.autoApprovePlan
-          && this.mode === 'plan'
-          && this.proc) {
+      if (ev.kind === 'plan_request' && this._planAutoApproves()) {
         ev.autoApproved = true;
         autoApproveFire = true;
       }
@@ -5093,6 +5158,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       temp: !!temp,
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
+      rootOwnerSessionId: rootOwnerOf(callerInstanceId ? this.byId.get(callerInstanceId) : undefined),
       // `debug` falls back to the persisted conductor-wide default only when
       // the caller omitted it (undefined) — an explicit true/false always wins.
       // `??` also treats an explicit `null` as "omitted" (falls through to the

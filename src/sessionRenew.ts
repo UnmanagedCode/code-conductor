@@ -33,6 +33,7 @@
 
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.js';
+import { RENEW_REQUEST_LEAD } from './injectedTurns.ts';
 
 // Defensive ceiling: if `/clear` never rotates the session (the real CLI always
 // does — this only guards a wedged/hung subprocess), abandon the pending
@@ -97,7 +98,7 @@ export const RENEW_SUMMARY_TEMPLATE =
 // path, and carries the conductor's pre-directive under its own fence.
 export function buildRenewRequest({ directive }: { directive?: string | null } = {}): string {
   const parts = [
-    'Your conductor is asking you to renew your context now (renew_session).',
+    RENEW_REQUEST_LEAD,
     'DECLINE if you are mid-operation or holding state only you can land — an unfinished rebase, '
     + 'uncommitted work, a running check whose result nobody else has. Say so and end this turn '
     + 'WITHOUT calling renew_session; nothing is cleared.',

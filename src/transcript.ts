@@ -14,7 +14,7 @@ import { sessionFilePath, subAgentDirPath, type TranscriptPlacement } from './pr
 import { markerPermissionMode } from './sessionModes.ts';
 import {
   consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
-  isTaskNotificationContent, attachSkillLoad,
+  isTaskNotificationContent, attachSkillLoad, stampCliInjected,
   type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
@@ -150,7 +150,7 @@ export function replayPersistedLine(
     // user_echo live.
     if (isTaskNotificationContent(content)) return tagAndReturn();
     if (typeof content === 'string') {
-      events.push({ kind: 'user_echo', text: content });
+      events.push(...stampCliInjected([{ kind: 'user_echo', text: content }], line));
       return tagAndReturn();
     }
     if (Array.isArray(content)) {
@@ -160,6 +160,7 @@ export function replayPersistedLine(
       // remain their own events.
       const userEvents = consolidateUserContent(content);
       attachSkillLoad(userEvents, line, pendingSkillLoads);
+      stampCliInjected(userEvents, line);
       for (const ev of userEvents) events.push(ev);
     }
     return tagAndReturn();

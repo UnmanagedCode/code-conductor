@@ -18,26 +18,13 @@
 import { getAccountUsage } from './accountUsage.ts';
 import { usageOverThreshold } from './appSettings.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
+import {
+  AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
+} from './injectedTurns.ts';
 
-// Prompt delivered by the overage auto-resume timer to a still-alive session
-// once the rate-limit window has reset (onOverage: 'stop-resume').
-export const AUTO_RESUME_TEXT =
-  'The rate-limit window has reset. Please continue where you left off.';
-
-// Softened preamble for a queued-only session (idle/new — never stopped
-// mid-work), so it doesn't get told to "continue where you left off".
-const QUEUED_ONLY_RESUME_TEXT =
-  'The rate-limit window has reset. Delivering the messages you queued while paused:';
-
-// Preamble for a session the overage stop found ALREADY IDLE — e.g. a conductor
-// parked awaiting a worker's wake. Nothing of its own was interrupted, so
-// AUTO_RESUME_TEXT's "continue where you left off" would be false; and it queued
-// nothing, so QUEUED_ONLY_RESUME_TEXT's promise of queued messages would be too.
-// Its conductor clauses still ride along — an idle-parked conductor held ≥1 armed
-// wake by construction (that is what made it in-control), so the stop severed it.
-export const IDLE_PARKED_RESUME_TEXT =
-  'The rate-limit window has reset. You were idle when the overage stop fired, so none '
-  + 'of your own work was interrupted.';
+// The three preambles live in injectedTurns.ts, where the awaiting-user
+// classifier recognises the same bytes.
+export { AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT };
 
 // The ONE mapping from the persisted overage flags to which preamble a resume
 // carries. Three mutually exclusive states; `_overageWasStopped` wins if both
@@ -111,7 +98,7 @@ interface OverageQueueItem {
 // short numbered, clock-stamped item so the model sees what the user typed
 // while the session was paused. `kind` picks the preamble (see overageResumeKind);
 // `conductor` adds whichever conductor clauses apply.
-function buildCombinedResumeText(
+export function buildCombinedResumeText(
   queue: OverageQueueItem[], kind: ResumeKind = 'stopped',
   conductor: { droppedCallbacks?: boolean; unarmedWorkers?: boolean } = {},
 ): string {
@@ -138,7 +125,7 @@ function buildCombinedResumeText(
       : (e.attachments?.length ? '(attachment)' : '(empty)');
     return `${i + 1}.${stamp} ${body}`;
   });
-  return `${preamble}\n\nWhile paused you queued ${queue.length} message${queue.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
+  return `${preamble}\n\n${QUEUED_SECTION_LEAD} ${queue.length} message${queue.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
 }
 
 // After this many CONSECUTIVE "can't confirm" usage fetches (null / backoff /

@@ -1,0 +1,9 @@
+{"cc": "prompt", "text": "Summarise the backlog."}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_00000000000000000000", "role": "assistant", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Backlog summarised. Shall I file the three cards?"}}}
+{"type": "assistant", "message": {"id": "msg_00000000000000000000", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "Backlog summarised. Shall I file the three cards?"}], "stop_reason": null}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+{"type": "stream_event", "event": {"type": "message_stop"}}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0}
+{"type": "user", "message": {"role": "user", "content": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation."}, "isSynthetic": true, "parent_tool_use_id": null}

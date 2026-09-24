@@ -1,0 +1,793 @@
+{
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "$SID",
+      "cwd": "$CWD",
+      "permissionMode": "$MODE"
+    }
+  ],
+  "turns": [
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_first",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "I finished the first pass.\n\nShould I continue with the tests?"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next0",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next1",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next2",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next3",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next4",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next5",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next6",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next7",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next8",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next9",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next10",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_next11",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "Noted."
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    }
+  ]
+}

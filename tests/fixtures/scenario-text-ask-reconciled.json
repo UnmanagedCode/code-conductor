@@ -1,0 +1,390 @@
+{
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "$SID",
+      "cwd": "$CWD",
+      "permissionMode": "$MODE"
+    }
+  ],
+  "turns": [
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_first",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "I finished the first pass.\n\nShould I continue with the tests?"
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next0",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next1",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next2",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next3",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next4",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next5",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next6",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next7",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next8",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next9",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next10",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_next11",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "stop_reason": null
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0,
+          "is_error": false
+        }
+      ]
+    }
+  ]
+}

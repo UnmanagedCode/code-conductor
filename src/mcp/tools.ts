@@ -110,7 +110,8 @@ export function buildTools(): Tool[] {
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, awaitingWake, playbook, stage}. ' +
+        'overageActive, overageResetsAt, ownerSessionId, awaitingUser, awaitingUserSource, ' +
+        'awaitingWake, playbook, stage}. ' +
         'Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
         'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity is the ' +
         'timestamp on the session\'s own last record, so it is when that session actually ran. ' +
@@ -127,8 +128,16 @@ export function buildTools(): Tool[] {
         '`renew_session` or by a prune, and `lastRotatedAt` when — a quiet worker that just ' +
         'rotated has a fresh context, not a stalled one. `segmentCount` is how many times over. ' +
         '`worktree` is the worktree\'s full metadata object (or null); the rendering shows its name. ' +
+        '`ownerSessionId` is the sessionId of the conductor at the root of a live worker\'s spawn ' +
+        'chain — null for a hand-spawned session, and for any session that is not live. ' +
+        '`awaitingUser` (`question` | `plan` | null) says the session asked the user something and no ' +
+        'real user message has arrived since; `awaitingUserSource` is `tool` (AskUserQuestion / ' +
+        'ExitPlanMode) or `text` (a turn that ended asking). It is sticky, never set on a conducted ' +
+        'worker, and not derived for an archived row here. A send over MCP (send_prompt, ' +
+        'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
         'The rendering omits pid / createdAt / contextWindowTokens, and shows ' +
-        'temp / conducted / debug / overage / auto-resume / resumes-hot only when they deviate from ' +
+        'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
+        'when they deviate from ' +
         'their default — so anything on a `flags` line is news. ' +
         '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
         'recorded in that mode, or it has no recorded mode and therefore falls back to it. It reads the ' +
@@ -169,6 +178,7 @@ export function buildTools(): Tool[] {
         'A RETIRED session renders the single session line instead of the worker block, and carries ' +
         'no mode/effort/model — there is no process to read them off; `resumes-hot` is the one mode ' +
         'fact available off-process. ' +
+        '`awaiting-user` is derived for the described session even when it is archived. ' +
         '`sessionId` takes the handle only: a backing/segment id soft-refuses SESSION_NOT_A_HANDLE ' +
         'naming the handle that owns it. ' +
         'SESSION_UNLOCATABLE means the transcript exists but no registered project or worktree owns ' +

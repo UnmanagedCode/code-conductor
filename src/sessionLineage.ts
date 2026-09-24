@@ -110,6 +110,12 @@ function liveSegments(row: LineageRow): LineageSegment[] {
   return row.chain.filter(s => !s.dropped);
 }
 
+// A row's live segment ids, oldest first — segmentsFor's answer for a caller
+// already holding the Lineage, so a per-row loop never re-reads the store.
+export function liveSegmentIdsOf(row: LineageRow): string[] {
+  return liveSegments(row).map(s => s.id);
+}
+
 function indexBacking(byPublic: Map<string, LineageRow>): Map<string, string> {
   const byBacking = new Map<string, string>();
   for (const [publicId, row] of byPublic) {

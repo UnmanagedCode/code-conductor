@@ -39,6 +39,11 @@ export interface InstanceSummary {
   mode: string;
   autoApprovePlan?: boolean;
   interrupting?: boolean;
+  // Live ownership + the sticky ask (docs/architecture.md → "Ownership and
+  // awaitingUser"). `ownerSessionId` is non-null only on a live conducted row.
+  ownerSessionId?: string | null;
+  awaitingUser?: 'question' | 'plan' | null;
+  awaitingUserSource?: 'tool' | 'text' | null;
   [key: string]: unknown;
 }
 

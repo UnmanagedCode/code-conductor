@@ -1784,6 +1784,12 @@ export interface SessionRow {
   // value, never the raw record: a consumer that rendered "no record" as "not
   // hot" would tell a reader a hot resume is safe.
   resumeMode: string;
+  // The sticky ask derived from the transcript (src/awaitingUserTranscript.ts).
+  // Always null on a conducted or archived row unless the listing was asked to
+  // derive that one row (`deriveAwaitingFor`). A disk row has no owner: that
+  // exists only while a session is live.
+  awaitingUser: 'question' | 'plan' | null;
+  awaitingUserSource: 'tool' | 'text' | null;
 }
 
 // One directory walk answering both "which sessions are here" and "how many of
@@ -1797,7 +1803,7 @@ export interface SessionRow {
 export async function listSessionsForCwdWithCounts(
   place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
-  { includeArchived = true }: { includeArchived?: boolean } = {},
+  { includeArchived = true, deriveAwaitingFor = null }: { includeArchived?: boolean; deriveAwaitingFor?: string | null } = {},
 ): Promise<{ rows: SessionRow[]; archivedCount: number }> {
   const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   let entries: string[];
@@ -1816,8 +1822,10 @@ export async function listSessionsForCwdWithCounts(
   const modes = await loadAllSessionModes();
   // Sixth bulk load, same rule. Lazy import: sessionLineage.ts imports
   // orchStoreRoot() from here, so a static edge would close a cycle.
-  const { loadLineage } = await import('./sessionLineage.ts');
+  const { loadLineage, liveSegmentIdsOf } = await import('./sessionLineage.ts');
   const lineage = await loadLineage();
+  // Same cycle as above: the scanner reads transcripts through this module.
+  const { deriveAwaitingUser, chainEndingAt } = await import('./awaitingUserTranscript.ts');
   const out: SessionRow[] = [];
   let archivedCount = 0;
   for (const name of entries) {
@@ -1840,11 +1848,22 @@ export async function listSessionsForCwdWithCounts(
     }
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
+    const rowId = projectRowId(sid, lineage);
+    // Cost bound: archived rows (every exited conductor, being temp) are not
+    // derived in a list read unless `deriveAwaitingFor` names the row. A
+    // conducted row never is — it never carries the flag, on any surface.
+    let ask: Awaited<ReturnType<typeof deriveAwaitingUser>> = null;
+    if (!conducted.has(sid) && (!isArchived || rowId === deriveAwaitingFor)) {
+      const lineageRow = rowId === sid ? null : lineage.byPublic.get(rowId);
+      const chain = lineageRow ? chainEndingAt(liveSegmentIdsOf(lineageRow), sid) : [sid];
+      try { ask = await deriveAwaitingUser(place, chain); }
+      catch (e) { console.warn(`awaiting-user: scan of ${sid} failed: ${(e as Error).message}`); }
+    }
     out.push({
       // The one projected field. Every sidecar below stays keyed to the FILENAME
       // — that is what they are keyed to on disk, and re-keying them would have
       // needed a migration, deliberately not written.
-      sessionId: projectRowId(sid, lineage),
+      sessionId: rowId,
       firstPrompt,
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),
@@ -1853,6 +1872,8 @@ export async function listSessionsForCwdWithCounts(
       lastActivity: await lastActivityOf(full, stat),
       size: stat.size,
       resumeMode: effectiveResumeMode(modes.get(sid) ?? null),
+      awaitingUser: ask?.kind ?? null,
+      awaitingUserSource: ask?.source ?? null,
     });
   }
   out.sort((a, b) => b.lastActivity - a.lastActivity);
