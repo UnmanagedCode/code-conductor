@@ -69,6 +69,7 @@ import { isDeadStatus } from '../instances.ts';
 // sessionLineage.ts imports orchStoreRoot from projects.ts, and nothing imports
 // this module.
 import { publicIdFor } from '../sessionLineage.ts';
+import { applySessionTitle } from '../sessionTitles.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
@@ -1245,6 +1246,21 @@ export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId:
   if ('soft' in r) return r.soft;
   const res = instances.setIdleTimeout(callerId, sessionId, timeoutSeconds * 1000);
   return { sessionId, armed: res.armed };
+}
+
+// Title the CALLING session. There is no target argument: callerId is the
+// ?caller= handle resolved to the caller's public sessionId, and the schema's
+// unknown-property refusal rejects any sessionId a caller tries to pass.
+export async function setSessionTitle({ title }: { title: string }, { instances, callerId }: McpCtx) {
+  if (!instances) throw new Error('orchestrator has no InstanceManager');
+  if (!callerId) {
+    throw new Error(
+      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'set_session_title titles the calling session, so it only works for a code-conductor-managed instance.',
+    );
+  }
+  const stored = await applySessionTitle(instances, callerId, title);
+  return { sessionId: callerId, title: stored };
 }
 
 // TWO FORMS, one tool.

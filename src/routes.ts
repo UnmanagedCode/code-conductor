@@ -70,7 +70,7 @@ import {
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
-import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
+import { applySessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { getSummaries, setSummary, deleteSummaries, SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { resolveBacking } from './sessionLineage.ts';
 import { generateSummary, countMessages } from './summarize.ts';
@@ -1051,21 +1051,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // re-renders without a page reload.
   r.put('/sessions/:sessionId/title', async (req, res, next) => {
     try {
-      const { sid, backing } = await sidParam(req.params.sessionId);
+      const { sid } = await sidParam(req.params.sessionId);
       const raw = jsonBody(req).title;
       if (raw != null && typeof raw !== 'string') {
         throw httpError(400, 'title must be a string');
       }
-      // Keyed to the TRANSCRIPT: listSessionsForCwdWithCounts looks titles up by
-      // filename and Instance._hydrateTitle reads the backing id, so a title
-      // written under the public id would reach neither.
-      const stored = await setSessionTitle(backing, raw ?? '');
-      if (instances) {
-        for (const id of instances.idsForSession(sid)) {
-          const inst = instances.get(id);
-          if (inst) inst.setTitle(stored);
-        }
-      }
+      const stored = await applySessionTitle(instances, sid, raw ?? '');
       broadcastProjects();
       res.json({ ok: true, sessionId: sid, title: stored, maxLength: MAX_TITLE_LEN });
     } catch (e) { next(e); }
