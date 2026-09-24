@@ -68,9 +68,14 @@ async function importConversation() {
   return Conversation;
 }
 
+// The worktree name deliberately carries markdown-active characters (a
+// backtick and asterisks) that public/markdown.js WOULD turn into `code` and
+// `strong` elements if this block were ever routed through the markdown
+// renderer, so the "never markdown" test below has something to actually
+// discriminate on.
 const STATE_BLOCK = `${MECHANICAL_STATE_HEADER}\n`
   + 'Live instances you spawned:\n'
-  + '  - sessionId=abc12345 project=p worktree=my_branch_name status=idle\n'
+  + '  - sessionId=abc12345 project=p worktree=`my_branch` **name** status=idle\n'
   + 'Workers you own (their next turn wakes you):\n'
   + '  (none)';
 
@@ -175,10 +180,14 @@ test('the mechanical state renders as literal text, never markdown', async () =>
 
   const stateEl = details.querySelector('.renew-state');
   assert.ok(stateEl, '.renew-state element present');
-  assert.ok(stateEl.textContent.includes('worktree=my_branch_name'),
-    'the worktree line appears verbatim');
-  assertNull(stateEl.querySelector('em'), 'underscores in the state block never become markdown emphasis');
-  assertNull(stateEl.querySelector('strong'), 'no markdown elements at all in the state block');
+  assert.ok(stateEl.textContent.includes('worktree=`my_branch` **name**'),
+    'the backtick- and asterisk-carrying line appears verbatim, unrendered');
+  // The discriminating check: markdown.js WOULD turn the backtick/asterisk
+  // fixture above into `code`/`strong` elements, so a bare "no em/strong"
+  // check can't fail even when routed through markdown (this renderer
+  // doesn't treat intra-word underscores as emphasis at all). Requiring zero
+  // child elements is what actually pins "never rendered as markdown".
+  assert.equal(stateEl.children.length, 0, 'the state block has no child elements — pure textContent');
 });
 
 test('raw view and copy of a renew seed yield the exact seed text', async () => {
@@ -220,6 +229,18 @@ test('ordinary prompts and forward-framed prompts still render as plain user bub
   assertNull(plainWrap.querySelector('details.block.renew-seed'), 'no renew-seed details');
   assert.ok(plainWrap.querySelector('.user-text'), 'plain prompt still gets a user-text body');
   assert.ok(!plainWrap.classList.contains('renew-seed'), 'wrap carries no renew-seed class');
+
+  // A forward frame embeds another worker's recent output — including,
+  // potentially, a renew seed it produced itself — after a header, so the
+  // embedded seed sits at a non-zero index and must not be detected.
+  const innerSeed = buildRenewSeed({ summary: 'the forwarded worker\'s own handoff summary' });
+  const forwardFrame = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---\n'
+    + '--- message 1/1 ---\n' + innerSeed + '\n--- END FORWARDED WORKER OUTPUT ---\n\nplease review this';
+  conv.apply({ kind: 'user_echo', text: forwardFrame, userIndex: 1 });
+  const forwardWrap = [...root.querySelectorAll('.msg.user')][1];
+  assertNull(forwardWrap.querySelector('details.block.renew-seed'), 'no renew-seed details for a forward frame');
+  assert.ok(forwardWrap.querySelector('.user-text'), 'forward frame still gets a plain user-text body');
+  assert.ok(!forwardWrap.classList.contains('renew-seed'), 'forward frame wrap carries no renew-seed class');
 });
 
 test('a wake stub still renders as the wake bubble, not a renew seed', async () => {

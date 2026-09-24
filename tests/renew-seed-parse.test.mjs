@@ -58,6 +58,15 @@ test('parseRenewSeed returns null for an ordinary prompt, a wake stub and a forw
   const fakeQuote = '--- HANDOFF SUMMARY ---\nsomeone pasted this fence without the preamble';
   assert.equal(parseRenewSeed(fakeQuote), null, 'fence text with no leading preamble');
 
+  // A forward frame (send_prompt({forward})) prepends a header before the
+  // forwarded worker's own recent output, so a whole renew seed embedded
+  // inside it — as the forwarded worker's own reseed turn — sits at a
+  // non-zero index, never at offset 0 the way a real echo's text does.
+  const innerSeed = buildRenewSeed({ summary: 'the forwarded worker\'s own handoff summary' });
+  const forwardFrame = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---\n'
+    + '--- message 1/1 ---\n' + innerSeed + '\n--- END FORWARDED WORKER OUTPUT ---\n\nplease review this';
+  assert.equal(parseRenewSeed(forwardFrame), null, 'forward frame carrying an embedded seed at a non-zero index');
+
   assert.equal(parseRenewSeed(null), null, 'non-string input');
   assert.equal(parseRenewSeed(undefined), null, 'undefined input');
 });
@@ -77,6 +86,27 @@ test('parseRenewSeed splits on the last mechanical-state header so a summary quo
   assert.ok(parsed);
   assert.equal(parsed.summary, summaryQuotingHeader, 'the quoted header stayed inside the summary');
   assert.equal(parsed.state, stateContentOf(stateBlock), 'the real (last) state block was split off correctly');
+});
+
+// A followUp is recognised only immediately before a real state block — never
+// in a state-less seed, since there a real followUp and a summary that merely
+// quotes the fence text are byte-identical (buildRenewSeed trims and joins
+// both the same way), and a state-less seed with a real followUp does not
+// occur in production (buildStateBlock is always built before buildRenewSeed
+// is called). See public/renewSeed.js's parseRenewSeed comment for the with-
+// state case, which remains ambiguous by the same argument and is left
+// unresolved deliberately — see this test's title for the chosen tradeoff.
+test('parseRenewSeed never splits a follow-up out of a state-less seed, even when the summary quotes the fence verbatim', () => {
+  const summaryQuotingFollowUp =
+    'Notes: quoting the follow-up fence text below because that is what the conductor asked for:\n\n'
+    + '--- YOUR CONDUCTOR\'S FOLLOW-UP DIRECTIVE ---\n'
+    + 'This quoted text should stay part of the summary, not become a phantom follow-up section.';
+  const seed = buildRenewSeed({ summary: summaryQuotingFollowUp });
+  const parsed = parseRenewSeed(seed);
+  assert.ok(parsed);
+  assert.equal(parsed.summary, summaryQuotingFollowUp, 'the quoted fence and everything after it stayed in the summary');
+  assert.equal(parsed.followUp, null, 'no state block to anchor against, so no follow-up is recognised');
+  assert.equal(parsed.state, null);
 });
 
 test('splitSummarySections splits a template-conforming summary into catalog titles in document order', () => {

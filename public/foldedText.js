@@ -47,8 +47,8 @@ export function renderWakeBodyInto(container, text) {
 // summary heading (falling back to a single "Handoff summary" section when
 // none matched), then the conductor's follow-up directive (if any), then the
 // mechanical state block. The state block renders as literal textContent,
-// never markdown — same reasoning as .wake-meta: `worktree=my_branch_name`
-// would otherwise mangle into italics.
+// never markdown — same reasoning as .wake-meta: a stray backtick or
+// asterisk in a worktree/project name would otherwise mangle into an element.
 export function renderRenewSeedInto(container, text) {
   container.textContent = '';
   const parsed = parseRenewSeed(text);

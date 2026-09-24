@@ -779,8 +779,8 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .renew-section + .renew-section { margin-top: 8px; }
 .renew-section-label { color: var(--muted); font-size: 11px; font-weight: 600; margin-bottom: 2px; }
 /* Mechanical state: literal textContent, never markdown — same reasoning as
-   .wake-meta, since a `worktree=my_branch_name` line would otherwise mangle
-   into italics. */
+   .wake-meta, since a stray backtick or asterisk in a worktree/project name
+   would otherwise mangle into an element. */
 .renew-state {
   font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
   white-space: pre-wrap; overflow-wrap: anywhere;

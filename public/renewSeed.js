@@ -56,8 +56,9 @@ export function buildRenewSeed({ summary, followUp = null, stateBlock = null } =
 // Parse a user-echo text into its renew-seed parts, or null when it isn't
 // one. The mechanical state block is always the LAST part buildRenewSeed
 // appends, so its header is found via lastIndexOf and cut off the tail
-// first; the follow-up fence (if present) is then found the same way in
-// what remains, leaving the summary as whatever is left.
+// first; the follow-up fence (only ever placed immediately before a real
+// state block — see the followUp comment below) is then found the same way
+// in what remains, leaving the summary as whatever is left.
 export function parseRenewSeed(text) {
   const prefix = RENEW_SEED_PREAMBLE + '\n\n' + HANDOFF_FENCE + '\n';
   if (typeof text !== 'string' || !text.startsWith(prefix)) return null;
@@ -72,12 +73,22 @@ export function parseRenewSeed(text) {
     rest = rest.slice(0, i);
   }
 
+  // A followUp is recognised only where buildRenewSeed could actually have
+  // placed one: immediately before a real mechanical-state block. Without a
+  // state block to anchor against, a real followUp and a summary that merely
+  // QUOTES the follow-up fence text are byte-identical — buildRenewSeed
+  // trims and joins both the same way — so there is no way to tell them
+  // apart from the text alone. That shape doesn't occur in production
+  // (buildStateBlock is always called before buildRenewSeed), so it's safe
+  // to never split there; a quoted fence stays part of the summary.
   let followUp = null;
-  const followUpMarker = '\n\n' + FOLLOWUP_FENCE + '\n';
-  const j = rest.lastIndexOf(followUpMarker);
-  if (j >= 0) {
-    followUp = rest.slice(j + followUpMarker.length);
-    rest = rest.slice(0, j);
+  if (i >= 0) {
+    const followUpMarker = '\n\n' + FOLLOWUP_FENCE + '\n';
+    const j = rest.lastIndexOf(followUpMarker);
+    if (j >= 0) {
+      followUp = rest.slice(j + followUpMarker.length);
+      rest = rest.slice(0, j);
+    }
   }
 
   return { summary: rest, followUp, state };
