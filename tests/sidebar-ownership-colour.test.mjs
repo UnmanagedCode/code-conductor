@@ -129,6 +129,26 @@ test('the bar clears in place when the worker dies', async () => {
   assert.deepEqual(barOf(after), { owned: false, color: '' });
 });
 
+// mergeLive's overlay branch (a live instance WITH a matching disk row, e.g. a
+// resumed non-temp conducted worker) must carry ownerSessionId onto the row,
+// not only the synthetic branch.
+test('a live owned session that also has a disk row keeps its owner\'s bar and tooltip', async () => {
+  const { root, sidebar, conductorColor } = await setupSidebar({
+    onLoadSessions: async (name, wt) => (name === 'proj' && !wt
+      ? [{ sessionId: 'wr', firstPrompt: 'resumed worker', conducted: true, lastActivity: 5 }]
+      : []),
+  });
+  await render(sidebar, root, {
+    projects: [project('proj', { sessions: { count: 1, lastActivity: 5 } })],
+    instances: [conductor('A', { title: 'Alpha' }), worker('wr', 'A', 'proj', null, { temp: false })],
+  });
+  const row = rowOf(root, 'wr');
+  assert.ok(row, 'the row renders');
+  assert.ok(row.closest('li')._holder.session.synthetic !== true, 'fixture: the row came through the overlay branch, not the synthetic one');
+  assert.deepEqual(barOf(row), { owned: true, color: conductorColor('A') });
+  assert.match(row.title, /\nconductor: Alpha$/);
+});
+
 test('a single-owner worktree head loses its bar in place when its last owned worker goes', async () => {
   const { root, sidebar, conductorColor } = await setupSidebar();
   const projects = [project('proj', { worktrees: ['solo'] })];

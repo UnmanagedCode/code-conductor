@@ -32,9 +32,17 @@ async function install(fetchImpl) {
 
 const ok = (body) => ({ ok: true, status: 200, json: async () => body });
 
-test('an archived resume restores the session first, then resumes it', async () => {
-  const h = await install(async (url) => (url === '/api/instances' ? ok({ id: 'inst-T' }) : ok({ ok: true })));
-  await h.resumeSession({ projectName: '.conduct', worktreeName: null, sessionId: 'T', archived: true });
+// The resume waits for the restore to SETTLE: while the restore response is
+// still pending, no instance POST has gone out.
+test('an archived resume does not POST the instance until the restore has resolved', async () => {
+  let releaseRestore;
+  const restorePending = new Promise(r => { releaseRestore = r; });
+  const h = await install(async (url) => (url === '/api/instances' ? ok({ id: 'inst-T' }) : restorePending));
+  const done = h.resumeSession({ projectName: '.conduct', worktreeName: null, sessionId: 'T', archived: true });
+  for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual(h.calls, ['POST /api/projects/.conduct/sessions/T/restore'], 'restore pending: no instance POST yet');
+  releaseRestore(ok({ ok: true }));
+  await done;
   assert.deepEqual(h.calls, [
     'POST /api/projects/.conduct/sessions/T/restore',
     'POST /api/instances',

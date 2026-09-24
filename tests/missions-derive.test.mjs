@@ -87,6 +87,34 @@ test('both groups order newest activity first', () => {
   assert.deepEqual(inactive.map(c => c.sessionId), ['D2', 'D3', 'D1']);
 });
 
+// A conductor's activity is the LATER of its disk row and its live instance
+// (lastResponseAt ?? createdAt). Each case is built so the max, and only the
+// max, decides the order against a single-source neighbour.
+test('a conductor\'s activity is the later of its disk row and its instance — whichever side is later decides the order', async (t) => {
+  await t.test('disk activity is the later one', () => {
+    const { live } = M.deriveMissions({
+      conductRows: [{ sessionId: 'X', lastActivity: 500 }],
+      instances: [
+        inst({ id: 'x', project: '.conduct', sessionId: 'X', createdAt: 100 }), // instance alone: 100
+        inst({ id: 'y', project: '.conduct', sessionId: 'Y', createdAt: 300 }),
+      ],
+    });
+    assert.deepEqual(live.map(c => c.sessionId), ['X', 'Y'], 'X ranks by its disk 500, not its instance 100');
+    assert.equal(live[0].lastActivity, 500);
+  });
+  await t.test('instance activity is the later one', () => {
+    const { live } = M.deriveMissions({
+      conductRows: [{ sessionId: 'Z', lastActivity: 100 }],                      // disk alone: 100
+      instances: [
+        inst({ id: 'z', project: '.conduct', sessionId: 'Z', createdAt: 50, lastResponseAt: 600 }),
+        inst({ id: 'w', project: '.conduct', sessionId: 'W', createdAt: 400 }),
+      ],
+    });
+    assert.deepEqual(live.map(c => c.sessionId), ['Z', 'W'], 'Z ranks by its instance 600, not its disk 100');
+    assert.equal(live[0].lastActivity, 600);
+  });
+});
+
 test('missionTitle prefers the title, falls back to the first prompt flagged untitled, then the sid prefix', () => {
   assert.deepEqual(M.missionTitle({ sessionId: 'abcdefghij', title: '  Ship it ', firstPrompt: 'x' }), { text: 'Ship it', untitled: false });
   assert.deepEqual(M.missionTitle({ sessionId: 'abcdefghij', title: '  ', firstPrompt: 'do\n  the\tthing' }), { text: 'do the thing', untitled: true });
