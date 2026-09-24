@@ -361,18 +361,38 @@ try {
         bMain.temp === true && before?.bw === '3px' && !!archivedRow && after === 'gone',
         `temp=${bMain.temp} before=${JSON.stringify(before)} archived=${!!archivedRow} after=${JSON.stringify(after)}`);
     }
+    // 10e — the worktree head's bar clears IN PLACE when its only owner's
+    // worker goes (the head node persists; the worktree still exists).
+    {
+      const node = await page.evaluateHandle(() => [...document.querySelectorAll('#project-list .worktree-row')]
+        .find(x => x.querySelector('.worktree-name')?.textContent === 'solo-a'));
+      const before = await node.evaluate(n => getComputedStyle(n).boxShadow);
+      await api('DELETE', `/api/instances/${aSolo.id}`);
+      const after = await waitFor(() => node.evaluate(n => (n.isConnected && getComputedStyle(n).boxShadow === 'none') ? 'none' : false), { timeout: 10000 })
+        .catch(() => node.evaluate(n => `${n.isConnected ? 'connected' : 'detached'} ${getComputedStyle(n).boxShadow}`));
+      check('10e solo-a head loses its bar in place when its worker is killed',
+        before.includes(colA) && after === 'none', `before=${before} after=${after}`);
+    }
     // 6 — kill B: Inactive (1), faded bar; B's live worker keeps colour B
     {
       await api('DELETE', `/api/instances/${b.id}`);
       await page.click('.sidebar-lens button[data-lens="missions"]');
+      // Collapsed, the group carries only its count — no items are built.
+      const collapsed = await waitFor(() => page.evaluate(() => {
+        const det = document.querySelector('#mission-list details.mission-inactive');
+        return det ? { summary: det.querySelector('summary').textContent, open: det.open,
+          items: det.querySelectorAll('.mission-inactive-list > li.mission').length } : false;
+      }), { timeout: 10000 }).catch(() => null);
+      await page.click('#mission-list details.mission-inactive > summary');
       await waitFor(() => page.evaluate((s) => !!document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`), bSid), { timeout: 10000 }).catch(() => {});
       const r = await page.evaluate((s) => {
-        const det = document.querySelector('#mission-list details.mission-inactive');
         const m = document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`);
-        return { summary: det?.querySelector('summary')?.textContent ?? null, open: det?.open ?? null, inactive: m?.classList.contains('inactive') ?? false, shadow: m ? getComputedStyle(m).boxShadow : null };
+        return { inactive: m?.classList.contains('inactive') ?? false, shadow: m ? getComputedStyle(m).boxShadow : null };
       }, bSid);
-      check('6a killed B moves under a collapsed Inactive (1) with a faded bar',
-        r.summary === 'Inactive (1)' && r.open === false && r.inactive && !!r.shadow && r.shadow !== 'none' && !r.shadow.includes(colB), JSON.stringify(r));
+      check('6a killed B moves under a collapsed Inactive (1) (no items built until opened) with a faded bar',
+        collapsed?.summary === 'Inactive (1)' && collapsed.open === false && collapsed.items === 0
+          && r.inactive && !!r.shadow && r.shadow !== 'none' && !r.shadow.includes(colB),
+        JSON.stringify({ collapsed, ...r }));
       await page.click('.sidebar-lens button[data-lens="projects"]');
       const rb = await rowSel(bMixed.sessionId);
       const liveOwner = (await insts()).find(i => i.sessionId === bMixed.sessionId)?.ownerSessionId ?? null;
@@ -403,6 +423,23 @@ try {
       check('6c an exited temp conductor (archived on exit) is listed under Inactive',
         !!archived && !plain && !!r && r.inactive && r.summary === 'Inactive (2)',
         `server row archived=${!!archived} in plain listing=${plain} (must be false: only includeArchived finds it) sidebar=${JSON.stringify(r)}`);
+
+      // Opening it resumes it AND un-archives it, as Settings → Archived's
+      // Restore does — else it stays archived and a later Restore 409s.
+      await page.click(`#mission-list .mission-inactive-list [data-key="mission:${cSid}"] .mission-title`);
+      const back = await waitFor(async () => {
+        const live = (await insts()).find(i => i.sessionId === cSid && i.status !== 'exited' && i.status !== 'crashed');
+        const row = ((await api('GET', '/api/projects/.conduct/sessions?includeArchived=1')).body ?? []).find(x => x.sessionId === cSid);
+        const inArchived = ((await api('GET', '/api/archived')).body?.groups ?? []).some(g => g.sessions.some(x => x.sessionId === cSid));
+        return live && row && !row.archived && !inArchived ? { status: live.status, archived: row.archived, inArchived } : false;
+      }, { timeout: 15000 }).catch(async () => ({
+        live: (await insts()).find(i => i.sessionId === cSid)?.status ?? 'absent',
+        row: ((await api('GET', '/api/projects/.conduct/sessions?includeArchived=1')).body ?? []).find(x => x.sessionId === cSid) ?? null,
+        failed: true,
+      }));
+      const inLive = await waitFor(() => page.evaluate((s) => !!document.querySelector(`#mission-list > [data-key="mission:${s}"]`), cSid), { timeout: 10000 }).catch(() => false);
+      check('6c clicking the archived C resumes it live and un-archived, back among the live missions',
+        !back.failed && inLive, `server=${JSON.stringify(back)} live mission row=${inLive}`);
     }
     // 13 — session view unchanged
     {

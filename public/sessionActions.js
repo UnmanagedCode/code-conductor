@@ -35,6 +35,7 @@
 import { apiFetch } from './http.js';
 import { send } from './ws.js';
 import { installDeleteProjectDialog } from './deleteProjectDialog.js';
+import { restoreArchivedSession } from './archivedSessions.js';
 
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
@@ -84,8 +85,12 @@ export function installSessionActions({
   // session, so the POST can 409 ("already attached") even though the session
   // IS coming up. Rather than alert, re-sync and select whatever instance now
   // owns the sessionId; only clear focus if it truly didn't come up.
-  async function resumeSession({ projectName, worktreeName, sessionId, silent = false }) {
+  // `archived` (a Missions → Inactive row for an archived conductor) un-archives
+  // first, exactly as Settings → Archived's Restore does, so the resumed
+  // session does not stay archived.
+  async function resumeSession({ projectName, worktreeName, sessionId, silent = false, archived = false }) {
     try {
+      if (archived) await restoreArchivedSession({ project: projectName, worktreeName, sessionId });
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

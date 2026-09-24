@@ -129,6 +129,20 @@ test('the bar clears in place when the worker dies', async () => {
   assert.deepEqual(barOf(after), { owned: false, color: '' });
 });
 
+test('a single-owner worktree head loses its bar in place when its last owned worker goes', async () => {
+  const { root, sidebar, conductorColor } = await setupSidebar();
+  const projects = [project('proj', { worktrees: ['solo'] })];
+  await render(sidebar, root, { projects, instances: [conductor('A', { title: 'Alpha' }), worker('w1', 'A', 'proj', 'solo')] });
+  const head = wtHead(root, 'solo');
+  assert.deepEqual(barOf(head), { owned: true, color: conductorColor('A') });
+  assert.equal(head.title, 'conductor: Alpha');
+  sidebar.setInstances([conductor('A', { title: 'Alpha' })]);
+  await tick();
+  assert.equal(wtHead(root, 'solo'), head, 'same head node');
+  assert.deepEqual(barOf(head), { owned: false, color: '' });
+  assert.equal(head.hasAttribute('title'), false, 'the conductor tooltip goes with the bar');
+});
+
 test('no .conduct row in the Projects lens, even with a live conductor and conduct disk rows', async () => {
   const { root, sidebar } = await setupSidebar();
   await render(sidebar, root, {

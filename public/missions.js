@@ -60,13 +60,14 @@ export function deriveMissions({ conductRows = [], instances = [] } = {}) {
       instanceStatus: null,
       instanceDisplayStatus: null,
       instanceAwaitingWake: false,
+      archived: !!r.archived,
       live: false,
     });
   }
   for (const inst of instances) {
     if (inst.project !== '.conduct' || !inst.sessionId) continue;
     const row = bySid.get(inst.sessionId) ?? {
-      sessionId: inst.sessionId, title: null, firstPrompt: null, lastActivity: 0,
+      sessionId: inst.sessionId, title: null, firstPrompt: null, lastActivity: 0, archived: false,
     };
     row.instanceId = inst.id;
     row.instanceStatus = inst.status;
