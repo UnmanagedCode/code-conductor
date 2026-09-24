@@ -1,7 +1,7 @@
 // The chrome AROUND the sidebar: the mobile slide-over drawer (toggle + scrim),
 // the desktop column's drag-resize handle and its persisted width, and the
 // sidebar ≡ overflow menu. Distinct from sidebar.js, which owns the
-// #project-list tree itself.
+// #mission-list and #project-list trees themselves.
 //
 // Extracted from app.js. Installed early — right after the dom map — because
 // closeSidebarOverflow is passed BY VALUE into installNewProjectDialog and

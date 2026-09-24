@@ -28,15 +28,17 @@ async function setupSidebar() {
   try { window.localStorage.clear(); } catch { /* ignore */ }
 
   const { Sidebar } = await import(pathToFileURL(path.join(PUB, 'sidebar.js')).href);
-  document.body.innerHTML = '<ul id="project-list" class="project-list"></ul>';
+  document.body.innerHTML = '<ul id="mission-list" class="mission-list"></ul><ul id="project-list" class="project-list"></ul>';
   const style = document.createElement('style');
   style.textContent = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
   document.head.appendChild(style);
   const list = document.getElementById('project-list');
+  const missionList = document.getElementById('mission-list');
 
   const calls = { showCommits: [] };
   const sidebar = new Sidebar({
     rootList: list,
+    missionList,
     onSelectInstance: () => {},
     onCreateInstanceClick: () => {},
     onResumeSession: () => {},
@@ -47,7 +49,7 @@ async function setupSidebar() {
     onQuickSpawn: () => {},
   });
   sidebar.onShowCommits = (name) => calls.showCommits.push(name);
-  return { window, list, sidebar, calls };
+  return { window, list, missionList, sidebar, calls };
 }
 
 function project(name, workspace, isGitRepo) {
@@ -72,6 +74,12 @@ const MIXED = [...FIXTURE, project('gitty', null, true)];
 const CONDUCT_INSTANCE = {
   id: 'inst-c', project: '.conduct', sessionId: 'sid-c', status: 'idle',
   mode: 'bypassPermissions', worktree: null, temp: true,
+};
+// A live worker of CONDUCT_INSTANCE in the git top-level project `gitty`, so
+// an expanded mission renders a project row inside .mission-tree.
+const GITTY_WORKER = {
+  id: 'inst-w', project: 'gitty', sessionId: 'sid-w', status: 'idle',
+  mode: 'default', worktree: null, conducted: true, ownerSessionId: 'sid-c',
 };
 
 async function render(sidebar, projects, instances = []) {
@@ -113,7 +121,7 @@ test('unassigned project after the last workspace sits at top level, directly af
   assertNull(li.closest('.project-workspace-list'), 'not nested in any workspace member list');
 });
 
-test('the first unassigned project opens its own section with the workspace section rule — collapsed, expanded, and under a Conduct row', async () => {
+test('the first unassigned project opens its own section with the workspace section rule — collapsed and expanded', async () => {
   const { window, list, sidebar } = await setupSidebar();
   await render(sidebar, FIXTURE);
   const ttd = workspaceDetails(list, 'TTD');
@@ -130,8 +138,6 @@ test('the first unassigned project opens its own section with the workspace sect
   check('expanded');
   ttd.open = false;
   check('collapsed');
-  await render(sidebar, FIXTURE, [CONDUCT_INSTANCE]);
-  check('with a Conduct row above');
 });
 
 test('the section rule is drawn once, not between unassigned rows', async () => {
@@ -147,21 +153,12 @@ test('the section rule is drawn once, not between unassigned rows', async () => 
   }
 });
 
-test('no section rule when nothing precedes it — no workspaces, or the Conduct row', async (t) => {
-  await t.test('only unassigned projects', async () => {
-    const { window, list, sidebar } = await setupSidebar();
-    await render(sidebar, [project('binary-ninja', null, false), project('zeta', null, false)]);
-    for (const li of list.querySelectorAll(':scope > li')) {
-      assert.notEqual(ruleOf(window, li).style, 'dashed', 'no rule without a preceding workspace');
-    }
-  });
-  await t.test('Conduct row precedes the workspaces', async () => {
-    const { window, list, sidebar } = await setupSidebar();
-    await render(sidebar, FIXTURE, [CONDUCT_INSTANCE]);
-    const conduct = list.querySelector('.project-conduct');
-    assert.ok(conduct, 'conduct row is rendered');
-    assert.notEqual(ruleOf(window, conduct).style, 'dashed', 'Conduct row draws no rule');
-  });
+test('no section rule when nothing precedes it — only unassigned projects', async () => {
+  const { window, list, sidebar } = await setupSidebar();
+  await render(sidebar, [project('binary-ninja', null, false), project('zeta', null, false)]);
+  for (const li of list.querySelectorAll(':scope > li')) {
+    assert.notEqual(ruleOf(window, li).style, 'dashed', 'no rule without a preceding workspace');
+  }
 });
 
 // ── Name alignment ──────────────────────────────────────────────────────────
@@ -259,29 +256,40 @@ test('the ≡ commit-log button on a git top-level row stays visible and clickab
   assert.deepEqual(calls.showCommits, ['gitty']);
 });
 
-test('workspace member rows and the Conduct row keep the base .project-row geometry', async () => {
+test('workspace member rows keep the base .project-row geometry', async () => {
   const { window, list, sidebar } = await setupSidebar();
-  await render(sidebar, MIXED, [CONDUCT_INSTANCE]);
+  await render(sidebar, MIXED);
   // Reference: the same markup outside the project list, where only the base
   // .project-row rules apply.
   const ref = window.document.createElement('div');
-  ref.innerHTML = '<div class="project-row"><button class="commit-log">≡</button><span class="project-name">x</span></div>'
-    + '<div class="project-row"><span class="commit-log-spacer">≡</span><span class="project-name">x</span></div>';
+  ref.innerHTML = '<div class="project-row"><button class="commit-log">≡</button><span class="project-name">x</span></div>';
   window.document.body.appendChild(ref);
-  const [refGit, refPlain] = ref.children;
+  const refGit = ref.firstElementChild;
   const member = topLi(list, 'recon').querySelector(':scope > .project-row');
   assert.ok(member.closest('.project-workspace-list'), 'fixture: recon is a workspace member');
   assert.deepEqual(rowGeometry(window, member), rowGeometry(window, refGit), 'member row geometry');
-  const conduct = list.querySelector('.project-conduct > .project-row');
-  assert.deepEqual(rowGeometry(window, conduct), rowGeometry(window, refPlain), 'Conduct row geometry');
   // The reference sits in the same cascade, so an unscoped alignment rule would
   // move it too; the top-level rows are the other side of that comparison.
   const topGit = topLi(list, 'gitty').querySelector(':scope > .project-row');
-  const topPlain = topLi(list, 'binary-ninja').querySelector(':scope > .project-row');
   assert.notDeepEqual(rowGeometry(window, member), rowGeometry(window, topGit),
     'the top-level alignment does not reach workspace member rows');
-  assert.notDeepEqual(rowGeometry(window, conduct), rowGeometry(window, topPlain),
-    'the top-level alignment does not reach the Conduct row');
+});
+
+test('the top-level alignment does not reach .mission-tree project rows', async () => {
+  const { window, list, missionList, sidebar } = await setupSidebar();
+  await render(sidebar, MIXED, [CONDUCT_INSTANCE, GITTY_WORKER]);
+  missionList.querySelector('.mission-caret').click();
+  const treeRow = missionList.querySelector('.mission-tree .project-row');
+  assert.ok(treeRow, 'fixture: the expanded mission renders a project row');
+  assert.ok(treeRow.querySelector(':scope > .commit-log'), 'fixture: gitty is a git project');
+  const topGit = topLi(list, 'gitty').querySelector(':scope > .project-row');
+  const ref = window.document.createElement('div');
+  ref.innerHTML = '<div class="project-row"><button class="commit-log">≡</button><span class="project-name">x</span></div>';
+  window.document.body.appendChild(ref);
+  assert.notDeepEqual(rowGeometry(window, treeRow), rowGeometry(window, topGit),
+    'a mission-tree project row does not take the top-level alignment');
+  assert.deepEqual(rowGeometry(window, treeRow).log, rowGeometry(window, ref.firstElementChild).log,
+    'its commit-log column keeps the base geometry');
 });
 
 test('the workspace header caret does not shrink when the summary overflows', async () => {

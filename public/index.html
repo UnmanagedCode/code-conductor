@@ -12,7 +12,7 @@
 <body>
   <div id="app">
     <div id="sidebar-scrim"></div>
-    <aside id="sidebar">
+    <aside id="sidebar" data-lens="missions">
       <header>
         <div id="app-switcher">
           <h1>CodeConductor</h1>
@@ -26,6 +26,17 @@
       <div id="sidebar-body">
         <div class="sidebar-actions">
           <button id="conduct-btn" title="Spawns a temp Claude session in the hidden .conduct project, pre-configured to orchestrate other sessions via MCP. Uses the Conductor role's model (Settings → Models). Transcript is wiped on exit.">🎼 Conduct</button>
+        </div>
+        <div id="sidebar-strip-slot"></div>
+        <div class="sidebar-lens" role="group" aria-label="sidebar lens">
+          <button type="button" data-lens="missions" aria-pressed="true">Missions</button>
+          <button type="button" data-lens="projects" aria-pressed="false">Projects</button>
+        </div>
+        <div class="projects-lens-row projects-lens-only">
+          <div id="conductor-filter" class="conductor-filter">
+            <label for="conductor-filter-select">Filter</label>
+            <select id="conductor-filter-select" aria-label="filter by conductor"></select>
+          </div>
           <div id="sidebar-overflow-menu" class="overflow-menu">
             <button id="sidebar-overflow-toggle" type="button"
                     aria-haspopup="menu" aria-expanded="false"
@@ -40,7 +51,8 @@
             </div>
           </div>
         </div>
-        <ul id="project-list" class="project-list"></ul>
+        <ul id="mission-list" class="mission-list missions-lens-only"></ul>
+        <ul id="project-list" class="project-list projects-lens-only"></ul>
       </div>
       <footer id="sidebar-footer">
         <div id="sidebar-status" class="sidebar-status" aria-live="polite"></div>
