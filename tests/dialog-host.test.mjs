@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { AWAITING_INPUT_MESSAGE } from '../src/settings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_CUT_PLAN = path.join(__dirname, 'fixtures', 'scenario-canusetool-plan.json');
@@ -65,7 +66,7 @@ test('can_use_tool(ExitPlanMode): denied with awaiting-input message, plan_reque
       && l.response?.request_id === 'ct_exit'
       && l.response?.response?.behavior === 'deny');
     assert.ok(resp, `deny control_response must be sent for ExitPlanMode; transcript: ${JSON.stringify(lines)}`);
-    assert.match(resp.response.response.message ?? '', /Awaiting user input/);
+    assert.equal(resp.response.response.message, AWAITING_INPUT_MESSAGE);
 
     await c.close();
   } finally {

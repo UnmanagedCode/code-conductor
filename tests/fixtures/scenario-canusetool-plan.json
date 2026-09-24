@@ -16,7 +16,7 @@
     {
       "on": { "type": "control_response", "request_id": "ct_exit", "behavior": "deny" },
       "emit": [
-        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_exit", "content": "Awaiting user input via the orchestrator UI — please stop and wait for the next user message.", "is_error": true } ] } },
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_exit", "content": "Delivered — the user can see your request in the orchestrator UI now. The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. Do not repeat the call, do not answer or decide it yourself, and do not start other work. End your turn now with no further tool calls unless another message arrives meanwhile — handle that one as normal; the user's reply comes as a later message.", "is_error": true } ] } },
         { "type": "stream_event", "event": { "type": "message_stop" } },
         { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
       ]
