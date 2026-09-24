@@ -144,6 +144,11 @@ test('with the plugin host failing, the refusal points at the host-unavailable c
   assert.match(res.reason, /an entry under 'plugins' means the plugin host is unavailable/);
   assert.match(res.reason, /the plugin is disabled \(re-enabling it/,
     're-enable is offered as the remedy for the disabled case only, not asserted');
+  // An invalid manifest yields NEITHER error form (the plugin just leaves the
+  // contributors), and enable refuses it — so the reason must name that bucket
+  // and where its errors live instead of ending on the re-enable remedy.
+  assert.match(res.reason,
+    /or its manifest is invalid as a whole — its Settings → Plugins row carries the errors, and re-enabling is refused until it is fixed\./);
 });
 
 // ── model pins ──────────────────────────────────────────────────────────────
