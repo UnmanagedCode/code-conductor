@@ -21,7 +21,8 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
 // lifecycle tests catch an instance in `turn` status.
 const SCENARIO_HANG = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 
-const bigText = 'y'.repeat(4000);
+const BIG_TEXT = 'y'.repeat(4000);
+const bigText = BIG_TEXT;
 
 let nextRpcId = 1;
 let mgr = null;
@@ -52,7 +53,7 @@ async function callTool(baseUrl, name, args, opts) {
 
 // Two turns, each carrying a bulky tool_use + tool_result, so a default prune
 // (newest turn kept) and a full one are distinguishable on disk.
-function sessionLines() {
+function sessionLines(bigText = BIG_TEXT) {
   return [
     { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
     { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
@@ -85,8 +86,8 @@ async function seedSession({ ctx, projectName, sid, lines = sessionLines() }) {
 }
 
 // Spawn a worker resumed from a seeded transcript and wait for it to settle.
-async function liveWorker(ctx, { projectName, sid }) {
-  const { sessionDir } = await seedSession({ ctx, projectName, sid });
+async function liveWorker(ctx, { projectName, sid, lines }) {
+  const { sessionDir } = await seedSession({ ctx, projectName, sid, lines });
   const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
     project: projectName, mode: 'bypassPermissions', resume: sid,
   });
@@ -134,6 +135,40 @@ test('prune_session keeps the newest turn by default and hands back the SAME ses
     const sent = await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'still here?' });
     assert.equal(sent.sessionId ?? sid, sid);
     await waitFor(() => inst.status === 'idle');
+  } finally { await ctx.close(); }
+});
+
+test('prune_session reports the real pre-prune baseline and a calibrated saving', async () => {
+  // Every assistant message carries usage, so the session has enough measured
+  // history for a live calibration factor, and the newest one is the ctx
+  // reading the resumed worker latches.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  mgr = ctx.instances;
+  try {
+    const sid = 'bbbbbbb3-2222-3333-4444-555555555555';
+    const lines = sessionLines('y'.repeat(6000));
+    const promptByMessage = { m1: 10000, m2: 17000, m3: 17100, m4: 22100 };
+    for (const o of lines) {
+      if (o.type !== 'assistant') continue;
+      o.message.model = 'claude-opus-5';
+      o.message.usage = { input_tokens: 7, cache_read_input_tokens: promptByMessage[o.message.id] - 7,
+        cache_creation_input_tokens: 0, output_tokens: 30 };
+    }
+    const { id } = await liveWorker(ctx, { projectName: 'mp3', sid, lines });
+    const analysis = (await api(ctx.baseUrl, 'GET', `/api/instances/${id}/prune/analysis`)).body;
+    const { factor } = analysis.calibration;
+    assert.notEqual(factor, 1, 'the seeded usage must make the factor live');
+
+    const res = await callTool(ctx.baseUrl, 'prune_session', { sessionId: sid });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.contextTokensBefore, promptByMessage.m4, 'the ctx reading taken before the prune wiped it');
+    // keepLatestTurns defaults to 1: turn 0 is the pruned prefix; thinking is global.
+    const prefix = analysis.turns.slice(0, res.prunedTurns);
+    assert.deepEqual(res.saved, {
+      thinking: Math.round(analysis.turns.reduce((a, t) => a + t.thinking, 0) * factor),
+      toolInputs: Math.round(prefix.reduce((a, t) => a + t.toolInputTruncatable, 0) * factor),
+      toolOutputs: Math.round(prefix.reduce((a, t) => a + t.toolOutput, 0) * factor),
+    });
   } finally { await ctx.close(); }
 });
 

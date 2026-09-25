@@ -6,6 +6,10 @@
 // per-category prunable-token counts, so dragging the slider or flipping a
 // tickbox is arithmetic on data we already hold — no round-trip per drag, and the
 // per-category breakdown (which is what makes the tickboxes decidable) is free.
+// The per-turn counts are raw estimates; every displayed figure is a sum scaled
+// by the payload's `calibration.factor` and rounded — the same arithmetic the
+// transform applies to what it reports as saved. The percentage is taken against
+// `contextTokens`, the ctx chip's own reading, and is omitted when there is none.
 //
 // Slider semantics: the value is a `cutTurnIndex` in the SAME index space
 // fork/rewind use (pure user-prompt lines). Turns [0, cut) get pruned; the max is
@@ -35,23 +39,29 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     errorEl.hidden = !msg;
   }
 
+  const calibrated = (raw) => Math.round(raw * analysis.calibration.factor);
+
   // Sum the prefix the slider selects. Thinking is global — summed over ALL
   // turns, not just the pruned prefix — because thinking staleness is
   // categorical, not temporal.
   function computeSavings() {
-    if (!analysis) return { thinking: 0, toolInputs: 0, toolOutputs: 0, total: 0 };
+    if (!analysis) return { thinking: 0, toolInputs: 0, toolOutputs: 0, exempt: 0, total: 0 };
     const cut = Number(cutEl.value);
     const minimal = minimalEl.checked;
     let toolInputs = 0;
     let toolOutputs = 0;
+    let exempt = 0;
     for (const t of analysis.turns.slice(0, cut)) {
       toolInputs += minimal ? t.toolInputMinimal : t.toolInputTruncatable;
       toolOutputs += t.toolOutput;
+      exempt += t.exempt;
     }
     const thinking = thinkingEl.checked
-      ? analysis.turns.reduce((a, t) => a + t.thinking, 0)
+      ? calibrated(analysis.turns.reduce((a, t) => a + t.thinking, 0))
       : 0;
-    return { thinking, toolInputs, toolOutputs, total: thinking + toolInputs + toolOutputs };
+    toolInputs = calibrated(toolInputs);
+    toolOutputs = calibrated(toolOutputs);
+    return { thinking, toolInputs, toolOutputs, exempt: calibrated(exempt), total: thinking + toolInputs + toolOutputs };
   }
 
   function renderSavings() {
@@ -63,29 +73,42 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     const table = document.createElement('table');
     table.className = 'stats-table';
     const tbody = document.createElement('tbody');
+    const tokens = (n) => `~${formatTokens(n)} tokens`;
+    // Encrypted thinking is in context but Prune never rewrites it, so a zero
+    // there is "not removable", not "nothing to remove".
+    const encrypted = analysis ? calibrated(analysis.encryptedThinking) : 0;
     const rows = [
-      ['Thinking', s.thinking],
-      ['Tool inputs', s.toolInputs],
-      ['Tool outputs', s.toolOutputs],
-      ['Estimated total saved', s.total],
+      ['Thinking', s.thinking === 0 && encrypted > 0
+        ? `n/a — stored encrypted (~${formatTokens(encrypted)} in context, kept)`
+        : tokens(s.thinking)],
+      ['Tool inputs', tokens(s.toolInputs)],
+      ['Tool outputs', tokens(s.toolOutputs)],
+      // Explains a near-zero tool figure on a conductor's orchestration-heavy turns.
+      ...(s.exempt > 0 ? [['Kept — orchestration calls (exempt)', tokens(s.exempt)]] : []),
+      ['Estimated total saved', tokens(s.total)],
     ];
     for (const [label, value] of rows) {
       const tr = document.createElement('tr');
       const td1 = document.createElement('td');
       td1.textContent = label;
       const td2 = document.createElement('td');
-      td2.textContent = `~${formatTokens(value)} tokens`;
+      td2.textContent = value;
       tr.append(td1, td2);
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
     savingsEl.appendChild(table);
 
-    if (analysis?.totalTokens > 0) {
-      const pct = Math.round((s.total / analysis.totalTokens) * 100);
+    if (analysis) {
+      const ctx = analysis.contextTokens;
       const p = document.createElement('p');
       p.className = 'settings-hint';
-      p.textContent = `~${pct}% of this session's estimated conversation tokens. `
+      p.textContent = (ctx > 0
+        ? `~${Math.round((s.total / ctx) * 100)}% of current context (${formatTokens(ctx)} tokens — the ctx chip's reading). `
+        : 'No current context reading yet — it returns after the session\'s next turn. ')
+        + (analysis.calibration.calibrated
+          ? 'Calibrated against this session\'s real token usage. '
+          : 'Uncalibrated estimate — not enough usage history yet. ')
         + 'Sub-agent transcripts are excluded — they are not in this session\'s context.';
       savingsEl.appendChild(p);
     }

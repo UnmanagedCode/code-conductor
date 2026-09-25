@@ -72,6 +72,7 @@ import { publicIdFor } from '../sessionLineage.ts';
 import { applySessionTitle } from '../sessionTitles.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import { buildForwardFrame } from '../../public/forwardFrame.js';
+import { contextReading } from '../sessionPrune.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
@@ -1409,6 +1410,8 @@ export async function pruneSession(
       reason: 'a prune kills and respawns the worker, which would destroy a running turn — '
         + 'interrupt_turn first, then prune once it is idle.' };
   }
+  // Read before the prune: it respawns the worker, which drops the reading.
+  const contextTokensBefore = contextReading(inst.lastContextUsage);
   const res = await inst.pruneSession({ keepLatestTurns, pruneThinking, inputMode });
   const turnCount = res.turnCount as number;
   const cut = res.cutTurnIndex as number;
@@ -1422,6 +1425,7 @@ export async function pruneSession(
     keptTurns: turnCount - cut,
     prunedTurns: cut,
     saved: res.saved,
+    contextTokensBefore,
   };
 }
 
