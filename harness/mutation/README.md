@@ -1,9 +1,9 @@
 # Mutation harness — code-conductor
 
-Project-local config for the shared [`code-mutant`](../../../code-mutant/) runner, so a reviewer can
+Project-local config for the shared `code-mutant` plugin's runner, so a reviewer can
 mutation-prove coverage claims via `/code-mutant:prove`. `config.json` is committed project state;
 `.mutation/` is the reviewer's gitignored scratch space. Command syntax below is `mutate.mjs`'s own —
-`node ../code-mutant/mutate.mjs --help` is authoritative if this drifts.
+`node harness/mutation/run.mjs --help` is authoritative if this drifts.
 
 **Open [RATIONALE.md](RATIONALE.md) only when you need the *why***: it holds the reasoning behind
 `config.json`'s values, the measured case against copy mode and `--jobs`, and the recipe for
@@ -13,27 +13,27 @@ artefact rather than a coverage finding. You do not need it to run a pass.
 
 ## Run a pass
 
-Runs from the repo root or any `code-conductor_worktree_*` — both are direct children of the
-projects root, so the relative path resolves from either. The `code-mutant` runner is expected as a
-SIBLING CHECKOUT of the projects root; where that root lives is environment-specific and is not
-recorded here.
+Run from the repo root of the main checkout or of any worktree. `harness/mutation/run.mjs` resolves
+`<projectsRoot>/.plugins/code-mutant/mutate.mjs` via `harness/pluginDir.mjs` (from
+`$CC_PROJECTS_ROOT`, else derived from git) and passes arguments, cwd and the exit code through
+unchanged. Install the plugin from Settings → Plugin Library if the wrapper reports it missing.
 
 **Never pass `--copy`: this project runs `in-place`, and a copy cannot be trusted here.**
 
 ```bash
 # 1. Gates. Nothing below is trustworthy until this is green AND the canary reads KILLED.
-node ../code-mutant/mutate.mjs baseline
+node harness/mutation/run.mjs baseline
 
 # 2. Diff hunks no catalog mutant covers yet. It lists; you target.
-node ../code-mutant/mutate.mjs candidates --base main
+node harness/mutation/run.mjs candidates --base main
 
 # 3. Run the catalog you authored at .mutation/mutants.json
-node ../code-mutant/mutate.mjs run --all
-node ../code-mutant/mutate.mjs run --id <id> --id <id>
+node harness/mutation/run.mjs run --all
+node harness/mutation/run.mjs run --id <id> --id <id>
 
 # Explore one mutation without a catalog entry (clean-tree gate only warns here).
 # No real id yet? Add --learn --json and read results[0].failedTests — never hand-construct one.
-node ../code-mutant/mutate.mjs probe \
+node harness/mutation/run.mjs probe \
   --file src/instances.ts --anchor "some exact text" --replace "false" \
   --expect-fail 'tests/instances.test.mjs::a top-level test name'
 

@@ -1,9 +1,9 @@
 // Live-browser regression test for the Settings → Plugins version-select
 // layout bug — skipped by default, opt-in via `RUN_PLAYWRIGHT=1` (needs the
-// code-playwright sibling repo + a system Chromium; see
-// harness/playwright/README.md). The import of that sibling repo is deferred into the
-// test body so this file loads cleanly (and shows as skipped) on machines
-// that don't have it cloned.
+// code-playwright plugin installed + a system Chromium; see
+// harness/playwright/README.md). Loading the plugin is deferred into the test
+// body so this file loads cleanly (and shows as skipped) on machines that
+// don't have it installed.
 //
 // Root cause: `.pl-version` (public/styles.css) set only `font-size: 12px` —
 // no `max-width`/`min-width: 0`. As a flex child of `.pl-actions`
@@ -26,6 +26,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { bootServer, api } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
+import { importCodePlaywright } from '../harness/playwright/paths.mjs';
 
 const run = promisify(execFile);
 
@@ -77,7 +78,7 @@ t('.pl-version select stays compact regardless of option content (stopped vs rea
     await api(boot.baseUrl, 'POST', '/api/plugins/longplug/enable');
     await api(boot.baseUrl, 'POST', '/api/plugins/longplug/start');
 
-    const { withPage } = await import('../../code-playwright/browser.mjs');
+    const { withPage } = await importCodePlaywright();
     await withPage(async (page) => {
       await page.goto(boot.baseUrl, { waitUntil: 'load' });
       // At mobile widths the sidebar (which hosts #settings-btn) starts

@@ -44,7 +44,7 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 
 **Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses Web App Manifest (`public/manifest.webmanifest`) + SVG icon + Service Worker for standalone-mode launch.
 
-**Visual debug.** Playwright + Termux Chromium harness in `harness/playwright/`, which is a thin wrapper over the **sibling repo** — clone `code-playwright` to the parent directory of code-conductor and `npm install` once. Not wired into the main test suite.
+**Visual debug.** Playwright + Termux Chromium harness in `harness/playwright/`, which is a thin wrapper over the **code-playwright plugin** — install it from Settings → Plugin Library (it lands at `<projectsRoot>/.plugins/code-playwright`); see [`harness/playwright/README.md`](harness/playwright/README.md). Not wired into the main test suite.
 
 ## Features
 

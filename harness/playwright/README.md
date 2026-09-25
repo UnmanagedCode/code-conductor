@@ -1,26 +1,20 @@
 # Visual debug harness
 
-Orchestrator-specific glue around the generic [`code-playwright`](../../../code-playwright/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.ts`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
+Orchestrator-specific glue around the generic **code-playwright** plugin — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the plugin so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.ts`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
 
 ## Prereqs
 
-Clone the sibling repo to the parent directory of code-conductor and install its single dep:
+- Install **code-playwright** from **Settings → Plugin Library**. Its `postClone` runs `install.sh`, and it lands at `<projectsRoot>/.plugins/code-playwright`.
+- A system Chromium: `pkg install chromium` on Termux.
 
-```bash
-cd ..
-git clone git@github.com:UnmanagedCode/code-playwright.git
-cd code-playwright && npm install
-pkg install chromium                                            # Termux system browser
-```
-
-That's it — nothing to install in `code-conductor/harness/playwright/` itself. Imports resolve via `../../../code-playwright/`. `paths.mjs` holds this directory's depth-derived constants (ORCH_ROOT / ORCH_ENTRY / FAKE_CLAUDE); it stays node-builtins-only so `tests/harness-playwright-paths.test.mjs` can import it ungated.
+That's it — nothing to install in `harness/playwright/` itself. The plugin is found by `harness/pluginDir.mjs` (`$CC_PROJECTS_ROOT`, else the projects root derived from git), loaded through `paths.mjs`'s `importCodePlaywright()`. `paths.mjs` holds this directory's depth-derived constants (ORCH_ROOT / ORCH_ENTRY / FAKE_CLAUDE); it stays node-builtins-only (it resolves the plugin only when asked) so `tests/harness-playwright-paths.test.mjs` can import it ungated.
 
 ## Quick smoke test
 
 Boot a sandboxed scratch orchestrator, snap, tear down — one process:
 
 ```bash
-cd code-conductor/harness/playwright
+cd <cc checkout>/harness/playwright
 node snap.mjs --boot ./home.png
 # [boot] http://127.0.0.1:<ephemeral>
 # ./home.png   (PNG, headless, viewport 1280×800)
@@ -32,16 +26,18 @@ Or point at an already-running server:
 node snap.mjs http://127.0.0.1:8787 ./home.png
 ```
 
-See the sibling [`code-playwright/README.md`](../../../code-playwright/README.md) for the full `SNAP_VIEWPORT` / `SNAP_WAIT` / `SNAP_FULL_PAGE` env-var surface and troubleshooting.
+See the code-playwright plugin's `README.md` for the full `SNAP_VIEWPORT` / `SNAP_WAIT` / `SNAP_FULL_PAGE` env-var surface and troubleshooting.
 
 ## Writing a custom debug script
 
-Use `bootOrch()` from this directory for the orch's sandboxed-spawn shape, or `bootServer` directly from the sibling for full control. Both return a `{ url, sandbox?, close() }` object; `bootOrch({ sandbox: true })` additionally exposes `sandbox.dirs.PROJECTS_ROOT` and `sandbox.dirs.CLAUDE_PROJECTS_ROOT` so you can pre-populate disk fixtures before driving the UI.
+Use `bootOrch()` from this directory for the orch's sandboxed-spawn shape, or `bootServer` from the code-playwright plugin (`const { bootServer } = await importCodePlaywright();`) for full control. Both return a `{ url, sandbox?, close() }` object; `bootOrch({ sandbox: true })` additionally exposes `sandbox.dirs.PROJECTS_ROOT` and `sandbox.dirs.CLAUDE_PROJECTS_ROOT` so you can pre-populate disk fixtures before driving the UI.
 
 ```js
 // /tmp/repro-something.mjs
-import { withPage } from '../../../code-playwright/browser.mjs';
-import { bootOrch } from '../code-conductor/harness/playwright/boot-orch.mjs';
+import { bootOrch } from '<cc checkout>/harness/playwright/boot-orch.mjs';
+import { importCodePlaywright } from '<cc checkout>/harness/playwright/paths.mjs';
+
+const { withPage } = await importCodePlaywright();
 
 const orch = await bootOrch({
   sandbox: true,
@@ -58,7 +54,7 @@ try {
 }
 ```
 
-The sibling harness's "[growing the harness while debugging](../../../code-playwright/README.md#growing-the-harness-while-debugging)" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
+The code-playwright plugin README's "growing the harness while debugging" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
 
 ## Committed checks
 
@@ -96,4 +92,4 @@ node harness/playwright/check-sidebar-strip.mjs
 
 Visual-only — eyes on a screenshot / interactive scripting, which the headless `tests/` (node:test) runner can't do.
 
-A reusable Playwright **assertion** would ideally live in `tests/`, but it can't: `tests/` is the gated, dependency-free suite (`npm test` runs `tsc --noEmit` then `node:test`, no browser), and Chromium reaches this repo only through the sibling `code-playwright`. So browser-dependent checks are committed *here* as standalone scripts (see above) and the deterministic half of the same behaviour goes into `tests/` — e.g. `check-models-responsive.mjs` (geometry, browser) is paired with `tests/settings-models-field-labels.test.mjs` (the DOM contract that layout rests on, happy-dom). Split it that way rather than growing a second runner here.
+A reusable Playwright **assertion** would ideally live in `tests/`, but it can't: `tests/` is the gated, dependency-free suite (`npm test` runs `tsc --noEmit` then `node:test`, no browser), and Chromium reaches this repo only through the `code-playwright` plugin. So browser-dependent checks are committed *here* as standalone scripts (see above) and the deterministic half of the same behaviour goes into `tests/` — e.g. `check-models-responsive.mjs` (geometry, browser) is paired with `tests/settings-models-field-labels.test.mjs` (the DOM contract that layout rests on, happy-dom). Split it that way rather than growing a second runner here.

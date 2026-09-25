@@ -537,6 +537,37 @@ describe('T2: the spawn env', () => {
     assert.equal(inst._spawnEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR, undefined);
   });
 
+  // The harnesses resolve plugins from this variable (harness/pluginDir.mjs).
+  // A host value is planted first so the assertion can fail on a spawn that
+  // merely inherits process.env. Remote workers get the HOST value unmapped:
+  // their CLI runs on this machine.
+  test('every worker, local and remote, is given the absolute projects root as CC_PROJECTS_ROOT', async () => {
+    const saved = process.env.CC_PROJECTS_ROOT;
+    process.env.CC_PROJECTS_ROOT = '/host/planted';
+    try {
+      assert.ok(path.isAbsolute(process.env.PROJECTS_ROOT), 'the fixture root is absolute');
+      assert.equal((await spawnIn('app'))._spawnEnv.CC_PROJECTS_ROOT, process.env.PROJECTS_ROOT);
+      assert.equal((await spawnIn('localproj'))._spawnEnv.CC_PROJECTS_ROOT, process.env.PROJECTS_ROOT);
+    } finally {
+      if (saved === undefined) delete process.env.CC_PROJECTS_ROOT;
+      else process.env.CC_PROJECTS_ROOT = saved;
+    }
+  });
+
+  // The same directory spelled relative to cwd, so project resolution is
+  // unchanged while the value cc exports must still come out absolute.
+  test('CC_PROJECTS_ROOT is absolute even when PROJECTS_ROOT is relative', async () => {
+    const abs = process.env.PROJECTS_ROOT;
+    const rel = path.relative(process.cwd(), abs);
+    assert.equal(path.isAbsolute(rel), false, 'the fixture root is re-expressed relative');
+    process.env.PROJECTS_ROOT = rel;
+    try {
+      assert.equal((await spawnIn('localproj'))._spawnEnv.CC_PROJECTS_ROOT, abs);
+    } finally {
+      process.env.PROJECTS_ROOT = abs;
+    }
+  });
+
   // ── the CLAUDE_SECURESTORAGE_CONFIG_DIR ternary, BOTH branches ──
   //
   // Credentials are NOT linked into the farm; they are reached through this

@@ -70,7 +70,7 @@ Lead with the conclusion: **keep `in-place`; never pass `--copy`.**
   ```json
   "setup": "git rev-parse --git-dir >/dev/null 2>&1 || (git init -q -b main && git -c user.email=bench@local -c user.name=bench add -A && git -c user.email=bench@local -c user.name=bench commit -qm mutation-copy)"
   ```
-- Result: `node ../code-mutant/mutate.mjs baseline --copy` → **exit 0**, all gates green —
+- Result: `node harness/mutation/run.mjs baseline --copy` → **exit 0**, all gates green —
   clean-tree passed, baseline **2603 passed / 0 failed / 13 skipped / 2616 ran** (*byte-identical to
   the in-place run*, which is the evidence no test silently skipped itself in the copy), canary
   `KILLED` via `tests/account-overage.test.mjs`, `noTrace` ok with `residue: []`. Copy cost is
@@ -246,7 +246,7 @@ the reason is `detectToolchain()`'s own.
 
 Enabling any of them needs something a review environment does not have (the real
 `claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright`
-sibling; a network voice download), so the whole set is out of scope for mutation proof — report
+plugin; a network voice download), so the whole set is out of scope for mutation proof — report
 such a claim as unprovable-by-this-harness rather than mutating it.
 
 **§5.1a What `{tests}` resolves to, and it is NOT derived from the mutated file** (measured;

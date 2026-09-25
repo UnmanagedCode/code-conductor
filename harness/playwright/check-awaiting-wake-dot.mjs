@@ -15,8 +15,10 @@
 //   node harness/playwright/check-awaiting-wake-dot.mjs
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { withPage } from '../../../code-playwright/browser.mjs';
 import { bootOrch } from './boot-orch.mjs';
+import { importCodePlaywright } from './paths.mjs';
+
+const { withPage } = await importCodePlaywright();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // One scenario drives BOTH sessions: the two WORKER-* prompts are long turns
