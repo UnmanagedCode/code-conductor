@@ -617,6 +617,18 @@ test('id must be a valid slug and must match the filename it came from', () => {
   expectErr(base({ id: 'other' }), /id 'other' does not match its filename id 'fixture'/);
 });
 
+// Checked with the expected id equal to the draft's own (the validate route's
+// call), so the filename-match check cannot be what refuses it.
+test('a missing or non-string id is refused as an invalid id', async (t) => {
+  await t.test('missing', () => {
+    const { id: _id, ...def } = base();
+    expectErr(def, /^invalid id 'undefined'/, undefined);
+  });
+  await t.test('non-string', () => {
+    expectErr(base({ id: 5 }), /^invalid id '5'/, 5);
+  });
+});
+
 test('name/description/stages shape is enforced', () => {
   expectErr(base({ name: '' }), /name is required/);
   expectErr(base({ description: '   ' }), /description is required/);
