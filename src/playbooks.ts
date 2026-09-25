@@ -498,23 +498,34 @@ export function validatePlaybook(
 // stage names and edges (never a pattern over the text), so stage `plan` never
 // captures `plan-b`'s messages. The prefixes it reads are validatePlaybook's —
 // see the note above that function.
+//
+// Names are free text, so a prefix can still match more than one: stage `a`'s
+// `stage 'a' ` also heads every message of a stage named `a' b`. The LONGEST
+// matching stage name wins, since a message names exactly one stage and the
+// longer name's head contains the shorter's. Edges have no such tiebreak —
+// `a->` → `b` and `a` → `->b` print the same — so an edge text matching more
+// than one distinct declared edge locates to null rather than a guess.
 export function locateValidationError(message: string, draft: unknown): {
   stage: string | null;
   transition: { from: string; to: string } | null;
 } {
   const raw = isRecord(draft) ? draft : {};
+  let stage: string | null = null;
   for (const name of isRecord(raw.stages) ? Object.keys(raw.stages) : []) {
     const head = `stage '${name}'`;
-    if (message.startsWith(`${head}:`) || message.startsWith(`${head} `)) return { stage: name, transition: null };
+    const hit = message.startsWith(`${head}:`) || message.startsWith(`${head} `);
+    if (hit && (stage === null || name.length > stage.length)) stage = name;
   }
+  if (stage !== null) return { stage, transition: null };
+  const edges = new Map<string, { from: string; to: string }>();
   for (const t of Array.isArray(raw.transitions) ? raw.transitions : []) {
     if (!isRecord(t) || typeof t.from !== 'string' || typeof t.to !== 'string') continue;
     const edge = `${t.from}->${t.to}`;
     if (message.startsWith(`transition ${edge}:`) || message === `duplicate transition ${edge}`) {
-      return { stage: null, transition: { from: t.from, to: t.to } };
+      edges.set(JSON.stringify([t.from, t.to]), { from: t.from, to: t.to });
     }
   }
-  return { stage: null, transition: null };
+  return { stage: null, transition: edges.size === 1 ? [...edges.values()][0] : null };
 }
 
 // The optional conductor-facing `description` on a stage or a transition.
@@ -704,10 +715,13 @@ export async function userPlaybookIds(): Promise<string[]> {
     if (errCode(e) === 'ENOENT') return [];
     throw e;
   }
-  return names.sort()
+  // Sorted AFTER the extension is stripped: `.` sorts after `-`, so sorting
+  // filenames would put `my-flow` before `my`.
+  return names
     .filter(n => n.endsWith('.json'))
     .map(n => n.slice(0, -'.json'.length))
-    .filter(slug => slug !== RESERVED_OVERLAY_ID);
+    .filter(slug => slug !== RESERVED_OVERLAY_ID)
+    .sort();
 }
 
 async function userPlaybookFiles(): Promise<ExtraEntry[]> {

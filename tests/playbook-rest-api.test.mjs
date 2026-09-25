@@ -19,8 +19,10 @@ import {
   loadToolIndex, governableToolNames, validatePlaybook, locateValidationError, setPluginPlaybooksProvider,
   SEED_PLAYBOOK_IDS, DEFAULT_PLAYBOOK_ID, PIN_FORBIDDEN_KEYS, STAGE_KEYS, NEEDS_KEYS, TRANSITION_KEYS,
 } from '../src/playbooks.ts';
+import { liveSessionsOnPlaybook } from '../src/playbookLedger.ts';
 import { listPlaybooks } from '../src/mcp/handlers.ts';
 import { freshProjectsRoot } from './helpers.mjs';
+import { proj } from './playbook-fixtures.mjs';
 
 // `plan` pins/denies/wildcards; `implement` is fully populated (every stage
 // key, a defaulted needs entry); `review` is "*"-only (NOT spawnable), and
@@ -74,29 +76,32 @@ async function boot(playbookGate) {
   const base = `http://127.0.0.1:${server.address().port}/api/playbooks`;
   return {
     get: async (p = '') => { const res = await fetch(base + p); return { status: res.status, body: await res.json() }; },
-    validate: async (draft) => {
+    validate: async (draft, contentType = 'application/json') => {
       const res = await fetch(`${base}/validate`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft),
+        method: 'POST', headers: { 'content-type': contentType }, body: JSON.stringify(draft),
       });
       return { status: res.status, body: await res.json() };
     },
   };
 }
 
-// A projection shaped like PlaybookGate.readProjection's: `mine` has one live
-// and one dead worker, the overridden built-in one live worker.
+// A folded projection in which `mine` has one live and one dead worker, and the
+// overridden built-in one live worker. readLiveWorkers is the gate's own
+// composition (liveSessionsOnPlaybook over its projection and isLive).
 const LIVE = new Set(['s-mine-live', 's-other-live']);
+const PROJ = proj([
+  { kind: 'spawn', sessionId: 's-mine-live', playbook: 'mine', stage: 'plan' },
+  { kind: 'spawn', sessionId: 's-mine-dead', playbook: 'mine', stage: 'plan' },
+  { kind: 'spawn', sessionId: 's-other-live', playbook: OVERRIDDEN, stage: 'plan' },
+]);
 function fakeGate({ fail = false } = {}) {
-  const w = (sessionId, playbook) => [sessionId, { sessionId, playbook, stage: 'plan', stageHistory: ['plan'], provenance: {}, runRoot: sessionId }];
+  const isLive = sid => LIVE.has(sid);
   return {
-    async readProjection() {
+    async readLiveWorkers(playbook) {
       if (fail) throw new Error('ledger read failed');
-      return {
-        bySession: new Map([w('s-mine-live', 'mine'), w('s-mine-dead', 'mine'), w('s-other-live', OVERRIDDEN)]),
-        enforcement: new Map(), seq: 3, parent: new Map(),
-      };
+      return liveSessionsOnPlaybook(PROJ, playbook, isLive);
     },
-    isLive: sid => LIVE.has(sid),
+    isLive,
   };
 }
 
@@ -117,6 +122,10 @@ before(async () => {
   await write('custom', { ...MINE, id: 'custom' });
   const { id: _id, ...noId } = MINE;
   await write('noid', noId);
+  // A hyphen-prefix pair: sorting filenames (`my-flow.json` < `my.json`)
+  // and sorting ids (`my` < `my-flow`) disagree on it.
+  await write('my', { ...MINE, id: 'my' });
+  await write('my-flow', { ...MINE, id: 'my-flow' });
   setPluginPlaybooksProvider(async () => [{ id: 'acme/release', slug: 'release', plugin: 'acme', body: JSON.stringify(RELEASE) }]);
   api = await boot(fakeGate());
   apiNoGate = await boot(null);
@@ -199,6 +208,7 @@ test('list: takenIds — built-ins, every overlay file loaded or not, and the re
   assert.deepEqual(body.takenIds.builtin, [...SEED_PLAYBOOK_IDS].sort());
   for (const id of ['broken', 'mine', OVERRIDDEN, BAD_OVERRIDE]) assert.ok(body.takenIds.user.includes(id), id);
   assert.ok(!body.takenIds.user.includes('custom'));
+  assert.ok(body.takenIds.user.indexOf('my') < body.takenIds.user.indexOf('my-flow'), 'sorted by id, not by filename');
   assert.deepEqual(body.takenIds.user, [...body.takenIds.user].sort());
   assert.deepEqual(body.takenIds.reserved, ['custom']);
   assert.equal(row(body, 'custom'), undefined, 'a reserved-id file is not loaded');
@@ -298,9 +308,20 @@ test('validate: messages are exactly the validator\'s, in order, each with its l
   assert.equal(status, 200);
   assert.equal(body.ok, false);
   assert.deepEqual(body.errors.map(e => e.message), expected.errors);
-  assert.deepEqual(body.errors, expected.errors.map(message => ({ message, ...locateValidationError(message, draft) })));
-  assert.ok(body.errors.some(e => e.stage === 'plan'));
-  assert.ok(body.errors.some(e => e.transition?.from === 'plan' && e.transition?.to === 'review'));
+  assert.deepEqual(body.errors.map(({ stage, transition }) => ({ stage, transition })), [
+    { stage: null, transition: null }, // unknown top-level key 'extra'
+    { stage: 'plan', transition: null }, // stage 'plan': workers must be …
+    { stage: null, transition: { from: 'plan', to: 'review' } }, // transition plan->review: description …
+  ]);
+});
+
+test('validate: a non-JSON Content-Type is refused 400 BODY_NOT_JSON, not validated', async () => {
+  for (const type of ['text/plain', 'application/x-www-form-urlencoded']) {
+    const { status, body } = await api.validate(MINE, type);
+    assert.equal(status, 400, type);
+    assert.equal(body.code, 'BODY_NOT_JSON', type);
+    assert.equal(typeof body.error, 'string', type);
+  }
 });
 
 test('validate: a tool outside the live governable index is refused', async () => {
@@ -380,6 +401,24 @@ test('locateValidationError maps each validator message shape', async (t) => {
   await t.test('entryStages names … → nowhere', () => {
     const d = base(); d.entryStages.push('zz');
     assert.deepEqual(locate(d, /^entryStages names unknown stage/), nowhere);
+  });
+  await t.test("a stage name that extends another past its quote goes to the longer name", () => {
+    const d = base();
+    d.stages = { a: { tools: { spawn_instance: 'allow' }, bogus: 1 }, "a' b": { bogus: 2 } };
+    d.transitions = [{ from: 'a', to: "a' b" }];
+    assert.deepEqual(locate(d, /^stage 'a' b': unknown key/), atStage("a' b"));
+    assert.deepEqual(locate(d, /^stage 'a': unknown key/), atStage('a'));
+  });
+  await t.test('an edge text two declared edges print as locates to nowhere', () => {
+    const d = base();
+    d.stages = { a: { tools: { spawn_instance: 'allow' } }, 'a->': {}, b: {}, '->b': {} };
+    d.transitions = [
+      { from: 'a', to: 'a->' }, { from: 'a', to: 'b' },
+      { from: 'a', to: '->b', description: '' }, { from: 'a->', to: 'b' },
+    ];
+    assert.deepEqual(locate(d, /^transition a->->b: description/), nowhere);
+    d.transitions[0].description = '';
+    assert.deepEqual(locate(d, /^transition a->a->: description/), atEdge('a', 'a->'), 'an unambiguous edge still locates');
   });
   await t.test('plan-b is never captured by plan', () => {
     const d = base();

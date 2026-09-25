@@ -28,10 +28,7 @@ export function buildPlaybookApi({ playbookGate }: { playbookGate?: PlaybookGate
   async function liveWorkers(id: string): Promise<number | null> {
     if (!playbookGate) return null;
     try {
-      const proj = await playbookGate.readProjection();
-      let n = 0;
-      for (const w of proj.bySession.values()) if (w.playbook === id && playbookGate.isLive(w.sessionId)) n++;
-      return n;
+      return (await playbookGate.readLiveWorkers(id)).length;
     } catch (e) {
       console.warn('playbookApi: playbook projection read failed:', e);
       return null;
@@ -62,8 +59,15 @@ export function buildPlaybookApi({ playbookGate }: { playbookGate?: PlaybookGate
   // The draft is the body — the same JSON an authoring plugin writes to
   // `<id>.json`. Validated against the draft's OWN id, so the filename-match
   // check never fires; an absent or non-string id is reported by the slug check.
+  // A non-JSON Content-Type is refused rather than validated: express.json
+  // skips such a body, and validating the empty `req.body` it leaves would
+  // report errors about a draft the caller never sent.
   r.post('/validate', async (req, res, next) => {
     try {
+      if (!req.is('application/json')) {
+        res.status(400).json({ error: 'the draft must be sent as Content-Type: application/json', code: 'BODY_NOT_JSON' });
+        return;
+      }
       const draft: unknown = req.body;
       const id = (draft as { id?: unknown } | null)?.id as string;
       const result = validatePlaybook(draft, id, await loadToolIndex());

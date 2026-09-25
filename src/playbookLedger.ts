@@ -242,6 +242,15 @@ export function liveSessionsInStage(
   return out;
 }
 
+// Live workers bound to `playbook`, as sessionIds — GET /api/playbooks/:id's
+// `liveWorkers`. The binding is read through playbookBinding, the one binding
+// reader; `isLive` is the caller's liveness oracle, as for liveSessionsInStage.
+export function liveSessionsOnPlaybook(
+  p: Projection, playbook: string, isLive: (sessionId: string) => boolean,
+): string[] {
+  return [...p.bySession.keys()].filter(sid => playbookBinding(p, sid).playbook === playbook && isLive(sid));
+}
+
 export function hasEverBeen(p: Projection, sessionId: string, stage: string): boolean {
   return !!p.bySession.get(sessionId)?.stageHistory.includes(stage);
 }

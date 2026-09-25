@@ -582,7 +582,7 @@ Plugin ids are never in `takenIds`: they contain `/`, which an overlay id cannot
 - The graph is **post-validation** (`playbookDetail`, the payload `describe_playbook` renders): defaults applied (`needs[].position` → `[stage]`, `liveness` → `"live"`, `workers` → `"one"`); `tools` holds only the declared entries.
 - `via` = the declared `on`, else `"send_prompt"`. Lossless: the validator refuses `on: "send_prompt"`, so `via: "send_prompt"` always means no `on`.
 - `spawnable` = `isSpawnable(stage)`.
-- `liveWorkers` = workers bound to this id in the gate's projection for which `isLive` holds — for warning about [definition drift](#playbooks) before an edit. `null` = unknown: no gate wired, or the projection read failed (logged with `console.warn`, still 200 — the same degrade as `GET /api/instances`' bindings).
+- `liveWorkers` = the length of the gate's `readLiveWorkers(id)` — workers bound to this id in its projection for which `isLive` holds — for warning about [definition drift](#playbooks) before an edit. `null` = unknown: no gate wired, or the projection read failed (logged with `console.warn`, still 200 — the same degrade as `GET /api/instances`' bindings).
 - **404** `{error: "no playbook '<id>'", code: "PLAYBOOK_UNKNOWN"}` — an unknown id, an unknown plugin slug, or an overlay file that failed validation (its reasons are in the list's `errors`).
 
 **`POST /api/playbooks/validate`** → 200. The body is the draft definition itself — the JSON that would be written to `<id>.json`. Never writes.
@@ -598,11 +598,12 @@ Plugin ids are never in `takenIds`: they contain `/`, which an overlay id cannot
 - Valid → exactly `{ok: true}`.
 - `message` = `validatePlaybook(draft, draft.id, <tool index>)`'s errors, in emission order — the validator is the only rule set. The expected id is the draft's **own** `id`, so the filename-match check never fires; a missing or non-string id is reported once, as `invalid id '…'`.
 - `stage` / `transition` come from `locateValidationError` (`src/playbooks.ts`), matched against the draft's **actual** stage names and edges (so `plan` never captures `plan-b`'s messages):
-  - `stage` — a message starting `stage '<name>'` followed by `:` or a space.
-  - `transition` — a message starting `transition <from>-><to>:`, or exactly `duplicate transition <from>-><to>`.
+  - `stage` — a message starting `stage '<name>'` followed by `:` or a space. When several names match (`a` and `a' b` both head `stage 'a' b': …`), the **longest** wins.
+  - `transition` — a message starting `transition <from>-><to>:`, or exactly `duplicate transition <from>-><to>`. When that text is printed by more than one distinct declared edge (`a`→`->b` and `a->`→`b`), `transition` is `null`.
   - both `null` — a playbook-level message, or a transition message not attributed to a declared edge (e.g. `transition from names unknown stage …`).
 - No per-field path: the message text names the field.
-- A non-object JSON body (e.g. `[]`) → `ok:false` with the validator's `must be a JSON object` error. A body that is not JSON → 400 from `express.json`.
+- A request whose `Content-Type` is not `application/json` → **400** `{error, code: "BODY_NOT_JSON"}`, never validated.
+- A non-object JSON body (e.g. `[]`) → `ok:false` with the validator's `must be a JSON object` error. An `application/json` body that does not parse → 400 from `express.json`.
 - No collision check — apply `takenIds` client-side.
 
 ## Plugin system
