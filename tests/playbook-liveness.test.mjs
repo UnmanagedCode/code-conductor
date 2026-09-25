@@ -200,6 +200,17 @@ test('readLiveWorkers lists exactly the workers bound to that playbook that isSe
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
+// A directory at the ledger path: readFile fails EISDIR, a non-ENOENT load
+// failure (a malformed LINE would only be skipped, never thrown).
+test('readLiveWorkers propagates a ledger load failure rather than answering []', async () => {
+  const { dir, file } = await tmpLedgerFile();
+  try {
+    await fs.mkdir(file, { recursive: true });
+    const gate = gateOver(file, stubManager({ live: ['w1'] }));
+    await assert.rejects(() => gate.readLiveWorkers('gatelab'), /EISDIR/);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
 test('two readProjection() calls append nothing — the load stays read-only', async () => {
   const { dir, file } = await tmpLedgerFile();
   try {

@@ -19,7 +19,8 @@ import {
   loadToolIndex, governableToolNames, validatePlaybook, locateValidationError, setPluginPlaybooksProvider,
   SEED_PLAYBOOK_IDS, DEFAULT_PLAYBOOK_ID, PIN_FORBIDDEN_KEYS, STAGE_KEYS, NEEDS_KEYS, TRANSITION_KEYS,
 } from '../src/playbooks.ts';
-import { liveSessionsOnPlaybook } from '../src/playbookLedger.ts';
+import { liveSessionsOnPlaybook, createPlaybookLedger } from '../src/playbookLedger.ts';
+import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
 import { listPlaybooks } from '../src/mcp/handlers.ts';
 import { freshProjectsRoot } from './helpers.mjs';
 import { proj } from './playbook-fixtures.mjs';
@@ -108,6 +109,7 @@ function fakeGate({ fail = false } = {}) {
 let api; // with the fake gate
 let apiNoGate;
 let apiFailingGate;
+let apiRealBrokenGate; // the real gate over a ledger path that cannot be read
 
 before(async () => {
   await freshProjectsRoot();
@@ -130,6 +132,12 @@ before(async () => {
   api = await boot(fakeGate());
   apiNoGate = await boot(null);
   apiFailingGate = await boot(fakeGate({ fail: true }));
+  const brokenLedger = path.join(orchStoreRoot(), 'broken-ledger.jsonl');
+  await fs.mkdir(brokenLedger, { recursive: true }); // a directory: readFile fails EISDIR
+  apiRealBrokenGate = await boot(createPlaybookGate({
+    instances: { on() {}, emit() {}, liveForSession: () => null, anyForSession: () => null, isSessionLive: () => true },
+    ledger: createPlaybookLedger({ file: () => brokenLedger }),
+  }));
 });
 
 after(async () => {
@@ -284,6 +292,17 @@ test('detail: liveWorkers counts live workers bound to the id; null without a ga
   assert.equal(warnings.length, 1);
 });
 
+test('detail: the real gate\'s ledger load failure reaches the route as liveWorkers null with one warning, never 0', async () => {
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  let res;
+  try { res = await apiRealBrokenGate.get('/mine'); } finally { console.warn = origWarn; }
+  assert.equal(res.status, 200);
+  assert.strictEqual(res.body.liveWorkers, null);
+  assert.equal(warnings.length, 1);
+});
+
 // ── POST /api/playbooks/validate ────────────────────────────────────────────
 
 test('validate: a valid draft answers exactly {ok:true} and writes nothing', async () => {
@@ -406,6 +425,14 @@ test('locateValidationError maps each validator message shape', async (t) => {
     const d = base();
     d.stages = { a: { tools: { spawn_instance: 'allow' }, bogus: 1 }, "a' b": { bogus: 2 } };
     d.transitions = [{ from: 'a', to: "a' b" }];
+    assert.deepEqual(locate(d, /^stage 'a' b': unknown key/), atStage("a' b"));
+    assert.deepEqual(locate(d, /^stage 'a': unknown key/), atStage('a'));
+  });
+  await t.test('the longer name wins even when it is declared first', () => {
+    const d = base();
+    d.stages = { "a' b": { bogus: 2 }, a: { tools: { spawn_instance: 'allow' }, bogus: 1 } };
+    d.transitions = [{ from: 'a', to: "a' b" }];
+    assert.deepEqual(Object.keys(d.stages), ["a' b", 'a'], 'the longer name is declared first');
     assert.deepEqual(locate(d, /^stage 'a' b': unknown key/), atStage("a' b"));
     assert.deepEqual(locate(d, /^stage 'a': unknown key/), atStage('a'));
   });
