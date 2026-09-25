@@ -94,6 +94,7 @@ async function setup() {
   return {
     dom, header, window,
     show(inst) { instances = [inst]; activeId = inst.id; header.update(); },
+    clear() { instances = []; activeId = null; header.update(); },
   };
 }
 
@@ -165,7 +166,7 @@ test('clicking the pressed side sends nothing', async () => {
 });
 
 // Invariant: both buttons are disabled exactly in the states where a mode
-// change cannot land, and enabled otherwise.
+// change cannot land, and enabled otherwise; with no instance neither is pressed.
 test('disabled in turn / crashed / exited and with no instance; enabled when idle', async (tt) => {
   for (const status of ['turn', 'crashed', 'exited']) {
     await tt.test(`disabled while ${status}`, async () => {
@@ -175,11 +176,19 @@ test('disabled in turn / crashed / exited and with no instance; enabled when idl
       assert.equal(opt(t.dom, 'bypassPermissions').disabled, true);
     });
   }
-  await tt.test('disabled with no instance', async () => {
+  // Starts from a rendered instance (enabled, one side pressed), so the
+  // assertions read update()'s no-instance render rather than the markup's
+  // initial attributes: neither button may stay enabled or pressed.
+  await tt.test('disabled and unpressed with no instance', async () => {
     const t = await setup();
-    t.header.update();
-    assert.equal(opt(t.dom, 'plan').disabled, true);
-    assert.equal(opt(t.dom, 'bypassPermissions').disabled, true);
+    t.show({ ...WORKER, status: 'idle', mode: 'plan' });
+    assert.equal(opt(t.dom, 'plan').disabled, false, 'precondition: enabled');
+    assert.equal(pressed(t.dom, 'plan'), 'true', 'precondition: plan pressed');
+    t.clear();
+    for (const mode of ['plan', 'bypassPermissions']) {
+      assert.equal(opt(t.dom, mode).disabled, true, `${mode} disabled`);
+      assert.equal(pressed(t.dom, mode), 'false', `${mode} not pressed`);
+    }
   });
   await tt.test('enabled when idle', async () => {
     const t = await setup();

@@ -119,16 +119,15 @@ for (const mode of ['plan', 'bypassPermissions']) {
 // The fork, rewind and prune call sites each pass an instance's own mode down
 // to writeSessionMetadata. A `plan` session catches a site hard-coded to
 // `bypassPermissions` (also DEFAULT_RESUME_MODE); a `bypassPermissions` session
-// catches one hard-coded to `plan`. Fork is driven from both, so it catches
-// either hard-coded value; rewind and prune are driven from `plan`.
+// catches one hard-coded to `plan`. Each site is driven from both, so each
+// catches either hard-coded value.
+const MODE_CASES = [['plan', 'bypassPermissions'], ['bypassPermissions', 'plan']];
+const sidFor = (n, mode) => `aaaaaaa${n}-2222-3333-4444-55555555555${mode === 'plan' ? '5' : '6'}`;
 
 // Pins the REST fork call site (routes.ts), from each mode.
-for (const [mode, other, sid] of [
-  ['plan', 'bypassPermissions', 'aaaaaaa1-2222-3333-4444-555555555555'],
-  ['bypassPermissions', 'plan', 'aaaaaaa4-2222-3333-4444-555555555555'],
-]) {
+for (const [mode, other] of MODE_CASES) {
   test(`forking a \`${mode}\` session records \`${mode}\` in the fork transcript`, async () => {
-    const { id, dir, restore } = await resumeSeeded(`fork-${mode}`, sid, mode);
+    const { id, dir, restore } = await resumeSeeded(`fork-${mode}`, sidFor(1, mode), mode);
     try {
       const r = await api(baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
       assert.equal(r.status, 201);
@@ -141,39 +140,43 @@ for (const [mode, other, sid] of [
   });
 }
 
-// Pins the rewind call site (Instance.rewindToUserMessage, instances.ts).
-// Rewind rewrites the session in place, so a wrong marker mislabels the
-// session the user is still sitting in.
-test('rewinding a `plan` session records `plan` in the truncated transcript', async () => {
-  const sid = 'aaaaaaa3-2222-3333-4444-555555555555';
-  const { id, dir, restore } = await resumeSeeded('rewindplan', sid, 'plan');
-  try {
-    const r = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1 });
-    assert.equal(r.status, 200);
-    await waitFor(() => instances.get(id).status === 'idle');
-    const markers = await markersIn(dir, sid);
-    assert.ok(markers.length > 0, 'the truncated session carries a permission-mode marker');
-    assert.equal(markers[0].permissionMode, 'plan');
-    assert.ok(!markers.some(m => m.permissionMode === 'bypassPermissions'),
-      'no marker on a rewound plan session may say bypassPermissions');
-  } finally { restore(); }
-});
+// Pins the rewind call site (Instance.rewindToUserMessage, instances.ts), from
+// each mode. Rewind rewrites the session in place, so a wrong marker mislabels
+// the session the user is still sitting in.
+for (const [mode, other] of MODE_CASES) {
+  test(`rewinding a \`${mode}\` session records \`${mode}\` in the truncated transcript`, async () => {
+    const sid = sidFor(3, mode);
+    const { id, dir, restore } = await resumeSeeded(`rewind-${mode}`, sid, mode);
+    try {
+      const r = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1 });
+      assert.equal(r.status, 200);
+      await waitFor(() => instances.get(id).status === 'idle');
+      const markers = await markersIn(dir, sid);
+      assert.ok(markers.length > 0, 'the truncated session carries a permission-mode marker');
+      assert.equal(markers[0].permissionMode, mode);
+      assert.ok(!markers.some(m => m.permissionMode === other),
+        `no marker on a rewound ${mode} session may say ${other}`);
+    } finally { restore(); }
+  });
+}
 
-// Pins the prune call site (Instance.pruneSession, instances.ts).
-test('pruning a `plan` session records `plan` in the pruned transcript', async () => {
-  const { id, dir, restore } = await resumeSeeded('pruneplan', 'aaaaaaa2-2222-3333-4444-555555555555', 'plan');
-  try {
-    const r = await api(baseUrl, 'POST', `/api/instances/${id}/prune`, {
-      cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate',
-    });
-    assert.equal(r.status, 200);
-    const markers = await markersIn(dir, r.body.newSessionId);
-    assert.ok(markers.length > 0, 'the pruned copy carries a permission-mode marker');
-    assert.equal(markers[0].permissionMode, 'plan');
-    assert.ok(!markers.some(m => m.permissionMode === 'bypassPermissions'),
-      'no marker on the pruned copy of a plan session may say bypassPermissions');
-  } finally { restore(); }
-});
+// Pins the prune call site (Instance.pruneSession, instances.ts), from each mode.
+for (const [mode, other] of MODE_CASES) {
+  test(`pruning a \`${mode}\` session records \`${mode}\` in the pruned transcript`, async () => {
+    const { id, dir, restore } = await resumeSeeded(`prune-${mode}`, sidFor(2, mode), mode);
+    try {
+      const r = await api(baseUrl, 'POST', `/api/instances/${id}/prune`, {
+        cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate',
+      });
+      assert.equal(r.status, 200);
+      const markers = await markersIn(dir, r.body.newSessionId);
+      assert.ok(markers.length > 0, 'the pruned copy carries a permission-mode marker');
+      assert.equal(markers[0].permissionMode, mode);
+      assert.ok(!markers.some(m => m.permissionMode === other),
+        `no marker on the pruned copy of a ${mode} session may say ${other}`);
+    } finally { restore(); }
+  });
+}
 
 // Pins that setMode's live control request and the marker it writes share one
 // value: the mode switched to.
