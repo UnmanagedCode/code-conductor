@@ -183,6 +183,35 @@ test('only archived conductors: no Inactive group, the empty state', async () =>
   assert.equal(empty.textContent, 'no conductors yet — tap 🎼 Conduct');
 });
 
+// The group is dropped when every conductor goes live and rebuilt when one
+// stops; the user's open/closed choice must survive that rebuild.
+test('the Inactive group keeps the user\'s open or closed choice across its removal and re-creation', async () => {
+  const { missionList, sidebar } = await setupSidebar();
+  await render(sidebar, { conductRows: [{ sessionId: 'D', lastActivity: 1 }], instances: [conductor('L')] });
+  const group = () => missionList.querySelector('details.mission-inactive');
+  const setOpen = async (det, open) => {
+    det.open = open;
+    det.dispatchEvent(new det.ownerDocument.defaultView.Event('toggle'));
+    await tick();
+  };
+  const rebuild = async () => {
+    const before = group();
+    sidebar.setInstances([conductor('L'), conductor('D')]);
+    await tick();
+    assertNull(group(), 'every conductor live: the group is removed');
+    sidebar.setInstances([conductor('L')]);
+    await tick();
+    assert.ok(group(), 'D stopped: the group is back');
+    assert.notEqual(group(), before, 'the <details> is re-created, not reused');
+  };
+  await setOpen(group(), true);
+  await rebuild();
+  assert.equal(group().open, true, 'opened by the user: re-created open');
+  await setOpen(group(), false);
+  await rebuild();
+  assert.equal(group().open, false, 'closed by the user: re-created closed');
+});
+
 test('no Inactive group when every conductor is live', async () => {
   const { missionList, sidebar } = await setupSidebar();
   await render(sidebar, { instances: [conductor('A'), conductor('B')] });
