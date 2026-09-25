@@ -52,18 +52,19 @@ test('deriveMissions splits live from inactive by instance status', () => {
   assert.equal(inactive.find(c => c.sessionId === 'disk').instanceId, null);
 });
 
-// A temp conductor is archived on exit; it is still an inactive conductor.
-test('archived conduct rows land in inactive, ordered by activity with the rest', () => {
+test('archived conduct rows appear in neither group; a running conductor is placed by its instance', () => {
   const { live, inactive } = M.deriveMissions({
     conductRows: [
       { sessionId: 'arch-new', archived: true, lastActivity: 90 },
-      { sessionId: 'plain', lastActivity: 50 },
-      { sessionId: 'arch-old', archived: true, lastActivity: 10 },
+      { sessionId: 'plain-new', lastActivity: 70 },
+      { sessionId: 'arch-mid', archived: true, lastActivity: 50 },
+      { sessionId: 'plain-old', lastActivity: 10 },
+      { sessionId: 'arch-live', archived: true, lastActivity: 5 },
     ],
-    instances: [],
+    instances: [inst({ id: 'al', project: '.conduct', sessionId: 'arch-live', status: 'idle', createdAt: 1 })],
   });
-  assert.equal(live.length, 0);
-  assert.deepEqual(inactive.map(c => c.sessionId), ['arch-new', 'plain', 'arch-old']);
+  assert.deepEqual(inactive.map(c => c.sessionId), ['plain-new', 'plain-old']);
+  assert.deepEqual(live.map(c => c.sessionId), ['arch-live'], 'a running conductor is never hidden');
 });
 
 test('both groups order newest activity first', () => {

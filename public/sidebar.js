@@ -1191,20 +1191,13 @@ export class Sidebar {
     });
   }
 
-  // Every archived conductor lands here, so the group grows without bound:
-  // while it is collapsed only its count is kept current and its item list is
-  // left empty; opening it renders the items.
   _inactiveGroup(existing, inactive) {
     let li = existing;
     if (!li) {
       li = el('li', { class: 'mission-inactive-item' });
       const det = el('details', { class: 'worktree-group mission-inactive' });
       if (this.inactiveOpen) det.setAttribute('open', '');
-      det.addEventListener('toggle', () => {
-        if (this.inactiveOpen === det.open) return;
-        this.inactiveOpen = det.open;
-        this.render();
-      });
+      det.addEventListener('toggle', () => { this.inactiveOpen = det.open; });
       const summaryEl = el('summary', { class: 'worktree-summary' });
       const ul = el('ul', { class: 'mission-inactive-list' });
       det.appendChild(summaryEl);
@@ -1214,9 +1207,8 @@ export class Sidebar {
       li._ul = ul;
     }
     li._summaryEl.textContent = `Inactive (${inactive.length})`;
-    const shown = this.inactiveOpen ? inactive : [];
-    const bySid = new Map(shown.map(c => [c.sessionId, c]));
-    reconcileChildren(li._ul, shown.map(c => `mission:${c.sessionId}`),
+    const bySid = new Map(inactive.map(c => [c.sessionId, c]));
+    reconcileChildren(li._ul, inactive.map(c => `mission:${c.sessionId}`),
       (k, ex) => this._missionItem(ex, bySid.get(k.slice(8))));
     return li;
   }
@@ -1269,11 +1261,7 @@ export class Sidebar {
         onclick: () => {
           const c = holder.conductor;
           if (c.instanceId) this.onSelectInstance(c.instanceId);
-          // An archived conductor (a temp one that exited) is un-archived as it
-          // resumes; a plain disk row just resumes.
-          else if (this.onResumeSession) this.onResumeSession({
-            projectName: '.conduct', worktreeName: null, sessionId: c.sessionId, ...(c.archived ? { archived: true } : {}),
-          });
+          else if (this.onResumeSession) this.onResumeSession({ projectName: '.conduct', worktreeName: null, sessionId: c.sessionId });
         },
       });
       row._caret = el('button', {

@@ -1,5 +1,4 @@
-// Client calls on an archived session, shared by Settings → Archived and the
-// sidebar's Missions → Inactive resume so un-archiving has one spelling.
+// Client calls on an archived session, made by Settings → Archived.
 
 export function archivedSessionUrl(project, worktreeName, sessionId, suffix) {
   const enc = encodeURIComponent;
