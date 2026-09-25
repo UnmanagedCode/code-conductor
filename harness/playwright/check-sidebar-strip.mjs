@@ -401,13 +401,22 @@ try {
     });
     await page.screenshot({ path: path.join(OUT, 'strip-phone.png') });
     await page.click(`#sidebar-strip-slot [data-key="entry:${B.sessionId}"] .strip-entry`);
-    const after = await waitFor(() => page.evaluate(() => {
+    // B is untitled, so the header text alone is the same `.conduct` chip for
+    // every conductor: its identity is the chip's `session <sid>` tooltip and
+    // B's own entry being the active one.
+    const after = await waitFor(() => page.evaluate((sid) => {
       const open = document.getElementById('sidebar').classList.contains('open');
-      const t = document.getElementById('instance-title')?.textContent ?? '';
-      return !open && t && t !== 'no instance selected' ? { open, t } : false;
-    }), { timeout: 10000 }).catch(() => null);
-    check('12 phone: no sideways overflow; a strip click closes the drawer and opens the session',
-      g.open && g.sw <= g.cw && !!after, JSON.stringify({ g, after }));
+      const chipTitle = document.querySelector('#instance-title .ih-project')?.title ?? '';
+      const active = document.querySelector(`#sidebar-strip-slot [data-key="entry:${sid}"] .strip-entry`)?.classList.contains('active') ?? false;
+      return !open && chipTitle === `session ${sid}` && active ? { open, chipTitle, active } : false;
+    }, B.sessionId), { timeout: 10000 }).catch(() => page.evaluate((sid) => ({
+      failed: true,
+      open: document.getElementById('sidebar').classList.contains('open'),
+      chipTitle: document.querySelector('#instance-title .ih-project')?.title ?? null,
+      active: document.querySelector(`#sidebar-strip-slot [data-key="entry:${sid}"] .strip-entry`)?.classList.contains('active') ?? null,
+    }), B.sessionId));
+    check('12 phone: no sideways overflow; a strip click closes the drawer and opens that session (header names its sid, its entry is active)',
+      g.open && g.sw <= g.cw && !after.failed, JSON.stringify({ g, after, sid: B.sessionId }));
   }, { viewport: { width: 390, height: 844 } });
 } finally {
   await orch.close();

@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setupSidebar, tick, project, conductor, worker, hand } from './sidebar-fixture.mjs';
+import { setupSidebar, tick, project, conductor, worker, hand, rowOf } from './sidebar-fixture.mjs';
 
 async function render(sidebar, { projects = [project('p')], instances = [], conductRows = [] } = {}) {
   sidebar.setProjects(projects);
@@ -181,4 +181,37 @@ test('a conductor entry takes its merged mission title from the disk row', async
     instances: [conductor('A')],
   });
   assert.equal(entryOf(strip, 'A').textContent, 'Disk title');
+});
+
+test('the ring shows only on strip entries and Missions conductor rows: a Projects-lens session row and a Missions worker row are never ringed', async () => {
+  const { strip, root, missionList, sidebar } = await setupSidebar();
+  const q = ask('question', 'tool');
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt'] })],
+    instances: [
+      conductor('A', q),
+      hand('h', 'p', null, ask('question', 'text')),
+      // A worker never carries awaitingUser on the server; forced here so the
+      // row builders, not the data, are what keeps it unringed.
+      worker('w', 'A', 'p', 'wt', q),
+    ],
+  });
+  for (const d of root.querySelectorAll('details.worktree-group')) d.open = true;
+  await tick();
+  await tick();
+  missionList.querySelector('[data-key="mission:A"] .mission-caret').click();
+  await tick();
+
+  // The same sessions are ringed where the ring belongs.
+  assert.equal(entryOf(strip, 'h').querySelector('.dot').className, 'dot idle needs-you');
+  assert.equal(entryOf(strip, 'A').querySelector('.dot').className, 'dot idle needs-you');
+  assert.equal(missionList.querySelector('[data-key="mission:A"] .mission-row > .dot').className, 'dot idle needs-you');
+
+  const dotIn = (list, sid) => rowOf(list, sid)?.querySelector('.dot') ?? null;
+  const projH = dotIn(root, 'h'), projW = dotIn(root, 'w'), treeW = dotIn(missionList, 'w');
+  assert.ok(projH && projW && treeW, 'the Projects rows for h and w and the Missions worker row for w are rendered');
+  for (const [where, dot] of [['Projects h', projH], ['Projects w', projW], ['Missions worker w', treeW]]) {
+    assert.equal(dot.classList.contains('needs-you'), false, `${where}: ${dot.className}`);
+    assert.doesNotMatch(dot.title, /waiting on you/, `${where}: ${dot.title}`);
+  }
 });
