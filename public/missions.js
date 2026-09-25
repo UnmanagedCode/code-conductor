@@ -60,6 +60,10 @@ export function deriveMissions({ conductRows = [], instances = [] } = {}) {
       instanceStatus: null,
       instanceDisplayStatus: null,
       instanceAwaitingWake: false,
+      // Instance-only: a dead conductor is never waiting on you, whatever
+      // its disk row reports.
+      awaitingUser: null,
+      awaitingUserSource: null,
       archived: !!r.archived,
       live: false,
     });
@@ -73,6 +77,8 @@ export function deriveMissions({ conductRows = [], instances = [] } = {}) {
     row.instanceStatus = inst.status;
     row.instanceDisplayStatus = inst.displayStatus ?? null;
     row.instanceAwaitingWake = !!inst.awaitingWake;
+    row.awaitingUser = inst.awaitingUser ?? null;
+    row.awaitingUserSource = inst.awaitingUserSource ?? null;
     if (inst.title) row.title = inst.title;
     if (!row.firstPrompt && inst.firstPrompt) row.firstPrompt = inst.firstPrompt;
     row.lastActivity = Math.max(row.lastActivity ?? 0, inst.lastResponseAt ?? inst.createdAt ?? 0);

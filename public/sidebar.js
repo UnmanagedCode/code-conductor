@@ -3,8 +3,9 @@ import { formatAutoResumeTime } from './usage.js';
 import { conductorColor } from './conductorColor.js';
 import {
   sessionFromInstance, deriveMissions, missionTitle, workersOf, missionProjects,
-  ownersByPlace, worktreeOwnership, ownerLabel, stageText,
+  ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
 } from './missions.js';
+import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
 // so the user can see at-a-glance which sessions are recent enough to
@@ -137,19 +138,24 @@ function reconcileChildren(parent, keys, makeOrUpdate) {
   }
 }
 
+// The needs-you strip's group headings, in display order.
+const STRIP_HEADS = { waiting: 'Waiting on you', running: 'Running', finished: 'Finished' };
+
 export class Sidebar {
   constructor({
-    rootList, missionList, filterRoot, onSelectInstance, onCreateInstanceClick,
+    rootList, missionList, filterRoot, stripRoot, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onPromoteSession,
     onReviewWorktree, onEditProjectRemote,
   }) {
     this.list = rootList;
-    // The Missions lens's list and the Projects lens's conductor filter. Both
-    // optional: without missionList the Missions render is skipped, without
-    // filterRoot the filter stays off.
+    // The Missions lens's list, the Projects lens's conductor filter and the
+    // needs-you strip's slot (shown in both lenses). All optional: without
+    // missionList the Missions render is skipped, without filterRoot the
+    // filter stays off, without stripRoot the strip render is skipped.
     this.missionList = missionList ?? null;
     this.filterRoot = filterRoot ?? null;
+    this.stripRoot = stripRoot ?? null;
     this.onSelectInstance = onSelectInstance;
     this.onCreateInstanceClick = onCreateInstanceClick;
     this.onRemoveWorktree = onRemoveWorktree;
@@ -307,11 +313,15 @@ export class Sidebar {
   // running turn, not because it is done. The accent modifier is the only thing
   // on the row that distinguishes those two, and it stays lit across a
   // heartbeat (a heartbeat reports without consuming the wake), so a conductor
-  // whose worker is hung no longer reads as done.
-  _applyDot(dot, { status, awaitingWake }) {
+  // whose worker is hung no longer reads as done. `awaitingUser` adds the
+  // waiting-on-you ring over whatever fill the run state gives, on a live dot
+  // only.
+  _applyDot(dot, { status, awaitingWake, awaitingUser = null, awaitingUserSource = null }) {
     const awaiting = status === 'idle' && !!awaitingWake;
-    dot.className = `dot ${status}${awaiting ? ' awaiting' : ''}`;
-    dot.title = awaiting ? 'idle — waiting on a worker' : status;
+    const forYou = !!awaitingUser && status !== 'offline' && isLiveStatus(status);
+    dot.className = `dot ${status}${awaiting ? ' awaiting' : ''}${forYou ? ' needs-you' : ''}`;
+    dot.title = forYou ? needsYouTitle({ status, awaitingWake, awaitingUser, awaitingUserSource })
+      : awaiting ? 'idle — waiting on a worker' : status;
     return dot;
   }
 
@@ -1014,6 +1024,75 @@ export class Sidebar {
     this._renderFilter(liveOwners);
     this._renderProjects({ directByProject, byWorktree });
     if (this.missionList) this._renderMissions();
+    if (this.stripRoot) this._renderStrip();
+  }
+
+  // The needs-you strip: Waiting on you, Running, Finished — each only when
+  // non-empty, and no strip at all when every group is empty. The same strip
+  // in both lenses; the conductor filter does not narrow it.
+  _renderStrip() {
+    const g = deriveStrip({ conductors: this._missions.live, instances: this.instances });
+    reconcileChildren(this.stripRoot, isStripEmpty(g) ? [] : ['strip'], (k, ex) => {
+      const strip = ex ?? el('div', { class: 'sidebar-strip' });
+      const names = Object.keys(STRIP_HEADS).filter(name => g[name].length > 0);
+      reconcileChildren(strip, names.map(name => `group:${name}`), (gk, gex) => {
+        const name = gk.slice(6);
+        const entries = g[name];
+        let group = gex;
+        if (!group) {
+          group = el('div', { class: `strip-group ${name}` });
+          group._head = el('div', { class: 'strip-head' });
+          group._ul = el('ul', { class: 'strip-list' });
+          group.appendChild(group._head);
+          group.appendChild(group._ul);
+        }
+        group._head.textContent = `${STRIP_HEADS[name]} (${entries.length})`;
+        const bySid = new Map(entries.map(e => [e.sessionId, e]));
+        reconcileChildren(group._ul, entries.map(e => `entry:${e.sessionId}`),
+          (ek, eex) => this._stripEntry(eex, bySid.get(ek.slice(6)), name));
+        return group;
+      });
+      return strip;
+    });
+  }
+
+  // One strip entry: the dot and the label. Its state is not rendered as text
+  // (the dot and the heading carry it); it is in the tooltip and the accessible
+  // name.
+  _stripEntry(existing, entry, group) {
+    let li = existing, holder, btn;
+    if (!li) {
+      li = el('li', {});
+      holder = { entry };
+      btn = el('button', {
+        type: 'button', class: 'strip-entry',
+        onclick: () => this.onSelectInstance(holder.entry.instanceId),
+      });
+      li.appendChild(btn);
+      li._holder = holder;
+      li._btn = btn;
+    } else {
+      holder = li._holder;
+      btn = li._btn;
+    }
+    holder.entry = entry;
+    const reason = entryReason(entry, group);
+    btn.className = 'strip-entry' + (entry.instanceId === this.activeInstanceId ? ' active' : '');
+    this._applyOwner(btn, entry.conductor ? entry.sessionId : null);
+    btn.title = `${entry.label}\n${reason}`;
+    btn.setAttribute('aria-label', `${entry.label} — ${reason}`);
+    reconcileChildren(btn, ['dot', 'title'], (k, ex) => {
+      if (k === 'dot') {
+        return this._applyDot(ex ?? el('span', { class: 'dot' }), {
+          status: entry.status, awaitingWake: entry.awaitingWake,
+          awaitingUser: entry.awaitingUser, awaitingUserSource: entry.awaitingUserSource,
+        });
+      }
+      const t = ex ?? el('span', { class: 'strip-title' });
+      t.textContent = entry.label;
+      return t;
+    });
+    return li;
   }
 
   // Reconcile the conductor filter's options: All, Hand-spawned only, then one
@@ -1222,6 +1301,7 @@ export class Sidebar {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
           status: c.instanceDisplayStatus ?? c.instanceStatus ?? 'offline',
           awaitingWake: c.instanceAwaitingWake,
+          awaitingUser: c.awaitingUser, awaitingUserSource: c.awaitingUserSource,
         });
       }
       if (k === 'title') {

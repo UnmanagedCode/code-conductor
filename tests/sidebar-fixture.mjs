@@ -1,5 +1,5 @@
 // Shared happy-dom setup for the Missions-lens / ownership / filter Sidebar
-// tests: a fresh Window per call, both lists, the filter root, and recorded
+// tests: a fresh Window per call, both lists, the filter root, the strip slot and recorded
 // callbacks.
 
 import fs from 'node:fs/promises';
@@ -23,6 +23,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
   const { Sidebar } = await import(pathToFileURL(path.join(PUB, 'sidebar.js')).href);
   const { conductorColor } = await import(pathToFileURL(path.join(PUB, 'conductorColor.js')).href);
   document.body.innerHTML = `
+    <div id="sidebar-strip-slot"></div>
     <div id="conductor-filter" class="conductor-filter"><select id="conductor-filter-select"></select></div>
     <ul id="mission-list" class="mission-list"></ul>
     <ul id="project-list" class="project-list"></ul>`;
@@ -35,12 +36,14 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
   const missionList = document.getElementById('mission-list');
   const filterRoot = document.getElementById('conductor-filter');
   const select = document.getElementById('conductor-filter-select');
+  const strip = document.getElementById('sidebar-strip-slot');
 
   const calls = { select: [], resume: [], create: [] };
   const sidebar = new Sidebar({
     rootList: root,
     missionList,
     filterRoot,
+    stripRoot: strip,
     onSelectInstance: (id) => calls.select.push(id),
     onCreateInstanceClick: (name, opts) => calls.create.push({ name, opts }),
     onResumeSession: (s) => calls.resume.push(s),
@@ -51,7 +54,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
     onEditWorkspace: () => {},
     onPromoteSession: () => {},
   });
-  return { window, root, missionList, filterRoot, select, sidebar, calls, conductorColor };
+  return { window, root, missionList, filterRoot, select, strip, sidebar, calls, conductorColor };
 }
 
 export const tick = () => new Promise(r => setTimeout(r, 0));
