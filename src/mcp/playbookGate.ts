@@ -41,7 +41,7 @@ import {
   type Move, type Playbook, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
 import {
-  createPlaybookLedger, ledgerFile, readEvents, playbookBinding,
+  createPlaybookLedger, ledgerFile, readEvents, playbookBinding, liveSessionsOnPlaybook,
   type PlaybookLedger, type Projection, type LedgerEvent,
 } from '../playbookLedger.ts';
 import { isConductorInstance } from '../conduct.ts';
@@ -92,6 +92,11 @@ export interface PlaybookGate {
   // as readProjection, so a caller that wants to degrade rather than throw
   // still has to catch it.
   readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>>;
+  // The live workers bound to `playbook` (liveSessionsOnPlaybook over this
+  // gate's projection and isLive), for src/playbookApi.ts — which, like
+  // routes.ts, may not import playbookLedger.ts. Same propagate-on-load-failure
+  // contract as readBindings.
+  readLiveWorkers(playbook: string): Promise<string[]>;
   // THE liveness oracle this gate's decide() calls use — exposed so a read
   // surface (playbook_state, describe_playbook's dry-run) answers from the same
   // source as enforcement, rather than re-deriving its own.
@@ -432,6 +437,10 @@ export function createPlaybookGate(
     return sessionIds.map(sid => playbookBinding(proj, sid));
   }
 
+  async function readLiveWorkers(playbook: string): Promise<string[]> {
+    return liveSessionsOnPlaybook(await readProjection(), playbook, isLive);
+  }
+
   // Raw events, for the backtrack surface. Re-read per call rather than kept
   // alongside the projection: history is asked for by a human-paced read tool,
   // and holding every event in memory forever to serve it would be a leak.
@@ -440,7 +449,7 @@ export function createPlaybookGate(
     return readEvents(ledger.file());
   }
 
-  return { check, readProjection, readHistory, readBindings, isLive, ledger: () => ledger };
+  return { check, readProjection, readHistory, readBindings, readLiveWorkers, isLive, ledger: () => ledger };
 }
 
 // The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the

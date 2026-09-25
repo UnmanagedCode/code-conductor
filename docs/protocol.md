@@ -268,6 +268,9 @@ That future-`resetsAt` check is the **safety rail**: a queued send bypasses the 
 | `GET` | `/api/settings/spawn` | `{debugByDefault}` — persisted default applied to `debug` on `POST /api/instances`/`spawn_instance` when the caller omits it. `src/appSettings.ts`. |
 | `POST` | `/api/settings/spawn/prefs` | `{debugByDefault?}` — persist the debug-by-default toggle. Returns refreshed state. |
 | `POST` | `/api/settings/self-update` | Apply the update, **streamed as NDJSON** (same contract as `POST /api/plugins/library/:id/update`): `{type:'chunk',phase,text}` lines (`phase` ∈ `pull`\|`npm`) then a terminal `{type:'result',ok,result\|error,tail}`. `result` = `{ok, version, depsChanged, npm, restartRequired}`, where `restartRequired` = `depsChanged ? (npm.ok ?? false) : true` — a failed `npm install` reports `false` so the client won't restart into a half-installed tree. Runs `git pull --ff-only` in the repo root, then `npm install` iff the pull moved `package.json`/`package-lock.json` (or the pre-pull HEAD/diff couldn't be read — errs toward running it). Never restarts the process — the client hands off to `POST /api/admin/restart {resume:true}` after a successful apply. A pre-stream validation/`--ff-only` failure surfaces as a 502 with a git `tail`. |
+| `GET` | `/api/playbooks` | Every loaded playbook's summary plus the editor catalog (`errors`, `governableTools`, `takenIds`). See [REST — `/api/playbooks`](#rest--apiplaybooks). |
+| `GET` | `/api/playbooks/:id` | One playbook's post-validation graph + `liveWorkers`; a plugin id's `/` may be raw or `%2F`. 404 `PLAYBOOK_UNKNOWN`. See [REST — `/api/playbooks`](#rest--apiplaybooks). |
+| `POST` | `/api/playbooks/validate` | Body = a draft definition; `{ok:true}` or `{ok:false, errors:[{message, stage, transition}]}`. **Never writes.** See [REST — `/api/playbooks`](#rest--apiplaybooks). |
 
 **`GET /api/instances/:id/events` paging mechanics.** Backward pages are **quiescent-aligned**: the page start snaps to the nearest quiescent point (no open block, every `tool_use` resolved; outer `user_echo`/`turn_end` reset the scan), so each page holds only whole blocks and complete tool round-trips; sub-agent group integrity pulls a child's Task head (and thus the whole group) into the page, or pushes the page start past any child with no head at or before it in the loaded array. Quiescent points are dense, so pages stay ~`limit`-sized. Backward pages are never empty while `hasMore` is true: a window whose only servable cut would be its own `end` (the whole tentative window fell inside a forbidden component anchored by a headless group) is instead served from that window's own pre-snap start, down-snapped to the nearest quiescent cut — so a sub-agent child with no reachable head may ride along on a page and park client-side rather than the page coming back empty. `hasMore: false` remains the only end-of-history signal, never `events: []`. The `nextBefore` cursor jumps the numeric gap between the two seq spaces. Evicted/archived events get their own dense `_seq` space strictly below `trimmedBefore`, cut so ring + archive never overlap — at the ring head's stamped `userIndex` when it's an outer echo (turn boundary), or content-correlated into the archive by `(kind, msgId, blockIdx)`/a `tool_result`'s `toolUseId` when it's mid-turn, falling back to the echo ordinal only when no correlator resolves (full correlator mechanics in [architecture.md](architecture.md) → `eventArchive.ts`) — a mid-turn head with no correlator hit ⇒ gap, never duplication — marked with a seq-less synthetic `{kind:'history_gap'}` event placed at the archive/ring **seam** — the last event of a page whose window *ends* on that boundary, or spliced at the seam's own offset **inside** the served slice when the window *straddles* it (one page, `[…, 12, <GAP>, 13, …]`) — so in the reassembled stream it always sits between the last archive event and the first ring-side one. **At least one** marker per backward walk: pages tile unconditionally (every window is served, none skipped), so some page always ends on the seam or straddles it. Not exactly one — a page whose snapped start lands exactly *on* the seam splices at offset 0 while the page below it splices at its own end, yielding `[…, 12, <GAP>][<GAP>, 13, …]`. That server-side double is known, narrow and deliberately not closed; the client collapses it at render time — `_renderHistoryGap` in `public/conversation.js` skips the append when the root's last element is already a gap divider, and `spliceBatchAbove` in `public/lazyHistory.js` drops a batch's trailing gap divider when the chunk below it begins with one (paged batches render into their own detached root, so the append-side check cannot see across a page seam) — so a doubled marker surfaces as **one** "earlier messages unavailable" divider. The dedupe is adjacency-scoped: markers separated by real content are distinct seams and both render. A page serving entirely **above** the seam with `hasMore:false` — only reachable via forward `after=` paging, where no further page follows — appends the marker after whatever it serves instead, so the eviction is never left unmarked). Synthetic `{kind:'task_completion', tasks}` events (no `_seq`) are spliced in after the completing `TaskUpdate` of any task batch below the tail, so lazily-loaded history shows the finished-task bubble. Full mechanics in [architecture.md](architecture.md) → `eventArchive.ts` / `taskReconstruct.ts`.
 
@@ -515,7 +518,7 @@ Commits a **`resume`** ledger event (never a second `spawn` — that would reset
 
 Because a `spawn` ledger event needs the new worker's sessionId — which does not exist until the handler has run — the checkpoint is **check-before / commit-after**: one call decides, a second records. A handler that throws never reaches the commit, and one that soft-refuses is filtered inside it; either way the move did not happen, so the ledger must not claim it did. The commit reads the sessionId off the **result**, not the arguments, and re-checks it there: a `spawn` move whose result names a session the projection **already holds** is appended as a **`resume`** instead (`commitMove`, `src/mcp/playbookGate.ts`), decided **inside** the serialized append chain so two concurrent commits on one sessionId cannot both read "unbound" — the decision layer was handed an id it could not place, and folding a spawn would reset that worker's `stage`, `stageHistory` and `provenance`.
 
-**Read tools.** `list_playbooks` (ids, names, descriptions, entry + spawnable stages, `plugin` naming the owner on a plugin-contributed playbook, plus `errors` for definitions rejected at load — JSON, because `errors` is structured data), `describe_playbook({id})` (the full graph, as **plain text** — see [Rendered read results](#rendered-read-results)), `playbook_state({sessionId?})` (the run graph, legal next moves, and the run's ledger history; for a worker whose playbook is no longer loaded, `playbookMissing: "<id>"` plus a `reason` naming the cause — for a plugin playbook, the owning plugin and where to look to tell the possible causes apart — `list_playbooks` → `errors`, or the plugin's Settings → Plugins row when its manifest is invalid as a whole; a conductor at `enforce` gets the targeted call refused `PLAYBOOK_UNKNOWN` with the same cause instead, since the call names that worker). All three are read-only in the strong sense: on an install with no ledger they answer with empty state and **create no file**.
+**Read tools.** `list_playbooks` (ids, names, descriptions, entry + spawnable stages, `plugin` naming the owner on a plugin-contributed playbook, plus `errors` for definitions rejected at load — JSON, because `errors` is structured data), `describe_playbook({id})` (the full graph, as **plain text** — see [Rendered read results](#rendered-read-results)), `playbook_state({sessionId?})` (the run graph, legal next moves, and the run's ledger history; for a worker whose playbook is no longer loaded, `playbookMissing: "<id>"` plus a `reason` naming the cause — for a plugin playbook, the owning plugin and where to look to tell the possible causes apart — `list_playbooks` → `errors`, or the plugin's Settings → Plugins row when its manifest is invalid as a whole; a conductor at `enforce` gets the targeted call refused `PLAYBOOK_UNKNOWN` with the same cause instead, since the call names that worker). All three are read-only in the strong sense: on an install with no ledger they answer with empty state and **create no file**. The REST routes ([REST — `/api/playbooks`](#rest--apiplaybooks)) serve the same payload builders as the first two (`playbookSummary` / `playbookDetail`, `src/playbooks.ts`).
 
 `describe_playbook`'s layout is owned by `renderPlaybook` (`src/mcp/readRenderers.ts`). The worked example is the synthetic `GRAPH` in `tests/mcp-text-render.test.mjs`, whose expected rendering is asserted line by line and exercises every layout feature at once — a multi-member `needs.position` join, `tools (none)`, a `"*"` policy entry, edge-label padding, and verbatim indented description prose. Read it there rather than from a pasted sample: a renderer change fails that test, so it cannot drift the way a hand-pasted rendering of a hand-editable built-in silently did.
 
@@ -527,6 +530,81 @@ Because a `spawn` ledger event needs the new worker's sessionId — which does n
 - **Definition edits drift under live workers.** Definitions are deliberately not pinned to a run — no snapshot, no hash on the `spawn` event, and a load is never refused for invalidating a live run. A worker whose stage vanished under it gets `STAGE_UNKNOWN`, whose text says the definition changed rather than blaming the call. The same holds when a **plugin** providing the playbook is disabled or removed: the worker's governed calls (under `enforce`) and its resume are refused `PLAYBOOK_UNKNOWN` with a reason naming the plugin and pointing at `list_playbooks` → `errors` to tell a disabled plugin (re-enable restores it) from an unavailable plugin host or an invalid body, and at the plugin's Settings → Plugins row for a manifest invalid as a whole (still enabled, re-enable refused until fixed) (`missingPlaybookCause`, `src/playbooks.ts`); the ledger binding is untouched, so re-enabling restores governance on the same session.
 - **A worker spawned illegally under `warn` stays untracked.** The refusal is recorded but the call proceeds, and no binding is written — so flipping to `enforce` mid-run governs new spawns while that worker stays ungoverned (no subject in the projection). A *legal* `warn` spawn is bound normally and becomes governable on the flip.
 - **A forward source is checked for permission, never for run membership.** A stage may forbid its worker's output being read out (`"get_recent_messages": "deny"`), and that denial covers `send_prompt({forward})` as well as a direct read. It is not scoped to a run: a conductor may forward from any tracked worker whose stage permits the read, including one in another run or another project. Deliberate — `freeform` declares no `needs`, so each of its workers is its own run root, and a same-run rule would refuse the fan-out-and-synthesise pattern that stage invites, recoverable only by declaring `provenance` at spawn time and never retroactively.
+
+### REST — `/api/playbooks`
+
+Read + validate only, served by `buildPlaybookApi` (`src/playbookApi.ts`, mounted at `/api/playbooks` from `src/routes.ts`). There is **no write or delete route**: an authoring plugin writes the user-overlay file itself — see [plugins.md → Authoring playbooks from a plugin](plugins.md#authoring-playbooks-from-a-plugin). Ledger state is read only through the playbook gate (`tests/playbook-ledger-chokepoint.test.mjs`).
+
+Shape conventions (all three routes):
+- An optional key (`description` on a stage or a transition) is **absent** when unauthored — never `null` or `""`.
+- The order of `playbooks` is not part of the contract.
+- `takenIds.*`, `pinArgs` and `governableTools` are sorted ascending.
+
+**`GET /api/playbooks`** → 200
+
+```json
+{
+  "playbooks": [{ "id": "relay", "name": "…", "description": "…", "source": "builtin", "editable": false,
+                  "entryStages": ["plan"], "spawnableStages": ["plan", "implement"] }],
+  "errors": [{ "id": "broken", "message": "…" }],
+  "governableTools": [{ "name": "send_prompt", "pinArgs": ["model", "text"] }],
+  "takenIds": { "builtin": ["…"], "user": ["…"], "reserved": ["custom"] }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `source` | `"builtin"` \| `"user"` \| `"plugin:<plugin-id>"` (`playbookSource`) — of the definition that **won**: a valid overlay file with a built-in's id overrides it and reports `"user"`; an invalid one leaves the built-in loaded (`"builtin"`) with its reasons in `errors` under that id. |
+| `editable` | `true` iff `source === "user"`. |
+| `entryStages` / `spawnableStages` | As `list_playbooks`; spawnable = `isSpawnable` (a `"*"` entry confers nothing). |
+| `errors` | Exactly `list_playbooks`' `errors`. Ids: a bare slug, `<plugin-id>/<slug>`, or `plugins` when the plugin host is unavailable. |
+| `governableTools` | One entry per `governableToolNames` (`governableToolCatalog`). `pinArgs` = the tool's `inputSchema` properties minus `PIN_FORBIDDEN_KEYS` — exactly the argument names the validator accepts inside `{pin:{…}}`. A pin on `"*"` is always refused. |
+| `takenIds.builtin` | `SEED_PLAYBOOK_IDS`. Writing one **overrides** the shipped definition — legal; warn, don't block. |
+| `takenIds.user` | Every `<id>.json` in the overlay (`userPlaybookIds`), **loaded or not** — an invalid file is absent from `playbooks` but its id is taken. |
+| `takenIds.reserved` | `RESERVED_OVERLAY_ID` — the loader **silently skips** that file (it is the catalog's store file). Refuse these ids. |
+
+Plugin ids are never in `takenIds`: they contain `/`, which an overlay id cannot. The editor catalog rides on the list rather than a route of its own because any literal `/api/playbooks/<word>` path would collide with a playbook of that id.
+
+**`GET /api/playbooks/:id`** → 200. Plugin ids resolve both raw (`/api/playbooks/acme/release`) and encoded (`/api/playbooks/acme%2Frelease`).
+
+```json
+{
+  "id": "acme/release", "name": "…", "description": "…", "source": "plugin:acme", "editable": false,
+  "entryStages": ["plan"],
+  "stages": { "plan": { "needs": [{ "stage": "research", "position": ["research"], "liveness": "live" }],
+                        "workers": "one", "tools": { "spawn_instance": { "pin": { "model": "acme/captain" } } },
+                        "spawnable": true, "description": "…" } },
+  "transitions": [{ "from": "plan", "to": "ship", "via": "send_prompt", "description": "…" }],
+  "liveWorkers": 0
+}
+```
+
+- The graph is **post-validation** (`playbookDetail`, the payload `describe_playbook` renders): defaults applied (`needs[].position` → `[stage]`, `liveness` → `"live"`, `workers` → `"one"`); `tools` holds only the declared entries.
+- `via` = the declared `on`, else `"send_prompt"`. Lossless: the validator refuses `on: "send_prompt"`, so `via: "send_prompt"` always means no `on`.
+- `spawnable` = `isSpawnable(stage)`.
+- `liveWorkers` = the length of the gate's `readLiveWorkers(id)` — workers bound to this id in its projection for which `isLive` holds — for warning about [definition drift](#playbooks) before an edit. `null` = unknown: no gate wired, or the projection read failed (logged with `console.warn`, still 200 — the same degrade as `GET /api/instances`' bindings).
+- **404** `{error: "no playbook '<id>'", code: "PLAYBOOK_UNKNOWN"}` — an unknown id, an unknown plugin slug, or an overlay file that failed validation (its reasons are in the list's `errors`).
+
+**`POST /api/playbooks/validate`** → 200. The body is the draft definition itself — the JSON that would be written to `<id>.json`. Never writes.
+
+```json
+{ "ok": false, "errors": [
+  { "message": "stage 'plan': …", "stage": "plan", "transition": null },
+  { "message": "transition plan->ship: …", "stage": null, "transition": { "from": "plan", "to": "ship" } },
+  { "message": "name is required and must be a non-empty string", "stage": null, "transition": null }
+] }
+```
+
+- Valid → exactly `{ok: true}`.
+- `message` = `validatePlaybook(draft, draft.id, <tool index>)`'s errors, in emission order — the validator is the only rule set. The expected id is the draft's **own** `id`, so the filename-match check never fires; a missing or non-string id is reported once, as `invalid id '…'`.
+- `stage` / `transition` come from `locateValidationError` (`src/playbooks.ts`), matched against the draft's **actual** stage names and edges (so `plan` never captures `plan-b`'s messages):
+  - `stage` — a message starting `stage '<name>'` followed by `:` or a space. When several names match (`a` and `a' b` both head `stage 'a' b': …`), the **longest** wins.
+  - `transition` — a message starting `transition <from>-><to>:`, or exactly `duplicate transition <from>-><to>`. When that text is printed by more than one distinct declared edge (`a`→`->b` and `a->`→`b`), `transition` is `null`.
+  - both `null` — a playbook-level message, or a transition message not attributed to a declared edge (e.g. `transition from names unknown stage …`).
+- No per-field path: the message text names the field.
+- A request whose `Content-Type` is not `application/json` → **400** `{error, code: "BODY_NOT_JSON"}`, never validated.
+- A non-object JSON body (e.g. `[]`) → `ok:false` with the validator's `must be a JSON object` error. An `application/json` body that does not parse → 400 from `express.json`.
+- No collision check — apply `takenIds` client-side.
 
 ## Plugin system
 

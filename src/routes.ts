@@ -27,6 +27,7 @@ import {
 } from './gitDiff.ts';
 import { buildPluginApi } from './plugins/api.ts';
 import type { PluginHostApiLike, PluginLibraryApiLike } from './plugins/api.ts';
+import { buildPlaybookApi } from './playbookApi.ts';
 import { scheduleRestart } from './restart.ts';
 import { drainAndScheduleRestart } from './resumeRestart.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
@@ -308,6 +309,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // version, library list/install) — delegates to the registry/library,
   // errors bubble to the middleware at the bottom of this router.
   r.use('/plugins', buildPluginApi({ pluginHost, pluginLibrary }));
+  // Playbook read + validate API (list, describe, dry-run validate) — see
+  // src/playbookApi.ts; there is no write route.
+  r.use('/playbooks', buildPlaybookApi({ playbookGate }));
 
   // Nudge every connected client to re-fetch /api/projects. Mirrors the
   // hint that wsHub.ts broadcasts on instance lifecycle events — used

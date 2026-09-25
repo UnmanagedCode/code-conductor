@@ -71,6 +71,7 @@
 - **Preferred playbook:** a plugin playbook can be chosen in Settings → Conventions → Conductor only while loaded; the choice is **retained through a disable** and applies again on re-enable (`defaultPlaybookMissing` in the Settings payload meanwhile).
 - **Model pins:** a stage `pin` naming a role is resolved only at spawn. Pinning the plugin's own role works; pinning another plugin's role while that plugin is disabled leaves the playbook listed, and the spawn fails with `spawn_instance`'s `unknown model '<role>'` error.
 - The conductor's role doc lists plugin playbooks from its next spawn/resume (Known limitations → "Already-running sessions are not reached"); the MCP tools see them on the next call.
+- **Authoring overlay playbooks from a plugin** (a GUI editor) is a different path from contributing them: see [Authoring playbooks from a plugin](#authoring-playbooks-from-a-plugin).
 
 **`claudePlugin` (active pluginApi:1 capability, no backend).** OPTIONAL string — a path **relative to the cc plugin root** pointing at a **Claude Code plugin root** (a dir directly containing `.claude-plugin/plugin.json`; skills resolve at `<root>/skills/<name>/SKILL.md`). `"claude"`, `"adapters/x"`, or `"."` (the cc plugin root itself) — the author picks the dir. **Shape-validated at manifest load** (relative, no leading `/`, no `..`, not absolute; a bad shape marks the plugin `invalid`). At **every** claude launch — interactive sessions and MCP-spawned workers alike — each **enabled + `ok`** plugin declaring `claudePlugin` contributes one repeatable **`--plugin-dir <resolved-root>`** flag (session-local; `src/instances.ts` `Instance.spawn()`, resolved via `pluginHost.claudePluginDirs()`). **Existence is validated at launch/resolve time, not load:** if `{resolved}/.claude-plugin/plugin.json` is missing/unreadable the flag is **dropped with a loud `console.warn`** (never silently, and the session still launches) — it does **not** invalidate the plugin. Absent field → no flag. **A plugin whose PROJECT is on a non-`local` system contributes no flag at all** (`PLUGIN_DIR_LOCAL_ONLY`): `--plugin-dir` takes an absolute LOCAL directory, and passing the remote path through would load whatever sits at that path on cc's own machine into every session. Additive, no migration. Resolved+frozen per session at create (mirrors the MCP-config wiring), so a plugin enabled mid-session is picked up on the next spawn, not a bare respawn. Kept a **string** for now; the single accessor `claudePluginPaths(manifest)` (`src/plugins/manifest.ts`) makes widening to `string | string[]` a non-breaking change.
 
@@ -125,6 +126,18 @@ Plugin frontends include `<script src="/pluginBridge.js" defer></script>` (serve
 | parent → child | `navigate` | `{path}` | external navigation; bridge `replaceState`s `<prefix><path>` and dispatches a synthetic `popstate` |
 
 Inside the iframe the bridge patches `history.pushState` → `replaceState`, so a plugin visit adds exactly one joint-history entry (hardware Back exits to the conductor). Multi-page plugins bypass this and pollute history.
+
+### Authoring playbooks from a plugin
+
+A plugin that lets users edit playbooks (rather than ship them) works against the **user overlay**, not its manifest. cc core serves read + validate only — [`/api/playbooks`](protocol.md#rest--apiplaybooks) at `$CONDUCTOR_URL/api/playbooks`; the plugin does the writing.
+
+- **Create / edit** = write `$PROJECTS_ROOT/.code-conductor/playbooks/<id>.json` (`orchStoreRoot()/playbooks`; the dotfolder is `ORCH_STORE_DIRNAME`, `src/projects.ts`), creating the directory if missing. The body's `id` must equal `<id>`.
+- **Delete** = remove that file.
+- **Validate first:** `POST /api/playbooks/validate` with the draft; write only on `{ok:true}`.
+- **Collisions:** check `GET /api/playbooks` → `takenIds` — a `builtin` id overrides the shipped definition (legal; warn), a `user` id overwrites that file, a `reserved` id is **silently ignored** by the loader (refuse it).
+- **Pickup:** the next `loadPlaybooks` call reads the file — bodies are read per call, no restart. The conductor's role doc picks it up from its next spawn/resume.
+- **Live runs drift:** editing an id live workers are bound to changes their graph under them (`GET /api/playbooks/:id` → `liveWorkers`; protocol.md → Playbooks → Known limitations).
+- **Plugin-contributed playbooks are read-only** here (`editable:false`): edit them in the contributing plugin's manifest files.
 
 ### REST — `/api/plugins`
 

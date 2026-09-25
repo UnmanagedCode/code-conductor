@@ -122,6 +122,18 @@ export function governableToolNames(index: ToolIndex): string[] {
   return [...index.keys()].sort();
 }
 
+// Each governable tool with the argument names a `{pin:{…}}` on it may name —
+// exactly the set validateToolPolicy accepts (inputSchema properties minus
+// PIN_FORBIDDEN_KEYS), for an editor that offers pins without re-deriving it.
+export function governableToolCatalog(index: ToolIndex): Array<{ name: string; pinArgs: string[] }> {
+  return governableToolNames(index).map(name => ({
+    name,
+    pinArgs: [...(index.get(name) as Set<string>)]
+      .filter(arg => !(PIN_FORBIDDEN_KEYS as readonly string[]).includes(arg))
+      .sort(),
+  }));
+}
+
 // ── definition types (post-validation: defaults applied) ────────────────────
 
 export type PinLiteral = string | number | boolean | null;
@@ -179,6 +191,64 @@ export interface Playbook {
   // The contributing plugin's id. Set by loadPlaybooks, never by the validator,
   // and absent on a built-in or user-overlay playbook.
   plugin?: string;
+  // Set by loadPlaybooks on a shipped definition, never by the validator;
+  // absent on overlay and plugin ones. A user-overlay file overriding a
+  // built-in id wins the map, so its entry carries no `builtin`.
+  builtin?: true;
+}
+
+// Where the loaded definition came from — the WINNING one for an overridden
+// built-in id. Read off loadPlaybooks' provenance stamps, never the id alone.
+export type PlaybookSource = 'builtin' | 'user' | `plugin:${string}`;
+export function playbookSource(pb: Playbook): PlaybookSource {
+  if (pb.plugin !== undefined) return `plugin:${pb.plugin}`;
+  return pb.builtin ? 'builtin' : 'user';
+}
+
+// The list-row payload. Shared by list_playbooks (src/mcp/handlers.ts) and
+// GET /api/playbooks (src/playbookApi.ts), so the two surfaces cannot drift.
+export function playbookSummary(pb: Playbook) {
+  return {
+    id: pb.id,
+    name: pb.name,
+    description: pb.description,
+    entryStages: pb.entryStages,
+    // Derived, because spawn_instance FAILS CLOSED: a stage is spawnable only
+    // if it names spawn_instance explicitly, and a "*" wildcard confers
+    // nothing. Reporting it saves the caller re-deriving a rule it can get
+    // wrong.
+    spawnableStages: Object.keys(pb.stages).filter(s => isSpawnable(pb.stages[s])),
+  };
+}
+
+// The full-graph payload. describe_playbook renders it as text (renderPlaybook
+// stays a pure function of a payload the tests can hand-build);
+// GET /api/playbooks/:id serves it as JSON.
+export function playbookDetail(pb: Playbook) {
+  return {
+    id: pb.id,
+    name: pb.name,
+    description: pb.description,
+    entryStages: pb.entryStages,
+    stages: Object.fromEntries(Object.entries(pb.stages).map(([name, stage]) => [name, {
+      needs: stage.needs,
+      workers: stage.workers,
+      tools: stage.tools,
+      spawnable: isSpawnable(stage),
+      // The conductor's move at this stage, when the definition authors one.
+      // Left undefined when unauthored, which the rendering shows by emitting no
+      // description line at all rather than an empty one.
+      ...(stage.description !== undefined && { description: stage.description }),
+    }])),
+    // `via` is computed: an edge with no `on` is driven by send_prompt, and an
+    // edge WITH one can be driven by that tool only. Both are rules the caller
+    // would otherwise have to know rather than read. Lossless: the validator
+    // refuses `on: "send_prompt"`, so a `via` of send_prompt always means no `on`.
+    transitions: pb.transitions.map(t => ({
+      from: t.from, to: t.to, via: t.on ?? 'send_prompt',
+      ...(t.description !== undefined && { description: t.description }),
+    })),
+  };
 }
 
 // The validator's allowlists. EXPORTED FOR SCHEMA-BINDING IN TESTS — do not
@@ -204,6 +274,11 @@ export type ValidateResult =
 // Pure and synchronous. `index` is the tool index (see loadToolIndex) — passed
 // in rather than fetched so this stays a pure function of its arguments.
 // `idSource` names where the expected `id` came from, for the mismatch message.
+//
+// LOCATION PREFIXES ARE READ BY locateValidationError (below): a message scoped
+// to a stage starts `stage '<name>':` or `stage '<name>' `, one scoped to an
+// edge starts `transition <from>-><to>:` or is `duplicate transition <edge>`.
+// Changing one of those shapes means updating the locator with it.
 export function validatePlaybook(
   raw: unknown, id: string, index: ToolIndex, idSource = 'its filename id',
 ): ValidateResult {
@@ -217,7 +292,11 @@ export function validatePlaybook(
   }
 
   // id must be a valid slug and must match the file it came from.
-  try { validateSlug(String(raw.id)); } catch { err(`invalid id '${String(raw.id)}' (must match ^[a-z][a-z0-9-]*$, max 40 chars)`); }
+  try {
+    // String() alone would let an absent id through as the slug 'undefined'.
+    if (typeof raw.id !== 'string') throw new Error('not a string');
+    validateSlug(raw.id);
+  } catch { err(`invalid id '${String(raw.id)}' (must match ^[a-z][a-z0-9-]*$, max 40 chars)`); }
   if (raw.id !== id) err(`id '${String(raw.id)}' does not match ${idSource} '${id}'`);
   for (const field of ['name', 'description'] as const) {
     if (typeof raw[field] !== 'string' || !raw[field].trim()) err(`${field} is required and must be a non-empty string`);
@@ -414,6 +493,41 @@ export function validatePlaybook(
   };
 }
 
+// Which stage or edge of `draft` a validatePlaybook message is about, or
+// null/null for a playbook-level message. Matched against the draft's ACTUAL
+// stage names and edges (never a pattern over the text), so stage `plan` never
+// captures `plan-b`'s messages. The prefixes it reads are validatePlaybook's —
+// see the note above that function.
+//
+// Names are free text, so a prefix can still match more than one: stage `a`'s
+// `stage 'a' ` also heads every message of a stage named `a' b`. The LONGEST
+// matching stage name wins, since a message names exactly one stage and the
+// longer name's head contains the shorter's. Edges have no such tiebreak —
+// `a->` → `b` and `a` → `->b` print the same — so an edge text matching more
+// than one distinct declared edge locates to null rather than a guess.
+export function locateValidationError(message: string, draft: unknown): {
+  stage: string | null;
+  transition: { from: string; to: string } | null;
+} {
+  const raw = isRecord(draft) ? draft : {};
+  let stage: string | null = null;
+  for (const name of isRecord(raw.stages) ? Object.keys(raw.stages) : []) {
+    const head = `stage '${name}'`;
+    const hit = message.startsWith(`${head}:`) || message.startsWith(`${head} `);
+    if (hit && (stage === null || name.length > stage.length)) stage = name;
+  }
+  if (stage !== null) return { stage, transition: null };
+  const edges = new Map<string, { from: string; to: string }>();
+  for (const t of Array.isArray(raw.transitions) ? raw.transitions : []) {
+    if (!isRecord(t) || typeof t.from !== 'string' || typeof t.to !== 'string') continue;
+    const edge = `${t.from}->${t.to}`;
+    if (message.startsWith(`transition ${edge}:`) || message === `duplicate transition ${edge}`) {
+      edges.set(JSON.stringify([t.from, t.to]), { from: t.from, to: t.to });
+    }
+  }
+  return { stage: null, transition: edges.size === 1 ? [...edges.values()][0] : null };
+}
+
 // The optional conductor-facing `description` on a stage or a transition.
 //
 // No length limit — the gate on what belongs here is editorial, not mechanical.
@@ -573,35 +687,51 @@ export function resolvePolicy(stage: Stage, toolName: string): ToolPolicy {
 // <orchStoreRoot>/playbooks/*.json, read through the factory's extraProvider
 // hook so there is no second discovery layer. Bodies come back as raw JSON
 // strings which getPlaybooks() parses. No CRUD surface: playbooks are authored
-// as files, not through the UI.
+// as files (by hand or by a plugin), never through a core write route.
+// The overlay id the loader skips: `<id>.json` of this name is the catalog's
+// store file, so an overlay playbook with it would be silently ignored.
+export const RESERVED_OVERLAY_ID = 'custom';
+
+const overlayDir = (): string => path.join(orchStoreRoot(), 'playbooks');
+
 const catalog = createFragmentCatalog({
   seeds: SEED_PLAYBOOK_IDS.map(slug => ({ slug, name: '', description: '' })),
   seedDir: PLAYBOOKS_DIR,
   seedExt: '.json',
   // Never called (no CRUD), but the factory requires it and it must stay lazy so
   // a PROJECTS_ROOT override in tests is honoured per-call.
-  storeFile: () => path.join(orchStoreRoot(), 'playbooks', 'custom.json'),
+  storeFile: () => path.join(overlayDir(), `${RESERVED_OVERLAY_ID}.json`),
   noun: 'playbook',
   extraProvider: userPlaybookFiles,
 });
 
-async function userPlaybookFiles(): Promise<ExtraEntry[]> {
-  const dir = path.join(orchStoreRoot(), 'playbooks');
+// The id of every `<id>.json` in the user overlay, sorted — LOADED OR NOT: an
+// invalid file still occupies its id. The reserved id is never one.
+export async function userPlaybookIds(): Promise<string[]> {
   let names: string[];
   try {
-    names = await fs.readdir(dir);
+    names = await fs.readdir(overlayDir());
   } catch (e) {
     if (errCode(e) === 'ENOENT') return [];
     throw e;
   }
+  // Sorted AFTER the extension is stripped: `.` sorts after `-`, so sorting
+  // filenames would put `my-flow` before `my`.
+  return names
+    .filter(n => n.endsWith('.json'))
+    .map(n => n.slice(0, -'.json'.length))
+    .filter(slug => slug !== RESERVED_OVERLAY_ID)
+    .sort();
+}
+
+async function userPlaybookFiles(): Promise<ExtraEntry[]> {
   const out: ExtraEntry[] = [];
-  for (const n of names.sort()) {
-    if (!n.endsWith('.json') || n === 'custom.json') continue;
-    const slug = n.slice(0, -'.json'.length);
+  for (const slug of await userPlaybookIds()) {
+    const file = path.join(overlayDir(), `${slug}.json`);
     try {
-      out.push({ slug, name: '', description: '', body: await fs.readFile(path.join(dir, n), 'utf8') });
+      out.push({ slug, name: '', description: '', body: await fs.readFile(file, 'utf8') });
     } catch (e) {
-      console.warn(`playbooks: failed to read ${path.join(dir, n)}: ${errMsg(e)}`);
+      console.warn(`playbooks: failed to read ${file}: ${errMsg(e)}`);
     }
   }
   return out;
@@ -641,7 +771,10 @@ export async function loadPlaybooks(): Promise<LoadResult> {
   const entries = await catalog.getCatalog();
   const playbooks = new Map<string, Playbook>();
   const errors: Array<{ id: string; message: string }> = [];
-  const load = (id: string, body: string, check: (parsed: unknown) => ValidateResult, plugin?: string): void => {
+  const load = (
+    id: string, body: string, check: (parsed: unknown) => ValidateResult,
+    stamp: { builtin?: true; plugin?: string },
+  ): void => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -650,11 +783,12 @@ export async function loadPlaybooks(): Promise<LoadResult> {
       return;
     }
     const res = check(parsed);
-    if (res.ok) playbooks.set(id, plugin === undefined ? res.playbook : { ...res.playbook, id, plugin });
+    if (res.ok) playbooks.set(id, { ...res.playbook, id, ...stamp });
     else for (const message of res.errors) errors.push({ id, message });
   };
   for (const entry of entries) {
-    load(entry.slug, entry.body ?? '', parsed => validatePlaybook(parsed, entry.slug, index));
+    load(entry.slug, entry.body ?? '', parsed => validatePlaybook(parsed, entry.slug, index),
+      entry.builtin ? { builtin: true } : {});
   }
   let records: PluginPlaybookRecord[] = [];
   try {
@@ -663,7 +797,7 @@ export async function loadPlaybooks(): Promise<LoadResult> {
     errors.push({ id: 'plugins', message: `plugin playbooks unavailable: ${errMsg(e)}` });
   }
   for (const r of records) {
-    load(r.id, r.body, parsed => validatePlaybook(parsed, r.slug, index, 'its manifest slug'), r.plugin);
+    load(r.id, r.body, parsed => validatePlaybook(parsed, r.slug, index, 'its manifest slug'), { plugin: r.plugin });
   }
   return { playbooks, errors };
 }

@@ -185,6 +185,32 @@ test('the same rebooted run still wedges the slot if the new process\'s registry
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
+test('readLiveWorkers lists exactly the workers bound to that playbook that isSessionLive reports live', async () => {
+  const { dir, file } = await tmpLedgerFile();
+  try {
+    await seed(file, [
+      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
+      { kind: 'spawn', sessionId: 'w2', playbook: 'gatelab', stage: 'draft' },
+      { kind: 'spawn', sessionId: 'w3', playbook: 'other', stage: 'draft' },
+    ]);
+    const gate = gateOver(file, stubManager({ live: ['w1', 'w3'], known: ['w2'] }));
+    assert.deepEqual(await gate.readLiveWorkers('gatelab'), ['w1']);
+    assert.deepEqual(await gate.readLiveWorkers('other'), ['w3']);
+    assert.deepEqual(await gate.readLiveWorkers('absent'), []);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+// A directory at the ledger path: readFile fails EISDIR, a non-ENOENT load
+// failure (a malformed LINE would only be skipped, never thrown).
+test('readLiveWorkers propagates a ledger load failure rather than answering []', async () => {
+  const { dir, file } = await tmpLedgerFile();
+  try {
+    await fs.mkdir(file, { recursive: true });
+    const gate = gateOver(file, stubManager({ live: ['w1'] }));
+    await assert.rejects(() => gate.readLiveWorkers('gatelab'), /EISDIR/);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
 test('two readProjection() calls append nothing — the load stays read-only', async () => {
   const { dir, file } = await tmpLedgerFile();
   try {

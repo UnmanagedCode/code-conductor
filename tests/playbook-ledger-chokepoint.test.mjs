@@ -1,8 +1,8 @@
 // Structural gate for 2026-0130's "no second ledger write path" acceptance
 // criterion — as a checkable invariant, not a review habit. Two claims:
 //
-//   • src/routes.ts and src/instances.ts import the playbook ledger ZERO
-//     times. The coupling from instances.ts to the gate is one-way, via the
+//   • src/routes.ts, src/instances.ts and src/playbookApi.ts import the
+//     playbook ledger ZERO times (the REST surfaces read it through the gate). The coupling from instances.ts to the gate is one-way, via the
 //     'status' EventEmitter — nothing in either module may reach for the
 //     ledger directly and grow a second writer.
 //   • src/mcp/playbookGate.ts contains exactly ONE `ledger.append(` call
@@ -33,9 +33,9 @@ async function read(rel) {
   return stripLineComments(await fs.readFile(path.join(ROOT, rel), 'utf8'));
 }
 
-test('src/routes.ts and src/instances.ts import the playbook ledger zero times', async () => {
+test('src/routes.ts, src/instances.ts and src/playbookApi.ts import the playbook ledger zero times', async () => {
   const importRe = /from\s+['"][^'"]*playbookLedger(?:\.ts)?['"]/;
-  for (const rel of ['src/routes.ts', 'src/instances.ts']) {
+  for (const rel of ['src/routes.ts', 'src/instances.ts', 'src/playbookApi.ts']) {
     const src = await read(rel);
     assert.doesNotMatch(src, importRe,
       `${rel} must not import playbookLedger — the ledger has exactly one writer (src/mcp/playbookGate.ts)`);

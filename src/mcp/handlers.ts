@@ -61,7 +61,7 @@ import {
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, loadDiskSelection,
   type ReconMessage,
 } from './messageReconstruction.ts';
-import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
+import { loadPlaybooks, playbookSummary, playbookDetail, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
 import { runMembers, playbookBinding, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
@@ -600,15 +600,7 @@ export async function listPlaybooks() {
   const { playbooks, errors } = await loadPlaybooks();
   return {
     playbooks: [...playbooks.values()].map(pb => ({
-      id: pb.id,
-      name: pb.name,
-      description: pb.description,
-      entryStages: pb.entryStages,
-      // Derived, because spawn_instance FAILS CLOSED: a stage is spawnable only
-      // if it names spawn_instance explicitly, and a "*" wildcard confers
-      // nothing. Reporting it saves the caller re-deriving a rule it can get
-      // wrong.
-      spawnableStages: Object.keys(pb.stages).filter(s => isSpawnable(pb.stages[s])),
+      ...playbookSummary(pb),
       ...(pb.plugin !== undefined && { plugin: pb.plugin }),
     })),
     // Load-time rejections. Without this a hand-authored definition that fails
@@ -628,32 +620,7 @@ export async function describePlaybook({ id }: { id: string }) {
       known: [...playbooks.keys()].sort(),
     };
   }
-  // The payload is assembled here and rendered there: the two derived fields
-  // below are rules about the graph, so they stay next to the graph, and
-  // renderPlaybook stays a pure function of a payload the tests can hand-build.
-  return textResult(renderPlaybook({
-    id: pb.id,
-    name: pb.name,
-    description: pb.description,
-    entryStages: pb.entryStages,
-    stages: Object.fromEntries(Object.entries(pb.stages).map(([name, stage]) => [name, {
-      needs: stage.needs,
-      workers: stage.workers,
-      tools: stage.tools,
-      spawnable: isSpawnable(stage),
-      // The conductor's move at this stage, when the definition authors one.
-      // Left undefined when unauthored, which the rendering shows by emitting no
-      // description line at all rather than an empty one.
-      ...(stage.description !== undefined && { description: stage.description }),
-    }])),
-    // `via` is computed: an edge with no `on` is driven by send_prompt, and an
-    // edge WITH one can be driven by that tool only. Both are rules the caller
-    // would otherwise have to know rather than read.
-    transitions: pb.transitions.map(t => ({
-      from: t.from, to: t.to, via: t.on ?? 'send_prompt',
-      ...(t.description !== undefined && { description: t.description }),
-    })),
-  }));
+  return textResult(renderPlaybook(playbookDetail(pb)));
 }
 
 const HISTORY_CAP = 200;
