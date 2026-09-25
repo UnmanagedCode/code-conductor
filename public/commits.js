@@ -436,7 +436,8 @@ export function installCommits({ onClose } = {}) {
     canEscape: () => getEl('review-view')?.hidden,
     navigate: () => history.pushState(null, '', '#commits'),
     onShow: (project, worktree) => { _project = project; _worktree = worktree ?? null; loadCommits(); },
-    onTeardown: () => { _project = null; _worktree = null; _onClose?.(); },
+    onLeave: () => { _onClose?.(); },
+    onTeardown: () => { _project = null; _worktree = null; },
   });
   api.open = open;
   api.close = close;

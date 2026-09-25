@@ -839,7 +839,7 @@ test('appSwitcher + pluginView: after the hash moves to a session anchor, close(
   assert.equal(select.value, 'conductor', 'switcher reflects Conductor, not the torn-down plugin');
 });
 
-test('appSwitcher + pluginView: after the hash moves to Commits, close() → onClosed → sync() re-syncs to Conductor, not the stale plugin', async () => {
+test('appSwitcher + pluginView: close() after the hash names Commits re-syncs the switcher to Conductor, not the stale plugin', async () => {
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   const { select } = buildSwitcherDom(window.document);

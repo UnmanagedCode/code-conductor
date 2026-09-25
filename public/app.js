@@ -23,6 +23,7 @@ import { installPluginView } from './pluginView.js';
 import { installReview } from './review.js';
 import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
+import { reconcileMainViews } from './mainViews.js';
 import { installRestart } from './restartFlow.js';
 import { installNewProjectDialog } from './newProjectDialog.js';
 import { installAdoptProjectDialog } from './adoptProjectDialog.js';
@@ -503,15 +504,14 @@ function closeSettings() {
 // App switcher (sidebar header dropdown) + plugin iframe view. The switcher
 // re-fetches the catalog after any pluginManager action via onPluginsChanged
 // and re-syncs its selection after every plugin-view teardown (onClosed),
-// which reads location.hash to decide Conductor vs a plugin. Settings and
-// review navigate via a plain `location.hash =` assignment, which fires
-// hashchange BEFORE pluginView's own listener tears it down — hash is
-// already correct by the time sync() runs. replaceState/pushState-based
-// navigation (this Conductor entry; commits open, below) fires no
-// hashchange, so those paths close the plugin view explicitly — and MUST
-// update the hash first, or sync() reads the stale `#plugin/...` hash and
-// re-selects the plugin (see selectInstance's session-select path, which
-// gets this ordering right already). onShown fires on entry into the plugin
+// which reads location.hash to decide Conductor vs a plugin — so whoever
+// closes the plugin view MUST update the hash first, or sync() re-selects the
+// plugin off the stale `#plugin/...` hash. Opening another main view and
+// selectInstance's reconcileMainViews() (public/mainViews.js) both run after
+// the URL already names the new view; this Conductor entry writes the anchor
+// before its close().
+//
+// onShown fires on entry into the plugin
 // space (dropdown select, deep link, boot) AND on a plugin-to-plugin switch
 // — collapse the mobile drawer there too, same idiom as selectInstance
 // revealing a session.
@@ -531,6 +531,8 @@ appSwitcher = installAppSwitcher({
 // Assigned later by installRestart() (called after this block); the
 // self-update flow only invokes it on a user click, long after wiring.
 let restartHandle = null;
+// Installed before review/commits/costs: its hashchange listener must show
+// Settings (superseding the open view) before theirs can run a navigating leave.
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
@@ -561,7 +563,7 @@ const settings = installSettings({
   },
   // Jump straight to the restored session: resumeSession() spawns/attaches
   // the instance and selects it, which closes Settings automatically
-  // (selectInstance() detects location.hash === '#settings').
+  // (selectInstance() reconciles the main views once the session anchor is set).
   onSessionRestored: ({ project, worktreeName, sessionId }) =>
     sessionActions.resumeSession({ projectName: project, worktreeName, sessionId }),
 });
@@ -608,13 +610,7 @@ const commits = installCommits({ onClose: () => {
 } });
 sidebar.onShowCommits = (project, worktree) => {
   closeSidebarOnMobile();
-  // commits opens via pushState (no hashchange — unlike review's hash
-  // assignment), so the plugin view must be closed explicitly or the two
-  // full-page sections stack. Open commits FIRST so the hash already reads
-  // '#commits' by the time close() fires the switcher's re-sync — otherwise
-  // sync() reads the still-stale '#plugin/...' hash and re-selects the plugin.
   commits.open(project, worktree);
-  pluginView.close();
 };
 // Every row hands out its own diffUrl (commits.js), so the (project, worktree)
 // spelling has exactly one home.
@@ -822,9 +818,6 @@ function selectInstance(id, opts = {}) {
   // Uses sessionId (stable across crash/resume), not the transient instance id.
   // pushState when navigating into a sub-agent so the back button can return
   // to the conductor; replaceState for all other navigation to avoid clutter.
-  const leavingSettings = location.hash === '#settings';
-  const leavingCommits  = location.hash === '#commits';
-  const leavingPlugin   = location.hash.startsWith('#plugin/');
   const inst = id ? state.instances.find(i => i.id === id) : null;
   if (opts.push) {
     pushSessionAnchor(inst?.sessionId || null);
@@ -834,12 +827,9 @@ function selectInstance(id, opts = {}) {
   // Now that the user is viewing this session, any backlog of unread
   // turn-end pings for it is by definition read.
   unread.clear(inst?.sessionId);
-  // If the user tapped a session from within the Settings or Commits page, close
-  // that overlay so the conversation view is visible. writeSessionAnchor already
-  // replaced the hash, so we check flags captured before that call.
-  if (leavingSettings) settings.close();
-  if (leavingCommits)  commits.close();
-  if (leavingPlugin)   pluginView.close();
+  // The URL now names the session: close whichever full-page view was showing
+  // so the conversation is visible.
+  reconcileMainViews();
   closeSidebarOnMobile();
 }
 

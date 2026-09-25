@@ -233,6 +233,6 @@ export function installCosts({ onClose } = {}) {
     guard: () => !!getEl('costs-view'),
     navigate: () => history.pushState({}, '', '#costs'),
     onShow: () => load(),
-    onTeardown: () => { _onClose?.(); },
+    onLeave: () => { _onClose?.(); },
   });
 }
