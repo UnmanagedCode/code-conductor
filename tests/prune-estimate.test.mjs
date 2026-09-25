@@ -213,6 +213,36 @@ test('unmeasured content is excluded from both sides of the calibration', async 
   });
 });
 
+test('a line that is not a real API call never opens a step', async (t) => {
+  // Spliced between two clean calls. Taken for a call, it would end the step
+  // before it (a non-growing delta) and hand the next step the whole prompt as
+  // its growth, pinning the factor at its clamp. Its content is empty, so kept
+  // in its step it changes no estimate.
+  const lineWithUsage = (model, usage) => ({ type: 'assistant', uuid: 'x0', message: {
+    id: 'mx', role: 'assistant', model, content: [{ type: 'text', text: '' }],
+    usage: { cache_creation_input_tokens: 0, output_tokens: 0, ...usage },
+  } });
+  const spliced = {
+    'a <synthetic> API-error line carrying usage':
+      lineWithUsage('<synthetic>', { input_tokens: 100, cache_read_input_tokens: 0 }),
+    'an all-zero usage line': lineWithUsage('glm-5.3', { input_tokens: 0, cache_read_input_tokens: 0 }),
+  };
+  for (const [label, line] of Object.entries(spliced)) {
+    await t.test(label, async () => {
+      await withStore(async () => {
+        const { lines } = await calibrationSession(cleanSteps());
+        await seed(lines);
+        const baseline = (await analyze()).calibration;
+        assert.ok(baseline.calibrated && baseline.factor !== 1 && baseline.steps > 0,
+          `the baseline calibration must be live: ${JSON.stringify(baseline)}`);
+        lines.splice(lines.findIndex(o => o.uuid === 'a4'), 0, line);
+        await seed(lines);
+        assert.deepEqual((await analyze()).calibration, baseline);
+      });
+    });
+  }
+});
+
 test('thin history falls back to 1 and absurd history is bounded', async (t) => {
   await t.test('under the minimum estimate: factor 1, uncalibrated, steps still reported', async () => {
     await withStore(async () => {
