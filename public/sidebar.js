@@ -2,9 +2,9 @@ import { el } from './dom.js';
 import { formatAutoResumeTime } from './usage.js';
 import { conductorColor } from './conductorColor.js';
 import {
-  sessionFromInstance, deriveMissions, missionTitle, workersOf, missionProjects,
+  sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorProjects,
   ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
-} from './missions.js';
+} from './conductors.js';
 import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
@@ -85,6 +85,9 @@ function mergeLive(onDisk, liveInstances) {
 // persistence.
 const WORKSPACES_EXPANDED_STORAGE_KEY = 'code-conductor:workspaces-expanded';
 
+// reconcileChildren key prefix of a Conductors-lens block; its sessionId follows.
+const CONDUCTOR_KEY = 'conductor:';
+
 function loadExpandedWorkspaces() {
   try {
     const raw = localStorage.getItem(WORKSPACES_EXPANDED_STORAGE_KEY);
@@ -143,17 +146,17 @@ const STRIP_HEADS = { waiting: 'Waiting on you', running: 'Running', finished: '
 
 export class Sidebar {
   constructor({
-    rootList, missionList, filterRoot, stripRoot, onSelectInstance, onCreateInstanceClick,
+    rootList, conductorList, filterRoot, stripRoot, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onPromoteSession,
     onReviewWorktree, onEditProjectRemote,
   }) {
     this.list = rootList;
-    // The Missions lens's list, the Projects lens's conductor filter and the
+    // The Conductors lens's list, the Projects lens's conductor filter and the
     // needs-you strip's slot (shown in both lenses). All optional: without
-    // missionList the Missions render is skipped, without filterRoot the
+    // conductorList the Conductors render is skipped, without filterRoot the
     // filter stays off, without stripRoot the strip render is skipped.
-    this.missionList = missionList ?? null;
+    this.conductorList = conductorList ?? null;
     this.filterRoot = filterRoot ?? null;
     this.stripRoot = stripRoot ?? null;
     this.onSelectInstance = onSelectInstance;
@@ -198,9 +201,9 @@ export class Sidebar {
     // (a new instance id for the same session).
     this.unreadBySessionId = new Map();
     // The `.conduct` disk rows (GET /api/projects/.conduct/sessions): the
-    // conductors that are not live, for the Missions *Inactive* group.
+    // conductors that are not live, for the Conductors *Inactive* group.
     this.conductRows = [];
-    this.expandedMissions = new Set();    // key: conductor sessionId
+    this.expandedConductors = new Set();    // key: conductor sessionId
     this.inactiveOpen = false;
     // Conductor filter: '' (all), 'hand' (hand-spawned only) or an owner
     // sessionId.
@@ -214,7 +217,7 @@ export class Sidebar {
     }
     // Per-render derivations shared by the row builders (see render()).
     this._owners = new Map();
-    this._missions = { live: [], inactive: [] };
+    this._conductors = { live: [], inactive: [] };
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -271,7 +274,7 @@ export class Sidebar {
   // identical "formatAgo is a snapshot, nothing re-ticks it" problem for the
   // turn-indicator's idle label.
   tickAgo() {
-    for (const root of [this.list, this.missionList]) {
+    for (const root of [this.list, this.conductorList]) {
       if (!root) continue;
       for (const node of root.querySelectorAll('.session-ago[data-activity]')) {
         node.textContent = formatAgo(Number(node.dataset.activity));
@@ -315,7 +318,7 @@ export class Sidebar {
     return onDiskCount + extra;
   }
 
-  // The status dot shared by session rows and mission rows. `awaitingWake` is
+  // The status dot shared by session rows and conductor rows. `awaitingWake` is
   // CALLER-side: this session is idle because it is waiting on a worker's
   // running turn, not because it is done. The accent modifier is the only thing
   // on the row that distinguishes those two, and it stays lit across a
@@ -342,7 +345,7 @@ export class Sidebar {
   }
 
   _ownerLabel(sid) {
-    return ownerLabel(sid, { missions: this._missions, instances: this.instances });
+    return ownerLabel(sid, { conductors: this._conductors, instances: this.instances });
   }
 
   // Create-or-update one session row (an <li> wrapping the .session-row div).
@@ -354,8 +357,8 @@ export class Sidebar {
   // at the right position without disturbing the always-present children.
   //   showOwner — draw the conductor bar for a live conducted session (the
   //               Projects lens, where no worktree row carries it instead).
-  //   readOnly  — no promote / archive buttons (the Missions tree).
-  //   showStage — the playbook · stage line under the label (Missions tree).
+  //   readOnly  — no promote / archive buttons (the Conductors tree).
+  //   showStage — the playbook · stage line under the label (Conductors tree).
   _sessionRow(existing, { session, projectName, worktreeName, showOwner = false, readOnly = false, showStage = false }) {
     let li = existing, row, holder;
     if (!li) {
@@ -623,7 +626,7 @@ export class Sidebar {
   // Create-or-update the head row of a worktree item (buttons + name + base +
   // the merge-status pill). Buttons capture stable strings, so they're built
   // create-only; the pill is inserted/removed at its fixed position (between
-  // name and base) on update. `readOnly` (the Missions tree, fixed for the
+  // name and base) on update. `readOnly` (the Conductors tree, fixed for the
   // node's life) builds it without the spawn and remove buttons.
   _worktreeHead(existing, { project: p, wt, readOnly = false }) {
     let head = existing;
@@ -761,7 +764,7 @@ export class Sidebar {
   // buttons). Buttons are create-only; delete-project reads a mutable holder
   // so it always deletes the current project object. The pill is inserted /
   // removed at its fixed position (between name and the action buttons).
-  // `readOnly` (the Missions tree, fixed for the row's life) builds it without
+  // `readOnly` (the Conductors tree, fixed for the row's life) builds it without
   // the new-session and delete buttons and never makes the system pill a
   // control.
   _projectRow(existing, { project: p, readOnly = false }) {
@@ -1016,7 +1019,7 @@ export class Sidebar {
     const liveOwners = new Set(this.instances.map(i => i.ownerSessionId).filter(Boolean));
     if (this._filterOwner() && !liveOwners.has(this.filter)) this.filter = '';
     this._owners = ownersByPlace(this.instances);
-    this._missions = deriveMissions({ conductRows: this.conductRows, instances: this.instances });
+    this._conductors = deriveConductors({ conductRows: this.conductRows, instances: this.instances });
 
     // Bucket live instances by (project, worktree?) so the per-subnode
     // merge into Sessions has only the relevant live overlay.
@@ -1037,7 +1040,7 @@ export class Sidebar {
 
     this._renderFilter(liveOwners);
     this._renderProjects({ directByProject, byWorktree });
-    if (this.missionList) this._renderMissions();
+    if (this.conductorList) this._renderConductors();
     if (this.stripRoot) this._renderStrip();
   }
 
@@ -1045,7 +1048,7 @@ export class Sidebar {
   // non-empty, and no strip at all when every group is empty. The same strip
   // in both lenses; the conductor filter does not narrow it.
   _renderStrip() {
-    const g = deriveStrip({ conductors: this._missions.live, instances: this.instances });
+    const g = deriveStrip({ conductors: this._conductors.live, instances: this.instances });
     reconcileChildren(this.stripRoot, isStripEmpty(g) ? [] : ['strip'], (k, ex) => {
       const strip = ex ?? el('div', { class: 'sidebar-strip' });
       const names = Object.keys(STRIP_HEADS).filter(name => g[name].length > 0);
@@ -1110,13 +1113,13 @@ export class Sidebar {
   }
 
   // Reconcile the conductor filter's options: All, Hand-spawned only, then one
-  // per live owner — live missions, inactive missions, then owners that are no
-  // mission at all (a hand-spawned session that spawned workers).
+  // per live owner — live conductors, inactive conductors, then owners that are not
+  // conductors (a hand-spawned session that spawned workers).
   _renderFilter(liveOwners) {
     const select = this._filterSelect;
     if (!select) return;
     const order = [];
-    for (const c of [...this._missions.live, ...this._missions.inactive]) {
+    for (const c of [...this._conductors.live, ...this._conductors.inactive]) {
       if (liveOwners.has(c.sessionId)) order.push(c.sessionId);
     }
     for (const sid of liveOwners) if (!order.includes(sid)) order.push(sid);
@@ -1196,30 +1199,30 @@ export class Sidebar {
     });
   }
 
-  // The Missions lens: live conductors newest first, then a collapsed
+  // The Conductors lens: live conductors newest first, then a collapsed
   // *Inactive (n)* group of the rest, or an empty state when there are none.
-  _renderMissions() {
-    const { live, inactive } = this._missions;
-    const keys = live.map(c => `mission:${c.sessionId}`);
+  _renderConductors() {
+    const { live, inactive } = this._conductors;
+    const keys = live.map(c => `${CONDUCTOR_KEY}${c.sessionId}`);
     if (inactive.length > 0) keys.push('inactive');
     if (keys.length === 0) keys.push('empty');
     const liveBySid = new Map(live.map(c => [c.sessionId, c]));
-    reconcileChildren(this.missionList, keys, (k, ex) => {
-      if (k === 'empty') return ex ?? el('li', { class: 'mission-empty' }, 'no conductors yet — tap 🎼 Conduct');
+    reconcileChildren(this.conductorList, keys, (k, ex) => {
+      if (k === 'empty') return ex ?? el('li', { class: 'conductor-empty' }, 'no conductors yet — tap 🎼 Conduct');
       if (k === 'inactive') return this._inactiveGroup(ex, inactive);
-      return this._missionItem(ex, liveBySid.get(k.slice(8)));
+      return this._conductorItem(ex, liveBySid.get(k.slice(CONDUCTOR_KEY.length)));
     });
   }
 
   _inactiveGroup(existing, inactive) {
     let li = existing;
     if (!li) {
-      li = el('li', { class: 'mission-inactive-item' });
-      const det = el('details', { class: 'worktree-group mission-inactive' });
+      li = el('li', { class: 'conductor-inactive-item' });
+      const det = el('details', { class: 'worktree-group conductor-inactive' });
       if (this.inactiveOpen) det.setAttribute('open', '');
       det.addEventListener('toggle', () => { this.inactiveOpen = det.open; });
       const summaryEl = el('summary', { class: 'worktree-summary' });
-      const ul = el('ul', { class: 'mission-inactive-list' });
+      const ul = el('ul', { class: 'conductor-inactive-list' });
       det.appendChild(summaryEl);
       det.appendChild(ul);
       li.appendChild(det);
@@ -1228,18 +1231,18 @@ export class Sidebar {
     }
     li._summaryEl.textContent = `Inactive (${inactive.length})`;
     const bySid = new Map(inactive.map(c => [c.sessionId, c]));
-    reconcileChildren(li._ul, inactive.map(c => `mission:${c.sessionId}`),
-      (k, ex) => this._missionItem(ex, bySid.get(k.slice(8))));
+    reconcileChildren(li._ul, inactive.map(c => `${CONDUCTOR_KEY}${c.sessionId}`),
+      (k, ex) => this._conductorItem(ex, bySid.get(k.slice(CONDUCTOR_KEY.length))));
     return li;
   }
 
-  // Create-or-update one mission block: its row, its project chips, and —
+  // Create-or-update one conductor block: its row, its project chips, and —
   // while expanded — the read-only tree of this conductor's live workers.
   // The block alone carries the conductor's bar; nothing inside repeats it.
-  _missionItem(existing, conductor) {
+  _conductorItem(existing, conductor) {
     let li = existing, holder;
     if (!li) {
-      li = el('li', { class: 'mission' });
+      li = el('li', { class: 'conductor-block' });
       holder = { conductor };
       li._holder = holder;
     } else {
@@ -1247,37 +1250,37 @@ export class Sidebar {
     }
     holder.conductor = conductor;
     const sid = conductor.sessionId;
-    const open = this.expandedMissions.has(sid);
-    li.className = 'mission' + (conductor.live ? '' : ' inactive') + (open ? ' open' : '');
+    const open = this.expandedConductors.has(sid);
+    li.className = 'conductor-block' + (conductor.live ? '' : ' inactive') + (open ? ' open' : '');
     li.style.setProperty('--owner-color', conductorColor(sid));
     const workers = workersOf(sid, this.instances);
-    const projects = missionProjects(workers);
+    const projects = conductorProjects(workers);
 
     const keys = ['row', 'chips'];
     if (open) keys.push('tree');
     reconcileChildren(li, keys, (k, ex) => {
-      if (k === 'row') return this._missionRow(ex, holder, open);
+      if (k === 'row') return this._conductorRow(ex, holder, open);
       if (k === 'chips') {
-        const chips = ex ?? el('div', { class: 'mission-chips' });
+        const chips = ex ?? el('div', { class: 'conductor-chips' });
         const ck = projects.length > 0 ? projects.map(p => `chip:${p}`) : ['none'];
         reconcileChildren(chips, ck, (c, cex) => {
-          if (c === 'none') return cex ?? el('span', { class: 'mission-chip mission-chip-none' }, 'no live workers');
-          const chip = cex ?? el('span', { class: 'mission-chip' });
+          if (c === 'none') return cex ?? el('span', { class: 'conductor-chip conductor-chip-none' }, 'no live workers');
+          const chip = cex ?? el('span', { class: 'conductor-chip' });
           chip.textContent = c.slice(5);
           return chip;
         });
         return chips;
       }
-      return this._missionTree(ex, workers, projects);
+      return this._conductorTree(ex, workers, projects);
     });
     return li;
   }
 
-  _missionRow(existing, holder, open) {
+  _conductorRow(existing, holder, open) {
     let row = existing;
     if (!row) {
       row = el('div', {
-        class: 'mission-row',
+        class: 'conductor-row',
         onclick: () => {
           const c = holder.conductor;
           if (c.instanceId) this.onSelectInstance(c.instanceId);
@@ -1285,20 +1288,20 @@ export class Sidebar {
         },
       });
       row._caret = el('button', {
-        type: 'button', class: 'mission-caret', 'aria-label': 'show workers',
+        type: 'button', class: 'conductor-caret', 'aria-label': 'show workers',
         onclick: (e) => {
           e.stopPropagation();
           const sid = holder.conductor.sessionId;
-          if (this.expandedMissions.has(sid)) this.expandedMissions.delete(sid);
-          else this.expandedMissions.add(sid);
+          if (this.expandedConductors.has(sid)) this.expandedConductors.delete(sid);
+          else this.expandedConductors.add(sid);
           this.render();
         },
       }, '▸');
     }
     const c = holder.conductor;
-    const { text, untitled } = missionTitle(c);
+    const { text, untitled } = conductorTitle(c);
     const unread = this.unreadBySessionId.get(c.sessionId) ?? 0;
-    row.className = 'mission-row' + (c.instanceId && c.instanceId === this.activeInstanceId ? ' active' : '');
+    row.className = 'conductor-row' + (c.instanceId && c.instanceId === this.activeInstanceId ? ' active' : '');
     row.title = c.sessionId;
     row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');
     const keys = ['caret', 'dot', 'title', 'ago'];
@@ -1314,7 +1317,7 @@ export class Sidebar {
       }
       if (k === 'title') {
         const t = ex ?? el('span', {});
-        t.className = 'mission-title' + (untitled ? ' untitled' : '');
+        t.className = 'conductor-title' + (untitled ? ' untitled' : '');
         t.textContent = text;
         return t;
       }
@@ -1333,11 +1336,11 @@ export class Sidebar {
     return row;
   }
 
-  // Expanded mission: per project (sorted), the project row, then the workers
+  // Expanded conductor: per project (sorted), the project row, then the workers
   // in its main checkout, then each worktree (sorted by name) holding one with
   // its workers. Only this conductor's live workers, all read-only.
-  _missionTree(existing, workers, projects) {
-    const ul = existing ?? el('ul', { class: 'mission-tree' });
+  _conductorTree(existing, workers, projects) {
+    const ul = existing ?? el('ul', { class: 'conductor-tree' });
     const projByName = new Map(this.projects.map(p => [p.name, p]));
     reconcileChildren(ul, projects.map(n => `proj:${n}`), (k, ex) => {
       const name = k.slice(5);
@@ -1358,7 +1361,7 @@ export class Sidebar {
       if (wtNames.length > 0) keys.push('wts');
       reconcileChildren(li, keys, (ck, cex) => {
         if (ck === 'row') return this._projectRow(cex, { project: p, readOnly: true });
-        if (ck === 'direct') return this._workerList(cex ?? el('ul', { class: 'sessions-list mission-direct' }), direct, name, null);
+        if (ck === 'direct') return this._workerList(cex ?? el('ul', { class: 'sessions-list conductor-direct' }), direct, name, null);
         const wtUl = cex ?? el('ul', { class: 'worktree-list' });
         reconcileChildren(wtUl, wtNames.map(n => `wt:${n}`), (wk, wex) => {
           const wtName = wk.slice(3);

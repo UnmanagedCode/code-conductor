@@ -1,4 +1,4 @@
-// The sidebar's Missions / Projects lenses and conductor ownership colour, in a
+// The sidebar's Conductors / Projects lenses and conductor ownership colour, in a
 // real browser: what happy-dom cannot compute — rendered boxes, resolved
 // colours, the lens switch surviving a reload, the phone drawer.
 //
@@ -99,7 +99,7 @@ try {
   const a = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'warn' })).body;
   const b = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: false, playbookEnforcement: 'warn' })).body;
   // C takes the 🎼 Conduct button's own path — a temp conductor, archived on
-  // exit — to prove an exited temp conductor leaves Missions.
+  // exit — to prove an exited temp conductor leaves Conductors.
   const c = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true })).body;
   await idle(i => i.id === a.id);
   await idle(i => i.id === b.id);
@@ -107,7 +107,7 @@ try {
   const cSid = (await insts()).find(i => i.id === c.id).sessionId;
   const aSid = (await insts()).find(i => i.id === a.id).sessionId;
   const bSid = (await insts()).find(i => i.id === b.id).sessionId;
-  await api('PUT', `/api/sessions/${aSid}/title`, { title: 'Alpha mission' });
+  await api('PUT', `/api/sessions/${aSid}/title`, { title: 'Alpha conductor' });
   // fake-claude writes no transcript, so give B one: once killed it then stays
   // listed (as a disk row) under Inactive, and its first prompt becomes its
   // untitled label.
@@ -153,7 +153,7 @@ try {
 
   await withPage(async (page) => {
     await page.goto(base, { waitUntil: 'networkidle' });
-    await page.waitForSelector(`#mission-list [data-key="mission:${aSid}"]`);
+    await page.waitForSelector(`#conductor-list [data-key="conductor:${aSid}"]`);
 
     // Resolve a conductor's colour the way the page does, as a computed rgb().
     const colourOf = (sid) => page.evaluate(async (s) => {
@@ -168,23 +168,23 @@ try {
     const colA = await colourOf(aSid);
     const colB = await colourOf(bSid);
     const hasBox = (sel) => page.evaluate((s) => { const e = document.querySelector(s); if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }, sel);
-    const mission = (sid) => `#mission-list [data-key="mission:${sid}"]`;
+    const conductorSel = (sid) => `#conductor-list [data-key="conductor:${sid}"]`;
 
-    // 1 — fresh profile opens on Missions
+    // 1 — fresh profile opens on Conductors
     {
       const st = {
-        missions: await hasBox('#mission-list'), projects: await hasBox('#project-list'),
+        conductors: await hasBox('#conductor-list'), projects: await hasBox('#project-list'),
         row: await hasBox('.projects-lens-row'), menu: await hasBox('#sidebar-overflow-menu'),
-        pressed: await page.getAttribute('.sidebar-lens button[data-lens="missions"]', 'aria-pressed'),
+        pressed: await page.getAttribute('.sidebar-lens button[data-lens="conductors"]', 'aria-pressed'),
       };
-      check('1 fresh profile opens on Missions', st.missions && !st.projects && !st.row && !st.menu && st.pressed === 'true', JSON.stringify(st));
+      check('1 fresh profile opens on Conductors', st.conductors && !st.projects && !st.row && !st.menu && st.pressed === 'true', JSON.stringify(st));
     }
     // 2 — order + Conduct full width
     {
       const o = await page.evaluate(() => {
         const top = (s) => document.querySelector(s).getBoundingClientRect().top;
         return {
-          order: [top('#conduct-btn'), top('#sidebar-strip-slot'), top('.sidebar-lens'), top('#mission-list')],
+          order: [top('#conduct-btn'), top('#sidebar-strip-slot'), top('.sidebar-lens'), top('#conductor-list')],
           btnW: document.getElementById('conduct-btn').getBoundingClientRect().width,
           actW: document.querySelector('.sidebar-actions').getBoundingClientRect().width,
         };
@@ -192,14 +192,14 @@ try {
       const sorted = o.order.every((v, i) => i === 0 || v >= o.order[i - 1]);
       check('2 order Conduct → strip slot → toggle → lists; Conduct full width', sorted && Math.abs(o.btnW - o.actW) < 0.5, JSON.stringify(o));
     }
-    // 3 — mission rows: title weight, untitled italic muted, chip colours
+    // 3 — conductor rows: title weight, untitled italic muted, chip colours
     {
       const r = await page.evaluate(([aS, bS]) => {
         const root = getComputedStyle(document.documentElement);
         const toRgb = (v) => { const i = document.createElement('i'); i.style.color = v; document.body.appendChild(i); const c = getComputedStyle(i).color; i.remove(); return c; };
-        const at = document.querySelector(`#mission-list [data-key="mission:${aS}"] .mission-title`);
-        const bt = document.querySelector(`#mission-list [data-key="mission:${bS}"] .mission-title`);
-        const chips = [...document.querySelectorAll('#mission-list .mission-chip')].map(c => {
+        const at = document.querySelector(`#conductor-list [data-key="conductor:${aS}"] .conductor-title`);
+        const bt = document.querySelector(`#conductor-list [data-key="conductor:${bS}"] .conductor-title`);
+        const chips = [...document.querySelectorAll('#conductor-list .conductor-chip')].map(c => {
           const s = getComputedStyle(c); return { color: s.color, border: s.borderTopColor };
         });
         return {
@@ -209,22 +209,22 @@ try {
         };
       }, [aSid, bSid]);
       const chipsOk = r.chips.length > 0 && r.chips.every(c => c.color === r.muted && c.border === r.border);
-      check('3 mission rows: titled bold, untitled italic muted, grey chips',
-        r.aText === 'Alpha mission' && r.aWeight >= 600 && r.bItalic === 'italic' && r.bColor === r.muted && chipsOk, JSON.stringify(r));
+      check('3 conductor rows: titled bold, untitled italic muted, grey chips',
+        r.aText === 'Alpha conductor' && r.aWeight >= 600 && r.bItalic === 'italic' && r.bColor === r.muted && chipsOk, JSON.stringify(r));
     }
-    // 4 — mission bars in the conductor colour
+    // 4 — conductor bars in the conductor colour
     {
-      const sa = await page.$eval(mission(aSid), e => getComputedStyle(e).boxShadow);
-      const sb = await page.$eval(mission(bSid), e => getComputedStyle(e).boxShadow);
-      check('4 each .mission box-shadow carries conductorColor(sid)', sa.includes(colA) && sb.includes(colB), `A=${sa} (want ${colA}) B=${sb} (want ${colB})`);
+      const sa = await page.$eval(conductorSel(aSid), e => getComputedStyle(e).boxShadow);
+      const sb = await page.$eval(conductorSel(bSid), e => getComputedStyle(e).boxShadow);
+      check('4 each .conductor-block box-shadow carries conductorColor(sid)', sa.includes(colA) && sb.includes(colB), `A=${sa} (want ${colA}) B=${sb} (want ${colB})`);
     }
-    await page.screenshot({ path: path.join(OUT, 'lenses-missions.png') });
+    await page.screenshot({ path: path.join(OUT, 'lenses-conductors.png') });
     // 5 — expanded read-only tree, stage line
     {
-      await page.click(`${mission(aSid)} .mission-caret`);
-      await page.waitForSelector(`${mission(aSid)} .mission-tree`);
+      await page.click(`${conductorSel(aSid)} .conductor-caret`);
+      await page.waitForSelector(`${conductorSel(aSid)} .conductor-tree`);
       const t = await page.evaluate(([sel, boundSid, mainSid]) => {
-        const tree = document.querySelector(`${sel} .mission-tree`);
+        const tree = document.querySelector(`${sel} .conductor-tree`);
         const forbidden = ['.add-instance', '.delete-project', '.wt-spawn', '.wt-remove', '.session-delete', '.session-promote']
           .filter(s => tree.querySelector(s));
         const rowOf = (sid) => [...tree.querySelectorAll('.session-row')].find(r => r.title.split('\n')[0] === sid);
@@ -238,14 +238,14 @@ try {
           unboundHasStage: !!rowOf(mainSid)?.querySelector('.session-stage'),
           unboundFound: !!rowOf(mainSid),
         };
-      }, [mission(aSid), bound?.sessionId ?? null, aMain.sessionId]);
+      }, [conductorSel(aSid), bound?.sessionId ?? null, aMain.sessionId]);
       check('5a expanded tree is read-only', t.forbidden.length === 0 && t.unboundFound, JSON.stringify(t));
       check('5b an unbound worker has no stage line', !t.unboundHasStage, JSON.stringify(t));
       if (bound) {
         check('5c stage line = /api/instances playbook · stage, under the preview',
           t.stageText === expectedStage && t.stageBelow === true, `got ${JSON.stringify(t.stageText)} want ${JSON.stringify(expectedStage)} below=${t.stageBelow}`);
       } else skip('5c stage line', boundWhy);
-      await page.screenshot({ path: path.join(OUT, 'lenses-missions-expanded.png') });
+      await page.screenshot({ path: path.join(OUT, 'lenses-conductors-expanded.png') });
     }
 
     // 7 — switch to Projects, reload, still Projects
@@ -254,7 +254,7 @@ try {
     await page.waitForSelector('#project-list .project-row');
     {
       const lens = await page.getAttribute('#sidebar', 'data-lens');
-      check('7 lens persists across a reload', lens === 'projects' && await hasBox('#project-list') && !(await hasBox('#mission-list')), `data-lens=${lens}`);
+      check('7 lens persists across a reload', lens === 'projects' && await hasBox('#project-list') && !(await hasBox('#conductor-list')), `data-lens=${lens}`);
     }
     // 8 — filter + ≡ equal height and centre; panel right-aligned
     const ctlGeom = () => page.evaluate(() => {
@@ -378,15 +378,15 @@ try {
     // 6 — kill B: Inactive (1), faded bar; B's live worker keeps colour B
     {
       await api('DELETE', `/api/instances/${b.id}`);
-      await page.click('.sidebar-lens button[data-lens="missions"]');
+      await page.click('.sidebar-lens button[data-lens="conductors"]');
       const collapsed = await waitFor(() => page.evaluate(() => {
-        const det = document.querySelector('#mission-list details.mission-inactive');
+        const det = document.querySelector('#conductor-list details.conductor-inactive');
         return det ? { summary: det.querySelector('summary').textContent, open: det.open } : false;
       }), { timeout: 10000 }).catch(() => null);
-      await page.click('#mission-list details.mission-inactive > summary');
-      await waitFor(() => page.evaluate((s) => !!document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`), bSid), { timeout: 10000 }).catch(() => {});
+      await page.click('#conductor-list details.conductor-inactive > summary');
+      await waitFor(() => page.evaluate((s) => !!document.querySelector(`#conductor-list .conductor-inactive-list [data-key="conductor:${s}"]`), bSid), { timeout: 10000 }).catch(() => {});
       const r = await page.evaluate((s) => {
-        const m = document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`);
+        const m = document.querySelector(`#conductor-list .conductor-inactive-list [data-key="conductor:${s}"]`);
         return { inactive: m?.classList.contains('inactive') ?? false, shadow: m ? getComputedStyle(m).boxShadow : null };
       }, bSid);
       check('6a killed B moves under a collapsed Inactive (1) with a faded bar',
@@ -405,7 +405,7 @@ try {
       }
     }
     // 6c — the default path: an exited TEMP conductor is archived, and is then
-    // in no Missions group; it is found in Settings → Archived.
+    // in no Conductors group; it is found in Settings → Archived.
     {
       await api('DELETE', `/api/instances/${c.id}`);
       const archived = await waitFor(async () => {
@@ -418,27 +418,27 @@ try {
       // waiting for C's row to vanish could pass in the gap between the
       // instance dropping and the projects refresh.
       await page.reload({ waitUntil: 'networkidle' });
-      await page.click('.sidebar-lens button[data-lens="missions"]');
-      await page.click('#mission-list details.mission-inactive > summary');
+      await page.click('.sidebar-lens button[data-lens="conductors"]');
+      await page.click('#conductor-list details.conductor-inactive > summary');
       // B is a disk row only: its inactive row proves the listing landed.
       const r = await waitFor(() => page.evaluate(([b, cs]) => {
-        if (!document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${b}"]`)) return false;
-        return { summary: document.querySelector('#mission-list details.mission-inactive > summary').textContent,
-          cShown: !!document.querySelector(`#mission-list [data-key="mission:${cs}"]`) };
+        if (!document.querySelector(`#conductor-list .conductor-inactive-list [data-key="conductor:${b}"]`)) return false;
+        return { summary: document.querySelector('#conductor-list details.conductor-inactive > summary').textContent,
+          cShown: !!document.querySelector(`#conductor-list [data-key="conductor:${cs}"]`) };
       }, [bSid, cSid]), { timeout: 10000 }).catch(() => null);
-      check('6c an exited temp conductor (archived on exit) is in no Missions group',
+      check('6c an exited temp conductor (archived on exit) is in no Conductors group',
         !!archived && !plain && inArchived && !!r && !r.cShown && r.summary === 'Inactive (1)',
         `server row archived=${!!archived} in plain listing=${plain} in /api/archived=${inArchived} sidebar=${JSON.stringify(r)}`);
     }
     // 13 — session view unchanged
     {
-      await page.click('.sidebar-lens button[data-lens="missions"]');
-      await page.click(`${mission(aSid)} .mission-title`);
+      await page.click('.sidebar-lens button[data-lens="conductors"]');
+      await page.click(`${conductorSel(aSid)} .conductor-title`);
       const v = await waitFor(() => page.evaluate(() => {
         const t = document.getElementById('instance-title')?.textContent ?? '';
         const panel = document.getElementById('subagent-panel');
         const shown = panel && !panel.hidden && panel.getBoundingClientRect().height > 0;
-        return t.includes('Alpha mission') && shown ? { t, text: panel.textContent.replace(/\s+/g, ' ').slice(0, 160) } : false;
+        return t.includes('Alpha conductor') && shown ? { t, text: panel.textContent.replace(/\s+/g, ' ').slice(0, 160) } : false;
       }), { timeout: 10000 }).catch(() => null);
       check('13 opening A sets #instance-title and shows #subagent-panel', !!v, JSON.stringify(v));
     }

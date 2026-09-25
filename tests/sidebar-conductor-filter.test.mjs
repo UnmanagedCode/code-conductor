@@ -16,7 +16,7 @@ const PROJECTS = [
   project('empty-ws-member', { workspace: 'WS2' }),
 ];
 const INSTANCES = [
-  conductor('A', { title: 'Alpha mission', createdAt: 3000 }),
+  conductor('A', { title: 'Alpha conductor', createdAt: 3000 }),
   conductor('B', { createdAt: 2000, firstPrompt: 'bravo prompt' }),
   hand('H', 'beta', null, { firstPrompt: 'hand owner' }),
   worker('a1', 'A', 'alpha', 'solo-a'),
@@ -46,17 +46,17 @@ async function choose(select, value) {
 
 const projectNames = (root) => [...root.querySelectorAll('.project-name')].map(n => n.textContent);
 
-test('options are All / Hand-spawned only / one per live owner, labelled by mission title', async () => {
+test('options are All / Hand-spawned only / one per live owner, labelled by conductor title', async () => {
   const { select, sidebar } = await setupSidebar();
   await render(sidebar);
   const opts = [...select.options].map(o => [o.value, o.textContent]);
   assert.deepEqual(opts, [
     ['', 'All sessions'],
     ['hand', 'Hand-spawned only'],
-    ['A', 'Alpha mission'],
+    ['A', 'Alpha conductor'],
     ['B', 'bravo prompt'],
     ['H', 'hand owner'],
-  ], 'live missions (newest first), then owners that are not missions');
+  ], 'live conductors (newest first), then owners that are not conductors');
 });
 
 test('selecting a conductor hides projects and workspaces without its live sessions, force-opens its worktrees and lists only its sessions', async () => {

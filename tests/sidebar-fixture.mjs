@@ -1,4 +1,4 @@
-// Shared happy-dom setup for the Missions-lens / ownership / filter Sidebar
+// Shared happy-dom setup for the Conductors-lens / ownership / filter Sidebar
 // tests: a fresh Window per call, both lists, the filter root, the strip slot and recorded
 // callbacks.
 
@@ -25,7 +25,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
   document.body.innerHTML = `
     <div id="sidebar-strip-slot"></div>
     <div id="conductor-filter" class="conductor-filter"><select id="conductor-filter-select"></select></div>
-    <ul id="mission-list" class="mission-list"></ul>
+    <ul id="conductor-list" class="conductor-list"></ul>
     <ul id="project-list" class="project-list"></ul>`;
   if (withCss) {
     const style = document.createElement('style');
@@ -33,7 +33,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
     document.head.appendChild(style);
   }
   const root = document.getElementById('project-list');
-  const missionList = document.getElementById('mission-list');
+  const conductorList = document.getElementById('conductor-list');
   const filterRoot = document.getElementById('conductor-filter');
   const select = document.getElementById('conductor-filter-select');
   const strip = document.getElementById('sidebar-strip-slot');
@@ -41,7 +41,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
   const calls = { select: [], resume: [], create: [] };
   const sidebar = new Sidebar({
     rootList: root,
-    missionList,
+    conductorList,
     filterRoot,
     stripRoot: strip,
     onSelectInstance: (id) => calls.select.push(id),
@@ -54,7 +54,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
     onEditWorkspace: () => {},
     onPromoteSession: () => {},
   });
-  return { window, root, missionList, filterRoot, select, strip, sidebar, calls, conductorColor };
+  return { window, root, conductorList, filterRoot, select, strip, sidebar, calls, conductorColor };
 }
 
 export const tick = () => new Promise(r => setTimeout(r, 0));

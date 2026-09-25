@@ -194,7 +194,7 @@ try {
         !!d && !!h && d.dot === 'dot idle' && h.dot === 'dot idle' && d.owned && d.bar.includes(colD) && !h.owned
           && d.aria.endsWith(' — turn ended') && h.aria.endsWith(' — turn ended'),
         JSON.stringify({ d, h, colD }));
-      await page.screenshot({ path: path.join(OUT, 'strip-missions.png') });
+      await page.screenshot({ path: path.join(OUT, 'strip-conductors.png') });
     }
 
     // 2 — D in a turn is Running (pulsing); H in a turn is not listed.
@@ -229,7 +229,7 @@ try {
 
     // 4 — a text ask: conductor A (titled) and H are Waiting on you.
     const A = await spawnConductor();
-    await api('PUT', `/api/sessions/${A.sessionId}/title`, { title: 'Alpha mission' });
+    await api('PUT', `/api/sessions/${A.sessionId}/title`, { title: 'Alpha conductor' });
     let asks = {};
     {
       await wsPrompt(A.id, 'ASK-TEXT');
@@ -238,14 +238,14 @@ try {
       const s = await sample(x => entryIn(x, 'waiting', A.sessionId));
       const a = entryIn(s, 'waiting', A.sessionId);
       const row = await page.evaluate((sid) => {
-        const d = document.querySelector(`#mission-list [data-key="mission:${sid}"] .mission-row > .dot`);
+        const d = document.querySelector(`#conductor-list [data-key="conductor:${sid}"] .conductor-row > .dot`);
         return d ? { cls: d.className, title: d.title } : null;
       }, A.sessionId);
       check('4a a text ask sets awaitingUser question/text on the API',
         apiA.awaitingUser === 'question' && apiA.awaitingUserSource === 'text', JSON.stringify({ awaitingUser: apiA.awaitingUser, src: apiA.awaitingUserSource }));
-      check('4b the asking conductor is in Waiting on you with the amber-ringed dot; its mission row is ringed too',
+      check('4b the asking conductor is in Waiting on you with the amber-ringed dot; its conductor row is ringed too',
         !!a && a.dot === 'dot idle needs-you' && a.bg === s.amber && a.shadow.includes(s.amber)
-          && a.aria === 'Alpha mission — asked in text · idle' && a.text === 'Alpha mission'
+          && a.aria === 'Alpha conductor — asked in text · idle' && a.text === 'Alpha conductor'
           && row?.cls === 'dot idle needs-you' && row.title === 'waiting on you (asked in text) · idle'
           && s.groups.waiting.head === 'Waiting on you (1)',
         JSON.stringify({ a, row, amber: s.amber }));
@@ -284,7 +284,7 @@ try {
         during.status === 'turn' && during.awaitingUser === 'question', JSON.stringify({ status: during.status, awaitingUser: during.awaitingUser }));
       check('6b during the wake turn it stays in Waiting, not Running: green fill in the ring, no pulse',
         !!a && a.dot === 'dot turn needs-you' && a.bg === s.green && a.anim === 'none' && groupsOf(s, A.sessionId).length === 1
-          && a.aria === 'Alpha mission — asked in text · running',
+          && a.aria === 'Alpha conductor — asked in text · running',
         JSON.stringify({ a, groups: groupsOf(s, A.sessionId), green: s.green }));
       await statusIs(A.id, 'idle', { timeout: 20000 });
       const after = await sample(x => entryIn(x, 'waiting', A.sessionId)?.dot === 'dot idle needs-you');
@@ -301,7 +301,7 @@ try {
         const t = document.getElementById('instance-title')?.textContent ?? '';
         const panel = document.getElementById('subagent-panel');
         const shown = panel && !panel.hidden && panel.getBoundingClientRect().height > 0;
-        return t.includes('Alpha mission') && shown ? { t } : false;
+        return t.includes('Alpha conductor') && shown ? { t } : false;
       }), { timeout: 10000 }).catch(() => null);
       const s = await sample(x => entryIn(x, 'waiting', A.sessionId)?.active);
       check('7a clicking the strip entry opens the session (title + sub-agent panel) and marks the entry active',
@@ -380,7 +380,7 @@ try {
           && ordered && geo.pos.every(p => p === 'static'),
         JSON.stringify({ before, after: allSids(s), geo }));
       await page.screenshot({ path: path.join(OUT, 'strip-projects.png') });
-      await page.click('.sidebar-lens button[data-lens="missions"]');
+      await page.click('.sidebar-lens button[data-lens="conductors"]');
     }
 
     // 11 — workers were never listed.

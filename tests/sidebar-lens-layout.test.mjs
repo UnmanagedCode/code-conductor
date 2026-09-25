@@ -12,7 +12,7 @@ import { PUB } from './sidebar-fixture.mjs';
 
 // `lens` is baked into the markup before the stylesheet loads: happy-dom's
 // computed-style cache does not see a later data-lens change.
-async function renderIndex({ lens = 'missions' } = {}) {
+async function renderIndex({ lens = 'conductors' } = {}) {
   const [html, css] = await Promise.all([
     fs.readFile(path.join(PUB, 'index.html'), 'utf8'),
     fs.readFile(path.join(PUB, 'styles.css'), 'utf8'),
@@ -23,7 +23,7 @@ async function renderIndex({ lens = 'missions' } = {}) {
   });
   const document = window.document;
   document.write(html.replace(/<script\b[\s\S]*?<\/script>/g, '')
-    .replace('<aside id="sidebar" data-lens="missions">', `<aside id="sidebar" data-lens="${lens}">`));
+    .replace('<aside id="sidebar" data-lens="conductors">', `<aside id="sidebar" data-lens="${lens}">`));
   const style = document.createElement('style');
   style.textContent = css;
   document.head.appendChild(style);
@@ -51,24 +51,24 @@ function sessionRow(document, classes) {
   return ul.querySelector('.session-row');
 }
 
-test('under data-lens=missions the Projects-only row and list compute display:none and #mission-list does not; under projects, the reverse', async () => {
+test('under data-lens=conductors the Projects-only row and list compute display:none and #conductor-list does not; under projects, the reverse', async () => {
   const shown = async (lens) => {
     const { window, document } = await renderIndex({ lens });
     const d = (el) => cs(window, el).display;
     return {
       row: d(document.querySelector('.projects-lens-row')),
       projects: d(document.getElementById('project-list')),
-      missions: d(document.getElementById('mission-list')),
+      conductors: d(document.getElementById('conductor-list')),
     };
   };
-  const m = await shown('missions');
+  const m = await shown('conductors');
   assert.equal(m.row, 'none', 'the lens rule outranks .projects-lens-row\'s own display:flex');
   assert.equal(m.projects, 'none');
-  assert.notEqual(m.missions, 'none');
+  assert.notEqual(m.conductors, 'none');
   const p = await shown('projects');
   assert.equal(p.row, 'flex');
   assert.notEqual(p.projects, 'none');
-  assert.equal(p.missions, 'none');
+  assert.equal(p.conductors, 'none');
 });
 
 test('.session-row.active: panel-2 background, a 1px solid muted outline at -1px offset, and no accent border-left', async () => {
@@ -91,7 +91,7 @@ test('an owned active row keeps its 3px owner border-left under the outline', as
   row.style.setProperty('--owner-color', 'hsl(30 70% 64%)');
   const s = cs(window, row);
   assert.match(ruleBody(css, '.session-row.owned'), /border-left:\s*3px solid var\(--owner-color\)/);
-  assert.doesNotMatch(ruleBody(css, '.session-row.active, .mission-row.active, .strip-entry.active'), /border|padding/,
+  assert.doesNotMatch(ruleBody(css, '.session-row.active, .conductor-row.active, .strip-entry.active'), /border|padding/,
     'the selected rule sets no border or padding, so it cannot override the owner bar');
   assert.equal(s.paddingLeft, '3px', 'the padding gives the bar\'s width back');
   assert.equal(s.outlineStyle, 'solid', 'and the selection outline is still drawn');
@@ -110,7 +110,7 @@ test('the filter select and #sidebar-overflow-toggle resolve the same height', a
 });
 
 test('#sidebar-strip-slot is displayed under both lenses', async () => {
-  for (const lens of ['missions', 'projects']) {
+  for (const lens of ['conductors', 'projects']) {
     const { window, document } = await renderIndex({ lens });
     assert.notEqual(cs(window, document.getElementById('sidebar-strip-slot')).display, 'none', lens);
   }
@@ -152,7 +152,7 @@ test('.strip-entry.active gets the selected fill, outline and bold label of .ses
   assert.equal(cs(window, entry.querySelector('.strip-title')).fontWeight, '700');
 });
 
-test('an owned strip entry draws the inset 3px owner bar, as a mission block does', async () => {
+test('an owned strip entry draws the inset 3px owner bar, as a conductor block does', async () => {
   const { css } = await renderIndex();
-  assert.match(ruleBody(css, '.worktree-row.owned, .mission, .strip-entry.owned'), /box-shadow:\s*inset 3px 0 0 var\(--owner-color\)/);
+  assert.match(ruleBody(css, '.worktree-row.owned, .conductor-block, .strip-entry.owned'), /box-shadow:\s*inset 3px 0 0 var\(--owner-color\)/);
 });

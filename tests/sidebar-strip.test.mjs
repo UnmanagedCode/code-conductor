@@ -174,7 +174,7 @@ test('the strip ignores the conductor filter: hand-only and a selected conductor
   assert.deepEqual(snapshot(), all);
 });
 
-test('a conductor entry takes its merged mission title from the disk row', async () => {
+test('a conductor entry takes its merged conductor title from the disk row', async () => {
   const { strip, sidebar } = await setupSidebar();
   await render(sidebar, {
     conductRows: [{ sessionId: 'A', title: 'Disk title', lastActivity: 1 }],
@@ -183,8 +183,8 @@ test('a conductor entry takes its merged mission title from the disk row', async
   assert.equal(entryOf(strip, 'A').textContent, 'Disk title');
 });
 
-test('the ring shows only on strip entries and Missions conductor rows: a Projects-lens session row and a Missions worker row are never ringed', async () => {
-  const { strip, root, missionList, sidebar } = await setupSidebar();
+test('the ring shows only on strip entries and conductor rows: a Projects-lens session row and a Conductors worker row are never ringed', async () => {
+  const { strip, root, conductorList, sidebar } = await setupSidebar();
   const q = ask('question', 'tool');
   await render(sidebar, {
     projects: [project('p', { worktrees: ['wt'] })],
@@ -199,18 +199,18 @@ test('the ring shows only on strip entries and Missions conductor rows: a Projec
   for (const d of root.querySelectorAll('details.worktree-group')) d.open = true;
   await tick();
   await tick();
-  missionList.querySelector('[data-key="mission:A"] .mission-caret').click();
+  conductorList.querySelector('[data-key="conductor:A"] .conductor-caret').click();
   await tick();
 
   // The same sessions are ringed where the ring belongs.
   assert.equal(entryOf(strip, 'h').querySelector('.dot').className, 'dot idle needs-you');
   assert.equal(entryOf(strip, 'A').querySelector('.dot').className, 'dot idle needs-you');
-  assert.equal(missionList.querySelector('[data-key="mission:A"] .mission-row > .dot').className, 'dot idle needs-you');
+  assert.equal(conductorList.querySelector('[data-key="conductor:A"] .conductor-row > .dot').className, 'dot idle needs-you');
 
   const dotIn = (list, sid) => rowOf(list, sid)?.querySelector('.dot') ?? null;
-  const projH = dotIn(root, 'h'), projW = dotIn(root, 'w'), treeW = dotIn(missionList, 'w');
-  assert.ok(projH && projW && treeW, 'the Projects rows for h and w and the Missions worker row for w are rendered');
-  for (const [where, dot] of [['Projects h', projH], ['Projects w', projW], ['Missions worker w', treeW]]) {
+  const projH = dotIn(root, 'h'), projW = dotIn(root, 'w'), treeW = dotIn(conductorList, 'w');
+  assert.ok(projH && projW && treeW, 'the Projects rows for h and w and the Conductors worker row for w are rendered');
+  for (const [where, dot] of [['Projects h', projH], ['Projects w', projW], ['Conductors worker w', treeW]]) {
     assert.equal(dot.classList.contains('needs-you'), false, `${where}: ${dot.className}`);
     assert.doesNotMatch(dot.title, /waiting on you/, `${where}: ${dot.title}`);
   }

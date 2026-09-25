@@ -73,12 +73,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .sidebar-actions { margin-bottom: 10px; display: flex; }
 .sidebar-actions > #conduct-btn { flex: 1; min-width: 0; }
 
-/* Missions / Projects lens (public/sidebarLens.js sets #sidebar[data-lens]).
+/* Conductors / Projects lens (public/sidebarLens.js sets #sidebar[data-lens]).
    Both lists are always rendered; the lens only decides which shows. The id +
    attribute + class specificity outranks every lens-only element's own
    `display` (e.g. .projects-lens-row's flex). */
-#sidebar[data-lens="missions"] .projects-lens-only,
-#sidebar[data-lens="projects"] .missions-lens-only { display: none; }
+#sidebar[data-lens="conductors"] .projects-lens-only,
+#sidebar[data-lens="projects"] .conductors-lens-only { display: none; }
 .sidebar-lens {
   display: flex; margin: 0 0 8px;
   border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
@@ -441,11 +441,11 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
    and gives the width back in padding so the row does not widen; block rows
    draw it inset. */
 .session-row.owned { border-left: 3px solid var(--owner-color); padding-left: 3px; }
-.worktree-row.owned, .mission, .strip-entry.owned { box-shadow: inset 3px 0 0 var(--owner-color); }
+.worktree-row.owned, .conductor-block, .strip-entry.owned { box-shadow: inset 3px 0 0 var(--owner-color); }
 /* Selected: fill + a neutral outline + a bold label — no colour, since the left
    bar means ownership. Hover stays fill-only, and the outline sits over an
    owner bar without replacing it. */
-.session-row.active, .mission-row.active, .strip-entry.active {
+.session-row.active, .conductor-row.active, .strip-entry.active {
   background: var(--panel-2);
   color: var(--text);
   outline: 1px solid var(--muted);
@@ -461,7 +461,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* Missions tree worker rows: the label with the verbatim playbook · stage on
+/* Conductors tree worker rows: the label with the verbatim playbook · stage on
    its own line underneath, wrapped rather than truncated away. */
 .session-label-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .session-stage {
@@ -489,47 +489,47 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .strip-entry:hover:not(:disabled) { background: var(--panel-2); }
 .strip-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 
-/* Missions lens. */
-.mission-list { list-style: none; padding: 0; margin: 0; }
-.mission { list-style: none; margin-bottom: 4px; border-radius: 4px; }
-.mission.open { background: rgba(255, 255, 255, .02); padding-bottom: 4px; }
-.mission.inactive { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--owner-color) 45%, transparent); }
-.mission-row {
+/* Conductors lens. */
+.conductor-list { list-style: none; padding: 0; margin: 0; }
+.conductor-block { list-style: none; margin-bottom: 4px; border-radius: 4px; }
+.conductor-block.open { background: rgba(255, 255, 255, .02); padding-bottom: 4px; }
+.conductor-block.inactive { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--owner-color) 45%, transparent); }
+.conductor-row {
   display: flex; align-items: center; gap: 7px;
   padding: 5px 6px 2px 8px; border-radius: 4px; cursor: pointer;
 }
-.mission-row:hover { background: var(--panel-2); }
-.mission-caret {
+.conductor-row:hover { background: var(--panel-2); }
+.conductor-caret {
   background: none; border: none; padding: 0 2px; color: var(--muted);
   font-size: 11px; width: 16px; flex: 0 0 auto; transition: transform .12s;
 }
-.mission-caret:hover:not(:disabled) { background: none; color: var(--text); }
-.mission.open > .mission-row > .mission-caret { transform: rotate(90deg); }
-.mission-title {
+.conductor-caret:hover:not(:disabled) { background: none; color: var(--text); }
+.conductor-block.open > .conductor-row > .conductor-caret { transform: rotate(90deg); }
+.conductor-title {
   flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.mission-title.untitled { font-weight: 400; font-style: italic; color: var(--muted); }
-.mission.inactive .mission-title { color: var(--muted); }
-.mission-row .session-ago { min-width: 0; font-size: 11px; }
-.mission-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 6px 4px 46px; }
+.conductor-title.untitled { font-weight: 400; font-style: italic; color: var(--muted); }
+.conductor-block.inactive .conductor-title { color: var(--muted); }
+.conductor-row .session-ago { min-width: 0; font-size: 11px; }
+.conductor-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 6px 4px 46px; }
 /* Monochrome, in the .system-pill shape. */
-.mission-chip {
+.conductor-chip {
   font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.4;
   padding: 0 5px; border-radius: 8px; color: var(--muted);
   border: 1px solid var(--border);
 }
-.mission-chip-none { font-style: italic; }
-.mission-tree { list-style: none; margin: 2px 0 0; padding: 0 4px 0 22px; }
-.mission-tree .project-row { padding: 3px 6px; }
-.mission-tree .project-name { font-size: 12px; }
-.mission-tree .worktree-list { padding-left: 10px; }
-.mission-tree .worktree-item > .sessions-list { padding-left: 14px; }
-.mission-tree .mission-direct { padding-left: 10px; }
-.mission-inactive-item { list-style: none; }
-.mission-inactive { margin: 8px 0 0; }
-.mission-inactive-list { list-style: none; padding: 0; margin: 4px 0 0; }
-.mission-empty { font-size: 11px; color: var(--muted); padding: 4px 6px; font-style: italic; }
+.conductor-chip-none { font-style: italic; }
+.conductor-tree { list-style: none; margin: 2px 0 0; padding: 0 4px 0 22px; }
+.conductor-tree .project-row { padding: 3px 6px; }
+.conductor-tree .project-name { font-size: 12px; }
+.conductor-tree .worktree-list { padding-left: 10px; }
+.conductor-tree .worktree-item > .sessions-list { padding-left: 14px; }
+.conductor-tree .conductor-direct { padding-left: 10px; }
+.conductor-inactive-item { list-style: none; }
+.conductor-inactive { margin: 8px 0 0; }
+.conductor-inactive-list { list-style: none; padding: 0; margin: 4px 0 0; }
+.conductor-empty { font-size: 11px; color: var(--muted); padding: 4px 6px; font-style: italic; }
 .session-unread {
   font-family: ui-monospace, monospace;
   font-size: 10px;
@@ -542,9 +542,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .session-row.has-unread .session-preview { color: var(--text); font-weight: 600; }
 /* The selected label's bold, after the live / unread weights it must outrank.
-   It also overrides .mission-title.untitled's 400: a selected untitled mission
+   It also overrides .conductor-title.untitled's 400: a selected untitled conductor
    reads bold italic, since selected is bold by spec. */
-.session-row.active .session-preview, .mission-row.active .mission-title,
+.session-row.active .session-preview, .conductor-row.active .conductor-title,
 .strip-entry.active .strip-title { font-weight: 700; }
 /* Overage auto-resume badge — shown on a stopped session awaiting resume. */
 .session-resume-badge {
@@ -2280,7 +2280,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
    column takes the caret's width, and the row gap already equals the summary's
    (.project-workspace > .project-workspace-summary and its ::before). A fixed
    width, not the glyph's advance, keeps git and non-git rows in step. Members
-   (inside .project-workspace-list) and the Missions tree keep the base
+   (inside .project-workspace-list) and the Conductors tree keep the base
    geometry. */
 .project-list > li > .project-row { padding-left: 6px; }
 .project-list > li > .project-row > .commit-log,

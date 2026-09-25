@@ -28,17 +28,17 @@ async function setupSidebar() {
   try { window.localStorage.clear(); } catch { /* ignore */ }
 
   const { Sidebar } = await import(pathToFileURL(path.join(PUB, 'sidebar.js')).href);
-  document.body.innerHTML = '<ul id="mission-list" class="mission-list"></ul><ul id="project-list" class="project-list"></ul>';
+  document.body.innerHTML = '<ul id="conductor-list" class="conductor-list"></ul><ul id="project-list" class="project-list"></ul>';
   const style = document.createElement('style');
   style.textContent = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
   document.head.appendChild(style);
   const list = document.getElementById('project-list');
-  const missionList = document.getElementById('mission-list');
+  const conductorList = document.getElementById('conductor-list');
 
   const calls = { showCommits: [] };
   const sidebar = new Sidebar({
     rootList: list,
-    missionList,
+    conductorList,
     onSelectInstance: () => {},
     onCreateInstanceClick: () => {},
     onResumeSession: () => {},
@@ -49,7 +49,7 @@ async function setupSidebar() {
     onQuickSpawn: () => {},
   });
   sidebar.onShowCommits = (name) => calls.showCommits.push(name);
-  return { window, list, missionList, sidebar, calls };
+  return { window, list, conductorList, sidebar, calls };
 }
 
 function project(name, workspace, isGitRepo) {
@@ -76,7 +76,7 @@ const CONDUCT_INSTANCE = {
   mode: 'bypassPermissions', worktree: null, temp: true,
 };
 // A live worker of CONDUCT_INSTANCE in the git top-level project `gitty`, so
-// an expanded mission renders a project row inside .mission-tree.
+// an expanded conductor renders a project row inside .conductor-tree.
 const GITTY_WORKER = {
   id: 'inst-w', project: 'gitty', sessionId: 'sid-w', status: 'idle',
   mode: 'default', worktree: null, conducted: true, ownerSessionId: 'sid-c',
@@ -275,18 +275,18 @@ test('workspace member rows keep the base .project-row geometry', async () => {
     'the top-level alignment does not reach workspace member rows');
 });
 
-test('the top-level alignment does not reach .mission-tree project rows', async () => {
-  const { window, list, missionList, sidebar } = await setupSidebar();
+test('the top-level alignment does not reach .conductor-tree project rows', async () => {
+  const { window, list, conductorList, sidebar } = await setupSidebar();
   await render(sidebar, MIXED, [CONDUCT_INSTANCE, GITTY_WORKER]);
-  missionList.querySelector('.mission-caret').click();
-  const treeRow = missionList.querySelector('.mission-tree .project-row');
-  assert.ok(treeRow, 'fixture: the expanded mission renders a project row');
+  conductorList.querySelector('.conductor-caret').click();
+  const treeRow = conductorList.querySelector('.conductor-tree .project-row');
+  assert.ok(treeRow, 'fixture: the expanded conductor renders a project row');
   assert.ok(treeRow.querySelector(':scope > .commit-log'), 'fixture: gitty is a git project');
   // The invariant: the tree row's commit-log column is the base .project-row
   // one (the reference sits outside #project-list, where the top-level rule
   // cannot reach). The log column is what the top-level rule changes (a fixed
   // 12px, no padding); the left padding cannot tell them apart, since the
-  // Missions tree's own rule also gives 6px.
+  // Conductors tree's own rule also gives 6px.
   const ref = window.document.createElement('div');
   ref.innerHTML = '<div class="project-row"><button class="commit-log">≡</button><span class="project-name">x</span></div>';
   window.document.body.appendChild(ref);
