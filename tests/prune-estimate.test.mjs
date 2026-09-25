@@ -171,6 +171,9 @@ test('unmeasured content is excluded from both sides of the calibration', async 
     ] } } },
     'the stub of an image with no readable size': { result: toolResult('rp', 'tp', '[pruned: image (url)]') },
     'a truncated-value stub': { result: toolResult('rp', 'tp', `${'v'.repeat(500)}… [+900 chars pruned]`) },
+    'a pruned thinking block': { head: [
+      { type: 'thinking', thinking: '[pruned: thinking]', signature: 's' }, { type: 'text', text: CALL_TEXT },
+    ] },
     'a non-per-step attachment': { extra: [{ type: 'attachment', uuid: 'at',
       attachment: { type: 'edited_text_file', filename: '/x.ts', snippet: 's'.repeat(3000) } }] },
   };
@@ -200,6 +203,21 @@ test('unmeasured content is excluded from both sides of the calibration', async 
       });
     });
   }
+  await t.test('control: content that only mentions a stub bracket keeps its step', async () => {
+    // Source that builds stubs is not a stub. Padded to RESULT_TEXT's length, so
+    // the step's estimate is a clean step's.
+    const mention = 'const stub = `[pruned: ${x}]`;\nparts.push(`[pruned: `);\n';
+    await withStore(async () => {
+      const steps = cleanSteps();
+      steps.splice(3, 0, { ratio: 1.5,
+        result: toolResult('r3', 't3', mention + 'r'.repeat(RESULT_TEXT.length - mention.length)) });
+      const { lines, cleanFactor } = await calibrationSession(steps);
+      await seed(lines);
+      const { calibration } = await analyze();
+      assert.equal(calibration.steps, CLEAN + 1, 'a step that merely mentions a stub bracket must count');
+      assert.ok(Math.abs(calibration.factor - cleanFactor) < 1e-9);
+    });
+  });
   await t.test('control: per-step attachments leave a step usable', async () => {
     await withStore(async () => {
       const steps = cleanSteps();
