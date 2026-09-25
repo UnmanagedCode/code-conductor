@@ -137,3 +137,75 @@ test('a second run is a no-op', async () => {
   assert.deepEqual(await m0038.run({ root }), { applied: false });
   assert.deepEqual(await snapshot(root), after);
 });
+
+async function oldKeyKept(store) {
+  return OLD in (await readJson(path.join(store, 'plugins', 'registry.json'))).plugins;
+}
+
+test('an unreadable file in an earlier step keeps the old registry key, and the repaired replay completes', async () => {
+  const { root, store, appDir } = await mkStore(NEW);
+  const recFile = path.join(store, 'projects', 'app', 'project.json');
+  const good = await fs.readFile(recFile, 'utf8');
+  await fs.writeFile(recFile, '{ not json');
+  await m0038.run({ root });
+  assert.equal(await oldKeyKept(store), true);
+  await fs.writeFile(recFile, good);
+  await m0038.run({ root });
+  assert.equal(await oldKeyKept(store), false);
+  assert.match(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), new RegExp(`${NEW}/project-wiki`));
+});
+
+test('defers when the registry has no record for the old id', async () => {
+  const { root } = await mkStore(NEW, { registry: {} });
+  const before = await snapshot(root);
+  assert.deepEqual(await m0038.run({ root }), { applied: false });
+  assert.deepEqual(await snapshot(root), before);
+});
+
+test('defers with a warning when the plugin project record is not local', async () => {
+  const { root, store } = await mkStore(NEW);
+  await writeJson(path.join(store, 'projects', OLD, 'project.json'), { location: { kind: 'remote', system: 'docker', remoteId: 'box', path: '/p' } });
+  const before = await snapshot(root);
+  const logs = [];
+  assert.deepEqual(await m0038.run({ root, log: (m) => logs.push(m) }), { applied: false });
+  assert.deepEqual(await snapshot(root), before);
+  assert.equal(logs.some(l => l.includes('deferred') && l.includes('not local')), true);
+});
+
+test('defers with a warning when the main-checkout manifest is missing or unparsable', async (t) => {
+  for (const [label, prepare] of [
+    ['missing', (f) => fs.rm(f)],
+    ['unparsable', (f) => fs.writeFile(f, '{ not json')],
+  ]) {
+    await t.test(label, async () => {
+      const { root } = await mkStore(NEW);
+      await prepare(path.join(root, '.plugins', OLD, 'conductor.plugin.json'));
+      const before = await snapshot(root);
+      const logs = [];
+      assert.deepEqual(await m0038.run({ root, log: (m) => logs.push(m) }), { applied: false });
+      assert.deepEqual(await snapshot(root), before);
+      assert.equal(logs.some(l => l.includes('deferred') && l.includes('conductor.plugin.json')), true);
+    });
+  }
+});
+
+test('a corrupt non-registry store does not throw and keeps the old registry key', async (t) => {
+  for (const rel of ['settings.json', 'conventions/conductor.json', 'conventions/workspace.json', 'plugins/runtime.json']) {
+    await t.test(rel, async () => {
+      const { root, store } = await mkStore(NEW);
+      await fs.mkdir(path.dirname(path.join(store, rel)), { recursive: true });
+      await fs.writeFile(path.join(store, rel), '{ not json');
+      const logs = [];
+      await m0038.run({ root, log: (m) => logs.push(m) });
+      assert.equal(await oldKeyKept(store), true);
+      assert.equal(logs.some(l => l.includes(path.join(store, rel))), true);
+    });
+  }
+});
+
+test('a non-directory entry under the store projects dir is skipped', async () => {
+  const { root, store } = await mkStore(NEW);
+  await fs.writeFile(path.join(store, 'projects', 'stray.txt'), 'x');
+  assert.equal((await m0038.run({ root })).applied, true);
+  assert.equal(await oldKeyKept(store), false);
+});
