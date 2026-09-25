@@ -593,3 +593,46 @@ test('ToolUseBlock: the code-owned tool_args default flip still applies when unt
   assert.ok(after === d, 'still the same node across the default flip');
   assert.equal(d.open, true, 'the renderer-backed default must still auto-open an untouched block');
 });
+
+// Pretty tool names: chip + sentence-case label; the raw name drives args.
+test('ToolUseBlock: a plugin tool renders chip + label with the raw name on hover, args unchanged', () => {
+  setupDOM();
+  const raw = 'mcp__code-conductor__code-kanban__move_card';
+  const input = { cardId: 'c1', column: 'done' };
+  const block = new ToolUseBlock({ name: raw, toolUseId: 'tu_kb' });
+  block.finalizeInput(input);
+  const name = block.summary.querySelector('.tool-name');
+  assert.equal(name.getAttribute('title'), raw);
+  assert.equal(name.dataset.tool, raw);
+  const chip = name.querySelector('.tool-chip');
+  assert.equal(chip.textContent, 'kanban');
+  assert.ok(chip.classList.contains('tool-chip-plugin'));
+  assert.equal(chip.nextSibling.nodeType, 3);
+  assert.equal(chip.nextSibling.textContent, 'Move card');
+  assert.equal(block.summary.querySelector('.tool-arg').textContent, describeToolInput(raw, input));
+  assert.equal(block.body.querySelector('details.block.tool-args pre').textContent, JSON.stringify(input, null, 2));
+  assertNull(name.querySelector('button'), 'no copy affordance inside the tool name');
+});
+
+test('ToolUseBlock: a cc core tool gets the cc chip and still dispatches its body on the raw name', () => {
+  setupDOM();
+  const raw = 'mcp__code-conductor__project_bash';
+  const input = { project: 'demo', command: 'rg foo' };
+  const block = new ToolUseBlock({ name: raw, toolUseId: 'tu_pb' });
+  block.finalizeInput(input);
+  const chip = block.summary.querySelector('.tool-name .tool-chip');
+  assert.equal(chip.textContent, 'cc');
+  assert.ok(chip.classList.contains('tool-chip-cc'));
+  assert.equal(chip.nextSibling.textContent, 'Project bash');
+  assert.equal(block.summary.querySelector('.tool-arg').textContent, describeToolInput(raw, input));
+  assert.ok(block.body.querySelector('.bash-cmd-wrap'), 'renderKindFor still maps the raw name to the Bash body');
+});
+
+test('ToolUseBlock: a built-in tool name renders as before — no chip, no title', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Bash', toolUseId: 'tu_b' });
+  const name = block.summary.querySelector('.tool-name');
+  assertNull(name.querySelector('.tool-chip'), 'built-ins get no chip');
+  assert.equal(name.hasAttribute('title'), false);
+  assert.equal(name.textContent, 'Bash');
+});

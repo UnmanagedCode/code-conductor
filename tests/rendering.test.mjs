@@ -871,6 +871,41 @@ test('DOM: permission_request for Edit renders the inline diff body', async () =
   assert.match(card.textContent, /new line/);
 });
 
+test('DOM: permission_request for an MCP tool titles it with chip + label; args unchanged', async () => {
+  const { root, Conversation } = await setupDOM();
+  const { describeToolInput } = await import(pathToFileURL(path.join(PUB, 'blocks.js')).href);
+  const raw = 'mcp__code-conductor__spawn_instance';
+  const input = { project: 'demo', model: 'sonnet' };
+  new Conversation(root).apply({ kind: 'permission_request', toolUseId: 'tu_perm_mcp', toolName: raw, toolInput: input });
+  const card = root.querySelector('.block.permission');
+  assert.equal(card.querySelector('.perm-title .tool-chip').textContent, 'cc');
+  assert.equal(card.querySelector('.perm-title .tool-name').getAttribute('title'), raw);
+  assert.match(card.querySelector('.perm-title').textContent, /Allow ccSpawn instance\?/);
+  assert.equal(card.querySelector('.perm-arg').textContent, describeToolInput(raw, input));
+  assert.equal(card.querySelector('pre').textContent, JSON.stringify(input, null, 2));
+});
+
+test('DOM: a nested sub-agent tool row shares the chip renderer', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer_c', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_chip', name: 'Agent', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"d","prompt":"p"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    {
+      type: 'assistant',
+      parent_tool_use_id: 'task_chip',
+      message: { id: 'msg_sub_c', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_kb_sub', name: 'mcp__code-conductor__code-kanban__move_card', input: { cardId: 'c1' } },
+      ] },
+    },
+  ]);
+  const chip = root.querySelector('.sub-conversation .tool-name .tool-chip');
+  assert.ok(chip, 'nested tool row renders a chip');
+  assert.equal(chip.textContent, 'kanban');
+});
+
 test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + attached result', async () => {
   // Sub-agent assistant turns arrive on the same stream as the outer turn
   // but only as a complete `assistant` envelope tagged with
