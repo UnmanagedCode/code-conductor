@@ -10,6 +10,7 @@ import {
   MECHANICAL_STATE_HEADER,
 } from '../public/renewSeed.js';
 import { buildWakeStub } from '../public/wakeCallback.js';
+import { buildForwardFrame } from '../public/forwardFrame.js';
 import { RENEW_SUMMARY_TEMPLATE } from '../src/sessionRenew.ts';
 
 const S = RENEW_SUMMARY_SECTIONS;
@@ -59,14 +60,12 @@ test('parseRenewSeed returns null for an ordinary prompt, a wake stub and a forw
   assert.equal(parseRenewSeed(fakeQuote), null, 'fence text with no leading preamble');
 
   // Text carrying the seed prefix at a non-zero index — e.g. inside a
-  // send_prompt({forward}) frame's header-then-body shape — is never
-  // detected, since parseRenewSeed requires the prefix at offset 0. The
-  // `--- message 1/1 ---` line below is illustrative framing only:
-  // send_prompt({forward}) relays assistant messages, so this exact payload
-  // (a user-turn seed embedded inside it) cannot occur for real.
+  // send_prompt({forward}) frame — is never detected, since parseRenewSeed
+  // requires the prefix at offset 0. send_prompt({forward}) relays assistant
+  // messages, so this exact payload (a user-turn seed embedded inside it)
+  // cannot occur for real.
   const innerSeed = buildRenewSeed({ summary: 'a handoff summary embedded mid-text' });
-  const forwardFrame = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---\n'
-    + '--- message 1/1 ---\n' + innerSeed + '\n--- END FORWARDED WORKER OUTPUT ---\n\nplease review this';
+  const forwardFrame = buildForwardFrame({ messages: [innerSeed], instruction: 'please review this' });
   assert.equal(parseRenewSeed(forwardFrame), null, 'seed prefix at a non-zero index is not detected');
 
   assert.equal(parseRenewSeed(null), null, 'non-string input');

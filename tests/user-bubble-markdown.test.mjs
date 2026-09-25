@@ -299,37 +299,3 @@ test('headings render subdued inside a user bubble (CSS pin)', async () => {
   assert.match(rule[0], /font-size:\s*1em/, 'user-bubble h1 does not blow up in size');
 });
 
-test('a forward-frame-shaped payload reads sensibly: no stray <hr>, plan heading present, second question list starts at 2', async () => {
-  setupDOM();
-  const Conversation = await importConversation();
-  const root = document.createElement('div');
-  const conv = new Conversation(root, {});
-  const src = [
-    '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---',
-    '--- message 1/1 ---',
-    '--- plan · saved to /home/node/.claude/plans/demo.md ---',
-    '# Plan: demo',
-    '',
-    '- step one',
-    '- step two',
-    '',
-    '--- questions ---',
-    '1. Q one',
-    '   - opt',
-    '2. Q two',
-    '--- END FORWARDED WORKER OUTPUT ---',
-    '',
-    'Please review and respond.',
-  ].join('\n');
-  conv.apply({ kind: 'user_echo', text: src, userIndex: 0 });
-
-  const body = userTextBody(root);
-  assertNull(body.querySelector('hr'), 'no framing line becomes a horizontal rule');
-  const h1 = body.querySelector('h1');
-  assert.ok(h1, 'plan heading present');
-  assert.match(h1.textContent, /Plan: demo/);
-  const ols = body.querySelectorAll('ol');
-  assert.equal(ols.length, 2, 'two question lists');
-  assert.equal(ols[1].getAttribute('start'), '2', 'second question numbered from 2');
-  assert.ok(body.textContent.includes('Please review and respond.'), 'footer guidance text present');
-});

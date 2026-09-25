@@ -21,7 +21,7 @@ import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
 import { RESUME_TEXT, buildConductorResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';
-import { FORWARD_FRAME_HEADER } from '../src/injectedTurns.ts';
+import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.js';
 import { buildApprovePrompt, buildRejectPrompt } from '../src/planApproval.ts';
 import { buildRebasePrompt } from '../src/worktrees.ts';
 
@@ -76,10 +76,12 @@ test('classifyUserTurn: the output of every injected-turn builder classifies inj
       buildCombinedResumeText([], 'stopped', { droppedCallbacks: true, unarmedWorkers: true }),
     'overage resume, idle-parked + conductor clauses':
       buildCombinedResumeText([], 'idle-parked', { droppedCallbacks: true }),
-    // Forwarded output: the frame is private to handlers.ts; its header is the
-    // shared constant, and tests/awaiting-user-live.test.mjs drives the real
-    // send_prompt({forward}) end to end.
-    'forward frame': `${FORWARD_FRAME_HEADER}\n\npayload\n\n--- END FORWARDED WORKER OUTPUT ---\n\nreview it`,
+    // Forwarded output, built by the same builder handlers.ts composes through;
+    // tests/awaiting-user-live.test.mjs drives the real send_prompt({forward})
+    // end to end.
+    'forward frame': buildForwardFrame({ messages: ['payload'], instruction: 'review it' }),
+    // A frame cut short (no footer) still classifies by its header alone.
+    'forward frame, truncated': `${FORWARD_FRAME_HEADER}\n\npayload`,
     'renew /clear (queued_command shape)': '/clear',
     'renew /clear (type:user shape)': '<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>',
     '/effort': '/effort high',

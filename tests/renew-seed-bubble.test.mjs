@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.js';
 import { buildWakeStub } from '../public/wakeCallback.js';
+import { buildForwardFrame } from '../public/forwardFrame.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -218,7 +219,7 @@ test('raw view and copy of a renew seed yield the exact seed text', async () => 
   }
 });
 
-test('ordinary prompts and forward-framed prompts still render as plain user bubbles', async () => {
+test('ordinary prompts render as plain user bubbles and forward frames as forward bubbles, never renew seeds', async () => {
   setupDOM();
   const Conversation = await importConversation();
   const root = document.createElement('div');
@@ -230,19 +231,17 @@ test('ordinary prompts and forward-framed prompts still render as plain user bub
   assert.ok(plainWrap.querySelector('.user-text'), 'plain prompt still gets a user-text body');
   assert.ok(!plainWrap.classList.contains('renew-seed'), 'wrap carries no renew-seed class');
 
-  // Text carrying the seed prefix at a non-zero index — e.g. inside a
-  // send_prompt({forward}) frame's header-then-body shape — must not be
-  // detected, since parseRenewSeed requires the prefix at offset 0. The
-  // `--- message 1/1 ---` line below is illustrative framing only:
-  // send_prompt({forward}) relays assistant messages, so this exact payload
-  // (a user-turn seed embedded inside it) cannot occur for real.
+  // A seed carried inside a send_prompt({forward}) frame sits at a non-zero
+  // index, so parseRenewSeed (offset 0 only) never detects it and the frame
+  // renders as the forward bubble. send_prompt({forward}) relays assistant
+  // messages, so this exact payload (a user-turn seed embedded inside it)
+  // cannot occur for real.
   const innerSeed = buildRenewSeed({ summary: 'a handoff summary embedded mid-text' });
-  const forwardFrame = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---\n'
-    + '--- message 1/1 ---\n' + innerSeed + '\n--- END FORWARDED WORKER OUTPUT ---\n\nplease review this';
+  const forwardFrame = buildForwardFrame({ messages: [innerSeed], instruction: 'please review this' });
   conv.apply({ kind: 'user_echo', text: forwardFrame, userIndex: 1 });
   const forwardWrap = [...root.querySelectorAll('.msg.user')][1];
+  assert.ok(forwardWrap.classList.contains('forward-frame'), 'forward frame renders as the forward bubble');
   assertNull(forwardWrap.querySelector('details.block.renew-seed'), 'no renew-seed details for a forward frame');
-  assert.ok(forwardWrap.querySelector('.user-text'), 'forward frame still gets a plain user-text body');
   assert.ok(!forwardWrap.classList.contains('renew-seed'), 'forward frame wrap carries no renew-seed class');
 });
 

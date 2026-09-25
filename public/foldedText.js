@@ -1,17 +1,19 @@
-// Folded bubble bodies (wake-callback, skill-load and renew-seed `<details>`):
+// Folded bubble bodies (wake-callback, skill-load, renew-seed and forward-frame
+// `<details>`):
 // lazy markdown rendering + raw/md toggle + copy, built on first expand and
 // reused after. Kept out of userText.js: that module's `buildUserText` is
 // the one generic, eagerly-built body shared by every user-text bubble —
-// the lazy build-on-first-expand mounting and the wake/renew-specific
+// the lazy build-on-first-expand mounting and the wake/renew/forward-specific
 // section splitting are concerns specific to these collapsible kinds, so they
 // live here instead of forking userText.js's single responsibility. Kept out
-// of wakeCallback.js/renewSeed.js because the server imports those modules
-// and they must stay free of DOM dependencies.
+// of wakeCallback.js/renewSeed.js/forwardFrame.js because the server imports
+// those modules and they must stay free of DOM dependencies.
 
 import { el } from './dom.js';
 import { buildUserText } from './userText.js';
 import { renderMarkdownInto } from './markdown.js';
 import { parseRenewSeed, splitSummarySections } from './renewSeed.js';
+import { splitForwardedMessages } from './forwardFrame.js';
 
 // Mounts a lazily-built body + controls into `details` on its first
 // toggle-to-open. Gated on `details.open`, not merely the event: real
@@ -78,4 +80,23 @@ export function renderRenewSeedInto(container, text) {
       el('div', { class: 'renew-state' }, parsed.state),
     ));
   }
+}
+
+// Renders a send_prompt({forward}) frame's payload (parseForwardFrame's
+// `payload`) as one labelled markdown section per forwarded message. Markdown,
+// like the renew summary: the bodies are the source worker's own prose, plans
+// and questions. One section per message keeps a truncated message's unclosed
+// code fence from swallowing the messages after it.
+export function renderForwardBodyInto(container, payload) {
+  container.textContent = '';
+  const bodies = splitForwardedMessages(payload);
+  bodies.forEach((body, i) => {
+    const bodyDiv = el('div', { class: 'forward-section-body' });
+    renderMarkdownInto(bodyDiv, body);
+    container.appendChild(el('section', { class: 'forward-section' },
+      el('div', { class: 'forward-section-label' },
+        bodies.length > 1 ? `Message ${i + 1}/${bodies.length}` : 'Forwarded output'),
+      bodyDiv,
+    ));
+  });
 }

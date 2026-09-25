@@ -71,7 +71,7 @@ import { isDeadStatus } from '../instances.ts';
 import { publicIdFor } from '../sessionLineage.ts';
 import { applySessionTitle } from '../sessionTitles.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
-import { FORWARD_FRAME_HEADER } from '../injectedTurns.ts';
+import { buildForwardFrame } from '../../public/forwardFrame.js';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
@@ -2142,23 +2142,6 @@ function renderMessageBody(m: ReconMessage, cappedText: string): string {
   return segments.map(s => s.text).join('\n');
 }
 
-// send_prompt({forward}) frame — wraps another worker's recent output so the
-// RECEIVING worker can tell reference material from its own instruction.
-// The header (FORWARD_FRAME_HEADER) lives in injectedTurns.ts, where the
-// awaiting-user classifier recognises it. The footer is required even though
-// only a header was asked for: without a closing delimiter the worker can't
-// tell where the payload ends and its own instruction begins.
-const FORWARD_FRAME_FOOTER = '--- END FORWARDED WORKER OUTPUT ---';
-
-// Bare message-boundary line for a forwarded payload — no msgId/char count,
-// unlike messageBoundaryHeader (get_recent_messages' telemetry-carrying
-// variant). Orchestrator telemetry (sessionId, msgId, char counts) never
-// reaches a worker prompt — the source sessionId is a live handle (workers
-// have send_prompt/spawn_instance themselves), so leaking it is a hazard.
-function forwardBoundaryHeader(index: number, total: number): string {
-  return `--- message ${index + 1}/${total} ---`;
-}
-
 // The forward size cap (MSG_TEXT_CAP, same as get_recent_messages) still
 // applies to each message's prose. Where it bites, splice an honest marker
 // into that message's prose before rendering: the receiving worker — not the
@@ -2175,23 +2158,23 @@ function forwardTruncationMarker(planPath: string | undefined): string {
       'remainder is not recoverable from your side — ask the orchestrator rather than inferring it.] ---';
 }
 
-// Compose a send_prompt({forward}) prompt: header / payload / footer /
-// guiding text, joined with blank lines. The payload reuses renderMessageBody
+// Compose a send_prompt({forward}) prompt. The frame layout (header, footer,
+// boundary lines, blank-line joins) is owned by public/forwardFrame.js, which
+// the conversation view parses back to render the forward bubble; this
+// function only renders the per-message bodies. They reuse renderMessageBody
 // — the SAME renderer get_recent_messages uses — so a forwarded plan/questions
 // body is never forked or re-derived (decision 3). Per-message prose is capped
 // and truncation-marked BEFORE rendering, so the marker rides inside the body
 // like any other segment.
 function renderForwardFrame(messages: ReconMessage[], guidingText: string): string {
-  const total = messages.length;
-  const payload = messages.map((m, index) => {
+  const bodies = messages.map(m => {
     const capped = capText(m.text ?? '', MSG_TEXT_CAP);
     const prose = capped.truncated
       ? (capped.text ? `${capped.text}\n${forwardTruncationMarker(m.planPath)}` : forwardTruncationMarker(m.planPath))
       : capped.text;
-    const rendered = renderMessageBody(m, prose);
-    return total > 1 ? `${forwardBoundaryHeader(index, total)}\n${rendered}` : rendered;
-  }).join('\n\n');
-  return [FORWARD_FRAME_HEADER, payload, FORWARD_FRAME_FOOTER, guidingText].join('\n\n');
+    return renderMessageBody(m, prose);
+  });
+  return buildForwardFrame({ messages: bodies, instruction: guidingText });
 }
 
 // Return the most recent N assistant messages as joined text + structured
