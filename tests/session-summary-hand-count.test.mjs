@@ -29,17 +29,21 @@ test('handCount counts only non-archived, non-conducted transcripts', async () =
   const cwd = path.join(tmp, 'tree');
   const dir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(cwd));
   await fs.mkdir(dir, { recursive: true });
+  // Unequal hand and conducted counts, so counting the conducted subset
+  // instead cannot pass.
   await writeTranscript(dir, 'hand', '2026-08-07T06:00:00.000Z');
   await writeTranscript(dir, 'conducted', '2026-08-07T07:00:00.000Z');
+  await writeTranscript(dir, 'conducted-2', '2026-08-07T05:00:00.000Z');
   await writeTranscript(dir, 'archived-hand', '2026-08-07T08:00:00.000Z');
   await writeTranscript(dir, 'archived-conducted', '2026-08-07T09:00:00.000Z');
   await markConducted('conducted');
+  await markConducted('conducted-2');
   await markConducted('archived-conducted');
   await markArchived('archived-hand');
   await markArchived('archived-conducted');
 
   assert.deepEqual(await summarizeSessions(localPlace(cwd)), {
-    count: 2, archivedCount: 2, handCount: 1, lastActivity: Date.parse('2026-08-07T07:00:00.000Z'),
+    count: 3, archivedCount: 2, handCount: 1, lastActivity: Date.parse('2026-08-07T07:00:00.000Z'),
   });
 });
 

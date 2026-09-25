@@ -118,13 +118,17 @@ test('Hand-spawned only drops conducted rows and the — conducted — separator
 // Pins the project/workspace half of the rule: under Hand-spawned only a
 // project shows iff its main checkout or a worktree holds a hand-spawned
 // session — a non-conducted one on disk (`handCount`) or a live one — and a
-// workspace shows iff a member does.
+// workspace shows iff a member does. Inside a shown project, a Worktrees group
+// whose worktrees hold only conducted sessions is dropped.
 test('Hand-spawned only hides projects and workspaces with no hand-spawned session — zero-session and all-conducted alike', async (t) => {
   const projects = [
     project('empty'),
     project('all-conducted', { workspace: 'WS3', sessions: { count: 2, handCount: 0, lastActivity: 1 } }),
-    project('disk-hand', { sessions: { count: 1, handCount: 1, lastActivity: 1 } }),
-    project('live-hand'),
+    project('disk-hand', {
+      sessions: { count: 1, handCount: 1, lastActivity: 1 },
+      worktrees: [{ name: 'disk-conducted', sessions: { count: 1, handCount: 0, lastActivity: 1 } }, 'live-conducted'],
+    }),
+    project('live-hand', { workspace: 'WS4' }),
     project('wt-disk-hand', {
       sessions: { count: 1, handCount: 0, lastActivity: 1 },
       worktrees: [{ name: 'w', sessions: { count: 1, handCount: 1, lastActivity: 1 } }],
@@ -134,19 +138,23 @@ test('Hand-spawned only hides projects and workspaces with no hand-spawned sessi
   const instances = [
     conductor('C'),
     worker('c1', 'C', 'all-conducted'),
+    worker('c2', 'C', 'disk-hand', 'live-conducted'),
     hand('lh', 'live-hand'),
   ];
   const { root, select, sidebar } = await setupSidebar();
   sidebar.setProjects(projects);
-  sidebar.setWorkspaces(['WS2', 'WS3']);
+  sidebar.setWorkspaces(['WS2', 'WS3', 'WS4']);
   sidebar.setConductSessions([]);
   sidebar.setInstances(instances);
   await tick();
   const mainSessions = (name) => [...root.querySelectorAll('.project-name')].find(n => n.textContent === name)
     ?.closest('li').querySelector(':scope > details.sessions-group') ?? null;
+  const worktreeGroup = (name) => [...root.querySelectorAll('.project-name')].find(n => n.textContent === name)
+    ?.closest('li').querySelector(':scope > details.worktree-group') ?? null;
   const workspaceNames = () => [...root.querySelectorAll('.project-workspace-name')].map(n => n.textContent);
   assert.deepEqual(projectNames(root).sort(), projects.map(p => p.name).sort(), 'fixture: All lists every project');
   assert.ok(mainSessions('wt-disk-hand'), 'fixture: its conducted-only main checkout has a Sessions subnode under All');
+  assert.ok(worktreeGroup('disk-hand'), 'fixture: its conducted-only worktrees have a Worktrees group under All');
   await choose(select, 'hand');
   const shown = projectNames(root);
   await t.test('a project with no sessions at all is hidden', () => {
@@ -167,13 +175,18 @@ test('Hand-spawned only hides projects and workspaces with no hand-spawned sessi
   await t.test('a main checkout holding only conducted sessions loses its Sessions subnode', () => {
     assertNull(mainSessions('wt-disk-hand'));
   });
-  await t.test('a workspace with no visible member is hidden', () => {
-    assert.deepEqual(workspaceNames(), []);
+  await t.test('a shown project whose worktrees hold only conducted sessions has no Worktrees group', () => {
+    assert.ok(shown.includes('disk-hand'), 'shown for its main checkout');
+    assertNull(worktreeGroup('disk-hand'));
+  });
+  await t.test('a workspace is listed only when a member is visible', () => {
+    assert.deepEqual(workspaceNames(), ['WS4'], 'WS4 holds live-hand; WS2 and WS3 hold no visible member');
   });
   await t.test('switching back to All restores every project and workspace', async () => {
     await choose(select, '');
     assert.deepEqual(projectNames(root).sort(), projects.map(p => p.name).sort());
-    assert.deepEqual(workspaceNames(), ['WS2', 'WS3']);
+    assert.deepEqual(workspaceNames(), ['WS2', 'WS3', 'WS4']);
+    assert.ok(worktreeGroup('disk-hand'));
   });
 });
 

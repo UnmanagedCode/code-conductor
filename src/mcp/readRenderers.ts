@@ -20,6 +20,9 @@
 //                  session detail, a 2-call derivation away via
 //                  list_sessions({project, worktree}). Accepted: a leaner
 //                  default listing is worth the second call.
+//                  sessions.handCount / worktrees[].sessions.handCount — an
+//                  input to the sidebar's Hand-spawned only filter;
+//                  list_sessions carries each row's `conducted`.
 //                  The live workers themselves — `live N` is a COUNT. Naming
 //                  them is list_sessions' job, and printing both made the two
 //                  tools look like they disagreed whenever a worker exited
