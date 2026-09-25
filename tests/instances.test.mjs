@@ -761,8 +761,9 @@ test("setMode('ask') throws invalid mode, sends nothing and leaves the mode unch
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     // The fake CLI appends every stdin line to the transcript, and nothing is
-    // written at idle. A valid same-mode switch first makes the file exist, so
-    // "nothing sent" below is measured against a real file, not an absent one.
+    // written at idle. A valid same-mode switch first puts a known line in it,
+    // so "nothing further was written" below is measured against a non-empty
+    // baseline rather than an empty file.
     const fsp = (await import('node:fs')).promises;
     const readLines = async () => (await fsp.readFile(transcriptPath, 'utf8'))
       .trim().split('\n').filter(Boolean).map(JSON.parse);
