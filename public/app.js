@@ -786,9 +786,7 @@ async function refreshProjects() {
   const [projects, workspaces, conductSessions] = await Promise.all([
     fetch('/api/projects').then(r => r.json()),
     fetch('/api/workspaces').then(r => r.json()).catch(() => []),
-    // includeArchived: a temp conductor is archived on exit, and it is still an
-    // inactive conductor the Missions lens lists.
-    fetch('/api/projects/.conduct/sessions?includeArchived=1').then(r => r.ok ? r.json() : []).catch(() => []),
+    fetch('/api/projects/.conduct/sessions').then(r => r.ok ? r.json() : []).catch(() => []),
   ]);
   state.projects = projects;
   sidebar.setProjects(projects);

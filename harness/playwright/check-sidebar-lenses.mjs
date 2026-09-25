@@ -97,7 +97,7 @@ try {
   const a = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'warn' })).body;
   const b = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: false, playbookEnforcement: 'warn' })).body;
   // C takes the 🎼 Conduct button's own path — a temp conductor, archived on
-  // exit — to prove an exited temp conductor still lands under Inactive.
+  // exit — to prove an exited temp conductor leaves Missions.
   const c = (await api('POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true })).body;
   await idle(i => i.id === a.id);
   await idle(i => i.id === b.id);
@@ -377,11 +377,9 @@ try {
     {
       await api('DELETE', `/api/instances/${b.id}`);
       await page.click('.sidebar-lens button[data-lens="missions"]');
-      // Collapsed, the group carries only its count — no items are built.
       const collapsed = await waitFor(() => page.evaluate(() => {
         const det = document.querySelector('#mission-list details.mission-inactive');
-        return det ? { summary: det.querySelector('summary').textContent, open: det.open,
-          items: det.querySelectorAll('.mission-inactive-list > li.mission').length } : false;
+        return det ? { summary: det.querySelector('summary').textContent, open: det.open } : false;
       }), { timeout: 10000 }).catch(() => null);
       await page.click('#mission-list details.mission-inactive > summary');
       await waitFor(() => page.evaluate((s) => !!document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`), bSid), { timeout: 10000 }).catch(() => {});
@@ -389,8 +387,8 @@ try {
         const m = document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`);
         return { inactive: m?.classList.contains('inactive') ?? false, shadow: m ? getComputedStyle(m).boxShadow : null };
       }, bSid);
-      check('6a killed B moves under a collapsed Inactive (1) (no items built until opened) with a faded bar',
-        collapsed?.summary === 'Inactive (1)' && collapsed.open === false && collapsed.items === 0
+      check('6a killed B moves under a collapsed Inactive (1) with a faded bar',
+        collapsed?.summary === 'Inactive (1)' && collapsed.open === false
           && r.inactive && !!r.shadow && r.shadow !== 'none' && !r.shadow.includes(colB),
         JSON.stringify({ collapsed, ...r }));
       await page.click('.sidebar-lens button[data-lens="projects"]');
@@ -404,42 +402,31 @@ try {
           `server ownerSessionId=${liveOwner} row=${JSON.stringify(rb)}`);
       }
     }
-    // 6c — the default path: an exited TEMP conductor is archived, and must
-    // still be listed under Inactive (the sidebar fetches archived rows too).
+    // 6c — the default path: an exited TEMP conductor is archived, and is then
+    // in no Missions group; it is found in Settings → Archived.
     {
       await api('DELETE', `/api/instances/${c.id}`);
       const archived = await waitFor(async () => {
         const rows = (await api('GET', '/api/projects/.conduct/sessions?includeArchived=1')).body ?? [];
         return rows.find(r => r.sessionId === cSid && r.archived) ?? false;
       }, { timeout: 10000 }).catch(() => null);
-      await page.click('.sidebar-lens button[data-lens="missions"]');
-      const r = await waitFor(() => page.evaluate((s) => {
-        const m = document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${s}"]`);
-        const det = document.querySelector('#mission-list details.mission-inactive');
-        return m ? { summary: det.querySelector('summary').textContent, inactive: m.classList.contains('inactive'),
-          title: m.querySelector('.mission-title').textContent } : false;
-      }, cSid), { timeout: 10000 }).catch(() => null);
       const plain = ((await api('GET', '/api/projects/.conduct/sessions')).body ?? []).some(x => x.sessionId === cSid);
-      check('6c an exited temp conductor (archived on exit) is listed under Inactive',
-        !!archived && !plain && !!r && r.inactive && r.summary === 'Inactive (2)',
-        `server row archived=${!!archived} in plain listing=${plain} (must be false: only includeArchived finds it) sidebar=${JSON.stringify(r)}`);
-
-      // Opening it resumes it AND un-archives it, as Settings → Archived's
-      // Restore does — else it stays archived and a later Restore 409s.
-      await page.click(`#mission-list .mission-inactive-list [data-key="mission:${cSid}"] .mission-title`);
-      const back = await waitFor(async () => {
-        const live = (await insts()).find(i => i.sessionId === cSid && i.status !== 'exited' && i.status !== 'crashed');
-        const row = ((await api('GET', '/api/projects/.conduct/sessions?includeArchived=1')).body ?? []).find(x => x.sessionId === cSid);
-        const inArchived = ((await api('GET', '/api/archived')).body?.groups ?? []).some(g => g.sessions.some(x => x.sessionId === cSid));
-        return live && row && !row.archived && !inArchived ? { status: live.status, archived: row.archived, inArchived } : false;
-      }, { timeout: 15000 }).catch(async () => ({
-        live: (await insts()).find(i => i.sessionId === cSid)?.status ?? 'absent',
-        row: ((await api('GET', '/api/projects/.conduct/sessions?includeArchived=1')).body ?? []).find(x => x.sessionId === cSid) ?? null,
-        failed: true,
-      }));
-      const inLive = await waitFor(() => page.evaluate((s) => !!document.querySelector(`#mission-list > [data-key="mission:${s}"]`), cSid), { timeout: 10000 }).catch(() => false);
-      check('6c clicking the archived C resumes it live and un-archived, back among the live missions',
-        !back.failed && inLive, `server=${JSON.stringify(back)} live mission row=${inLive}`);
+      const inArchived = ((await api('GET', '/api/archived')).body?.groups ?? []).some(g => g.sessions.some(x => x.sessionId === cSid));
+      // Reload so the sidebar's .conduct fetch is known to follow the archive:
+      // waiting for C's row to vanish could pass in the gap between the
+      // instance dropping and the projects refresh.
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.click('.sidebar-lens button[data-lens="missions"]');
+      await page.click('#mission-list details.mission-inactive > summary');
+      // B is a disk row only: its inactive row proves the listing landed.
+      const r = await waitFor(() => page.evaluate(([b, cs]) => {
+        if (!document.querySelector(`#mission-list .mission-inactive-list [data-key="mission:${b}"]`)) return false;
+        return { summary: document.querySelector('#mission-list details.mission-inactive > summary').textContent,
+          cShown: !!document.querySelector(`#mission-list [data-key="mission:${cs}"]`) };
+      }, [bSid, cSid]), { timeout: 10000 }).catch(() => null);
+      check('6c an exited temp conductor (archived on exit) is in no Missions group',
+        !!archived && !plain && inArchived && !!r && !r.cShown && r.summary === 'Inactive (1)',
+        `server row archived=${!!archived} in plain listing=${plain} in /api/archived=${inArchived} sidebar=${JSON.stringify(r)}`);
     }
     // 13 — session view unchanged
     {

@@ -10,12 +10,6 @@ import { setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } f
 const missionOf = (list, sid) => list.querySelector(`[data-key="mission:${sid}"]`);
 const titles = (root) => [...root.querySelectorAll(':scope > li.mission .mission-title')].map(t => t.textContent);
 
-// Open the Inactive group; its items are built only while it is open.
-async function openInactive(list) {
-  list.querySelector('details.mission-inactive').open = true;
-  await tick();
-}
-
 async function render(sidebar, { projects = [], instances = [], conductRows = [] } = {}) {
   sidebar.setProjects(projects);
   sidebar.setConductSessions(conductRows);
@@ -148,7 +142,7 @@ test('a stage change re-renders in place', async () => {
   assert.equal(after.querySelector('.session-stage').textContent, 'forge · implement');
 });
 
-test('Inactive (n) is a collapsed <details> after the live missions; open, it lists them newest first', async () => {
+test('Inactive (n) is a collapsed <details> after the live missions, listing them newest first', async () => {
   const { missionList, sidebar } = await setupSidebar();
   await render(sidebar, {
     conductRows: [
@@ -162,44 +156,60 @@ test('Inactive (n) is a collapsed <details> after the live missions; open, it li
   const det = missionList.querySelector('.mission-inactive-item > details.mission-inactive');
   assert.equal(det.open, false, 'collapsed by default');
   assert.equal(det.querySelector('summary').textContent, 'Inactive (3)');
-  await openInactive(missionList);
   assert.deepEqual(titles(det.querySelector('.mission-inactive-list')), ['Mid', 'Exited', 'Old']);
 });
 
-// The group holds every archived conductor, so collapsed it must cost only its
-// count: no item is built until it opens, and closing it drops them again.
-test('a collapsed Inactive group renders its count but no mission items; open, all of them', async () => {
-  const { missionList, sidebar } = await setupSidebar();
-  const conductRows = Array.from({ length: 5 }, (_, i) => ({ sessionId: `arch-${i}`, archived: true, lastActivity: i }));
-  await render(sidebar, { conductRows, instances: [conductor('L')] });
-  const det = missionList.querySelector('details.mission-inactive');
-  const items = () => det.querySelectorAll('.mission-inactive-list > li.mission').length;
-  assert.equal(det.querySelector('summary').textContent, 'Inactive (5)');
-  assert.equal(items(), 0, 'collapsed: no items built');
-  sidebar.setInstances([conductor('L', { title: 'renamed' })]);
-  await tick();
-  assert.equal(items(), 0, 'a re-render while collapsed still builds none');
-  await openInactive(missionList);
-  assert.equal(items(), 5, 'open: every inactive conductor is listed');
-  det.open = false;
-  await tick();
-  assert.equal(items(), 0, 'closing drops them again');
-  assert.equal(det.querySelector('summary').textContent, 'Inactive (5)', 'the count is kept current throughout');
-});
-
-// The 🎼 Conduct button spawns temp conductors, archived on exit: they must
-// still be listed as inactive missions.
-test('an archived conduct row renders under Inactive', async () => {
+test('an archived conduct row renders in no Missions group', async () => {
   const { missionList, sidebar } = await setupSidebar();
   await render(sidebar, {
-    conductRows: [{ sessionId: 'T', title: 'Temp one', archived: true, lastActivity: 5 }],
+    conductRows: [
+      { sessionId: 'T', title: 'Temp one', archived: true, lastActivity: 5 },
+      { sessionId: 'D', title: 'Kept', lastActivity: 1 },
+    ],
     instances: [conductor('L', { title: 'Live' })],
   });
+  assertNull(missionOf(missionList, 'T'), 'the archived conductor is in no group');
   const det = missionList.querySelector('.mission-inactive');
-  assert.ok(det, 'the Inactive group is rendered');
   assert.equal(det.querySelector('summary').textContent, 'Inactive (1)');
-  await openInactive(missionList);
-  assert.deepEqual(titles(det.querySelector('.mission-inactive-list')), ['Temp one']);
+  assert.deepEqual(titles(det.querySelector('.mission-inactive-list')), ['Kept']);
+});
+
+test('only archived conductors: no Inactive group, the empty state', async () => {
+  const { missionList, sidebar } = await setupSidebar();
+  await render(sidebar, { conductRows: [{ sessionId: 'T', archived: true, lastActivity: 5 }] });
+  assertNull(missionList.querySelector('.mission-inactive'), 'no Inactive group');
+  const empty = missionList.querySelector('.mission-empty');
+  assert.ok(empty, 'the empty-state row is rendered');
+  assert.equal(empty.textContent, 'no conductors yet — tap 🎼 Conduct');
+});
+
+// The group is dropped when every conductor goes live and rebuilt when one
+// stops; the user's open/closed choice must survive that rebuild.
+test('the Inactive group keeps the user\'s open or closed choice across its removal and re-creation', async () => {
+  const { missionList, sidebar } = await setupSidebar();
+  await render(sidebar, { conductRows: [{ sessionId: 'D', lastActivity: 1 }], instances: [conductor('L')] });
+  const group = () => missionList.querySelector('details.mission-inactive');
+  const setOpen = async (det, open) => {
+    det.open = open;
+    det.dispatchEvent(new det.ownerDocument.defaultView.Event('toggle'));
+    await tick();
+  };
+  const rebuild = async () => {
+    const before = group();
+    sidebar.setInstances([conductor('L'), conductor('D')]);
+    await tick();
+    assertNull(group(), 'every conductor live: the group is removed');
+    sidebar.setInstances([conductor('L')]);
+    await tick();
+    assert.ok(group(), 'D stopped: the group is back');
+    assert.notEqual(group(), before, 'the <details> is re-created, not reused');
+  };
+  await setOpen(group(), true);
+  await rebuild();
+  assert.equal(group().open, true, 'opened by the user: re-created open');
+  await setOpen(group(), false);
+  await rebuild();
+  assert.equal(group().open, false, 'closed by the user: re-created closed');
 });
 
 test('no Inactive group when every conductor is live', async () => {
@@ -214,7 +224,6 @@ test('row click selects a live conductor and resumes an inactive one in .conduct
     conductRows: [{ sessionId: 'D', lastActivity: 1 }],
     instances: [conductor('A'), conductor('X', { status: 'crashed' })],
   });
-  await openInactive(missionList);
   missionOf(missionList, 'A').querySelector('.mission-row').click();
   assert.deepEqual(calls.select, ['inst-A']);
   missionOf(missionList, 'D').querySelector('.mission-row').click();
@@ -226,26 +235,9 @@ test('row click selects a live conductor and resumes an inactive one in .conduct
   assert.equal(calls.resume.length, 1, 'caret click resumes nothing');
 });
 
-// Resuming an archived conductor must un-archive it (the resume handler does
-// that when told `archived`); a plain disk row must not be told so.
-test('resuming an archived inactive conductor passes archived:true; a non-archived one does not', async () => {
-  const { missionList, sidebar, calls } = await setupSidebar();
-  await render(sidebar, {
-    conductRows: [{ sessionId: 'T', archived: true, lastActivity: 2 }, { sessionId: 'D', lastActivity: 1 }],
-  });
-  await openInactive(missionList);
-  missionOf(missionList, 'T').querySelector('.mission-row').click();
-  missionOf(missionList, 'D').querySelector('.mission-row').click();
-  assert.deepEqual(calls.resume, [
-    { projectName: '.conduct', worktreeName: null, sessionId: 'T', archived: true },
-    { projectName: '.conduct', worktreeName: null, sessionId: 'D' },
-  ]);
-});
-
 test('the mission block carries --owner-color equal to conductorColor(sid); an inactive mission has .inactive', async () => {
   const { missionList, sidebar, conductorColor } = await setupSidebar();
   await render(sidebar, { conductRows: [{ sessionId: 'D', lastActivity: 1 }], instances: [conductor('A')] });
-  await openInactive(missionList);
   const a = missionOf(missionList, 'A');
   assert.equal(a.style.getPropertyValue('--owner-color'), conductorColor('A'));
   assert.equal(a.classList.contains('inactive'), false);
@@ -326,7 +318,6 @@ test('a live mission-row dot gains the waiting-on-you ring over its fill; an ina
   assert.equal(dot('T').title, 'waiting on you (asked in text) · running');
   assert.equal(dot('W').className, 'dot idle awaiting needs-you');
   assert.equal(dot('W').title, 'waiting on you (question) · on a worker');
-  await openInactive(missionList);
   assert.equal(dot('D').className, 'dot offline', 'a disk-only mission is offline and unringed');
   assert.equal(dot('X').className, 'dot exited', 'an exited instance is unringed');
 });
