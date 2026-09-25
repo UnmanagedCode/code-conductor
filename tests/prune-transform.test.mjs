@@ -1015,3 +1015,53 @@ test('an image whose header cannot be read is costed at the cap, so even a tiny 
     assert.deepEqual(byUuid.r1.message.content[0].content, [{ type: 'text', text: '[pruned: image/png (20 B)]' }]);
   });
 });
+
+test('a pasted image below the cap is costed by its dimensions', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const lines = [
+      { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [await screenshot(), { type: 'text', text: 'look' }] } },
+      userText('u2', 'second'),
+    ];
+    const { sid } = await seed(lines);
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    // The turn's whole cost: 1334 for the image, a token each for 'look' and
+    // 'second'.
+    assert.ok(analysis.totalTokens >= SCREENSHOT_TOKENS && analysis.totalTokens <= SCREENSHOT_TOKENS + 5,
+      `totalTokens ${analysis.totalTokens} is not the screenshot's 1334`);
+    // The saving is 1334 minus the stub's own ~10 tokens.
+    const { saved } = await pruneSessionToNewId({
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
+    });
+    assert.ok(saved.toolOutputs < SCREENSHOT_TOKENS && saved.toolOutputs > SCREENSHOT_TOKENS - 20,
+      `saved.toolOutputs ${saved.toolOutputs} is not the screenshot's 1334 less its stub`);
+  });
+});
+
+test('the text half of a mixed text+image tool_result is costed too', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
+    const textPart = { type: 'text', text: bigText };
+    const { sid } = await seed([
+      userText('u1', 'first'),
+      toolUse('a1', 't1', 'mcp__playwright__browser_take_screenshot', {}),
+      toolResult('r1', 't1', [textPart, await smallJpeg()]),
+      userText('u2', 'second'),
+      toolUse('a2', 't2', 'mcp__playwright__browser_take_screenshot', {}),
+      toolResult('r2', 't2', [textPart]),
+      userText('u3', 'third'),
+    ]);
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    // Measured against a text-only twin, so the band holds whatever the text
+    // estimator's chars-per-token. The mixed result saves the twin's text
+    // saving plus the 210×140 JPEG's 8 × 5 = 40 patches, less the ~7 tokens its
+    // longer stub (`; image/jpeg 210×140 (652 B)`) adds. Dropping the text term
+    // leaves ~28, far below the twin; dropping the image term leaves the twin
+    // minus ~7.
+    const JPEG_TOKENS = 40;
+    const [mixed, textOnly] = [a.turns[0].toolOutput, a.turns[1].toolOutput];
+    assert.ok(textOnly > 500, `the twin's text saving ${textOnly} is too small to discriminate`);
+    assert.ok(mixed > textOnly + JPEG_TOKENS - 20 && mixed < textOnly + JPEG_TOKENS,
+      `mixed toolOutput ${mixed} is not the text twin's ${textOnly} + the image's ${JPEG_TOKENS}, less the stub`);
+  });
+});

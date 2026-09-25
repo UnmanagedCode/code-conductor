@@ -44,6 +44,16 @@ test('the visual-token budget bounds a square image the edge limit would allow',
   assert.ok(imageTokenCost(20000, 300) <= IMAGE_MAX_TOKENS);
 });
 
+test('the edge limit alone sizes an extreme-aspect image', () => {
+  // By hand from the documented rule: the padded long edge may not pass 2576 px,
+  // so the long edge is at most 92 patches (92·28 = 2576; a 2577-px edge pads to
+  // 93·28 = 2604). The short edge follows the aspect: 2576 · 300 / 20000 = 38.64,
+  // which rounds to 39 px = 2 patches. 92 × 2 = 184, far under the 4784 budget,
+  // so the edge limit is the binding constraint.
+  assert.equal(imageTokenCost(20000, 300), 184);
+  assert.equal(imageTokenCost(300, 20000), 184);
+});
+
 test('the downscale rounds its short edge half-to-even, like the reference search', () => {
   // At a long edge of 2353, 4706×3137 gives an exact 1568.5 short edge.
   // Half-even keeps 1568: 85 × 56 = 4760 patches, which fits the budget.
