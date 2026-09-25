@@ -204,7 +204,7 @@ test('opening a main view supersedes whichever other one is showing', async t =>
 
 // INVARIANT: review opened from the commit list layers over it (both shown,
 // hash #review), and backing out of the diff returns to the list alone.
-test('review over commits layers, and backing out returns to the list', async () => {
+test('a commit-row review (no onBack) layers over commits, and backing out returns to the list', async () => {
   const h = await setup();
   h.open.commits(); await h.settle();
   h.views.review.open({ title: 'abc123 subject', url: '/api/projects/p/commits/abc123/diff' });

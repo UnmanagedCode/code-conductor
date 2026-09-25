@@ -437,7 +437,7 @@
     ├─ chrome .......... sidebarChrome (drawer/scrim · resize · ≡ overflow) · sidebarLens (Missions/Projects)
     ├─ header .......... header (active-instance chips + usage popover + controls)
     ├─ polling ......... accountUsage (/api/usage → globalRLTracker)
-    ├─ hash views ...... settings · review · commits · costs · plugin   (via hashView scaffold; one active at a time via mainViews)
+    ├─ hash views ...... review · commits · costs · plugin (via hashView scaffold) · settings (registers with mainViews directly); one active at a time via mainViews
     └─ wsRouter ........ installed LAST; routes `bus` events into the modules below
          shared leaf modules (imported where needed, not app-wired):
          conversation · blocks · diff · markdown · dom · http · models · usage ·

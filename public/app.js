@@ -509,7 +509,9 @@ function closeSettings() {
 // plugin off the stale `#plugin/...` hash. Opening another main view and
 // selectInstance's reconcileMainViews() (public/mainViews.js) both run after
 // the URL already names the new view; this Conductor entry writes the anchor
-// before its close(). onShown fires on entry into the plugin
+// before its close().
+//
+// onShown fires on entry into the plugin
 // space (dropdown select, deep link, boot) AND on a plugin-to-plugin switch
 // — collapse the mobile drawer there too, same idiom as selectInstance
 // revealing a session.
