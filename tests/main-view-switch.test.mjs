@@ -294,3 +294,46 @@ test('mainViews registry is scoped to its window', async () => {
   a.happyDOM.abort();
   b.happyDOM.abort();
 });
+
+// INVARIANT: reconcileMainViews() tears down only views that are showing — a
+// main view that is installed but closed (never opened, or already left) is
+// not torn down again by later switches, so its teardown notification (the
+// plugin view's onClosed) fires once per close, never per switch.
+test('switching views never re-tears-down a closed view', async t => {
+  const switchAround = async h => {
+    const { reconcileMainViews } = await sharedImport('mainViews.js');
+    h.open.settings(); await h.settle();
+    h.open.commits(); await h.settle();
+    h.window.history.replaceState(null, '', '#session=picked'); await h.settle();
+    reconcileMainViews(); await h.settle();
+    h.open.review(); await h.settle();
+    h.open.settings(); await h.settle();
+  };
+
+  await t.test('plugin view never opened', async () => {
+    const h = await setup();
+    await switchAround(h);
+    assert.equal(h.calls.pluginClosed, 0, 'onClosed must not fire for a view that was never shown');
+    h.window.happyDOM.abort();
+  });
+
+  await t.test('plugin view already left', async () => {
+    const h = await setup();
+    h.open.plugin(); await h.settle();
+    h.open.commits(); await h.settle();
+    assert.equal(h.calls.pluginClosed, 1, 'precondition: leaving the plugin view fired onClosed once');
+    await switchAround(h);
+    assert.equal(h.calls.pluginClosed, 1, 'onClosed must not fire again after the view is closed');
+    h.window.happyDOM.abort();
+  });
+
+  await t.test('registry: a registered view reporting closed is not superseded', async () => {
+    makeWindow('http://localhost/#elsewhere');
+    const { registerMainView, reconcileMainViews } = await sharedImport('mainViews.js');
+    let superseded = 0;
+    registerMainView({ matches: () => false, isOpen: () => false, supersede: () => { superseded++; } });
+    reconcileMainViews();
+    assert.equal(superseded, 0);
+    window.happyDOM.abort();
+  });
+});
