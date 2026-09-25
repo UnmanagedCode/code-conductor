@@ -472,7 +472,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
           const wtTempSids = instances ? instances.tempSessionIdsForPlace(wtPlace) : null;
           return {
             ...w,
-            sessions: await summarizeSessions(wtPlace, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+            sessions: await summarizeSessions(wtPlace, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
           };
         }));
         const projPlace = placeOf(p, p.path);
@@ -487,7 +487,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(projPlace, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
+          sessions: await summarizeSessions(projPlace, projTempSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
         };
       }));

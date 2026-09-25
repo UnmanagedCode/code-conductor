@@ -282,6 +282,13 @@ export class Sidebar {
     }
   }
 
+  // Whether a place (main checkout or worktree) holds a session Hand-spawned
+  // only would list: a non-archived, non-conducted one on disk, or a live one
+  // that is not conducted.
+  _hasHandSession({ liveInstances, summary }) {
+    return (summary?.handCount ?? 0) > 0 || liveInstances.some(i => !i.conducted);
+  }
+
   // Visible session count for a subnode = on-disk count + live instances
   // whose sessionId isn't already on disk. Shared by the parent (to decide
   // whether the Sessions subnode exists at all) and the subnode's own
@@ -706,7 +713,8 @@ export class Sidebar {
   // summary is patched, and the worktree items are keyed-reconciled by name.
   // While a conductor filter is selected the group is forced open once per
   // selection, and that forced state is never recorded as the user's own
-  // expansion; clearing the filter restores the recorded state.
+  // expansion; clearing the filter restores the recorded state. Hand-spawned
+  // only narrows the list the same way but forces nothing open.
   _worktreeGroup(existing, { project: p, worktrees, byWorktree }) {
     const filterOwner = this._filterOwner();
     let det = existing;
@@ -736,7 +744,9 @@ export class Sidebar {
     det._summaryEl.textContent = `Worktrees (${worktrees.length})`;
     const listed = filterOwner
       ? worktrees.filter(wt => this._owners.get(`${p.name}:${wt.worktreeName}`)?.has(filterOwner))
-      : worktrees;
+      : this.filter === 'hand'
+        ? worktrees.filter(wt => this._hasHandSession({ liveInstances: byWorktree.get(`${p.name}:${wt.worktreeName}`) ?? [], summary: wt.sessions }))
+        : worktrees;
     const wtByName = new Map(listed.map(wt => [wt.worktreeName, wt]));
     const keys = listed.map(wt => `wt:${wt.worktreeName}`);
     reconcileChildren(det._wtUl, keys, (k, ex) => {
@@ -907,7 +917,8 @@ export class Sidebar {
   // items and workspace-nested items. The <li>'s own children are
   // keyed-reconciled so a Sessions subnode can appear/vanish (between the row
   // and the Worktrees group) without a teardown. Under a selected conductor the
-  // Sessions subnode and the worktrees are listed only where it owns something.
+  // Sessions subnode and the worktrees are listed only where it owns something;
+  // under Hand-spawned only, only where a hand-spawned session is.
   _projectItem(existing, { project: p, directByProject, byWorktree }) {
     const li = existing ?? el('li', {});
     const allDirects = directByProject.get(p.name) ?? [];
@@ -918,6 +929,9 @@ export class Sidebar {
     if (filterOwner) {
       showSessions = allDirects.some(i => i.ownerSessionId === filterOwner);
       showWorktrees = worktrees.some(wt => this._owners.get(`${p.name}:${wt.worktreeName}`)?.has(filterOwner));
+    } else if (this.filter === 'hand') {
+      showSessions = this._hasHandSession({ liveInstances: allDirects, summary: p.sessions });
+      showWorktrees = worktrees.some(wt => this._hasHandSession({ liveInstances: byWorktree.get(`${p.name}:${wt.worktreeName}`) ?? [], summary: wt.sessions }));
     }
 
     const keys = ['row'];
@@ -1127,10 +1141,16 @@ export class Sidebar {
     }
 
     // Under a selected conductor only the projects holding one of its live
-    // sessions are listed.
+    // sessions are listed; under Hand-spawned only, only those whose main
+    // checkout or a worktree holds a hand-spawned session. Either way a
+    // workspace is listed only with a visible member.
     const filterOwner = this._filterOwner();
     const ownedProjects = new Set(this.instances.filter(i => filterOwner && i.ownerSessionId === filterOwner).map(i => i.project));
-    const visible = (p) => !filterOwner || ownedProjects.has(p.name);
+    const hasHand = (p) => this._hasHandSession({ liveInstances: directByProject.get(p.name) ?? [], summary: p.sessions })
+      || (Array.isArray(p.worktrees) ? p.worktrees : []).some(wt => this._hasHandSession({
+        liveInstances: byWorktree.get(`${p.name}:${wt.worktreeName}`) ?? [], summary: wt.sessions,
+      }));
+    const visible = (p) => (filterOwner ? ownedProjects.has(p.name) : this.filter === 'hand' ? hasHand(p) : true);
 
     // Split into workspace-assigned (rendered first, nested under <details>)
     // and unassigned (rendered flat underneath, as their own section — see the
@@ -1155,7 +1175,7 @@ export class Sidebar {
     }
 
     const workspaceNames = [...byWorkspace.keys()].sort((a, b) => a.localeCompare(b))
-      .filter(name => !filterOwner || byWorkspace.get(name).some(visible));
+      .filter(name => !this.filter || byWorkspace.get(name).some(visible));
     const shownUnassigned = unassigned.filter(visible);
     const unassignedByName = new Map(shownUnassigned.map(p => [p.name, p]));
 
