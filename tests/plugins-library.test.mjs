@@ -56,7 +56,7 @@ test('list(): code-playwright is a built-in entry alongside code-share, with its
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
     const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-karpathy-wiki', 'code-mutant', 'code-playwright', 'code-share', 'code-system']);
+    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-mutant', 'code-playwright', 'code-share', 'code-system', 'code-wiki']);
     const cp = rows.find(r => r.id === 'code-playwright');
     assert.equal(cp.repo, 'https://github.com/UnmanagedCode/code-playwright');
     assert.equal(cp.postClone, 'bash install.sh');
@@ -80,7 +80,7 @@ test('list(): a dropped file adds an entry; malformed files are skipped, not fat
     const lib = createPluginLibrary();
     const { entries: rows, skipped } = await lib.list();
     const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-karpathy-wiki', 'code-mutant', 'code-playwright', 'code-share', 'code-system', 'extra-plugin']);
+    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-mutant', 'code-playwright', 'code-share', 'code-system', 'code-wiki', 'extra-plugin']);
 
     // A silently-dropped drop-in is indistinguishable from one never written, so
     // both per-file skip reasons are reported by name.

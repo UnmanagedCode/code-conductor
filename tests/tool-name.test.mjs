@@ -20,7 +20,7 @@ test('formatToolName: three segments under cc\'s server read as a core tool', as
 
 test('formatToolName: four segments read as plugin + tool, with a leading code- stripped', async (t) => {
   await check(t, 'mcp__code-conductor__code-kanban__move_card', 'plugin', 'kanban', 'Move card');
-  await check(t, 'mcp__code-conductor__code-karpathy-wiki__read_index', 'plugin', 'karpathy-wiki', 'Read index');
+  await check(t, 'mcp__code-conductor__code-wiki__read_index', 'plugin', 'wiki', 'Read index');
 });
 
 test('formatToolName: a plugin id without code- is the chip verbatim', async (t) => {
