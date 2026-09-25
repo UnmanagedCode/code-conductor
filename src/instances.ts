@@ -2301,6 +2301,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // BEFORE the cc-managed context vars below so those always win — they are
     // deliberately not exposed in the Backends UI.
     Object.assign(spawnEnv, backendEnvVars);
+    // cc-managed, and set after the backend pairs so neither they nor a host
+    // value win. Consumers (harness/pluginDir.mjs) append `.plugins/<name>`.
+    // Remote workers get the same host value: their CLI runs on this machine,
+    // and their redirected Bash runs on the remote without cc's env.
+    spawnEnv.CC_PROJECTS_ROOT = path.resolve(projectsRoot());
     // REDIRECTED SESSIONS ONLY: pin the CLI's per-uid tmp root to a cc-owned
     // per-session directory.
     //
