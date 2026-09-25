@@ -101,7 +101,7 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postPull: 'npm install',
   },
   {
-    id: 'code-karpathy-wiki',
+    id: 'code-wiki',
     name: 'Code Karpathy Wiki',
     description: 'Durable-knowledge wiki conventions: a per-project .wiki/ plus the conductor\'s .conduct/wiki/.',
     repo: 'https://github.com/UnmanagedCode/code-karpathy-wiki',

@@ -73,6 +73,7 @@ import * as m0034 from './0034-retire-session-roots.mjs';
 import * as m0035 from './0035-normalize-system-paths.mjs';
 import * as m0036 from './0036-temp-cleanup-manifest-place.mjs';
 import * as m0037 from './0037-project-location-records.mjs';
+import * as m0038 from './0038-rename-wiki-plugin-id.mjs';
 
 // Ordered list. Numeric (lexicographic) order IS execution order — keep it that
 // way: append to the end, or letter-suffix (`0018b`) when a migration must slot
@@ -83,7 +84,7 @@ import * as m0037 from './0037-project-location-records.mjs';
 // must consume `models.sonnetContextWindow` before 0019 deletes it, but 0026
 // later drops the `window` key that proves it did, so asserting on the
 // end state alone would pass even with the two reordered.
-export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029, m0030, m0031, m0032, m0033, m0034, m0035, m0036, m0037];
+export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029, m0030, m0031, m0032, m0033, m0034, m0035, m0036, m0037, m0038];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {
