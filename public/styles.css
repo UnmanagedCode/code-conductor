@@ -945,6 +945,18 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 }
 .block.tool[open] > summary::before { transform: rotate(90deg); }
 .block.tool .tool-name { color: var(--tool); font-weight: 600; }
+.tool-chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 5px;
+  border: 1px solid var(--tool);
+  border-radius: 3px;
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+/* Echoes public/icon.svg: white monospace on black. */
+.tool-chip-cc { background: #000; color: #fff; border-color: #000; font-family: ui-monospace, monospace; }
 .block.tool .tool-arg { color: var(--text); }
 .block.tool .tool-status { color: var(--muted); margin-left: auto; padding-left: 8px; font-size: 11px; }
 .block.tool pre {

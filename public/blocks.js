@@ -109,6 +109,7 @@ export class ThinkingBlock {
 import { lineDiff, diffStats } from './diff.js';
 import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost } from './usage.js';
 import { renderMarkdownInto } from './markdown.js';
+import { formatToolName, toolNamePlain } from './toolName.js';
 import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop, maybeAutoSpeak } from './tts.js';
 
 // Module-level active-button tracking — one subscription, no per-button leaks.
@@ -283,6 +284,17 @@ export function describeToolInput(name, input, ctx = {}) {
   return '';
 }
 
+// A tool-call name as the UI shows it: a server/plugin chip plus a
+// sentence-case label (public/toolName.js), raw name on hover. `data-tool`
+// carries the raw name for readers of the DOM (agToolLabel).
+function toolNameNode(raw) {
+  const { chip, kind, label } = formatToolName(raw);
+  return el('span', { class: 'tool-name', 'data-tool': typeof raw === 'string' ? raw : null, title: chip ? raw : null },
+    chip ? el('span', { class: `tool-chip tool-chip-${kind}` }, chip) : null,
+    label,
+  );
+}
+
 export class ToolUseBlock {
   constructor({ name, toolUseId, describeCtx = {} }) {
     this.name = name; this.toolUseId = toolUseId;
@@ -382,7 +394,7 @@ export class ToolUseBlock {
   _renderSummary() {
     const desc = this.input ? describeToolInput(this.name, this.input, this.describeCtx) : '';
     this.summary.textContent = '';
-    this.summary.append('🔧 ', el('span', { class: 'tool-name' }, this.name ?? 'tool'));
+    this.summary.append('🔧 ', toolNameNode(this.name ?? 'tool'));
     if (desc) this.summary.append(' · ', el('span', { class: 'tool-arg' }, desc));
     let statusText;
     if (this.status === 'running' && this._startedAt) {
@@ -517,7 +529,9 @@ export function mergeActionGroupInto(keeper, donor) {
 // that block's own <summary>, which keeps a nested sub-agent's tool names out
 // of the outer tally.
 function agToolLabel(kid) {
-  return kid.firstElementChild?.querySelector('.tool-name')?.textContent || 'tool';
+  const nameEl = kid.firstElementChild?.querySelector('.tool-name');
+  const raw = nameEl?.dataset.tool;
+  return raw ? toolNamePlain(raw) : (nameEl?.textContent || 'tool');
 }
 
 function agLabelFor(kid) {
@@ -1098,7 +1112,7 @@ export class PermissionRequestBlock {
 
     this.node = el('div', { class: 'block permission' },
       el('div', { class: 'perm-head' },
-        el('span', { class: 'perm-title' }, `🔐 Allow ${ev.toolName ?? 'tool'}?`),
+        el('span', { class: 'perm-title' }, '🔐 Allow ', toolNameNode(ev.toolName ?? 'tool'), '?'),
         this.statusNode,
       ),
       argLine ? el('div', { class: 'perm-arg' }, argLine) : null,

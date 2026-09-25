@@ -806,3 +806,17 @@ test('E3 pins: a run-ender folds a group two sub-agent levels down', async () =>
   assert.equal(deep.hasAttribute('open'), false,
     'the sweep must reach every depth, not only first-level panels');
 });
+
+// The tally names MCP tools in their plain formatted form, first-appearance order.
+test('action-group tally reads MCP tools as "chip: Label", not chip and label glued together', async () => {
+  const { root, Conversation } = await setupDOM();
+  const kb = 'mcp__code-conductor__code-kanban__move_card';
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'tu1', kb),
+    ...tool('m1', 1, 'tu2', 'mcp__code-conductor__spawn_instance'),
+    ...tool('m1', 2, 'tu3', kb),
+    ...tool('m1', 3, 'tu4', 'Bash'),
+    ...text('m1', 4, 'done'),
+  ]);
+  assert.equal(summaryTextOf(groupsIn(root)[0]), '4 actions · kanban: Move card ×2, cc: Spawn instance, Bash');
+});
