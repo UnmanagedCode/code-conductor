@@ -162,14 +162,14 @@ test('defers when the registry has no record for the old id', async () => {
   assert.deepEqual(await snapshot(root), before);
 });
 
-test('defers with a warning when the plugin project record is not local', async () => {
+test('defers with a warning when the plugin project record names another machine', async () => {
   const { root, store } = await mkStore(NEW);
   await writeJson(path.join(store, 'projects', OLD, 'project.json'), { location: { kind: 'remote', system: 'docker', remoteId: 'box', path: '/p' } });
   const before = await snapshot(root);
   const logs = [];
   assert.deepEqual(await m0038.run({ root, log: (m) => logs.push(m) }), { applied: false });
   assert.deepEqual(await snapshot(root), before);
-  assert.equal(logs.some(l => l.includes('deferred') && l.includes('not local')), true);
+  assert.equal(logs.some(l => l.includes('deferred') && l.includes('another machine')), true);
 });
 
 test('defers with a warning when the main-checkout manifest is missing or unparsable', async (t) => {
@@ -208,4 +208,22 @@ test('a non-directory entry under the store projects dir is skipped', async () =
   await fs.writeFile(path.join(store, 'projects', 'stray.txt'), 'x');
   assert.equal((await m0038.run({ root })).applied, true);
   assert.equal(await oldKeyKept(store), false);
+});
+
+test('a parseable but unusable project record is logged by path and the run still completes', async (t) => {
+  for (const [label, rec] of [
+    ['empty object', {}], ['null', null], ['array', []], ['no location', { workspace: 'x' }],
+    ['local without path', { location: { kind: 'local' } }], ['unknown kind', { location: { kind: 'ftp', path: '/p' } }],
+  ]) {
+    await t.test(label, async () => {
+      const { root, store, appDir } = await mkStore(NEW);
+      const recFile = path.join(store, 'projects', 'broken', 'project.json');
+      await writeJson(recFile, rec);
+      const logs = [];
+      await m0038.run({ root, log: (m) => logs.push(m) });
+      assert.equal(logs.some(l => l.includes(recFile) && l.includes(`${NEW}/<slug>`)), true);
+      assert.equal(await oldKeyKept(store), false);
+      assert.match(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), new RegExp(`^<!-- cc:conventions design-guidelines,${NEW}/project-wiki,`));
+    });
+  }
 });

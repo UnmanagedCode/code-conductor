@@ -64,6 +64,9 @@
 // - A plugin whose main checkout has no manifest and is discovered only
 //   through a worktree's (discovery's bootstrap fallback) is not followed;
 //   it defers with the "manifest missing" warning and is re-keyed by hand.
+// - A project record that parses but has no usable `location` (cc cannot
+//   resolve that project either) is logged with the hand repair of its
+//   marker, and does not hold the migration back.
 // - A registered REMOTE project's CONVENTIONS.md cannot be reached with
 //   built-ins; each such project is named in the summary for a hand edit of
 //   its line-1 marker.
@@ -87,16 +90,18 @@ const DEFAULT_PROJECTS_ROOT = path.resolve(
 // The line-1 selection marker, as src/projectClaudeMd.ts parses it.
 const MARKER_RE = /^<!-- cc:conventions ?(.*?) ?-->$/;
 
-// A file that exists but cannot be read or parsed.
+// A file that does not exist, and one that exists but cannot be read or
+// parsed. Distinct from any JSON value, `null` included.
+const ABSENT = Symbol('absent');
 const UNREADABLE = Symbol('unreadable');
 
-// Reads `file`: its text (or parsed JSON), null when absent, UNREADABLE (logged
-// by path) on any other failure.
+// Reads `file`: its text (or parsed JSON), ABSENT when missing, UNREADABLE
+// (logged by path) on any other failure.
 async function readTolerant(file, { json, log }) {
   let text;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) {
-    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null;
+    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return ABSENT;
     log(`  ! ${name}: cannot read ${file}: ${e.message}`);
     return UNREADABLE;
   }
@@ -126,6 +131,20 @@ function renameSlug(slug) {
   return typeof slug === 'string' && slug.startsWith(`${OLD}/`) ? `${NEW}/${slug.slice(OLD.length + 1)}` : slug;
 }
 
+// A parsed project record's location, classified as src/projects.ts
+// readProjectRecord does: { local: path } | { remote: true } | { unusable: why }.
+function classifyLocation(rec) {
+  const str = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+  if (typeof rec !== 'object' || rec === null || Array.isArray(rec)) return { unusable: 'the record is not a JSON object' };
+  const loc = rec.location;
+  if (typeof loc !== 'object' || loc === null || Array.isArray(loc)) return { unusable: 'it has no `location`' };
+  const p = str(loc.path);
+  if (!p) return { unusable: 'its `location` has no `path`' };
+  if (loc.kind === 'local') return { local: p };
+  if (loc.kind === 'remote') return str(loc.system) ? { remote: true } : { unusable: 'a remote `location` names no `system`' };
+  return { unusable: `unknown location kind ${JSON.stringify(loc.kind)}` };
+}
+
 // Why the gate cannot pass on this boot, or null when the plugin project's
 // main-checkout manifest declares NEW. `warn` is set when the defer will not
 // resolve by itself.
@@ -133,16 +152,16 @@ async function gate(storeDir, project, log) {
   const recFile = path.join(storeDir, 'projects', project, 'project.json');
   const rec = await readTolerant(recFile, { json: true, log });
   if (rec === UNREADABLE) return { warn: `project record ${recFile} is unreadable` };
-  if (!rec) return { warn: `project '${project}' has no record at ${recFile}` };
-  if (rec.location?.kind !== 'local' || typeof rec.location.path !== 'string') {
-    return { warn: `project '${project}' is not local` };
-  }
-  const file = path.join(rec.location.path, 'conductor.plugin.json');
+  if (rec === ABSENT) return { warn: `project '${project}' has no record at ${recFile}` };
+  const loc = classifyLocation(rec);
+  if (loc.unusable) return { warn: `project record ${recFile} is unusable: ${loc.unusable}` };
+  if (loc.remote) return { warn: `project '${project}' is on another machine` };
+  const file = path.join(loc.local, 'conductor.plugin.json');
   const manifest = await readTolerant(file, { json: true, log });
-  if (manifest === UNREADABLE || !manifest) return { warn: `manifest ${file} is ${manifest ? 'unreadable' : 'missing'}` };
-  if (manifest.id === NEW) return null;
-  if (manifest.id === OLD) return {};
-  return { warn: `manifest ${file} declares id ${JSON.stringify(manifest.id)}` };
+  if (manifest === UNREADABLE || manifest === ABSENT) return { warn: `manifest ${file} is ${manifest === ABSENT ? 'missing' : 'unreadable'}` };
+  if (manifest?.id === NEW) return null;
+  if (manifest?.id === OLD) return {};
+  return { warn: `manifest ${file} declares id ${JSON.stringify(manifest?.id)}` };
 }
 
 async function rewriteMarkers(storeDir, ctx) {
@@ -153,13 +172,20 @@ async function rewriteMarkers(storeDir, ctx) {
     const recFile = path.join(storeDir, 'projects', project, 'project.json');
     const rec = await readTolerant(recFile, { json: true, log: ctx.log });
     if (rec === UNREADABLE) { ctx.unreadable.push(recFile); continue; }
-    const loc = rec?.location;
-    if (!loc) continue;
-    if (loc.kind !== 'local') { ctx.summary.remoteProjectsNotChecked.push(project); continue; }
-    const file = path.join(loc.path, 'CONVENTIONS.md');
+    if (rec === ABSENT) continue;
+    const loc = classifyLocation(rec);
+    if (loc.unusable) {
+      // cc cannot resolve this project either, so it must not hold the whole
+      // migration back: log the hand repair and carry on.
+      ctx.log(`  ! ${name}: project record ${recFile} is unusable (${loc.unusable}). Repair: if that project's CONVENTIONS.md line 1 selects '${OLD}/<slug>', rename it to '${NEW}/<slug>'.`);
+      ctx.summary.unusableRecords.push(recFile);
+      continue;
+    }
+    if (loc.remote) { ctx.summary.remoteProjectsNotChecked.push(project); continue; }
+    const file = path.join(loc.local, 'CONVENTIONS.md');
     const text = await readTolerant(file, { json: false, log: ctx.log });
     if (text === UNREADABLE) { ctx.unreadable.push(file); continue; }
-    if (text === null) continue;
+    if (text === ABSENT) continue;
     const nl = text.indexOf('\n');
     const line1 = nl === -1 ? text : text.slice(0, nl);
     const m = MARKER_RE.exec(line1);
@@ -248,7 +274,7 @@ export async function run({ root, log = () => {} } = {}) {
     return { applied: false };
   }
 
-  const summary = { markers: [], disabled: [], roles: [], remoteProjectsNotChecked: [] };
+  const summary = { markers: [], disabled: [], roles: [], remoteProjectsNotChecked: [], unusableRecords: [] };
   const ctx = { log, summary, unreadable: [] };
   await rewriteMarkers(storeDir, ctx);
   await rewriteDenyLists(storeDir, ctx);
