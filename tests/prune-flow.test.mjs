@@ -138,6 +138,73 @@ test('prune rotates the BACKING id, PINS the public id, archives the original, a
   } finally { await ctx.close(); }
 });
 
+// The newest assistant line's usage is what a resumed session latches as its ctx
+// chip reading (loadHistory's seed), so the three input-side fields are distinct.
+const SEEDED_USAGE = { input_tokens: 10, cache_read_input_tokens: 4000, cache_creation_input_tokens: 300, output_tokens: 20 };
+const SEEDED_CONTEXT = 10 + 4000 + 300;
+
+test('the analysis carries the ctx chip\'s reading as its baseline', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa6-2222-3333-4444-555555555555';
+    const lines = sessionLines();
+    lines[lines.length - 1].message.usage = SEEDED_USAGE;
+    await seedSession({ ctx, projectName: 'prunebaseline', sid, lines });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunebaseline', mode: 'bypassPermissions', resume: sid,
+    });
+    await waitFor(() => ctx.instances.get(r.body.id).status === 'idle');
+    const analysis = await api(ctx.baseUrl, 'GET', `/api/instances/${r.body.id}/prune/analysis`);
+    assert.equal(analysis.status, 200);
+    assert.equal(analysis.body.contextTokens, SEEDED_CONTEXT);
+  } finally { await ctx.close(); }
+});
+
+test('a latched usage whose prompt sum is zero is no baseline', async () => {
+  // Some backends report all-zero usage; a zero is not a measurement of context.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa8-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'prunezerobaseline', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunezerobaseline', mode: 'bypassPermissions', resume: sid,
+    });
+    await waitFor(() => ctx.instances.get(r.body.id).status === 'idle');
+    const inst = ctx.instances.get(r.body.id);
+    inst._lastContextUsage = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 12 };
+    assert.ok(inst.lastContextUsage, 'the zero reading is latched');
+    const analysis = await api(ctx.baseUrl, 'GET', `/api/instances/${r.body.id}/prune/analysis`);
+    assert.equal(analysis.status, 200);
+    assert.equal(analysis.body.contextTokens, null);
+  } finally { await ctx.close(); }
+});
+
+test('no ctx reading, no baseline: the analysis right after a prune has none', async () => {
+  // A pruned session's jsonl still carries the PRE-prune usage, which the
+  // respawn deliberately does not seed; the analysis must not resurrect it.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa7-2222-3333-4444-555555555555';
+    const lines = sessionLines();
+    lines[lines.length - 1].message.usage = SEEDED_USAGE;
+    await seedSession({ ctx, projectName: 'prunenobaseline', sid, lines });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunenobaseline', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const before = await api(ctx.baseUrl, 'GET', `/api/instances/${id}/prune/analysis`);
+    assert.equal(before.body.contextTokens, SEEDED_CONTEXT, 'a reading existed before the prune');
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 200);
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const after = await api(ctx.baseUrl, 'GET', `/api/instances/${id}/prune/analysis`);
+    assert.equal(after.status, 200);
+    assert.equal(after.body.contextTokens, null);
+  } finally { await ctx.close(); }
+});
+
 test('a prompt landing mid-rewrite is refused instead of corrupting the transform', async () => {
   // Between the caller's idle check and the kill completing, the subprocess is
   // still writable: a prompt landing there would have its partial tail persisted

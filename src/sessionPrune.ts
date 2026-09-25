@@ -51,7 +51,7 @@ import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sessionFilePath, subAgentDirPath, writeFileAtomic, type TranscriptPlacement } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
-import type { WireContentBlock } from './parser.ts';
+import { promptTokenSum, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
 import { imageDimensions, imageTokenCost, IMAGE_MAX_TOKENS } from './imageCost.ts';
 
@@ -180,6 +180,7 @@ interface PruneBlock {
   content?: unknown;
   tool_use_id?: unknown;
   source?: unknown;
+  signature?: unknown;
 }
 
 interface PruneOpts {
@@ -196,13 +197,37 @@ function humanBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Rough token estimate. Mirrors the shape of the CLI's own per-block accounting
-// (text → text, thinking → thinking, tool_use → name + JSON(input), tool_result →
-// content) at ~4 chars/token. The brief only asks for a heuristic; what matters is
-// that it is computed over IN-CONTEXT entries only (see analyzeSessionForPrune).
-// Non-string input coerces to '' (was NaN before, when a malformed block carried
-// a numeric field).
-const approxTokens = (s: unknown): number => Math.ceil((typeof s === 'string' ? s : '').length / 4);
+// Characters per token, per block kind. Measured from Opus 5 usage deltas
+// between consecutive calls: tool_result over steps whose only new content was
+// one tool_result of at least 8k chars; text and tool_use (name + JSON(input))
+// by least squares over every step. Tool output is denser than prose, which is
+// why one flat ratio under-reports exactly what Prune removes. What these leave
+// (a backend's own tokenizer, the session's mix) is corrected per session by
+// usageCalibration.
+export const TOKEN_CHARS = { text: 4.0, toolUse: 3.8, toolResult: 2.5 };
+
+// Encrypted thinking (`thinking: ""` + a signature) is in context at about its
+// `thinking_tokens`, and the signature grows linearly with them: a fixed
+// overhead plus a per-token rate, fitted per model over empty-text blocks. The
+// fit is for Opus 5 / Sonnet 5 / Opus 4.8; Opus 5.5 / Fable 5.1 signatures carry
+// a larger fixed part, so their blocks are over-sized. That is accepted: this
+// cost feeds calibration and the dialog's info row, never a saving (pruneBlock
+// never rewrites an encrypted block).
+const SIGNATURE_OVERHEAD_CHARS = 400;
+const SIGNATURE_CHARS_PER_TOKEN = 3.6;
+
+// The estimate is computed over IN-CONTEXT entries only (see
+// analyzeSessionForPrune). Non-string input coerces to ''.
+const approxTokens = (s: unknown, charsPerToken: number): number =>
+  Math.ceil((typeof s === 'string' ? s : '').length / charsPerToken);
+
+const isEncryptedThinking = (block: PruneBlock): boolean =>
+  block.type === 'thinking' && (typeof block.thinking !== 'string' || block.thinking === '');
+
+// A non-text block inside a tool_result's content array.
+function nestedResultBlockTokens(block: unknown): number {
+  return approxTokens(JSON.stringify(block), 4);
+}
 
 const isImage = (b: unknown): b is PruneBlock => !!b && typeof b === 'object' && (b as PruneBlock).type === 'image';
 
@@ -237,23 +262,31 @@ function imageInfo(block: PruneBlock): { tokens: number; label: string } {
 function blockTokens(block: PruneBlock | null | undefined): number {
   if (!block || typeof block !== 'object') return 0;
   switch (block.type) {
-    case 'text': return approxTokens(block.text);
-    case 'thinking': return approxTokens(block.thinking);
-    case 'redacted_thinking': return approxTokens(block.data);
-    case 'tool_use': return approxTokens(String(block.name ?? '') + JSON.stringify(block.input ?? {}));
+    case 'text': return approxTokens(block.text, TOKEN_CHARS.text);
+    case 'thinking': {
+      // A visible-thinking model's text is what is in context; its signature is not.
+      if (!isEncryptedThinking(block)) return approxTokens(block.thinking, TOKEN_CHARS.text);
+      const sig = typeof block.signature === 'string' ? block.signature.length : 0;
+      return Math.max(0, Math.ceil((sig - SIGNATURE_OVERHEAD_CHARS) / SIGNATURE_CHARS_PER_TOKEN));
+    }
+    case 'redacted_thinking': return approxTokens(block.data, 4);
+    case 'tool_use': return approxTokens(String(block.name ?? '') + JSON.stringify(block.input ?? {}), TOKEN_CHARS.toolUse);
+    // An image's visual-token cost comes from its dimensions, never a chars ratio.
     case 'image': return imageInfo(block).tokens;
     case 'tool_result': {
       if (!Array.isArray(block.content)) {
-        return approxTokens(typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''));
+        return approxTokens(typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''), TOKEN_CHARS.toolResult);
       }
-      // Images at their visual cost; the rest at chars/4 as before.
-      const images = block.content.filter(isImage);
-      if (!images.length) return approxTokens(JSON.stringify(block.content));
-      const rest = block.content.filter(b => !isImage(b));
-      return (rest.length ? approxTokens(JSON.stringify(rest)) : 0)
-        + images.reduce((n, b) => n + imageInfo(b).tokens, 0);
+      let textChars = 0;
+      let nested = 0;
+      for (const b of block.content as PruneBlock[]) {
+        if (b?.type === 'text' && typeof b.text === 'string') textChars += b.text.length;
+        else if (isImage(b)) nested += imageInfo(b).tokens;
+        else nested += nestedResultBlockTokens(b);
+      }
+      return Math.ceil(textChars / TOKEN_CHARS.toolResult) + nested;
     }
-    default: return approxTokens(JSON.stringify(block));
+    default: return approxTokens(JSON.stringify(block), 4);
   }
 }
 
@@ -281,14 +314,20 @@ function stubToolResultContent(content: unknown, toolName: string | undefined): 
 // THE single block transform — both the savings preview and the actual rewrite
 // call this, so the number the dialog shows can never drift from what Prune does.
 //
-// Returns { block, category, saved }. `saved` is the token delta and is never
-// negative: a stub that would be BIGGER than what it replaces (an empty thinking
-// block, a two-byte tool output) is skipped and the original block is returned
-// verbatim. Pruning must never inflate the context.
+// Returns { block, category, saved, imageSaved }. `saved` is the token delta and
+// is never negative: a stub that would be BIGGER than what it replaces (an empty
+// thinking block, a two-byte tool output) is skipped and the original block is
+// returned verbatim. Pruning must never inflate the context.
+//
+// `imageSaved` is the part of `saved` owed to images, whose cost is real (the
+// patch rule), not an estimate — so the calibration factor must not scale it.
+// The rule: the stub's whole cost is charged to the block's images. The image
+// part is the images' cost less the stub's, floored at 0 and capped at `saved`;
+// the rest of `saved` is the non-image content's full estimate.
 function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking, exemptThinking, toolNames, inputMode }: PruneOpts): {
-  block: PruneBlock | null | undefined; category: string | null; saved: number;
+  block: PruneBlock | null | undefined; category: string | null; saved: number; imageSaved: number;
 } {
-  const none = { block, category: null, saved: 0 };
+  const none = { block, category: null, saved: 0, imageSaved: 0 };
   if (!block || typeof block !== 'object') return none;
 
   let next: PruneBlock | null = null;
@@ -301,6 +340,11 @@ function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking
     // then reach the API unsigned. Measured: replacing the text while keeping the
     // signature provokes no rejection.
     if (!pruneThinking || exemptThinking) return none;
+    // Encrypted thinking has a cost (blockTokens sizes it from the signature),
+    // so the stub would score a saving — but the text is already empty: the
+    // rewrite would remove nothing and put a stub beside a signature that
+    // covers the real, hidden thinking.
+    if (isEncryptedThinking(block)) return none;
     next = { ...block, thinking: THINKING_STUB };
     category = 'thinking';
   } else if (!inCut) {
@@ -330,7 +374,13 @@ function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking
   }
 
   const saved = blockTokens(block) - blockTokens(next);
-  return saved > 0 ? { block: next, category, saved } : none;
+  if (saved <= 0) return none;
+  const imageTokens = block.type === 'image' ? imageInfo(block).tokens
+    : block.type === 'tool_result' && Array.isArray(block.content)
+      ? (block.content as unknown[]).filter(isImage).reduce((n, b) => n + imageInfo(b).tokens, 0)
+      : 0;
+  const imageSaved = imageTokens > 0 ? Math.max(0, Math.min(saved, imageTokens - blockTokens(next))) : 0;
+  return { block: next, category, saved, imageSaved };
 }
 
 // tool_use id → tool name, over in-context entries. Lets a tool_result pick the
@@ -379,6 +429,12 @@ function squeezeString(value: string, mode: InputMode): string {
   const head = sliceCodePoints(value, PRUNE_INPUT_MAX);
   return `${head}… [+${value.length - head.length} chars pruned]`;
 }
+
+// Matches every stub this module writes: THINKING_STUB, the truncation suffix,
+// and every `[pruned: …]` marker — a size (squeezeString, stubToolResultContent),
+// or one ending in an image label's parenthesis (a top-level image, a tool_result
+// that held images). Tested against a block's JSON, so it finds a stub at any depth.
+const PRUNE_STUB_RE = /\[pruned: (?:thinking|[^\]\n]*(?:\d B|KB|MB|\)))\]|… \[\+\d+ chars pruned\]/;
 
 // Walk a tool input, editing string VALUES in place and preserving every key,
 // every nested object/array, and every non-string scalar. Path keys are skipped
@@ -447,14 +503,22 @@ function unresolvedThinkingMessageIds(objs: Array<PersistedLine | null | undefin
   return exempt;
 }
 
+interface PruneRecord { raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }
+
 // Parse the jsonl into `{ obj, raw, turn, prunable }` records. `turn` is the
 // 0-based index among pure user-prompt lines — the SAME index space fork/rewind
 // use (`isPureUserPromptLine`) and the same `userIndex` the conversation view
 // stamps on user bubbles, which is what makes the slider snap to turn boundaries
 // structurally rather than cosmetically. Lines before the first prompt ride turn 0.
+//
+// Everything before the LAST compaction boundary has left the model's context:
+// neither prunable nor in context, so no estimate counts it and the transform
+// copies it verbatim. The CLI also carries a few pre-boundary messages across a
+// compaction (`compactMetadata.preservedMessages`); they are not counted either,
+// so a session that keeps them under-reports slightly.
 async function readRecords({ place, sessionId }: { place: TranscriptPlacement; sessionId: string }): Promise<{
   file: string;
-  records: Array<{ raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }>;
+  records: PruneRecord[];
   turnCount: number;
 }> {
   const file = sessionFilePath(place, sessionId);
@@ -466,31 +530,126 @@ async function readRecords({ place, sessionId }: { place: TranscriptPlacement; s
     }
     throw e;
   }
-  const records: Array<{ raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }> = [];
-  let turn = -1;
+  const parsed: Array<{ raw: string; obj: PersistedLine | null }> = [];
   for (const raw of text.split('\n')) {
     if (!raw.length) continue;
     let obj: PersistedLine | null = null;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') obj = parsed as PersistedLine;
+      const value: unknown = JSON.parse(raw);
+      if (value && typeof value === 'object') obj = value as PersistedLine;
     } catch { /* pass unparseable lines through verbatim */ }
+    parsed.push({ raw, obj });
+  }
+  let boundary = -1;
+  parsed.forEach(({ obj }, i) => {
+    if (obj && !obj.isSidechain && obj.type === 'system' && obj.subtype === 'compact_boundary') boundary = i;
+  });
+
+  const records: PruneRecord[] = [];
+  let turn = -1;
+  for (const [i, { raw, obj }] of parsed.entries()) {
     if (obj && isPureUserPromptLine(obj)) turn++;
+    const live = i > boundary;
     // Sidechain entries are not in the parent's context and are never pruned
     // (invariant 5); an unparseable line is copied byte-for-byte.
-    const prunable = !!obj && !obj.isSidechain
+    const prunable = live && !!obj && !obj.isSidechain
       && (obj.type === 'assistant' || obj.type === 'user');
     // Wider than `prunable`: `attachment` entries (CLAUDE.md / nested-memory /
     // file injections the CLI folds into a user turn) ARE in the model's context
-    // even though Prune never touches them. They belong in the savings
-    // DENOMINATOR — leaving them out shrinks it and over-reports the percentage
-    // saved, the same dishonesty we exclude sidechains to avoid, pointing the
-    // other way. CLI bookkeeping lines (queue-operation, ai-title, last-prompt,
-    // permission-mode, system) are not context and stay out.
-    const inContext = prunable || (!!obj && !obj.isSidechain && obj.type === 'attachment');
+    // even though Prune never touches them — usageCalibration reads them to
+    // decide which steps it can measure. CLI bookkeeping lines (queue-operation,
+    // ai-title, last-prompt, permission-mode, system) are not context.
+    const inContext = prunable || (live && !!obj && !obj.isSidechain && obj.type === 'attachment');
     records.push({ raw, obj, turn: Math.max(turn, 0), prunable, inContext });
   }
   return { file, records, turnCount: turn + 1 };
+}
+
+// ── calibration ─────────────────────────────────────────────────────────────
+
+// Attachment kinds the CLI emits on (nearly) every step, whose context cost is
+// part of the per-step framing the calibration absorbs. Any other attachment
+// kind makes its step unmeasurable. CLI-owned vocabulary, read as found.
+const PER_STEP_ATTACHMENTS = new Set(['total_tokens_reminder', 'hook_success']);
+
+// Below this much estimated growth the measured factor is noise; use 1.
+const CALIBRATION_MIN_TOKENS = 5000;
+const CALIBRATION_MIN_FACTOR = 0.5;
+const CALIBRATION_MAX_FACTOR = 2;
+
+// Content the estimate cannot size the way the API counts it: images, redacted
+// thinking, and a stub from an earlier prune (whose step's recorded usage still
+// reflects the content the stub replaced).
+function unmeasurableBlock(block: PruneBlock | null | undefined): boolean {
+  if (!block || typeof block !== 'object') return false;
+  if (block.type === 'image' || block.type === 'redacted_thinking') return true;
+  if (block.type === 'tool_result' && Array.isArray(block.content)
+    && (block.content as PruneBlock[]).some(b => b?.type === 'image')) return true;
+  return PRUNE_STUB_RE.test(JSON.stringify(block));
+}
+
+// The session's measured-over-estimated token ratio. Both the analysis and the
+// transform scale by it, so the preview and the reported saving stay equal.
+//
+// A CALL is an in-context assistant message carrying real usage; the CLI splits
+// one message over several lines sharing its id and usage, so a call starts at
+// the first line of a new id. A STEP runs from one call's first line to the
+// next call's: the prompt grew by exactly the content appended in between, so
+// its measured growth is the next prompt minus this one, and its estimate is
+// blockTokens over its in-context user/assistant content (attachments are not
+// estimated). A step is dropped when it holds unmeasurable content, an attachment
+// outside PER_STEP_ATTACHMENTS, or did not grow (a prune or compaction drop).
+//
+// `calibrated` is false when too little growth was measured and the factor fell
+// back to 1; `steps` is reported either way. A clamped factor is calibrated.
+function usageCalibration(records: PruneRecord[]): { factor: number; steps: number; calibrated: boolean } {
+  let prevPrompt: number | null = null;
+  let prevId: unknown;
+  let est = 0;
+  let usable = true;
+  let sumReal = 0;
+  let sumEst = 0;
+  let steps = 0;
+  for (const rec of records) {
+    if (!rec.inContext || !rec.obj) continue;
+    const obj = rec.obj;
+    const msg = obj.message;
+    if (obj.type === 'assistant' && msg?.usage != null && msg.model !== '<synthetic>'
+      && promptTokenSum(msg.usage) > 0 && msg.id !== prevId) {
+      const promptNow = promptTokenSum(msg.usage);
+      if (prevPrompt !== null && usable && promptNow > prevPrompt) {
+        sumReal += promptNow - prevPrompt;
+        sumEst += est;
+        steps++;
+      }
+      prevPrompt = promptNow;
+      prevId = msg.id;
+      est = 0;
+      usable = true;
+    }
+    if (!rec.prunable) {
+      if (!PER_STEP_ATTACHMENTS.has(obj.attachment?.type as string)) usable = false;
+      continue;
+    }
+    const content = msg?.content;
+    if (typeof content === 'string') est += approxTokens(content, TOKEN_CHARS.text);
+    if (!Array.isArray(content)) continue;
+    for (const block of content as PruneBlock[]) {
+      if (unmeasurableBlock(block)) usable = false;
+      est += blockTokens(block);
+    }
+  }
+  if (sumEst < CALIBRATION_MIN_TOKENS) return { factor: 1, steps, calibrated: false };
+  const factor = Math.min(CALIBRATION_MAX_FACTOR, Math.max(CALIBRATION_MIN_FACTOR, sumReal / sumEst));
+  return { factor, steps, calibrated: true };
+}
+
+// The ctx chip's reading (public/usage.js currentContextSize) for a latched
+// usage object, or null when there is none — the real baseline both the
+// analysis route and prune_session report beside the estimate.
+export function contextReading(usage: unknown): number | null {
+  if (!usage) return null;
+  return promptTokenSum(usage) || null;
 }
 
 // Per-turn, per-category savings. Savings are measured by running the ACTUAL stub
@@ -500,10 +659,18 @@ async function readRecords({ place, sessionId }: { place: TranscriptPlacement; s
 // Counted over in-context entries ONLY: sidechain lines are skipped (a sub-agent's
 // transcript is not in the parent's context — only the Task tool_result carrying
 // its report is), and `toolUseResult` bytes are never counted (disk-only sidecar).
+//
+// Every per-turn figure is RAW (uncalibrated); the client scales its sums by
+// `calibration.factor` exactly as pruneSessionToNewId scales `saved`.
+// `toolOutputImage` is the part of `toolOutput` owed to images (see pruneBlock),
+// which is added back unscaled.
+// `exempt` is the in-context payload of exempt tools (isPruneExemptTool) — kept,
+// never saved. `encryptedThinking` is session-wide, like thinking pruning.
 export async function analyzeSessionForPrune({ place, sessionId }: { place: TranscriptPlacement; sessionId: string }): Promise<{
   turnCount: number;
-  turns: Array<{ index: number; preview: string; thinking: number; toolInputTruncatable: number; toolInputMinimal: number; toolOutput: number; total: number }>;
-  totalTokens: number;
+  turns: Array<{ index: number; preview: string; thinking: number; toolInputTruncatable: number; toolInputMinimal: number; toolOutput: number; toolOutputImage: number; exempt: number; total: number }>;
+  encryptedThinking: number;
+  calibration: { factor: number; steps: number; calibrated: boolean };
 }> {
   if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   const { records, turnCount } = await readRecords({ place, sessionId });
@@ -512,33 +679,27 @@ export async function analyzeSessionForPrune({ place, sessionId }: { place: Tran
 
   const turns = Array.from({ length: turnCount }, (_, index) => ({
     index, preview: '',
-    thinking: 0, toolInputTruncatable: 0, toolInputMinimal: 0, toolOutput: 0, total: 0,
+    thinking: 0, toolInputTruncatable: 0, toolInputMinimal: 0, toolOutput: 0, toolOutputImage: 0, exempt: 0, total: 0,
   }));
-  let totalTokens = 0;
+  let encryptedThinking = 0;
 
   for (const rec of records) {
     if (rec.obj && isPureUserPromptLine(rec.obj) && turns[rec.turn]) {
       turns[rec.turn].preview = readTurnPreview(rec.obj);
     }
-    if (!rec.inContext) continue;
-    if (!rec.prunable) {
-      // An attachment: denominator only, never pruned. Its shape varies by
-      // attachment kind, so estimate off the serialized payload.
-      totalTokens += approxTokens(JSON.stringify(rec.obj?.attachment ?? ''));
-      continue;
-    }
+    if (!rec.prunable) continue;
     const content = rec.obj?.message?.content;
-    if (!Array.isArray(content)) {
-      if (typeof content === 'string') totalTokens += approxTokens(content);
-      continue;
-    }
+    if (!Array.isArray(content)) continue;
     const bucket = turns[rec.turn];
     const exempt = exemptThinking.has(thinkingExemptKey(rec.obj));
     for (const block of content as PruneBlock[]) {
       const before = blockTokens(block);
-      totalTokens += before;
+      if (block && typeof block === 'object' && isEncryptedThinking(block)) encryptedThinking += before;
       if (!bucket) continue;
       bucket.total += before;
+      const exemptName = block?.type === 'tool_use' ? block.name
+        : block?.type === 'tool_result' ? toolNames.get(block.tool_use_id as string) : undefined;
+      if (isPruneExemptTool(exemptName)) bucket.exempt += before;
       // Probe the real transform once per category. `inCut` is forced true here:
       // the analysis reports what EACH turn would yield if it fell inside the cut,
       // and the client sums the prefix the slider selects.
@@ -547,12 +708,15 @@ export async function analyzeSessionForPrune({ place, sessionId }: { place: Tran
       const trunc = pruneBlock(block, { ...base, pruneThinking: false, inputMode: 'truncate' });
       const minimal = pruneBlock(block, { ...base, pruneThinking: false, inputMode: 'minimal' });
       if (think.category === 'thinking') bucket.thinking += think.saved;
-      if (trunc.category === 'toolOutputs') bucket.toolOutput += trunc.saved;
+      if (trunc.category === 'toolOutputs') {
+        bucket.toolOutput += trunc.saved;
+        bucket.toolOutputImage += trunc.imageSaved;
+      }
       if (trunc.category === 'toolInputs') bucket.toolInputTruncatable += trunc.saved;
       if (minimal.category === 'toolInputs') bucket.toolInputMinimal += minimal.saved;
     }
   }
-  return { turnCount, turns, totalTokens };
+  return { turnCount, turns, encryptedThinking, calibration: usageCalibration(records) };
 }
 
 // ── the transform ───────────────────────────────────────────────────────────
@@ -585,6 +749,8 @@ async function copySubAgentDir({ place, sessionId, newSessionId }: { place: Tran
 //   inputMode    — 'truncate' | 'minimal', applied inside the pruned region only.
 //
 // Returns { newSessionId, turnCount, cutTurnIndex, saved:{…}, lastSurvivingUuid }.
+// `saved` is calibrated: each category's raw non-image estimate × usageCalibration's
+// factor, plus its image part unscaled (see pruneBlock).
 export async function pruneSessionToNewId({
   place, sessionId, cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate',
   mode, newSessionId,
@@ -623,6 +789,7 @@ export async function pruneSessionToNewId({
   const toolNames = toolNamesById(records.map(r => r.obj));
   const newSid = newSessionId ?? randomUUID();
   const saved = { thinking: 0, toolInputs: 0, toolOutputs: 0 };
+  const imageSaved = { thinking: 0, toolInputs: 0, toolOutputs: 0 };
   const out: string[] = [];
   let lastSurvivingUuid: string | null = null;
 
@@ -649,7 +816,10 @@ export async function pruneSessionToNewId({
     };
     const nextContent = (content as PruneBlock[]).map((block) => {
       const r = pruneBlock(block, opts);
-      if (r.category) saved[r.category as keyof typeof saved] += r.saved;
+      if (r.category) {
+        saved[r.category as keyof typeof saved] += r.saved;
+        imageSaved[r.category as keyof typeof saved] += r.imageSaved;
+      }
       return r.block;
     });
 
@@ -658,6 +828,11 @@ export async function pruneSessionToNewId({
       ...(typeof obj.sessionId === 'string' ? { sessionId: newSid } : {}),
       message: { ...obj.message, content: nextContent },
     }));
+  }
+
+  const { factor } = usageCalibration(records);
+  for (const k of Object.keys(saved) as Array<keyof typeof saved>) {
+    saved[k] = Math.round((saved[k] - imageSaved[k]) * factor) + imageSaved[k];
   }
 
   await writeFileAtomic(sessionFilePath(place, newSid), out.join('\n') + '\n');

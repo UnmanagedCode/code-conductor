@@ -1404,7 +1404,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     // client can recompute any slider/tickbox combination locally instead of
     // round-tripping on every drag. Counted over in-context entries only —
     // sidechains and the disk-only `toolUseResult` sidecar are excluded (see
-    // sessionPrune.ts).
+    // sessionPrune.ts). `contextTokens` is the ctx chip's reading, the dialog's
+    // percentage baseline; null while the instance holds none.
     r.get('/instances/:id/prune/analysis', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
@@ -1412,8 +1413,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
         if (!inst.backingSessionId) {
           throw httpError(400, 'no sessionId — instance has not yet received a turn');
         }
-        const { analyzeSessionForPrune } = await import('./sessionPrune.ts');
-        res.json(await analyzeSessionForPrune({ place: inst.transcriptPlace, sessionId: inst.backingSessionId }));
+        const { analyzeSessionForPrune, contextReading } = await import('./sessionPrune.ts');
+        const contextTokens = contextReading(inst.lastContextUsage);
+        const analysis = await analyzeSessionForPrune({ place: inst.transcriptPlace, sessionId: inst.backingSessionId });
+        res.json({ ...analysis, contextTokens });
       } catch (e) { next(e); }
     });
 

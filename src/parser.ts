@@ -124,8 +124,9 @@ function eventIndex(ev: WireStreamEvent): number {
 // The prompt size of one API call: the three input-side fields the ctx readout
 // sums. One definition, because both context-reading sources (message_start
 // and the message_delta fallback) apply the same "a zero sum is not a
-// measurement" floor and must not drift apart.
-function promptTokenSum(usage: unknown): number {
+// measurement" floor and must not drift apart — and Prune's estimate reads the
+// same sum off persisted usage (sessionPrune.ts).
+export function promptTokenSum(usage: unknown): number {
   const u = (usage ?? {}) as {
     input_tokens?: number;
     cache_read_input_tokens?: number;

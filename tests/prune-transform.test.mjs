@@ -243,14 +243,33 @@ test('analysis excludes sidechain entries and toolUseResult bytes', async () => 
     const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
     assert.equal(a.turnCount, 2);
     assert.equal(a.turns[1].total, 3, 'the newest turn is just "second" + "done"');
-    // The sidechain line alone carries ~2000 tokens (4k of thinking + 4k of
-    // text). Counting it would inflate the reported saving by half again while
-    // the model's real context barely moves — worse than showing no number.
-    assert.ok(a.totalTokens > 4000 && a.totalTokens < 5000,
-      `sidechain leaked into the estimate (${a.totalTokens})`);
-    assert.ok(a.turns[0].toolOutput > 1900, 'both tool outputs land in turn 0');
+    // Each 4000-char output alone is under 1600 tokens, so only both clear this.
+    assert.ok(a.turns[0].toolOutput > 3000, 'both tool outputs land in turn 0');
     assert.ok(a.turns[0].toolInputMinimal > a.turns[0].toolInputTruncatable,
       'minimal mode must save more than truncate mode');
+  });
+});
+
+test('a sidechain contributes to no savings, exempt or encrypted-thinking figure', async () => {
+  // A sub-agent's transcript is not in the parent's context — only the Task
+  // tool_result carrying its report is. Counting it would report a saving while
+  // the model's real context barely moves.
+  await withStore(async () => {
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
+    const withoutSidechains = scenario().filter(o => !o.isSidechain);
+    await seed(withoutSidechains);
+    const bare = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: '11111111-2222-3333-4444-555555555555' });
+    const lines = scenario();
+    lines.splice(lines.findIndex(o => o.isSidechain) + 1, 0,
+      { type: 'assistant', uuid: 's2', sessionId: 'old', isSidechain: true, message: { id: 'ms2', role: 'assistant', content: [
+        { type: 'thinking', thinking: '', signature: 'S'.repeat(3000) },
+        { type: 'tool_use', id: 'tsc', name: 'mcp__code-conductor__spawn_instance', input: { prompt: bigText } },
+      ] } },
+      { type: 'user', uuid: 's3', sessionId: 'old', isSidechain: true, toolUseResult: 'ok',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tsc', content: bigText }] } });
+    const { sid } = await seed(lines);
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    assert.deepEqual(a, bare, 'the sidechain lines moved the analysis');
   });
 });
 
@@ -327,11 +346,15 @@ test('truncate mode never splits a surrogate pair', async () => {
 });
 
 // Every (cut, inputMode, pruneThinking) combination: the dialog's client-side
-// prefix sum over the analysis must equal what the transform reports saving.
+// prefix sum over the analysis, scaled by its calibration factor and rounded,
+// must equal what the transform reports saving. The image part of a tool-output
+// saving (`toolOutputImage`) is a real cost already, so it is added unscaled.
+// Returns the factor used.
 async function assertPreviewMatchesTransform(lines) {
   const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
   const { sid } = await seed(lines);
   const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+  const { factor } = analysis.calibration;
 
   for (const inputMode of ['truncate', 'minimal']) {
     for (const pruneThinking of [true, false]) {
@@ -343,18 +366,21 @@ async function assertPreviewMatchesTransform(lines) {
           place: localPlace(CWD), sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode, mode: 'bypassPermissions',
         });
         // Same arithmetic the dialog does: sum the selected prefix per
-        // category, with thinking summed over ALL turns (it is global).
+        // category, with thinking summed over ALL turns (it is global), then
+        // scale by the calibration factor and round.
         const prefix = analysis.turns.slice(0, cut);
         const expected = {
-          thinking: pruneThinking ? analysis.turns.reduce((a, t) => a + t.thinking, 0) : 0,
-          toolInputs: prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0),
-          toolOutputs: prefix.reduce((a, t) => a + t.toolOutput, 0),
+          thinking: pruneThinking ? Math.round(analysis.turns.reduce((a, t) => a + t.thinking, 0) * factor) : 0,
+          toolInputs: Math.round(prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0) * factor),
+          toolOutputs: Math.round(prefix.reduce((a, t) => a + t.toolOutput - t.toolOutputImage, 0) * factor)
+            + prefix.reduce((a, t) => a + t.toolOutputImage, 0),
         };
         assert.deepEqual(saved, expected,
-          `preview drifted from the transform (cut=${cut}, ${inputMode}, thinking=${pruneThinking})`);
+          `preview drifted from the transform (cut=${cut}, ${inputMode}, thinking=${pruneThinking}, factor=${factor})`);
       }
     }
   }
+  return factor;
 }
 
 test('the savings preview equals what the transform actually saves', async () => {
@@ -362,28 +388,46 @@ test('the savings preview equals what the transform actually saves', async () =>
   // "by construction" is exactly the kind of guarantee that quietly stops being
   // true. The other assertions in this file are one-sided lower bounds and would
   // not notice an analysis pass that reported 10x the real figure.
+  //
+  // The plain scenario runs twice: with no usage (factor 1), and with
+  // usage-bearing assistant lines so the factor is live and the rounding is
+  // exercised too.
   await withStore(async () => {
-    await assertPreviewMatchesTransform(scenario());
+    assert.equal(await assertPreviewMatchesTransform(scenario()), 1);
+  });
+  await withStore(async () => {
+    const lines = scenario();
+    const promptByMessage = { m1: 10000, m2: 14000, m3: 18000 };
+    for (const o of lines) {
+      if (o.type === 'assistant' && !o.isSidechain) {
+        o.message.model = 'claude-opus-5';
+        o.message.usage = { input_tokens: promptByMessage[o.message.id], cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0, output_tokens: 20 };
+      }
+    }
+    assert.notEqual(await assertPreviewMatchesTransform(lines), 1, 'the seeded usage must make the factor live');
   });
   await withStore(async () => {
     await assertPreviewMatchesTransform(await imageScenario());
   });
-});
-
-test('the savings denominator counts attachments, which are in context', async () => {
+  // Every image step is left out of calibration, so a live factor needs clean,
+  // usage-bearing steps of its own after the image turns.
   await withStore(async () => {
+    const lines = await imageScenario();
+    lines.push({ type: 'user', uuid: 'u3', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'more' }] } });
+    for (let i = 0; i <= 4; i++) {
+      lines.push({ type: 'assistant', uuid: `c${i}`, sessionId: 'old', message: {
+        id: `mc${i}`, role: 'assistant', model: 'claude-opus-5',
+        usage: { input_tokens: 30000 + 2400 * i, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 20 },
+        content: [{ type: 'tool_use', id: `tc${i}`, name: 'Bash', input: { command: `echo ${i}` } }],
+      } });
+      if (i < 4) lines.push(toolResult(`rc${i}`, `tc${i}`, 'o'.repeat(4000)));
+    }
+    const factor = await assertPreviewMatchesTransform(lines);
+    assert.notEqual(factor, 1, 'the clean steps must make the factor live');
     const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
-    const lines = scenario();
-    // A CLAUDE.md injection: never pruned, but genuinely in the model's context,
-    // so omitting it from the denominator over-reports the percentage saved.
-    lines.splice(1, 0, {
-      type: 'attachment', uuid: 'at1', sessionId: 'old',
-      attachment: { type: 'nested_memory', path: '/CLAUDE.md', content: 'z'.repeat(4000) },
-    });
-    const { sid } = await seed(lines);
-    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
-    assert.ok(a.totalTokens > 5000,
-      `attachment excluded from the denominator (${a.totalTokens})`);
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: '11111111-2222-3333-4444-555555555555' });
+    assert.ok(a.turns.some(t => t.toolOutputImage > 0), 'the image part must be non-zero for the split to be exercised');
   });
 });
 
@@ -757,7 +801,7 @@ test('prune stubs a foreign MCP server unchanged', async () => {
 test('the savings preview accounts for the exemption too', async () => {
   // The exemption must live in the shared pruneBlock, not in the transform loop:
   // bolted onto one side, the dialog would promise savings the rewrite never
-  // delivers. Exempt blocks still count toward the per-turn DENOMINATOR — they
+  // delivers. Exempt blocks still count toward the per-turn `total` — they
   // remain in the model's context.
   await withStore(async () => {
     const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
@@ -779,7 +823,7 @@ test('the savings preview accounts for the exemption too', async () => {
     }
     const t0 = analysis.turns[0];
     assert.ok(t0.total > t0.toolOutput + t0.toolInputMinimal,
-      'exempt blocks must stay in the denominator — they are still in context');
+      'exempt blocks must stay in the per-turn total — they are still in context');
   });
 });
 
@@ -877,8 +921,8 @@ test('an image tool_result is costed by its dimensions, not its base64 length', 
     assert.ok(a.turns[0].toolOutput <= images && a.turns[0].toolOutput > images - 40,
       `toolOutput ${a.turns[0].toolOutput} is not the dimension-driven cost of ${images}`);
     const base64Estimate = (shot.source.data.length + large.source.data.length) / 4;
-    assert.ok(a.totalTokens * 5 < base64Estimate,
-      `totalTokens ${a.totalTokens} tracks the base64 (${base64Estimate}), not the image`);
+    assert.ok(a.turns[0].toolOutput * 5 < base64Estimate,
+      `toolOutput ${a.turns[0].toolOutput} tracks the base64 (${base64Estimate}), not the image`);
   });
 });
 
@@ -957,18 +1001,6 @@ test('an icon whose stub would inflate the context is kept verbatim', async () =
   });
 });
 
-test('an image in a kept turn adds its visual tokens to the denominator, not its base64', async () => {
-  await withStore(async () => {
-    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
-    const { sid } = await seed([
-      { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'hi' }, await largePng()] } },
-    ]);
-    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
-    assert.ok(a.totalTokens >= LARGE_TOKENS && a.totalTokens <= LARGE_TOKENS + 10,
-      `totalTokens ${a.totalTokens} is not the image's visual cost`);
-  });
-});
-
 test('an image with no base64 source is costed at the per-image cap and names its source kind', async () => {
   await withStore(async () => {
     const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
@@ -1018,17 +1050,12 @@ test('an image whose header cannot be read is costed at the cap, so even a tiny 
 
 test('a pasted image below the cap is costed by its dimensions', async () => {
   await withStore(async () => {
-    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const lines = [
       { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [await screenshot(), { type: 'text', text: 'look' }] } },
       userText('u2', 'second'),
     ];
     const { sid } = await seed(lines);
-    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
-    // The turn's whole cost: 1334 for the image, a token each for 'look' and
-    // 'second'.
-    assert.ok(analysis.totalTokens >= SCREENSHOT_TOKENS && analysis.totalTokens <= SCREENSHOT_TOKENS + 5,
-      `totalTokens ${analysis.totalTokens} is not the screenshot's 1334`);
     // The saving is 1334 minus the stub's own ~10 tokens.
     const { saved } = await pruneSessionToNewId({
       place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
