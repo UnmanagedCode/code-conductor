@@ -20,6 +20,7 @@ import {
   seedSessionJsonl, driveTurn,
 } from './helpers.mjs';
 import { localPlace } from '../src/projects.ts';
+import { parseForwardFrame, splitForwardedMessages } from '../public/forwardFrame.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -204,11 +205,36 @@ test('forward: multi-message payload uses bare boundaries, not get_recent_messag
     'must never use get_recent_messages\' telemetry-carrying boundary variant');
   assert.ok(composed.includes('--- plan ---\nStep 1\nStep 2'), 'the inline plan body rides along in full');
   // Inter-message seam: a blank line between message 1's body and message 2's
-  // boundary, not a bare newline — the second mutation site (handlers.ts's
-  // messages.join('\n\n')), distinct from the header/payload/footer assembly
+  // boundary, not a bare newline — the second mutation site (buildForwardFrame's
+  // payload join in public/forwardFrame.js), distinct from the header/payload/footer assembly
   // join pinned in the test above.
   assert.ok(composed.includes('Step 2\n\n--- message 2/2 ---'),
     'the inter-message seam is a blank line, not a bare newline');
+});
+
+test('forward: the composed prompt round-trips through parseForwardFrame/splitForwardedMessages', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const sourceSid = await spawnReady('p');
+  const targetSid = await spawnReady('p');
+  const targetInst = instForSession(instances, targetSid);
+  const calls = recordPrompt(targetInst);
+
+  const src = instForSession(instances, sourceSid);
+  src._emitUi({ kind: 'tool_use', msgId: 'm-plan', blockIdx: 0, toolUseId: 'tu-plan', name: 'ExitPlanMode', input: { plan: 'Step 1\nStep 2' } });
+  src._emitUi({ kind: 'text_delta', msgId: 'm-prose', blockIdx: 0, text: 'Standing by.' });
+  src._emitUi({ kind: 'turn_end' });
+
+  const res = unwrap(await callTool('send_prompt', {
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
+  }));
+  // The conversation view's parser reads back exactly what the real
+  // send_prompt builder wrote, so the two cannot drift apart.
+  const parsed = parseForwardFrame(calls[0][0]);
+  assert.ok(parsed, 'the real composed prompt is recognised as a forward frame');
+  assert.equal(parsed.instruction, 'go');
+  const bodies = splitForwardedMessages(parsed.payload);
+  assert.deepEqual(bodies, ['--- plan ---\nStep 1\nStep 2', 'Standing by.']);
+  assert.equal(bodies.length, res.forwarded);
 });
 
 test('forward: a plan backed by a file carries the saved path and the full body inline', async () => {

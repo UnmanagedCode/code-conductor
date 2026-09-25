@@ -9,8 +9,9 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 import { parseRenewSeed } from './renewSeed.js';
+import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
 import { buildUserText } from './userText.js';
-import { mountFoldedText, renderWakeBodyInto, renderRenewSeedInto } from './foldedText.js';
+import { mountFoldedText, renderWakeBodyInto, renderRenewSeedInto, renderForwardBodyInto } from './foldedText.js';
 
 // The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
 // builds it and `lazyHistory.js` collapses a doubled one at a page seam.
@@ -574,10 +575,26 @@ export class Conversation {
       blocks.appendChild(details);
     }
 
+    // send_prompt({forward}) frame: another worker's output relayed with the
+    // conductor's instruction after it. Render the forwarded payload as a
+    // collapsed bubble — one labelled section per message, built lazily on
+    // first expand — and hand the instruction on as `text`, so it renders
+    // below as an ordinary user-text block with its own controls.
+    const forward = (skill || wake || renew) ? null : parseForwardFrame(text);
+    if (forward) {
+      const badge = el('span', { class: 'forward-badge', title: 'Forwarded worker output' }, '📨');
+      const n = splitForwardedMessages(forward.payload).length;
+      const details = el('details', { class: 'block forward-frame' },
+        el('summary', {}, badge, `Forwarded worker output · ${n} message${n === 1 ? '' : 's'}`));
+      mountFoldedText(details, forward.payload, { renderInto: renderForwardBodyInto });
+      blocks.appendChild(details);
+      text = forward.instruction;
+    }
+
     // Strip the <transcribed> marker for display — the agent still receives it
     // in the sent payload so it knows the message came from speech-to-text.
     const TRANSCRIBED_PREFIX = '<transcribed>\n';
-    const isTranscribed = !skill && !wake && !renew && text.startsWith(TRANSCRIBED_PREFIX);
+    const isTranscribed = !skill && !wake && !renew && !forward && text.startsWith(TRANSCRIBED_PREFIX);
     if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
     let userTextControls = null;
@@ -617,7 +634,10 @@ export class Conversation {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
     }
     if (userTextControls) roleEl.appendChild(userTextControls);
-    const cls = wake ? 'msg user wake-callback' : renew ? 'msg user renew-seed' : 'msg user';
+    const cls = wake ? 'msg user wake-callback'
+      : renew ? 'msg user renew-seed'
+      : forward ? 'msg user forward-frame'
+      : 'msg user';
     const attrs = { class: cls };
     if (userIndex != null) attrs['data-user-index'] = String(userIndex);
     if (this.segmentId != null) attrs['data-segment-id'] = this.segmentId;

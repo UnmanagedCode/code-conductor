@@ -18,8 +18,9 @@
 
 import { WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
 import { parseRenewSeed } from '../public/renewSeed.js';
+import { FORWARD_FRAME_HEADER } from '../public/forwardFrame.js';
 import {
-  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK, FORWARD_FRAME_HEADER,
+  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK,
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
 } from './injectedTurns.ts';
 import type { UiEvent } from './parser.ts';
