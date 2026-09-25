@@ -472,7 +472,7 @@ test('close() reaps a command that is still in flight', async () => {
   await assert.rejects(fs.stat(witness),
     'the command must not have run to completion on the far side after close()');
 
-  // And close() is idempotent, which instance exit + kill + discardAll all rely
+  // And close() is idempotent, which instance exit and kill both rely
   // on: they can each reach it for the same session.
   await redirect.close();
 });

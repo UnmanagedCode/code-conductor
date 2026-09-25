@@ -62,18 +62,6 @@ test('a recorded plan session resumes in plan, not bypassPermissions', async () 
     'the recorded mode must govern the resume — bypassPermissions here means the record was ignored');
 });
 
-test('a recorded ask session resumes in ask', async () => {
-  // `ask` is orchestrator-only: the CLI is told bypassPermissions and the
-  // distinction lives in our own gating, so this also proves the value round
-  // -trips through our store rather than being read back off the subprocess.
-  const sid = '22222222-2222-4222-8222-222222222222';
-  await seedSession('inherit-ask', sid);
-  await markSessionMode(sid, 'ask');
-
-  const inst = await resume('inherit-ask', { resume: sid });
-  assert.equal(inst.mode, 'ask');
-});
-
 test('an explicit mode beats the recorded one', async () => {
   // Both directions, because a one-way test passes on an implementation that
   // just ignores one of the two inputs.

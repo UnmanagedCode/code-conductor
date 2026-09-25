@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { sessionFilePath, subAgentDirPath, type TranscriptPlacement } from './projects.ts';
-import { markerPermissionMode } from './sessionModes.ts';
+import { MODES } from './sessionModes.ts';
 import {
   consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
   isTaskNotificationContent, attachSkillLoad, stampCliInjected,
@@ -499,12 +499,10 @@ export async function hasResumableConversation(options: { place: TranscriptPlace
 // shell picker can discover and label the session. Best-effort — caller
 // swallows errors.
 //
-// `mode` is the ORCHESTRATOR mode, not a CLI one, and the translation to the
-// CLI's vocabulary happens here rather than at each call site that reaches this
-// function. That is the point: a caller that reached for the live-wire
-// mapping (cliPermissionMode) instead is what previously recorded every `ask`
-// session as `bypassPermissions`. With the mapping owned here, no caller can
-// hand this function a CLI-shaped value to begin with.
+// The `permission-mode` marker records the session's mode. A value outside
+// MODES throws instead of writing a marker: the callers are all internal, so
+// an unknown mode here is a bug in this repo, and a marker that misstates or
+// omits its mode is silent at write time.
 export async function writeSessionMetadata(options: {
   place: TranscriptPlacement;
   sessionId: string;
@@ -513,11 +511,14 @@ export async function writeSessionMetadata(options: {
 }): Promise<void> {
   const { place, sessionId, leafUuid, mode } = options;
   if (!place?.cwd || !sessionId || !leafUuid) return;
+  if (!(MODES as readonly string[]).includes(mode)) {
+    throw new Error(`writeSessionMetadata: unknown mode ${JSON.stringify(mode)}`);
+  }
   const file = sessionFilePath(place, sessionId);
   const dir = path.dirname(file);
   const lines =
     JSON.stringify({ type: 'last-prompt', leafUuid, sessionId }) + '\n' +
-    JSON.stringify({ type: 'permission-mode', permissionMode: markerPermissionMode(mode), sessionId }) + '\n';
+    JSON.stringify({ type: 'permission-mode', permissionMode: mode, sessionId }) + '\n';
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(file, lines);
 }

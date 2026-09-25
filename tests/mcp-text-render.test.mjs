@@ -571,11 +571,6 @@ describe('renderSessions — the resumes-hot safety flag', () => {
     assert.ok(!out.includes('resumes-hot'), `plan does not resume hot:\n${out}`);
   });
 
-  test('ask is gated, so it is not hot either', () => {
-    const out = renderSessions([grp({ inactive: [stoppedRow({ resumeMode: 'ask' })] })]);
-    assert.ok(!out.includes('resumes-hot'));
-  });
-
   test('the flag joins the same flags cell as temp/conducted', () => {
     const out = renderSessions([grp({ inactive: [stoppedRow({ temp: true, resumeMode: 'bypassPermissions' })] })]);
     assert.match(out, /temp,resumes-hot/);

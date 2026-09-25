@@ -2,11 +2,8 @@
 // permission mode each session was last running under.
 //
 // Why the store exists: `spawn_instance({resume})` has to come back up in the
-// mode the session was actually in. The CLI jsonl's `permission-mode` marker
-// can't serve that — it is written in the CLI's vocabulary, which has no `ask`
-// (see markerPermissionMode below), so an `ask` session cannot round-trip
-// through it. This store keeps the orchestrator-level value, which is the one
-// the orchestrator resumes on.
+// mode the session was actually in, and the resume path reads this store —
+// the CLI jsonl's `permission-mode` marker is not an input to it.
 //
 // There is NO backfill. Sessions that predate the store have no record and
 // resolve through effectiveResumeMode() to DEFAULT_RESUME_MODE — exactly the
@@ -22,18 +19,15 @@ import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
 import { withLock } from './storeLock.ts';
 
-// Three user-facing modes:
-//   - `plan`              — read-only planning; CLI is in plan mode
-//   - `ask`               — full power but every destructive tool is gated
-//                           by an interactive PreToolUse hook; CLI is in
-//                           bypassPermissions
-//   - `bypassPermissions` — full power, no gating; CLI is in bypassPermissions
+// Two user-facing modes, both the CLI's own values:
+//   - `plan`              — read-only planning
+//   - `bypassPermissions` — full power, no gating
 // The CLI's `default`/`acceptEdits` modes are unusable in stream-json
 // --print (no SDK canUseTool callback), so we don't expose them.
-export const MODES = ['plan', 'ask', 'bypassPermissions'] as const;
+export const MODES = ['plan', 'bypassPermissions'] as const;
 
 // Start fresh instances in read-only plan mode by default. The user can pick
-// `ask` or `code` (= bypassPermissions) in the new-instance dialog, or
+// `code` (= bypassPermissions) in the new-instance dialog, or
 // approve a plan to flip the running instance to bypassPermissions
 // mid-session. A **resume** with no recorded mode falls back to
 // `bypassPermissions` instead — a resume is almost always continuing real work
@@ -49,39 +43,7 @@ export function effectiveResumeMode(recorded: string | null | undefined): string
   return typeof recorded === 'string' && recorded ? recorded : DEFAULT_RESUME_MODE;
 }
 
-// How an orchestrator mode is RECORDED in the CLI's own session jsonl, whose
-// `permission-mode` marker the CLI reads back when it rebuilds a session (it
-// both writes and reads that record, under a last-wins merge). Its vocabulary
-// is `dontAsk|auto|default|acceptEdits|plan|bypassPermissions` — no `ask`, so
-// `ask` is recorded as `default`: the CLI mode that prompts, which is what an
-// `ask` session does. Recording it as `bypassPermissions` would tell an
-// interactive `claude --resume` that a gated session ran hot.
-//
-// This is deliberately NOT cliPermissionMode (instances.ts), which maps
-// `ask -> bypassPermissions` for the live subprocess — there the collapse is
-// the mechanism: the CLI stops prompting so the orchestrator's PreToolUse hook
-// can prompt instead. Conflating the two is what made the marker lossy in the
-// unsafe direction; the live wire and the durable record are different
-// questions and must not share a mapping.
-// Throws rather than passing an unknown value through: a record that omits or
-// misstates its own mode is the same defect class as one claiming a gated
-// session ran hot, and both are silent at the point of writing. The callers are
-// all internal (`Instance.mode` and the rewind/fork/prune paths that read it),
-// so anything outside MODES here is a bug in this repo, not user input.
-// It is an internal assertion, not a loud failure on every path: the
-// highest-frequency caller, Instance._writeSessionMetadata, is best-effort
-// (`.catch(() => {})`), so there the throw means NO marker is written rather
-// than a wrong one — which is the point, but it is silent.
-export function markerPermissionMode(mode: string): string {
-  if (!(MODES as readonly string[]).includes(mode)) {
-    throw new Error(`markerPermissionMode: unknown orchestrator mode ${JSON.stringify(mode)}`);
-  }
-  return mode === 'ask' ? 'default' : mode;
-}
-
-// True when resuming in this mode gives the worker ungated tool use. `ask` is
-// CLI-hot but every destructive tool is gated by the interactive hook, so it is
-// not "hot" in the sense that matters here: nothing runs unattended.
+// True when resuming in this mode gives the worker ungated tool use.
 export function resumesHot(mode: string): boolean {
   return mode === 'bypassPermissions';
 }

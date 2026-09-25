@@ -432,7 +432,7 @@ async function headerFixture() {
   window.document.documentElement.innerHTML = html;
   const document = window.document;
 
-  const ids = ['composer-input', 'mode-select', 'kill-btn', 'mute-btn', 'resume-btn',
+  const ids = ['composer-input', 'mode-toggle', 'kill-btn', 'mute-btn', 'resume-btn',
     'instance-title', 'turn-indicator', 'ti-left', 'ti-dot', 'ti-label', 'ti-ellipsis',
     'ti-interrupt-now', 'ti-usage-slot', 'sync-btn', 'merge-btn', 'debug-btn',
     'summarize-session-btn', 'rename-session-btn', 'change-model-btn', 'change-effort-btn',

@@ -1,5 +1,5 @@
 // Active-instance header: the chip row (title / project / worktree / status /
-// temp / debug / auto-resume), the primary controls (mode select, kill/resume,
+// temp / debug / auto-resume), the primary controls (mode switch, kill/resume,
 // sync/merge, overflow + auto-approve buttons), the composer/turn-indicator
 // enablement, and the combined context+rate-limit chip with its usage popover.
 //
@@ -438,11 +438,15 @@ export function installHeader({
   // module already renders and enable/disables every one of them; only their
   // click handlers used to sit in app.js.
 
-  dom.modeSelect.addEventListener('change', async () => {
-    if (!getActiveId()) return;
-    const mode = dom.modeSelect.value;
-    try { await send('mode', { id: getActiveId(), mode }, { ack: true }); }
-    catch (e) { alert(`mode change failed: ${e.message}`); }
+  // Code | Plan switch. Rendered from state in update(), never flipped here: a
+  // click on the unpressed side sends one `mode` frame and the `status` frame
+  // that follows re-renders it.
+  dom.modeToggle.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.qs-mode-opt');
+    if (!btn || !dom.modeToggle.contains(btn)) return;
+    if (!getActiveId() || btn.getAttribute('aria-pressed') === 'true') return;
+    try { await send('mode', { id: getActiveId(), mode: btn.dataset.mode }, { ack: true }); }
+    catch (err) { alert(`mode change failed: ${err.message}`); }
   });
 
   dom.killBtn.addEventListener('click', () => {
@@ -657,6 +661,14 @@ export function installHeader({
     renderTiLeft(inst);
   }
 
+  // Render the Code | Plan switch: `mode` is pressed (null presses neither).
+  function setModeToggle(mode, disabled) {
+    for (const btn of dom.modeToggle.querySelectorAll('.qs-mode-opt')) {
+      btn.setAttribute('aria-pressed', btn.dataset.mode === mode ? 'true' : 'false');
+      btn.disabled = disabled;
+    }
+  }
+
   function update() {
     // The header gets rebuilt from scratch on every call, which discards
     // the existing chip nodes. The chips are rebuilt below, so close the two
@@ -676,7 +688,7 @@ export function installHeader({
     currentInst = inst ?? null;
     if (!inst) {
       dom.instanceTitle.textContent = 'no instance selected';
-      dom.modeSelect.disabled = true;
+      setModeToggle(null, true);
       dom.killBtn.textContent = 'Interrupt';
       dom.killBtn.disabled = true;
       dom.resumeBtn.hidden = true;
@@ -750,8 +762,7 @@ export function installHeader({
     // per-session; rl half reads from globalRLTracker (account-wide).
     dom.tiUsageSlot.textContent = '';
     dom.tiUsageSlot.appendChild(renderCombinedChip(inst));
-    dom.modeSelect.value = inst.mode;
-    dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
+    setModeToggle(inst.mode, inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited');
     dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
     dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
     dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
@@ -768,7 +779,7 @@ export function installHeader({
     // alive; once enabled
     // it flips to a disabled '🐛 capturing' indicator — there's no off
     // path (the CLI stays mirrored for the rest of its life). Auto-approve
-    // plans lives in the controls row (sibling of #mode-select), not in
+    // plans lives in the controls row (sibling of #mode-toggle), not in
     // this menu, so the toggle is one click from anywhere — including
     // mid-turn.
     dom.debugBtn.hidden = !canMenu;
@@ -805,7 +816,7 @@ export function installHeader({
       : 'mute turn-end notifications for this session';
     dom.muteBtn.setAttribute('aria-pressed', muted ? 'true' : 'false');
     // Auto-approve only applies to plan mode (it short-circuits the
-    // ExitPlanMode confirmation card). Hide it in code/ask mode so the
+    // ExitPlanMode confirmation card). Hide it in Code mode so the
     // controls row stays uncluttered.
     const showAutoApprove = canMenu && inst.mode === 'plan';
     dom.autoApprovePlanBtn.hidden = !showAutoApprove;
@@ -813,7 +824,7 @@ export function installHeader({
     // Playbook enforcement governs the CONDUCTOR's own tool calls, so it is
     // meaningless on any other session — and a visible control that does nothing
     // is worse than an absent one. Rendered from state (never optimistic), like
-    // #mode-select: the `status` frame is authoritative.
+    // #mode-toggle: the `status` frame is authoritative.
     const showEnforcement = canMenu && inst.project === CONDUCT_PROJECT;
     dom.playbookEnforcementBtn.hidden = !showEnforcement;
     dom.playbookEnforcementBtn.disabled = !showEnforcement;

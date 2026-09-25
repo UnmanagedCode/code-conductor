@@ -97,9 +97,8 @@ test('prune stubs the pruned region and leaves the newest turn verbatim', async 
     // exactly as fork does.
     const core = out.filter(o => o.uuid !== undefined);
     assert.deepEqual(out.slice(core.length).map(o => o.type), ['last-prompt', 'permission-mode']);
-    // The marker carries a VALUE, not just a type: prune reaches
-    // writeSessionMetadata like every other write site, so it inherits the
-    // orchestrator -> CLI vocabulary mapping rather than recording raw.
+    // The marker carries a VALUE, not just a type: prune passes the session's
+    // own mode to writeSessionMetadata, and that is what the marker carries.
     assert.equal(out.at(-1).permissionMode, 'bypassPermissions');
     assert.equal(core.length, lines.length);
     assert.deepEqual(core.map(o => o.uuid), lines.map(o => o.uuid));

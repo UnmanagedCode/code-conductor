@@ -254,7 +254,7 @@ test('warn: a LEGAL spawn is patched by `require` and recorded, exactly as under
     // Neither mode nor createWorktree is passed; `draft` pins both. Proof that
     // warn runs the full decide()+patch path rather than passing args through.
     const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    assert.equal(w.mode, 'ask', 'warn applies the stage\'s require');
+    assert.equal(w.mode, 'bypassPermissions', 'warn applies the stage\'s require');
     assert.ok(w.worktree?.worktreeName, 'require filled in createWorktree under warn');
 
     const spawn = await waitFor(async () =>
@@ -272,7 +272,7 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     // `require` FILLS IN omitted arguments: neither mode nor createWorktree is
     // passed, and both come back as `draft` pins them.
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    assert.equal(impl.mode, 'ask', 'require filled in mode');
+    assert.equal(impl.mode, 'bypassPermissions', 'require filled in mode');
     assert.ok(impl.worktree?.worktreeName, 'require filled in createWorktree');
     const wtName = impl.worktree.worktreeName;
 
@@ -590,8 +590,8 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     // gatelab/draft deliberately: its `createWorktree: true` pin is what puts the
     // worker in a worktree, which is what the transcript seeding below depends on.
     //
-    // `mode` is omitted because `draft` PINS {mode:'ask', createWorktree:true}
-    // (ARG_PIN_CONFLICT if either is supplied). So this worker runs in ask mode
+    // `mode` is omitted because `draft` PINS {mode:'bypassPermissions', createWorktree:true}
+    // (ARG_PIN_CONFLICT if either is supplied). So this worker runs in bypassPermissions
     // AND in a real git worktree — its cwd is the worktree, not the project root,
     // which is why the transcript below is seeded at inst.cwd rather than the
     // project path. Neither matters to the prune; both are consequences of the

@@ -432,23 +432,6 @@ export function parseResetEpochSecs(info: unknown): number | null {
   const ms = Date.parse(v as string);                              // ISO-8601 string
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
-// `ask` is orchestrator-only — the CLI itself doesn't know about it. At
-// spawn / set_permission_mode time the CLI receives the equivalent
-// bypassPermissions value; the orchestrator tracks `ask` separately and
-// uses it to decide whether the interactive hook callback should prompt
-// the user or auto-allow.
-//
-// LIVE WIRE ONLY — its two call sites are the `--permission-mode` argv below
-// and the `set_permission_mode` control request. The collapse is the mechanism
-// there: the CLI must stop prompting so the hook can. It is NOT how a mode is
-// recorded; the durable jsonl marker goes through markerPermissionMode
-// (sessionModes.ts), which maps `ask` to `default` instead. Reaching for this
-// one when writing a record is the bug that made the marker claim every gated
-// session ran hot.
-function cliPermissionMode(mode: string): string {
-  return mode === 'ask' ? 'bypassPermissions' : mode;
-}
-
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
 const DEFAULT_THINKING = 'adaptive';
 
@@ -931,12 +914,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // alone — that session continues).
     this._lastContextUsage = null;
     this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
-    // Per-instance PreToolUse hook callback broker (held-open
-    // responses + timeout fallbacks + the ask-mode permission_request
-    // emission). See src/hookBroker.ts.
+    // Per-instance PreToolUse/PostToolUse hook callback answerer: allows
+    // local calls, applies the SessionRedirect policy to redirected ones.
+    // See src/hookBroker.ts.
     this._hooks = new HookBroker({
-      getMode: () => this.mode,
-      emit: (ev: unknown) => this._emitUi(ev as UiEvent),
       // A GETTER, not the value: the redirect is attached after construction
       // (it needs this instance's emit) and dropped when the session ends.
       getRedirect: () => this._redirect,
@@ -2212,18 +2193,16 @@ export class Instance extends EventEmitter implements InstanceLike {
       // --dangerously-skip-permissions" and the plan-approve flow can't
       // leave plan mode.
       '--allow-dangerously-skip-permissions',
-      '--permission-mode', cliPermissionMode(this.mode),
+      '--permission-mode', this.mode,
       // `effort` is always resolved to a concrete level by the manager's
       // _doCreate (resolveSpawnEffort never returns null); the field is
       // `string | null` only because the contract allows it.
       '--effort', this.effort as string,
       '--thinking', this.thinking,
-      // PreToolUse hooks. The static `command` deny on
-      // AskUserQuestion|ExitPlanMode replaces the old auto-interrupt +
-      // marker-scrub plumbing. When a hookCallbackUrl is supplied, an
-      // interactive `http` hook is ALSO registered for the destructive
-      // tools — its behaviour at callback time depends on the
-      // orchestrator-tracked mode (ask = prompt user, otherwise = allow).
+      // Hooks (src/settings.ts). When a hookCallbackUrl is supplied, an
+      // `http` PreToolUse hook is registered for the mutating tools; the
+      // HookBroker allows local calls and applies the redirect policy to
+      // redirected ones.
       '--settings', buildSettingsJSON({
         hookCallbackUrl: this.hookCallbackUrl ?? undefined,
         redirect: this._redirect !== null,
@@ -2515,14 +2494,9 @@ export class Instance extends EventEmitter implements InstanceLike {
         }
         const mode = data?.permissionMode;
         if (mode && typeof mode === 'string' && VALID_MODES.has(mode)) {
-          // The CLI reports its own mode value ('plan' or
-          // 'bypassPermissions'). Don't clobber the orchestrator-only
-          // 'ask' label when the CLI says bypassPermissions — they're
-          // CLI-equivalent and we own the higher-level distinction.
-          if (!(mode === 'bypassPermissions' && this.mode === 'ask')) {
-            this.mode = mode;
-            this._recordMode(mode);
-          }
+          // The CLI reports its own mode, which is the session's mode.
+          this.mode = mode;
+          this._recordMode(mode);
         }
         this._trackModel(data?.model);
       }
@@ -2865,10 +2839,6 @@ export class Instance extends EventEmitter implements InstanceLike {
       p.reject(new Error('subprocess exited'));
     }
     this._pending.clear();
-    // Resolve any in-flight permission prompts with deny — the CLI is
-    // gone, so the tool won't run anyway, but we still need to free
-    // the held-open HTTP responses.
-    this._hooks.discardAll();
     // And stop every command this session still has running on the remote
     // system. Each is a process on someone else's machine keyed to a session
     // that no longer exists, with nobody left to read its result.
@@ -3221,9 +3191,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
     try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
     try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
-    // Like the conducted/title markers, the old id KEEPS its mode record: the
-    // archived row is still listed under includeArchived, and its resumes-hot
-    // flag should stay accurate rather than degrade to the unrecorded default.
+    // Records the rotated id's mode here, at rotation, so the new id is never
+    // left unrecorded: an unrecorded id resumes as DEFAULT_RESUME_MODE, so a
+    // `plan` worker would come back ungated. This holds whether or not a later
+    // system/init reports the mode. Like the conducted/title markers, the old id
+    // KEEPS its mode record: the archived row is still listed under
+    // includeArchived, and its resumes-hot flag should stay accurate.
     try { await markSessionMode(newSid, this.mode); } catch { /* best-effort */ }
     try {
       if (this.backend !== CLAUDE_BACKEND_ID) {
@@ -3267,7 +3240,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   async setMode(mode: string): Promise<unknown> {
     if (!VALID_MODES.has(mode)) throw new Error('invalid mode');
-    await this._controlRequest({ subtype: 'set_permission_mode', mode: cliPermissionMode(mode) });
+    await this._controlRequest({ subtype: 'set_permission_mode', mode });
     this.mode = mode;
     this._recordMode(mode);
     this.emit('status', this.summary());
@@ -3386,10 +3359,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     return this.summary();
   }
 
-  // Thin delegate so callers (routes.ts / wsHub.ts) keep talking to
+  // Thin delegate so the caller (routes.ts) keeps talking to
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope: unknown, res: Response): void { this._hooks.handle(envelope as HookEnvelope | null | undefined, res); }
-  resolveHookCallback(toolUseId: unknown, allow: boolean): boolean { return this._hooks.resolve(toolUseId, allow); }
 
   // Two-tier interrupt, both tiers a real `control_request subtype:interrupt` —
   // they differ only in WHEN it fires. FORCED (`force:true`) fires now, severing
@@ -3443,7 +3415,6 @@ export class Instance extends EventEmitter implements InstanceLike {
         if (!(e as { timedOut?: boolean })?.timedOut) this._turnForceAborted = false;
         throw e;
       }
-      this._releaseParkedPermissions();
       // Open the drain window synchronously in the same microtask as the ACK.
       // Any system/init that follows (the CLI dequeuing its leftover input queue)
       // will be caught before the spurious API round-trip begins. Opening here
@@ -3498,13 +3469,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._interruptDeadline.unref?.();
   }
 
-  // True while a tool sits at an unanswered ask-mode permission card. Such a
-  // tool has NOT started, so there is no work to preserve — without this the
-  // armed interrupt would wait on a `pendingTools` entry that only a human can
-  // clear. No timer and no max-defer knob: a genuinely wedged tool is what the
-  // forced tier is for.
-  _blockedOnPermission(): boolean { return this._hooks.pendingCount > 0; }
-
   // The armed abort's boundary test. Two clauses, and they are NOT symmetric:
   //
   //   pendingTools empty  — STRICT. A dispatched tool must have returned its
@@ -3524,20 +3488,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     return q.openBlocks.size === 0 || q.boundarySeq > this._interruptArmSeq;
   }
 
-  // Called once an interrupt has been ACKED: the turn is severed, so a tool
-  // still parked at a permission card will never run. Deny it — freeing the
-  // held-open hook HTTP response and resolving the UI card — instead of leaving
-  // both hanging until HOOK_PENDING_TIMEOUT_MS (9 min). Scoped by construction
-  // to the aborted turn: a pending decision only exists for a tool_use the CLI
-  // was about to dispatch in it.
-  //
-  // ONLY after the ACK, never before the request: a deny released first comes
-  // back as an error tool_result, and the CLI's agent loop would spend exactly
-  // the extra model round-trip this whole path exists to avoid.
-  _releaseParkedPermissions(): void {
-    this._hooks.discardAll('turn interrupted before the tool ran', 'interrupted');
-  }
-
   // Fire an armed deferred interrupt if the stream is at a boundary. Called
   // from interrupt() (covers arming into an existing gap) and from the tail of
   // _emitUi (covers every later event). Deliberately synchronous inside the
@@ -3547,10 +3497,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _maybeFireArmedInterrupt(): void {
     if (!this._interruptArmed || this._interruptFired) return;
     if (this.status !== 'turn' || !this.proc) return;
-    if (!this._atInterruptBoundary() && !this._blockedOnPermission()) return;
+    if (!this._atInterruptBoundary()) return;
     this._interruptFired = true;
     this._controlRequest({ subtype: 'interrupt' }).then(
-      () => this._releaseParkedPermissions(),
+      undefined,
       (e: Error) => {
         // Timed out or the process died mid-flight. Disarm so the UI never
         // sticks on "stopping…" with nothing coming, and clear _interruptFired
@@ -4096,7 +4046,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.parser.reset();
     this._lastLeafUuid = null;
     this._planFiles.reset();
-    this._hooks.discardAll();
     // A rewind/respawn rewrites the CLI's prefix, so a command still running on
     // the system belongs to a conversation the worker no longer has. Stop it —
     // and NOTE that the redirect keeps serving this session afterwards, which is
@@ -4181,8 +4130,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._resuming = new Map<string, Promise<Instance>>();
     this._resumingPublicIds = new Set<string>();
     // Set by the server after `server.listen()` resolves. New instances
-    // spawned without a port set get null hookCallbackUrl, which disables
-    // the interactive http hook (ask mode falls back to auto-allow).
+    // spawned without a port set get null hookCallbackUrl, which registers
+    // no http hook.
     this.serverPort = null;
     // Resolves the enabled cc plugins' Claude Code plugin roots (validated abs
     // dirs) to add as `--plugin-dir` flags. Injected by server.ts after the
@@ -4749,7 +4698,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       : DEFAULT_MODE;
     const finalMode = mode ?? defaultMode;
     if (!VALID_MODES.has(finalMode)) {
-      throw httpError(400, 'invalid mode (must be plan, ask, or bypassPermissions)');
+      throw httpError(400, 'invalid mode (must be plan or bypassPermissions)');
     }
     // `tier`/`role` are carried ONLY to resolve the default effort — the model +
     // backend are already resolved to concrete values by the caller. They are not

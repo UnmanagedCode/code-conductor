@@ -240,8 +240,6 @@ const SKIPPABLE_HEADS = [
   ['raw', { kind: 'raw', line: 'not json', _seq: 59 }],
   ['hook', { kind: 'hook', event: 'PreToolUse', _seq: 59 }],
   ['control_response', { kind: 'control_response', requestId: 'r1', ok: true, _seq: 59 }],
-  ['permission_request', { kind: 'permission_request', toolUseId: 'tuP', _seq: 59 }],
-  ['permission_resolved', { kind: 'permission_resolved', toolUseId: 'tuP', allow: true, _seq: 59 }],
   ['overage_message_queued', { kind: 'overage_message_queued', _seq: 59 }],
 ];
 

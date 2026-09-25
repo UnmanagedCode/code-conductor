@@ -258,7 +258,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value wins, EXCEPT where a playbook stage pins `mode`: the pinned value is filled in over the inherited one, and a conflicting explicit value is refused.' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value wins, EXCEPT where a playbook stage pins `mode`: the pinned value is filled in over the inherited one, and a conflicting explicit value is refused.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:
@@ -348,8 +348,7 @@ export function buildTools(): Tool[] {
     {
       name: 'set_mode',
       description:
-        'Switch a running instance\'s permission mode at runtime via control_request. ' +
-        'plan / ask / bypassPermissions.',
+        'Switch a running instance\'s permission mode at runtime via control_request.',
       inputSchema: {
         type: 'object',
         properties: {

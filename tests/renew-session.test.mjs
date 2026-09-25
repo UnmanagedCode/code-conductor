@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
@@ -527,10 +528,10 @@ test('renew_session carries the durable temp + conducted markers onto the rotate
     // …and the session's own identity is untouched by any of it.
     assert.equal(rotated.sessionId, sid1, 'the public id is pinned across the carry');
 
-    // The mode record is NOT asserted here: for a bypassPermissions session the
-    // system/init handler records the rotated id on the reseed turn anyway, so
-    // an assertion here would pass with the carry deleted. `ask` is the mode
-    // the carry actually owns — see the dedicated test at the end of this file.
+    // The mode record is NOT asserted here: the system/init handler records the
+    // rotated id on the reseed turn anyway, so an assertion here would pass with
+    // the carry's mode line deleted. The dedicated carry test at the end of this
+    // file isolates that line.
   } finally {
     await srv.close();
   }
@@ -1255,42 +1256,32 @@ test('renew_session against the real claude binary rotates the BACKING id and pi
   }
 });
 
-test('renew_session carries the mode record for an `ask` session, which nothing else writes', async () => {
-  // The carry at Instance.carryMarkersAcrossRenewal is redundant for `plan` and
-  // `bypassPermissions`: the system/init handler rotates the backing id and
-  // records the CLI-reported mode in the same breath, and the fork path
-  // relaunches, so spawn() records there. `ask` is the one mode it cannot
-  // cover — `ask` is orchestrator-only, the CLI reports the rotated session as
-  // `bypassPermissions`, and the init handler's anti-clobber guard skips BOTH
-  // the assignment and the record write. Without the carry the rotated id stays
-  // unrecorded, so it resolves to DEFAULT_RESUME_MODE: listed with
-  // `resumes-hot` and resumed ungated, for a worker that was deliberately in
-  // the hook-gated mode. That is this task's footgun on the renewal path.
+test("renewal carry records the rotated id's mode before any init reports it", async () => {
+  // Invariant: carryMarkersAcrossRenewal writes the rotated id's mode record
+  // itself. The fresh id below is one no system/init has seen and no spawn
+  // recorded, so the carry's markSessionMode line is the only writer of it —
+  // the test fails if that line is deleted. Unrecorded, the id would resolve to
+  // DEFAULT_RESUME_MODE and a `plan` worker would resume ungated.
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'ask' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
     const sid1 = spawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
-    const oldBacking = inst.backingSessionId;
-    assert.equal(inst.mode, 'ask', 'the CLI reports bypassPermissions; the orchestrator keeps `ask`');
-    await waitFor(async () => (await getSessionMode(oldBacking)) === 'ask');
+    const old = inst.backingSessionId;
+    await waitFor(async () => (await getSessionMode(old)) === 'plan');
 
-    await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on' }, { caller: sid1 });
-    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
-    assert.equal(instForSession(srv.instances, NEW_SID).mode, 'ask',
-      'the rotated worker is still in ask');
+    const fresh = randomUUID();
+    assert.equal(await getSessionMode(fresh), null, 'precondition: the fresh id is unrecorded');
+    inst.backingSessionId = fresh;
+    await inst.carryMarkersAcrossRenewal(old);
 
-    await waitFor(async () => (await getSessionMode(NEW_SID)) === 'ask');
-    assert.equal(await getSessionMode(NEW_SID), 'ask',
-      'the rotated id must carry `ask` — nothing else writes it');
+    assert.equal(await getSessionMode(fresh), 'plan', 'the rotated id carries the worker\'s mode');
     // The old id KEEPS its record: it survives as an archived, still-listable
     // row whose resumes-hot flag has to stay accurate.
-    assert.equal(await getSessionMode(oldBacking), 'ask',
-      'the archived pre-clear id keeps its mode record');
+    assert.equal(await getSessionMode(old), 'plan', 'the pre-rotation id keeps its mode record');
   } finally {
     await srv.close();
   }
