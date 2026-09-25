@@ -760,16 +760,23 @@ test("setMode('ask') throws invalid mode, sends nothing and leaves the mode unch
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    // The fake CLI appends every stdin line to the transcript, and nothing is
+    // written at idle. A valid same-mode switch first makes the file exist, so
+    // "nothing sent" below is measured against a real file, not an absent one.
+    const fsp = (await import('node:fs')).promises;
+    const readLines = async () => (await fsp.readFile(transcriptPath, 'utf8'))
+      .trim().split('\n').filter(Boolean).map(JSON.parse);
+    await inst.setMode('plan');
+    const before = await readLines();
+    const isModeReq = p => p.type === 'control_request' && p.request?.subtype === 'set_permission_mode';
+    assert.equal(before.filter(isModeReq).length, 1, 'precondition: the priming switch reached the CLI');
 
     await assert.rejects(inst.setMode('ask'), /invalid mode/);
     assert.equal(inst.mode, 'plan', 'the tracked mode is unchanged');
 
-    const fsp = (await import('node:fs')).promises;
-    let text = '';
-    try { text = await fsp.readFile(transcriptPath, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    const lines = text.trim().split('\n').filter(Boolean).map(JSON.parse);
-    const modeReq = lines.find(p => p.type === 'control_request' && p.request?.subtype === 'set_permission_mode');
-    assert.equal(modeReq, undefined, 'no set_permission_mode control_request was written');
+    const after = await readLines();
+    assert.equal(after.length, before.length, 'nothing further was written to the CLI');
+    assert.equal(after.filter(isModeReq).length, 1, 'no set_permission_mode control_request was written');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
   }

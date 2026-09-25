@@ -1,5 +1,5 @@
 // Active-instance header: the chip row (title / project / worktree / status /
-// temp / debug / auto-resume), the primary controls (mode select, kill/resume,
+// temp / debug / auto-resume), the primary controls (mode switch, kill/resume,
 // sync/merge, overflow + auto-approve buttons), the composer/turn-indicator
 // enablement, and the combined context+rate-limit chip with its usage popover.
 //

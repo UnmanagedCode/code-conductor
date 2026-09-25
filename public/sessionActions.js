@@ -78,7 +78,7 @@ export function installSessionActions({
   // mode means the resume inherits the one the session was recorded in, or
   // `code` (bypassPermissions) when it has no record — fresh spawns default
   // to plan, but a resume is usually continuing real work. Switch via the
-  // header mode dropdown if needed.
+  // header Code/Plan switch if needed.
   // `silent` is used by the anchor auto-resume: a concurrent resume (the
   // server's manifest restore, or a manual stop+resume) may already own this
   // session, so the POST can 409 ("already attached") even though the session

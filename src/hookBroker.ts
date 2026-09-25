@@ -85,7 +85,7 @@ export class HookBroker {
   // posts them to one URL and `hook_event_name` discriminates.
   //
   // Synchronous entry point over an async body, because the caller is an
-  // express handler that has already been handed the response to hold open.
+  // express handler that has already been handed the response.
   // Every path here answers `res` exactly once; a thrown redirector is answered
   // with a DENY, never with a fall-through allow, because allowing a rewrite
   // that failed to happen runs the worker's own command on the orchestrator's

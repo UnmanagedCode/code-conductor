@@ -3359,7 +3359,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     return this.summary();
   }
 
-  // Thin delegate so callers (routes.ts / wsHub.ts) keep talking to
+  // Thin delegate so the caller (routes.ts) keeps talking to
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope: unknown, res: Response): void { this._hooks.handle(envelope as HookEnvelope | null | undefined, res); }
 

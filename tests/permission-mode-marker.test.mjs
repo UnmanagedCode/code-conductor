@@ -117,24 +117,29 @@ for (const mode of ['plan', 'bypassPermissions']) {
 }
 
 // The fork, rewind and prune call sites each pass an instance's own mode down
-// to writeSessionMetadata. Every other fork/prune test in the suite drives
-// `bypassPermissions`, which is also DEFAULT_RESUME_MODE, so a hard-coded
-// value there is indistinguishable from `inst.mode`. Driving `plan` through
-// them makes the difference observable.
+// to writeSessionMetadata. A `plan` session catches a site hard-coded to
+// `bypassPermissions` (also DEFAULT_RESUME_MODE); a `bypassPermissions` session
+// catches one hard-coded to `plan`. Fork is driven from both, so it catches
+// either hard-coded value; rewind and prune are driven from `plan`.
 
-// Pins the REST fork call site (routes.ts).
-test('forking a `plan` session records `plan` in the fork transcript', async () => {
-  const { id, dir, restore } = await resumeSeeded('forkplan', 'aaaaaaa1-2222-3333-4444-555555555555', 'plan');
-  try {
-    const r = await api(baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
-    assert.equal(r.status, 201);
-    const markers = await markersIn(dir, r.body.newSessionId);
-    assert.ok(markers.length > 0, 'the fork carries a permission-mode marker');
-    assert.equal(markers[0].permissionMode, 'plan');
-    assert.ok(!markers.some(m => m.permissionMode === 'bypassPermissions'),
-      'no marker on the fork of a plan session may say bypassPermissions');
-  } finally { restore(); }
-});
+// Pins the REST fork call site (routes.ts), from each mode.
+for (const [mode, other, sid] of [
+  ['plan', 'bypassPermissions', 'aaaaaaa1-2222-3333-4444-555555555555'],
+  ['bypassPermissions', 'plan', 'aaaaaaa4-2222-3333-4444-555555555555'],
+]) {
+  test(`forking a \`${mode}\` session records \`${mode}\` in the fork transcript`, async () => {
+    const { id, dir, restore } = await resumeSeeded(`fork-${mode}`, sid, mode);
+    try {
+      const r = await api(baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+      assert.equal(r.status, 201);
+      const markers = await markersIn(dir, r.body.newSessionId);
+      assert.ok(markers.length > 0, 'the fork carries a permission-mode marker');
+      assert.equal(markers[0].permissionMode, mode);
+      assert.ok(!markers.some(m => m.permissionMode === other),
+        `no marker on the fork of a ${mode} session may say ${other}`);
+    } finally { restore(); }
+  });
+}
 
 // Pins the rewind call site (Instance.rewindToUserMessage, instances.ts).
 // Rewind rewrites the session in place, so a wrong marker mislabels the

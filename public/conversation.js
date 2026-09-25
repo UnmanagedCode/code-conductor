@@ -118,7 +118,7 @@ export class Conversation {
     this.subConvs = new Map();
     // The currently-open `.msg.assistant` wrap. New assistant msgIds register
     // against this wrap until a user action (echo / question / plan /
-    // permission / history divider) closes the segment, so a streak of
+    // history divider) closes the segment, so a streak of
     // sequential tool calls renders as one bordered envelope with one label
     // instead of a new box per action.
     this._activeAssistantWrap = null;
