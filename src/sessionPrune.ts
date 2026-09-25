@@ -43,6 +43,9 @@
 //      fully readable in the GUI.
 //   6. Some tools are EXEMPT by name: their `tool_use` and the `tool_result`
 //      answering it are copied verbatim in every mode. See isPruneExemptTool.
+//   7. An image in a pruned turn never survives partially: a tool_result's stub
+//      replaces its whole content, images included, and a top-level image
+//      block becomes a text stub (content replaced, block kept — invariant 4).
 
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -50,6 +53,7 @@ import { sessionFilePath, subAgentDirPath, writeFileAtomic, type TranscriptPlace
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import type { WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
+import { imageDimensions, imageTokenCost, IMAGE_MAX_TOKENS } from './imageCost.ts';
 
 // Stub shape for a pruned Read/Write tool_result. `true` (the default) makes the
 // stub a content-block array instead of a plain string.
@@ -175,6 +179,7 @@ interface PruneBlock {
   input?: unknown;
   content?: unknown;
   tool_use_id?: unknown;
+  source?: unknown;
 }
 
 interface PruneOpts {
@@ -199,6 +204,36 @@ function humanBytes(n: number): string {
 // a numeric field).
 const approxTokens = (s: unknown): number => Math.ceil((typeof s === 'string' ? s : '').length / 4);
 
+const isImage = (b: unknown): b is PruneBlock => !!b && typeof b === 'object' && (b as PruneBlock).type === 'image';
+
+// Memoised per block object: the analysis costs the same block several times,
+// and each would otherwise re-decode its base64.
+const imageInfoCache = new WeakMap<object, { tokens: number; label: string }>();
+
+// An image block's visual-token cost and its stub label. An image whose size
+// cannot be read (a url/file source, an unrecognised header) is costed at the
+// per-image budget — the most the API ever charges for one image — and never at
+// its base64 length.
+function imageInfo(block: PruneBlock): { tokens: number; label: string } {
+  const cached = imageInfoCache.get(block);
+  if (cached) return cached;
+  const source = (block.source && typeof block.source === 'object' ? block.source : null) as
+    { type?: unknown; media_type?: unknown; data?: unknown } | null;
+  const mediaType = typeof source?.media_type === 'string' ? source.media_type : 'image';
+  let info: { tokens: number; label: string };
+  if (source?.type === 'base64' && typeof source.data === 'string') {
+    const buf = Buffer.from(source.data, 'base64');
+    const dims = imageDimensions(buf);
+    info = dims
+      ? { tokens: imageTokenCost(dims.width, dims.height), label: `${mediaType} ${dims.width}×${dims.height} (${humanBytes(buf.length)})` }
+      : { tokens: IMAGE_MAX_TOKENS, label: `${mediaType} (${humanBytes(buf.length)})` };
+  } else {
+    info = { tokens: IMAGE_MAX_TOKENS, label: `${mediaType} (${String(source?.type ?? 'no source')})` };
+  }
+  imageInfoCache.set(block, info);
+  return info;
+}
+
 function blockTokens(block: PruneBlock | null | undefined): number {
   if (!block || typeof block !== 'object') return 0;
   switch (block.type) {
@@ -206,9 +241,18 @@ function blockTokens(block: PruneBlock | null | undefined): number {
     case 'thinking': return approxTokens(block.thinking);
     case 'redacted_thinking': return approxTokens(block.data);
     case 'tool_use': return approxTokens(String(block.name ?? '') + JSON.stringify(block.input ?? {}));
-    case 'tool_result': return approxTokens(
-      typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''),
-    );
+    case 'image': return imageInfo(block).tokens;
+    case 'tool_result': {
+      if (!Array.isArray(block.content)) {
+        return approxTokens(typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''));
+      }
+      // Images at their visual cost; the rest at chars/4 as before.
+      const images = block.content.filter(isImage);
+      if (!images.length) return approxTokens(JSON.stringify(block.content));
+      const rest = block.content.filter(b => !isImage(b));
+      return (rest.length ? approxTokens(JSON.stringify(rest)) : 0)
+        + images.reduce((n, b) => n + imageInfo(b).tokens, 0);
+    }
     default: return approxTokens(JSON.stringify(block));
   }
 }
@@ -217,11 +261,18 @@ function blockTokens(block: PruneBlock | null | undefined): number {
 
 // `toolName` is the name of the tool_use this result answers (null when unknown —
 // e.g. an orphaned result), and decides the stub SHAPE. See PRUNE_STUB_AS_BLOCKS.
+// The stub names the non-image bytes it replaced and each image by label.
 function stubToolResultContent(content: unknown, toolName: string | undefined): Array<{ type: string; text: string }> | string {
-  const bytes = Buffer.byteLength(
-    typeof content === 'string' ? content : JSON.stringify(content ?? ''), 'utf8',
-  );
-  const text = `[pruned: ${humanBytes(bytes)}]`;
+  const images = Array.isArray(content) ? content.filter(isImage) : [];
+  const rest = Array.isArray(content) && images.length ? content.filter(b => !isImage(b)) : null;
+  const parts: string[] = [];
+  if (!rest || rest.length) {
+    const serialized = rest ? JSON.stringify(rest)
+      : typeof content === 'string' ? content : JSON.stringify(content ?? '');
+    parts.push(humanBytes(Buffer.byteLength(serialized, 'utf8')));
+  }
+  for (const img of images) parts.push(imageInfo(img).label);
+  const text = `[pruned: ${parts.join('; ')}]`;
   return PRUNE_STUB_AS_BLOCKS && toolName != null && SEEDING_TOOLS.has(toolName)
     ? [{ type: 'text', text }]
     : text;
@@ -268,6 +319,11 @@ function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking
     if (isPruneExemptTool(block.name)) return none;   // invariant 6
     next = { ...block, input: squeezeInput(block.input, inputMode) };
     category = 'toolInputs';
+  } else if (block.type === 'image') {
+    // A user-pasted image (invariant 7). Folded into tool outputs: top-level
+    // images only arise in adopted terminal-CLI sessions.
+    next = { type: 'text', text: `[pruned: ${imageInfo(block).label}]` };
+    category = 'toolOutputs';
   } else {
     // text and redacted_thinking are never touched.
     return none;

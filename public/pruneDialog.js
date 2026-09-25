@@ -15,6 +15,7 @@
 // structurally impossible for it to fall between a tool_use and its tool_result.
 
 import { apiFetch } from './http.js';
+import { formatTokens } from './usage.js';
 
 export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
   const dialog = dom.pruneDialog;
@@ -33,8 +34,6 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     errorEl.textContent = msg ?? '';
     errorEl.hidden = !msg;
   }
-
-  const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
   // Sum the prefix the slider selects. Thinking is global — summed over ALL
   // turns, not just the pruned prefix — because thinking staleness is
@@ -75,7 +74,7 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
       const td1 = document.createElement('td');
       td1.textContent = label;
       const td2 = document.createElement('td');
-      td2.textContent = `~${fmtTokens(value)} tokens`;
+      td2.textContent = `~${formatTokens(value)} tokens`;
       tr.append(td1, td2);
       tbody.appendChild(tr);
     }
