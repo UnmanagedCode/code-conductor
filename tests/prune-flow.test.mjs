@@ -160,6 +160,25 @@ test('the analysis carries the ctx chip\'s reading as its baseline', async () =>
   } finally { await ctx.close(); }
 });
 
+test('a latched usage whose prompt sum is zero is no baseline', async () => {
+  // Some backends report all-zero usage; a zero is not a measurement of context.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa8-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'prunezerobaseline', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunezerobaseline', mode: 'bypassPermissions', resume: sid,
+    });
+    await waitFor(() => ctx.instances.get(r.body.id).status === 'idle');
+    const inst = ctx.instances.get(r.body.id);
+    inst._lastContextUsage = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 12 };
+    assert.ok(inst.lastContextUsage, 'the zero reading is latched');
+    const analysis = await api(ctx.baseUrl, 'GET', `/api/instances/${r.body.id}/prune/analysis`);
+    assert.equal(analysis.status, 200);
+    assert.equal(analysis.body.contextTokens, null);
+  } finally { await ctx.close(); }
+});
+
 test('no ctx reading, no baseline: the analysis right after a prune has none', async () => {
   // A pruned session's jsonl still carries the PRE-prune usage, which the
   // respawn deliberately does not seed; the analysis must not resurrect it.

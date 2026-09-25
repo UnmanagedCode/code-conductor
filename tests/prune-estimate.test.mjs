@@ -170,6 +170,7 @@ test('unmeasured content is excluded from both sides of the calibration', async 
       { type: 'tool_result', tool_use_id: 'tp', content: RESULT_TEXT }, { type: 'text', text: '[pruned: image/png 1280×800 (51.2 KB)]' },
     ] } } },
     'the stub of an image with no readable size': { result: toolResult('rp', 'tp', '[pruned: image (url)]') },
+    'a truncated-value stub': { result: toolResult('rp', 'tp', `${'v'.repeat(500)}… [+900 chars pruned]`) },
     'a non-per-step attachment': { extra: [{ type: 'attachment', uuid: 'at',
       attachment: { type: 'edited_text_file', filename: '/x.ts', snippet: 's'.repeat(3000) } }] },
   };
@@ -186,17 +187,19 @@ test('unmeasured content is excluded from both sides of the calibration', async 
       });
     });
   }
-  await t.test('a non-positive prompt delta', async () => {
-    await withStore(async () => {
-      const steps = cleanSteps();
-      steps.splice(3, 0, { delta: -3000, polluted: true });
-      const { lines, cleanFactor } = await calibrationSession(steps);
-      await seed(lines);
-      const { calibration } = await analyze();
-      assert.equal(calibration.steps, CLEAN);
-      assert.ok(Math.abs(calibration.factor - cleanFactor) < 1e-9, `factor ${calibration.factor} ≠ ${cleanFactor}`);
+  for (const [label, delta] of [['a negative prompt delta', -3000], ['a zero prompt delta', 0]]) {
+    await t.test(label, async () => {
+      await withStore(async () => {
+        const steps = cleanSteps();
+        steps.splice(3, 0, { delta, polluted: true });
+        const { lines, cleanFactor } = await calibrationSession(steps);
+        await seed(lines);
+        const { calibration } = await analyze();
+        assert.equal(calibration.steps, CLEAN, `the step with ${label} was used`);
+        assert.ok(Math.abs(calibration.factor - cleanFactor) < 1e-9, `factor ${calibration.factor} ≠ ${cleanFactor}`);
+      });
     });
-  });
+  }
   await t.test('control: per-step attachments leave a step usable', async () => {
     await withStore(async () => {
       const steps = cleanSteps();
@@ -266,6 +269,45 @@ test('thin history falls back to 1 and absurd history is bounded', async (t) => 
       assert.deepEqual((await analyze()).calibration, { factor: 0.5, steps: CLEAN, calibrated: true },
         'a clamped factor is still a calibrated one');
     });
+  });
+});
+
+// ── absolute raw figures ───────────────────────────────────────────────────
+// Each expected figure is derived by hand from the payload's character count, so
+// a ratio drifting from its measured value moves the figure.
+
+test('a tool_use costs its name + JSON input at the tool-use ratio', async () => {
+  await withStore(async () => {
+    // 'mcp__code-conductor__spawn_instance' (35) + '{"prompt":"' (11) + 333 + '"}' (2)
+    // = 381 chars; 381 / 3.8 = 100.26 → 101. Exempt and unanswered, so `exempt`
+    // is this one block's raw cost.
+    await seed([
+      prompt('p0', 'go'),
+      { type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [
+        { type: 'tool_use', id: 't0', name: 'mcp__code-conductor__spawn_instance', input: { prompt: 'p'.repeat(333) } },
+      ] } },
+    ]);
+    assert.equal((await analyze()).turns[0].exempt, 101);
+  });
+});
+
+// A turn holding only the prompt 'go' (2 chars / 4 → 1) and one orphaned
+// tool_result with the given array content.
+const orphanResultTurn = (content) => [prompt('p0', 'go'), toolResult('r0', 'none', content)];
+
+test('a tool_result\'s text blocks cost their text at the tool-output ratio', async () => {
+  await withStore(async () => {
+    // 2000 chars / 2.5 = 800, plus the prompt's 1.
+    await seed(orphanResultTurn([{ type: 'text', text: 't'.repeat(2000) }]));
+    assert.equal((await analyze()).turns[0].total, 801);
+  });
+});
+
+test('a tool_result\'s nested non-text, non-image block costs its JSON at 4 chars per token', async () => {
+  await withStore(async () => {
+    // '{"type":"x","d":"' (17) + 381 + '"}' (2) = 400 chars / 4 = 100, plus the prompt's 1.
+    await seed(orphanResultTurn([{ type: 'x', d: 'd'.repeat(381) }]));
+    assert.equal((await analyze()).turns[0].total, 101);
   });
 });
 

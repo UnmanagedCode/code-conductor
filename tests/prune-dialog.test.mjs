@@ -99,6 +99,34 @@ test('encrypted thinking reads as not removable, sized and kept', async () => {
   assert.equal(rows().Thinking, 'n/a — stored encrypted (~12k in context, kept)');
 });
 
+test('a visible thinking saving is shown even when encrypted thinking is present', async () => {
+  const { rows } = await openDialog(analysis({
+    turns: [turn(0, { toolOutput: 1000, thinking: 1000 }), turn(1, { toolInputTruncatable: 200 }), turn(2)],
+    encryptedThinking: 8000,
+  }));
+  assert.equal(rows().Thinking, '~1.5k tokens');
+});
+
+test('the Thinking value is the raw sum times the factor, and counts in the total', async () => {
+  const { rows } = await openDialog(analysis({
+    turns: [turn(0, { toolOutput: 1000 }), turn(1, { toolInputTruncatable: 200, thinking: 200 }), turn(2)],
+  }));
+  const r = rows();
+  assert.equal(r.Thinking, '~300 tokens');
+  assert.equal(r['Estimated total saved'], '~2.1k tokens', '1500 + 300 + 300');
+});
+
+test('thinking is global: a turn past the cut still counts, in the row and the total', async () => {
+  const { rows, setCut } = await openDialog(analysis({
+    turns: [turn(0, { toolOutput: 1000 }), turn(1, { toolInputTruncatable: 200 }), turn(2, { thinking: 400 })],
+  }));
+  setCut(1);
+  const r = rows();
+  assert.equal(r.Thinking, '~600 tokens');
+  assert.equal(r['Tool inputs'], '~0 tokens', 'turn 1 is past the cut');
+  assert.equal(r['Estimated total saved'], '~2.1k tokens', '1500 + 600');
+});
+
 test('the exempt row appears only when the selected prefix holds exempt payload', async () => {
   const { rows, setCut } = await openDialog(analysis({
     turns: [turn(0, { toolOutput: 1000 }), turn(1), turn(2, { exempt: 5000 })],
