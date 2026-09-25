@@ -214,6 +214,7 @@ test('a parseable but unusable project record is logged by path and the run stil
   for (const [label, rec] of [
     ['empty object', {}], ['null', null], ['array', []], ['no location', { workspace: 'x' }],
     ['local without path', { location: { kind: 'local' } }], ['unknown kind', { location: { kind: 'ftp', path: '/p' } }],
+    ['remote without system', { location: { kind: 'remote', path: '/p' } }],
   ]) {
     await t.test(label, async () => {
       const { root, store, appDir } = await mkStore(NEW);
@@ -226,4 +227,109 @@ test('a parseable but unusable project record is logged by path and the run stil
       assert.match(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), new RegExp(`^<!-- cc:conventions design-guidelines,${NEW}/project-wiki,`));
     });
   }
+});
+
+async function assertDefers(root) {
+  const before = await snapshot(root);
+  assert.deepEqual(await m0038.run({ root }), { applied: false });
+  assert.deepEqual(await snapshot(root), before);
+}
+
+test('defers without writing when the gate cannot establish the new id', async (t) => {
+  await t.test('manifest declares a third id', async () => {
+    const { root } = await mkStore('code-other');
+    await assertDefers(root);
+  });
+  await t.test('plugin project record unparsable', async () => {
+    const { root, store } = await mkStore(NEW);
+    await fs.writeFile(path.join(store, 'projects', OLD, 'project.json'), '{ not json');
+    await assertDefers(root);
+  });
+  await t.test('plugin project record absent', async () => {
+    const { root, store } = await mkStore(NEW);
+    await fs.rm(path.join(store, 'projects', OLD, 'project.json'));
+    await assertDefers(root);
+  });
+  await t.test('plugin project record unusable', async () => {
+    const { root, store } = await mkStore(NEW);
+    await writeJson(path.join(store, 'projects', OLD, 'project.json'), { workspace: 'x' });
+    await assertDefers(root);
+  });
+  await t.test('registry record has no string project', async () => {
+    const { root } = await mkStore(NEW, { registry: { [OLD]: { ...OLD_REC, project: 42 } } });
+    await assertDefers(root);
+  });
+});
+
+test('the normal wait on an old-id manifest logs nothing', async () => {
+  const { root } = await mkStore(OLD);
+  const logs = [];
+  await m0038.run({ root, log: (m) => logs.push(m) });
+  assert.deepEqual(logs, []);
+});
+
+test('an old slug in the CONVENTIONS.md body is left byte-identical', async () => {
+  const { root, appDir } = await mkStore(NEW);
+  const body = `\n\nSee ${OLD}/project-wiki for details.\n`;
+  await fs.writeFile(path.join(appDir, 'CONVENTIONS.md'), `<!-- cc:conventions ${OLD}/project-wiki -->${body}`);
+  await m0038.run({ root });
+  assert.equal(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), `<!-- cc:conventions ${NEW}/project-wiki -->${body}`);
+});
+
+test('a marker selecting both the old and the new slug keeps the new one once', async () => {
+  const { root, appDir } = await mkStore(NEW);
+  await fs.writeFile(path.join(appDir, 'CONVENTIONS.md'), `<!-- cc:conventions ${OLD}/x,${NEW}/x -->${BODY}`);
+  await m0038.run({ root });
+  assert.equal(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), `<!-- cc:conventions ${NEW}/x -->${BODY}`);
+});
+
+test('a marker-only CONVENTIONS.md with no trailing newline becomes exactly the new marker', async () => {
+  const { root, appDir } = await mkStore(NEW);
+  await fs.writeFile(path.join(appDir, 'CONVENTIONS.md'), `<!-- cc:conventions ${OLD}/project-wiki -->`);
+  await m0038.run({ root });
+  assert.equal(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), `<!-- cc:conventions ${NEW}/project-wiki -->`);
+});
+
+test('an unreadable CONVENTIONS.md keeps the old registry key', async () => {
+  const { root, store, appDir } = await mkStore(NEW);
+  await fs.rm(path.join(appDir, 'CONVENTIONS.md'));
+  await fs.mkdir(path.join(appDir, 'CONVENTIONS.md'));
+  await m0038.run({ root });
+  assert.equal(await oldKeyKept(store), true);
+});
+
+test('an existing new role key wins and the displaced old value is backed up', async () => {
+  const { root, store } = await mkStore(NEW);
+  await writeJson(path.join(store, 'settings.json'), { models: { roleBackend: { [`${OLD}/r`]: 'old', [`${NEW}/r`]: 'new' } } });
+  await m0038.run({ root });
+  assert.deepEqual((await readJson(path.join(store, 'settings.json'))).models.roleBackend, { [`${NEW}/r`]: 'new' });
+  assert.deepEqual(await readJson(path.join(store, 'migrated-backup-0038', 'settings-roles.json')), { roleBackend: { [`${OLD}/r`]: 'old' } });
+});
+
+test('a deny-list holding both the old and the new slug keeps the new one once', async () => {
+  const { root, store } = await mkStore(NEW);
+  await writeJson(path.join(store, 'conventions', 'conductor.json'), { disabled: [`${OLD}/x`, `${NEW}/x`] });
+  await m0038.run({ root });
+  assert.deepEqual((await readJson(path.join(store, 'conventions', 'conductor.json'))).disabled, [`${NEW}/x`]);
+});
+
+test('a lookalike prefix is renamed in no store', async () => {
+  const LOOK = `${OLD}-x`;
+  const lookRec = { project: LOOK, enabled: true };
+  const { root, store, appDir } = await mkStore(NEW, {
+    registry: { [OLD]: OLD_REC, [LOOK]: lookRec },
+    runtime: { [OLD]: RUNTIME_REC, [LOOK]: RUNTIME_REC },
+  });
+  const marker = `<!-- cc:conventions ${LOOK}/s,${OLD}/project-wiki -->${BODY}`;
+  await fs.writeFile(path.join(appDir, 'CONVENTIONS.md'), marker);
+  await writeJson(path.join(store, 'conventions', 'conductor.json'), { disabled: [`${LOOK}/s`] });
+  await writeJson(path.join(store, 'conventions', 'workspace.json'), { disabled: [`${LOOK}/s`] });
+  await writeJson(path.join(store, 'settings.json'), { models: { roleBackend: { [`${LOOK}/s`]: 'b' }, roleEffort: { [`${LOOK}/s`]: 'high' } } });
+  await m0038.run({ root });
+  assert.equal(await fs.readFile(path.join(appDir, 'CONVENTIONS.md'), 'utf8'), `<!-- cc:conventions ${LOOK}/s,${NEW}/project-wiki -->${BODY}`);
+  assert.deepEqual((await readJson(path.join(store, 'conventions', 'conductor.json'))).disabled, [`${LOOK}/s`]);
+  assert.deepEqual((await readJson(path.join(store, 'conventions', 'workspace.json'))).disabled, [`${LOOK}/s`]);
+  assert.deepEqual((await readJson(path.join(store, 'settings.json'))).models, { roleBackend: { [`${LOOK}/s`]: 'b' }, roleEffort: { [`${LOOK}/s`]: 'high' } });
+  assert.deepEqual((await readJson(path.join(store, 'plugins', 'registry.json'))).plugins[LOOK], lookRec);
+  assert.deepEqual((await readJson(path.join(store, 'plugins', 'runtime.json')))[LOOK], RUNTIME_REC);
 });
