@@ -326,38 +326,47 @@ test('truncate mode never splits a surrogate pair', async () => {
   });
 });
 
+// Every (cut, inputMode, pruneThinking) combination: the dialog's client-side
+// prefix sum over the analysis must equal what the transform reports saving.
+async function assertPreviewMatchesTransform(lines) {
+  const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+  const { sid } = await seed(lines);
+  const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+
+  for (const inputMode of ['truncate', 'minimal']) {
+    for (const pruneThinking of [true, false]) {
+      // Up to and INCLUDING turnCount: the dialog's client-side prefix sum has
+      // to equal the transform at the full cut too, which is the one cut where
+      // the prefix covers every turn.
+      for (let cut = 0; cut <= analysis.turnCount; cut++) {
+        const { saved } = await pruneSessionToNewId({
+          place: localPlace(CWD), sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode, mode: 'bypassPermissions',
+        });
+        // Same arithmetic the dialog does: sum the selected prefix per
+        // category, with thinking summed over ALL turns (it is global).
+        const prefix = analysis.turns.slice(0, cut);
+        const expected = {
+          thinking: pruneThinking ? analysis.turns.reduce((a, t) => a + t.thinking, 0) : 0,
+          toolInputs: prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0),
+          toolOutputs: prefix.reduce((a, t) => a + t.toolOutput, 0),
+        };
+        assert.deepEqual(saved, expected,
+          `preview drifted from the transform (cut=${cut}, ${inputMode}, thinking=${pruneThinking})`);
+      }
+    }
+  }
+}
+
 test('the savings preview equals what the transform actually saves', async () => {
   // Invariant 10 holds by construction (both passes call pruneBlock), but
   // "by construction" is exactly the kind of guarantee that quietly stops being
   // true. The other assertions in this file are one-sided lower bounds and would
   // not notice an analysis pass that reported 10x the real figure.
   await withStore(async () => {
-    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
-    const { sid } = await seed(scenario());
-    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
-
-    for (const inputMode of ['truncate', 'minimal']) {
-      for (const pruneThinking of [true, false]) {
-        // Up to and INCLUDING turnCount: the dialog's client-side prefix sum has
-        // to equal the transform at the full cut too, which is the one cut where
-        // the prefix covers every turn.
-        for (let cut = 0; cut <= analysis.turnCount; cut++) {
-          const { saved } = await pruneSessionToNewId({
-            place: localPlace(CWD), sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode, mode: 'bypassPermissions',
-          });
-          // Same arithmetic the dialog does: sum the selected prefix per
-          // category, with thinking summed over ALL turns (it is global).
-          const prefix = analysis.turns.slice(0, cut);
-          const expected = {
-            thinking: pruneThinking ? analysis.turns.reduce((a, t) => a + t.thinking, 0) : 0,
-            toolInputs: prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0),
-            toolOutputs: prefix.reduce((a, t) => a + t.toolOutput, 0),
-          };
-          assert.deepEqual(saved, expected,
-            `preview drifted from the transform (cut=${cut}, ${inputMode}, thinking=${pruneThinking})`);
-        }
-      }
-    }
+    await assertPreviewMatchesTransform(scenario());
+  });
+  await withStore(async () => {
+    await assertPreviewMatchesTransform(await imageScenario());
   });
 });
 
@@ -801,4 +810,161 @@ test('isPruneExemptTool draws the line at the segment boundary', async () => {
     'mcp__code-conductor__project_read',
     'mcp__code-conductor__system_bash',
   ], 'the denylist is exactly the bulk-output tools — a core tool added later is exempt by default');
+});
+
+// ── images ──────────────────────────────────────────────────────────────────
+//
+// Real image bytes from tests/fixtures/prune-images. The two large PNGs are
+// blocky noise so their base64/4 sits far ABOVE their visual cost — a fixture
+// whose base64 happened to cost about what the image does could not tell a
+// dimension-driven estimate from a chars/4 one.
+
+const IMAGE_FIXTURES = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures', 'prune-images');
+
+async function imageBlock(name, mediaType) {
+  const data = (await fs.readFile(path.join(IMAGE_FIXTURES, name))).toString('base64');
+  return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
+}
+const screenshot = () => imageBlock('screenshot-1280x800.png', 'image/png');
+const largePng = () => imageBlock('large-3840x2160.png', 'image/png');
+const iconPng = () => imageBlock('icon-16x16.png', 'image/png');
+const smallJpeg = () => imageBlock('baseline-210x140.jpg', 'image/jpeg');
+
+const userText = (uuid, text) => ({ type: 'user', uuid, sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text }] } });
+const toolUse = (uuid, id, name, input) => ({ type: 'assistant', uuid, sessionId: 'old', message: { id: `m_${uuid}`, role: 'assistant', content: [
+  { type: 'tool_use', id, name, input },
+] } });
+const toolResult = (uuid, id, content) => ({ type: 'user', uuid, sessionId: 'old', toolUseResult: 'ok', message: { role: 'user', content: [
+  { type: 'tool_result', tool_use_id: id, content },
+] } });
+
+const SCREENSHOT_TOKENS = 1334;   // 46 × 29 patches
+const LARGE_TOKENS = 4784;        // the per-image budget, after the resize
+
+// Every image path at once: a Read of a PNG, a mixed text+image screenshot, a
+// user-pasted image, an icon too small to stub, and a pasted image in the kept
+// newest turn.
+async function imageScenario() {
+  return [
+    { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [await screenshot(), { type: 'text', text: 'look at this' }] } },
+    toolUse('a1', 't1', 'Read', { file_path: '/tmp/prune-fixture-project/shot.png' }),
+    toolResult('r1', 't1', [await largePng()]),
+    toolUse('a2', 't2', 'mcp__playwright__browser_take_screenshot', {}),
+    toolResult('r2', 't2', [{ type: 'text', text: 'Took the screenshot' }, await smallJpeg()]),
+    toolUse('a3', 't3', 'Read', { file_path: '/tmp/prune-fixture-project/icon.png' }),
+    toolResult('r3', 't3', [await iconPng()]),
+    { type: 'user', uuid: 'u2', sessionId: 'old', message: { role: 'user', content: [await screenshot(), { type: 'text', text: 'and this' }] } },
+    { type: 'assistant', uuid: 'a4', sessionId: 'old', message: { id: 'm4', role: 'assistant', content: [{ type: 'text', text: 'seen' }] } },
+  ];
+}
+
+test('an image tool_result is costed by its dimensions, not its base64 length', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
+    const shot = await screenshot();
+    const large = await largePng();
+    const { sid } = await seed([
+      userText('u1', 'first'),
+      toolUse('a1', 't1', 'Read', { file_path: '/tmp/prune-fixture-project/shot.png' }),
+      toolResult('r1', 't1', [shot]),
+      toolUse('a2', 't2', 'Bash', { command: 'screenshot' }),
+      toolResult('r2', 't2', [large]),
+      userText('u2', 'second'),
+    ]);
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    // The saving is the visual cost minus the stubs' own few tokens.
+    const images = SCREENSHOT_TOKENS + LARGE_TOKENS;
+    assert.ok(a.turns[0].toolOutput <= images && a.turns[0].toolOutput > images - 40,
+      `toolOutput ${a.turns[0].toolOutput} is not the dimension-driven cost of ${images}`);
+    const base64Estimate = (shot.source.data.length + large.source.data.length) / 4;
+    assert.ok(a.totalTokens * 5 < base64Estimate,
+      `totalTokens ${a.totalTokens} tracks the base64 (${base64Estimate}), not the image`);
+  });
+});
+
+test('a pruned image tool_result names media type and dimensions, and no image survives', async () => {
+  await withStore(async () => {
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const textPart = { type: 'text', text: 'Took the screenshot' };
+    const { dir, sid } = await seed([
+      userText('u1', 'first'),
+      toolUse('a1', 't1', 'Read', { file_path: '/tmp/prune-fixture-project/shot.png' }),
+      toolResult('r1', 't1', [await screenshot()]),
+      toolUse('a2', 't2', 'mcp__playwright__browser_take_screenshot', {}),
+      toolResult('r2', 't2', [textPart, await smallJpeg()]),
+      userText('u2', 'second'),
+    ]);
+    const { newSessionId } = await pruneSessionToNewId({
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
+    });
+    const out = await readOut(dir, newSessionId);
+    const byUuid = Object.fromEntries(out.map(o => [o.uuid, o]));
+    // Read keeps the block-array stub shape (PRUNE_STUB_AS_BLOCKS).
+    assert.deepEqual(byUuid.r1.message.content[0].content,
+      [{ type: 'text', text: '[pruned: image/png 1280×800 (51.2 KB)]' }]);
+    // A non-seeding tool gets a string stub naming the text part AND the image.
+    const textBytes = Buffer.byteLength(JSON.stringify([textPart]), 'utf8');
+    assert.equal(byUuid.r2.message.content[0].content,
+      `[pruned: ${textBytes} B; image/jpeg 210×140 (652 B)]`);
+    for (const o of out.filter(o => ['u1', 'a1', 'r1', 'a2', 'r2'].includes(o.uuid))) {
+      assert.ok(!JSON.stringify(o).includes('"type":"image"'), `an image survived in ${o.uuid}`);
+    }
+  });
+});
+
+test('a user-pasted image in a pruned turn becomes a text stub; a kept turn\'s image is untouched', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const lines = [
+      { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [await screenshot(), { type: 'text', text: 'look' }] } },
+      { type: 'assistant', uuid: 'a1', sessionId: 'old', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'seen' }] } },
+      { type: 'user', uuid: 'u2', sessionId: 'old', message: { role: 'user', content: [await screenshot(), { type: 'text', text: 'again' }] } },
+    ];
+    const { dir, sid } = await seed(lines);
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    const { newSessionId, saved } = await pruneSessionToNewId({
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
+    });
+    const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    const pruned = byUuid.u1.message.content;
+    assert.equal(pruned.length, 2, 'a block was removed rather than replaced');
+    assert.deepEqual(pruned[0], { type: 'text', text: '[pruned: image/png 1280×800 (51.2 KB)]' });
+    assert.deepEqual(pruned[1], { type: 'text', text: 'look' });
+    assert.deepEqual(byUuid.u2.message.content, lines[2].message.content);
+    // Folded into the tool-output category, preview and apply alike.
+    assert.ok(saved.toolOutputs > 0, `pasted image saved nothing: ${JSON.stringify(saved)}`);
+    assert.equal(analysis.turns[0].toolOutput, saved.toolOutputs);
+  });
+});
+
+test('an icon whose stub would inflate the context is kept verbatim', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const icon = [await iconPng()];
+    const { dir, sid } = await seed([
+      userText('u1', 'first'),
+      toolUse('a1', 't1', 'Read', { file_path: '/tmp/prune-fixture-project/icon.png' }),
+      toolResult('r1', 't1', icon),
+      userText('u2', 'second'),
+    ]);
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    assert.equal(analysis.turns[0].toolOutput, 0);
+    const { newSessionId } = await pruneSessionToNewId({
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
+    });
+    const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    assert.deepEqual(byUuid.r1.message.content[0].content, icon);
+  });
+});
+
+test('an image in a kept turn adds its visual tokens to the denominator, not its base64', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
+    const { sid } = await seed([
+      { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'hi' }, await largePng()] } },
+    ]);
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    assert.ok(a.totalTokens >= LARGE_TOKENS && a.totalTokens <= LARGE_TOKENS + 10,
+      `totalTokens ${a.totalTokens} is not the image's visual cost`);
+  });
 });
