@@ -44,6 +44,15 @@ test('the visual-token budget bounds a square image the edge limit would allow',
   assert.ok(imageTokenCost(20000, 300) <= IMAGE_MAX_TOKENS);
 });
 
+test('the downscale rounds its short edge half-to-even, like the reference search', () => {
+  // At a long edge of 2353, 4706×3137 gives an exact 1568.5 short edge.
+  // Half-even keeps 1568: 85 × 56 = 4760 patches, which fits the budget.
+  // Half-up would take 1569: 85 × 57 overflows, so the search would settle
+  // one pixel lower at 2352×1568 = 84 × 56 = 4704. Python's `round`, which the
+  // reference search uses, gives 4760.
+  assert.equal(imageTokenCost(4706, 3137), 4760);
+});
+
 test('imageDimensions reads each supported format from real bytes', async (t) => {
   const cases = [
     ['screenshot-1280x800.png', 1280, 800],
@@ -79,4 +88,18 @@ test('imageDimensions refuses truncated or foreign bytes', async (t) => {
   await t.test('bytes with no image signature', () => {
     assert.equal(imageDimensions(Buffer.from('not an image')), null);
   });
+});
+
+test('imageDimensions walks past JPEG fill bytes and standalone markers to the SOF', async () => {
+  const jpg = await fixture('baseline-210x140.jpg');
+  const sof = jpg.indexOf(Buffer.from([0xff, 0xc0]));
+  assert.ok(sof > 2, 'fixture carries a SOF0 marker');
+  const padded = Buffer.concat([
+    jpg.subarray(0, 2),                       // SOI
+    Buffer.from([0xff, 0xd0, 0xff, 0x01]),    // RST0 and TEM: no length field
+    jpg.subarray(2, sof),
+    Buffer.from([0xff, 0xff, 0xff]),          // fill bytes ahead of the SOF marker
+    jpg.subarray(sof),
+  ]);
+  assert.deepEqual(imageDimensions(padded), { width: 210, height: 140 });
 });

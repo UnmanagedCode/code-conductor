@@ -968,3 +968,50 @@ test('an image in a kept turn adds its visual tokens to the denominator, not its
       `totalTokens ${a.totalTokens} is not the image's visual cost`);
   });
 });
+
+test('an image with no base64 source is costed at the per-image cap and names its source kind', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const { IMAGE_MAX_TOKENS } = await import('../src/imageCost.ts');
+    const { dir, sid } = await seed([
+      { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [
+        { type: 'image', source: { type: 'url', url: 'https://example.com/shot.png' } },
+        { type: 'text', text: 'look' },
+      ] } },
+      userText('u2', 'second'),
+    ]);
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    // The saving is the cap minus the stub's own few tokens.
+    assert.ok(analysis.turns[0].toolOutput < IMAGE_MAX_TOKENS && analysis.turns[0].toolOutput > IMAGE_MAX_TOKENS - 20,
+      `toolOutput ${analysis.turns[0].toolOutput} is not the per-image cap`);
+    const { newSessionId } = await pruneSessionToNewId({
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
+    });
+    const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    assert.deepEqual(byUuid.u1.message.content[0], { type: 'text', text: '[pruned: image (url)]' });
+  });
+});
+
+test('an image whose header cannot be read is costed at the cap, so even a tiny one is stubbed', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const { IMAGE_MAX_TOKENS } = await import('../src/imageCost.ts');
+    // The icon's first 20 bytes: a PNG signature with IHDR cut short. Its real
+    // cost would be one patch, below its stub — the cap is what stubs it.
+    const truncated = (await fs.readFile(path.join(IMAGE_FIXTURES, 'icon-16x16.png'))).subarray(0, 20);
+    const { dir, sid } = await seed([
+      userText('u1', 'first'),
+      toolUse('a1', 't1', 'Read', { file_path: '/tmp/prune-fixture-project/icon.png' }),
+      toolResult('r1', 't1', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: truncated.toString('base64') } }]),
+      userText('u2', 'second'),
+    ]);
+    const analysis = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: sid });
+    assert.ok(analysis.turns[0].toolOutput < IMAGE_MAX_TOKENS && analysis.turns[0].toolOutput > IMAGE_MAX_TOKENS - 40,
+      `toolOutput ${analysis.turns[0].toolOutput} is not the per-image cap`);
+    const { newSessionId } = await pruneSessionToNewId({
+      place: localPlace(CWD), sessionId: sid, cutTurnIndex: 1, inputMode: 'truncate', mode: 'bypassPermissions',
+    });
+    const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    assert.deepEqual(byUuid.r1.message.content[0].content, [{ type: 'text', text: '[pruned: image/png (20 B)]' }]);
+  });
+});
