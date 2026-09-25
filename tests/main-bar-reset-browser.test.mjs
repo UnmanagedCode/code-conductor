@@ -1,9 +1,10 @@
 // Live-browser regression test for the main-bar (#instance-header) not
 // clearing when navigating away from a session view. Skipped by default —
-// opt-in via `RUN_PLAYWRIGHT=1` (needs the code-playwright sibling
-// repo + a system Chromium; see harness/playwright/README.md). The import of that sibling
-// repo is deferred into the test body so this file loads cleanly (and shows
-// as skipped) on machines that don't have it cloned.
+// opt-in via `RUN_PLAYWRIGHT=1` (needs the
+// code-playwright plugin installed + a system Chromium; see
+// harness/playwright/README.md). Loading the plugin is deferred into the test
+// body so this file loads cleanly (and shows as skipped) on machines that
+// don't have it installed.
 //
 // Root cause (fixed in public/styles.css): #main.settings-open /
 // #main.plugin-open (and the review/commits/costs-open siblings) already
@@ -26,6 +27,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
+import { importCodePlaywright } from '../harness/playwright/paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -38,7 +40,7 @@ async function titleDisplay(page) {
 }
 
 t('main bar clears the session title/chips when navigating to Settings or a plugin view, and restores them on return', async () => {
-  const { withPage } = await import('../../code-playwright/browser.mjs');
+  const { withPage } = await importCodePlaywright();
   const boot = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
   try {
     await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });

@@ -1,9 +1,9 @@
 // Live-browser regression test for the app-switcher "leave session → default
 // view" bug. Skipped by default — opt-in via `RUN_PLAYWRIGHT=1` (needs the
-// code-playwright sibling repo + a system Chromium; see
-// harness/playwright/README.md). The import of that sibling repo is deferred into the test
+// code-playwright plugin installed + a system Chromium; see
+// harness/playwright/README.md). Loading the plugin is deferred into the test
 // body so this file loads cleanly (and shows as skipped) on machines that
-// don't have it cloned.
+// don't have it installed.
 //
 // Root cause (fixed in public/wsRouter.js's popstate handler): picking a
 // plugin from #app-switcher-select sets `location.hash = '#plugin/<id>/'`
@@ -25,6 +25,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
+import { importCodePlaywright } from '../harness/playwright/paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -44,7 +45,7 @@ async function switchToPlugin(page) {
 }
 
 t('picking a plugin from the app-switcher lands on it (not the placeholder) on the first try, from an active session', async () => {
-  const { withPage } = await import('../../code-playwright/browser.mjs');
+  const { withPage } = await importCodePlaywright();
   const boot = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
   try {
     await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });

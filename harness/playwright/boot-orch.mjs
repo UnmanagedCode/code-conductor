@@ -4,8 +4,8 @@
 // that tests/fake-claude.mjs expects (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT
 // subdirs and CLAUDE_BIN pointing at the fake).
 //
-// The generic harness lives in a sibling repo cloned to the parent directory
-// of code-conductor. See ./README.md for setup.
+// The generic harness is the code-playwright plugin, loaded through
+// ./paths.mjs's importCodePlaywright. See ./README.md for setup.
 //
 //   import { bootOrch } from './boot-orch.mjs';
 //   const orch = await bootOrch({ sandbox: true });
@@ -15,12 +15,13 @@
 //   } finally { await orch.close(); }
 
 import { existsSync } from 'node:fs';
-import { bootServer } from '../../../code-playwright/browser.mjs';
-import { ORCH_ROOT, ORCH_ENTRY, FAKE_CLAUDE } from './paths.mjs';
+import { ORCH_ROOT, ORCH_ENTRY, FAKE_CLAUDE, importCodePlaywright } from './paths.mjs';
+
+const { bootServer } = await importCodePlaywright();
 
 // A silent depth change spends 15s inside bootServer's readiness poll and then
 // reports only "child server exited before binding" — the child's real
-// MODULE_NOT_FOUND is swallowed by `silent: true` (snap.mjs:53). Say what broke.
+// MODULE_NOT_FOUND is swallowed by `silent: true` (as snap.mjs passes it). Say what broke.
 for (const p of [ORCH_ENTRY, FAKE_CLAUDE]) {
   if (!existsSync(p)) {
     throw new Error(

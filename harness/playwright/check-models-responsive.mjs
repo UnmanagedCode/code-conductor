@@ -10,7 +10,7 @@
 // Writes models-<width>.png per width and exits non-zero if any assertion fails.
 // This is the reproducible form of the numbers quoted when the phone layout was
 // fixed — re-run it on a clean checkout to re-measure. It lives here rather than
-// in tests/ because it needs Chromium via the sibling code-playwright harness,
+// in tests/ because it needs Chromium via the code-playwright plugin,
 // which the gated `npm test` suite deliberately has no dependency on; the
 // DOM-contract half of the same fix is covered deterministically by
 // tests/settings-models-field-labels.test.mjs.
@@ -25,8 +25,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { withPage } from '../../../code-playwright/browser.mjs';
 import { bootOrch } from './boot-orch.mjs';
+import { importCodePlaywright } from './paths.mjs';
+
+const { withPage } = await importCodePlaywright();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

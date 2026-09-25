@@ -5,7 +5,7 @@
 
 set -e
 
-PARENT="${CC_PARENT_PATH:-../code-conductor}"
+PARENT="${CC_PARENT_PATH:?CC_PARENT_PATH is unset — cc passes it when it runs this hook (src/worktrees.ts)}"
 
 PARENT_NM="${PARENT}/node_modules"
 
