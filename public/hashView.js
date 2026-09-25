@@ -6,6 +6,12 @@
 // `history.back()`, which fires `hashchange`, whose handler runs the teardown);
 // the public `close()` runs the same teardown directly.
 //
+// Every view registers with mainViews.js, and open() reconciles after it
+// navigates, so opening one view supersedes whichever other is showing.
+// Leaving (close(), or the hash moving off the view) runs `onLeave` — the
+// caller's navigating callback — then `onTeardown`; being superseded runs
+// `onTeardown` only.
+//
 // Per-view differences stay injected, NOT flattened:
 //   - `navigate`  — the exact history op that opens the view (hash= vs pushState).
 //   - `escapeCapture` — capture phase (commits/costs) vs bubble (review). This
@@ -16,14 +22,21 @@
 //     (commits stays open while `#review` is layered on top).
 //   - `canEscape` — an extra Escape guard (commits: only when review-view hidden).
 //   - `guard` — gates open()/teardown when the view element may be absent (costs).
-//   - `onShow` / `onTeardown` — the per-view data load and state reset + callback.
+//   - `onShow` — the per-view data load.
+//   - `onLeave` — the navigating callback (restore the session anchor); runs on
+//     leave only, before `onTeardown`.
+//   - `onTeardown` — state reset and non-navigating notifications; runs on
+//     both leave and supersede.
 //   - `matchHash` — optional predicate replacing the default exact-hash check
 //     for views that own a hash *space* (plugin view: `#plugin/<id>/<subpath>`).
 //
 // settings.js intentionally does NOT use this helper — it syncs bidirectionally
 // on hashchange, closes via close() (not history.back()), guards re-entrant
 // show() with an isOpen flag, opens by setting the hash only, and has no back
-// button. Forcing it here would change behavior.
+// button. Forcing it here would change behavior. It registers with
+// mainViews.js itself.
+
+import { registerMainView, reconcileMainViews } from './mainViews.js';
 
 export function installHashView({
   name,
@@ -33,6 +46,7 @@ export function installHashView({
   guard,
   navigate,
   onShow,
+  onLeave,
   onTeardown,
   matchHash,
 } = {}) {
@@ -56,9 +70,10 @@ export function installHashView({
     getEl('main').classList.remove(openClass);
   }
 
-  function teardown() {
+  function teardown({ leaving }) {
     if (guard && !guard()) return;
     hide();
+    if (leaving) onLeave?.();
     onTeardown?.();
   }
 
@@ -68,11 +83,12 @@ export function installHashView({
     if (guard && !guard()) return;
     navigate();
     show();
+    reconcileMainViews();
     onShow?.(...args);
   }
 
   function close() {
-    teardown();
+    teardown({ leaving: true });
   }
 
   // Listeners attached in the originals' order: back-click → keydown → hashchange.
@@ -88,8 +104,14 @@ export function installHashView({
 
   window.addEventListener('hashchange', () => {
     if (!matches(location.hash) && isVisible()) {
-      teardown();
+      teardown({ leaving: true });
     }
+  });
+
+  registerMainView({
+    matches,
+    isOpen: () => (!guard || guard()) && !!getEl(viewId) && !getEl(viewId).hidden,
+    supersede: () => teardown({ leaving: false }),
   });
 
   return { open, close };

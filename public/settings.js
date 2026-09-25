@@ -7,6 +7,8 @@
 // Navigation is hash-driven so a refresh keeps the page. app.js owns the
 // hash (it knows the active session to restore on close) and passes a
 // `requestClose` callback; we just translate hashchange into show/hide.
+// Registered with mainViews.js: opening Settings supersedes any other main
+// view, and another view superseding Settings hides it without requestClose.
 
 import { formatAgo } from './sidebar.js';
 import { installPluginManager } from './pluginManager.js';
@@ -15,6 +17,7 @@ import { installDefaultPlaybook } from './defaultPlaybook.js';
 import { installDefaultEnforcement } from './defaultEnforcement.js';
 import { CLAUDE_BACKEND, backendIdOf } from './models.js';
 import { archivedSessionUrl, restoreArchivedSession } from './archivedSessions.js';
+import { registerMainView, reconcileMainViews } from './mainViews.js';
 
 const POLL_MS = 1500;
 
@@ -194,6 +197,7 @@ export function installSettings({
     isOpen = true;
     main.classList.add('settings-open');
     view.hidden = false;
+    reconcileMainViews();
     load();
     clearOverageDirty(); // discard any un-applied edit from a prior open before refetching
     clearOverageStatus(); // discard any stale applied/failed message from a prior open
@@ -1963,6 +1967,7 @@ export function installSettings({
     }
   });
 
+  registerMainView({ matches: h => h === '#settings', isOpen: () => isOpen, supersede: hide });
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape' && isOpen) close();

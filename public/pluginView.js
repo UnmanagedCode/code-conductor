@@ -14,12 +14,12 @@
 // iframe): child `route` messages mirror into the hash via replaceState
 // (no hashchange fires, so no reload loop); external subpath changes are
 // forwarded as `navigate` messages instead of reloading the iframe.
-// Teardown blanks the iframe so a closed plugin costs no memory. `close()`
-// is the deterministic exit used by app.js when navigation happens via
-// replaceState/pushState (sidebar session select, review open, the
-// switcher's Conductor entry) — those never fire hashchange, so the
-// hashchange teardown can't cover them; `onClosed` fires after every
-// teardown (the app switcher re-syncs its dropdown off it). `onShown` fires
+// Teardown blanks the iframe so a closed plugin costs no memory. Navigation
+// via replaceState/pushState never fires hashchange, so the hashchange
+// teardown can't cover it: another main view opening, or a sidebar session
+// select, supersedes this view through mainViews.js, and `close()` is the
+// switcher's Conductor entry exit. `onClosed` fires after every teardown,
+// supersede included (the app switcher re-syncs its dropdown off it). `onShown` fires
 // on every entry into the `#plugin/` space (dropdown select, deep link,
 // page-load boot) AND on a plugin-to-plugin switch within an already-open
 // view (app.js uses it to collapse the mobile sidebar drawer, same idiom as

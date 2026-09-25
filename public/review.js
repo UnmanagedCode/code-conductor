@@ -244,15 +244,14 @@ export function installReview() {
       _onBack = onBack || null;
       loadDiff();
     },
-    // Hash navigated away (hardware/browser back or commits-back) — run the
-    // full teardown so the onBack callback (e.g. closeReview) still fires.
+    // Hash navigated away (hardware/browser back or commits-back) — the
+    // onBack callback (e.g. closeReview) still fires.
+    onLeave: () => { _onBack?.(); },
     onTeardown: () => {
       _seq++;
-      const cb = _onBack;
       _title = '';
       _url = null;
       _onBack = null;
-      cb?.();
     },
   });
 }
