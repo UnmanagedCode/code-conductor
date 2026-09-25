@@ -55,6 +55,11 @@ test('an instruction containing a footer paragraph splits there and loses no byt
   });
 });
 
+test('a last footer that is not paragraph-final recedes to an earlier one that is', () => {
+  const text = `${H}\n\np\n\n${F}\n\ntail\n\n${F}\ntail2`;
+  assert.deepEqual(parseForwardFrame(text), { payload: 'p', instruction: `tail\n\n${F}\ntail2` });
+});
+
 test('footer text not standing as its own paragraph does not move the split', async (t) => {
   for (const [label, body] of [
     ['inline mention', `see ${F} above`],
@@ -107,6 +112,16 @@ test('splitForwardedMessages scans backwards and falls back to one body on incon
     const messages = ['quoting\n\n--- message 2/3 ---\nfake body', 'real two', 'real three'];
     const payload = parseForwardFrame(buildForwardFrame({ messages, instruction: 'go' })).payload;
     assert.deepEqual(splitForwardedMessages(payload), messages);
+  });
+  await t.test('a later message quoting an earlier boundary line still splits correctly', () => {
+    const messages = ['real one', 'real two', 'three quoting\n\n--- message 2/3 ---\nfake body'];
+    const payload = parseForwardFrame(buildForwardFrame({ messages, instruction: 'go' })).payload;
+    assert.deepEqual(splitForwardedMessages(payload), messages);
+  });
+  await t.test('a boundary sequence anywhere but offset 0 is one body', () => {
+    const body = 'quoting a frame:\n--- message 1/3 ---\na\n\n--- message 2/3 ---\nb\n\n--- message 3/3 ---\nc';
+    const payload = parseForwardFrame(buildForwardFrame({ messages: [body], instruction: 'go' })).payload;
+    assert.deepEqual(splitForwardedMessages(payload), [body]);
   });
   await t.test('a missing boundary yields the whole payload', () => {
     const payload = '--- message 1/3 ---\none\n\n--- message 2/3 ---\ntwo';

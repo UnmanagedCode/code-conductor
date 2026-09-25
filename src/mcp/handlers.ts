@@ -2163,7 +2163,7 @@ function forwardTruncationMarker(planPath: string | undefined): string {
 // the conversation view parses back to render the forward bubble; this
 // function only renders the per-message bodies. They reuse renderMessageBody
 // — the SAME renderer get_recent_messages uses — so a forwarded plan/questions
-// body is never forked or re-derived (decision 3). Per-message prose is capped
+// body is never forked or re-derived. Per-message prose is capped
 // and truncation-marked BEFORE rendering, so the marker rides inside the body
 // like any other segment.
 function renderForwardFrame(messages: ReconMessage[], guidingText: string): string {

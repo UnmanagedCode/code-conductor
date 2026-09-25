@@ -139,6 +139,14 @@ test('expanding renders one labelled markdown section per forwarded message', as
   assert.equal(ols[1].getAttribute('start'), '2', 'second question numbered from 2');
 });
 
+test('a one-message forward labels its single section Forwarded output', async () => {
+  const root = await render(buildForwardFrame({ messages: ['only'], instruction: 'go' }));
+  const details = root.querySelector('details.block.forward-frame');
+  expand(details);
+  const labels = [...details.querySelectorAll('.forward-section-label')].map((n) => n.textContent);
+  assert.deepEqual(labels, ['Forwarded output']);
+});
+
 test('an unclosed code fence in one message does not swallow the next', async () => {
   const root = await render(buildForwardFrame({
     messages: ['truncated here:\n```js\nconst a = 1;', 'second message stays prose'],
@@ -194,4 +202,23 @@ test('non-frames stay plain user bubbles', async (t) => {
       assert.ok(wrap.querySelector('.user-text'), 'plain user-text body');
     });
   }
+});
+
+test('a skill-load echo whose text opens with the frame header renders as a skill bubble only', async () => {
+  setupDOM();
+  const Conversation = await importConversation();
+  const root = document.createElement('div');
+  const conv = new Conversation(root, {});
+  conv.apply({ kind: 'user_echo', text: FRAME, skillLoad: { skill: 'demo' }, userIndex: 0 });
+
+  const wrap = root.querySelector('.msg.user');
+  assert.ok(!wrap.classList.contains('forward-frame'), 'no forward-frame class');
+  assertNull(wrap.querySelector('details.block.forward-frame'), 'no forward details');
+  assertNull(wrap.querySelector('.blocks > .block.text'), 'no instruction block outside the skill fold');
+  const skill = wrap.querySelector('details.block.skill');
+  assert.ok(skill, 'skill bubble present');
+  expand(skill);
+  skill.querySelector('.user-view-toggle').click(); // -> raw
+  assert.equal(skill.querySelector(':scope > .user-text').textContent, FRAME,
+    'the skill fold holds the whole text, not the parsed instruction');
 });
