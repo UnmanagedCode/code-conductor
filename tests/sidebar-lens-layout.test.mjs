@@ -91,7 +91,7 @@ test('an owned active row keeps its 3px owner border-left under the outline', as
   row.style.setProperty('--owner-color', 'hsl(30 70% 64%)');
   const s = cs(window, row);
   assert.match(ruleBody(css, '.session-row.owned'), /border-left:\s*3px solid var\(--owner-color\)/);
-  assert.doesNotMatch(ruleBody(css, '.session-row.active, .mission-row.active'), /border|padding/,
+  assert.doesNotMatch(ruleBody(css, '.session-row.active, .mission-row.active, .strip-entry.active'), /border|padding/,
     'the selected rule sets no border or padding, so it cannot override the owner bar');
   assert.equal(s.paddingLeft, '3px', 'the padding gives the bar\'s width back');
   assert.equal(s.outlineStyle, 'solid', 'and the selection outline is still drawn');
@@ -107,4 +107,52 @@ test('the filter select and #sidebar-overflow-toggle resolve the same height', a
   assert.equal(hs, ht);
   assert.equal(cs(window, select).boxSizing, 'border-box');
   assert.equal(cs(window, toggle).boxSizing, 'border-box');
+});
+
+test('#sidebar-strip-slot is displayed under both lenses', async () => {
+  for (const lens of ['missions', 'projects']) {
+    const { window, document } = await renderIndex({ lens });
+    assert.notEqual(cs(window, document.getElementById('sidebar-strip-slot')).display, 'none', lens);
+  }
+});
+
+// A dot placed inside the real strip, so the real cascade reaches it.
+function stripDot(document, dotClasses, entryClasses = 'strip-entry') {
+  document.getElementById('sidebar-strip-slot').innerHTML =
+    `<div class="sidebar-strip"><div class="strip-group waiting"><ul class="strip-list"><li><button type="button" class="${entryClasses}"><span class="${dotClasses}"></span><span class="strip-title">x</span></button></li></ul></div></div>`;
+  return document.querySelector('#sidebar-strip-slot .dot');
+}
+
+test('the waiting-on-you ring: amber for idle, accent on a worker, green without the pulse in a turn', async () => {
+  const { window, document, css } = await renderIndex();
+  const bg = (cls) => cs(window, stripDot(document, cls)).backgroundColor;
+  assert.match(bg('dot idle needs-you'), /var\(--amber\)|#f59e0b|rgb\(245, 158, 11\)/);
+  assert.match(bg('dot idle awaiting needs-you'), /var\(--accent\)|#6ea8ff|rgb\(110, 168, 255\)/);
+  const turn = cs(window, stripDot(document, 'dot turn needs-you'));
+  assert.match(turn.backgroundColor, /var\(--green\)|#4ade80|rgb\(74, 222, 128\)/);
+  // happy-dom reports the animation shorthand only, not its longhands.
+  assert.equal(turn.animation, 'none', 'the pulse is dropped inside the ring');
+  assert.match(cs(window, stripDot(document, 'dot turn')).animation, /pulse/, 'an unringed turn dot still pulses');
+  const running = cs(window, stripDot(document, 'dot running needs-you'));
+  assert.match(running.backgroundColor, /var\(--green\)|#4ade80|rgb\(74, 222, 128\)/);
+  assert.equal(running.animation, 'none');
+  assert.match(ruleBody(css, '.dot.needs-you'), /box-shadow:[^;]*var\(--amber\)/, 'the ring itself is amber');
+  assert.match(bg('dot idle'), /var\(--muted\)|#8a90a3|rgb\(138, 144, 163\)/, 'a plain idle dot is not amber');
+});
+
+test('.strip-entry.active gets the selected fill, outline and bold label of .session-row.active', async () => {
+  const { window, document } = await renderIndex();
+  stripDot(document, 'dot idle', 'strip-entry active');
+  const entry = document.querySelector('#sidebar-strip-slot .strip-entry');
+  const s = cs(window, entry);
+  assert.match(s.backgroundColor + s.background, /var\(--panel-2\)|#1d2130|rgb\(29, 33, 48\)/);
+  assert.equal(s.outlineStyle, 'solid');
+  assert.equal(s.outlineWidth, '1px');
+  assert.equal(s.outlineOffset, '-1px');
+  assert.equal(cs(window, entry.querySelector('.strip-title')).fontWeight, '700');
+});
+
+test('an owned strip entry draws the inset 3px owner bar, as a mission block does', async () => {
+  const { css } = await renderIndex();
+  assert.match(ruleBody(css, '.worktree-row.owned, .mission, .strip-entry.owned'), /box-shadow:\s*inset 3px 0 0 var\(--owner-color\)/);
 });

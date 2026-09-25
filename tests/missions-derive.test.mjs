@@ -170,3 +170,29 @@ test('ownerLabel prefers a mission title, then a live instance label, then the s
   assert.equal(M.ownerLabel('H', { missions, instances }), 'hand owner');
   assert.equal(M.ownerLabel('abcdefghijk', { missions, instances }), 'abcdefgh…');
 });
+
+test('deriveMissions carries awaitingUser and awaitingUserSource from the live instance', () => {
+  const { live } = M.deriveMissions({
+    conductRows: [{ sessionId: 'A', lastActivity: 1 }],
+    instances: [
+      { id: 'iA', project: '.conduct', sessionId: 'A', status: 'idle', awaitingUser: 'plan', awaitingUserSource: 'tool' },
+      { id: 'iB', project: '.conduct', sessionId: 'B', status: 'turn', awaitingUser: 'question', awaitingUserSource: 'text' },
+      { id: 'iC', project: '.conduct', sessionId: 'C', status: 'idle' },
+    ],
+  });
+  const by = new Map(live.map(c => [c.sessionId, c]));
+  assert.equal(by.get('A').awaitingUser, 'plan');
+  assert.equal(by.get('A').awaitingUserSource, 'tool');
+  assert.equal(by.get('B').awaitingUser, 'question');
+  assert.equal(by.get('B').awaitingUserSource, 'text');
+  assert.equal(by.get('C').awaitingUser, null);
+  assert.equal(by.get('C').awaitingUserSource, null);
+});
+
+test('a disk-only mission row has null awaitingUser even when its disk row reports one', () => {
+  const { inactive } = M.deriveMissions({
+    conductRows: [{ sessionId: 'D', lastActivity: 1, awaitingUser: 'question', awaitingUserSource: 'tool' }],
+  });
+  assert.equal(inactive[0].awaitingUser, null);
+  assert.equal(inactive[0].awaitingUserSource, null);
+});

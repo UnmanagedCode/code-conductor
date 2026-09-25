@@ -319,6 +319,16 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .dot.running { background: var(--green); animation: pulse 1s infinite alternate; }
 .dot.spawning { background: var(--amber); }
 .dot.crashed, .dot.exited { background: var(--red); }
+/* Waiting on you: an amber ring around the dot. The fill keeps the run state's
+   colour (green in a turn, accent on a worker) and only a plain idle fills
+   amber; the running pulse is dropped so the ring never fades. */
+.dot.needs-you {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--amber);
+  margin: 0 2px;
+}
+.dot.idle.needs-you { background: var(--amber); }
+.dot.idle.awaiting.needs-you { background: var(--accent); }
+.dot.turn.needs-you, .dot.running.needs-you { background: var(--green); animation: none; }
 @keyframes pulse { from { opacity: .4 } to { opacity: 1 } }
 
 /* Worktree subnode: collapsed by default; nested under each project. */
@@ -431,11 +441,11 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
    and gives the width back in padding so the row does not widen; block rows
    draw it inset. */
 .session-row.owned { border-left: 3px solid var(--owner-color); padding-left: 3px; }
-.worktree-row.owned, .mission { box-shadow: inset 3px 0 0 var(--owner-color); }
+.worktree-row.owned, .mission, .strip-entry.owned { box-shadow: inset 3px 0 0 var(--owner-color); }
 /* Selected: fill + a neutral outline + a bold label — no colour, since the left
    bar means ownership. Hover stays fill-only, and the outline sits over an
    owner bar without replacing it. */
-.session-row.active, .mission-row.active {
+.session-row.active, .mission-row.active, .strip-entry.active {
   background: var(--panel-2);
   color: var(--text);
   outline: 1px solid var(--muted);
@@ -458,6 +468,26 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   font-family: ui-monospace, monospace; font-size: 10px; color: var(--thinking);
   white-space: normal; overflow-wrap: anywhere;
 }
+
+/* Needs-you strip (#sidebar-strip-slot, above the lens toggle, both lenses). */
+.sidebar-strip {
+  margin: 0 0 10px; padding: 6px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+}
+.strip-group + .strip-group { margin-top: 6px; }
+.strip-head {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); padding: 0 4px 3px; font-weight: 600;
+}
+.strip-group.waiting .strip-head { color: var(--amber); }
+.strip-list { list-style: none; margin: 0; padding: 0; }
+.strip-entry {
+  width: 100%; display: flex; align-items: center; gap: 7px;
+  padding: 4px 6px 4px 10px; border: none; border-radius: 4px;
+  background: transparent; font-size: 12px; text-align: left; color: var(--text);
+}
+.strip-entry:hover:not(:disabled) { background: var(--panel-2); }
+.strip-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 
 /* Missions lens. */
 .mission-list { list-style: none; padding: 0; margin: 0; }
@@ -514,7 +544,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 /* The selected label's bold, after the live / unread weights it must outrank.
    It also overrides .mission-title.untitled's 400: a selected untitled mission
    reads bold italic, since selected is bold by spec. */
-.session-row.active .session-preview, .mission-row.active .mission-title { font-weight: 700; }
+.session-row.active .session-preview, .mission-row.active .mission-title,
+.strip-entry.active .strip-title { font-weight: 700; }
 /* Overage auto-resume badge — shown on a stopped session awaiting resume. */
 .session-resume-badge {
   font-size: 10px;

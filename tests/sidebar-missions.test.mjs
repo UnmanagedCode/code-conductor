@@ -307,3 +307,26 @@ test('tickAgo refreshes mission-row ago labels', async () => {
   sidebar.tickAgo();
   assert.equal(ago.textContent, '2h ago');
 });
+
+test('a live mission-row dot gains the waiting-on-you ring over its fill; an inactive mission is never ringed', async () => {
+  const { missionList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    conductRows: [{ sessionId: 'D', lastActivity: 1, awaitingUser: 'question', awaitingUserSource: 'tool' }],
+    instances: [
+      conductor('I', { status: 'idle', awaitingUser: 'plan', awaitingUserSource: 'tool' }),
+      conductor('T', { status: 'turn', awaitingUser: 'question', awaitingUserSource: 'text' }),
+      conductor('W', { status: 'idle', awaitingWake: true, awaitingUser: 'question', awaitingUserSource: 'tool' }),
+      conductor('X', { status: 'exited', awaitingUser: 'question', awaitingUserSource: 'tool' }),
+    ],
+  });
+  const dot = (sid) => missionOf(missionList, sid).querySelector('.mission-row > .dot');
+  assert.equal(dot('I').className, 'dot idle needs-you');
+  assert.equal(dot('I').title, 'waiting on you (plan approval) · idle');
+  assert.equal(dot('T').className, 'dot turn needs-you');
+  assert.equal(dot('T').title, 'waiting on you (asked in text) · running');
+  assert.equal(dot('W').className, 'dot idle awaiting needs-you');
+  assert.equal(dot('W').title, 'waiting on you (question) · on a worker');
+  await openInactive(missionList);
+  assert.equal(dot('D').className, 'dot offline', 'a disk-only mission is offline and unringed');
+  assert.equal(dot('X').className, 'dot exited', 'an exited instance is unringed');
+});
