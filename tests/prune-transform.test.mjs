@@ -347,7 +347,9 @@ test('truncate mode never splits a surrogate pair', async () => {
 
 // Every (cut, inputMode, pruneThinking) combination: the dialog's client-side
 // prefix sum over the analysis, scaled by its calibration factor and rounded,
-// must equal what the transform reports saving. Returns the factor used.
+// must equal what the transform reports saving. The image part of a tool-output
+// saving (`toolOutputImage`) is a real cost already, so it is added unscaled.
+// Returns the factor used.
 async function assertPreviewMatchesTransform(lines) {
   const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
   const { sid } = await seed(lines);
@@ -370,7 +372,8 @@ async function assertPreviewMatchesTransform(lines) {
         const expected = {
           thinking: pruneThinking ? Math.round(analysis.turns.reduce((a, t) => a + t.thinking, 0) * factor) : 0,
           toolInputs: Math.round(prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0) * factor),
-          toolOutputs: Math.round(prefix.reduce((a, t) => a + t.toolOutput, 0) * factor),
+          toolOutputs: Math.round(prefix.reduce((a, t) => a + t.toolOutput - t.toolOutputImage, 0) * factor)
+            + prefix.reduce((a, t) => a + t.toolOutputImage, 0),
         };
         assert.deepEqual(saved, expected,
           `preview drifted from the transform (cut=${cut}, ${inputMode}, thinking=${pruneThinking}, factor=${factor})`);
@@ -406,6 +409,25 @@ test('the savings preview equals what the transform actually saves', async () =>
   });
   await withStore(async () => {
     await assertPreviewMatchesTransform(await imageScenario());
+  });
+  // Every image step is left out of calibration, so a live factor needs clean,
+  // usage-bearing steps of its own after the image turns.
+  await withStore(async () => {
+    const lines = await imageScenario();
+    lines.push({ type: 'user', uuid: 'u3', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'more' }] } });
+    for (let i = 0; i <= 4; i++) {
+      lines.push({ type: 'assistant', uuid: `c${i}`, sessionId: 'old', message: {
+        id: `mc${i}`, role: 'assistant', model: 'claude-opus-5',
+        usage: { input_tokens: 30000 + 2400 * i, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 20 },
+        content: [{ type: 'tool_use', id: `tc${i}`, name: 'Bash', input: { command: `echo ${i}` } }],
+      } });
+      if (i < 4) lines.push(toolResult(`rc${i}`, `tc${i}`, 'o'.repeat(4000)));
+    }
+    const factor = await assertPreviewMatchesTransform(lines);
+    assert.notEqual(factor, 1, 'the clean steps must make the factor live');
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
+    const a = await analyzeSessionForPrune({ place: localPlace(CWD), sessionId: '11111111-2222-3333-4444-555555555555' });
+    assert.ok(a.turns.some(t => t.toolOutputImage > 0), 'the image part must be non-zero for the split to be exercised');
   });
 });
 

@@ -314,14 +314,20 @@ function stubToolResultContent(content: unknown, toolName: string | undefined): 
 // THE single block transform — both the savings preview and the actual rewrite
 // call this, so the number the dialog shows can never drift from what Prune does.
 //
-// Returns { block, category, saved }. `saved` is the token delta and is never
-// negative: a stub that would be BIGGER than what it replaces (an empty thinking
-// block, a two-byte tool output) is skipped and the original block is returned
-// verbatim. Pruning must never inflate the context.
+// Returns { block, category, saved, imageSaved }. `saved` is the token delta and
+// is never negative: a stub that would be BIGGER than what it replaces (an empty
+// thinking block, a two-byte tool output) is skipped and the original block is
+// returned verbatim. Pruning must never inflate the context.
+//
+// `imageSaved` is the part of `saved` owed to images, whose cost is real (the
+// patch rule), not an estimate — so the calibration factor must not scale it.
+// The rule: the stub's whole cost is charged to the block's images. The image
+// part is the images' cost less the stub's, floored at 0 and capped at `saved`;
+// the rest of `saved` is the non-image content's full estimate.
 function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking, exemptThinking, toolNames, inputMode }: PruneOpts): {
-  block: PruneBlock | null | undefined; category: string | null; saved: number;
+  block: PruneBlock | null | undefined; category: string | null; saved: number; imageSaved: number;
 } {
-  const none = { block, category: null, saved: 0 };
+  const none = { block, category: null, saved: 0, imageSaved: 0 };
   if (!block || typeof block !== 'object') return none;
 
   let next: PruneBlock | null = null;
@@ -368,7 +374,13 @@ function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking
   }
 
   const saved = blockTokens(block) - blockTokens(next);
-  return saved > 0 ? { block: next, category, saved } : none;
+  if (saved <= 0) return none;
+  const imageTokens = block.type === 'image' ? imageInfo(block).tokens
+    : block.type === 'tool_result' && Array.isArray(block.content)
+      ? (block.content as unknown[]).filter(isImage).reduce((n, b) => n + imageInfo(b).tokens, 0)
+      : 0;
+  const imageSaved = imageTokens > 0 ? Math.max(0, Math.min(saved, imageTokens - blockTokens(next))) : 0;
+  return { block: next, category, saved, imageSaved };
 }
 
 // tool_use id → tool name, over in-context entries. Lets a tool_result pick the
@@ -650,11 +662,13 @@ export function contextReading(usage: unknown): number | null {
 //
 // Every per-turn figure is RAW (uncalibrated); the client scales its sums by
 // `calibration.factor` exactly as pruneSessionToNewId scales `saved`.
+// `toolOutputImage` is the part of `toolOutput` owed to images (see pruneBlock),
+// which is added back unscaled.
 // `exempt` is the in-context payload of exempt tools (isPruneExemptTool) — kept,
 // never saved. `encryptedThinking` is session-wide, like thinking pruning.
 export async function analyzeSessionForPrune({ place, sessionId }: { place: TranscriptPlacement; sessionId: string }): Promise<{
   turnCount: number;
-  turns: Array<{ index: number; preview: string; thinking: number; toolInputTruncatable: number; toolInputMinimal: number; toolOutput: number; exempt: number; total: number }>;
+  turns: Array<{ index: number; preview: string; thinking: number; toolInputTruncatable: number; toolInputMinimal: number; toolOutput: number; toolOutputImage: number; exempt: number; total: number }>;
   encryptedThinking: number;
   calibration: { factor: number; steps: number; calibrated: boolean };
 }> {
@@ -665,7 +679,7 @@ export async function analyzeSessionForPrune({ place, sessionId }: { place: Tran
 
   const turns = Array.from({ length: turnCount }, (_, index) => ({
     index, preview: '',
-    thinking: 0, toolInputTruncatable: 0, toolInputMinimal: 0, toolOutput: 0, exempt: 0, total: 0,
+    thinking: 0, toolInputTruncatable: 0, toolInputMinimal: 0, toolOutput: 0, toolOutputImage: 0, exempt: 0, total: 0,
   }));
   let encryptedThinking = 0;
 
@@ -694,7 +708,10 @@ export async function analyzeSessionForPrune({ place, sessionId }: { place: Tran
       const trunc = pruneBlock(block, { ...base, pruneThinking: false, inputMode: 'truncate' });
       const minimal = pruneBlock(block, { ...base, pruneThinking: false, inputMode: 'minimal' });
       if (think.category === 'thinking') bucket.thinking += think.saved;
-      if (trunc.category === 'toolOutputs') bucket.toolOutput += trunc.saved;
+      if (trunc.category === 'toolOutputs') {
+        bucket.toolOutput += trunc.saved;
+        bucket.toolOutputImage += trunc.imageSaved;
+      }
       if (trunc.category === 'toolInputs') bucket.toolInputTruncatable += trunc.saved;
       if (minimal.category === 'toolInputs') bucket.toolInputMinimal += minimal.saved;
     }
@@ -732,7 +749,8 @@ async function copySubAgentDir({ place, sessionId, newSessionId }: { place: Tran
 //   inputMode    — 'truncate' | 'minimal', applied inside the pruned region only.
 //
 // Returns { newSessionId, turnCount, cutTurnIndex, saved:{…}, lastSurvivingUuid }.
-// `saved` is calibrated: each category's raw estimate × usageCalibration's factor.
+// `saved` is calibrated: each category's raw non-image estimate × usageCalibration's
+// factor, plus its image part unscaled (see pruneBlock).
 export async function pruneSessionToNewId({
   place, sessionId, cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate',
   mode, newSessionId,
@@ -771,6 +789,7 @@ export async function pruneSessionToNewId({
   const toolNames = toolNamesById(records.map(r => r.obj));
   const newSid = newSessionId ?? randomUUID();
   const saved = { thinking: 0, toolInputs: 0, toolOutputs: 0 };
+  const imageSaved = { thinking: 0, toolInputs: 0, toolOutputs: 0 };
   const out: string[] = [];
   let lastSurvivingUuid: string | null = null;
 
@@ -797,7 +816,10 @@ export async function pruneSessionToNewId({
     };
     const nextContent = (content as PruneBlock[]).map((block) => {
       const r = pruneBlock(block, opts);
-      if (r.category) saved[r.category as keyof typeof saved] += r.saved;
+      if (r.category) {
+        saved[r.category as keyof typeof saved] += r.saved;
+        imageSaved[r.category as keyof typeof saved] += r.imageSaved;
+      }
       return r.block;
     });
 
@@ -809,7 +831,9 @@ export async function pruneSessionToNewId({
   }
 
   const { factor } = usageCalibration(records);
-  for (const k of Object.keys(saved) as Array<keyof typeof saved>) saved[k] = Math.round(saved[k] * factor);
+  for (const k of Object.keys(saved) as Array<keyof typeof saved>) {
+    saved[k] = Math.round((saved[k] - imageSaved[k]) * factor) + imageSaved[k];
+  }
 
   await writeFileAtomic(sessionFilePath(place, newSid), out.join('\n') + '\n');
   await copySubAgentDir({ place, sessionId, newSessionId: newSid });

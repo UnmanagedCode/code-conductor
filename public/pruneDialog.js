@@ -50,17 +50,20 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     const minimal = minimalEl.checked;
     let toolInputs = 0;
     let toolOutputs = 0;
+    let toolOutputImage = 0;
     let exempt = 0;
     for (const t of analysis.turns.slice(0, cut)) {
       toolInputs += minimal ? t.toolInputMinimal : t.toolInputTruncatable;
       toolOutputs += t.toolOutput;
+      toolOutputImage += t.toolOutputImage;
       exempt += t.exempt;
     }
     const thinking = thinkingEl.checked
       ? calibrated(analysis.turns.reduce((a, t) => a + t.thinking, 0))
       : 0;
     toolInputs = calibrated(toolInputs);
-    toolOutputs = calibrated(toolOutputs);
+    // An image's saving is a real cost already, never scaled (see sessionPrune.ts pruneBlock).
+    toolOutputs = calibrated(toolOutputs - toolOutputImage) + toolOutputImage;
     return { thinking, toolInputs, toolOutputs, exempt: calibrated(exempt), total: thinking + toolInputs + toolOutputs };
   }
 

@@ -14,7 +14,7 @@ const PUB = path.resolve(__dirname, '..', 'public');
 
 const turn = (index, o = {}) => ({
   index, preview: `turn ${index}`, thinking: 0, toolInputTruncatable: 0, toolInputMinimal: 0,
-  toolOutput: 0, exempt: 0, total: 0, ...o,
+  toolOutput: 0, toolOutputImage: 0, exempt: 0, total: 0, ...o,
 });
 
 // Three turns, so the dialog's default cut is 2: turns 0 and 1 are the prefix.
@@ -92,6 +92,17 @@ test('every figure is the raw sum times the calibration factor', async () => {
   assert.equal(r['Tool outputs'], '~1.5k tokens');
   assert.equal(r['Tool inputs'], '~300 tokens');
   assert.equal(r['Estimated total saved'], '~1.8k tokens');
+});
+
+test('the image part of the tool outputs is not scaled by the factor', async () => {
+  // 3000 raw, 1334 of it an image's saving: round(1666 × 1.5) + 1334 = 3833.
+  // Scaling all of it would read ~4.5k.
+  const { rows } = await openDialog(analysis({
+    turns: [turn(0, { toolOutput: 3000, toolOutputImage: 1334 }), turn(1), turn(2)],
+  }));
+  const r = rows();
+  assert.equal(r['Tool outputs'], '~3.8k tokens');
+  assert.equal(r['Estimated total saved'], '~3.8k tokens');
 });
 
 test('encrypted thinking reads as not removable, sized and kept', async () => {

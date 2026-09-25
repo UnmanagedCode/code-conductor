@@ -311,6 +311,39 @@ test('a tool_result\'s nested non-text, non-image block costs its JSON at 4 char
   });
 });
 
+// ── images and the calibration factor ─────────────────────────────────────
+
+test('an image\'s saving is never scaled by the calibration factor', async () => {
+  // Turn 0: a pasted 1280×800 screenshot, and a Bash output of 2500 chars.
+  //   screenshot: 46 × 29 patches = 1334 tokens; its stub
+  //     `[pruned: image/png 1280×800 (51.2 KB)]` is 38 chars / 4 → 10,
+  //     so the image saving is 1334 − 10 = 1324.
+  //   output: 2500 / 2.5 = 1000; its stub `[pruned: 2.4 KB]` is 16 chars / 2.5
+  //     → 7, so the non-image saving is 993.
+  // Turn 1: the clean calibration steps, each growing by round(1.5 × estimate).
+  // Only the 993 is scaled: round(993 × factor) + 1324. Scaling the whole
+  // 2317 would give a different figure.
+  await withStore(async () => {
+    const data = (await fs.readFile(path.join(__dirname, 'fixtures', 'prune-images', 'screenshot-1280x800.png'))).toString('base64');
+    const { lines: clean, cleanFactor } = await calibrationSession(cleanSteps());
+    await seed([
+      { type: 'user', uuid: 'xu', message: { role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }, { type: 'text', text: 'look' },
+      ] } },
+      { type: 'assistant', uuid: 'xa', message: { id: 'mx', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tx', name: 'Bash', input: { command: 'ls' } },
+      ] } },
+      toolResult('xr', 'tx', 'o'.repeat(2500)),
+      ...clean,
+    ]);
+    const { calibration } = await analyze();
+    assert.ok(Math.abs(calibration.factor - cleanFactor) < 1e-9 && calibration.factor > 1.4,
+      `the factor must be live (${calibration.factor})`);
+    const { saved } = await prune({ cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate' });
+    assert.equal(saved.toolOutputs, Math.round(993 * calibration.factor) + 1324);
+  });
+});
+
 // ── thinking ───────────────────────────────────────────────────────────────
 
 const thinkingSession = (block) => [
