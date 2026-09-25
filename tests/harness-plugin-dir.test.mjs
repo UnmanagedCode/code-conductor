@@ -54,6 +54,12 @@ test('without CC_PROJECTS_ROOT, the main checkout resolves to its parent', () =>
   assert.equal(resolvePluginDir('foo', { env: {}, cwd: proj }), path.join(root, '.plugins', 'foo'));
 });
 
+test('an empty CC_PROJECTS_ROOT counts as unset and falls back to the git-derived root', () => {
+  // Only the git root holds `.plugins/foo`: resolving '' as a path would land
+  // on the process cwd, which does not.
+  assert.equal(resolvePluginDir('foo', { env: { CC_PROJECTS_ROOT: '' }, cwd: wt }), path.join(root, '.plugins', 'foo'));
+});
+
 test('a missing plugin directory throws naming the path tried and CC_PROJECTS_ROOT', () => {
   const tried = new RegExp(`${escapeRe(path.join(root, '.plugins', 'absent'))}[\\s\\S]*CC_PROJECTS_ROOT`);
   assert.throws(() => resolvePluginDir('absent', { env: { CC_PROJECTS_ROOT: root }, cwd: wt }), tried);

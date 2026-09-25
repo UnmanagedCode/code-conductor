@@ -3,6 +3,10 @@
 // it with this process's arguments, cwd (the runner finds the repo root from
 // it), stdio and exit status unchanged.
 //
+// SIGINT sent to this pid alone does nothing: the wrapper ignores it so the
+// runner can restore the tree. Ctrl-C at a terminal and a process-group kill
+// both reach the runner — to interrupt a run, signal the group, not the pid.
+//
 //   node harness/mutation/run.mjs <runner args…>
 
 import { spawn } from 'node:child_process';

@@ -5,8 +5,9 @@
 // Imports harness/playwright/paths.mjs, NOT boot-orch.mjs: boot-orch loads the
 // code-playwright plugin at module load and throws on any machine without it
 // installed — which is why the Playwright-adjacent tests in this directory defer
-// that load into the test body. paths.mjs is a node-builtins-only leaf precisely
-// so this guard can run ungated.
+// that load into the test body. paths.mjs is node-builtins-only, transitively (its one
+// non-builtin import, harness/pluginDir.mjs, is itself a builtins-only leaf, and
+// the plugin is resolved only when asked) precisely so this guard can run ungated.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

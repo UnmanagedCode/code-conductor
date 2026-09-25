@@ -2,10 +2,10 @@
 // installed plugin: `<projectsRoot>/.plugins/<name>`.
 //
 // The projects root comes from CC_PROJECTS_ROOT, which cc exports to every
-// worker it spawns. Without it (a shell outside cc), the root is derived from
-// git: the main checkout's `.git` is a directory directly under the projects
-// root, and `--git-common-dir` names it from the main checkout and from any
-// worktree alike.
+// worker it spawns. Without it (a shell outside cc) — and an empty value counts
+// as unset — the root is derived from git: the main checkout's `.git` is a
+// directory directly under the projects root, and `--git-common-dir` names it
+// from the main checkout and from any worktree alike.
 //
 // LEAF MODULE — node builtins ONLY. harness/playwright/paths.mjs imports this,
 // and that module must load under `npm test` on a machine with no plugins.
