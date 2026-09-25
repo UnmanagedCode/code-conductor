@@ -284,6 +284,16 @@ describe('substitution-backend spawn command/args', () => {
     const { env } = await spawnOnBackend({ model: 's:v1', backend: 'shadow' });
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '128000', 'cc-managed value wins over the user env pair');
   });
+
+  test('cc\'s CC_PROJECTS_ROOT beats a same-named backend env pair', async () => {
+    await addBackend({
+      id: 'shadow-root', label: 'Shadow root', template: 'shadowctl claude --model {model} --',
+      env: [{ key: 'CC_PROJECTS_ROOT', value: '/backend/planted' }],
+    });
+    await addCustomModel({ label: 'SR', model: 'sr:v1', backend: 'shadow-root', contextWindow: 128_000 });
+    const { env } = await spawnOnBackend({ model: 'sr:v1', backend: 'shadow-root' });
+    assert.equal(env.CC_PROJECTS_ROOT, projectsRoot, 'cc-managed value wins over the user env pair');
+  });
 });
 
 // The write at src/instances.ts spawn() is fire-and-forget, so the 201 + idle can

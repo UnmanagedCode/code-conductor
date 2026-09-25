@@ -554,6 +554,20 @@ describe('T2: the spawn env', () => {
     }
   });
 
+  // The same directory spelled relative to cwd, so project resolution is
+  // unchanged while the value cc exports must still come out absolute.
+  test('CC_PROJECTS_ROOT is absolute even when PROJECTS_ROOT is relative', async () => {
+    const abs = process.env.PROJECTS_ROOT;
+    const rel = path.relative(process.cwd(), abs);
+    assert.equal(path.isAbsolute(rel), false, 'the fixture root is re-expressed relative');
+    process.env.PROJECTS_ROOT = rel;
+    try {
+      assert.equal((await spawnIn('localproj'))._spawnEnv.CC_PROJECTS_ROOT, abs);
+    } finally {
+      process.env.PROJECTS_ROOT = abs;
+    }
+  });
+
   // ── the CLAUDE_SECURESTORAGE_CONFIG_DIR ternary, BOTH branches ──
   //
   // Credentials are NOT linked into the farm; they are reached through this
