@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
 const N = await import(pathToFileURL(path.join(PUB, 'needsYou.js')).href);
-const { deriveMissions } = await import(pathToFileURL(path.join(PUB, 'missions.js')).href);
+const { deriveConductors } = await import(pathToFileURL(path.join(PUB, 'conductors.js')).href);
 
 const cond = (sid, o = {}) => ({
   id: `inst-${sid}`, project: '.conduct', sessionId: sid, status: 'idle', createdAt: 1000, ...o,
@@ -22,8 +22,8 @@ const workerInst = (sid, owner, o = {}) => ({
 });
 
 function strip(instances, conductRows = []) {
-  const missions = deriveMissions({ conductRows, instances });
-  return N.deriveStrip({ conductors: missions.live, instances });
+  const conductors = deriveConductors({ conductRows, instances });
+  return N.deriveStrip({ conductors: conductors.live, instances });
 }
 const sids = (entries) => entries.map(e => e.sessionId);
 const groupOf = (g, sid) => ['waiting', 'running', 'finished'].filter(k => g[k].some(e => e.sessionId === sid));
@@ -117,14 +117,14 @@ test('within a group: conductors in the given order first, then hand-spawned ses
     handInst('hNew', { createdAt: 50, lastResponseAt: 9000 }),
     cond('cNew', { createdAt: 5000 }),
   ];
-  const missions = deriveMissions({ instances });
-  const g = N.deriveStrip({ conductors: missions.live, instances });
+  const conductors = deriveConductors({ instances });
+  const g = N.deriveStrip({ conductors: conductors.live, instances });
   assert.deepEqual(sids(g.finished), ['cNew', 'cOld', 'hNew', 'hOld']);
-  const flipped = N.deriveStrip({ conductors: [...missions.live].reverse(), instances });
+  const flipped = N.deriveStrip({ conductors: [...conductors.live].reverse(), instances });
   assert.deepEqual(sids(flipped.finished), ['cOld', 'cNew', 'hNew', 'hOld'], 'conductor order is the given order');
 });
 
-test('entries carry the mission label (title, then first prompt, then sid prefix) and their instanceId', () => {
+test('entries carry the conductor label (title, then first prompt, then sid prefix) and their instanceId', () => {
   const g = strip([
     cond('aaaaaaaaaaaa', { title: 'Alpha' }),
     cond('bbbbbbbbbbbb', { firstPrompt: 'fix   the\nthing' }),

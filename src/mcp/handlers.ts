@@ -187,7 +187,7 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageActive',
   'overageResetsAt',
   // Live ownership (the root conductor of a live worker) and the sticky ask —
-  // what a mission-first view groups and sorts by.
+  // what a conductor-first view groups and sorts by.
   'ownerSessionId',
   'awaitingUser',
   'awaitingUserSource',

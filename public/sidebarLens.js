@@ -1,11 +1,11 @@
-// The sidebar's Missions / Projects lens toggle. Presentation only: sidebar.js
+// The sidebar's Conductors / Projects lens toggle. Presentation only: sidebar.js
 // renders both lists on every render, and the lens just sets
 // `#sidebar[data-lens]`, which styles.css turns into which list (and which
 // lens-only controls) show. The choice is a per-browser preference.
 
 const LENS_STORAGE_KEY = 'code-conductor:sidebar-lens';
-const LENSES = ['missions', 'projects'];
-const DEFAULT_LENS = 'missions';
+const LENSES = ['conductors', 'projects'];
+const DEFAULT_LENS = 'conductors';
 
 function loadLens() {
   try {
@@ -35,7 +35,7 @@ export function installSidebarLens({ dom, closeSidebarOverflow }) {
       saveLens(lens);
       // The ≡ menu lives in the Projects-only row; an open panel must not stay
       // armed inside a hidden row.
-      if (lens === 'missions') closeSidebarOverflow();
+      if (lens === 'conductors') closeSidebarOverflow();
     });
   }
 }

@@ -1,12 +1,12 @@
 // Pure derivations behind the sidebar's needs-you strip and the waiting-on-you
 // ring on a status dot. No DOM: every function maps the rows the sidebar
-// already receives (`/api/instances`, and the Missions derivation over it) to
+// already receives (`/api/instances`, and the Conductors derivation over it) to
 // plain values.
 //
 // The strip is built from live instances only, so an archived or disk-only
 // session never reaches it: opening an entry always selects a live instance.
 
-import { isLiveStatus, missionTitle } from './missions.js';
+import { isLiveStatus, conductorTitle } from './conductors.js';
 
 // Which strip group an entry sits in, or null for none. `status` is the status
 // the dot renders (displayStatus over status). A sticky awaitingUser wins over
@@ -50,7 +50,7 @@ function conductorEntry(c) {
   return {
     sessionId: c.sessionId,
     instanceId: c.instanceId,
-    label: missionTitle(c).text,
+    label: conductorTitle(c).text,
     conductor: true,
     live: isLiveStatus(c.instanceStatus),
     status: c.instanceDisplayStatus ?? c.instanceStatus,
@@ -64,7 +64,7 @@ function handEntry(inst) {
   return {
     sessionId: inst.sessionId,
     instanceId: inst.id,
-    label: missionTitle(inst).text,
+    label: conductorTitle(inst).text,
     conductor: false,
     live: isLiveStatus(inst.status),
     status: inst.displayStatus ?? inst.status,
@@ -75,7 +75,7 @@ function handEntry(inst) {
   };
 }
 
-// The strip's groups. `conductors` is deriveMissions(...).live, in its order;
+// The strip's groups. `conductors` is deriveConductors(...).live, in its order;
 // `instances` is the raw /api/instances list, from which the hand-spawned
 // sessions (not conducted, not a conductor) are taken, newest first. Conducted
 // workers are never listed; Running lists conductors only.

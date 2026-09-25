@@ -55,7 +55,7 @@ const state = {
 
 const dom = {
   projectList: document.getElementById('project-list'),
-  missionList: document.getElementById('mission-list'),
+  conductorList: document.getElementById('conductor-list'),
   conductorFilter: document.getElementById('conductor-filter'),
   sidebarStripSlot: document.getElementById('sidebar-strip-slot'),
   sidebarLensButtons: document.querySelectorAll('.sidebar-lens button'),
@@ -379,7 +379,7 @@ let spawnHandles = null;
 
 const sidebar = new Sidebar({
   rootList: dom.projectList,
-  missionList: dom.missionList,
+  conductorList: dom.conductorList,
   filterRoot: dom.conductorFilter,
   stripRoot: dom.sidebarStripSlot,
   onSelectInstance: selectInstance,

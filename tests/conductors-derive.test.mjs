@@ -1,5 +1,5 @@
-// Pure derivations behind the sidebar's Missions lens and ownership colour
-// (public/missions.js, public/conductorColor.js). No DOM.
+// Pure derivations behind the sidebar's Conductors lens and ownership colour
+// (public/conductors.js, public/conductorColor.js). No DOM.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
-const M = await import(pathToFileURL(path.join(PUB, 'missions.js')).href);
+const M = await import(pathToFileURL(path.join(PUB, 'conductors.js')).href);
 const { conductorColor } = await import(pathToFileURL(path.join(PUB, 'conductorColor.js')).href);
 
 const HSL = /^hsl\((\d+) (\d+)% (\d+)%\)$/;
@@ -36,8 +36,8 @@ test('conductorColor reaches every slot', () => {
 
 const inst = (o) => ({ project: 'p', worktree: null, status: 'idle', ownerSessionId: null, ...o });
 
-test('deriveMissions splits live from inactive by instance status', () => {
-  const { live, inactive } = M.deriveMissions({
+test('deriveConductors splits live from inactive by instance status', () => {
+  const { live, inactive } = M.deriveConductors({
     conductRows: [{ sessionId: 'disk', lastActivity: 5 }],
     instances: [
       inst({ id: 'i1', project: '.conduct', sessionId: 'live', status: 'turn', createdAt: 1 }),
@@ -53,7 +53,7 @@ test('deriveMissions splits live from inactive by instance status', () => {
 });
 
 test('archived conduct rows appear in neither group; a running conductor is placed by its instance', () => {
-  const { live, inactive } = M.deriveMissions({
+  const { live, inactive } = M.deriveConductors({
     conductRows: [
       { sessionId: 'arch-new', archived: true, lastActivity: 90 },
       { sessionId: 'plain-new', lastActivity: 70 },
@@ -68,7 +68,7 @@ test('archived conduct rows appear in neither group; a running conductor is plac
 });
 
 test('both groups order newest activity first', () => {
-  const { live, inactive } = M.deriveMissions({
+  const { live, inactive } = M.deriveConductors({
     conductRows: [
       { sessionId: 'L1', lastActivity: 100 },
       { sessionId: 'L2', lastActivity: 10 },
@@ -93,7 +93,7 @@ test('both groups order newest activity first', () => {
 // max, decides the order against a single-source neighbour.
 test('a conductor\'s activity is the later of its disk row and its instance — whichever side is later decides the order', async (t) => {
   await t.test('disk activity is the later one', () => {
-    const { live } = M.deriveMissions({
+    const { live } = M.deriveConductors({
       conductRows: [{ sessionId: 'X', lastActivity: 500 }],
       instances: [
         inst({ id: 'x', project: '.conduct', sessionId: 'X', createdAt: 100 }), // instance alone: 100
@@ -104,7 +104,7 @@ test('a conductor\'s activity is the later of its disk row and its instance — 
     assert.equal(live[0].lastActivity, 500);
   });
   await t.test('instance activity is the later one', () => {
-    const { live } = M.deriveMissions({
+    const { live } = M.deriveConductors({
       conductRows: [{ sessionId: 'Z', lastActivity: 100 }],                      // disk alone: 100
       instances: [
         inst({ id: 'z', project: '.conduct', sessionId: 'Z', createdAt: 50, lastResponseAt: 600 }),
@@ -116,11 +116,11 @@ test('a conductor\'s activity is the later of its disk row and its instance — 
   });
 });
 
-test('missionTitle prefers the title, falls back to the first prompt flagged untitled, then the sid prefix', () => {
-  assert.deepEqual(M.missionTitle({ sessionId: 'abcdefghij', title: '  Ship it ', firstPrompt: 'x' }), { text: 'Ship it', untitled: false });
-  assert.deepEqual(M.missionTitle({ sessionId: 'abcdefghij', title: '  ', firstPrompt: 'do\n  the\tthing' }), { text: 'do the thing', untitled: true });
-  assert.equal(M.missionTitle({ sessionId: 's', firstPrompt: 'y'.repeat(200) }).text.length, 80);
-  assert.deepEqual(M.missionTitle({ sessionId: 'abcdefghij' }), { text: 'abcdefgh…', untitled: true });
+test('conductorTitle prefers the title, falls back to the first prompt flagged untitled, then the sid prefix', () => {
+  assert.deepEqual(M.conductorTitle({ sessionId: 'abcdefghij', title: '  Ship it ', firstPrompt: 'x' }), { text: 'Ship it', untitled: false });
+  assert.deepEqual(M.conductorTitle({ sessionId: 'abcdefghij', title: '  ', firstPrompt: 'do\n  the\tthing' }), { text: 'do the thing', untitled: true });
+  assert.equal(M.conductorTitle({ sessionId: 's', firstPrompt: 'y'.repeat(200) }).text.length, 80);
+  assert.deepEqual(M.conductorTitle({ sessionId: 'abcdefghij' }), { text: 'abcdefgh…', untitled: true });
 });
 
 test('workersOf counts only live instances owned by that conductor', () => {
@@ -134,11 +134,11 @@ test('workersOf counts only live instances owned by that conductor', () => {
   assert.deepEqual(M.workersOf('A', instances).map(i => i.id), ['w1', 'w2']);
 });
 
-test('missionProjects is the sorted distinct projects of live owned workers', () => {
-  assert.deepEqual(M.missionProjects([
+test('conductorProjects is the sorted distinct projects of live owned workers', () => {
+  assert.deepEqual(M.conductorProjects([
     inst({ project: 'zeta' }), inst({ project: 'alpha' }), inst({ project: 'zeta' }),
   ]), ['alpha', 'zeta']);
-  assert.deepEqual(M.missionProjects([]), []);
+  assert.deepEqual(M.conductorProjects([]), []);
 });
 
 test('worktreeOwnership is none / single / mixed over all owners in the place', () => {
@@ -164,16 +164,16 @@ test('stageText is verbatim and opaque', () => {
   assert.equal(M.stageText({}), null);
 });
 
-test('ownerLabel prefers a mission title, then a live instance label, then the sid prefix', () => {
-  const missions = { live: [{ sessionId: 'A', title: 'Alpha' }], inactive: [] };
+test('ownerLabel prefers a conductor title, then a live instance label, then the sid prefix', () => {
+  const conductors = { live: [{ sessionId: 'A', title: 'Alpha' }], inactive: [] };
   const instances = [inst({ sessionId: 'H', firstPrompt: 'hand  owner' })];
-  assert.equal(M.ownerLabel('A', { missions, instances }), 'Alpha');
-  assert.equal(M.ownerLabel('H', { missions, instances }), 'hand owner');
-  assert.equal(M.ownerLabel('abcdefghijk', { missions, instances }), 'abcdefgh…');
+  assert.equal(M.ownerLabel('A', { conductors, instances }), 'Alpha');
+  assert.equal(M.ownerLabel('H', { conductors, instances }), 'hand owner');
+  assert.equal(M.ownerLabel('abcdefghijk', { conductors, instances }), 'abcdefgh…');
 });
 
-test('deriveMissions carries awaitingUser and awaitingUserSource from the live instance', () => {
-  const { live } = M.deriveMissions({
+test('deriveConductors carries awaitingUser and awaitingUserSource from the live instance', () => {
+  const { live } = M.deriveConductors({
     conductRows: [{ sessionId: 'A', lastActivity: 1 }],
     instances: [
       { id: 'iA', project: '.conduct', sessionId: 'A', status: 'idle', awaitingUser: 'plan', awaitingUserSource: 'tool' },
@@ -190,8 +190,8 @@ test('deriveMissions carries awaitingUser and awaitingUserSource from the live i
   assert.equal(by.get('C').awaitingUserSource, null);
 });
 
-test('a disk-only mission row has null awaitingUser even when its disk row reports one', () => {
-  const { inactive } = M.deriveMissions({
+test('a disk-only conductor row has null awaitingUser even when its disk row reports one', () => {
+  const { inactive } = M.deriveConductors({
     conductRows: [{ sessionId: 'D', lastActivity: 1, awaitingUser: 'question', awaitingUserSource: 'tool' }],
   });
   assert.equal(inactive[0].awaitingUser, null);

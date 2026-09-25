@@ -1,4 +1,4 @@
-// Pure derivations behind the sidebar's Missions lens and its ownership
+// Pure derivations behind the sidebar's Conductors lens and its ownership
 // colour. No DOM: every function maps the rows the sidebar already receives
 // (`/api/instances` and the `.conduct` disk list) to plain values.
 //
@@ -14,7 +14,7 @@ export function isLiveStatus(status) {
 
 // The session-row shape for a live instance with no on-disk row to overlay.
 // sidebar.js's mergeLive builds its synthetic rows through this, and the
-// Missions tree renders its worker rows from it.
+// Conductors tree renders its worker rows from it.
 export function sessionFromInstance(inst) {
   return {
     sessionId: inst.sessionId,
@@ -48,7 +48,7 @@ const byActivityDesc = (a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
 // keeps its instanceId so opening it behaves as it does for any dead session).
 // A conductor with a listed instance is placed by that instance whatever its
 // disk row says: an instance does not report its session's archived state.
-export function deriveMissions({ conductRows = [], instances = [] } = {}) {
+export function deriveConductors({ conductRows = [], instances = [] } = {}) {
   const bySid = new Map();
   for (const r of conductRows) {
     if (!r?.sessionId || r.archived) continue;
@@ -92,10 +92,10 @@ export function deriveMissions({ conductRows = [], instances = [] } = {}) {
   };
 }
 
-// The label a mission row shows: its own title, else the first prompt (the
+// The label a conductor row shows: its own title, else the first prompt (the
 // same preview rule as a session row), else the sessionId prefix. `untitled`
 // says the text is a fallback, which the row renders muted italic.
-export function missionTitle(row) {
+export function conductorTitle(row) {
   const custom = (row.title ?? '').trim();
   if (custom) return { text: custom, untitled: false };
   const preview = (row.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
@@ -110,7 +110,7 @@ export function workersOf(conductorSid, instances) {
 }
 
 // The distinct projects a set of workers sits in, sorted.
-export function missionProjects(workers) {
+export function conductorProjects(workers) {
   return [...new Set(workers.map(w => w.project))].sort((a, b) => a.localeCompare(b));
 }
 
@@ -142,11 +142,11 @@ export function worktreeOwnership(ownerSet) {
   return { kind: 'mixed' };
 }
 
-// A human label for an owner sessionId: its mission title, else a live
+// A human label for an owner sessionId: its conductor title, else a live
 // instance's title or first prompt, else the sessionId prefix.
-export function ownerLabel(sid, { missions, instances = [] } = {}) {
-  const m = missions && [...(missions.live ?? []), ...(missions.inactive ?? [])].find(c => c.sessionId === sid);
-  if (m) return missionTitle(m).text;
+export function ownerLabel(sid, { conductors, instances = [] } = {}) {
+  const m = conductors && [...(conductors.live ?? []), ...(conductors.inactive ?? [])].find(c => c.sessionId === sid);
+  if (m) return conductorTitle(m).text;
   const inst = instances.find(i => i.sessionId === sid);
   if (inst) {
     const t = (inst.title ?? '').trim()
