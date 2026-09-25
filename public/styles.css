@@ -961,8 +961,9 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   margin-right: 5px;
   vertical-align: 1px;
 }
-/* Echoes public/icon.svg: white monospace on black. */
-.tool-chip-cc { background: #000; color: #fff; border-color: #000; font-family: ui-monospace, monospace; }
+/* Echoes public/icon.svg: white on black — cc's own tools and its plugins'. */
+.tool-chip-cc, .tool-chip-plugin { background: #000; color: #fff; border-color: #000; }
+.tool-chip-cc { font-family: ui-monospace, monospace; }
 .block.tool .tool-arg { color: var(--text); }
 .block.tool .tool-status { color: var(--muted); margin-left: auto; padding-left: 8px; font-size: 11px; }
 .block.tool pre {
