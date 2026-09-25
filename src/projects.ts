@@ -2276,17 +2276,24 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
 // since the last walk (lastActivityOf memoizes on the stat this loop already
 // does) — so the steady-state fan-out across every project stays readdir +
 // stat, which is the property this walk has always been protecting.
+//
+// `handCount` is the non-conducted subset of `count` — what the sidebar's
+// Hand-spawned only filter reads to decide whether a place holds a session it
+// would list, before any Sessions subnode has loaded its rows. It costs one
+// more sidecar load per walk, not a read per transcript.
 export async function summarizeSessions(
   place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
-): Promise<{ count: number; archivedCount: number; lastActivity: number }> {
+): Promise<{ count: number; archivedCount: number; handCount: number; lastActivity: number }> {
   const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   let entries: string[];
   try { entries = await fs.readdir(dir); }
-  catch (e) { if (errCode(e) === 'ENOENT') return { count: 0, archivedCount: 0, lastActivity: 0 }; throw e; }
+  catch (e) { if (errCode(e) === 'ENOENT') return { count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 }; throw e; }
   const archivedSet = await loadAllArchived();
+  const conducted = await loadAllConducted();
   let count = 0;
   let archivedCount = 0;
+  let handCount = 0;
   let lastActivity = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -2300,11 +2307,12 @@ export async function summarizeSessions(
       archivedCount++;
     } else {
       count++;
+      if (!conducted.has(sid)) handCount++;
       const ts = await lastActivityOf(full, stat);
       if (ts > lastActivity) lastActivity = ts;
     }
   }
-  return { count, archivedCount, lastActivity };
+  return { count, archivedCount, handCount, lastActivity };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

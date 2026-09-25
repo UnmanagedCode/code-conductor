@@ -59,13 +59,15 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
 
 export const tick = () => new Promise(r => setTimeout(r, 0));
 
-export function project(name, { worktrees = [], workspace = null, isGitRepo = true, sessions = { count: 0, lastActivity: 0 } } = {}) {
+// A `worktrees` entry is a name, or `{ name, sessions }` to give that worktree
+// an on-disk session summary.
+export function project(name, { worktrees = [], workspace = null, isGitRepo = true, sessions = { count: 0, handCount: 0, lastActivity: 0 } } = {}) {
   return {
     name, path: `/p/${name}`, workspace, isGitRepo, sessionIds: [],
     sessions,
-    worktrees: worktrees.map(w => ({
-      worktreeName: w, branch: `cc/${w}`, baseBranch: 'main', baseSha: 'abc',
-      sessions: { count: 0, lastActivity: 0 },
+    worktrees: worktrees.map(w => (typeof w === 'string' ? { name: w } : w)).map(w => ({
+      worktreeName: w.name, branch: `cc/${w.name}`, baseBranch: 'main', baseSha: 'abc',
+      sessions: w.sessions ?? { count: 0, handCount: 0, lastActivity: 0 },
     })),
   };
 }

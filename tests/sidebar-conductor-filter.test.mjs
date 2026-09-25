@@ -112,7 +112,101 @@ test('Hand-spawned only drops conducted rows and the — conducted — separator
   assert.ok(rowOf(root, 'h2'), 'the hand-spawned row stays');
   for (const sid of ['a1', 'a2', 'b1', 'h1']) assertNull(rowOf(root, sid), `${sid} (conducted) is dropped`);
   assert.equal([...root.querySelectorAll('.sessions-separator')].some(s => s.textContent === '— conducted —'), false);
-  assert.ok(projectNames(root).includes('delta'), 'projects are not hidden by Hand-spawned only');
+  assertNull(projectNames(root).find(n => n === 'delta') ?? null, 'delta, whose only session is conducted, is hidden');
+});
+
+// Pins the project/workspace half of the rule: under Hand-spawned only a
+// project shows iff its main checkout or a worktree holds a hand-spawned
+// session — a non-conducted one on disk (`handCount`) or a live one — and a
+// workspace shows iff a member does. Inside a shown project, a Worktrees group
+// whose worktrees hold only conducted sessions is dropped.
+test('Hand-spawned only hides projects and workspaces with no hand-spawned session — zero-session and all-conducted alike', async (t) => {
+  const projects = [
+    project('empty'),
+    project('all-conducted', { workspace: 'WS3', sessions: { count: 2, handCount: 0, lastActivity: 1 } }),
+    project('disk-hand', {
+      sessions: { count: 1, handCount: 1, lastActivity: 1 },
+      worktrees: [{ name: 'disk-conducted', sessions: { count: 1, handCount: 0, lastActivity: 1 } }, 'live-conducted'],
+    }),
+    project('live-hand', { workspace: 'WS4' }),
+    project('wt-disk-hand', {
+      sessions: { count: 1, handCount: 0, lastActivity: 1 },
+      worktrees: [{ name: 'w', sessions: { count: 1, handCount: 1, lastActivity: 1 } }],
+    }),
+    project('ws2-member', { workspace: 'WS2' }),
+  ];
+  const instances = [
+    conductor('C'),
+    worker('c1', 'C', 'all-conducted'),
+    worker('c2', 'C', 'disk-hand', 'live-conducted'),
+    hand('lh', 'live-hand'),
+  ];
+  const { root, select, sidebar } = await setupSidebar();
+  sidebar.setProjects(projects);
+  sidebar.setWorkspaces(['WS2', 'WS3', 'WS4']);
+  sidebar.setConductSessions([]);
+  sidebar.setInstances(instances);
+  await tick();
+  const mainSessions = (name) => [...root.querySelectorAll('.project-name')].find(n => n.textContent === name)
+    ?.closest('li').querySelector(':scope > details.sessions-group') ?? null;
+  const worktreeGroup = (name) => [...root.querySelectorAll('.project-name')].find(n => n.textContent === name)
+    ?.closest('li').querySelector(':scope > details.worktree-group') ?? null;
+  const workspaceNames = () => [...root.querySelectorAll('.project-workspace-name')].map(n => n.textContent);
+  assert.deepEqual(projectNames(root).sort(), projects.map(p => p.name).sort(), 'fixture: All lists every project');
+  assert.ok(mainSessions('wt-disk-hand'), 'fixture: its conducted-only main checkout has a Sessions subnode under All');
+  assert.ok(worktreeGroup('disk-hand'), 'fixture: its conducted-only worktrees have a Worktrees group under All');
+  await choose(select, 'hand');
+  const shown = projectNames(root);
+  await t.test('a project with no sessions at all is hidden', () => {
+    assert.equal(shown.includes('empty'), false);
+  });
+  await t.test('a project whose sessions are all conducted is hidden', () => {
+    assert.equal(shown.includes('all-conducted'), false);
+  });
+  await t.test('an on-disk hand-spawned session (handCount) shows the project', () => {
+    assert.ok(shown.includes('disk-hand'));
+  });
+  await t.test('a live hand-spawned instance shows the project', () => {
+    assert.ok(shown.includes('live-hand'));
+  });
+  await t.test('an on-disk hand-spawned session in a worktree shows the project', () => {
+    assert.ok(shown.includes('wt-disk-hand'));
+  });
+  await t.test('a main checkout holding only conducted sessions loses its Sessions subnode', () => {
+    assertNull(mainSessions('wt-disk-hand'));
+  });
+  await t.test('a shown project whose worktrees hold only conducted sessions has no Worktrees group', () => {
+    assert.ok(shown.includes('disk-hand'), 'shown for its main checkout');
+    assertNull(worktreeGroup('disk-hand'));
+  });
+  await t.test('a workspace is listed only when a member is visible', () => {
+    assert.deepEqual(workspaceNames(), ['WS4'], 'WS4 holds live-hand; WS2 and WS3 hold no visible member');
+  });
+  await t.test('switching back to All restores every project and workspace', async () => {
+    await choose(select, '');
+    assert.deepEqual(projectNames(root).sort(), projects.map(p => p.name).sort());
+    assert.deepEqual(workspaceNames(), ['WS2', 'WS3', 'WS4']);
+    assert.ok(worktreeGroup('disk-hand'));
+  });
+});
+
+// Pins the inner half: inside a shown project only the places holding a
+// hand-spawned session are listed, the counts stay whole, and nothing is
+// force-opened (that is the selected-conductor filter's alone).
+test('Hand-spawned only lists only the worktrees and Sessions subnodes holding a hand-spawned session', async () => {
+  const { root, select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  await choose(select, 'hand');
+  const alphaLi = [...root.querySelectorAll('.project-name')].find(n => n.textContent === 'alpha').closest('li');
+  const group = alphaLi.querySelector('details.worktree-group');
+  assert.equal(group.open, false, 'the Worktrees group is not force-opened');
+  assert.equal(sidebar.expandedWorktrees.has('alpha'), false);
+  group.open = true;
+  await tick();
+  assert.ok(wtHead(root, 'mixed'), 'mixed holds h2');
+  assertNull(wtHead(root, 'solo-a'), 'solo-a holds only a conducted session');
+  assertNull(wtHead(root, 'other-b'), 'other-b holds only a conducted session');
+  assert.equal(group.querySelector('.worktree-summary').textContent, 'Worktrees (3)', 'the count stays unfiltered');
 });
 
 test('clearing the filter restores the user\'s own worktree expansion', async () => {
