@@ -636,3 +636,16 @@ test('ToolUseBlock: a built-in tool name renders as before — no chip, no title
   assert.equal(name.hasAttribute('title'), false);
   assert.equal(name.textContent, 'Bash');
 });
+
+test('styles.css: a plugin chip shares the cc chip\'s black styling; other servers keep the default chip', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(path.resolve(__dirname, '..', 'public', 'styles.css'), 'utf8');
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .map(([, sel, body]) => ({ sels: sel.split(',').map((x) => x.trim()), body }));
+  const black = rules.filter((r) => /background:\s*#000/.test(r.body) && r.sels.includes('.tool-chip-cc'));
+  assert.equal(black.length, 1, 'sanity: exactly one rule paints the cc chip black');
+  assert.match(black[0].body, /color:\s*#fff/);
+  assert.match(black[0].body, /border-color:\s*#000/);
+  assert.ok(black[0].sels.includes('.tool-chip-plugin'), 'plugin chip is painted by the same rule as cc');
+  assert.ok(!rules.some((r) => r.sels.includes('.tool-chip-mcp')), 'third-party server chips keep the default .tool-chip styling');
+});
