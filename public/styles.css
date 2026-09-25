@@ -945,6 +945,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 }
 .block.tool[open] > summary::before { transform: rotate(90deg); }
 .block.tool .tool-name { color: var(--tool); font-weight: 600; }
+.block.tool .tool-chip { margin-left: 5px; }
 .tool-chip {
   display: inline-block;
   font-size: 10px;
