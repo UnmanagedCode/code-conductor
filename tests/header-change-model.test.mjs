@@ -38,7 +38,7 @@ async function setup() {
 
   const dom = {
     composerInput: document.getElementById('composer-input'),
-    modeSelect: document.getElementById('mode-select'),
+    modeToggle: document.getElementById('mode-toggle'),
     killBtn: document.getElementById('kill-btn'),
     muteBtn: document.getElementById('mute-btn'),
     resumeBtn: document.getElementById('resume-btn'),

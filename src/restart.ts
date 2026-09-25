@@ -4,8 +4,7 @@
 // reloads everything without the user having to ctrl+C in their shell.
 //
 // Mechanics:
-//   1. Close the WebSocket server and terminate any held-open sockets
-//      (the PreToolUse hook callbacks hang up to `HOOK_PENDING_TIMEOUT_MS` otherwise).
+//   1. Close the WebSocket server and terminate any held-open sockets.
 //   2. Stop accepting new HTTP connections.
 //   3. Best-effort shutdown of attached instance subprocesses' stdin
 //      so they don't lose buffered writes; the subprocesses themselves

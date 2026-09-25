@@ -1,8 +1,7 @@
 // Integration tests for the PreToolUse http hook callback — the
 // orchestrator-side REST endpoint that the Claude Code CLI POSTs to
-// before running a destructive tool. The endpoint either auto-allows
-// (non-ask modes) or holds the response open and surfaces a
-// permission_request UI event until the user decides via WS.
+// before running a mutating tool. For a local session the endpoint allows
+// every call; an unknown instance gets a deny.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,7 +47,7 @@ function buildHookEnvelope({ toolUseId = 'tu_hook_1', toolName = 'Write', toolIn
   };
 }
 
-test('hook-callback auto-allows in non-ask mode (code/bypassPermissions)', async () => {
+test('hook-callback auto-allows for a local session (code/bypassPermissions)', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
   const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'bypassPermissions' });
   const id = r.body.id;
@@ -77,113 +76,23 @@ test('hook-callback in plan mode auto-allows (plan-mode CLI will deny on its own
   assert.equal(callback.body.hookSpecificOutput.permissionDecision, 'allow');
 });
 
-test('hook-callback in ask mode emits permission_request over WS and resolves on hook_decision allow', async () => {
+// Pins that the WS protocol has no hook_decision frame: it gets the generic
+// unknown-message-type reply like any other unrecognised `t`.
+test('a hook_decision WS frame gets the unknown message type reply', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'ask' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'bypassPermissions' });
   const id = r.body.id;
   await waitFor(() => instances.get(id).status === 'idle');
 
   const c = await wsClient(wsUrl);
-  c.send({ t: 'subscribe', id });
-  await c.wait(m => m.t === 'snapshot');
-
-  // Fire the hook callback in the background — the response should stay
-  // open until we issue a hook_decision.
-  const envelope = buildHookEnvelope({ toolUseId: 'tu_ask_1', toolName: 'Write', toolInput: { file_path: '/x/y.txt', content: 'hi' } });
-  const callbackPromise = api(baseUrl, 'POST', `/api/instances/${id}/hook-callback`, envelope);
-
-  // The UI should see a permission_request event.
-  const pr = await c.wait(m => m.t === 'event' && m.ev.kind === 'permission_request');
-  assert.equal(pr.ev.toolUseId, 'tu_ask_1');
-  assert.equal(pr.ev.toolName, 'Write');
-  assert.equal(pr.ev.toolInput.file_path, '/x/y.txt');
-
-  // Response should still be pending.
-  const settled = await Promise.race([
-    callbackPromise.then(() => 'settled'),
-    new Promise(r => setTimeout(() => r('pending'), 100)),
-  ]);
-  assert.equal(settled, 'pending', 'hook callback response is held open until the user decides');
-
-  // Allow it.
-  c.send({ t: 'hook_decision', id, toolUseId: 'tu_ask_1', allow: true });
-  const callback = await callbackPromise;
-  assert.equal(callback.status, 200);
-  assert.equal(callback.body.hookSpecificOutput.permissionDecision, 'allow');
-
-  // permission_resolved follow-up event signals subscribers the card is done.
-  const resolved = await c.wait(m => m.t === 'event' && m.ev.kind === 'permission_resolved');
-  assert.equal(resolved.ev.toolUseId, 'tu_ask_1');
-  assert.equal(resolved.ev.allow, true);
-
-  await c.close();
-});
-
-test('hook-callback in ask mode → hook_decision deny replies with permissionDecision:"deny"', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'ask' });
-  const id = r.body.id;
-  await waitFor(() => instances.get(id).status === 'idle');
-
-  const c = await wsClient(wsUrl);
-  c.send({ t: 'subscribe', id });
-  await c.wait(m => m.t === 'snapshot');
-
-  const callbackPromise = api(
-    baseUrl, 'POST', `/api/instances/${id}/hook-callback`,
-    buildHookEnvelope({ toolUseId: 'tu_deny', toolName: 'Bash', toolInput: { command: 'rm -rf /' } }),
-  );
-  await c.wait(m => m.t === 'event' && m.ev.kind === 'permission_request' && m.ev.toolUseId === 'tu_deny');
-
-  c.send({ t: 'hook_decision', id, toolUseId: 'tu_deny', allow: false });
-  const callback = await callbackPromise;
-  assert.equal(callback.body.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(callback.body.hookSpecificOutput.permissionDecisionReason ?? '', /denied/i);
-
-  await c.close();
-});
-
-test('hook-callback in ask mode → if the instance exits with a pending response, the response resolves deny', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'ask' });
-  const id = r.body.id;
-  const inst = instances.get(id);
-  await waitFor(() => inst.status === 'idle');
-
-  const c = await wsClient(wsUrl);
-  c.send({ t: 'subscribe', id });
-  await c.wait(m => m.t === 'snapshot');
-
-  const callbackPromise = api(
-    baseUrl, 'POST', `/api/instances/${id}/hook-callback`,
-    buildHookEnvelope({ toolUseId: 'tu_exit' }),
-  );
-  await c.wait(m => m.t === 'event' && m.ev.kind === 'permission_request');
-
-  await inst.kill({ graceMs: 100 });
-  const callback = await callbackPromise;
-  assert.equal(callback.body.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(callback.body.hookSpecificOutput.permissionDecisionReason ?? '', /exited/i);
-
-  await c.close();
-});
-
-test('hook_decision over WS for an unknown toolUseId acks with an error and does not throw', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'ask' });
-  const id = r.body.id;
-  await waitFor(() => instances.get(id).status === 'idle');
-
-  const c = await wsClient(wsUrl);
-  c.send({ t: 'subscribe', id });
-  await c.wait(m => m.t === 'snapshot');
-
-  c.send({ t: 'hook_decision', id, toolUseId: 'never-seen', allow: true, reqId: 'r1' });
-  const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'r1');
-  assert.equal(ack.ok, false);
-  assert.match(ack.error, /no pending/i);
-
-  await c.close();
+  try {
+    c.send({ t: 'hook_decision', id, toolUseId: 'tu_x', allow: true, reqId: 'r1' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'r1');
+    assert.equal(ack.ok, false);
+    assert.equal(ack.error, 'unknown message type: hook_decision');
+  } finally {
+    await c.close();
+  }
 });
 
 test('hook-callback for an unknown instance id replies 200 + deny (CLI auto-deny path)', async () => {

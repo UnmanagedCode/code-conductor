@@ -728,10 +728,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #notify-toggle, #settings-btn { padding: 4px 8px; line-height: 1; }
 #notify-toggle[aria-pressed="true"] { background: #2a3548; }
 
-/* Inline auto-approve-plans toggle, sibling of #mode-select. Icon-only so
+/* Inline auto-approve-plans toggle, sibling of #mode-toggle. Icon-only so
  * it doesn't crowd the mobile controls row; on/off state is communicated
  * by aria-pressed (green-tinted background when on). Padding matches the
- * default button rule so its height aligns with #mode-select and the ⋮
+ * default button rule so its height aligns with #mode-toggle and the ⋮
  * burger. */
 .auto-approve-toggle[aria-pressed="true"] {
   background: rgba(74,222,128,.20); border-color: var(--green);
@@ -739,6 +739,11 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .auto-approve-toggle[aria-pressed="true"]:hover:not(:disabled) {
   background: rgba(74,222,128,.30);
 }
+/* Header Code | Plan switch: the spawn dialog's segmented toggle, sized to the
+ * controls row. Padding matches the default button rule so its height lines
+ * up with its neighbours. */
+#instance-controls .qs-mode-toggle { margin: 0; }
+#instance-controls .qs-mode-toggle .qs-mode-opt { flex: none; padding: 6px 10px; font-size: 12px; }
 
 button, select, textarea, input {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
@@ -1227,34 +1232,6 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   background: rgba(245,158,11,.15); color: var(--amber); border-color: var(--amber);
 }
 .pr-reject:hover:not(:disabled) { background: rgba(245,158,11,.25); }
-.block.permission {
-  background: #1c1830;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin: 10px 0;
-}
-.block.permission.allow-pending { border-color: var(--green); }
-.block.permission.deny-pending { border-color: var(--amber); }
-.block.permission.allowed { border-color: var(--green); opacity: .85; }
-.block.permission.denied { border-color: var(--amber); opacity: .85; }
-.perm-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
-.perm-title { font-weight: 600; color: var(--accent); }
-.block.permission.allowed .perm-title { color: var(--green); }
-.block.permission.denied .perm-title { color: var(--amber); }
-.perm-status { font-size: 11px; color: var(--muted); }
-.perm-arg { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); margin: 0 0 8px 0; word-break: break-all; }
-.perm-actions { display: flex; gap: 8px; margin-top: 8px; }
-.perm-allow {
-  flex: 1; padding: 10px; font-weight: 600;
-  background: rgba(74,222,128,.20); color: var(--green); border-color: var(--green);
-}
-.perm-allow:hover:not(:disabled) { background: rgba(74,222,128,.30); }
-.perm-deny {
-  flex: 1; padding: 10px;
-  background: rgba(245,158,11,.15); color: var(--amber); border-color: var(--amber);
-}
-.perm-deny:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 .block.tool-result,
 .block.tool-args { margin-left: 18px; }
 .block.tool-result summary,

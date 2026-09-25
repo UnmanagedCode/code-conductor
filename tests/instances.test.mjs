@@ -686,10 +686,9 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
     const cmdDenyRow = preToolUse.find(h => /AskUserQuestion|ExitPlanMode/.test(h.matcher || ''));
     assert.ok(!cmdDenyRow, 'no PreToolUse command-deny hook for the interactive tools anymore');
 
-    // The interactive PreToolUse http hook is still registered so that a
-    // plan→ask runtime switch starts gating destructive tools without
-    // requiring a respawn. The hook targets the orchestrator's REST
-    // callback for this specific instance.
+    // The PreToolUse http hook is registered for every session with a server
+    // port. It targets the orchestrator's REST callback for this specific
+    // instance.
     const httpRow = preToolUse.find(h => /Edit/.test(h.matcher) && /Write/.test(h.matcher) && /Bash/.test(h.matcher));
     assert.ok(httpRow, 'PreToolUse matcher covers destructive tools (Edit|Write|NotebookEdit|Bash)');
     const httpHook = httpRow.hooks?.[0];
@@ -742,28 +741,17 @@ test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv', async
   }
 });
 
-test('ask mode: --permission-mode is bypassPermissions at the CLI level, orchestrator-tracked mode stays "ask"', async () => {
+// Pins that spawn validates against the two-mode vocabulary: `ask` is not a mode.
+test("spawn with mode:'ask' is refused 400", async () => {
   await setupWithProject();
-  const fsp = (await import('node:fs')).promises;
-  const argvPath = `${home}/argv.txt`;
-  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'ask' });
-    const id = r.body.id;
-    await waitFor(() => instances.get(id).status === 'idle');
-    assert.equal(instances.get(id).mode, 'ask', 'orchestrator tracks ask separately from the CLI mode');
-
-    await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
-    const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
-    const pm = argv.indexOf('--permission-mode');
-    assert.equal(argv[pm + 1], 'bypassPermissions',
-      `ask maps to CLI bypassPermissions (CLI doesn't know about ask); argv was: ${argv.join(' ')}`);
-  } finally {
-    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
-  }
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'ask' });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /invalid mode \(must be plan or bypassPermissions\)/);
 });
 
-test('setMode("ask") flips orchestrator mode to ask while sending bypassPermissions to the CLI', async () => {
+// Pins that setMode refuses an unknown mode before anything reaches the CLI:
+// no set_permission_mode is written and the tracked mode is unchanged.
+test("setMode('ask') throws invalid mode, sends nothing and leaves the mode unchanged", async () => {
   await setupWithProject();
   const transcriptPath = `${home}/transcript.log`;
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -773,15 +761,15 @@ test('setMode("ask") flips orchestrator mode to ask while sending bypassPermissi
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    await inst.setMode('ask');
-    assert.equal(inst.mode, 'ask', 'orchestrator-tracked mode is ask');
+    await assert.rejects(inst.setMode('ask'), /invalid mode/);
+    assert.equal(inst.mode, 'plan', 'the tracked mode is unchanged');
 
     const fsp = (await import('node:fs')).promises;
-    const lines = (await fsp.readFile(transcriptPath, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    let text = '';
+    try { text = await fsp.readFile(transcriptPath, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const lines = text.trim().split('\n').filter(Boolean).map(JSON.parse);
     const modeReq = lines.find(p => p.type === 'control_request' && p.request?.subtype === 'set_permission_mode');
-    assert.ok(modeReq, 'set_permission_mode control_request was written');
-    assert.equal(modeReq.request.mode, 'bypassPermissions',
-      'CLI receives the bypassPermissions equivalent — it doesn\'t know about ask');
+    assert.equal(modeReq, undefined, 'no set_permission_mode control_request was written');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
   }

@@ -23,6 +23,7 @@ import { renderSessions } from '../src/mcp/readRenderers.ts';
 
 const SID_A = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 const SID_B = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+const SID_ASK = 'cccccccc-3333-4333-8333-cccccccccccc';
 
 let home;
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
@@ -42,7 +43,6 @@ test('an unrecorded session resolves to bypassPermissions — the pre-store beha
 
 test('a recorded mode is returned verbatim, including the cold ones', () => {
   assert.equal(effectiveResumeMode('plan'), 'plan');
-  assert.equal(effectiveResumeMode('ask'), 'ask');
   assert.equal(effectiveResumeMode('bypassPermissions'), 'bypassPermissions');
 });
 
@@ -53,9 +53,8 @@ test('effectiveResumeMode never returns a value outside the mode vocabulary', ()
   }
 });
 
-test('only bypassPermissions is hot — ask is gated, plan is read-only', () => {
+test('only bypassPermissions is hot', () => {
   assert.equal(resumesHot('bypassPermissions'), true);
-  assert.equal(resumesHot('ask'), false, 'every destructive tool in ask is hook-gated');
   assert.equal(resumesHot('plan'), false);
   // The rule that matters, stated as one expression: no record ⇒ hot.
   assert.equal(resumesHot(effectiveResumeMode(null)), true);
@@ -162,13 +161,16 @@ test('a corrupt store degrades to empty rather than throwing — so a resume sti
   assert.equal(effectiveResumeMode(await getSessionMode(SID_A)), 'bypassPermissions');
 });
 
+// A stored `ask` is not a mode: it is dropped like any other invalid value and
+// its session degrades to the unrecorded default.
 test('an on-disk entry with an unknown mode is dropped, not trusted', async () => {
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   await fs.writeFile(storeFile(), JSON.stringify({
-    sessions: { [SID_A]: 'acceptEdits', [SID_B]: 'plan' },
+    sessions: { [SID_A]: 'acceptEdits', [SID_B]: 'plan', [SID_ASK]: 'ask' },
   }));
   const map = await loadAll();
   assert.equal(map.has(SID_A), false, 'an invalid mode must not reach a spawn');
+  assert.equal(map.has(SID_ASK), false, 'a stored ask is dropped');
   assert.equal(map.get(SID_B), 'plan', 'valid siblings survive');
   // Dropped ⇒ unrecorded ⇒ hot. Degrading to a *colder* mode would be the
   // wrong direction: it would silently change what a resume can do.
@@ -176,6 +178,6 @@ test('an on-disk entry with an unknown mode is dropped, not trusted', async () =
 });
 
 test('the persisted shape is the documented {sessions:{sid:mode}} map', async () => {
-  await markSessionMode(SID_A, 'ask');
-  assert.deepEqual(await readStore(), { sessions: { [SID_A]: 'ask' } });
+  await markSessionMode(SID_A, 'plan');
+  assert.deepEqual(await readStore(), { sessions: { [SID_A]: 'plan' } });
 });

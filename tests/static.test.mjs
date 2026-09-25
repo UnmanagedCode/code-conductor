@@ -17,7 +17,7 @@ test('serves index.html with module entry', async () => {
     const html = await r.text();
     assert.match(html, /<script type="module" src="\/app\.js">/);
     assert.match(html, /id="conversation"/);
-    assert.match(html, /id="mode-select"/);
+    assert.match(html, /id="mode-toggle"/);
   } finally { await close(); }
 });
 

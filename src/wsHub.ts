@@ -320,15 +320,6 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             reply(true);
             return;
           }
-          case 'hook_decision': {
-            if (!inst) { reply(false, 'unknown instance'); return; }
-            const toolUseId = msg.toolUseId;
-            if (!toolUseId) { reply(false, 'missing toolUseId'); return; }
-            const resolved = inst.resolveHookCallback(toolUseId, !!msg.allow);
-            if (!resolved) { reply(false, 'no pending permission request for that toolUseId'); return; }
-            reply(true);
-            return;
-          }
           default:
             reply(false, `unknown message type: ${t}`);
         }

@@ -209,7 +209,7 @@ test('describe_playbook returns the graph the enforcement actually uses', async 
 
     // `pin` — enforced argument values, reported verbatim so a caller knows
     // what will be filled in or refused.
-    assert.match(pb, /^ {6}spawn_instance pin \{"mode":"ask","createWorktree":true\}$/m);
+    assert.match(pb, /^ {6}spawn_instance pin \{"mode":"bypassPermissions","createWorktree":true\}$/m);
     assert.match(pb, /^ {6}set_mode deny$/m);
 
     // `needs` — worker provenance, not argument values. Read off `review`'s

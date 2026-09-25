@@ -66,7 +66,7 @@ const dom = {
   composerAttach: document.getElementById('composer-attach'),
   composerFile: document.getElementById('composer-file'),
   composerAttachments: document.getElementById('composer-attachments'),
-  modeSelect: document.getElementById('mode-select'),
+  modeToggle: document.getElementById('mode-toggle'),
   killBtn: document.getElementById('kill-btn'),
   muteBtn: document.getElementById('mute-btn'),
   resumeBtn: document.getElementById('resume-btn'),
@@ -321,13 +321,6 @@ const conversationOptions = {
       formatUserQuestionAnswers(questions, answers),
       (reason) => conversation.userQuestionBlocks.get(toolUseId)?.markSendFailed(reason),
     );
-  },
-  onPermissionDecision: ({ toolUseId, allow }) => {
-    if (!state.activeId) return;
-    // Forward the Allow/Deny click to the orchestrator over WS. The
-    // server resolves the held-open PreToolUse hook HTTP response and
-    // the CLI then either runs the tool or auto-denies it.
-    send('hook_decision', { id: state.activeId, toolUseId, allow });
   },
   onPlanDecision: async ({ toolUseId, decision, feedback }) => {
     if (!state.activeId) return;

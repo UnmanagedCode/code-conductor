@@ -1,36 +1,28 @@
-// Per-instance broker for the tool-hook http callbacks. Owns the
-// pending-callback map + timeout plumbing + JSON response helpers, so
-// none of that needs to clutter the Instance class. The broker only
-// reaches back into the Instance via the callbacks it's
-// constructed with — getMode(), emit(ev) and getRedirect() — keeping the
-// dependency arrow one-way.
+// Per-instance answerer for the tool-hook http callbacks, plus the JSON
+// response helpers, so none of that needs to clutter the Instance class. The
+// broker only reaches back into the Instance via the getRedirect() callback
+// it's constructed with, keeping the dependency arrow one-way.
 //
-// It answers two hook events. `PreToolUse` is the original: auto-allow, or hold
-// the response open behind an ask-mode permission card. `PostToolUse` is
-// registered only for a session redirected to another system and has no
-// consumer today: the union writes through, so there is nothing to report back.
-// It stays wired because the daemon's lazy per-open mirror pushes at
-// `release`, which can fail AFTER the tool has already returned success, and
-// `additionalContext` is the only channel that can put that in front of the
-// worker in band — a tool result can be annotated but never replaced.
+// It answers two hook events. `PreToolUse`: a local session's calls are all
+// allowed; a redirected session's calls follow the SessionRedirect policy —
+// allow (optionally with a rewritten input), or deny — and a redirector that
+// throws is answered with a deny. `PostToolUse` is registered only for a
+// session redirected to another system and has no consumer today: the union
+// writes through, so there is nothing to report back. It stays wired because
+// the daemon's lazy per-open mirror pushes at `release`, which can fail AFTER
+// the tool has already returned success, and `additionalContext` is the only
+// channel that can put that in front of the worker in band — a tool result can
+// be annotated but never replaced.
 
 import type { Response } from 'express';
 import type { RedirectDecision } from './systems/toolRedirect.ts';
-
-// Server-side timeout for a pending interactive hook callback. Must
-// be safely under HOOK_HTTP_TIMEOUT_S (in settings.ts) so we always
-// respond before the CLI gives up — an HTTP timeout on its side =
-// non-blocking error = the tool proceeds, which is the opposite of
-// what we want here.
-export const HOOK_PENDING_TIMEOUT_MS = 540_000;
 
 interface PreToolUseOutput {
   hookEventName: 'PreToolUse';
   permissionDecision: string;
   permissionDecisionReason?: string;
-  // The rewritten tool input. Returned ALONGSIDE the allow, in one response —
-  // which is what lets the ask card show the worker's original command while
-  // the tool that actually runs is the redirected one.
+  // The rewritten tool input. Returned ALONGSIDE the allow, in one response:
+  // the CLI runs the tool with this input in place of the worker's own.
   updatedInput?: Record<string, unknown>;
 }
 
@@ -74,58 +66,19 @@ export interface HookRedirector {
   postToolUse(toolName: string, toolInput: Record<string, unknown>, toolResponse: unknown): Promise<string | null>;
 }
 
-
-// Tools a REDIRECTED session hooks for a reason other than permission, and
-// which must therefore not raise an ask card. `Read` is here because a
-// redirected session hooks it to REFUSE a path the union does not serve, never
-// to ask about one it does (src/settings.ts →
-// REDIRECT_PRE_TOOL_MATCHER); gating it would start prompting on reads that
-// never prompted before, which is a regression against every local session.
-// Scoped to redirected sessions: with no redirector attached the gate below
-// tests no tool name at all. The exemption is this list and nothing else — a
-// tool hooked later gates unless it is added here, rather than falling through
-// a hole.
-const REDIRECT_UNGATED_TOOLS = new Set(['Read']);
-
-interface PendingCallback {
-  res: Response;
-  timer: NodeJS.Timeout;
-  toolName: unknown;
-  // Carried across the wait so the allow the user's click produces still
-  // rewrites the tool input.
-  updatedInput?: Record<string, unknown>;
-}
-
 export interface HookBrokerOptions {
-  getMode: () => string;
-  emit: (ev: unknown) => void;
   // The session's redirection policy, or null for a local project. A GETTER
   // because it is attached after the Instance is constructed and dropped when
   // the session ends.
-  getRedirect?: () => HookRedirector | null;
-  pendingTimeoutMs?: number;
+  getRedirect: () => HookRedirector | null;
 }
 
 export class HookBroker {
-  // getMode(): the orchestrator-tracked mode ('plan' | 'ask' | 'bypassPermissions').
-  //            The broker auto-allows everything when mode !== 'ask'.
-  // emit(ev):  pushes a UI event (typically a permission_request /
-  //            permission_resolved card) through the instance's normal
-  //            ring + WS path.
-  // pendingTimeoutMs: override for tests; defaults to the production value.
-  private readonly _getMode: () => string;
-  private readonly _emit: (ev: unknown) => void;
   private readonly _getRedirect: () => HookRedirector | null;
-  private readonly _pendingTimeoutMs: number;
-  private readonly _pending = new Map<unknown, PendingCallback>(); // toolUseId -> { res, timer, toolName }
 
-  constructor({ getMode, emit, getRedirect, pendingTimeoutMs = HOOK_PENDING_TIMEOUT_MS }: HookBrokerOptions) {
-    if (typeof getMode !== 'function') throw new Error('HookBroker requires getMode()');
-    if (typeof emit !== 'function') throw new Error('HookBroker requires emit()');
-    this._getMode = getMode;
-    this._emit = emit;
-    this._getRedirect = getRedirect ?? (() => null);
-    this._pendingTimeoutMs = pendingTimeoutMs;
+  constructor({ getRedirect }: HookBrokerOptions) {
+    if (typeof getRedirect !== 'function') throw new Error('HookBroker requires getRedirect()');
+    this._getRedirect = getRedirect;
   }
 
   // Called by the REST hook-callback handler, for BOTH hook events — the CLI
@@ -167,92 +120,6 @@ export class HookBroker {
       }
       updatedInput = decision.updatedInput;
     }
-    this._decide(envelope, res, toolName, !!redirect, updatedInput);
+    respondAllow(res, updatedInput);
   }
-
-  // The ask-mode gate: auto-allow outside ask mode, else hold the response open
-  // behind a permission card. Unchanged in substance for a local session —
-  // `redirected` is false there, so the condition below reduces to
-  // `mode !== 'ask'` and no tool name is tested, exactly as before redirection
-  // existed. The one deliberate difference is the redirect-scoped exemption
-  // above, which applies only when a redirector is attached.
-  private _decide(
-    envelope: HookEnvelope | null | undefined,
-    res: Response,
-    toolName: string,
-    redirected: boolean,
-    updatedInput: Record<string, unknown> | undefined,
-  ): void {
-    const toolUseId = envelope?.tool_use_id;
-    const mode = this._getMode();
-    if (mode !== 'ask' || (redirected && REDIRECT_UNGATED_TOOLS.has(toolName))) {
-      respondAllow(res, updatedInput);
-      return;
-    }
-    if (!toolUseId) {
-      // Defensive — without a tool_use_id we can't correlate a later
-      // decision back to this pending response. Auto-allow so the user
-      // isn't silently blocked by a malformed hook envelope.
-      respondAllow(res, updatedInput);
-      return;
-    }
-    // THE PRE-REWRITE INPUT, deliberately. Under redirection every Bash call is
-    // rewritten into the same forwarder invocation, so a card built from what
-    // the tool will actually run would render every command as one opaque line
-    // and no two could be told apart. The broker holds both; the card gets the
-    // one the worker asked for.
-    this._emit({
-      kind: 'permission_request',
-      toolUseId,
-      toolName,
-      toolInput: envelope?.tool_input ?? {},
-    });
-    const timer = setTimeout(() => {
-      const pending = this._pending.get(toolUseId);
-      if (!pending) return;
-      this._pending.delete(toolUseId);
-      respondDeny(pending.res, 'user did not respond in time');
-      this._emit({ kind: 'permission_resolved', toolUseId, allow: false, reason: 'timeout' });
-    }, this._pendingTimeoutMs);
-    // Don't keep the event loop alive just for this timer — server
-    // shutdown should finish even if a permission card is sitting idle.
-    if (typeof timer.unref === 'function') timer.unref();
-    this._pending.set(toolUseId, { res, timer, toolName, updatedInput });
-  }
-
-  // Called when the user clicks Allow / Deny in the UI. Returns true
-  // if there was a matching pending callback to resolve, false if not
-  // (so the WS hub can ack with an error).
-  resolve(toolUseId: unknown, allow: boolean): boolean {
-    const pending = this._pending.get(toolUseId);
-    if (!pending) return false;
-    clearTimeout(pending.timer);
-    this._pending.delete(toolUseId);
-    if (allow) respondAllow(pending.res, pending.updatedInput);
-    else respondDeny(pending.res, 'user denied via orchestrator UI');
-    this._emit({ kind: 'permission_resolved', toolUseId, allow: !!allow });
-    return true;
-  }
-
-  // Drain every pending callback with a deny, for the cases where the parked
-  // tool provably will never run: the parent instance exited (the CLI is gone)
-  // or its turn was interrupted (Instance._releaseParkedPermissions). Either
-  // way the held-open HTTP responses must be freed and subscribed UI tabs told
-  // the cards are done. `reason` reaches the CLI as the deny reason; `event` is
-  // the slug on the emitted permission_resolved (diagnostics — the client
-  // renders the card from `allow` alone), so a reader can tell an exit-time
-  // discard from an interrupt-time one.
-  discardAll(reason = 'instance exited before user responded', event = 'exited'): void {
-    for (const [toolUseId, pending] of this._pending) {
-      clearTimeout(pending.timer);
-      respondDeny(pending.res, reason);
-      this._emit({ kind: 'permission_resolved', toolUseId, allow: false, reason: event });
-    }
-    this._pending.clear();
-  }
-
-  // In-flight pending callbacks. Read by Instance._blockedOnPermission (a tool
-  // parked on a permission card must not hold an armed deferred interrupt) and
-  // by tests.
-  get pendingCount(): number { return this._pending.size; }
 }

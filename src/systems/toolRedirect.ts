@@ -513,7 +513,7 @@ export class SessionRedirect {
   // ── Lifecycle ──────────────────────────────────────────────────────
 
   // Stop everything this session has running ON THE SYSTEM, not merely abandon
-  // it, and drop the shell. Called on instance exit, kill, discardAll AND on a
+  // it, and drop the shell. Called on instance exit, kill AND on a
   // rewind/respawn — see #abort above for why the controller is replaced rather
   // than left aborted. Idempotent: a second call aborts a controller with
   // nothing attached to it.

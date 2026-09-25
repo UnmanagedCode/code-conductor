@@ -55,14 +55,14 @@ export async function builtins() {
 //
 // `draft` and `sealed` pin `mode` DIFFERENTLY on purpose, because the two jobs
 // pull opposite ways and one stage cannot do both:
-//   - pin fill-in needs a NON-default value ('ask'), or "the pin filled the
+//   - pin fill-in needs a NON-default value ('bypassPermissions'), or "the pin filled the
 //     argument in" is true whether or not the pin was ever applied — MCP
 //     spawn_instance already defaults to 'plan'.
 //   - the approve_plan side-effect needs the flip to be REACHABLE, and
 //     approve_plan's handler flips the mode only for a worker already IN plan
 //     mode (src/mcp/handlers.ts). Pin anything else and "the mode did not move"
 //     is true no matter what the deny does.
-// So `draft` pins 'ask' and `sealed` pins no mode at all, spawning at the
+// So `draft` pins 'bypassPermissions' and `sealed` pins no mode at all, spawning at the
 // default.
 //
 // Every value below is load-bearing: each one has been mutated in place and the
@@ -98,7 +98,7 @@ export const GATELAB = {
   stages: {
     draft: {
       description: 'Entry: pins are filled in here.',
-      tools: { spawn_instance: { pin: { mode: 'ask', createWorktree: true } }, set_mode: 'deny' },
+      tools: { spawn_instance: { pin: { mode: 'bypassPermissions', createWorktree: true } }, set_mode: 'deny' },
     },
     build: {
       description: 'Reached only by the approve_plan edge.',

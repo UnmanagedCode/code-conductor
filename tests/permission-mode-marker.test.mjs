@@ -1,18 +1,9 @@
-// The `permission-mode` marker in the CLI's own session jsonl vs. the live
-// permission mode handed to the subprocess. These are DIFFERENT questions and
-// the whole defect was conflating them:
-//
-//   live wire   — cliPermissionMode (instances.ts): `ask` -> `bypassPermissions`,
-//                 because the CLI must stop prompting so the orchestrator's
-//                 PreToolUse hook can prompt instead. Load-bearing.
-//   durable record — markerPermissionMode (sessionModes.ts): `ask` -> `default`,
-//                 the CLI mode that prompts. The CLI reads this record back
-//                 (it both writes and reads `type:"permission-mode"`), so
-//                 recording `bypassPermissions` told an interactive
-//                 `claude --resume` that a gated session had run hot.
-//
-// Every test here asserts BOTH halves on the same instance, so a "fix" that
-// changes cliPermissionMode instead fails rather than passes.
+// The `permission-mode` marker in the CLI's own session jsonl and the live
+// permission mode handed to the subprocess (`--permission-mode` at spawn,
+// `set_permission_mode` on a runtime switch) carry the same value: the
+// instance's own `inst.mode`. Every call site that writes a marker — spawn,
+// setMode, fork, rewind, prune — must pass the session's mode rather than a
+// hard-coded one, and writeSessionMetadata refuses a value outside MODES.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, localPlace} from '../src/projects.ts';
-import { markerPermissionMode, MODES } from '../src/sessionModes.ts';
+import { MODES } from '../src/sessionModes.ts';
 import { writeSessionMetadata } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -107,31 +98,13 @@ async function markersIn(dir, sid) {
     .filter(o => o && o.type === 'permission-mode');
 }
 
-// Pins the defect: the record must not claim a gated session ran hot, while
-// the live subprocess must still be launched ungated so the hook can gate it.
-test('an `ask` session records `default` while the CLI is still launched bypassPermissions', async () => {
-  const { inst, restore } = await spawnAndRunTurn('ask');
-  try {
-    const markers = await markerLines(inst);
-    assert.ok(markers.length > 0, 'a permission-mode marker was written');
-    for (const m of markers) {
-      assert.equal(m.permissionMode, 'default',
-        'orchestrator `ask` must be recorded as the CLI mode that PROMPTS');
-      assert.notEqual(m.permissionMode, 'bypassPermissions',
-        'recording bypassPermissions would tell `claude --resume` a gated session ran hot');
-    }
-
-    // Same instance, live wire: the collapse must still be in place.
-    const argv = inst._spawnArgv;
-    const i = argv.indexOf('--permission-mode');
-    assert.ok(i >= 0, '--permission-mode is on the launch argv');
-    assert.equal(argv[i + 1], 'bypassPermissions',
-      'the CLI must still run ungated so the PreToolUse hook does the asking');
-  } finally { restore(); }
+// Pins that the marker and the launch argv are both the session's own mode,
+// for every mode in the vocabulary. The MODES check makes a mode added
+// without a decision here fail on the sorted list.
+test('MODES is exactly plan and bypassPermissions', () => {
+  assert.deepEqual([...MODES].sort(), ['bypassPermissions', 'plan']);
 });
 
-// Pins that the mapping does not over-reach: only `ask` differs between the
-// two paths, so a mapping that touched anything else fails here.
 for (const mode of ['plan', 'bypassPermissions']) {
   test(`a \`${mode}\` session records and launches as \`${mode}\``, async () => {
     const { inst, restore } = await spawnAndRunTurn(mode);
@@ -143,51 +116,47 @@ for (const mode of ['plan', 'bypassPermissions']) {
   });
 }
 
-// The other two call sites the lossless-marker change touched. Both pass an
-// instance's own mode down to writeSessionMetadata, and every other fork/prune
-// test in the suite drives `bypassPermissions` — which maps to ITSELF, so an
-// identity mapping cannot tell `inst.mode` apart from a hardcoded live-wire
-// value. Driving `ask` through them is what makes the difference observable:
-// if either site regressed, the CLI marker on the resulting transcript would
-// claim a gated session ran hot — 2026-0101's defect, relocated.
+// The fork, rewind and prune call sites each pass an instance's own mode down
+// to writeSessionMetadata. Every other fork/prune test in the suite drives
+// `bypassPermissions`, which is also DEFAULT_RESUME_MODE, so a hard-coded
+// value there is indistinguishable from `inst.mode`. Driving `plan` through
+// them makes the difference observable.
 
 // Pins the REST fork call site (routes.ts).
-test('forking an `ask` session records `default` in the fork transcript', async () => {
-  const { id, dir, restore } = await resumeSeeded('forkask', 'aaaaaaa1-2222-3333-4444-555555555555', 'ask');
+test('forking a `plan` session records `plan` in the fork transcript', async () => {
+  const { id, dir, restore } = await resumeSeeded('forkplan', 'aaaaaaa1-2222-3333-4444-555555555555', 'plan');
   try {
     const r = await api(baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
     assert.equal(r.status, 201);
     const markers = await markersIn(dir, r.body.newSessionId);
     assert.ok(markers.length > 0, 'the fork carries a permission-mode marker');
-    assert.equal(markers[0].permissionMode, 'default',
-      'the fork of a gated session is itself gated, and must be recorded that way');
+    assert.equal(markers[0].permissionMode, 'plan');
     assert.ok(!markers.some(m => m.permissionMode === 'bypassPermissions'),
-      'no marker on the fork may claim it ran hot');
+      'no marker on the fork of a plan session may say bypassPermissions');
   } finally { restore(); }
 });
 
-// Pins the rewind call site (Instance.rewindToUserMessage, instances.ts) — the
-// third site of the same shape. Not on the review's list, but hardcoding it
-// passes the whole suite too, and rewind rewrites the session IN PLACE, so a
-// regression there mislabels the session the user is still sitting in.
-test('rewinding an `ask` session records `default` in the truncated transcript', async () => {
+// Pins the rewind call site (Instance.rewindToUserMessage, instances.ts).
+// Rewind rewrites the session in place, so a wrong marker mislabels the
+// session the user is still sitting in.
+test('rewinding a `plan` session records `plan` in the truncated transcript', async () => {
   const sid = 'aaaaaaa3-2222-3333-4444-555555555555';
-  const { id, dir, restore } = await resumeSeeded('rewindask', sid, 'ask');
+  const { id, dir, restore } = await resumeSeeded('rewindplan', sid, 'plan');
   try {
     const r = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1 });
     assert.equal(r.status, 200);
     await waitFor(() => instances.get(id).status === 'idle');
     const markers = await markersIn(dir, sid);
     assert.ok(markers.length > 0, 'the truncated session carries a permission-mode marker');
-    assert.equal(markers[0].permissionMode, 'default');
+    assert.equal(markers[0].permissionMode, 'plan');
     assert.ok(!markers.some(m => m.permissionMode === 'bypassPermissions'),
-      'no marker may claim the still-gated session ran hot');
+      'no marker on a rewound plan session may say bypassPermissions');
   } finally { restore(); }
 });
 
 // Pins the prune call site (Instance.pruneSession, instances.ts).
-test('pruning an `ask` session records `default` in the pruned transcript', async () => {
-  const { id, dir, restore } = await resumeSeeded('pruneask', 'aaaaaaa2-2222-3333-4444-555555555555', 'ask');
+test('pruning a `plan` session records `plan` in the pruned transcript', async () => {
+  const { id, dir, restore } = await resumeSeeded('pruneplan', 'aaaaaaa2-2222-3333-4444-555555555555', 'plan');
   try {
     const r = await api(baseUrl, 'POST', `/api/instances/${id}/prune`, {
       cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate',
@@ -195,69 +164,60 @@ test('pruning an `ask` session records `default` in the pruned transcript', asyn
     assert.equal(r.status, 200);
     const markers = await markersIn(dir, r.body.newSessionId);
     assert.ok(markers.length > 0, 'the pruned copy carries a permission-mode marker');
-    assert.equal(markers[0].permissionMode, 'default',
-      'a prune preserves the mode, so the record must preserve it losslessly too');
+    assert.equal(markers[0].permissionMode, 'plan');
     assert.ok(!markers.some(m => m.permissionMode === 'bypassPermissions'),
-      'no marker on the pruned copy may claim it ran hot');
+      'no marker on the pruned copy of a plan session may say bypassPermissions');
   } finally { restore(); }
 });
 
-// Pins that setMode's live control request keeps the collapse — the second
-// cliPermissionMode call site, which the marker change must not touch.
-test('setMode("ask") sends bypassPermissions on the wire and records default', async () => {
+// Pins that setMode's live control request and the marker it writes share one
+// value: the mode switched to.
+test("setMode('plan') sends plan on the wire and records plan", async () => {
   const { inst, restore } = await spawnAndRunTurn('bypassPermissions');
   try {
     const sent = [];
     const realWrite = inst.proc.stdin.write.bind(inst.proc.stdin);
     inst.proc.stdin.write = (chunk, ...rest) => { sent.push(String(chunk)); return realWrite(chunk, ...rest); };
 
-    await inst.setMode('ask');
+    await inst.setMode('plan');
 
     const req = sent.join('').split('\n').filter(Boolean)
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
       .find(o => o?.request?.subtype === 'set_permission_mode');
     assert.ok(req, 'a set_permission_mode control request was sent');
-    assert.equal(req.request.mode, 'bypassPermissions',
-      'the live wire keeps the ask -> bypassPermissions collapse');
+    assert.equal(req.request.mode, 'plan');
 
-    const markers = await markerLines(inst);
-    assert.equal(markers.at(-1).permissionMode, 'default',
-      'the record written by the same setMode call is the lossless one');
+    await waitFor(async () => (await markerLines(inst)).at(-1).permissionMode === 'plan');
+    assert.equal((await markerLines(inst)).at(-1).permissionMode, 'plan',
+      'the record written by the same setMode call carries the same value');
   } finally { restore(); }
 });
 
-// What each orchestrator mode must be RECORDED as, written out rather than
-// derived from the implementation's `ask ? 'default' : mode` rule — a
-// derived expectation is satisfied by whatever the code does, so a fourth mode
-// would record itself raw and still pass.
-const EXPECTED_RECORDING = { plan: 'plan', ask: 'default', bypassPermissions: 'bypassPermissions' };
-
-// Pins the mapping at the unit level, and pins it as TOTAL: the exhaustiveness
-// check is what makes a mode added to the vocabulary without a decision about
-// how it is recorded fail here, on the missing entry.
-test('markerPermissionMode is total over MODES, mapping only ask', () => {
-  assert.deepEqual([...MODES].sort(), Object.keys(EXPECTED_RECORDING).sort(),
-    'a new mode needs an explicit decision here about how it is RECORDED');
-  for (const mode of MODES) {
-    assert.equal(markerPermissionMode(mode), EXPECTED_RECORDING[mode], `mode ${mode}`);
-  }
-  assert.equal(markerPermissionMode('ask'), 'default', 'the one mode that must differ');
-});
-
 // Pins the runtime floor. A value outside MODES must FAIL rather than write a
-// marker with its `permissionMode` field silently absent — an omitted value is
-// the same defect class as a wrong one, and both are invisible at write time.
-test('markerPermissionMode refuses a value outside the vocabulary', () => {
-  for (const bad of [undefined, null, '', 'default', 'acceptEdits', 'nonsense']) {
-    assert.throws(() => markerPermissionMode(bad), /unknown orchestrator mode/,
-      `must refuse ${JSON.stringify(bad)}`);
+// marker — an omitted or unknown value is invisible at write time.
+test('writeSessionMetadata refuses a value outside the vocabulary and writes no marker', async () => {
+  const prev = process.env.CLAUDE_PROJECTS_ROOT;
+  const root = path.join(home, 'claude-projects-refuse');
+  process.env.CLAUDE_PROJECTS_ROOT = root;
+  try {
+    const cwd = path.join(home, 'proj');
+    const sid = 'aaaaaaaa-bbbb-4ccc-8ddd-000000000bad';
+    for (const bad of [undefined, null, '', 'ask', 'default', 'acceptEdits', 'nonsense']) {
+      await assert.rejects(
+        writeSessionMetadata({ place: localPlace(cwd), sessionId: sid, leafUuid: 'leaf-1', mode: bad }),
+        /writeSessionMetadata: unknown mode/,
+        `must refuse ${JSON.stringify(bad)}`);
+    }
+    await assert.rejects(fs.access(path.join(root, encodeCwd(cwd), `${sid}.jsonl`)),
+      { code: 'ENOENT' }, 'no marker file is written for a refused mode');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_PROJECTS_ROOT;
+    else process.env.CLAUDE_PROJECTS_ROOT = prev;
   }
 });
 
-// Pins that the mapping lives INSIDE writeSessionMetadata, so the rewind /
-// fork / prune call sites cannot record a live-wire value even if they wanted
-// to — they pass an orchestrator mode and get the record's vocabulary.
-test('writeSessionMetadata maps the orchestrator mode itself', async () => {
+// Pins that writeSessionMetadata writes each mode as itself.
+test('writeSessionMetadata records the mode it is given', async () => {
   const prev = process.env.CLAUDE_PROJECTS_ROOT;
   const root = path.join(home, 'claude-projects-marker');
   process.env.CLAUDE_PROJECTS_ROOT = root;
@@ -269,9 +229,7 @@ test('writeSessionMetadata maps the orchestrator mode itself', async () => {
       const text = await fs.readFile(path.join(root, encodeCwd(cwd), `${sid}.jsonl`), 'utf8');
       const marker = text.split('\n').filter(Boolean).map(l => JSON.parse(l))
         .find(o => o.type === 'permission-mode');
-      // Literal, not markerPermissionMode(mode): asserting against the
-      // implementation would make this pass for whatever the mapping does.
-      assert.equal(marker.permissionMode, EXPECTED_RECORDING[mode], `mode ${mode}`);
+      assert.equal(marker.permissionMode, mode, `mode ${mode}`);
       assert.ok('permissionMode' in marker, 'the marker must carry a value, not omit the field');
     }
   } finally {

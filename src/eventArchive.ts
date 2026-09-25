@@ -152,8 +152,7 @@ function buildFlatIndex(flat: SeqEvent[]): Map<string, number> {
 // one steps over its archive twin and duplicates it.
 const RING_ONLY_KINDS = new Set([
   'message_start', 'turn_end', 'assistant_message', 'tool_use_input_delta',
-  'raw', 'hook', 'control_response',
-  'permission_request', 'permission_resolved', 'overage_message_queued',
+  'raw', 'hook', 'control_response', 'overage_message_queued',
 ]);
 
 // True when replay provably cannot have emitted a counterpart for `ev` — the

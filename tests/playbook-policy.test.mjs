@@ -49,7 +49,7 @@ function allowed(res) {
 
 test('spawn into an entry stage is allowed and `require` FILLS the omitted arguments', () => {
   const res = allowed(d('spawn_instance', { playbook: 'gatelab', stage: 'draft', project: 'demo' }));
-  assert.equal(res.patchedArgs.mode, 'ask');
+  assert.equal(res.patchedArgs.mode, 'bypassPermissions');
   assert.equal(res.patchedArgs.createWorktree, true);
   // A stage pins what it pins and nothing more: `draft` names no `model`, so
   // none is invented. (The mirror — a stage that DOES pin one — is the next test.)
@@ -72,9 +72,9 @@ test('a stage that pins a role fills it in, and refuses a spawn that names anoth
 
 test('a supplied argument that contradicts `require` is refused, not overridden', () => {
   const res = refusal(
-    d('spawn_instance', { playbook: 'gatelab', stage: 'draft', mode: 'bypassPermissions' }),
+    d('spawn_instance', { playbook: 'gatelab', stage: 'draft', mode: 'plan' }),
     'ARG_PIN_CONFLICT');
-  assert.match(res.reason, /requires spawn_instance to be called with mode="ask"/);
+  assert.match(res.reason, /requires spawn_instance to be called with mode="bypassPermissions"/);
   assert.match(res.reason, /hard constraint, not a default/);
 });
 
@@ -102,7 +102,7 @@ test('`require` is enforced per tool, not once per stage — a second tool has i
   const filled = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001' }, projection, playbooks: P, isLive });
   assert.equal(allowed(filled).patchedArgs.mode, 'plan');
   // tool 2: refused on conflict, and the message names the right tool+arg
-  const conflict = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001', mode: 'ask' }, projection, playbooks: P, isLive });
+  const conflict = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001', mode: 'bypassPermissions' }, projection, playbooks: P, isLive });
   assert.match(refusal(conflict, 'ARG_PIN_CONFLICT').reason, /set_mode to be called with mode="plan"/);
 });
 
@@ -140,7 +140,7 @@ test('a "*": "allow" wildcard does NOT make a stage spawnable — spawn_instance
   // The wildcard still governs every OTHER tool in that stage as usual.
   const wildEvents = [{ kind: 'spawn', sessionId: 'w-wild-001', playbook: 'wild', stage: 'b' }];
   allowed(decide({
-    toolName: 'set_mode', args: { sessionId: 'w-wild-001', mode: 'ask' },
+    toolName: 'set_mode', args: { sessionId: 'w-wild-001', mode: 'bypassPermissions' },
     projection: proj(wildEvents),
     playbooks: pbs(wild), isLive: isLiveFromEvents(wildEvents),
   }));
@@ -278,13 +278,13 @@ test('a resume keeps a stage\'s POLICY pin while dropping its SPAWN-SHAPE pins',
   // DEFAULT_RESUME_MODE (bypassPermissions, src/sessionModes.ts) inside a stage
   // that asked for something narrower.
   const draftPin = GATELAB_PB.stages.draft.tools.spawn_instance.pin;
-  assert.deepEqual(draftPin, { mode: 'ask', createWorktree: true },
+  assert.deepEqual(draftPin, { mode: 'bypassPermissions', createWorktree: true },
     'premise: `draft` must pin one of each kind, or this test proves nothing');
 
   // ADOPTION — an untracked resume declaring a binding.
   const adopted = allowed(d('spawn_instance',
     { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft' }, RESUMABLE));
-  assert.equal(adopted.patchedArgs.mode, 'ask');
+  assert.equal(adopted.patchedArgs.mode, 'bypassPermissions');
   assert.equal('createWorktree' in adopted.patchedArgs, false);
 
   // …and the TRACKED resume, which reaches the pin by the other path. One rule,
@@ -292,16 +292,16 @@ test('a resume keeps a stage\'s POLICY pin while dropping its SPAWN-SHAPE pins',
   const events = [{ kind: 'spawn', sessionId: 'w-draft-p1', playbook: 'gatelab', stage: 'draft' }];
   const tracked = allowed(d('spawn_instance', { resume: 'w-draft-p1' }, events));
   assert.equal(tracked.move.kind, 'resume');
-  assert.equal(tracked.patchedArgs.mode, 'ask');
+  assert.equal(tracked.patchedArgs.mode, 'bypassPermissions');
   assert.equal('createWorktree' in tracked.patchedArgs, false);
 });
 
 test('a resume that contradicts a stage\'s POLICY pin is still ARG_PIN_CONFLICT', () => {
   // The policy half is a hard constraint, not a default a resume can talk past.
   const res = refusal(d('spawn_instance',
-    { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft', mode: 'bypassPermissions' },
+    { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft', mode: 'plan' },
     RESUMABLE), 'ARG_PIN_CONFLICT');
-  assert.match(res.reason, /mode="ask"/);
+  assert.match(res.reason, /mode="bypassPermissions"/);
 });
 
 test('a resume with NOTHING left to pin gets its own args object back, not a copy', () => {
@@ -849,7 +849,7 @@ test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', 
   const projection = proj(lockedEvents);
   const isLive = isLiveFromEvents(lockedEvents);
   // not in the allowlist -> denied via '*'
-  refusal(decide({ toolName: 'set_mode', args: { sessionId: 'w-locked-1', mode: 'ask' }, projection, playbooks: P, isLive }),
+  refusal(decide({ toolName: 'set_mode', args: { sessionId: 'w-locked-1', mode: 'bypassPermissions' }, projection, playbooks: P, isLive }),
     'TOOL_DENIED_IN_STAGE');
   // exact 'allow' beats the '*' deny
   allowed(decide({ toolName: 'kill_instance', args: { sessionId: 'w-locked-1' }, projection, playbooks: P, isLive }));
@@ -859,7 +859,7 @@ test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', 
 
 test('the mcp__code-conductor__ prefix is normalized before policy lookup', () => {
   const events = [{ kind: 'spawn', sessionId: 'w-sealed-01', playbook: 'gatelab', stage: 'sealed' }];
-  refusal(d('mcp__code-conductor__set_mode', { sessionId: 'w-sealed-01', mode: 'ask' }, events),
+  refusal(d('mcp__code-conductor__set_mode', { sessionId: 'w-sealed-01', mode: 'bypassPermissions' }, events),
     'TOOL_DENIED_IN_STAGE');
   // and the prefixed spawn_instance still routes to the spawn path
   refusal(d('mcp__code-conductor__spawn_instance', { playbook: 'gatelab', stage: 'build' }),
@@ -949,7 +949,7 @@ test('every refusal carries the playbook, the stage, and the legal transitions f
   // `draft` both denies a tool and has an outgoing edge, so the transitions list
   // is non-empty — an empty one would pass a mutant that always returned [].
   const events = [{ kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft' }];
-  const res = refusal(d('set_mode', { sessionId: 'w-drafter-1', mode: 'ask' }, events), 'TOOL_DENIED_IN_STAGE');
+  const res = refusal(d('set_mode', { sessionId: 'w-drafter-1', mode: 'bypassPermissions' }, events), 'TOOL_DENIED_IN_STAGE');
   assert.equal(res.legalMoves.playbook, 'gatelab');
   assert.equal(res.legalMoves.stage, 'draft');
   assert.deepEqual(res.legalMoves.transitions, [{ to: 'build', via: 'approve_plan' }]);

@@ -1,11 +1,10 @@
 // Builds the inline `--settings` JSON the orchestrator passes to every
 // claude subprocess. A PreToolUse hook is registered (when `hookCallbackUrl` is provided):
 //
-//   - (Optional, when hookCallbackUrl is provided) An interactive
-//     `http` hook on the destructive tools that POSTs back to the
-//     orchestrator's hook-callback endpoint. The endpoint auto-allows
-//     in non-ask modes, or surfaces a permission_request to the UI in
-//     ask mode and holds the response open until the user clicks.
+//   - (Optional, when hookCallbackUrl is provided) An `http` hook on the
+//     mutating tools that POSTs back to the orchestrator's hook-callback
+//     endpoint. The endpoint's HookBroker allows every local call and
+//     applies the redirect policy to a redirected session's calls.
 //
 // The interactive tools (AskUserQuestion / ExitPlanMode / EnterPlanMode)
 // are NO LONGER gated by a static PreToolUse deny hook. Under CLI 2.1.x
@@ -29,10 +28,10 @@ export const AWAITING_INPUT_MESSAGE =
   + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
   + "End your turn now with no further tool calls and wait for the user's reply; it arrives as a new message.";
 
-// Destructive tools gated by the interactive PreToolUse http hook in
-// ask mode. Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated
-// so the model can explore freely without a prompt per call.
-const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
+// The mutating tools. Every local session registers the PreToolUse http hook
+// on these and the broker allows them; the redirect matchers below build on
+// this list.
+const MUTATING_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
 // A session on a REMOTE system hooks three tools more. `Glob` and `Grep` are
 // here as the SECOND guard described below.
@@ -41,13 +40,11 @@ const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 // there, so no fetch is needed — but a Read aimed at a path the union does not
 // serve to this session must meet cc's refusal rather than an -ENOENT a model
 // reads as "the file is absent" (src/systems/fuse/tierTable.ts →
-// classifyForTool). It is hooked to REFUSE, never to gate, which is why the
-// broker exempts it from the ask card (REDIRECT_UNGATED_TOOLS,
-// src/hookBroker.ts).
+// classifyForTool). It is hooked to REFUSE.
 //
 // EXPORTED so a test can assert that every FILE_TOOLS key is in it: a fifth
 // file tool must fail that assertion rather than silently escape the boundary.
-export const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Glob|Grep|Read`;
+export const REDIRECT_PRE_TOOL_MATCHER = `${MUTATING_TOOL_MATCHER}|Glob|Grep|Read`;
 
 // AND ITS CONSUMER IS `SessionRedirect.postToolUse`, which reports a reconcile
 // that refused AFTER the tool already returned success — the push cc issues
@@ -57,7 +54,7 @@ export const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Glob|Grep|Re
 // `Read` IS ABSENT FROM THIS ONE and present in the pre-tool matcher above,
 // and the asymmetry is the point: a read-only open pushes nothing, so it has
 // no reconcile to report.
-const REDIRECT_POST_TOOL_MATCHER = ASK_GATED_TOOL_MATCHER;
+const REDIRECT_POST_TOOL_MATCHER = MUTATING_TOOL_MATCHER;
 
 // The two tools that read the filesystem and CANNOT be redirected: a PreToolUse
 // hook rewrites input, and there is no channel to substitute a result, so a
@@ -77,11 +74,10 @@ const REDIRECT_POST_TOOL_MATCHER = ASK_GATED_TOOL_MATCHER;
 // makes the whole feature safe rather than merely convenient.
 const REDIRECT_DENIED_TOOLS = ['Glob', 'Grep'];
 
-// Per-hook timeout (seconds) for the interactive http hook. Generous —
-// the CLI waits this long for the user to click Allow/Deny in the UI.
-// The orchestrator's pending timeout (see hookBroker.ts) resolves with
-// a synthesised deny well before this fires; the headroom is just
-// there to avoid the CLI cutting off a slow human.
+// Per-hook timeout (seconds) for the http hooks. Generous because the redirect
+// path needs the headroom: `SessionRedirect.postToolUse` awaits the daemon
+// settle, and a CLI-side hook timeout is a non-blocking error — the CLI runs
+// the tool with the unrewritten input.
 export const HOOK_HTTP_TIMEOUT_S = 660;
 
 // `redirect` marks a worker session whose project lives on another system
@@ -94,7 +90,7 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   const out: Record<string, unknown> = { hooks: { PreToolUse: preToolUse } };
   if (hookCallbackUrl) {
     preToolUse.push({
-      matcher: redirect ? REDIRECT_PRE_TOOL_MATCHER : ASK_GATED_TOOL_MATCHER,
+      matcher: redirect ? REDIRECT_PRE_TOOL_MATCHER : MUTATING_TOOL_MATCHER,
       hooks: httpHook(hookCallbackUrl),
     });
     if (redirect) {

@@ -1567,12 +1567,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       } catch (e) { next(e); }
     });
 
-    // PreToolUse http hook callback. The Claude Code CLI POSTs the hook
-    // envelope here when a gated tool is about to run; we either
-    // auto-allow (non-ask mode) or hold the response open and surface a
-    // permission_request to the UI (ask mode) — the user's Allow/Deny
-    // click eventually resolves the response. Response shape mirrors the
-    // CLI's expected hookSpecificOutput JSON.
     // Serve a previously-saved attachment from the instance's central-
     // store attachments dir. The frontend uses this to populate user-
     // bubble thumbnails on transcript replay (the bytes aren't echoed
@@ -1610,6 +1604,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       } catch (e) { next(e); }
     });
 
+    // Tool-hook http callback: delegates to the instance's HookBroker; an
+    // unknown instance gets 200 + deny.
     r.post('/instances/:id/hook-callback', (req, res) => {
       const inst = instances.get(req.params.id);
       if (!inst) {

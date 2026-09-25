@@ -200,8 +200,7 @@ describe('a worker session on a remote system', () => {
   // The `Read` clause: Read is hooked to REFUSE a path the union does not serve
   // to this session (criterion 11), so a Read
   // missing from this matcher would leak an -ENOENT the model reads as "the
-  // file is absent". It is hooked and NOT gated — see the ask-mode arm in
-  // tests/systems-redirect-hooks.test.mjs.
+  // file is absent".
   test('the spawn argv carries the redirected settings', async () => {
     const argv = instances.get(instId)._spawnArgv;
     const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]);

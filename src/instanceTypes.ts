@@ -196,7 +196,6 @@ export interface InstanceLike {
   kill(opts?: { graceMs?: number }): Promise<unknown>;
   setAutoApprovePlan(enabled: boolean): void;
   setPlaybookEnforcement(mode: PlaybookEnforcement): void;
-  resolveHookCallback(toolUseId: unknown, allow: boolean): boolean;
   // Orchestrator surfaces beyond the core lifecycle: the worktree the session
   // is attached to (MCP handlers, src/mcp/handlers.ts), temp→normal promotion
   // (REST POST /api/instances/:id/promote, src/routes.ts), and the
