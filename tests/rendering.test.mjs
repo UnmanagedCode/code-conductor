@@ -211,6 +211,27 @@ test('DOM: AskUserQuestion renders options + custom input + submit button (singl
   assert.ok(card.classList.contains('answered'));
 });
 
+test('DOM: a denied AskUserQuestion\'s tool_result renders handed-to-user and adds no group error', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const { AWAITING_INPUT_MESSAGE } = await import(pathToFileURL(path.resolve(__dirname, '..', 'src', 'settings.ts')).href);
+  const conversation = new Conversation(root, {});
+  feed(new Parser(), conversation, [
+    ...askUserQuestionStream(),
+    { type: 'user', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'tu_q', content: AWAITING_INPUT_MESSAGE, is_error: true },
+    ] } },
+  ]);
+
+  assertNull(root.querySelector('.tool-result.error'));
+  const results = root.querySelectorAll('.tool-result');
+  assert.equal(results.length, 1);
+  assert.equal(results[0].querySelector('summary').textContent, '↪ handed to user');
+  assert.equal(results[0].open, false, 'a yielded result arrives folded');
+  assertNull(root.querySelector('.ag-errors'));
+  assert.match(root.querySelector('.tool-status').textContent, /handed to user/);
+  assert.ok(root.querySelector('.block.user-question'), 'the question card still renders');
+});
+
 test('DOM: typing spaces in the custom answer input is preserved (regression)', async () => {
   // Regression: _setCustom previously trimmed the stored text, then
   // _render wrote it back into input.value — swallowing every space the

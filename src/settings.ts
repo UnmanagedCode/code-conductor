@@ -28,6 +28,22 @@ export const AWAITING_INPUT_MESSAGE =
   + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
   + "End your turn now with no further tool calls and wait for the user's reply; it arrives as a new message.";
 
+// Earlier wordings of AWAITING_INPUT_MESSAGE that appear in persisted
+// transcripts. The parser tags a tool_result matching any of them, or the
+// current message, exactly as it does the current one.
+export const EARLIER_AWAITING_INPUT_MESSAGES: readonly string[] = [
+  'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.',
+  'Delivered — the user can see your request in the orchestrator UI now. '
+    + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
+    + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
+    + 'End your turn now with no further tool calls unless another message arrives meanwhile — '
+    + "handle that one as normal; the user's reply comes as a later message.",
+  'Delivered — the user can see your request in the orchestrator UI now. '
+    + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
+    + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
+    + "End your turn now with no further tool calls; the user's reply comes as a later message.",
+];
+
 // The mutating tools. Every local session registers the PreToolUse http hook
 // on these and the broker allows them; the redirect matchers below build on
 // this list.

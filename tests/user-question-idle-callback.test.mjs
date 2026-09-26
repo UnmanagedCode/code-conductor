@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { buildWakeStub } from '../public/wakeCallback.js';
+import { AWAITING_INPUT_MESSAGE } from '../src/settings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -59,12 +60,13 @@ const UQ_EVENT = {
   toolUseId: Q_TOOL_USE_ID,
   questions: QUESTIONS,
 };
-// The tool_result that the PreToolUse hook generates (is_error).
+// The tool_result the `can_use_tool` deny produces.
 const TOOL_RESULT_EVENT = {
   kind: 'tool_result',
   toolUseId: Q_TOOL_USE_ID,
-  content: 'AskUserQuestion: denied by hook',
+  content: AWAITING_INPUT_MESSAGE,
   isError: true,
+  yielded: true,
 };
 // A formatted answer text (what the user would have submitted).
 const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
