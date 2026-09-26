@@ -536,6 +536,19 @@ const mv = (stage, events = MOVED_OFF) => decide({
   projection: proj(events), playbooks: pbs(MOVER), isLive: isLiveFromEvents(events),
 });
 
+// Invariant: the census's "gone" list is liveness-gated — a run member that
+// passed through the need's stage but has merely MOVED ON (still running, now
+// outside the accepted position) is neither a satisfier nor reported gone.
+test('a live run member that moved off the accepted position is not reported as gone', () => {
+  const res = refusal(decide({
+    toolName: 'spawn_instance',
+    args: { playbook: 'mover', stage: 'strict', provenance: { other: 'w-mover-001' } },
+    projection: proj(MOVED_OFF), playbooks: pbs(MOVER), isLive: isLiveFromEvents(MOVED_OFF),
+  }), 'NEEDS_UNSATISFIED');
+  assert.match(res.reason, /pass provenance: \{ "root": "<sessionId>" \}\. No worker in this run satisfies it right now\.$/);
+  assert.doesNotMatch(res.reason, /no running process|passed through 'root'/);
+});
+
 test('a position list refuses a stage it does not name, and says which stages it accepts', () => {
   // Provenance passes (it HAS been in `root`) and liveness passes (still live),
   // so position is the only thing that can refuse — which is what makes this a
