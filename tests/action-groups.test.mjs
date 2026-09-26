@@ -54,12 +54,14 @@ function text(msgId, blockIdx, body) {
 
 // A whole tool call: head, finalized input, result. `result: null` leaves it
 // unresolved (a run still in flight).
-function tool(msgId, blockIdx, id, name, { result = 'ok', isError = false } = {}) {
+function tool(msgId, blockIdx, id, name, { result = 'ok', isError = false, yielded = false } = {}) {
   const evs = [
     { kind: 'tool_use_start', msgId, blockIdx, toolUseId: id, name },
     { kind: 'tool_use', msgId, blockIdx, toolUseId: id, name, input: { command: 'x' } },
   ];
-  if (result !== null) evs.push({ kind: 'tool_result', toolUseId: id, content: result, isError });
+  if (result !== null) {
+    evs.push({ kind: 'tool_result', toolUseId: id, content: result, isError, ...(yielded ? { yielded: true } : {}) });
+  }
   return evs;
 }
 
@@ -819,4 +821,46 @@ test('action-group tally reads MCP tools as "chip: Label", not chip and label gl
     ...text('m1', 4, 'done'),
   ]);
   assert.equal(summaryTextOf(groupsIn(root)[0]), '4 actions · kanban: Move card ×2, cc: Spawn instance, Bash');
+});
+
+// ---------------------------------------------------------------------------
+// Y — a `yielded` tool_result (the orchestrator's deliberate can_use_tool deny
+// of an interactive tool) is handed to the user, not a failure. The content is
+// deliberately NOT AWAITING_INPUT_MESSAGE: the frontend keys on the flag.
+// ---------------------------------------------------------------------------
+test('Y1 pins: a yielded tool_result adds no error clause and no error styling', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'q1', 'AskUserQuestion', { result: 'delivered', isError: true, yielded: true }),
+  ]);
+  const group = groupsIn(root)[0];
+  assert.equal(summaryTextOf(group), '1 action · AskUserQuestion');
+  assertNull(group.querySelector('.ag-errors'));
+  assertNull(root.querySelector('.tool-result.error'));
+});
+
+test('Y2 pins: the same errored AskUserQuestion result without the flag still counts', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'q1', 'AskUserQuestion', { result: 'delivered', isError: true }),
+  ]);
+  assert.equal(summaryTextOf(groupsIn(root)[0]), '1 action · AskUserQuestion · 1 error');
+});
+
+test('Y3 pins: a yielded orphan tool_result is not counted', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'tu1', 'Bash'),
+    { kind: 'tool_result', toolUseId: 'ghost', content: 'delivered', isError: true, yielded: true },
+  ]);
+  assert.equal(summaryTextOf(groupsIn(root)[0]), '2 actions · Bash, tool_result');
+});
+
+test('Y4 pins: a yielded result beside a real error counts only the real one', async () => {
+  const { root, Conversation } = await setupDOM();
+  feed(new Conversation(root, {}), [
+    ...tool('m1', 0, 'q1', 'AskUserQuestion', { result: 'delivered', isError: true, yielded: true }),
+    ...tool('m1', 1, 'b1', 'Bash', { result: 'boom', isError: true }),
+  ]);
+  assert.equal(summaryTextOf(groupsIn(root)[0]), '2 actions · AskUserQuestion, Bash · 1 error');
 });
