@@ -1239,7 +1239,8 @@ export class Sidebar {
   }
 
   // Create-or-update one conductor block: its row, its project chips, and —
-  // while expanded — the read-only tree of this conductor's live workers.
+  // while expanded — the tree of this conductor's live workers (no structural
+  // actions, only ↑ promote on a live temp worker).
   // The block alone carries the conductor's bar; nothing inside repeats it.
   _conductorItem(existing, conductor) {
     let li = existing, holder;

@@ -754,6 +754,25 @@ test('Re-discovered temp session with NO live instance groups under — temp —
   assert.ok(normalRow, 'the non-temp session row is rendered without the .temp class');
 });
 
+test('A disk-only temp session row (no live instance) does NOT show the promote button', async () => {
+  const now = Date.now();
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [
+      { sessionId: 'sid-temp', firstPrompt: 'a temp one', temp: true, lastActivity: now - 60_000, size: 10 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 1, lastActivity: now - 60_000 },
+  }]);
+  sidebar.setInstances([]);
+  await new Promise(r => setTimeout(r, 0));
+  const row = [...root.querySelectorAll('.session-row')].find(r => r.title.split('\n')[0] === 'sid-temp');
+  assert.ok(row, 'the disk-only temp row renders');
+  assert.ok(row.classList.contains('temp'), 'and carries the durable temp flag');
+  assertNull(row.querySelector('.session-promote'), 'no promote button without a live instance to promote');
+});
+
 // (The conducted-from-disk path is already covered by the existing
 // "On-disk conducted metadata (no live instance) still groups under
 // — conducted —" test above — conducted grouping keys off the durable
