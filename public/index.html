@@ -72,8 +72,8 @@
                   aria-pressed="false" aria-label="Auto-approve plans" disabled hidden
                   title="Auto-approve plans — when on, ExitPlanMode skips the confirmation card. Session-local; per instance.">📋</button>
           <div id="mode-toggle" class="qs-mode-toggle" role="group" aria-label="Session mode">
-            <button type="button" class="qs-mode-opt" data-mode="bypassPermissions" aria-pressed="false" disabled>Code</button>
             <button type="button" class="qs-mode-opt" data-mode="plan" aria-pressed="false" disabled>Plan</button>
+            <button type="button" class="qs-mode-opt" data-mode="bypassPermissions" aria-pressed="false" disabled>Code</button>
           </div>
           <button id="resume-btn" hidden>Resume</button>
           <button id="sync-btn" hidden title="Bring this worktree up to date with its parent branch (fast-forward or rebase when git can; otherwise report what blocks it)">Sync</button>
@@ -668,8 +668,8 @@
         <button type="button" class="qs-model" data-tier="frontier">Frontier<span class="qs-sublabel">Fable 5.1</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
-        <button type="button" id="sd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
         <button type="button" id="sd-mode-plan" class="qs-mode-opt" data-mode="plan" aria-pressed="false">Plan &amp; Approve</button>
+        <button type="button" id="sd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
       </div>
       <details id="sd-advanced">
         <summary>Advanced options</summary>

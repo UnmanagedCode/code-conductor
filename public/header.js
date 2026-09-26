@@ -438,7 +438,7 @@ export function installHeader({
   // module already renders and enable/disables every one of them; only their
   // click handlers used to sit in app.js.
 
-  // Code | Plan switch. Rendered from state in update(), never flipped here: a
+  // Plan | Code switch. Rendered from state in update(), never flipped here: a
   // click on the unpressed side sends one `mode` frame and the `status` frame
   // that follows re-renders it.
   dom.modeToggle.addEventListener('click', async (e) => {
@@ -661,7 +661,7 @@ export function installHeader({
     renderTiLeft(inst);
   }
 
-  // Render the Code | Plan switch: `mode` is pressed (null presses neither).
+  // Render the Plan | Code switch: `mode` is pressed (null presses neither).
   function setModeToggle(mode, disabled) {
     for (const btn of dom.modeToggle.querySelectorAll('.qs-mode-opt')) {
       btn.setAttribute('aria-pressed', btn.dataset.mode === mode ? 'true' : 'false');

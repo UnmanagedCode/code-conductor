@@ -83,7 +83,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
 
   // ── Unified spawn dialog ──────────────────────────────────────────────
   // Opened by the + (new session) sidebar button.
-  // Collapsed face: model cards + Code/Plan toggle.
+  // Collapsed face: model cards + Plan/Code toggle.
   // Defaults: configured default model (Opus out of the box; set via Settings →
   // Models), temp ON, worktree OFF — reproduces the old quick-spawn behaviour
   // when the user never opens Advanced options.

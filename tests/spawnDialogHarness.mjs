@@ -54,8 +54,8 @@ export function buildDOM(document) {
         <div class="quick-spawn-models">
           ${TIERS.map(t => `<button type="button" class="qs-model" data-tier="${t}"><span class="qs-sublabel"></span></button>`).join('')}
         </div>
-        <button type="button" id="sd-mode-code" aria-pressed="true"></button>
         <button type="button" id="sd-mode-plan" aria-pressed="false"></button>
+        <button type="button" id="sd-mode-code" aria-pressed="true"></button>
         ${SD_EFFORT_MARKUP}
         <select id="sd-thinking"><option value="adaptive" selected>adaptive</option></select>
         <input id="sd-worktree" type="checkbox" />
