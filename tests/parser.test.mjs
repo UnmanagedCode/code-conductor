@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Parser } from '../src/parser.ts';
+import { Parser, consolidateUserContent } from '../src/parser.ts';
+import { AWAITING_INPUT_MESSAGE } from '../src/settings.ts';
+import { replayPersistedLine } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FX = path.join(__dirname, 'fixtures');
@@ -1029,4 +1031,40 @@ test('parser T6: reset() disarms the ctx fallback', () => {
   p.reset();
   assert.deepEqual(p.handleObject(msgDeltaEv(REAL_DELTA_USAGE)), [],
     'a rewound session must not inherit an armed flag');
+});
+
+// ── yielded: the orchestrator's own can_use_tool deny of an interactive tool ──
+
+test('parser: the can_use_tool deny\'s tool_result is tagged yielded and stays an error', async () => {
+  const events = feed(await loadScenario('scenario-canusetool-plan.json'));
+  const ev = events.find(e => e.kind === 'tool_result' && e.toolUseId === 'tu_exit');
+  assert.ok(ev, 'fixture must carry the tu_exit tool_result');
+  assert.equal(ev.content, AWAITING_INPUT_MESSAGE, 'fixture deny text drifted from AWAITING_INPUT_MESSAGE');
+  assert.equal(ev.yielded, true);
+  assert.equal(ev.isError, true);
+});
+
+test('parser: an errored tool_result with any other text is not yielded', async (t) => {
+  for (const [name, content] of [
+    ['a real error', 'boom'],
+    ['a near miss of the deny text', AWAITING_INPUT_MESSAGE + ' '],
+  ]) {
+    await t.test(name, () => {
+      const [ev] = consolidateUserContent([{ type: 'tool_result', tool_use_id: 'tu_x', content, is_error: true }]);
+      assert.equal(ev.kind, 'tool_result');
+      assert.ok(!('yielded' in ev), `unexpected yielded on ${JSON.stringify(content)}`);
+      assert.equal(ev.isError, true);
+    });
+  }
+});
+
+test('replay: a persisted deny tool_result is tagged yielded, same as live', () => {
+  const line = {
+    type: 'user', uuid: 'u-deny',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_q', content: AWAITING_INPUT_MESSAGE, is_error: true }] },
+  };
+  const ev = replayPersistedLine(line).find(e => e.kind === 'tool_result');
+  assert.ok(ev, 'replay must emit the tool_result');
+  assert.equal(ev.toolUseId, 'tu_q');
+  assert.equal(ev.yielded, true);
 });
