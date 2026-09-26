@@ -120,7 +120,7 @@ export function installSessionActions({
   // `reset_snapshot` (handled in app.js) so this view clears, and respawns
   // against the truncated history. We prefill the composer with the
   // dropped prompt so the user can edit and re-send.
-  async function rewindActiveSession(userMessageIndex) {
+  async function rewindActiveSession(userMessageIndex, text) {
     const id = getActiveId();
     if (!id) return;
     if (!confirm('Rewind to here? Everything after this message will be discarded; the composer will be prefilled with this prompt so you can edit and resend.')) return;
@@ -132,7 +132,7 @@ export function installSessionActions({
       await apiFetch(`/api/instances/${encodeURIComponent(id)}/rewind`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ userMessageIndex }),
+        body: JSON.stringify({ userMessageIndex, text }),
       });
     } catch (e) {
       alert(`rewind failed: ${e.message}`);
@@ -144,7 +144,7 @@ export function installSessionActions({
   // The composer prefill (the dropped prompt) rides the new instance's
   // first `snapshot` WS frame as `droppedText` — no client-side handshake;
   // the wsRouter snapshot handler applies it.
-  async function forkActiveSession(userMessageIndex) {
+  async function forkActiveSession(userMessageIndex, text) {
     const id = getActiveId();
     if (!id) return;
     if (!confirm('Fork from here? A new session is created from the prefix; the original session is left intact and the composer is prefilled with this prompt.')) return;
@@ -152,7 +152,7 @@ export function installSessionActions({
       const { instance: newInst } = await apiFetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ userMessageIndex }),
+        body: JSON.stringify({ userMessageIndex, text }),
       });
       await refreshProjects();
       await refreshInstances();

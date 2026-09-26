@@ -16,7 +16,8 @@
 //   - The ring trims onto turn boundaries when it can (EventLog._trim snaps
 //     the head to an outer user_echo, falling back to a quiescent point),
 //     and every outer user_echo carries an absolute `userIndex` matching the
-//     Nth pure-user-prompt jsonl line. When the ring head is the echo for
+//     Nth pure-user-prompt jsonl line (offset by calibrateEchoOffset across a
+//     live rotation, below). When the ring head is the echo for
 //     prompt N, the archive is cut strictly before its own echo #N — no
 //     overlap, no gap.
 //   - When the head is mid-turn (no echo in the trim's reach — e.g. one
@@ -49,7 +50,10 @@
 // predates the current segment loads no archive at all; a head inside it cuts
 // the file with a live→file ordinal offset measured from content
 // (calibrateEchoOffset). Evicted events of EARLIER segments are never servable
-// here and get one "floor" `history_gap` before the first servable event.
+// here and get one "floor" `history_gap` before the first servable event. The
+// served archive echoes are restamped into live space with that same offset, so
+// every current-segment bubble carries the live ordinal fork/rewind translate
+// back (Instance._fileOrdinalFor → measureSegmentEchoOffset).
 
 import type { TranscriptPlacement } from './projects.ts';
 import { loadPersistedTranscript } from './transcript.ts';
@@ -208,8 +212,9 @@ function cutFromEchoAnchor(flat: SeqEvent[], anchor: number, includeAnchorEcho: 
 
 // The live→file echo-ordinal offset for a ring that crossed a seam into the
 // file's segment: the live ordinals count every earlier segment's echoes, and
-// the file opens with a varying number of replay-only echoes the live ring
-// never emitted, so no constant offset exists. Walks the ring's outer events
+// the file opens with replay-only echoes the live ring never emitted (a
+// post-`/clear` file opens with the `/clear` command line), so no constant
+// offset exists. Walks the ring's outer events
 // remembering the latest echo E; at the first later outer event whose content
 // correlates into the file at index k, E's twin is the last outer echo in the
 // file at or before k. Returns twin − E, or null when no ring turn correlates.
@@ -231,6 +236,18 @@ function calibrateEchoOffset(ring: SeqEvent[], flat: SeqEvent[], flatIndex: Map<
     return null;
   }
   return null;
+}
+
+// calibrateEchoOffset over `sessionId`'s file: file ordinal = live ordinal +
+// the result. null when the file is missing or no ring turn correlates into it.
+// `ring` must hold only that segment's ring events, or an earlier segment's echo
+// can become the calibration echo.
+export async function measureSegmentEchoOffset({ place, sessionId, ring }: {
+  place: TranscriptPlacement; sessionId: string; ring: SeqEvent[];
+}): Promise<number | null> {
+  const flat = await loadStampedTranscript({ place, sessionId });
+  if (!flat) return null;
+  return calibrateEchoOffset(ring, flat, buildFlatIndex(flat));
 }
 
 // Which backing segment this pager can serve, from the ring's seams:
@@ -299,6 +316,9 @@ export function insertRingSeamDividers(events: UiEvent[], seams: readonly RingSe
 // live and file ordinals align. Above 0 every ordinal is shifted by the
 // calibrated offset, and when none can be measured nothing is served from the
 // file (`cut: 0`, gap marked) — an unmeasured ordinal is never guessed. The
+// returned archive echoes are then restamped into live space (`userIndex` =
+// file ordinal − offset, dropped when that is negative), AFTER the cut: the
+// calibration reads the file ordinals. The
 // precondition `ring[0]._seq >= segmentStartSeq` holds by construction: both
 // callers only get here when `archivable` (tb >= startSeq), tb IS ring[0]._seq
 // for a non-empty ring, and each reads the ring, tb and the scope in one
@@ -367,7 +387,25 @@ export async function buildArchive({ place, sessionId, ring, trimmedBefore, user
   const clampedCut = Math.min(cut, Math.max(0, trimmedBefore));
   const clampDroppedContent = cut > trimmedBefore;
   cut = clampedCut;
-  return { events: flat, cut, gap: includeAnchorEcho || clampDroppedContent };
+  const gap = includeAnchorEcho || clampDroppedContent;
+  if (segmentStartSeq === 0) return { events: flat, cut, gap };
+  // The correlated mid-turn branch never needed the offset; the restamp does.
+  const measured = offset === undefined ? calibrateEchoOffset(ring, flat, index()) : offset;
+  return { events: restampToLive(flat, measured), cut, gap };
+}
+
+// Copies of `flat` whose outer echoes carry the live ordinal (file − offset). An
+// echo whose live ordinal cannot be measured (null offset) or would be negative
+// gets no `userIndex` — a bubble without one offers no rewind/fork.
+function restampToLive(flat: SeqEvent[], offset: number | null): SeqEvent[] {
+  return flat.map((ev) => {
+    if (!isOuterUserEcho(ev) || typeof ev.userIndex !== 'number') return ev;
+    const copy = { ...ev };
+    const live = offset === null ? -1 : ev.userIndex - offset;
+    if (live < 0) delete copy.userIndex;
+    else copy.userIndex = live;
+    return copy;
+  });
 }
 
 // Page an instance's event history.

@@ -256,7 +256,7 @@ test('fork guards its jsonl read with the same flag', async () => {
       set: (v) => { flag = v; writes.push(v); },
     });
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     assert.deepEqual(writes, [true, false], 'fork must set and clear _mutating around its read');
     assert.equal(inst._mutating, false, 'the flag is cleared even though fork leaves the source alive');
@@ -264,7 +264,7 @@ test('fork guards its jsonl read with the same flag', async () => {
     // …and fork refuses to read a jsonl another rewrite is already rewriting.
     inst._mutating = true;
     try {
-      const clash = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+      const clash = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
       assert.equal(clash.status, 409);
     } finally { inst._mutating = false; }
   } finally { await ctx.close(); }
@@ -318,8 +318,8 @@ test('two concurrent forks cannot both claim the flag', async () => {
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
     const [a, b] = await Promise.all([
-      api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 }),
-      api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 }),
+      api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' }),
+      api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' }),
     ]);
     const codes = [a.status, b.status].sort();
     assert.deepEqual(codes, [201, 409],

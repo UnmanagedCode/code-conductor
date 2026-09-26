@@ -240,15 +240,26 @@ wtest('W1 segment parity: each served segment equals its own MCP read, _seq incl
 
 wtest('W1v the view of the ring-head segment equals that segment\'s single-segment read, cut exactly at the ring head', async (t) => {
   // (i) every served seq is below tb, (ii) each equals the file read's event at
-  // that seq, (iii) the served seqs are exactly 0…cut-1, (iv) every prompt and
-  // reply of H is served once across the whole walk.
-  function assertView(walk, { H, tb, ref, cut, gapAfter = null }) {
+  // that seq, but for an echo's `userIndex`: a k > 0 view is restamped into live
+  // space, so every echo is shifted by the same offset (0 for k = 0), (iii) the
+  // served seqs are exactly 0…cut-1, (iv) every prompt and reply of H is served
+  // once across the whole walk.
+  function assertView(walk, { H, tb, ref, cut, gapAfter = null, k = 0 }) {
     const view = spaceEvents(walk, H);
     assert.ok(view.length > 0, 'the walk served the view');
     const seqd = view.filter(e => typeof e._seq === 'number');
     for (const e of seqd) assert.ok(e._seq < tb, `(i) served seq ${e._seq} < tb ${tb}`);
     const bySeq = new Map(ref.filter(e => typeof e._seq === 'number').map(e => [e._seq, e]));
-    for (const e of seqd) assert.deepEqual(e, bySeq.get(e._seq), `(ii) seq ${e._seq} equals the file read`);
+    const shifts = new Set();
+    for (const e of seqd) {
+      const { userIndex, ...rest } = e;
+      const { userIndex: fileIndex, ...fileRest } = bySeq.get(e._seq);
+      assert.deepEqual(rest, fileRest, `(ii) seq ${e._seq} equals the file read`);
+      assert.equal(typeof userIndex, typeof fileIndex, `(ii) seq ${e._seq} carries a userIndex iff the file read does`);
+      if (typeof userIndex === 'number') shifts.add(userIndex - fileIndex);
+    }
+    if (k === 0) assert.ok(shifts.size === 0 || (shifts.size === 1 && shifts.has(0)), '(ii) a k = 0 view keeps the file ordinals');
+    else assert.equal(shifts.size, 1, '(ii) every echo is shifted by one offset');
     assert.deepEqual(seqd.map(e => e._seq), Array.from({ length: cut }, (_, i) => i), `(iii) the view is exactly 0…${cut - 1}`);
     const gaps = view.map((e, i) => (isGap(e) ? i : -1)).filter(i => i >= 0);
     if (gapAfter == null) assert.deepEqual(gaps, [], 'no marker in the view');
@@ -356,7 +367,7 @@ wtest('W1v the view of the ring-head segment equals that segment\'s single-segme
     const walk = await walkLineage(ctx, id, { limit: 7 });
     const cut = ref.findIndex(e => e.kind === 'user_echo' && e.text === ring[0].text);
     assert.ok(cut > 0);
-    assertView(walk, { H: POST, tb, ref, cut });
+    assertView(walk, { H: POST, tb, ref, cut, k: 1 });
     once(walk, turnTexts('post', 6));
   });
 });
@@ -454,7 +465,7 @@ wtest('W4 renew/prune/renew: exactly once, dividers at the renew boundaries, a m
   const lastText = (i) => walk.events.slice(0, i).findLast(e => typeof e.text === 'string')?.text;
   const iC = walk.events.findIndex(e => e.kind === 'segment_seam' && e.segmentId === C);
   assert.equal(lastText(iC), 'a reply 2', 'the C divider follows A\'s last event');
-  assert.equal(walk.events[iC + 1].text, RENEW_HEAD[0].message.content, 'and precedes C\'s first');
+  assert.equal(walk.events[iC + 1].text, RENEW_HEAD[1].message.content, 'and precedes C\'s first');
   const iD = walk.events.findIndex(e => e.kind === 'segment_seam' && e.segmentId === D);
   assert.equal(lastText(iD), 'c reply 1', 'the D divider follows C\'s last event');
   assert.equal(walk.events[iD + 1]._seq, inst.ringSnapshot()[0]._seq, 'and precedes D\'s first');
@@ -543,7 +554,7 @@ wtest('W7 live case B: the earlier segment is read from its file above the curre
   const walk = await walkLineage(ctx, id, { limit: 7 });
   assert.equal(render(walk.events, { [POST]: 'POST' }), '[pre] ‖POST [post]');
   const iS = walk.events.findIndex(e => e.kind === 'segment_seam');
-  assert.equal(walk.events[iS + 1].text, RENEW_HEAD[0].message.content, 'the divider directly precedes POST\'s file head');
+  assert.equal(walk.events[iS + 1].text, RENEW_HEAD[1].message.content, 'the divider directly precedes POST\'s file head');
   assert.equal(gapCount(walk.events), 0, 'no floor marker: the earlier segment is served');
   assertOnceInOrder(walk.events, 'pre', 3);
   assertOnceInOrder(walk.events, 'post', 12);
@@ -578,7 +589,10 @@ wtest('W8 three live segments: view of the middle one, then the oldest; and the 
     assert.ok(viewIdx.length > 0, 'the view was paged');
     const terminal = walk.pages[viewIdx.at(-1)];
     assert.equal(terminal.events[0].kind, GAP, 'the view\'s terminal page opens on the gap');
-    assert.deepEqual(terminal.events[1], refPost[0], 'directly above POST\'s file event 0');
+    // Its userIndex is the view's live-space restamp, not the file ordinal.
+    const { userIndex: _viewIndex, ...head } = terminal.events[1];
+    const { userIndex: _fileIndex, ...fileHead } = refPost[0];
+    assert.deepEqual(head, fileHead, 'directly above POST\'s file event 0');
     assert.equal(gapCount(walk.events), 1, 'exactly one gap in the whole walk');
   });
 

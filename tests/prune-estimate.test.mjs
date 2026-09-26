@@ -503,3 +503,17 @@ test('an exempt tool\'s payload is reported as kept, not saved', async () => {
     assert.equal(a.turns[1].exempt, 0);
   });
 });
+
+test('a caveat line is not its own prune turn', async () => {
+  await withStore(async () => {
+    await seed([
+      prompt('u0', 'first'),
+      { type: 'user', isMeta: true, uuid: 'cav', message: { role: 'user', content: '<local-command-caveat>Caveat: local commands below.</local-command-caveat>' } },
+      { type: 'user', uuid: 'cmd', message: { role: 'user', content: '<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>high</command-args>' } },
+      { type: 'system', subtype: 'local_command', uuid: 'out', content: '<local-command-stdout></local-command-stdout>' },
+      prompt('u1', 'second'),
+    ]);
+    const a = await analyze();
+    assert.equal(a.turnCount, 3, 'first, /effort, second');
+  });
+});

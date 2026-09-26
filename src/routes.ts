@@ -1351,7 +1351,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     });
 
     // Rewind the active session to before the Nth user prompt (0-indexed
-    // among emitted user_echo events). Kills the subprocess, truncates the
+    // among emitted user_echo events — the bubble's `userIndex`; `text` is the
+    // bubble's text, and a prompt that doesn't match it is refused before
+    // anything is killed or written). Kills the subprocess, truncates the
     // persisted jsonl, broadcasts a snapshot_reset so subscribers clear
     // their conversation, then respawns with --resume so the surviving
     // prefix is replayed. Returns { ok:true, droppedText } so the
@@ -1360,17 +1362,20 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        const idx = Number(jsonBody(req).userMessageIndex);
+        const body = jsonBody(req);
+        const idx = Number(body.userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
           throw httpError(400, 'userMessageIndex must be a non-negative integer');
         }
-        const { droppedText } = await inst.rewindToUserMessage(idx);
+        if (typeof body.text !== 'string') throw httpError(400, 'text must be a string');
+        const { droppedText } = await inst.rewindToUserMessage(idx, body.text);
         res.json({ ok: true, droppedText });
       } catch (e) { next(e); }
     });
 
     // Fork the session of the named instance: copy the prefix of its
-    // jsonl up to (excluding) the Nth user prompt into a new sessionId,
+    // jsonl up to (excluding) the Nth user prompt (same `userMessageIndex` +
+    // `text` contract as /rewind) into a new sessionId,
     // leave the original session intact, and spawn a fresh instance
     // resuming the forked jsonl. The composer prefill rides the new
     // instance's first `snapshot` frame as `droppedText` (stored via
@@ -1381,14 +1386,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        const idx = Number(jsonBody(req).userMessageIndex);
+        const body = jsonBody(req);
+        const idx = Number(body.userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
           throw httpError(400, 'userMessageIndex must be a non-negative integer');
         }
+        if (typeof body.text !== 'string') throw httpError(400, 'text must be a string');
         // Every guard, the rewrite-interlock flag's claim/release and the
         // derivation of the respawn arguments live on the instance alongside its
         // rewind/prune siblings; the route only spawns what it hands back.
-        const { newSessionId, droppedText, createArgs } = await inst.forkAtUserMessage(idx);
+        const { newSessionId, droppedText, createArgs } = await inst.forkAtUserMessage(idx, body.text);
         const newInst = await instances.create(createArgs);
         res.status(201).json({
           ok: true,

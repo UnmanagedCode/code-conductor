@@ -78,7 +78,7 @@ test('truncate at N=1 drops everything from the 2nd user prompt onward', async (
   ];
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'second',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'second');
@@ -104,7 +104,7 @@ test('truncate at N=0 empties the file, no metadata appended', async () => {
   ];
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0, expectedText: 'first',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'first');
@@ -120,7 +120,7 @@ test('truncate out-of-range throws 400', async () => {
   ];
   const { cwd, sid } = await makeFixture(lines);
   await assert.rejects(
-    truncateSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 5 }),
+    truncateSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 5, expectedText: 'first' }),
     (e) => e.statusCode === 400 && /out of range/.test(e.message),
   );
 });
@@ -140,7 +140,7 @@ test('fork copies the prefix to a new sessionId and leaves the original intact',
   const originalBytes = await fs.readFile(file);
 
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'second',
     mode: 'bypassPermissions',
   });
   assert.ok(result.newSessionId && result.newSessionId !== sid, 'fresh sessionId');
@@ -191,7 +191,7 @@ test('predicate: tool_result-only user lines do NOT increment the user-message c
   ];
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'second',
     mode: 'bypassPermissions',
   });
   // We expect droppedText='second' (the 2nd real user prompt), not the tool_result.
@@ -283,7 +283,7 @@ test('fork targeting a queued_command auto-approve mid-session succeeds and pref
 
   // The 4th forkable bubble (index 3) is "Please start" — must succeed.
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 3,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 3, expectedText: 'Please start',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'Please start',
@@ -337,7 +337,7 @@ test('fork targeting a real prompt after a background-subagent task-notification
   // Bubble index 2 (0-based) is "third prompt" — the 3rd real user_echo the
   // UI ever rendered. Must not drift because of the task-notification line.
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 2,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 2, expectedText: 'third prompt',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'third prompt',
@@ -370,7 +370,7 @@ test('fork targeting the queued_command itself prefills the queued text and drop
   ];
   const { cwd, sid, dir } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'I approve the plan. Please proceed with the implementation.',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText,
@@ -388,6 +388,7 @@ test('fork with attachment-bearing user message strips the marker from droppedTe
   // the same `text` block array. When we prefill the composer after a fork,
   // we don't want the marker line bouncing back as visible prose.
   const lines = [
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'earlier' } },
     { type: 'user', uuid: 'u1', message: { role: 'user', content: [
       { type: 'text', text: 'look at this' },
       { type: 'text', text: 'Attached file: `/tmp/foo/.code-conductor/projects/demo/attachments/123-screenshot.png`' },
@@ -398,9 +399,159 @@ test('fork with attachment-bearing user message strips the marker from droppedTe
   ];
   const { cwd, sid } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'look at this',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'look at this',
     'Attached file: marker line is stripped from the composer prefill text');
+});
+
+// ── local-command caveat + the prompt-text guard ────────────────────────────
+
+const CAVEAT_TEXT = '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>';
+const caveatLine = (uuid) => ({ type: 'user', isMeta: true, uuid, message: { role: 'user', content: CAVEAT_TEXT } });
+const commandLine = (uuid, name, args) => ({ type: 'user', uuid, message: { role: 'user', content:
+  `<command-name>/${name}</command-name>\n            <command-message>${name}</command-message>\n            <command-args>${args}</command-args>` } });
+const localCommandStdout = (uuid) => ({ type: 'system', subtype: 'local_command', uuid, content: '<local-command-stdout></local-command-stdout>' });
+const turn = (tag, text) => [
+  { type: 'user', uuid: `u-${tag}`, message: { role: 'user', content: text } },
+  { type: 'assistant', uuid: `a-${tag}`, message: { id: `m-${tag}`, role: 'assistant', content: [{ type: 'text', text: `${tag} reply` }] } },
+];
+const ATT_MARKER = 'Attached file: `/store/.code-conductor/projects/demo/attachments/1-shot.png`';
+const MID_TURN = '<system-reminder>\nThe user sent this message while you were mid-turn.\n</system-reminder>';
+
+// `run` refuses with a PROMPT_MISMATCH 409.
+async function assertMismatch(run) {
+  let caught = null;
+  await assert.rejects(run, (e) => { caught = e; return true; });
+  assert.equal(caught.statusCode, 409, caught.message);
+  const { PROMPT_MISMATCH } = await import('../src/sessionEdit.ts');
+  assert.equal(typeof PROMPT_MISMATCH, 'string', 'sessionEdit exports PROMPT_MISMATCH');
+  assert.ok(caught.message.startsWith(PROMPT_MISMATCH), caught.message);
+}
+
+test('isPureUserPromptLine: the CLI caveat is not a prompt; user text mentioning the tag is', () => {
+  assert.equal(isPureUserPromptLine(caveatLine('c')), false, 'the isMeta string caveat');
+  assert.equal(isPureUserPromptLine({ type: 'user', message: { content: CAVEAT_TEXT } }), true,
+    'a user-authored string that is only the tag still counts');
+  assert.equal(isPureUserPromptLine({ type: 'user', message: { content: [{ type: 'text', text: CAVEAT_TEXT }] } }), true,
+    'array content holding the tag still counts');
+  assert.equal(isPureUserPromptLine({ type: 'user', isMeta: true, message: { content: `forwarded: ${CAVEAT_TEXT}` } }), true,
+    'an isMeta line that merely contains the tag still counts');
+});
+
+test('replayPersistedLine and the live parser emit nothing for the caveat', async () => {
+  const { replayPersistedLine } = await import('../src/transcript.ts');
+  const { Parser } = await import('../src/parser.ts');
+  assert.deepEqual(replayPersistedLine(caveatLine('c')), [], 'the jsonl shape (isMeta)');
+  assert.deepEqual(new Parser().handleObject({ type: 'user', isSynthetic: true, message: { role: 'user', content: CAVEAT_TEXT } }), [],
+    'the stdout shape (isSynthetic)');
+});
+
+test('replay and the prompt counter agree 1:1', async () => {
+  const { replayPersistedLine, loadPersistedTranscript } = await import('../src/transcript.ts');
+  const { stampArchiveEvents } = await import('../src/eventArchive.ts');
+  const { isOuterUserEcho } = await import('../src/parser.ts');
+  const lines = [
+    caveatLine('head-caveat'), commandLine('head-clear', 'clear', ''), localCommandStdout('head-stdout'),
+    ...turn('t0', 'first'),
+    caveatLine('e-caveat'), commandLine('e-cmd', 'effort', 'high'), localCommandStdout('e-stdout'),
+    // The interactive CLI persists a command's output as a user line.
+    caveatLine('i-caveat'), commandLine('i-cmd', 'config', ''),
+    { type: 'user', uuid: 'i-stdout', message: { role: 'user', content: '<local-command-stdout>ok</local-command-stdout>' } },
+    ...turn('t1', `worker said: ${CAVEAT_TEXT}`),
+    { type: 'attachment', uuid: 'q1', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'queued' }] } },
+    { type: 'user', uuid: 'tn', message: { role: 'user', content: '<task-notification>\n<task-id>t</task-id>\n</task-notification>' } },
+    { type: 'user', uuid: 'im', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } },
+    ...turn('t2', 'last'),
+  ];
+  const outerEchoes = (obj) => replayPersistedLine(obj).filter(isOuterUserEcho);
+  for (const obj of lines) {
+    assert.equal(outerEchoes(obj).length, isPureUserPromptLine(obj) ? 1 : 0, `line ${obj.uuid}: one echo iff a prompt line`);
+  }
+  const { cwd, sid } = await makeFixture(lines);
+  const result = await loadPersistedTranscript({ place: localPlace(cwd), sessionId: sid, seqHint: 0 });
+  const stamped = stampArchiveEvents(result.lines).filter(isOuterUserEcho);
+  const promptLines = lines.filter(isPureUserPromptLine);
+  assert.equal(stamped.length, promptLines.length, 'replayed echoes === counted prompt lines');
+  stamped.forEach((e, i) => assert.equal(e.text, outerEchoes(promptLines[i])[0].text, `echo ${i} is its own line's`));
+});
+
+test('the prompt-text guard: what matches and what refuses', async (t) => {
+  // [title, target line, the text its live bubble carried, accepted]
+  const rows = [
+    ['CRLF and trailing whitespace', { type: 'user', uuid: 'x', message: { content: 'line one\r\nline two  ' } }, 'line one\nline two', true],
+    ['command wrapper ↔ /effort high', commandLine('x', 'effort', 'high'), '/effort high', true],
+    ['empty-args /clear', { type: 'user', uuid: 'x', message: { content: '<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>' } }, '/clear', true],
+    ['attachment-marker blocks stripped', { type: 'user', uuid: 'x', message: { content: [{ type: 'text', text: 'look' }, { type: 'text', text: ATT_MARKER }] } }, 'look', true],
+    ['mid-turn note skipped', { type: 'user', uuid: 'x', message: { content: [{ type: 'text', text: MID_TURN }, { type: 'text', text: 'steer' }] } }, 'steer', true],
+    ['multi-block text joined with \\n', { type: 'user', uuid: 'x', message: { content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] } }, 'a\nb', true],
+    ['attachment-only', { type: 'user', uuid: 'x', message: { content: [{ type: 'text', text: ATT_MARKER }] } }, '', true],
+    ['queued_command', { type: 'attachment', uuid: 'x', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'queued' }] } }, 'queued', true],
+    ['a genuine mismatch', { type: 'user', uuid: 'x', message: { content: 'hello' } }, 'goodbye', false],
+    ['prose quoting a command tag is not a command', { type: 'user', uuid: 'x', message: { content: 'please run <command-name>/effort</command-name> for me' } }, '/effort', false],
+    ['prose quoting a command tag matches its own text', { type: 'user', uuid: 'x', message: { content: 'please run <command-name>/effort</command-name> for me' } }, 'please run <command-name>/effort</command-name> for me', true],
+  ];
+  for (const [title, target, expectedText, accepted] of rows) {
+    await t.test(title, async () => {
+      const { cwd, sid } = await makeFixture([...turn('t0', 'first'), target]);
+      const run = forkSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText });
+      if (accepted) await run;
+      else await assertMismatch(run);
+    });
+  }
+});
+
+test('truncate refuses a text mismatch and leaves the file byte-identical', async () => {
+  const { cwd, sid, file } = await makeFixture([...turn('t0', 'first'), ...turn('t1', 'second')]);
+  const before = await fs.readFile(file, 'utf8');
+  await assertMismatch(
+    truncateSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText: 'first' }));
+  assert.equal(await fs.readFile(file, 'utf8'), before);
+});
+
+test('fork refuses a text mismatch and writes no file', async () => {
+  const { cwd, sid, dir } = await makeFixture([...turn('t0', 'first'), ...turn('t1', 'second')]);
+  const listing = (await fs.readdir(dir)).sort();
+  await assertMismatch(
+    forkSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText: 'first' }));
+  assert.deepEqual((await fs.readdir(dir)).sort(), listing);
+});
+
+test('a split before a command line drops its caveat too', async () => {
+  const { cwd, sid, file } = await makeFixture([
+    ...turn('t0', 'first'),
+    caveatLine('e-caveat'), commandLine('e-cmd', 'effort', 'high'), localCommandStdout('e-stdout'),
+    ...turn('t1', 'after'),
+  ]);
+  const result = await truncateSessionAtUserMessage({
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText: '/effort high',
+  });
+  assert.equal(result.lastSurvivingUuid, 'a-t0', 'the leaf is the last line before the caveat');
+  assert.equal(result.remainingLineCount, 2);
+  assert.equal(result.droppedLineCount, 5, 'the caveat is dropped with its command');
+  const after = readJsonl(await fs.readFile(file, 'utf8'));
+  assert.deepEqual(after.map(l => l.uuid ?? l.type), ['u-t0', 'a-t0', 'last-prompt', 'permission-mode']);
+  assert.equal(after[2].leafUuid, 'a-t0');
+});
+
+test('composer prefill: a command bubble prefills its command form, any other prompt its text byte-for-byte', async (t) => {
+  // [title, target line, its bubble's text, expected droppedText]
+  const rows = [
+    ['/effort high', commandLine('x', 'effort', 'high'), '/effort high', '/effort high'],
+    ['/model opus', commandLine('x', 'model', 'opus'), '/model opus', '/model opus'],
+    ['/clear', { type: 'user', uuid: 'x', message: { content: '<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>' } }, '/clear', '/clear'],
+    ['a prompt with surrounding whitespace', { type: 'user', uuid: 'x', message: { content: '  keep\n  my spacing  ' } }, '  keep\n  my spacing  ', '  keep\n  my spacing  '],
+    ['prose quoting a command tag', { type: 'user', uuid: 'x', message: { content: 'please run <command-name>/effort</command-name> for me' } },
+      'please run <command-name>/effort</command-name> for me', 'please run <command-name>/effort</command-name> for me'],
+  ];
+  for (const [title, target, expectedText, droppedText] of rows) {
+    for (const [op, run] of [['truncate', truncateSessionAtUserMessage], ['fork', forkSessionAtUserMessage]]) {
+      await t.test(`${op}: ${title}`, async () => {
+        const { cwd, sid } = await makeFixture([...turn('t0', 'first'), target]);
+        const result = await run({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText });
+        assert.equal(result.droppedText, droppedText);
+      });
+    }
+  }
 });

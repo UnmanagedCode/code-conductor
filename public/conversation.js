@@ -629,6 +629,9 @@ export class Conversation {
     // level) gets no rewind/fork buttons — guessing an index could
     // truncate the session at the wrong line.
     const userIndex = Number.isInteger(ev.userIndex) ? ev.userIndex : null;
+    // The raw event text rides along: the server refuses a rewind/fork whose
+    // prompt at `userIndex` is not this one.
+    const userText = typeof ev.text === 'string' ? ev.text : '';
     const roleEl = el('div', { class: 'role' }, 'user');
     if (isTranscribed) {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
@@ -657,7 +660,7 @@ export class Conversation {
           title: 'Rewind to before this message (drops everything after, prefills the composer with this prompt)',
         }, '↶');
         btn.disabled = !this._userActionsEnabled;
-        btn.addEventListener('click', () => this.onRewind && this.onRewind(userIndex));
+        btn.addEventListener('click', () => this.onRewind && this.onRewind(userIndex, userText));
         actions.appendChild(btn);
       }
       if (this.onFork) {
@@ -667,7 +670,7 @@ export class Conversation {
           title: 'Fork a new session at this point (original session is preserved, composer is prefilled with this prompt)',
         }, '⑂');
         btn.disabled = !this._userActionsEnabled;
-        btn.addEventListener('click', () => this.onFork && this.onFork(userIndex));
+        btn.addEventListener('click', () => this.onFork && this.onFork(userIndex, userText));
         actions.appendChild(btn);
       }
       wrap.appendChild(actions);

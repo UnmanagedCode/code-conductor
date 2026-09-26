@@ -345,8 +345,8 @@ const conversationOptions = {
       sendCardAnswer(activeId, text, onFail);
     }
   },
-  onRewind: (userMessageIndex) => sessionActions.rewindActiveSession(userMessageIndex),
-  onFork: (userMessageIndex) => sessionActions.forkActiveSession(userMessageIndex),
+  onRewind: (userMessageIndex, text) => sessionActions.rewindActiveSession(userMessageIndex, text),
+  onFork: (userMessageIndex, text) => sessionActions.forkActiveSession(userMessageIndex, text),
   // Read finalized assistant messages aloud when TTS auto-speak is enabled.
   onAssistantText: (block) => autoSpeakBlock(block),
 };

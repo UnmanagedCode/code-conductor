@@ -219,11 +219,12 @@ export interface InstanceLike {
   readonly debug: boolean;
   readonly debugDir: string | null;
   _mutating: boolean;
-  rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }>;
+  // `userMessageIndex` is the bubble's live ordinal, `expectedText` its text.
+  rewindToUserMessage(userMessageIndex: number, expectedText: string): Promise<{ droppedText: string }>;
   // Fork at the Nth user prompt, leaving THIS session intact. Owns the whole
   // guard→claim→read→release sequence plus the derivation of its respawn
   // argument list; the caller only makes the create() call — see src/instances.ts.
-  forkAtUserMessage(userMessageIndex: number): Promise<{
+  forkAtUserMessage(userMessageIndex: number, expectedText: string): Promise<{
     newSessionId: string;
     droppedText: string;
     createArgs: CreateInstanceInput;
