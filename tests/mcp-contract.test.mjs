@@ -15,6 +15,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, registerLocalProject} from './helpers.mjs';
 import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../src/idleSubscriptions.ts';
+import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -538,3 +539,283 @@ test('send_prompt exposes forward as an optional object param', async () => {
   assert.equal(tool.inputSchema.properties.forward?.type, 'object');
   assert.ok(!(tool.inputSchema.required ?? []).includes('forward'), 'forward must not be required — text stays the instruction');
 });
+
+// ---------- contract strictness: descriptions and refusals name what is valid ----------
+
+// Invariant: pins are documented only by playbook surfaces — spawn_instance
+// (top level and every property) never mentions a pin, and list_sessions no
+// longer qualifies `resumes-hot` with one.
+test('spawn_instance and list_sessions carry no playbook-pin prose', async () => {
+  const { body } = await rpc('tools/list');
+  const spawn = body.result.tools.find(t => t.name === 'spawn_instance');
+  assert.doesNotMatch(spawn.description, /\bpin/i);
+  for (const [k, p] of Object.entries(spawn.inputSchema.properties)) {
+    assert.doesNotMatch(p.description ?? '', /\bpin/i, `spawn_instance.${k}`);
+  }
+  const ls = body.result.tools.find(t => t.name === 'list_sessions');
+  assert.doesNotMatch(ls.description, /pinning/);
+});
+
+// Invariant: a path passed as `project` is still refused (no path→name
+// resolution), and the refusal names the valid form — the NAME list_projects
+// prints and its regex. list_projects' own description says the name is the
+// argument.
+test('a filesystem path as project is refused naming the expected form', async () => {
+  const repo = await makeRealRepo('pathy');
+  const r = await callTool('project_status', { project: repo });
+  assert.equal(r.isError, true);
+  const t = errText(r);
+  assert.match(t, /list_projects/);
+  assert.match(t, /NAME/);
+  assert.ok(t.includes('^[a-zA-Z0-9._-]+$'), t);
+  assert.ok(t.includes(JSON.stringify(repo)), t);
+
+  const { body } = await rpc('tools/list');
+  const lp = body.result.tools.find(x => x.name === 'list_projects');
+  assert.match(lp.description, /NAME is the `project` argument/);
+});
+
+// Invariant: a resume whose location cannot be recovered is refused naming
+// list_sessions as the recovery; a fresh spawn's refusal stays the plain
+// `project required` and never mentions it.
+test('spawn_instance: the resume "project required" names list_sessions, the fresh-spawn one does not', async () => {
+  const resumed = await callTool('spawn_instance', { resume: '0badc0de-0000-4000-8000-000000000000' });
+  assert.equal(resumed.isError, true, JSON.stringify(resumed));
+  assert.match(errText(resumed), /^project required: .*list_sessions/);
+
+  const fresh = await callTool('spawn_instance', {});
+  assert.equal(fresh.isError, true, JSON.stringify(fresh));
+  assert.equal(JSON.parse(fresh.content[1].text).error, 'project required');
+  assert.doesNotMatch(errText(fresh), /list_sessions/);
+});
+
+// Invariant: `worktree:""` is refused by the schema on every MCP tool that
+// takes a worktree — a census over tools/list, so a future tool's
+// worktree/baseWorktree property is covered by construction.
+test('every worktree param is minLength 1', async () => {
+  const { body } = await rpc('tools/list');
+  let seen = 0;
+  for (const t of body.result.tools) {
+    for (const [k, p] of Object.entries(t.inputSchema.properties ?? {})) {
+      if (k !== 'worktree' && k !== 'baseWorktree') continue;
+      seen++;
+      assert.equal(p.minLength, 1, `${t.name}.${k} must declare minLength: 1`);
+    }
+  }
+  assert.ok(seen > 0, 'premise: some tool takes a worktree');
+});
+
+// Invariant: `worktree:""` never reaches a handler — no filtering to nothing,
+// no "not found", and above all no silent fall-through to the project root.
+// One top-level test per tool (the file's beforeEach resets the store, which a
+// subtest would inherit).
+for (const [tool, args] of [
+  ['list_sessions', { project: 'empt', worktree: '' }],
+  ['project_diff', { project: 'empt', worktree: '' }],
+  ['project_bash', { project: 'empt', worktree: '', command: 'pwd' }],
+]) {
+  test(`worktree:"" is refused by the schema, not run at the project root: ${tool}`, async () => {
+    await makeRealRepo('empt');
+    const r = await callTool(tool, args);
+    assert.equal(r.isError, true, JSON.stringify(r));
+    assert.equal(errText(r), "argument 'worktree' must be at least 1 character(s)");
+  });
+}
+
+// Invariant: an unknown worktree's refusal lists the project's worktrees by
+// exact name, on every surface that resolves one — and the match stays exact:
+// a near-miss is refused, never resolved.
+for (const tool of ['project_diff', 'list_sessions', 'spawn_instance']) {
+  test(`unknown worktree lists exact names: ${tool}`, async () => {
+    await makeRealRepo('names');
+    const a = meta(await callTool('create_worktree', { project: 'names', name: 'alpha-one' }));
+    const b = meta(await callTool('create_worktree', { project: 'names', name: 'beta-two' }));
+    assert.ok(a.worktree && b.worktree, `premise: two worktrees: ${JSON.stringify([a, b])}`);
+    const r = await callTool(tool, { project: 'names', worktree: 'alpha' });
+    assert.equal(r.isError, true, JSON.stringify(r));
+    const msg = errText(r);
+    assert.match(msg, /worktree 'alpha' not found under project 'names' — its worktrees, by exact name: /);
+    assert.ok(msg.includes(a.worktree) && msg.includes(b.worktree), msg);
+  });
+}
+
+// ---------- project_diff within the MCP result budget ----------
+// Every page's summed content[].text stays within MCP_RESULT_CHAR_BUDGET,
+// every cut is flagged, and paging loses nothing.
+const resultChars = r => r.content.reduce((n, c) => n + c.text.length, 0);
+function assertInBudget(r, what) {
+  assert.ok(resultChars(r) <= MCP_RESULT_CHAR_BUDGET, `${what}: ${resultChars(r)} chars, over ${MCP_RESULT_CHAR_BUDGET}`);
+}
+async function worktreeWithCommit(files) {
+  await makeRealRepo('demo');
+  const wt = meta(await callTool('create_worktree', { project: 'demo' }));
+  for (const [rel, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(wt.worktreePath, rel)), { recursive: true });
+    await fs.writeFile(path.join(wt.worktreePath, rel), body);
+  }
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'bulk');
+  return wt;
+}
+const manyFiles = (n, body) => Object.fromEntries(
+  Array.from({ length: n }, (_, i) => [`dir/file-${String(i).padStart(4, '0')}.txt`, body(i)]));
+
+// Invariant: diff pages tile [0, totalLines) exactly — each page starts where
+// the last one's nextOffset pointed — and every page fits the budget.
+test('project_diff: a ~300 KB diff pages within the budget and the pages tile every line', async () => {
+  const wt = await worktreeWithCommit({ 'big.txt': Array.from({ length: 3000 }, (_, i) => `line ${i} ${'z'.repeat(90)}`).join('\n') + '\n' });
+  let offset = 0;
+  let totalLines = null;
+  for (let guard = 0; guard < 50; guard++) {
+    const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, offset });
+    assertInBudget(r, `page at ${offset}`);
+    const m = meta(r);
+    assert.equal(m.offset, offset, 'each page starts at the previous nextOffset');
+    totalLines ??= m.totalLines;
+    if (!m.truncated) { assert.equal(m.nextOffset, null); offset = totalLines; break; }
+    assert.ok(m.nextOffset > offset, 'offset advances');
+    offset = m.nextOffset;
+  }
+  assert.ok(totalLines > 3000, 'premise: the diff is bigger than one page');
+  assert.equal(offset, totalLines, 'the last page ends at totalLines');
+});
+
+// Invariant: a line no page can hold is cut to fit and flagged, never emitted
+// whole past the budget.
+test('project_diff: a single 120 KB line is cut, flagged lineTruncated, within the budget', async () => {
+  const wt = await worktreeWithCommit({ 'wide.txt': 'w'.repeat(120 * 1024) + '\n' });
+  let offset = 0;
+  let sawCut = false;
+  for (let guard = 0; guard < 10; guard++) {
+    const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, offset });
+    assertInBudget(r, `page at ${offset}`);
+    const m = meta(r);
+    if (m.lineTruncated === true) sawCut = true;
+    if (!m.truncated) break;
+    offset = m.nextOffset;
+  }
+  assert.ok(sawCut, 'some page reports lineTruncated:true');
+});
+
+// Invariant: summary mode pages `files` by index — every page fits the budget,
+// the union of pages is every changed file exactly once, and totals always
+// cover the whole change set.
+test('project_diff summary: ~1500 changed files page within the budget and lose none', async () => {
+  const wt = await worktreeWithCommit(manyFiles(1500, i => `${i}\n`));
+  const seen = [];
+  let offset = 0;
+  for (let guard = 0; guard < 50; guard++) {
+    const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true, offset });
+    assert.equal(r.content.length, 1, 'summary is one JSON block');
+    assertInBudget(r, `summary page at ${offset}`);
+    const m = meta(r);
+    assert.equal(m.totals.files, 1500, 'totals cover the whole change set on every page');
+    seen.push(...m.files.map(f => f.path));
+    if (!m.truncated) { assert.equal(m.nextOffset, null); break; }
+    assert.equal(m.nextOffset, offset + m.files.length);
+    offset = m.nextOffset;
+  }
+  assert.ok(offset > 0, 'premise: more than one page');
+  assert.deepEqual([...seen].sort(), Object.keys(manyFiles(1500, () => '')).sort());
+  assert.equal(new Set(seen).size, seen.length, 'no file on two pages');
+});
+
+// Invariant: the untracked side list is capped and flagged with the full count,
+// in both modes, and the result stays within the budget.
+test('project_diff: ~1500 untracked files are capped with untrackedTruncated + untrackedTotal in both modes', async () => {
+  const wt = await worktreeWithCommit({ 'a.txt': 'a\n' });
+  for (const [rel, body] of Object.entries(manyFiles(1500, i => `${i}\n`))) {
+    await fs.mkdir(path.dirname(path.join(wt.worktreePath, rel)), { recursive: true });
+    await fs.writeFile(path.join(wt.worktreePath, rel), body);
+  }
+  const d = await callTool('project_diff', { project: 'demo', worktree: wt.worktree });
+  assertInBudget(d, 'diff mode');
+  const dm = meta(d);
+  assert.equal(dm.untrackedTruncated, true);
+  assert.equal(dm.untrackedTotal, 1500);
+  assert.ok(dm.untracked.length > 0 && dm.untracked.length < 1500);
+
+  const s = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  assertInBudget(s, 'summary mode');
+  const sm = meta(s);
+  assert.equal(sm.uncommitted.untrackedTruncated, true);
+  assert.equal(sm.uncommitted.untrackedTotal, 1500);
+  assert.ok(sm.uncommitted.untracked.length > 0 && sm.uncommitted.untracked.length < 1500);
+});
+
+// Invariant: diff mode's file lists are capped and flagged with the full count,
+// so a page over a wide change set still fits the budget.
+test('project_diff: over ~1500 changed files, omittedFiles is capped with omittedFilesTruncated + omittedFilesTotal', async () => {
+  const wt = await worktreeWithCommit(manyFiles(1500, i => `${i}\n`));
+  const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree });
+  assertInBudget(r, 'first diff page');
+  const m = meta(r);
+  assert.equal(m.truncated, true, 'premise: more than one page');
+  assert.equal(m.omittedFilesTruncated, true);
+  const includedCount = m.includedFilesTotal ?? m.includedFiles.length;
+  assert.equal(m.omittedFilesTotal, 1500 - includedCount, 'the total counts every file this page omits');
+  assert.ok(m.omittedFiles.length < m.omittedFilesTotal);
+});
+
+// Invariant: a summary page sized at the exact budget boundary never exceeds
+// it — the frame it is fitted against is the longer of the two
+// truncated/nextOffset spellings ({false, null} beats {true, <3 digits>}). The
+// change set is calibrated so ALL files as one page would render at exactly
+// MCP_RESULT_CHAR_BUDGET + 1 chars; that page must be cut, not returned whole.
+test('project_diff summary: a change set one char over the budget as one page is cut, never over the budget', async () => {
+  const wt = await worktreeWithCommit(manyFiles(300, () => 'x\n'));
+  const probe = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  const pm = meta(probe);
+  assert.equal(pm.truncated, false, 'premise: the probe is one whole page');
+  const r = JSON.stringify(pm.files[0]).length + 1; // one uniform row, with its comma
+  const needed = MCP_RESULT_CHAR_BUDGET + 1 - resultChars(probe);
+  const k = Math.floor(needed / r) - 1;
+  const rem = needed - k * r; // in [r, 2r): one row of padded name
+  const extra = {};
+  for (let i = 300; i < 300 + k; i++) extra[`dir/file-${String(i).padStart(4, '0')}.txt`] = 'x\n';
+  extra[`dir/file-${String(300 + k).padStart(4, '0')}${'p'.repeat(rem - r)}.txt`] = 'x\n';
+  for (const [rel, body] of Object.entries(extra)) await fs.writeFile(path.join(wt.worktreePath, rel), body);
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'to the boundary');
+
+  const first = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  assertInBudget(first, 'boundary page');
+  const p1 = meta(first);
+  assert.notEqual(p1.code, 'RESULT_OVER_BUDGET');
+  assert.equal(p1.truncated, true, 'the boundary page is cut');
+  const p2 = meta(await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true, offset: p1.nextOffset }));
+  assert.equal(p2.truncated, false);
+  // The fixture really sits on the boundary: every file as one last page
+  // renders at exactly budget + 1.
+  const whole = { ...p1, truncated: false, nextOffset: null, files: [...p1.files, ...p2.files] };
+  assert.equal(whole.files.length, 301 + k);
+  assert.equal(JSON.stringify(whole).length, MCP_RESULT_CHAR_BUDGET + 1);
+});
+
+// Invariant: the list_projects/NAME/not-a-path guidance belongs to ADDRESSING
+// an existing project only — creating one (REST POST /api/projects, the
+// new-project dialog) gets the neutral regex refusal, while the MCP `project`
+// argument gets the guidance.
+test('an invalid name: neutral on REST create, addressing guidance on an MCP project argument', async () => {
+  const created = await api(baseUrl, 'POST', '/api/projects', { name: '/tmp/not a name' });
+  assert.equal(created.status, 400);
+  assert.equal(created.body.error, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
+
+  const addressed = await callTool('list_worktrees', { project: '/tmp/not a name' });
+  assert.equal(addressed.isError, true);
+  assert.match(errText(addressed), /invalid project name "\/tmp\/not a name" — pass the project's NAME as list_projects prints it/);
+  assert.match(errText(addressed), /not its path/);
+});
+
+// Invariant: the addressing guidance answers a REGEX failure only. A dot-only
+// name satisfies the regex, so it keeps validateName's path-traversal refusal —
+// never a guidance line quoting a regex the value matches.
+for (const name of ['.', '..']) {
+  test(`a dot-only project argument keeps the path-traversal refusal: ${name}`, async () => {
+    const r = await callTool('project_status', { project: name });
+    assert.equal(r.isError, true);
+    assert.equal(JSON.parse(r.content[1].text).error,
+      `invalid project name '${name}' (a dot-only name is a path traversal, not a project)`);
+    assert.doesNotMatch(errText(r), /list_projects/);
+  });
+}

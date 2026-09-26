@@ -12,7 +12,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject
 import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
   registeredWorktreeNames, removeAllWorktreesForProject, runGit, GIT_OUTPUT_LIMIT_BYTES,
-  resolveProjectCwd,
+  resolveProjectCwd, requireWorktree,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
 import { localSystem } from '../src/systems/registry.ts';
@@ -1237,5 +1237,23 @@ test('resolveProjectCwd refuses an unknown worktree with a 404', async () => {
   const err = await resolveProjectCwd('demo', 'nope').then(() => null, e => e);
   assert.ok(err, 'an unknown worktree is refused, not resolved to the project tree');
   assert.equal(err.statusCode, 404);
-  assert.equal(err.message, "worktree 'nope' not found under project 'demo'");
+  assert.equal(err.message, "worktree 'nope' not found under project 'demo' — project 'demo' has no worktrees");
+});
+
+// Invariant: an unknown-worktree refusal names what IS valid — every worktree of
+// the project by its exact name, or that it has none — and the match stays
+// exact: a near-miss prefix is refused, not resolved.
+test('requireWorktree: a 404 listing the exact names, or saying there are none', async () => {
+  await makeRealRepo('demo');
+  const none = await requireWorktree('demo', 'nope').then(() => null, e => e);
+  assert.equal(none?.statusCode, 404);
+  assert.equal(none.message, "worktree 'nope' not found under project 'demo' — project 'demo' has no worktrees");
+
+  const a = await createWorktree('demo', { name: 'alpha-one' });
+  const b = await createWorktree('demo', { name: 'beta-two' });
+  assert.equal((await requireWorktree('demo', a.worktreeName)).worktreePath, a.worktreePath);
+  const miss = await requireWorktree('demo', 'alpha', 'base worktree').then(() => null, e => e);
+  assert.equal(miss?.statusCode, 404);
+  assert.equal(miss.message,
+    `base worktree 'alpha' not found under project 'demo' — its worktrees, by exact name: ${a.worktreeName}, ${b.worktreeName}`);
 });

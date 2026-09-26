@@ -15,6 +15,7 @@ import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 import { MAX_TITLE_LEN } from '../sessionTitles.ts';
+import { MCP_BODY_BUDGET } from './content.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
@@ -87,12 +88,12 @@ export function buildTools(): Tool[] {
       name: 'list_projects',
       description:
         'List every project as PLAIN TEXT (this tool returns no JSON). ' +
-        'One block per project: its absolute path, workspace when set, session counts, a ' +
+        'One block per project, headed by its name and absolute path, then its workspace when set, session counts, a ' +
         'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
         + 'and each worktree with branch, base, ahead/behind and its path. ' +
         'A project lives wherever its record says — inside the projects root, nested in a container ' +
-        'directory, elsewhere on disk, or on a registered system — and every row has the same shape: ' +
-        'the `path` it reports is the one to pass to every other tool. ' +
+        'directory, elsewhere on disk, or on a registered system — and every row has the same shape. ' +
+        'The NAME is the `project` argument every other tool takes; the path is informational. ' +
         'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
@@ -141,7 +142,7 @@ export function buildTools(): Tool[] {
         'their default — so anything on a `flags` line is news. ' +
         '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
         'recorded in that mode, or it has no recorded mode and therefore falls back to it. It reads the ' +
-        'session record only: a playbook stage pinning `mode` overrides it on the resume itself. ' +
+        'session record only. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
         '`awaitingWake`, `playbook` and `stage`.',
       inputSchema: {
@@ -156,7 +157,7 @@ export function buildTools(): Tool[] {
               + 'pass it when you know the project.',
           },
           worktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description: 'Narrow to one worktree of `project`, by its exact registered name. Requires `project`.',
           },
           includeArchived: {
@@ -223,7 +224,9 @@ export function buildTools(): Tool[] {
         'nextFrom}. Event kinds: text_delta, tool_use, ' +
         'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
-        'mid-turn use get_recent_messages.)',
+        'mid-turn use get_recent_messages.) A page stops short of `limit` when the next event would push the ' +
+        'result past the MCP result budget — hasMore/nextFrom continue from there; an event too large for any ' +
+        'page arrives as {_seq, kind, omitted:true, chars} (read its prose via get_recent_messages).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -245,9 +248,8 @@ export function buildTools(): Tool[] {
         'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
         'The session is archived on subprocess exit (transcript retained and still resumable, just out of the ' +
         'default list_sessions view); mode still defaults to plan (NOT bypassPermissions) so workers plan before acting. ' +
-        'project is required for a fresh spawn, but optional when resume is given: if worktree is also ' +
-        'omitted, the session\'s recorded project + worktree are recovered automatically so ' +
-        'spawn_instance({resume:sessionId}) alone re-attaches the right cwd/branch and its prior history. ' +
+        'spawn_instance({resume:sessionId}) alone re-attaches a session at its recorded project + worktree, ' +
+        'with its prior history — see `project` for when that holds. ' +
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
         'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where. ' +
@@ -257,8 +259,8 @@ export function buildTools(): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value wins, EXCEPT where a playbook stage pins `mode`: the pinned value is filled in over the inherited one, and a conflicting explicit value is refused.' },
+          project: { type: 'string', description: 'Required for a fresh spawn. On a `resume` with `worktree` also omitted it may be omitted too, but only when the session\'s recorded location resolves — its transcript lies under a registered project or worktree.' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:
@@ -271,7 +273,7 @@ export function buildTools(): Tool[] {
             type: 'string',
             description:
               'A capability tier (fast / balanced / powerful / frontier — the primary vocabulary), a role, ' +
-              'or a specific model id to pin one exact model. Omit it to use the default tier set in Settings → Models.',
+              'or a specific model id for one exact model. Omit it to use the default tier set in Settings → Models.',
           },
           resume: {
             type: 'string',
@@ -283,7 +285,7 @@ export function buildTools(): Tool[] {
               '`model` comes back on the model it last ran.',
           },
           worktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description: 'Name of an existing worktree to spawn into. To create a fresh one instead, use createWorktree:true.',
           },
           createWorktree: {
@@ -291,7 +293,7 @@ export function buildTools(): Tool[] {
             description: 'If true, create a fresh worktree off the project\'s HEAD and spawn into it. Takes precedence over worktree.',
           },
           baseWorktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description: 'Requires createWorktree:true (else refused). Same meaning as create_worktree\'s — see that tool\'s schema.',
           },
           name: {
@@ -305,7 +307,7 @@ export function buildTools(): Tool[] {
           },
           stage: {
             type: 'string',
-            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `pin`). On a resume of a playbook-tracked session it is inherited from that session\'s record instead (the worker enters no stage); supplying a different one is refused PLAYBOOK_MISMATCH.',
+            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and its entry conditions — describe_playbook shows them. On a resume of a playbook-tracked session it is inherited from that session\'s record instead (the worker enters no stage); supplying a different one is refused PLAYBOOK_MISMATCH.',
           },
           provenance: {
             type: 'object',
@@ -415,8 +417,8 @@ export function buildTools(): Tool[] {
             items: {
               type: 'object',
               properties: {
-                option: { type: 'string', description: 'Chosen option label (single-choice question).' },
-                options: { type: 'array', items: { type: 'string' }, description: 'Chosen option labels (multiSelect question).' },
+                option: { type: 'string', description: 'The chosen option\'s label exactly as the questions block renders it, byte-for-byte — suffixes such as " (Recommended)" included (single-choice question).' },
+                options: { type: 'array', items: { type: 'string' }, description: 'The chosen options\' labels, each exactly as rendered, byte-for-byte (multiSelect question).' },
                 text: { type: 'string', description: 'Custom free-text answer (overrides option/options).' },
                 note: { type: 'string', description: 'Optional note appended to an option/options answer.' },
               },
@@ -589,7 +591,7 @@ export function buildTools(): Tool[] {
         properties: {
           project: { type: 'string' },
           baseWorktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description:
               'Base the new worktree on this existing worktree of the project instead of the project\'s HEAD, ' +
               'so it syncs against and merges into that worktree — how a multi-task feature integrates as a unit ' +
@@ -619,7 +621,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string' },
+          worktree: { type: 'string', minLength: 1 },
           force: { type: 'boolean' },
         },
         required: ['project', 'worktree'],
@@ -645,7 +647,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Parent project holding the worktree.' },
-          worktree: { type: 'string', description: 'Worktree name (see list_worktrees).' },
+          worktree: { type: 'string', minLength: 1, description: 'Worktree name (see list_worktrees).' },
         },
         required: ['project', 'worktree'],
       },
@@ -668,7 +670,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Parent project holding the worktree.' },
-          worktree: { type: 'string', description: 'Worktree name (see list_worktrees).' },
+          worktree: { type: 'string', minLength: 1, description: 'Worktree name (see list_worktrees).' },
           allowDirty: { type: 'boolean', description: 'Merge even though the worktree has uncommitted/untracked changes (they will not be included in the merge commit).' },
         },
         required: ['project', 'worktree'],
@@ -949,7 +951,7 @@ export function buildTools(): Tool[] {
         'and `history` is the run\'s ledger events oldest-first (capped; see historyTruncated). ' +
         'Each move is evaluated as the BARE call, with no `provenance` supplied, so an edge into a stage ' +
         'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
-        '— that is not "impossible", it is "pass the argument": the `reason` names exactly what to pass. ' +
+        '— the `reason` names what to pass and which workers of the run satisfy it, or that none does. ' +
         'WITHOUT sessionId: {tracked:false, runs, enforcement} — every run at once. ' +
         'An untracked worker is a normal {tracked:false} answer, not a refusal. ' +
         'Note the no-argument form names no worker, so it is never subject to a stage\'s tool policy: ' +
@@ -992,13 +994,17 @@ export function buildTools(): Tool[] {
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
         'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, hasPlan?, planPath?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
-        'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
+        'textTruncated, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
+        'source:"ring"|"disk", ' +
+        'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
         'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
-        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); ' +
+        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated), and so is the whole ' +
+        'result: over one MCP result\'s budget, text, plan (planTruncated), questions (questionsTruncated) and block ' +
+        'inputs are cut shorter, then the ' +
+        'oldest messages are dropped (omittedForBudget + hint) — a plan/questions message last; ' +
         '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
         '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
         'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
@@ -1037,7 +1043,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           logLimit: { type: 'integer', default: 20, description: 'Number of recent commits to include. Default 20. 0 disables.' },
         },
         required: ['project'],
@@ -1052,30 +1058,36 @@ export function buildTools(): Tool[] {
         'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
         '(per the contextLines schema range/default) sets hunk context. The supported modes keep this usable at any size: (1) summary:true returns a ' +
         'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +
-        'diff — always small, never truncated, single JSON block. (2) paths:[...] scopes the diff (or summary) to ' +
-        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns at most `DIFF_BYTE_CAP` of whole ' +
-        'lines starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
+        'diff, in one JSON block; totals always cover the whole change set, and files pages by offset (a file index in ' +
+        'this mode) with truncated/nextOffset like diff mode. (2) paths:[...] scopes the diff (or summary) to ' +
+        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns as many whole lines as fit ' +
+        'one MCP result (a single over-long line is cut, lineTruncated:true), ' +
+        'starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
         'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
-        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], ahead, includedFiles?, omittedFiles?} ' +
+        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], untrackedTruncated?, untrackedTotal?, ' +
+        'ahead, lineTruncated?, includedFiles?, includedFilesTruncated?, includedFilesTotal?, omittedFiles?, ' +
+        'omittedFilesTruncated?, omittedFilesTotal?} ' +
         'PLUS a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset ' +
         'until truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a ' +
         'truncated page lists includedFiles/omittedFiles. Never silently cuts. Staged + unstaged changes vs HEAD ' +
         '(git diff HEAD) are always appended after the committed diff behind a `@@@ uncommitted working tree changes ' +
         '(git diff HEAD) @@@` separator whenever any exist (absent on a clean tree); untracked files never-git-added ' +
         'are always listed in `untracked`. summary:true likewise always includes `ahead` and an ' +
-        '`uncommitted:{totals, files, untracked}` section. `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
+        '`uncommitted:{totals, files, untracked}` section. untracked, uncommitted.files and includedFiles/omittedFiles ' +
+        'are capped, flagged <list>Truncated + <list>Total; project_bash\'s git ls-files --others --exclude-standard / ' +
+        'git diff --name-status give the full lists. `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
         'hasUncommittedChanges:true is the signal that nothing will land if you merge_worktree right now. ' +
         'Complements project_status.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string' },
+          worktree: { type: 'string', minLength: 1 },
           baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
           contextLines: { type: 'integer', minimum: 0, maximum: 50, default: 3, description: 'Lines of context around each hunk (per the schema range/default).' },
-          summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
+          summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff.' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
-          offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
+          offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0); in summary mode, a 0-based index into files. Use nextOffset from the previous call to paginate.' },
         },
         required: ['project', 'worktree'],
       },
@@ -1100,7 +1112,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project:  { type: 'string' },
-          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           command:  { type: 'string', description: 'The bash command to run.' },
           description: BASH_DESCRIPTION_PROP,
           timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `clampBashTimeoutMs` are clamped.' },
@@ -1145,20 +1157,24 @@ export function buildTools(): Tool[] {
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
         'guarded. OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
-        'lineCountExact, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+        'lineCountExact, lineTruncated?, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
         'file body. `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
         '`offset` (1-based start line, default 1) and `limit` (max lines, default: to EOF) for range reads. Set ' +
         '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
-        'full file). Metadata includes `startLine`/`endLine` when a range is requested. Binary files come back as a ' +
+        'full file). Metadata includes `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
         'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
-        '(default per the schema); the `truncated` flag tells you when that happened.',
+        '(default and maximum per the schema — the most one result carries); `truncated` says when. A cut line-range ' +
+        'read ends on a whole line and endLine names it, so offset:endLine+1 continues — except a single line longer ' +
+        'than maxBytes, which (with or without line params) is cut mid-line with an in-band "… [line cut: N bytes]" ' +
+        'marker (when it fits within maxBytes), lineTruncated:true and endLine; ' +
+        'no offset reaches the rest of that line, so read it with project_bash (e.g. cut/head -c).',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
-          maxBytes: { type: 'integer', minimum: 1, default: 262144, description: 'Cap on bytes returned (default per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
+          maxBytes: { type: 'integer', minimum: 1, maximum: MCP_BODY_BUDGET, default: MCP_BODY_BUDGET, description: 'Cap on bytes returned (default and maximum per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
           lineNumbers: { type: 'boolean', default: false, description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
           offset: { type: 'integer', minimum: 1, default: 1, description: '1-based line number to start at (default 1). Ignored for binary files.' },
           limit: { type: 'integer', minimum: 1, description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },

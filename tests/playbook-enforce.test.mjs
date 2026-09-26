@@ -1247,7 +1247,7 @@ test('enforce: a resume of a worker bound to a PINNED stage neither re-spawns no
 test('enforce: worktree stays undefined through the gate, so the project/worktree recovery fires', async () => {
   // INVARIANT: a resume that names its recorded binding still leaves `worktree`
   // unset, which is the condition findSessionLocation's recovery is gated on —
-  // the documented "project is optional when resume is given" contract. An
+  // the documented rule that `project` may be omitted on a resume. An
   // injected createWorktree:true skips it and throws 400 `project required`.
   const t = await setup({ enforcement: 'enforce' });
   try {

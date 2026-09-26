@@ -122,7 +122,8 @@ describe('commit history for a worktree on a system', () => {
     const unknown = await api(baseUrl, 'GET',
       `/api/projects/app/worktrees/app_worktree_nope/commits/${sha}/diff`);
     assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
-    assert.equal(unknown.body.error, "worktree 'app_worktree_nope' not found under project 'app'");
+    assert.ok(unknown.body.error.startsWith("worktree 'app_worktree_nope' not found under project 'app' — its worktrees, by exact name: "), unknown.body.error);
+    assert.ok(unknown.body.error.includes(wt.worktreeName), unknown.body.error);
   });
 
   // PINS: the "Working tree" row of that list resolves on the system too.
@@ -158,6 +159,7 @@ describe('commit history for a worktree on a system', () => {
   test('an unknown worktree under a real project is a 404', async () => {
     const r = await api(baseUrl, 'GET', '/api/projects/app/worktrees/app_worktree_nope/commits');
     assert.equal(r.status, 404, `expected 404, got ${r.status}: ${JSON.stringify(r.body)}`);
-    assert.equal(r.body.error, "worktree 'app_worktree_nope' not found under project 'app'");
+    assert.ok(r.body.error.startsWith("worktree 'app_worktree_nope' not found under project 'app' — its worktrees, by exact name: "), r.body.error);
+    assert.ok(r.body.error.includes(wt.worktreeName), r.body.error);
   });
 });

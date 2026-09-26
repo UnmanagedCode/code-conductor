@@ -15,7 +15,7 @@ import {
 import { suggestAdoptableDirs } from './projectSuggestions.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
-  buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
+  buildRebasePrompt, getWorktree, requireWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
@@ -812,8 +812,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     try {
       const sid = String(req.params.sid || '');
       assertValidSid(sid);
-      const wt = await getWorktree(req.params.name, req.params.wt);
-      if (!wt) throw httpError(404, 'worktree not found');
+      const wt = await requireWorktree(req.params.name, req.params.wt);
       const force = req.query.force === '1' || req.query.force === 'true';
       await deleteSessionAtCwd({ place: await projectRootPlace(req.params.name, wt.worktreePath), sessionId: sid, force });
       res.json({ ok: true });
@@ -849,8 +848,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     try {
       const sid = String(req.params.sid || '');
       assertValidSid(sid);
-      const wt = await getWorktree(req.params.name, req.params.wt);
-      if (!wt) throw httpError(404, 'worktree not found');
+      const wt = await requireWorktree(req.params.name, req.params.wt);
       const force = req.query.force === '1' || req.query.force === 'true';
       await archiveSessionAtCwd({ place: await projectRootPlace(req.params.name, wt.worktreePath), sessionId: sid, force });
       res.json({ ok: true });
@@ -888,8 +886,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // own ~/.claude/projects/<encoded>/ history, distinct from the parent).
   r.get('/projects/:name/worktrees/:wt/sessions', async (req, res, next) => {
     try {
-      const wt = await getWorktree(req.params.name, req.params.wt);
-      if (!wt) throw httpError(404, 'worktree not found');
+      const wt = await requireWorktree(req.params.name, req.params.wt);
       const wtPlace = await projectRootPlace(req.params.name, wt.worktreePath);
       const tempSids = instances ? instances.tempSessionIdsForPlace(wtPlace) : null;
       const wtSessions = await listSessionsForCwd(wtPlace, tempSids, { includeArchived: !!req.query.includeArchived });

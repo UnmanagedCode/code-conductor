@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
 import { orchStoreRoot, localPlace} from '../src/projects.ts';
+import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -436,5 +437,190 @@ test('a retired session is never described as active or waitable', async () => {
     assert.doesNotMatch(refused.reason, /Wait for its next turn_end/,
       'a retired source will never produce another turn_end — waiting stalls the conductor forever');
     assert.match(refused.reason, /retired/);
+  } finally { await ctx.close(); }
+});
+
+// ── the MCP result budget ───────────────────────────────────────────────────
+// Every result's summed content[].text stays within MCP_RESULT_CHAR_BUDGET,
+// every cut is flagged, and paging loses nothing.
+const resultChars = r => r.content.reduce((n, c) => n + c.text.length, 0);
+function assertInBudget(r, what) {
+  assert.ok(resultChars(r) <= MCP_RESULT_CHAR_BUDGET, `${what}: ${resultChars(r)} chars, over ${MCP_RESULT_CHAR_BUDGET}`);
+}
+const userLine = (uuid, text) => ({ type: 'user', uuid, message: { role: 'user', content: text } });
+const proseLine = (uuid, id, text) => ({ type: 'assistant', uuid, message: { id, role: 'assistant', content: [{ type: 'text', text }] } });
+
+// Invariant: forward paging from 0 serves every _seq exactly once across pages,
+// each page within the budget; an event too large for any page arrives as an
+// omitted stub carrying its size, so the cursor still passes it.
+test('get_transcript pages under the result budget and loses nothing', async () => {
+  const lines = [userLine('u0', 'go')];
+  for (let i = 0; i < 30; i++) lines.push(proseLine(`a${i}`, `m_${i}`, `msg ${i} ${'p'.repeat(5000)}`));
+  lines.push(proseLine('aBig', 'm_big', `BIG ${'q'.repeat(80_000)}`));
+  lines.push(proseLine('aTail', 'm_tail', 'tail'));
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'budgettx', lines);
+    const seqs = [];
+    let omitted = null;
+    let fromSeq = 0;
+    let lastSeq = null;
+    for (let guard = 0; guard < 50; guard++) {
+      const r = await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq });
+      assertInBudget(r, `page from ${fromSeq}`);
+      const page = unwrap(r);
+      lastSeq = page.lastSeq;
+      for (const ev of page.events) {
+        if (typeof ev._seq === 'number') seqs.push(ev._seq);
+        if (ev.omitted === true) omitted = ev;
+      }
+      if (!page.hasMore) break;
+      assert.ok(page.nextFrom > fromSeq, 'the cursor advances');
+      fromSeq = page.nextFrom;
+    }
+    assert.ok(fromSeq > 0, 'premise: more than one page');
+    assert.equal(new Set(seqs).size, seqs.length, 'no event on two pages');
+    assert.deepEqual(seqs, Array.from({ length: lastSeq + 1 }, (_, i) => i), 'every _seq, contiguous, oldest-first');
+    assert.ok(omitted, 'the 80 KB event arrives as an omitted stub');
+    assert.equal(typeof omitted.kind, 'string');
+    assert.ok(omitted.chars > 80_000, `the stub carries the event's size: ${omitted.chars}`);
+
+    const newest = await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid });
+    assertInBudget(newest, 'the newest page');
+  } finally { await ctx.close(); }
+});
+
+// Invariant: prose over the budget is cut shorter, each cut flagged, with the
+// full size kept in textChars.
+test('get_recent_messages: count:3 of 30 KB prose fits the budget, each textTruncated with the full textChars', async () => {
+  const big = i => `m${i} ${'r'.repeat(30_000)}`;
+  const lines = [userLine('u0', 'go'), ...[0, 1, 2].map(i => proseLine(`a${i}`, `m_${i}`, big(i)))];
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'budgetmsgs', lines);
+    const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 3 });
+    assertInBudget(r, 'count:3');
+    const { meta } = unwrapMsgs(r);
+    assert.equal(meta.messages.length, 3);
+    for (const [i, m] of meta.messages.entries()) {
+      assert.equal(m.textTruncated, true, `message ${i} flagged`);
+      assert.equal(m.textChars, big(i).length, `message ${i} keeps its full size`);
+    }
+    assert.equal(meta.omittedForBudget, undefined, 'shortening was enough — nothing dropped');
+  } finally { await ctx.close(); }
+});
+
+// Invariant: when shortening is not enough, the oldest messages are dropped
+// and the drop is reported (omittedForBudget + a hint naming it).
+test('get_recent_messages: count:50 with includeToolCalls over tool-heavy messages drops the oldest, flagged', async () => {
+  const lines = [userLine('u0', 'go')];
+  for (let i = 0; i < 50; i++) {
+    lines.push({ type: 'assistant', uuid: `a${i}`, message: { id: `m_${i}`, role: 'assistant', content:
+      Array.from({ length: 10 }, (_, k) => ({ type: 'tool_use', id: `tu_${i}_${k}`, name: 'Bash', input: { command: `echo ${'c'.repeat(2000)}` } })) } });
+  }
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'budgettools', lines);
+    const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 50, includeToolCalls: true });
+    assertInBudget(r, 'count:50');
+    const { meta } = unwrapMsgs(r);
+    assert.ok(meta.omittedForBudget > 0, `omittedForBudget: ${meta.omittedForBudget}`);
+    assert.equal(meta.messages.length + meta.omittedForBudget, 50, 'kept + omitted is the whole selection');
+    assert.match(meta.hint, new RegExp(`^${meta.omittedForBudget} older message\\(s\\) omitted to fit one MCP result`));
+    assert.equal(meta.messages.at(-1).msgId, 'm_49', 'the newest are the ones kept');
+  } finally { await ctx.close(); }
+});
+
+// Invariant: a plan over the budget is cut and flagged planTruncated, and the
+// plan message itself is kept.
+test('get_recent_messages: a default call on a 60 KB plan plus trailing prose keeps the plan, planTruncated', async () => {
+  const lines = [
+    userLine('u0', 'plan it'),
+    { type: 'assistant', uuid: 'aP', message: { id: 'm_plan', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tu_p', name: 'ExitPlanMode', input: { plan: `PLAN ${'s'.repeat(60_000)}` } },
+    ] } },
+    proseLine('aT', 'm_trail', 'trailing prose'),
+  ];
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'budgetplan', lines);
+    const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid });
+    assertInBudget(r, 'default call');
+    const { meta, bodies } = unwrapMsgs(r);
+    const plan = meta.messages.find(m => m.msgId === 'm_plan');
+    assert.ok(plan, `the plan message is kept: ${JSON.stringify(meta.messages.map(m => m.msgId))}`);
+    assert.equal(plan.planTruncated, true);
+    assert.match(bodies[plan.index], /--- plan ---\nPLAN s+/);
+  } finally { await ctx.close(); }
+});
+
+// Invariant: the rendered questions are a string the budget fit can shrink —
+// an oversized option description is cut, flagged questionsTruncated, the
+// questions message kept, and the result fits (no backstop refusal).
+test('get_recent_messages: a questions body over the budget is cut, flagged questionsTruncated, and kept', async () => {
+  const lines = [
+    userLine('u0', 'ask me'),
+    { type: 'assistant', uuid: 'aQ', message: { id: 'm_q', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tu_q', name: 'AskUserQuestion', input: { questions: [
+        { question: 'Pick one', header: 'Pick', multiSelect: false,
+          options: [{ label: 'Alpha', description: 'd'.repeat(200_000) }, { label: 'Beta' }] },
+      ] } },
+    ] } },
+  ];
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'budgetquestions', lines);
+    const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 1 });
+    assertInBudget(r, 'count:1');
+    const { meta, bodies } = unwrapMsgs(r);
+    assert.notEqual(meta.code, 'RESULT_OVER_BUDGET');
+    assert.equal(meta.messages.length, 1);
+    assert.equal(meta.messages[0].msgId, 'm_q', 'the questions message is kept');
+    assert.equal(meta.messages[0].questionCount, 1);
+    assert.equal(meta.messages[0].questionsTruncated, true);
+    assert.match(bodies[0], /^--- questions ---\n1\. Pick one/);
+  } finally { await ctx.close(); }
+});
+
+// Invariant: a get_transcript page sized at the exact budget boundary never
+// exceeds it — the frame it is fitted against spells every placeholder at its
+// longest (a last page says hasMore:false, one char longer than true). The
+// fixture is calibrated so the whole transcript as ONE page would be exactly
+// MCP_RESULT_CHAR_BUDGET + 1 chars; that page must be cut, not returned whole.
+test('get_transcript: a transcript one char over the budget as one page is cut, never over the budget', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const name = 'budgetedge';
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', { project: name, mode: 'bypassPermissions' }));
+    const sid = spawn.sessionId;
+    await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
+    const backing = instForSession(ctx.instances, sid).backingSessionId;
+    const place = localPlace(path.join(ctx.projectsRoot, name));
+    const linesFor = n => [userLine('u0', 'go'), proseLine('a0', 'm_0', 'small'), proseLine('a1', 'm_1', 'a'.repeat(n))];
+    await seedSessionJsonl(place, backing, linesFor(1000));
+    unwrap(await callTool(ctx.baseUrl, 'kill_instance', { sessionId: sid }));
+    await waitFor(() => ctx.instances.idsForSession(sid).length === 0);
+
+    // Calibrate: one whole page at n=1000, then grow the last text so the
+    // whole-page rendering is exactly budget + 1 (plain 'a's add 1:1).
+    const probe = await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0 });
+    assert.equal(unwrap(probe).hasMore, false, 'premise: the probe is one whole page');
+    const n = 1000 + (MCP_RESULT_CHAR_BUDGET + 1 - resultChars(probe));
+    await seedSessionJsonl(place, backing, linesFor(n));
+
+    const first = await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0 });
+    assertInBudget(first, 'boundary page');
+    const p1 = unwrap(first);
+    assert.notEqual(p1.code, 'RESULT_OVER_BUDGET');
+    assert.equal(p1.hasMore, true, 'the boundary page is cut');
+    const p2 = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: p1.nextFrom }));
+    assert.equal(p2.hasMore, false);
+    // The fixture really sits on the boundary: the whole transcript as one
+    // last page renders at exactly budget + 1.
+    const whole = { ...p1, events: [...p1.events, ...p2.events], hasMore: false, nextFrom: p2.nextFrom };
+    assert.equal(JSON.stringify(whole).length, MCP_RESULT_CHAR_BUDGET + 1);
+    assert.ok(whole.events.some(e => e.omitted !== true && JSON.stringify(e).includes('a'.repeat(n))),
+      'the big event arrives whole, not stubbed');
   } finally { await ctx.close(); }
 });

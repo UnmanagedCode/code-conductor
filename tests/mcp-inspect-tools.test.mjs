@@ -12,6 +12,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.ts';
+import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -224,9 +225,14 @@ describe('project_bash', () => {
 
   test('project_bash caps retained output but lets the command finish (drain, not kill)', async () => {
     await makeRealRepo('demo');
-    const r = unwrapBash(await callTool('project_bash', {
+    const raw = await callTool('project_bash', {
       project: 'demo', command: 'yes x | head -c 500000; echo DONE_MARKER_$?',
-    }));
+    });
+    // Invariant: the capped result fits one MCP result (the harness rejects a
+    // larger one), marker and metadata included.
+    const chars = raw.content.reduce((n, c) => n + c.text.length, 0);
+    assert.ok(chars <= MCP_RESULT_CHAR_BUDGET, `${chars} chars, over the ${MCP_RESULT_CHAR_BUDGET} budget`);
+    const r = unwrapBash(raw);
     assert.equal(r.truncated, true);
     assert.equal(r.exitCode, 0, 'command should run to completion, not be killed, on output cap');
     assert.ok(r.output.length < 500000, 'retained output should be capped well below the full 500000 bytes');

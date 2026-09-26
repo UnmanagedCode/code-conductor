@@ -176,10 +176,13 @@ test('version guards: unknown worktree 404, bad shape 400, no registry entry 409
   const env = await makePluginRoot();
   const host = createPluginHost();
   try {
-    await setup(env);
+    const { meta } = await setup(env);
     await assert.rejects(host.setActiveVersion('wtplug', { type: 'main' }), (e) => e.statusCode === 409);
     await host.enable('wtplug');
-    await assert.rejects(host.setActiveVersion('wtplug', { type: 'worktree', name: 'nope' }), (e) => e.statusCode === 404);
+    // Invariant: an unknown worktree is refused naming the project's worktrees
+    // by exact name — the match stays exact.
+    await assert.rejects(host.setActiveVersion('wtplug', { type: 'worktree', name: 'nope' }), (e) => e.statusCode === 404
+      && e.message === `worktree 'nope' not found under project 'wtplug' — its worktrees, by exact name: ${meta.worktreeName}`);
     await assert.rejects(host.setActiveVersion('wtplug', { type: 'branch' }), (e) => e.statusCode === 400);
     await assert.rejects(host.setActiveVersion('wtplug', { type: 'worktree' }), (e) => e.statusCode === 400);
   } finally {

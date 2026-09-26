@@ -408,17 +408,19 @@ test('project_diff makes progress even when a single line exceeds the cap', asyn
 
   let offset = 0;
   let guard = 0;
-  let sawHugeLine = false;
+  let sawCutLine = false;
   while (guard++ < 20) {
     const page = unwrapDiff(await callTool('project_diff', {
       project: 'demo', worktree: wt.worktree, offset,
     }));
-    if (/\+x{200000,}/.test(page.diff)) sawHugeLine = true;
+    // The line no page can hold arrives cut, flagged and marked in-band with
+    // its full size ('+' plus the content), never whole and never silently.
+    if (page.lineTruncated === true && page.diff.includes(`… [line cut: ${300 * 1024 + 1} bytes]`)) sawCutLine = true;
     if (!page.truncated) break;
     assert.ok(page.nextOffset > offset, 'offset must advance even past an oversized line');
     offset = page.nextOffset;
   }
-  assert.ok(sawHugeLine, 'the oversized line is still emitted on its own page');
+  assert.ok(sawCutLine, 'the oversized line is emitted cut, with lineTruncated and the in-band marker');
 });
 
 test('project_diff summary returns a per-file stat (add + modify)', async () => {

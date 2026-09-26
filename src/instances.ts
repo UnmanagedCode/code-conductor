@@ -57,7 +57,7 @@ import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
   trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
-import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
+import { createWorktree, requireWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
@@ -4707,7 +4707,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     }
     if (!project) {
-      throw httpError(400, 'project required');
+      throw httpError(400, resume
+        ? `project required: session ${publicId ?? resume} has no recorded location under a registered project or worktree — list_sessions lists every resumable session under its project and worktree; pass those as project (and worktree)`
+        : 'project required');
     }
     const proj = await getProject(project);
     // A worker on a NON-LOCAL system still runs the CLI here — the CLI is
@@ -4849,10 +4851,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       worktreeMeta = await createWorktree(project, { baseWorktree, name });
       cwd = worktreeMeta.worktreePath;
     } else if (typeof worktree === 'string' && worktree.trim()) {
-      worktreeMeta = await getWorktree(project, worktree.trim());
-      if (!worktreeMeta) {
-        throw httpError(404, `worktree '${worktree}' not found under project '${project}'`);
-      }
+      worktreeMeta = await requireWorktree(project, worktree.trim());
       // An EXPLICIT worktree name skips the `worktree === undefined` recovery
       // above, so it is otherwise taken on faith — and a resume landing at the
       // wrong cwd replays nothing, or worse, the wrong thing. Check it against
@@ -4861,7 +4860,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // Naming the session's OWN worktree is legitimate and stays legal — that is
       // what the restart manifest and the UI both pass — so only a MISMATCH is
       // refused. Compared on the resolved record's `worktreeName` rather than the
-      // raw argument, so the comparison is against what `getWorktree` actually
+      // raw argument, so the comparison is against what `requireWorktree` actually
       // matched. A session findSessionLocation cannot place is left to the
       // pre-flight below rather than refused here.
       if (resume) {
