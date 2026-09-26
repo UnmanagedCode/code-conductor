@@ -122,8 +122,8 @@ The consequences of being a substitution backend:
 - **Off-spec stream framing is coded for, not assumed away.** A gateway may frame a
   content block so its close never reaches the parser — `content_block_start` with no
   `content_block.type`, or a `type` of `"output_text"`: the block opens on its first
-  `text_delta` and its `content_block_stop` emits nothing. That is what made the soft
-  interrupt appear to be a no-op against these backends (card 2026-0230), and why
+  `text_delta` and its `content_block_stop` emits nothing. Unhandled, that makes the soft
+  interrupt a no-op against these backends, which is why
   `QuiescenceScan` retires a block on the next `${msgId}:${blockIdx}` key as well as on
   its own close — see [protocol.md](protocol.md) → Two-tier interrupt. Third coded-for
   off-spec trait alongside the all-zero `message_start.usage` block (above) and the
