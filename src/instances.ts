@@ -3758,8 +3758,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     this._mutating = true;
     try {
-      // prompt() refuses while `_mutating` is set, so no turn can start
-      // between this check and the kill.
+      // prompt() refuses while `_mutating` is set, so no prompt lands between
+      // this check and the kill. setEffort does not check it: an `/effort`
+      // sent in that window is persisted after the target and so falls in the
+      // truncated tail — and truncate re-checks the target itself.
       const fileIdx = await this._fileOrdinalFor(userMessageIndex);
       await verifyUserPrompt({ place: this.transcriptPlace, sessionId: backingId, userMessageIndex: fileIdx, expectedText });
       // Marks the kill→relaunch window for isSessionLive — see the

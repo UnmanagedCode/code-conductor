@@ -102,6 +102,7 @@ async function assertForks(inst, id, file, { cmd, later }) {
 
   const fkCmd = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: cmd.userIndex, text: cmd.text });
   assert.equal(fkCmd.status, 201, JSON.stringify(fkCmd.body));
+  assert.equal(fkCmd.body.droppedText, cmd.text, 'the composer is prefilled with the command form');
   const cmdPrefix = await readFork(fkCmd.body.newSessionId);
   assert.deepEqual(cmdPrefix.map(r => r.uuid), ['u0', 'a0', 'u1', 'a1'],
     'forking at the command bubble drops its caveat with it');

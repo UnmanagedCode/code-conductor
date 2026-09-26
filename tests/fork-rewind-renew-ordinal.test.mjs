@@ -16,7 +16,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import { sessionFilePath } from '../src/projects.ts';
 import { isPureUserPromptLine } from '../src/transcript.ts';
 import {
-  RENEW_HEAD, segmentTurns, bootLiveAcrossSeams, rotate, emitLive, withRingCap,
+  RENEW_HEAD, segmentTurns, bootLiveAcrossSeams, rotate, replaySlice, emitLive, withRingCap,
 } from './segmentChain.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -276,4 +276,109 @@ test('missing text is a 400', async (t) => {
       assert.equal(await fs.readFile(file, 'utf8'), fileText);
     });
   }
+});
+
+// ── restamp refusals and the translation's guards ───────────────────────────
+
+const archiveEchoes = async (inst, id) => {
+  const tb = inst.ring.trimmedBefore;
+  return (await pageAll(id)).filter(e => e.kind === 'user_echo' && !e.parentToolUseId && e._seq < tb);
+};
+
+test('an unmeasurable offset serves archive echoes with no userIndex', async () => {
+  // One giant s1 turn: the trim falls back to a quiescent point inside it, so
+  // the ring head's own content correlates (the correlated cut needs no offset)
+  // while no outer echo precedes any correlating ring event.
+  const ids = chainIds();
+  const big = { type: 'assistant', uuid: 's1-aBig', message: { id: 's1-mBig', role: 'assistant',
+    content: Array.from({ length: 12 }, (_, i) => ({ type: 'text', text: `s1 big block ${i}` })) } };
+  const { inst, id } = await bootLiveAcrossSeams({
+    ctx, project: `p${boots}`, publicId: ids.s0.slice(0, 8), ringCap: RING_CAP,
+    segments: [
+      { id: ids.s0, reason: 'initial', records: segmentTurns('s0', 2) },
+      { id: ids.s1, reason: 'renew', records: [
+        { type: 'user', uuid: 's1-uBig', message: { role: 'user', content: 's1 big prompt' } }, big,
+      ] },
+    ],
+  });
+  const ring = inst.ringSnapshot();
+  assert.equal(ring[0].kind, 'text_delta', 'fixture: the ring head is mid-turn');
+  assert.equal(ring[0].msgId, 's1-mBig', 'fixture: inside the persisted big reply');
+  assert.ok(!ring.some(e => e.kind === 'user_echo' && !e.parentToolUseId), 'fixture: no outer echo in the ring');
+  assert.ok(inst.ring.trimmedBefore >= inst.ring.seams.at(-1).startSeq, 'fixture: the ring head is inside s1');
+  const echoes = await archiveEchoes(inst, id);
+  assert.deepEqual(echoes.map(e => e.text), [RENEW_HEAD[1].message.content, 's1 big prompt'], 'fixture: both s1 echoes are archive-served');
+  for (const e of echoes) assert.equal('userIndex' in e, false, `"${e.text}" carries no userIndex`);
+});
+
+test('an archive echo whose live ordinal would be negative carries no userIndex', async () => {
+  // No s0 echo against the renew head's one prompt line: file = live + 1, so the
+  // `/clear` line's live ordinal would be −1.
+  const ids = chainIds();
+  const { inst, id, crossed } = await bootLiveAcrossSeams({
+    ctx, project: `p${boots}`, publicId: ids.s0.slice(0, 8), ringCap: RING_CAP,
+    segments: [
+      { id: ids.s0, reason: 'initial', records: [{ type: 'assistant', uuid: 's0-a', message: { id: 's0-m', role: 'assistant', content: [{ type: 'text', text: 's0 reply' }] } }] },
+      { id: ids.s1, reason: 'renew', records: segmentTurns('s1', M) },
+    ],
+  });
+  const live = liveStamps(crossed);
+  assert.equal(live.get(0), 0, 'fixture: s0 contributed no echo');
+  const echoes = await archiveEchoes(inst, id);
+  const clear = echoes.find(e => e.text === RENEW_HEAD[1].message.content);
+  assert.ok(clear, 'fixture: the /clear echo is archive-served');
+  assert.equal('userIndex' in clear, false, 'the /clear echo carries no userIndex');
+  const prompts = echoes.filter(e => S1_PROMPT.test(e.text));
+  assert.ok(prompts.length > 0, 'fixture: some s1 prompt is archive-served');
+  for (const e of prompts) assert.equal(e.userIndex, live.get(Number(S1_PROMPT.exec(e.text)[1])), `"${e.text}" carries its live stamp`);
+});
+
+test('a single-segment instance forks and rewinds with a ring the file cannot calibrate', async () => {
+  // A live turn the file has not recorded, big enough that the trim evicted its
+  // echo: nothing in the ring correlates into the file.
+  const ids = chainIds();
+  const { inst, id, place } = await bootLiveAcrossSeams({
+    ctx, project: `p${boots}`, publicId: ids.s0.slice(0, 8), ringCap: RING_CAP,
+    segments: [{ id: ids.s0, reason: 'initial', records: segmentTurns('s0', 3) }],
+  });
+  const file = sessionFilePath(place, ids.s0);
+  emitLive(inst, { echo: 'unrecorded prompt', msgId: 'unrecorded', blocks: 12 });
+  assert.deepEqual(inst.ring.seams.map(s => s.startSeq), [0], 'fixture: one segment');
+  assert.ok(!inst.ringSnapshot().some(e => e.kind === 'user_echo'), 'fixture: the trim evicted every echo');
+  const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 's0 prompt 1' });
+  assert.equal(fk.status, 201, JSON.stringify(fk.body));
+  assert.equal(fk.body.droppedText, 's0 prompt 1');
+  const rw = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1, text: 's0 prompt 1' });
+  assert.equal(rw.status, 200, JSON.stringify(rw.body));
+  assert.equal(rw.body.droppedText, 's0 prompt 1');
+  assert.deepEqual(parseLines(await fs.readFile(file, 'utf8')).filter(r => r.uuid).map(r => r.uuid), ['s0-u0', 's0-a0']);
+});
+
+test('the offset is calibrated on the current segment\'s ring content only', async () => {
+  // Untrimmed ring: the s0 echoes are still in it (trimmedBefore < the seam).
+  // The first s1 ring content is a reply whose echo the ring never carried,
+  // and the file holds a prompt the ring never echoed before the first s1
+  // echo — so an s0 echo taken as the calibration echo gives a different
+  // offset from the current segment's own first echo.
+  const ids = chainIds();
+  const s1 = [
+    ...segmentTurns('s1', 1),
+    { type: 'user', uuid: 's1-uX', message: { role: 'user', content: 's1 unechoed prompt' } },
+    { type: 'assistant', uuid: 's1-aX', message: { id: 's1-mX', role: 'assistant', content: [{ type: 'text', text: 's1 unechoed reply' }] } },
+    { type: 'user', uuid: 's1-u1', message: { role: 'user', content: 's1 prompt 1' } },
+    { type: 'assistant', uuid: 's1-a1', message: { id: 's1-m1', role: 'assistant', content: [{ type: 'text', text: 's1 reply 1' }] } },
+  ];
+  const { inst, id, place } = await bootLiveAcrossSeams({
+    ctx, project: `p${boots}`, publicId: ids.s0.slice(0, 8), ringCap: 1000,
+    segments: [{ id: ids.s0, reason: 'initial', records: segmentTurns('s0', 2) }],
+  });
+  await fs.writeFile(sessionFilePath(place, ids.s1), [...RENEW_HEAD, ...s1].map(r => JSON.stringify(r)).join('\n') + '\n');
+  await rotate(inst, ids.s1);
+  await replaySlice(inst, place, ids.s1, { from: 1, to: 2 }); // s1 reply 0, without its echo
+  await replaySlice(inst, place, ids.s1, { from: 4 });        // s1 prompt 1 + reply
+  assert.ok(inst.ring.trimmedBefore < inst.ring.seams.at(-1).startSeq, 'fixture: the ring still holds s0');
+  const echo = inst.ringSnapshot().find(e => e.kind === 'user_echo' && e.text === 's1 prompt 1');
+  const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: echo.userIndex, text: echo.text });
+  assert.equal(fk.status, 201, JSON.stringify(fk.body));
+  assert.equal(fk.body.droppedText, 's1 prompt 1');
 });

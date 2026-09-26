@@ -488,6 +488,8 @@ test('the prompt-text guard: what matches and what refuses', async (t) => {
     ['attachment-only', { type: 'user', uuid: 'x', message: { content: [{ type: 'text', text: ATT_MARKER }] } }, '', true],
     ['queued_command', { type: 'attachment', uuid: 'x', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'queued' }] } }, 'queued', true],
     ['a genuine mismatch', { type: 'user', uuid: 'x', message: { content: 'hello' } }, 'goodbye', false],
+    ['prose quoting a command tag is not a command', { type: 'user', uuid: 'x', message: { content: 'please run <command-name>/effort</command-name> for me' } }, '/effort', false],
+    ['prose quoting a command tag matches its own text', { type: 'user', uuid: 'x', message: { content: 'please run <command-name>/effort</command-name> for me' } }, 'please run <command-name>/effort</command-name> for me', true],
   ];
   for (const [title, target, expectedText, accepted] of rows) {
     await t.test(title, async () => {
@@ -530,4 +532,25 @@ test('a split before a command line drops its caveat too', async () => {
   const after = readJsonl(await fs.readFile(file, 'utf8'));
   assert.deepEqual(after.map(l => l.uuid ?? l.type), ['u-t0', 'a-t0', 'last-prompt', 'permission-mode']);
   assert.equal(after[2].leafUuid, 'a-t0');
+});
+
+test('composer prefill: a command bubble prefills its command form, any other prompt its text byte-for-byte', async (t) => {
+  // [title, target line, its bubble's text, expected droppedText]
+  const rows = [
+    ['/effort high', commandLine('x', 'effort', 'high'), '/effort high', '/effort high'],
+    ['/model opus', commandLine('x', 'model', 'opus'), '/model opus', '/model opus'],
+    ['/clear', { type: 'user', uuid: 'x', message: { content: '<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>' } }, '/clear', '/clear'],
+    ['a prompt with surrounding whitespace', { type: 'user', uuid: 'x', message: { content: '  keep\n  my spacing  ' } }, '  keep\n  my spacing  ', '  keep\n  my spacing  '],
+    ['prose quoting a command tag', { type: 'user', uuid: 'x', message: { content: 'please run <command-name>/effort</command-name> for me' } },
+      'please run <command-name>/effort</command-name> for me', 'please run <command-name>/effort</command-name> for me'],
+  ];
+  for (const [title, target, expectedText, droppedText] of rows) {
+    for (const [op, run] of [['truncate', truncateSessionAtUserMessage], ['fork', forkSessionAtUserMessage]]) {
+      await t.test(`${op}: ${title}`, async () => {
+        const { cwd, sid } = await makeFixture([...turn('t0', 'first'), target]);
+        const result = await run({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText });
+        assert.equal(result.droppedText, droppedText);
+      });
+    }
+  }
 });

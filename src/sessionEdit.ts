@@ -65,19 +65,25 @@ function extractUserPromptText(obj: PersistedLine | null | undefined): string {
 // is not the one the caller clicked.
 export const PROMPT_MISMATCH = 'prompt text does not match the transcript';
 
-// The comparison form of a bubble's text: CRLF → LF, trimmed, and a CLI
-// command wrapper (only `<command-name>`/`<command-message>`/`<command-args>`
-// tags and whitespace) rewritten to the `/name args` a live echo carries.
+// A CLI command wrapper — only `<command-name>`/`<command-message>`/
+// `<command-args>` tags and whitespace — as the `/name args` a live echo
+// carries; null for any other text.
 const COMMAND_TAG_RE = /<(command-name|command-message|command-args)>([\s\S]*?)<\/\1>/g;
 
+function commandForm(text: string): string | null {
+  const tags = new Map<string, string>();
+  const rest = text.replace(COMMAND_TAG_RE, (_m, tag: string, body: string) => { tags.set(tag, body); return ''; });
+  const name = tags.get('command-name')?.trim();
+  if (!name || rest.trim() !== '') return null;
+  const args = (tags.get('command-args') ?? '').trim();
+  return name + (args ? ` ${args}` : '');
+}
+
+// The comparison form of a bubble's text: CRLF → LF, trimmed, a command
+// wrapper in its command form.
 function normalizePromptText(text: string): string {
   const t = text.replace(/\r\n/g, '\n').trim();
-  const tags = new Map<string, string>();
-  const rest = t.replace(COMMAND_TAG_RE, (_m, tag: string, body: string) => { tags.set(tag, body); return ''; });
-  const name = tags.get('command-name')?.trim();
-  if (!name || rest.trim() !== '') return t;
-  const args = (tags.get('command-args') ?? '').trim();
-  return (name.startsWith('/') ? name : `/${name}`) + (args ? ` ${args}` : '');
+  return commandForm(t) ?? t;
 }
 
 // The text the target line's bubble shows: its replayed outer echo — the same
@@ -91,7 +97,8 @@ function replayedPromptText(obj: PersistedLine): string {
 //   - prefixLines: the raw lines (objects) that survive before the target
 //   - droppedLines: the lines from the target onward (including the user
 //     line itself)
-//   - droppedText: the prompt text of the target user message
+//   - droppedText: the prompt text of the target user message (a command
+//     wrapper in its command form, the `/name args` the composer can resend)
 //   - lastSurvivingUuid: uuid of the last prefix line, or null
 // Throws { statusCode: 400 } if the target index isn't found, and a
 // PROMPT_MISMATCH 409 if the target's replayed text is not `expectedText`.
@@ -167,10 +174,11 @@ async function readAndSplit({ place, sessionId, userMessageIndex, expectedText }
     lastSurvivingUuid = typeof leaf === 'string' ? leaf : null;
   }
 
+  const promptText = extractUserPromptText(target);
   return {
     prefix,
     dropped,
-    droppedText: extractUserPromptText(target),
+    droppedText: commandForm(promptText) ?? promptText,
     lastSurvivingUuid,
   };
 }
