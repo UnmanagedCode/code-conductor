@@ -226,6 +226,7 @@ test('DOM: a denied AskUserQuestion\'s tool_result renders handed-to-user and ad
   const results = root.querySelectorAll('.tool-result');
   assert.equal(results.length, 1);
   assert.equal(results[0].querySelector('summary').textContent, '↪ handed to user');
+  assert.equal(results[0].open, false, 'a yielded result arrives folded');
   assertNull(root.querySelector('.ag-errors'));
   assert.match(root.querySelector('.tool-status').textContent, /handed to user/);
   assert.ok(root.querySelector('.block.user-question'), 'the question card still renders');

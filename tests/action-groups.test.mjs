@@ -839,6 +839,8 @@ test('Y1 pins: a yielded tool_result adds no error clause and no error styling',
   assertNull(root.querySelector('.tool-result.error'));
 });
 
+// Pins that an errored result without the flag still counts — not every
+// errored result is treated as yielded.
 test('Y2 pins: the same errored AskUserQuestion result without the flag still counts', async () => {
   const { root, Conversation } = await setupDOM();
   feed(new Conversation(root, {}), [
