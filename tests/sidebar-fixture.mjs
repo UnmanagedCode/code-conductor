@@ -38,7 +38,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
   const select = document.getElementById('conductor-filter-select');
   const strip = document.getElementById('sidebar-strip-slot');
 
-  const calls = { select: [], resume: [], create: [] };
+  const calls = { select: [], resume: [], create: [], delete: [] };
   const sidebar = new Sidebar({
     rootList: root,
     conductorList,
@@ -50,7 +50,7 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
     onRemoveWorktree: () => {},
     onDeleteProject: () => {},
     onLoadSessions: onLoadSessions ?? (async () => []),
-    onDeleteSession: () => {},
+    onDeleteSession: (s) => calls.delete.push(s),
     onEditWorkspace: () => {},
     onPromoteSession: () => {},
   });

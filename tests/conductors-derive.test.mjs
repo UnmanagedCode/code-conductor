@@ -197,3 +197,17 @@ test('a disk-only conductor row has null awaitingUser even when its disk row rep
   assert.equal(inactive[0].awaitingUser, null);
   assert.equal(inactive[0].awaitingUserSource, null);
 });
+
+test('onDisk says whether the .conduct list carries the conductor\'s transcript', () => {
+  const { live, inactive } = M.deriveConductors({
+    conductRows: [{ sessionId: 'disk', lastActivity: 1 }, { sessionId: 'both', lastActivity: 2 }],
+    instances: [
+      inst({ id: 'b', project: '.conduct', sessionId: 'both', createdAt: 1 }),
+      inst({ id: 'o', project: '.conduct', sessionId: 'only', createdAt: 1 }),
+    ],
+  });
+  const all = new Map([...live, ...inactive].map(c => [c.sessionId, c]));
+  assert.equal(all.get('disk').onDisk, true, 'disk-only');
+  assert.equal(all.get('both').onDisk, true, 'disk row merged with an instance');
+  assert.equal(all.get('only').onDisk, false, 'instance-only');
+});

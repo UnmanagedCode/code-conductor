@@ -1306,6 +1306,7 @@ export class Sidebar {
     row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');
     const keys = ['caret', 'dot', 'title', 'ago'];
     if (unread > 0) keys.push('unread');
+    keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'caret') return row._caret;
       if (k === 'dot') {
@@ -1328,10 +1329,25 @@ export class Sidebar {
         else delete ago.dataset.activity;
         return ago;
       }
-      const b = ex ?? el('span', { class: 'session-unread' });
-      b.textContent = String(unread);
-      b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
-      return b;
+      if (k === 'unread') {
+        const b = ex ?? el('span', { class: 'session-unread' });
+        b.textContent = String(unread);
+        b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
+        return b;
+      }
+      // delete — the session row's archive ×. A conductor with no transcript
+      // listed yet goes through the synthetic (kill-only) path.
+      return ex ?? el('button', {
+        class: 'session-delete', title: 'archive session (keeps history)',
+        onclick: (e) => {
+          e.stopPropagation();
+          const c = holder.conductor;
+          if (this.onDeleteSession) this.onDeleteSession({
+            projectName: '.conduct', worktreeName: null, sessionId: c.sessionId,
+            preview: conductorTitle(c).text, synthetic: !c.onDisk,
+          });
+        },
+      }, '×');
     });
     return row;
   }

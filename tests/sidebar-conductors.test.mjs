@@ -4,8 +4,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { assertNull } from './dom-assert.mjs';
-import { setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
+import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
 
 const conductorOf = (list, sid) => list.querySelector(`[data-key="conductor:${sid}"]`);
 const titles = (root) => [...root.querySelectorAll(':scope > li.conductor-block .conductor-title')].map(t => t.textContent);
@@ -320,4 +322,130 @@ test('a live conductor-row dot gains the waiting-on-you ring over its fill; an i
   assert.equal(dot('W').title, 'waiting on you (question) · on a worker');
   assert.equal(dot('D').className, 'dot offline', 'a disk-only conductor is offline and unringed');
   assert.equal(dot('X').className, 'dot exited', 'an exited instance is unringed');
+});
+
+test('every conductor row, live and inactive, ends in a × archive button; the worker tree has none', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('proj')],
+    conductRows: [{ sessionId: 'D', lastActivity: 1 }],
+    instances: [conductor('A'), worker('w', 'A', 'proj')],
+  });
+  sidebar.setUnread(new Map([['A', 2]]));
+  await tick();
+  for (const sid of ['A', 'D']) {
+    const row = conductorOf(conductorList, sid).querySelector('.conductor-row');
+    const x = row.querySelector(':scope > .session-delete');
+    assert.ok(x, `${sid}: the row has a × button`);
+    assert.equal(row.lastElementChild.dataset.key, 'delete', `${sid}: the × is the row's last child`);
+    assert.ok(row.lastElementChild === x, `${sid}: the last child is the × button`);
+    assert.equal(x.tagName, 'BUTTON');
+    assert.equal(x.textContent, '×');
+    assert.equal(x.title, 'archive session (keeps history)');
+  }
+  assert.ok(conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-unread'), 'the unread pill still renders, before the ×');
+  conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
+  await tick();
+  const tree = conductorOf(conductorList, 'A').querySelector('.conductor-tree');
+  assert.ok(tree, 'the tree is expanded');
+  assert.ok(rowOf(tree, 'w'), 'the worker row is rendered');
+  assertNull(tree.querySelector('.session-delete'), 'no × inside the worker tree');
+});
+
+test('× archives through onDeleteSession with the conductor\'s id and never selects or resumes', async (t) => {
+  const click = async ({ conductRows = [], instances }, sid) => {
+    const { conductorList, sidebar, calls } = await setupSidebar();
+    await render(sidebar, { conductRows, instances });
+    conductorOf(conductorList, sid).querySelector('.conductor-row > .session-delete').click();
+    assert.deepEqual(calls.select, [], 'the × selects nothing');
+    assert.deepEqual(calls.resume, [], 'the × resumes nothing');
+    return calls.delete;
+  };
+  await t.test('a live conductor with no transcript listed goes the synthetic path', async () => {
+    assert.deepEqual(await click({ instances: [conductor('A', { title: 'Alpha' })] }, 'A'), [
+      { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Alpha', synthetic: true },
+    ]);
+  });
+  await t.test('an inactive disk-only conductor archives its transcript', async () => {
+    assert.deepEqual(await click({ conductRows: [{ sessionId: 'D', title: 'Disk', lastActivity: 1 }], instances: [] }, 'D'), [
+      { projectName: '.conduct', worktreeName: null, sessionId: 'D', preview: 'Disk', synthetic: false },
+    ]);
+  });
+  await t.test('a live conductor with a disk row archives its transcript', async () => {
+    assert.deepEqual(await click({
+      conductRows: [{ sessionId: 'B', lastActivity: 1 }],
+      instances: [conductor('B', { firstPrompt: 'plan the work' })],
+    }, 'B'), [
+      { projectName: '.conduct', worktreeName: null, sessionId: 'B', preview: 'plan the work', synthetic: false },
+    ]);
+  });
+});
+
+test('the × reads the freshest conductor after a re-render', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A')] });
+  const before = conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete');
+  sidebar.setConductSessions([{ sessionId: 'A', lastActivity: 1 }]);
+  sidebar.setInstances([conductor('A', { title: 'Renamed' })]);
+  await tick();
+  const after = conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete');
+  assert.ok(after === before, 'the button is reused, not rebuilt');
+  after.click();
+  assert.deepEqual(calls.delete, [
+    { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Renamed', synthetic: false },
+  ]);
+});
+
+test('the × on the only conductor archives it; applying the refresh leaves the empty state', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
+  conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete').click();
+  assert.deepEqual(calls.delete.map(d => d.sessionId), ['A'], 'onDeleteSession fired for the only conductor');
+  // What deleteSession's refreshProjects/refreshInstances deliver once it is archived.
+  sidebar.setInstances([]);
+  sidebar.setConductSessions([]);
+  await tick();
+  assertNull(conductorList.querySelector('.conductor-block'), 'no conductor block remains');
+  const empty = conductorList.querySelector('.conductor-empty');
+  assert.ok(empty, 'the empty-state row is rendered');
+  assert.equal(empty.textContent, 'no conductors yet — tap 🎼 Conduct');
+});
+
+// Top-level rules of a stylesheet as { selectors, decls }; at-rule blocks
+// (@media etc.) are skipped, so a match is one that applies unconditionally.
+function topLevelRules(css) {
+  css = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [];
+  let depth = 0, start = 0, head = '';
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === '{') {
+      if (depth === 0) { head = css.slice(start, i).trim(); start = i + 1; }
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        if (!head.startsWith('@')) {
+          const decls = new Map();
+          for (const d of css.slice(start, i).split(';')) {
+            const c = d.indexOf(':');
+            if (c > 0) decls.set(d.slice(0, c).trim(), d.slice(c + 1).trim());
+          }
+          rules.push({ selectors: head.split(',').map(x => x.trim().replace(/\s+/g, ' ')), decls });
+        }
+        start = i + 1;
+      }
+    }
+  }
+  return rules;
+}
+
+test('styles.css: hovering a conductor row reveals its × (a top-level rule for .conductor-row:hover .session-delete sets opacity 1)', async () => {
+  const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));
+  assert.ok(rules.some(r => r.selectors.includes('.session-row:hover .session-delete') && r.decls.get('opacity') === '1'),
+    'sanity: the parser finds the session-row hover reveal');
+  const hover = rules.filter(r => r.selectors.includes('.conductor-row:hover .session-delete'));
+  assert.ok(hover.length > 0, 'a rule selects .conductor-row:hover .session-delete');
+  assert.ok(hover.some(r => r.decls.get('opacity') === '1'),
+    `that rule sets opacity: 1 (found: ${JSON.stringify(hover.map(r => r.decls.get('opacity') ?? null))})`);
 });
