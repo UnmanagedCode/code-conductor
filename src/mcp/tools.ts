@@ -87,12 +87,12 @@ export function buildTools(): Tool[] {
       name: 'list_projects',
       description:
         'List every project as PLAIN TEXT (this tool returns no JSON). ' +
-        'One block per project: its absolute path, workspace when set, session counts, a ' +
+        'One block per project, headed by its name and absolute path, then its workspace when set, session counts, a ' +
         'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
         + 'and each worktree with branch, base, ahead/behind and its path. ' +
         'A project lives wherever its record says — inside the projects root, nested in a container ' +
-        'directory, elsewhere on disk, or on a registered system — and every row has the same shape: ' +
-        'the `path` it reports is the one to pass to every other tool. ' +
+        'directory, elsewhere on disk, or on a registered system — and every row has the same shape. ' +
+        'The NAME is the `project` argument every other tool takes; the path is informational. ' +
         'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
@@ -141,7 +141,7 @@ export function buildTools(): Tool[] {
         'their default — so anything on a `flags` line is news. ' +
         '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
         'recorded in that mode, or it has no recorded mode and therefore falls back to it. It reads the ' +
-        'session record only: a playbook stage pinning `mode` overrides it on the resume itself. ' +
+        'session record only. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
         '`awaitingWake`, `playbook` and `stage`.',
       inputSchema: {
@@ -258,7 +258,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value wins, EXCEPT where a playbook stage pins `mode`: the pinned value is filled in over the inherited one, and a conflicting explicit value is refused.' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:
@@ -271,7 +271,7 @@ export function buildTools(): Tool[] {
             type: 'string',
             description:
               'A capability tier (fast / balanced / powerful / frontier — the primary vocabulary), a role, ' +
-              'or a specific model id to pin one exact model. Omit it to use the default tier set in Settings → Models.',
+              'or a specific model id for one exact model. Omit it to use the default tier set in Settings → Models.',
           },
           resume: {
             type: 'string',
@@ -305,7 +305,7 @@ export function buildTools(): Tool[] {
           },
           stage: {
             type: 'string',
-            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `pin`). On a resume of a playbook-tracked session it is inherited from that session\'s record instead (the worker enters no stage); supplying a different one is refused PLAYBOOK_MISMATCH.',
+            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and its entry conditions — describe_playbook shows them. On a resume of a playbook-tracked session it is inherited from that session\'s record instead (the worker enters no stage); supplying a different one is refused PLAYBOOK_MISMATCH.',
           },
           provenance: {
             type: 'object',
@@ -415,8 +415,8 @@ export function buildTools(): Tool[] {
             items: {
               type: 'object',
               properties: {
-                option: { type: 'string', description: 'Chosen option label (single-choice question).' },
-                options: { type: 'array', items: { type: 'string' }, description: 'Chosen option labels (multiSelect question).' },
+                option: { type: 'string', description: 'The chosen option\'s label exactly as the questions block renders it, byte-for-byte — suffixes such as " (Recommended)" included (single-choice question).' },
+                options: { type: 'array', items: { type: 'string' }, description: 'The chosen options\' labels, each exactly as rendered, byte-for-byte (multiSelect question).' },
                 text: { type: 'string', description: 'Custom free-text answer (overrides option/options).' },
                 note: { type: 'string', description: 'Optional note appended to an option/options answer.' },
               },

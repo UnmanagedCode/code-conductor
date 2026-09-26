@@ -350,7 +350,7 @@ interface LineageRowLike { current: string }
 
 export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
-    throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
+    throw httpError(400, `invalid project name ${JSON.stringify(name)} — pass the project's NAME as list_projects prints it (^[a-zA-Z0-9._-]+$), not its path`);
   }
   // `.` and `..` pass NAME_RE (it has no positional rules) but they are PATH
   // TRAVERSAL, not names: `path.join(projectsRoot(), '..')` escapes the root

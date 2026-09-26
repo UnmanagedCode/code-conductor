@@ -1586,7 +1586,9 @@ export async function answerQuestion(
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     const a = answers[i] ?? {};
-    const validLabels = new Set((q?.options ?? []).map(o => o.label));
+    const offered = (q?.options ?? []).map(o => o.label);
+    const validLabels = new Set(offered);
+    const offeredList = offered.map(l => JSON.stringify(l)).join(', ');
     const note = typeof a.note === 'string' && a.note.trim() ? a.note : undefined;
     if (typeof a.text === 'string' && a.text.trim()) {
       states.push({ kind: 'custom', text: a.text });
@@ -1597,14 +1599,14 @@ export async function answerQuestion(
       }
       const invalid = a.options.filter(l => !validLabels.has(l));
       if (invalid.length) {
-        return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid,
-          reason: `Labels not offered for question ${i}: ${invalid.join(', ')}.` };
+        return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid, offered,
+          reason: `Labels not offered for question ${i}: ${invalid.map(l => JSON.stringify(l)).join(', ')}. Offered labels (matched byte-exact): ${offeredList}.` };
       }
       states.push(note ? { kind: 'multi', labels: a.options, note } : { kind: 'multi', labels: a.options });
     } else if (typeof a.option === 'string') {
       if (!validLabels.has(a.option)) {
-        return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid: [a.option],
-          reason: `"${a.option}" is not an offered option for question ${i}.` };
+        return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid: [a.option], offered,
+          reason: `"${a.option}" is not an offered option for question ${i}. Offered labels (matched byte-exact): ${offeredList}.` };
       }
       states.push(note ? { kind: 'option', label: a.option, note } : { kind: 'option', label: a.option });
     } else {

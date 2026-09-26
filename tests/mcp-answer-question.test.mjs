@@ -188,6 +188,59 @@ test('answer_question soft-refuses INVALID_OPTION for an unoffered label', async
   assert.equal(res.ok, false);
   assert.equal(res.code, 'INVALID_OPTION');
   assert.deepEqual(res.invalid, ['Cherry']);
+  assert.deepEqual(res.offered, ['Apple', 'Banana']);
+});
+
+// A question whose labels carry a " (Recommended)" suffix: the INVALID_OPTION
+// refusal names every offered label verbatim (structured `offered` + quoted in
+// `reason`), and a label with the suffix stripped is still refused — the match
+// stays byte-exact, no lenient comparison.
+const SCENARIO_RECOMMENDED = path.join(__dirname, 'fixtures', 'scenario-question-recommended.json');
+async function spawnAtRecommendedQuestion() {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RECOMMENDED;
+  try { return await spawnAtQuestion(); }
+  finally { process.env.FAKE_CLAUDE_SCENARIO = prev; }
+}
+
+test('INVALID_OPTION on a single-choice question names every offered label byte-exact; a stripped suffix stays refused', async () => {
+  const { sid } = await spawnAtRecommendedQuestion();
+  const res = unwrap(await callTool('answer_question', {
+    sessionId: sid, answers: [{ option: 'Apple' }, {}],
+  }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'INVALID_OPTION');
+  assert.equal(res.questionIndex, 0);
+  assert.deepEqual(res.invalid, ['Apple']);
+  assert.deepEqual(res.offered, ['Apple (Recommended)', 'Banana']);
+  assert.ok(res.reason.includes(JSON.stringify('Apple (Recommended)')), res.reason);
+  assert.ok(res.reason.includes(JSON.stringify('Banana')), res.reason);
+
+  const ok = unwrap(await callTool('answer_question', {
+    sessionId: sid, answers: [{ option: 'Apple (Recommended)' }, {}],
+  }));
+  assert.equal(ok.ok, undefined, JSON.stringify(ok));
+  assert.match(ok.sentText, /Apple \(Recommended\)/);
+});
+
+test('INVALID_OPTION on a multiSelect question names every offered label byte-exact; a stripped suffix stays refused', async () => {
+  const { sid } = await spawnAtRecommendedQuestion();
+  const res = unwrap(await callTool('answer_question', {
+    sessionId: sid, answers: [{}, { options: ['Red', 'Green'] }],
+  }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'INVALID_OPTION');
+  assert.equal(res.questionIndex, 1);
+  assert.deepEqual(res.invalid, ['Red']);
+  assert.deepEqual(res.offered, ['Red (Recommended)', 'Green']);
+  assert.ok(res.reason.includes(JSON.stringify('Red (Recommended)')), res.reason);
+  assert.ok(res.reason.includes(JSON.stringify('Green')), res.reason);
+
+  const ok = unwrap(await callTool('answer_question', {
+    sessionId: sid, answers: [{}, { options: ['Red (Recommended)', 'Green'] }],
+  }));
+  assert.equal(ok.ok, undefined, JSON.stringify(ok));
+  assert.match(ok.sentText, /Red \(Recommended\)/);
 });
 
 test('answer_question soft-refuses NOT_MULTISELECT when options[] used on a single-choice question', async () => {
