@@ -25,7 +25,7 @@ import {
   getDefaultPlaybookSelection, setDefaultPlaybook, defaultPlaybookConvention, playbookListing,
 } from '../src/conductorConventions.ts';
 import { renderPlaybookConvention } from '../src/playbookConvention.ts';
-import { loadPlaybooks, DEFAULT_PLAYBOOK_ID, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
+import { loadPlaybooks, DEFAULT_PLAYBOOK_ID, SEED_PLAYBOOK_IDS, PLAYBOOKS_DIR } from '../src/playbooks.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import * as m0028 from '../migrations/0028-tri-state-default-playbook.mjs';
 import * as m0033 from '../migrations/0033-drop-convention-enabled-allow-list.mjs';
@@ -61,9 +61,9 @@ const FIXTURE_ID = 'driftpb';
 
 // A two-stage overlay playbook exercising every render branch: authored stage
 // descriptions, workers:"many", an `on`-driven edge and a bare
-// (send_prompt-driven) one. It also carries `tools`/`needs` — not because they
-// are rendered (they are not, deliberately), but so the fixture stays a
-// realistic definition the validator accepts.
+// (send_prompt-driven) one. It also carries `tools`/`needs` so the fixture stays
+// a realistic definition the validator accepts; of those, only alpha's
+// `spawn_instance` pin is rendered.
 function fixture({ alphaDesc, betaDesc }) {
   return {
     id: FIXTURE_ID,
@@ -73,7 +73,7 @@ function fixture({ alphaDesc, betaDesc }) {
     stages: {
       alpha: {
         description: alphaDesc,
-        tools: { spawn_instance: { pin: { mode: 'plan' } } },
+        tools: { spawn_instance: { pin: { mode: 'plan' } }, set_mode: 'deny' },
       },
       beta: {
         description: betaDesc,
@@ -353,23 +353,68 @@ test('authored descriptions are passed through VERBATIM — never reflowed or tr
 
 test('capacity and both transition drivers are rendered from the definition', async () => {
   const out = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  assert.ok(out.includes('- **alpha** — A.'), 'workers:"one" carries no flag');
+  assert.ok(out.includes('- **alpha** (pins mode="plan") — A.'), 'workers:"one" carries no capacity flag');
   assert.ok(out.includes('- **beta** (many workers) — B.'), 'workers:"many" flag');
   assert.ok(out.includes('`alpha → beta` on `approve_plan`'), 'declared driver');
   assert.ok(out.includes('`beta → alpha` on `send_prompt`'), 'bare edge defaults to send_prompt');
 });
 
+// Invariant: pins are generated from the definition, and both flags compose in
+// one parenthetical.
+test('drift proof: a pin edit changes the rendered convention', async () => {
+  const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
+  const before = await renderFixture(def);
+  assert.ok(before.includes('- **alpha** (pins mode="plan") — A.'), 'initial pin rendered');
 
+  def.stages.alpha.tools.spawn_instance = { pin: { mode: 'plan', model: 'planner' } };
+  def.stages.beta.tools.spawn_instance = { pin: { mode: 'bypassPermissions' } };
+  const after = await renderFixture(def);
+  assert.ok(after.includes('- **alpha** (pins mode="plan", model="planner") — A.'), 'added pin rendered');
+  assert.ok(after.includes('- **beta** (many workers; pins mode="bypassPermissions") — B.'),
+    'capacity and pin flags share one parenthetical');
+});
 
+// Invariant: every spawn_instance pin in a shipped definition appears on its
+// stage's line, and no unpinned stage is marked pinned.
+test('every built-in stage\'s spawn_instance pins render on its stage line', async () => {
+  const files = (await fs.readdir(PLAYBOOKS_DIR)).filter(f => f.endsWith('.json'));
+  const { playbooks } = await loadPlaybooks();
+  let modelPins = 0;
+  for (const file of files) {
+    const id = path.basename(file, '.json');
+    const pb = playbooks.get(id);
+    assert.ok(pb, `${file} loads as playbook '${id}'`);
+    const lines = renderPlaybookConvention(pb).split('\n');
+    for (const [name, stage] of Object.entries(pb.stages)) {
+      const line = lines.find(l => l.startsWith(`- **${name}**`));
+      assert.ok(line, `${id}.${name} has a stage line`);
+      const pin = stage.tools.spawn_instance?.pin;
+      if (pin) {
+        assert.ok(line.includes('pins '), `${id}.${name} is marked pinned`);
+        for (const [arg, v] of Object.entries(pin)) {
+          assert.ok(line.includes(`${arg}=${JSON.stringify(v)}`), `${id}.${name} renders ${arg}`);
+        }
+        if ('model' in pin) modelPins++;
+      } else {
+        assert.ok(!line.includes('pins '), `${id}.${name} is not marked pinned`);
+      }
+    }
+  }
+  assert.ok(modelPins > 0, 'at least one built-in stage pins model (non-vacuity)');
+});
 
+// Invariant: only spawn_instance pins leak from `tools`, never allow/deny policy.
 test('facts a refusal volunteers are left in the payload, not copied into the prompt', async () => {
-  // tools policy → TOOL_DENIED_IN_STAGE, `needs` → NEEDS_UNSATISFIED,
+  // allow/deny policy → TOOL_DENIED_IN_STAGE, `needs` → NEEDS_UNSATISFIED,
   // spawnability → STAGE_NOT_SPAWNABLE (and list_playbooks' spawnableStages).
   // Each arrives at point of use and cannot go stale under a live worker;
-  // snapshotting them here would be a copy that can.
+  // snapshotting them here would be a copy that can. The `spawn_instance` pin
+  // is the one `tools` fact rendered, and only as its values.
   const out = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
   assert.ok(!out.includes('policy:'), 'no tools policy summary');
-  assert.ok(!out.includes('spawn_instance'), 'no policy entries at all');
+  assert.ok(!out.includes('spawn_instance'), 'no policy entries by tool name');
+  assert.ok(!out.includes('set_mode'), 'a denied tool is not named');
+  assert.ok(!out.includes('deny'), 'no deny verdict');
   assert.ok(!out.includes('needs:'), 'no needs summary');
   assert.ok(!out.includes('(spawnable'), 'no spawnability marker');
 });

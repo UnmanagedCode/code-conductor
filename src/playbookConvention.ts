@@ -10,7 +10,11 @@
 // WHAT BELONGS HERE — exactly the facts with NO CHANNEL THAT FIRES ON ITS OWN.
 // Every fact some refusal or pre-resolved field volunteers unasked stays in the
 // payload, where it arrives at point of use and cannot go stale:
-//   • `tools` policy   → TOOL_DENIED_IN_STAGE ships it with legalMoves.  OUT.
+//   • `tools` allow/deny → TOOL_DENIED_IN_STAGE ships it with legalMoves. OUT.
+//   • `spawn_instance` `pin` → ARG_PIN_CONFLICT fires only after the conductor
+//                        has chosen the argument, and "Model choice" has it
+//                        choose `model` before any call. Rendered in the
+//                        refusal's `arg=<JSON>` form.                    IN.
 //   • `needs`          → NEEDS_UNSATISFIED names what to pass.           OUT.
 //   • spawnability     → STAGE_NOT_SPAWNABLE, plus list_playbooks'
 //                        `spawnableStages` and the `spawnable` describe_playbook
@@ -63,7 +67,17 @@ export function renderPlaybookConvention(pb: Playbook): string {
 }
 
 // `workers: "one"` is the default and the common case, so naming it would be
-// noise in nearly every stage of every playbook.
+// noise in nearly every stage of every playbook. Pins are read from the exact
+// `spawn_instance` entry: the validator refuses a `pin` on the "*" fallback, so
+// this equals what resolvePolicy would enforce. JSON keeps `"plan"` distinct
+// from `true`, as describe_playbook does.
 function stageFlags(stage: Stage): string {
-  return stage.workers === 'many' ? 'many workers' : '';
+  const flags: string[] = [];
+  if (stage.workers === 'many') flags.push('many workers');
+  const policy = stage.tools['spawn_instance'];
+  if (typeof policy === 'object') {
+    flags.push(`pins ${Object.entries(policy.pin)
+      .map(([arg, value]) => `${arg}=${JSON.stringify(value)}`).join(', ')}`);
+  }
+  return flags.join('; ');
 }

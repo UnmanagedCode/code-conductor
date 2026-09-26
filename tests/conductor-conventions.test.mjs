@@ -65,6 +65,34 @@ test('composeConduct(all) = core + all convention bodies + footer', async () => 
   assert.match(doc, /generated from `conventions\/conductor\/core\.md`/, 'footer last');
 });
 
+// Invariant: the call-form instruction has exactly one home, the toolbelt.
+test('the call-name rule is stated once, inside the MCP toolbelt section', async () => {
+  const RULE = '`mcp__code-conductor__<name>`';
+  const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
+  assert.equal(doc.split(RULE).length - 1, 1, 'stated exactly once in the composed doc');
+  const start = doc.indexOf('## MCP toolbelt');
+  const end = doc.indexOf('\n## ', start + 1);
+  const at = doc.indexOf(RULE);
+  assert.ok(start >= 0 && at > start && (end < 0 || at < end), 'inside the MCP toolbelt section');
+
+  const dir = path.join(__dirname, '..', 'conventions', 'conductor');
+  const homes = [];
+  for (const f of (await fs.readdir(dir)).filter(f => f.endsWith('.md'))) {
+    if ((await fs.readFile(path.join(dir, f), 'utf8')).includes(RULE)) homes.push(f);
+  }
+  assert.deepEqual(homes, ['core.md'], 'only core.md carries it');
+});
+
+// Invariant: the prompt never instructs an unconditional `model`, which is what
+// ARG_PIN_CONFLICT refuses in a stage that pins it.
+test('Model choice conditions the tier on the stage not pinning model', async () => {
+  const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
+  const line = doc.split('\n').find(l => l.startsWith('- **Model choice.**'));
+  assert.ok(line, 'the Model choice bullet is composed');
+  assert.doesNotMatch(line, /^- \*\*Model choice\.\*\* Pass /);
+  assert.ok(line.includes('Omit `model` where the stage pins it'), 'pinned model is omitted');
+});
+
 test('composeConduct([]) = core + footer only (no convention headings)', async () => {
   const doc = await composeConduct([]);
   assert.ok(doc.startsWith('# Conductor role'));

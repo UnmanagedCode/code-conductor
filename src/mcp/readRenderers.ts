@@ -462,7 +462,8 @@ export function renderProjectStatus(status: unknown): string {
 //
 // The sibling renderer is renderPlaybookConvention (src/playbookConvention.ts),
 // which renders a playbook into the conductor's SYSTEM PROMPT and deliberately
-// omits `tools`, `needs` and `spawnable` (docs/protocol.md → Playbooks). Do not
+// omits `needs`, `spawnable` and every `tools` entry except `spawn_instance`'s
+// pin (docs/protocol.md → Playbooks). Do not
 // merge the two: this surface answers "what does this stage permit?" when asked,
 // and folding it into the prompt renderer would push every stage's tools policy
 // into every conductor's system prompt.
