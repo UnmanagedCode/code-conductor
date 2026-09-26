@@ -562,7 +562,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1;
   flex: 0 0 auto; opacity: 0;
 }
-.session-row:hover .session-delete { opacity: 1; }
+.session-row:hover .session-delete,
+.conductor-row:hover .session-delete { opacity: 1; }
 .session-delete:hover { color: var(--red); }
 @media (hover: none) {
   .session-delete { opacity: 1; }

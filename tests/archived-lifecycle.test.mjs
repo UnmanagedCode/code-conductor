@@ -172,3 +172,32 @@ test('.conduct archived sessions appear in /api/archived and are restorable', as
       '.conduct group absent from /api/archived after restore');
   } finally { await close(); }
 });
+
+test('a live temp .conduct conductor archives through the project archive route: stopped, gone from /api/instances, absent from the .conduct list', async () => {
+  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await ensureConductProject();
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions' });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const id = res.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    const backingId = inst.backingSessionId;
+    const publicId = inst.sessionId;     // what the Conductors-lens × sends
+    await materializeJsonl(claudeProjectsRoot, inst.cwd, backingId);
+
+    let r = await api(baseUrl, 'POST', `/api/projects/.conduct/sessions/${publicId}/archive`);
+    assert.equal(r.status, 409, 'a live conductor refuses the unforced archive');
+    r = await api(baseUrl, 'POST', `/api/projects/.conduct/sessions/${publicId}/archive?force=1`);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+
+    assert.equal(instances.get(id), undefined, 'the conductor instance is removed');
+    const list = await api(baseUrl, 'GET', '/api/instances');
+    assert.ok(!list.body.find(i => i.id === id), 'gone from /api/instances');
+    const conduct = await api(baseUrl, 'GET', '/api/projects/.conduct/sessions');
+    assert.equal(conduct.status, 200);
+    assert.ok(!conduct.body.find(s => s.sessionId === publicId), 'absent from the .conduct session list');
+    await waitFor(async () => (await isArchived(backingId)));
+    assert.equal(await isArchived(backingId), true);
+  } finally { await close(); }
+});

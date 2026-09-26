@@ -48,6 +48,8 @@ const byActivityDesc = (a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
 // keeps its instanceId so opening it behaves as it does for any dead session).
 // A conductor with a listed instance is placed by that instance whatever its
 // disk row says: an instance does not report its session's archived state.
+// `onDisk` says whether the `.conduct` list carries its transcript — false for
+// an instance-only conductor that has not written one yet.
 export function deriveConductors({ conductRows = [], instances = [] } = {}) {
   const bySid = new Map();
   for (const r of conductRows) {
@@ -66,12 +68,13 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
       awaitingUser: null,
       awaitingUserSource: null,
       live: false,
+      onDisk: true,
     });
   }
   for (const inst of instances) {
     if (inst.project !== '.conduct' || !inst.sessionId) continue;
     const row = bySid.get(inst.sessionId) ?? {
-      sessionId: inst.sessionId, title: null, firstPrompt: null, lastActivity: 0,
+      sessionId: inst.sessionId, title: null, firstPrompt: null, lastActivity: 0, onDisk: false,
     };
     row.instanceId = inst.id;
     row.instanceStatus = inst.status;
