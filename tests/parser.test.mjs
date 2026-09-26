@@ -1068,3 +1068,19 @@ test('replay: a persisted deny tool_result is tagged yielded, same as live', () 
   assert.equal(ev.toolUseId, 'tu_q');
   assert.equal(ev.yielded, true);
 });
+
+test('replay: a persisted deny carrying an earlier wording of the message is tagged yielded', () => {
+  const earlier = 'Delivered — the user can see your request in the orchestrator UI now. '
+    + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
+    + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
+    + "End your turn now with no further tool calls; the user's reply comes as a later message.";
+  assert.notEqual(earlier, AWAITING_INPUT_MESSAGE);
+  const line = {
+    type: 'user', uuid: 'u-deny-earlier',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_q', content: earlier, is_error: true }] },
+  };
+  const ev = replayPersistedLine(line).find(e => e.kind === 'tool_result');
+  assert.ok(ev, 'replay must emit the tool_result');
+  assert.equal(ev.yielded, true);
+  assert.equal(ev.isError, true);
+});
