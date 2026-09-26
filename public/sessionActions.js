@@ -44,13 +44,17 @@ export function installSessionActions({
   // Promote a live temp session into a regular one. The server flips the
   // temp flag, writes the resume-picker metadata, and broadcasts the
   // status change — the sidebar's `instances` re-fetch then migrates the
-  // row from the Temp Sessions subnode into the regular Sessions list.
+  // row from the Temp Sessions subnode into the regular Sessions list. A
+  // conductor (`.conduct`) gets its own confirm.
   async function promoteSession({ projectName, instanceId, preview }) {
     if (!instanceId) return;
-    const ok = confirm(
-      `Promote this temp session to a normal session in '${projectName}'?\n\n` +
-      `${preview || '(no preview yet)'}\n\n` +
-      `The transcript will be preserved when the session ends.`,
+    const isConductor = projectName === '.conduct';
+    const ok = confirm(isConductor
+      ? `Keep this conductor?\n\n${preview || '(no preview yet)'}\n\n` +
+        `It will move to Inactive instead of being archived when it exits.`
+      : `Promote this temp session to a normal session in '${projectName}'?\n\n` +
+        `${preview || '(no preview yet)'}\n\n` +
+        `The transcript will be preserved when the session ends.`,
     );
     if (!ok) return;
     try {

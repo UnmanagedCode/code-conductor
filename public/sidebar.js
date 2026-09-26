@@ -460,16 +460,9 @@ export class Sidebar {
         // Live temp instance → promote button trailing the row, left of ×
         // where the row has one. Always visible (no opacity:0 hover) so
         // mobile users can tap it.
-        return ex ?? el('button', {
-          class: 'session-promote', title: 'promote to normal session',
-          onclick: (e) => {
-            e.stopPropagation();
-            const s = holder.session;
-            if (this.onPromoteSession) this.onPromoteSession({
-              projectName: holder.projectName, instanceId: s.instanceId, preview: li._liveLabel,
-            });
-          },
-        }, '↑');
+        return ex ?? this._promoteButton(() => ({
+          projectName: holder.projectName, instanceId: holder.session.instanceId, preview: li._liveLabel,
+        }));
       }
       // delete
       return ex ?? el('button', {
@@ -1238,9 +1231,22 @@ export class Sidebar {
     return li;
   }
 
+  // The ↑ promote button of a live temp row. `getArgs` runs at click time, so
+  // a reused button reads its row's freshest holder.
+  _promoteButton(getArgs) {
+    return el('button', {
+      class: 'session-promote', title: 'promote to normal session',
+      onclick: (e) => {
+        e.stopPropagation();
+        if (this.onPromoteSession) this.onPromoteSession(getArgs());
+      },
+    }, '↑');
+  }
+
   // Create-or-update one conductor block: its row, its project chips, and —
   // while expanded — the tree of this conductor's live workers (no structural
-  // actions, only ↑ promote on a live temp worker).
+  // actions, only ↑ promote on a live temp worker). The row itself carries ↑
+  // on a live temp conductor.
   // The block alone carries the conductor's bar; nothing inside repeats it.
   _conductorItem(existing, conductor) {
     let li = existing, holder;
@@ -1309,6 +1315,7 @@ export class Sidebar {
     row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');
     const keys = ['caret', 'dot', 'title', 'ago'];
     if (unread > 0) keys.push('unread');
+    if (c.live && c.instanceTemp) keys.push('promote');
     keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'caret') return row._caret;
@@ -1337,6 +1344,12 @@ export class Sidebar {
         b.textContent = String(unread);
         b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
         return b;
+      }
+      if (k === 'promote') {
+        return ex ?? this._promoteButton(() => {
+          const c = holder.conductor;
+          return { projectName: '.conduct', instanceId: c.instanceId, preview: conductorTitle(c).text };
+        });
       }
       // delete — the session row's archive ×. A conductor with no transcript
       // listed yet goes through the synthetic (kill-only) path.
