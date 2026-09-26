@@ -387,7 +387,7 @@ export class ToolUseBlock {
       this._doneElapsed = s > 0 ? formatElapsed(s * 1000) : null;
     }
     this.node.appendChild(resultBlock.node);
-    this.status = resultBlock.isError ? 'errored' : 'done';
+    this.status = resultBlock.yielded ? 'handed to user' : resultBlock.isError ? 'errored' : 'done';
     this._renderSummary();
   }
 
@@ -1077,8 +1077,12 @@ export class PlanRequestBlock {
 
 
 export class ToolResultBlock {
-  constructor({ content, isError, toolUseId }) {
+  constructor({ content, isError, toolUseId, yielded }) {
     this.toolUseId = toolUseId; this.isError = isError;
+    // The orchestrator's deliberate deny of an interactive tool: handed to the
+    // user, so it renders neutral and the action group doesn't count it.
+    this.yielded = !!yielded;
+    const failed = isError && !this.yielded;
     // Separate text and image content. The Read tool returns images as
     // {type:'image', source:{type:'base64'|'url', ...}} content blocks
     // that the old text-only path silently dropped.
@@ -1111,13 +1115,14 @@ export class ToolResultBlock {
     const text = textParts.join('\n');
     const TRUNC = 4000;
     const truncated = text.length > TRUNC;
-    const label = images.length
-      ? (isError ? '↪ tool_result (error)' : `↪ tool_result · ${images.length} image${images.length === 1 ? '' : 's'}`)
-      : (isError ? '↪ tool_result (error)' : '↪ tool_result');
+    const label = this.yielded ? '↪ handed to user'
+      : images.length
+        ? (failed ? '↪ tool_result (error)' : `↪ tool_result · ${images.length} image${images.length === 1 ? '' : 's'}`)
+        : (failed ? '↪ tool_result (error)' : '↪ tool_result');
     const summary = el('summary', {}, label);
     // Auto-open when small, when it carries an image, or always for non-errors
     // with images so the user actually sees the picture.
-    const det = el('details', { class: 'block tool-result' + (isError ? ' error' : ''), open: !isError && (images.length > 0 || text.length < 600) },
+    const det = el('details', { class: 'block tool-result' + (failed ? ' error' : ''), open: !failed && !this.yielded && (images.length > 0 || text.length < 600) },
       summary,
     );
     let pre = null;
