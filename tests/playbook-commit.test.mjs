@@ -323,6 +323,32 @@ test('a transition without a forward omits forwardSessionId — the key, not jus
   }
 });
 
+// forwardSubject's guard has two clauses, each pinned alone: the gate is driven
+// directly, past the send_prompt handler's own argument check, so a malformed
+// forward reaches commitMove as-is.
+async function realMoveRowFor(forward) {
+  const { dir, gate, appended } = await tmpLedgerAppends(RUN);
+  try {
+    await sendPromptCommitted(gate, { sessionId: 'w1', text: 'go', stage: 'amend', provenance: { audit: 'a1' }, forward });
+    const row = appended.find(e => e.kind === 'transition');
+    assert.ok(row, 'premise: the move was ledgered');
+    return row;
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+}
+
+test('a non-string forward.sessionId mints no forwardSessionId key', async () => {
+  // INVARIANT: the `typeof === 'string'` clause — a truthy non-string never
+  // becomes a recorded worker id.
+  const row = await realMoveRowFor({ sessionId: 123 });
+  assert.equal(Object.hasOwn(row, 'forwardSessionId'), false);
+});
+
+test('an empty-string forward.sessionId mints no forwardSessionId key', async () => {
+  // INVARIANT: the non-empty clause — a string that names no worker is not recorded.
+  const row = await realMoveRowFor({ sessionId: '' });
+  assert.equal(Object.hasOwn(row, 'forwardSessionId'), false);
+});
+
 test('an undeclared self-edge with a forward is still not ledgered', async () => {
   // INVARIANT: carrying a forward does not make an undeclared self-edge worth a
   // row — `build` declares no build->build.
