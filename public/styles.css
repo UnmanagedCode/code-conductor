@@ -740,7 +740,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .auto-approve-toggle[aria-pressed="true"]:hover:not(:disabled) {
   background: rgba(74,222,128,.30);
 }
-/* Header Code | Plan switch: the spawn dialog's segmented toggle, sized to the
+/* Header Plan | Code switch: the spawn dialog's segmented toggle, sized to the
  * controls row. Padding matches the default button rule so its height lines
  * up with its neighbours. */
 #instance-controls .qs-mode-toggle { margin: 0; }

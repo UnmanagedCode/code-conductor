@@ -1,4 +1,4 @@
-// The header's Code | Plan mode switch (#mode-toggle).
+// The header's Plan | Code mode switch (#mode-toggle).
 //
 // Two aria-pressed buttons rendered from the instance's `mode` (never
 // optimistic — the `status` frame is authoritative), disabled exactly while a
