@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, registerLocalProject, api, waitFor } from './helpers.mjs';
 import { buildTools } from '../src/mcp/tools.ts';
-import { boundResult } from '../src/mcp/server.ts';
+import { boundResult, boundToolCall, capEcho } from '../src/mcp/server.ts';
 import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
 test('every core tool: over-budget content becomes RESULT_OVER_BUDGET, at-budget content passes', async (t) => {
@@ -206,4 +206,62 @@ test('boundary, JSON-RPC error: a huge unknown method is cut to the budget', asy
       assert.ok(logged.some(l => l.includes('JSON-RPC') && l.includes('cut to fit')), 'the cut is logged');
     });
   } finally { await ctx.close(); }
+});
+
+// Invariant: capEcho's output is bounded by the cap plus its marker, for every
+// cap — including caps too small for any tail — and it keeps only what it says.
+test('capEcho: output is bounded for small caps, and within cap + marker for any cap', () => {
+  const s = 'e'.repeat(60_000);
+  for (const cap of [1, 2, 3, 4, 7, 64, 6250]) {
+    const out = capEcho(s, cap);
+    const marker = ` … [cut: ${s.length} chars] … `;
+    assert.ok(out.includes(marker), `cap ${cap}: marker present`);
+    assert.ok(out.length <= cap + marker.length, `cap ${cap}: ${out.length} chars, over ${cap + marker.length}`);
+    assert.equal(out.length - marker.length, cap, `cap ${cap}: exactly cap chars of the input kept`);
+  }
+  assert.equal(capEcho('short', 1000), 'short', 'a string within the cap is returned as is');
+});
+
+// Invariant: a refusal or error that stays over the budget even at the smallest
+// echo cap — many short strings, none of which capEcho can shrink — is never
+// returned oversized: it becomes RESULT_OVER_BUDGET naming the tool and the
+// original size, within the budget, with `completed` false for a refusal (no
+// handler ran) and, for a thrown error, true unless the tool is read-only;
+// isError is carried over from the response it replaces.
+test('boundToolCall: an unfittable refusal or error becomes RESULT_OVER_BUDGET', () => {
+  const tools = buildTools();
+  const core = new Set(tools);
+  const spawn = tools.find(t => t.name === 'spawn_instance');
+  const read = tools.find(t => t.name === 'project_read');
+  assert.ok(spawn && !spawn.annotations?.readOnlyHint && read?.annotations?.readOnlyHint, 'premise: one acting, one read-only tool');
+  // An ambiguous-prefix refusal naming thousands of candidate sessions.
+  const matches = Array.from({ length: 20_000 }, (_, i) => `s${String(i).padStart(7, '0')}`);
+  const text = JSON.stringify({ ok: false, code: 'SESSION_AMBIGUOUS', sessionId: 's', reason: 'ambiguous', matches });
+  const chars = text.length;
+  assert.ok(chars > MCP_RESULT_CHAR_BUDGET, 'premise: over budget');
+
+  const cases = [
+    { tool: spawn, outcome: 'refused', isError: undefined, completed: false },
+    { tool: spawn, outcome: 'error', isError: true, completed: true },
+    { tool: read, outcome: 'error', isError: true, completed: false },
+  ];
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    for (const c of cases) {
+      const result = { content: [{ type: 'text', text }], ...(c.isError ? { isError: true } : {}) };
+      const out = boundToolCall({ result, tool: c.tool, outcome: c.outcome }, core);
+      const what = `${c.tool.name}/${c.outcome}`;
+      assert.equal(out.content.length, 1, what);
+      assert.ok(out.content[0].text.length <= MCP_RESULT_CHAR_BUDGET, what);
+      const r = JSON.parse(out.content[0].text);
+      assert.equal(r.ok, false, what);
+      assert.equal(r.code, 'RESULT_OVER_BUDGET', what);
+      assert.equal(r.tool, c.tool.name, what);
+      assert.equal(r.chars, chars, what);
+      assert.equal(r.budget, MCP_RESULT_CHAR_BUDGET, what);
+      assert.equal(r.completed, c.completed, what);
+      assert.equal(out.isError, c.isError, what);
+    }
+  } finally { console.error = origError; }
 });

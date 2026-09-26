@@ -197,14 +197,17 @@ export function boundResult(
 // Echoed caller strings — a tool name, an argument key, a `stage`, a path in an
 // error message, a JSON-RPC method — are the one thing in a refusal or an error
 // that can grow without bound. ECHO_CAP is where the response boundary cuts
-// one: the head plus the last ECHO_TAIL chars (an error's "(HTTP 404)" suffix
-// survives), joined by an in-band marker carrying the full length.
+// one: the head plus a tail of at most ECHO_TAIL chars — a quarter of a smaller
+// cap — so an error's "(HTTP 404)" suffix survives, joined by an in-band marker
+// carrying the full length.
 const ECHO_CAP = MCP_RESULT_CHAR_BUDGET / 8;
 const ECHO_TAIL = 64;
 export function capEcho(s: string, cap = ECHO_CAP): string {
   if (s.length <= cap) return s;
   const tail = Math.min(ECHO_TAIL, Math.floor(cap / 4));
-  return `${s.slice(0, cap - tail)} … [cut: ${s.length} chars] … ${s.slice(-tail)}`;
+  // slice(s.length - tail), not slice(-tail): a zero tail (cap <= 3) must keep
+  // nothing, and slice(-0) is the whole string.
+  return `${s.slice(0, cap - tail)} … [cut: ${s.length} chars] … ${s.slice(s.length - tail)}`;
 }
 
 function contentChars(content: TextContent): number {
