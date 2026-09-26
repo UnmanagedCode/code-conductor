@@ -493,10 +493,16 @@ export async function hasResumableConversation(options: { place: TranscriptPlace
     if (!trimmed) continue;
     let obj: unknown;
     try { obj = JSON.parse(trimmed); } catch { continue; }
-    const line = obj as PersistedLine;
-    if (line.type === 'user' || line.type === 'assistant') return true;
+    if (isResumableLine(obj)) return true;
   }
   return false;
+}
+
+// A real conversation record (user/assistant) — what hasResumableConversation
+// looks for, and what a fork's prefix must hold to be resumable.
+export function isResumableLine(obj: unknown): boolean {
+  const type = (obj as PersistedLine | null)?.type;
+  return type === 'user' || type === 'assistant';
 }
 
 // Append metadata markers to the session jsonl so `claude --resume`'s

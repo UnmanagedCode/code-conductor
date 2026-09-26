@@ -382,3 +382,59 @@ test('the offset is calibrated on the current segment\'s ring content only', asy
   assert.equal(fk.status, 201, JSON.stringify(fk.body));
   assert.equal(fk.body.droppedText, 's1 prompt 1');
 });
+
+test('a fork with nothing resumable before the prompt refuses before writing', async (t) => {
+  const assertRefusedUnchanged = async (id, body, file) => {
+    const listing = await dirListing(file);
+    const before = await fs.readFile(file, 'utf8');
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, body);
+    assert.equal(fk.status, 400, JSON.stringify(fk.body));
+    assert.match(fk.body.error, /nothing before this prompt to fork from/);
+    assert.deepEqual(await dirListing(file), listing, 'no file was written');
+    assert.equal(await fs.readFile(file, 'utf8'), before, 'the source is byte-identical');
+  };
+  await t.test('the restamped /clear echo of a renewed instance', async () => {
+    const { inst, id, file } = await bootRenewed(2);
+    const clear = (await archiveEchoes(inst, id)).find(e => e.text === RENEW_HEAD[1].message.content);
+    assert.equal(typeof clear?.userIndex, 'number', 'fixture: the /clear bubble is archive-served with a userIndex');
+    await assertRefusedUnchanged(id, { userMessageIndex: clear.userIndex, text: clear.text }, file);
+  });
+  await t.test('index 0 of a single-segment session', async () => {
+    const ids = chainIds();
+    const { id, place } = await bootLiveAcrossSeams({
+      ctx, project: `p${boots}`, publicId: ids.s0.slice(0, 8), ringCap: 1000,
+      segments: [{ id: ids.s0, reason: 'initial', records: segmentTurns('s0', 2) }],
+    });
+    await assertRefusedUnchanged(id, { userMessageIndex: 0, text: 's0 prompt 0' }, sessionFilePath(place, ids.s0));
+  });
+});
+
+test('a mid-turn correlated head with a measurable offset serves archive echoes with their live stamps', async () => {
+  // The trim falls back to a quiescent point inside one big persisted reply
+  // (the correlated cut), and a later s1 turn in the ring — an echo, then its
+  // persisted reply — makes the offset measurable.
+  const ids = chainIds();
+  const big = { type: 'assistant', uuid: 's1-aBig', message: { id: 's1-mBig', role: 'assistant',
+    content: Array.from({ length: 12 }, (_, i) => ({ type: 'text', text: `s1 big block ${i}` })) } };
+  const { inst, id, crossed } = await bootLiveAcrossSeams({
+    ctx, project: `p${boots}`, publicId: ids.s0.slice(0, 8), ringCap: RING_CAP,
+    segments: [
+      { id: ids.s0, reason: 'initial', records: segmentTurns('s0', 2) },
+      { id: ids.s1, reason: 'renew', records: [
+        { type: 'user', uuid: 's1-uBig', message: { role: 'user', content: 's1 big prompt' } }, big,
+        { type: 'user', uuid: 's1-uA', message: { role: 'user', content: 's1 after prompt' } },
+        { type: 'assistant', uuid: 's1-aA', message: { id: 's1-mA', role: 'assistant', content: [{ type: 'text', text: 's1 after reply' }] } },
+      ] },
+    ],
+  });
+  const ring = inst.ringSnapshot();
+  assert.equal(ring[0].kind, 'text_delta', 'fixture: the ring head is mid-turn');
+  assert.equal(ring[0].msgId, 's1-mBig', 'fixture: inside the persisted big reply');
+  const after = ring.findIndex(e => e.kind === 'user_echo' && e.text === 's1 after prompt');
+  assert.ok(after > 0 && ring.slice(after + 1).some(e => e.msgId === 's1-mA'), 'fixture: a later echo, then its persisted reply');
+  const liveBig = crossed[0].find(e => e.kind === 'user_echo' && e.text === 's1 big prompt').userIndex;
+  const echoes = await archiveEchoes(inst, id);
+  const bigEcho = echoes.find(e => e.text === 's1 big prompt');
+  assert.ok(bigEcho, 'fixture: the big prompt is archive-served');
+  assert.equal(bigEcho.userIndex, liveBig, 'the archive echo carries its live stamp');
+});

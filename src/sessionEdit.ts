@@ -20,7 +20,7 @@
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sessionFilePath, writeFileAtomic, type TranscriptPlacement } from './projects.ts';
-import { isPureUserPromptLine, replayPersistedLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
+import { isPureUserPromptLine, isResumableLine, replayPersistedLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { extractAttachedMarkers, isLocalCommandCaveatLine, isOuterUserEcho, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
 
@@ -66,8 +66,9 @@ function extractUserPromptText(obj: PersistedLine | null | undefined): string {
 export const PROMPT_MISMATCH = 'prompt text does not match the transcript';
 
 // A CLI command wrapper — only `<command-name>`/`<command-message>`/
-// `<command-args>` tags and whitespace — as the `/name args` a live echo
-// carries; null for any other text.
+// `<command-args>` tags and whitespace — as `<command-name> <command-args>`,
+// the text a live echo carries (the name verbatim: the CLI writes it with its
+// slash); null for any other text.
 const COMMAND_TAG_RE = /<(command-name|command-message|command-args)>([\s\S]*?)<\/\1>/g;
 
 function commandForm(text: string): string | null {
@@ -98,7 +99,7 @@ function replayedPromptText(obj: PersistedLine): string {
 //   - droppedLines: the lines from the target onward (including the user
 //     line itself)
 //   - droppedText: the prompt text of the target user message (a command
-//     wrapper in its command form, the `/name args` the composer can resend)
+//     wrapper in its command form, the command the composer can resend)
 //   - lastSurvivingUuid: uuid of the last prefix line, or null
 // Throws { statusCode: 400 } if the target index isn't found, and a
 // PROMPT_MISMATCH 409 if the target's replayed text is not `expectedText`.
@@ -237,7 +238,9 @@ export async function truncateSessionAtUserMessage({ place, sessionId, userMessa
 }
 
 // Copy the prefix of <cwd>/<sessionId>.jsonl up to (excluding) the Nth user
-// prompt line into a new file <cwd>/<newSessionId>.jsonl. The original
+// prompt line into a new file <cwd>/<newSessionId>.jsonl. A prefix with no
+// conversation record would be a session `--resume` cannot open, so that fork
+// is refused (400) before anything is written. The original
 // session jsonl is untouched. Rewrites the `sessionId` field inside each
 // copied line to the new id — purely cosmetic (the filename is what
 // `--resume` reads) but keeps the file self-consistent for any downstream
@@ -251,6 +254,9 @@ export async function forkSessionAtUserMessage({ place, sessionId, userMessageIn
   }
   const { prefix, droppedText, lastSurvivingUuid } =
     await readAndSplit({ place, sessionId, userMessageIndex, expectedText });
+  if (!prefix.some(e => isResumableLine(e.obj))) {
+    throw httpError(400, 'nothing before this prompt to fork from — rewind to it instead');
+  }
 
   const newSid = newSessionId ?? randomUUID();
   const newFile = sessionFilePath(place, newSid);
@@ -266,9 +272,8 @@ export async function forkSessionAtUserMessage({ place, sessionId, userMessageIn
 
   await writeFileAtomic(newFile, joinLines(rewritten));
 
-  // Anchor the new session in the resume picker. Skipped when prefix is
-  // empty (forking from N=0 — no surviving leaf, equivalent to a fresh
-  // sessionId no one has driven yet).
+  // Anchor the new session in the resume picker. Skipped when no prefix line
+  // carries a uuid — there is no leaf to anchor it on.
   if (lastSurvivingUuid) {
     await writeSessionMetadata({
       place, sessionId: newSid,

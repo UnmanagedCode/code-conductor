@@ -388,6 +388,7 @@ test('fork with attachment-bearing user message strips the marker from droppedTe
   // the same `text` block array. When we prefill the composer after a fork,
   // we don't want the marker line bouncing back as visible prose.
   const lines = [
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'earlier' } },
     { type: 'user', uuid: 'u1', message: { role: 'user', content: [
       { type: 'text', text: 'look at this' },
       { type: 'text', text: 'Attached file: `/tmp/foo/.code-conductor/projects/demo/attachments/123-screenshot.png`' },
@@ -398,7 +399,7 @@ test('fork with attachment-bearing user message strips the marker from droppedTe
   ];
   const { cwd, sid } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0, expectedText: 'look at this',
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'look at this',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'look at this',
