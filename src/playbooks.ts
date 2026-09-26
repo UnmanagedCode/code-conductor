@@ -1340,12 +1340,15 @@ function checkNeeds(
 // checkNeedEntry — the gate's own per-worker check — so the census never names
 // a worker the gate would then refuse. Provenance is never filled in from it.
 // No anchor (a run-root spawn with no provenance) ⇒ no run to count, no census.
+// Any anchor that does reach here is ledger-tracked — an untracked provenance
+// worker is refused before checkNeeds, and a transition's anchor is its tracked
+// subject — so it always has a run root.
 function needCensus(
   { need, playbook, projection, anchor, isLive, moves }:
   { need: NeedsEntry; playbook: Playbook; projection: Projection; anchor: string | undefined;
     isLive: (sessionId: string) => boolean; moves: LegalMoves },
 ): string {
-  if (!anchor || runRootOf(projection, anchor) === null) return '';
+  if (!anchor) return '';
   const members = runMembers(projection, anchor);
   const satisfiers = members.filter(m => checkNeedEntry({ need, sid: m, playbook, projection, anchor, isLive, moves }) === null);
   if (satisfiers.length > 0) return ` Workers in this run that satisfy it: ${satisfiers.map(short).join(', ')}.`;

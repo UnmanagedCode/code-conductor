@@ -363,8 +363,10 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
       try {
         // Every core tool's `project` names an existing project (creation takes
         // `name`), so a malformed one — most often a path — is refused here with
-        // the addressing guidance, through the same error envelope.
-        if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string') {
+        // the addressing guidance, through the same error envelope. An empty
+        // string is no path: it is left to each handler's own refusal
+        // (list_sessions answers it PROJECT_UNKNOWN).
+        if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string' && args.project !== '') {
           validateProjectRef(args.project);
         }
         const result = await tool.handler(args, ctx);

@@ -549,6 +549,15 @@ test('a live run member that moved off the accepted position is not reported as 
   assert.doesNotMatch(res.reason, /no running process|passed through 'root'/);
 });
 
+// Invariant: a run-root spawn (no provenance) has no run to describe, so its
+// refusal ends at the provenance hint with no census text.
+test('a run-root spawn with no provenance gets no census', () => {
+  const res = refusal(d('spawn_instance', { playbook: 'gatelab', stage: 'audit' }, GATELAB_RUN.slice(0, 2)),
+    'NEEDS_UNSATISFIED');
+  assert.match(res.reason, /pass provenance: \{ "build": "<sessionId>" \}\.$/);
+  assert.doesNotMatch(res.reason, /in this run/);
+});
+
 test('a position list refuses a stage it does not name, and says which stages it accepts', () => {
   // Provenance passes (it HAS been in `root`) and liveness passes (still live),
   // so position is the only thing that can refuse — which is what makes this a
