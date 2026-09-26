@@ -190,6 +190,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - [docs/models.md](docs/models.md) — the backend registry (launch templates + env), custom models, capability tiers & roles, Claude context-window policy, the Settings → Backends / → Models panels
 - [docs/protocol.md](docs/protocol.md) — subprocess protocol (CLI flags + hooks), WebSocket protocol, REST endpoints
 - [docs/architecture.md](docs/architecture.md) — stack, component layout, instance lifecycle, on-disk state, migrations, testing
+- [docs/frontend-testing.md](docs/frontend-testing.md) — testing `public/` under happy-dom (its UA-stylesheet and `hashchange` gaps, dialog reopen tests) and what the fake-CLI + headless-Chromium pass can and cannot reach
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [docs/systems-protocol.md](docs/systems-protocol.md) — the System provider wire protocol: frames, capabilities, the `exec` lifecycle, the derivations, the error taxonomy, and how to write or verify a provider
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) into `.conduct/CONVENTIONS.md` before every Conduct session's spawn/resume, loaded via that dir's `CLAUDE.md` `@CONVENTIONS.md` import (configurable in Settings → Conventions → Conductor)
