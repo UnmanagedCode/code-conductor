@@ -806,3 +806,16 @@ test('an invalid name: neutral on REST create, addressing guidance on an MCP pro
   assert.match(errText(addressed), /invalid project name "\/tmp\/not a name" — pass the project's NAME as list_projects prints it/);
   assert.match(errText(addressed), /not its path/);
 });
+
+// Invariant: the addressing guidance answers a REGEX failure only. A dot-only
+// name satisfies the regex, so it keeps validateName's path-traversal refusal —
+// never a guidance line quoting a regex the value matches.
+for (const name of ['.', '..']) {
+  test(`a dot-only project argument keeps the path-traversal refusal: ${name}`, async () => {
+    const r = await callTool('project_status', { project: name });
+    assert.equal(r.isError, true);
+    assert.equal(JSON.parse(r.content[1].text).error,
+      `invalid project name '${name}' (a dot-only name is a path traversal, not a project)`);
+    assert.doesNotMatch(errText(r), /list_projects/);
+  });
+}

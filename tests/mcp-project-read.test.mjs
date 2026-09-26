@@ -232,3 +232,23 @@ test('project_read: a first line longer than the cap is cut with a marker and li
     }
   } finally { await ctx.close(); }
 });
+
+// Invariant: the same condition is signalled the same way with NO line params —
+// a one-line file longer than the cap comes back with the in-band marker
+// carrying the line's full size, lineTruncated and endLine, within the budget,
+// never as a silent prefix.
+test('project_read: with no line params, a 100 KB one-line file is cut with a marker and lineTruncated', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const line = 'O'.repeat(100 * 1024);
+    await fs.writeFile(path.join(repoPath, 'oneline.txt'), line);
+    const r = await callTool(ctx.baseUrl, 'project_read', { project: 'demo', relativePath: 'oneline.txt' });
+    assert.ok(resultChars(r) <= MCP_RESULT_CHAR_BUDGET, `${resultChars(r)} chars`);
+    const m = unwrap(r);
+    assert.equal(m.truncated, true);
+    assert.equal(m.lineTruncated, true);
+    assert.equal(m.endLine, 1);
+    assert.ok(m.content.endsWith(` … [line cut: ${line.length} bytes]`), `ends ${JSON.stringify(m.content.slice(-60))}`);
+  } finally { await ctx.close(); }
+});

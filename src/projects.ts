@@ -366,15 +366,16 @@ export function validateName(name: string): string {
 }
 
 // validateName for an argument that ADDRESSES an existing project (the MCP
-// tools' `project`): same rule, but the refusal names the valid form — the
+// tools' `project`): same rule, but a regex failure names the valid form — the
 // NAME list_projects prints, not the path a caller most often passes instead.
 // validateName itself stays neutral, since it also guards names being created.
+// A dot-only name SATISFIES the regex, so its path-traversal refusal passes
+// through from validateName unchanged.
 export function validateProjectRef(name: string): string {
-  try {
-    return validateName(name);
-  } catch {
+  if (typeof name !== 'string' || !NAME_RE.test(name)) {
     throw httpError(400, `invalid project name ${JSON.stringify(name)} — pass the project's NAME as list_projects prints it (^[a-zA-Z0-9._-]+$), not its path`);
   }
+  return validateName(name);
 }
 
 export interface ProjectInfo {

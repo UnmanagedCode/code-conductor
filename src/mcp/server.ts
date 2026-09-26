@@ -72,8 +72,13 @@ interface McpPluginHostLike {
 function rpcResult(id: unknown, result: unknown): JsonRpcResponse {
   return { jsonrpc: JSONRPC, id, result };
 }
+// Every JSON-RPC error goes through here, and its message can echo the caller
+// (`method not found: <method>`, an internal error's message), so the message
+// is capped at the boundary the same way a tools/call echo is.
 function rpcError(id: unknown, code: number, message: string, data?: unknown): JsonRpcResponse {
-  const err: { code: number; message: string; data?: unknown } = { code, message };
+  const capped = capEcho(message);
+  if (capped !== message) console.error(`mcp: JSON-RPC error message of ${message.length} chars cut to fit the MCP result budget`);
+  const err: { code: number; message: string; data?: unknown } = { code, message: capped };
   if (data !== undefined) err.data = data;
   return { jsonrpc: JSONRPC, id, error: err };
 }
@@ -189,24 +194,250 @@ export function boundResult(
   return [{ type: 'text', text: JSON.stringify({ ok: false, code: 'RESULT_OVER_BUDGET', tool: tool.name, chars, budget, completed, reason }) }];
 }
 
-// The isError envelope for a thrown handler error: prose first (it reads best
-// for an LLM), then a structured {error, code, statusCode} block. Error prose
-// can echo an argument (a path, a worktree name) and the envelope carries the
-// message twice, so it is bounded too: over MCP_RESULT_CHAR_BUDGET the message
-// is cut to ERROR_MESSAGE_CAP chars with an in-band marker — the code and
-// statusCode, which carry the error's meaning, are kept whole — and logged.
-const ERROR_MESSAGE_CAP = MCP_RESULT_CHAR_BUDGET / 8;
-export function errorContent(
-  toolName: unknown, msg: string, code: string | null | undefined, sc: number | null,
-): TextContent {
-  const build = (m: string): TextContent => [
-    { type: 'text', text: sc ? `${m} (HTTP ${sc})` : m },
-    { type: 'text', text: JSON.stringify({ error: m, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}) }) },
-  ];
-  const full = build(msg);
-  if (full[0].text.length + full[1].text.length <= MCP_RESULT_CHAR_BUDGET) return full;
-  console.error(`mcp: ${String(toolName)} error message of ${msg.length} chars cut to fit the MCP result budget`);
-  return build(`${msg.slice(0, ERROR_MESSAGE_CAP)}… [error message cut: ${msg.length} chars]`);
+// Echoed caller strings — a tool name, an argument key, a `stage`, a path in an
+// error message, a JSON-RPC method — are the one thing in a refusal or an error
+// that can grow without bound. ECHO_CAP is where the response boundary cuts
+// one: the head plus the last ECHO_TAIL chars (an error's "(HTTP 404)" suffix
+// survives), joined by an in-band marker carrying the full length.
+const ECHO_CAP = MCP_RESULT_CHAR_BUDGET / 8;
+const ECHO_TAIL = 64;
+export function capEcho(s: string, cap = ECHO_CAP): string {
+  if (s.length <= cap) return s;
+  const tail = Math.min(ECHO_TAIL, Math.floor(cap / 4));
+  return `${s.slice(0, cap - tail)} … [cut: ${s.length} chars] … ${s.slice(-tail)}`;
+}
+
+function contentChars(content: TextContent): number {
+  let n = 0;
+  for (const c of content) n += c.text.length;
+  return n;
+}
+
+// Cap every string in one text block: a JSON object/array block has each string
+// VALUE capped (keys and every short field — `ok`, `code`, `statusCode` — stay
+// intact, and the block still parses); any other block is capped as one string.
+function capEchoesIn(text: string, cap: number): string {
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return capEcho(text, cap); }
+  if (!parsed || typeof parsed !== 'object') return capEcho(text, cap);
+  const walk = (v: unknown): unknown => typeof v === 'string' ? capEcho(v, cap)
+    : Array.isArray(v) ? v.map(walk)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))
+    : v;
+  return JSON.stringify(walk(parsed));
+}
+
+// THE RESPONSE BOUNDARY for MCP_RESULT_CHAR_BUDGET: every tools/call response
+// passes through here, whichever branch built it, so no echo can overflow it.
+//   - a handler RESULT over budget is withheld, never cut — cutting would change
+//     its data silently: a core tool's becomes boundResult's RESULT_OVER_BUDGET;
+//     a plugin tool's own result is outside cc's budget and passes as it is.
+//   - a REFUSAL or an ERROR carries its meaning in its code; what overflows is an
+//     echoed caller string, so every string in it is capped (capEcho), halving
+//     the cap until it fits, and logged. Should even the smallest cap not fit,
+//     it becomes RESULT_OVER_BUDGET.
+export function boundToolCall(call: ToolCall, coreTools: ReadonlySet<McpTool>): ToolCall['result'] {
+  const { result, tool, outcome } = call;
+  const chars = contentChars(result.content);
+  if (chars <= MCP_RESULT_CHAR_BUDGET) return result;
+  if (outcome === 'result') {
+    return tool && coreTools.has(tool) ? { ...result, content: boundResult(tool, result.content) } : result;
+  }
+  const name = tool?.name ?? '(unknown tool)';
+  console.error(`mcp: ${name} ${outcome === 'error' ? 'error' : 'refusal'} of ${chars} chars — echoed strings cut to fit the MCP result budget`);
+  for (let cap = ECHO_CAP; cap >= ECHO_TAIL; cap = Math.floor(cap / 2)) {
+    const content = result.content.map(c => ({ type: 'text' as const, text: capEchoesIn(c.text, cap) }));
+    if (contentChars(content) <= MCP_RESULT_CHAR_BUDGET) return { ...result, content };
+  }
+  return {
+    ...result,
+    content: [{ type: 'text', text: JSON.stringify({
+      ok: false, code: 'RESULT_OVER_BUDGET', tool: name, chars, budget: MCP_RESULT_CHAR_BUDGET,
+      completed: outcome === 'error' && !!tool && !tool.annotations?.readOnlyHint,
+      reason: `${name}'s ${outcome === 'error' ? 'error' : 'refusal'} (${chars} chars) is over the MCP result budget even with every echoed string cut`,
+    }) }],
+  };
+}
+
+// One tools/call, up to (not including) the response boundary: the result and
+// how the call ended — refused before any handler ran (unknown tool, argument
+// validation, prefix ambiguity, playbook policy), the handler's own result, or a
+// thrown handler error. boundToolCall reads `outcome` to bound it.
+interface ToolCall {
+  result: { content: TextContent; isError?: boolean };
+  tool: McpTool | null;
+  outcome: 'refused' | 'result' | 'error';
+}
+function refused(tool: McpTool | null, result: ToolCall['result']): ToolCall {
+  return { result, tool, outcome: 'refused' };
+}
+
+async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
+  const p = asRecord(params);
+  const name = p.name;
+  let args: unknown = p.arguments ?? {};
+  const tool = ctx.tools.find(t => t.name === name);
+  if (!tool) {
+    return refused(null, {
+      content: [{ type: 'text', text: `unknown tool: ${name}` }],
+      isError: true,
+    });
+  }
+  const v = validateArgs(tool.inputSchema, args, name);
+  if (v) {
+    return refused(tool, {
+      content: [{ type: 'text', text: v }],
+      isError: true,
+    });
+  }
+  // sessionId prefix resolution — the single, uniform chokepoint for every
+  // worker-addressing tool. Accept any unambiguous prefix of a sessionId in
+  // place of the full 36-char UUID, resolved to the canonical full id before
+  // the handler touches the registry. Non-destructive: only rewrites on a
+  // confident prefix→full resolution; exact ids and no-matches pass through
+  // unchanged so the handler's existing SESSION_NOT_LIVE / SESSION_UNKNOWN /
+  // on-disk lookup paths still run. The only new outcome is SESSION_AMBIGUOUS,
+  // serialized exactly like a handler soft-refusal (no isError).
+  if (ctx.instances?.resolveSessionRef
+      && hasSchemaProperty(tool.inputSchema, 'sessionId')
+      && isJsonRecord(args)
+      && typeof args.sessionId === 'string' && args.sessionId) {
+    const ref = ctx.instances.resolveSessionRef(args.sessionId);
+    if (ref && 'ambiguous' in ref) {
+      return refused(tool, {
+        content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.sessionId, 'sessionId')) }],
+      });
+    }
+    if (ref?.sessionId && ref.sessionId !== args.sessionId) {
+      args = { ...args, sessionId: ref.sessionId };
+    }
+  }
+  // `provenance` values are sessionIds too (the {stage: sessionId} map — see
+  // src/playbooks.ts), so they get the SAME prefix treatment. Without this
+  // the conductor would have to pass full 36-char UUIDs there while every
+  // other worker reference takes 8 chars.
+  // Ordering is load-bearing: this must run before the policy checkpoint
+  // below, which compares these values against the projection's full ids.
+  if (ctx.instances?.resolveSessionRef
+      && hasSchemaProperty(tool.inputSchema, 'provenance')
+      && isJsonRecord(args) && isJsonRecord(args.provenance)) {
+    const resolved: Record<string, unknown> = { ...args.provenance };
+    for (const [stage, value] of Object.entries(args.provenance)) {
+      if (typeof value !== 'string' || !value) continue;
+      const ref = ctx.instances.resolveSessionRef(value);
+      if (ref && 'ambiguous' in ref) {
+        return refused(tool, {
+          content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, value, `provenance.${stage}`)) }],
+        });
+      }
+      if (ref?.sessionId) resolved[stage] = ref.sessionId;
+    }
+    args = { ...args, provenance: resolved };
+  }
+  // `forward.sessionId` (send_prompt) is a worker handle too, nested one
+  // level deep, so the top-level chokepoint above misses it. Mirrors the
+  // `provenance` loop; NOT generalised into one loop with the others — the
+  // four sites differ in shape (scalar, map, nested, and `resume`'s
+  // two-answer resolver) and the ordering comment above is load-bearing for
+  // `provenance`.
+  if (ctx.instances?.resolveSessionRef
+      && hasSchemaProperty(tool.inputSchema, 'forward')
+      && isJsonRecord(args) && isJsonRecord(args.forward)
+      && typeof args.forward.sessionId === 'string' && args.forward.sessionId) {
+    const ref = ctx.instances.resolveSessionRef(args.forward.sessionId);
+    if (ref && 'ambiguous' in ref) {
+      return refused(tool, {
+        content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.forward.sessionId, 'forward.sessionId')) }],
+      });
+    }
+    if (ref?.sessionId) args = { ...args, forward: { ...args.forward, sessionId: ref.sessionId } };
+  }
+  // `resume` (spawn_instance) is a worker handle too — it just declares
+  // `resume` rather than `sessionId`, so the top-level block above misses it.
+  // TWO differences from the three sites above, both explained at
+  // InstanceManager.resolveResumeRef:
+  //   • it resolves over `byId` UNION the lineage store, because the ordinary
+  //     resume target — a killed conductor worker, or any worker after an
+  //     orchestrator restart — is not in `byId` at all;
+  //   • it REWRITES THE ARG ONLY FOR A PREFIX. An exact segment id is left
+  //     verbatim, because `resume` feeds create(), and create() opens the
+  //     segment it is named; the public id the policy gate needs travels
+  //     BESIDE it (`resumeHandle`) rather than in its place. Overwriting it
+  //     would silently redirect the resume to the session's newest transcript.
+  // Async, which is free here: this arm already awaits the gate and the
+  // handler below.
+  let resumeHandle: string | undefined;
+  if (ctx.instances?.resolveResumeRef
+      && hasSchemaProperty(tool.inputSchema, 'resume')
+      && isJsonRecord(args)
+      && typeof args.resume === 'string' && args.resume) {
+    const ref = await ctx.instances.resolveResumeRef(args.resume);
+    if (ref && 'ambiguous' in ref) {
+      return refused(tool, {
+        content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.resume, 'resume')) }],
+      });
+    }
+    if (ref) {
+      resumeHandle = ref.handle;
+      if (ref.resume !== args.resume) args = { ...args, resume: ref.resume };
+    }
+  }
+  // Playbook policy — the ONE enforcement point, deliberately AFTER
+  // validateArgs and after EVERY prefix-resolution pass above, and BEFORE
+  // the handler. Inert unless the caller is a conductor with enforcement on;
+  // see src/mcp/playbookGate.ts.
+  const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId, resumeHandle });
+  if ('refusal' in gate) {
+    return refused(tool, { content: [{ type: 'text', text: JSON.stringify(gate.refusal) }] });
+  }
+  args = gate.args;
+  try {
+    // Every core tool's `project` names an existing project (creation takes
+    // `name`), so a malformed one — most often a path — is refused here with
+    // the addressing guidance, through the same error envelope. An empty
+    // string is no path: it is left to each handler's own refusal
+    // (list_sessions answers it PROJECT_UNKNOWN).
+    if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string' && args.project !== '') {
+      validateProjectRef(args.project);
+    }
+    const result = await tool.handler(args, ctx);
+    // Ledger the move only now that it has actually happened. A throw skips
+    // this entirely (see the catch below); a soft refusal is filtered inside
+    // commit().
+    if (gate.commit) await gate.commit(result);
+    let content: TextContent;
+    if (isTextResult(result)) {
+      // The rendering IS the whole result — one raw block, no metadata
+      // block to parse (src/mcp/content.ts).
+      content = [{ type: 'text', text: result.text }];
+    } else if (isTextPayload(result)) {
+      // Multi-block: compact-JSON metadata block, then one raw text block
+      // per body, in order. Lets the LLM read file/diff/message bodies
+      // un-escaped while still parsing structured metadata from content[0].
+      content = [{ type: 'text', text: JSON.stringify(result.meta ?? null) }];
+      for (const b of result.bodies) content.push({ type: 'text', text: String(b) });
+    } else {
+      content = [{ type: 'text', text: JSON.stringify(result ?? null) }];
+    }
+    return { result: { content }, tool, outcome: 'result' };
+  } catch (e) {
+    // Errors read best as prose for an LLM (content[0]); a structured
+    // {error, code, statusCode} block follows for machine handling.
+    const sc = errStatus(e);
+    const code = errCode(e) ?? codeForStatus(sc);
+    const msg = errMsg(e);
+    return {
+      result: {
+        content: [
+          { type: 'text', text: sc ? `${msg} (HTTP ${sc})` : msg },
+          { type: 'text', text: JSON.stringify({ error: msg, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}) }) },
+        ],
+        isError: true,
+      },
+      tool,
+      outcome: 'error',
+    };
+  }
 }
 
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
@@ -242,161 +473,7 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
       return rpcResult(id, { tools });
     }
     if (method === 'tools/call') {
-      const p = asRecord(params);
-      const name = p.name;
-      let args: unknown = p.arguments ?? {};
-      const tool = ctx.tools.find(t => t.name === name);
-      if (!tool) {
-        return rpcResult(id, {
-          content: [{ type: 'text', text: `unknown tool: ${name}` }],
-          isError: true,
-        });
-      }
-      const v = validateArgs(tool.inputSchema, args, name);
-      if (v) {
-        return rpcResult(id, {
-          content: [{ type: 'text', text: v }],
-          isError: true,
-        });
-      }
-      // sessionId prefix resolution — the single, uniform chokepoint for every
-      // worker-addressing tool. Accept any unambiguous prefix of a sessionId in
-      // place of the full 36-char UUID, resolved to the canonical full id before
-      // the handler touches the registry. Non-destructive: only rewrites on a
-      // confident prefix→full resolution; exact ids and no-matches pass through
-      // unchanged so the handler's existing SESSION_NOT_LIVE / SESSION_UNKNOWN /
-      // on-disk lookup paths still run. The only new outcome is SESSION_AMBIGUOUS,
-      // serialized exactly like a handler soft-refusal (no isError).
-      if (ctx.instances?.resolveSessionRef
-          && hasSchemaProperty(tool.inputSchema, 'sessionId')
-          && isJsonRecord(args)
-          && typeof args.sessionId === 'string' && args.sessionId) {
-        const ref = ctx.instances.resolveSessionRef(args.sessionId);
-        if (ref && 'ambiguous' in ref) {
-          return rpcResult(id, {
-            content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.sessionId, 'sessionId')) }],
-          });
-        }
-        if (ref?.sessionId && ref.sessionId !== args.sessionId) {
-          args = { ...args, sessionId: ref.sessionId };
-        }
-      }
-      // `provenance` values are sessionIds too (the {stage: sessionId} map — see
-      // src/playbooks.ts), so they get the SAME prefix treatment. Without this
-      // the conductor would have to pass full 36-char UUIDs there while every
-      // other worker reference takes 8 chars.
-      // Ordering is load-bearing: this must run before the policy checkpoint
-      // below, which compares these values against the projection's full ids.
-      if (ctx.instances?.resolveSessionRef
-          && hasSchemaProperty(tool.inputSchema, 'provenance')
-          && isJsonRecord(args) && isJsonRecord(args.provenance)) {
-        const resolved: Record<string, unknown> = { ...args.provenance };
-        for (const [stage, value] of Object.entries(args.provenance)) {
-          if (typeof value !== 'string' || !value) continue;
-          const ref = ctx.instances.resolveSessionRef(value);
-          if (ref && 'ambiguous' in ref) {
-            return rpcResult(id, {
-              content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, value, `provenance.${stage}`)) }],
-            });
-          }
-          if (ref?.sessionId) resolved[stage] = ref.sessionId;
-        }
-        args = { ...args, provenance: resolved };
-      }
-      // `forward.sessionId` (send_prompt) is a worker handle too, nested one
-      // level deep, so the top-level chokepoint above misses it. Mirrors the
-      // `provenance` loop; NOT generalised into one loop with the others — the
-      // four sites differ in shape (scalar, map, nested, and `resume`'s
-      // two-answer resolver) and the ordering comment above is load-bearing for
-      // `provenance`.
-      if (ctx.instances?.resolveSessionRef
-          && hasSchemaProperty(tool.inputSchema, 'forward')
-          && isJsonRecord(args) && isJsonRecord(args.forward)
-          && typeof args.forward.sessionId === 'string' && args.forward.sessionId) {
-        const ref = ctx.instances.resolveSessionRef(args.forward.sessionId);
-        if (ref && 'ambiguous' in ref) {
-          return rpcResult(id, {
-            content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.forward.sessionId, 'forward.sessionId')) }],
-          });
-        }
-        if (ref?.sessionId) args = { ...args, forward: { ...args.forward, sessionId: ref.sessionId } };
-      }
-      // `resume` (spawn_instance) is a worker handle too — it just declares
-      // `resume` rather than `sessionId`, so the top-level block above misses it.
-      // TWO differences from the three sites above, both explained at
-      // InstanceManager.resolveResumeRef:
-      //   • it resolves over `byId` UNION the lineage store, because the ordinary
-      //     resume target — a killed conductor worker, or any worker after an
-      //     orchestrator restart — is not in `byId` at all;
-      //   • it REWRITES THE ARG ONLY FOR A PREFIX. An exact segment id is left
-      //     verbatim, because `resume` feeds create(), and create() opens the
-      //     segment it is named; the public id the policy gate needs travels
-      //     BESIDE it (`resumeHandle`) rather than in its place. Overwriting it
-      //     would silently redirect the resume to the session's newest transcript.
-      // Async, which is free here: this arm already awaits the gate and the
-      // handler below.
-      let resumeHandle: string | undefined;
-      if (ctx.instances?.resolveResumeRef
-          && hasSchemaProperty(tool.inputSchema, 'resume')
-          && isJsonRecord(args)
-          && typeof args.resume === 'string' && args.resume) {
-        const ref = await ctx.instances.resolveResumeRef(args.resume);
-        if (ref && 'ambiguous' in ref) {
-          return rpcResult(id, {
-            content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.resume, 'resume')) }],
-          });
-        }
-        if (ref) {
-          resumeHandle = ref.handle;
-          if (ref.resume !== args.resume) args = { ...args, resume: ref.resume };
-        }
-      }
-      // Playbook policy — the ONE enforcement point, deliberately AFTER
-      // validateArgs and after EVERY prefix-resolution pass above, and BEFORE
-      // the handler. Inert unless the caller is a conductor with enforcement on;
-      // see src/mcp/playbookGate.ts.
-      const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId, resumeHandle });
-      if ('refusal' in gate) {
-        return rpcResult(id, { content: [{ type: 'text', text: JSON.stringify(gate.refusal) }] });
-      }
-      args = gate.args;
-      try {
-        // Every core tool's `project` names an existing project (creation takes
-        // `name`), so a malformed one — most often a path — is refused here with
-        // the addressing guidance, through the same error envelope. An empty
-        // string is no path: it is left to each handler's own refusal
-        // (list_sessions answers it PROJECT_UNKNOWN).
-        if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string' && args.project !== '') {
-          validateProjectRef(args.project);
-        }
-        const result = await tool.handler(args, ctx);
-        // Ledger the move only now that it has actually happened. A throw skips
-        // this entirely (see the catch below); a soft refusal is filtered inside
-        // commit().
-        if (gate.commit) await gate.commit(result);
-        let content: TextContent;
-        if (isTextResult(result)) {
-          // The rendering IS the whole result — one raw block, no metadata
-          // block to parse (src/mcp/content.ts).
-          content = [{ type: 'text', text: result.text }];
-        } else if (isTextPayload(result)) {
-          // Multi-block: compact-JSON metadata block, then one raw text block
-          // per body, in order. Lets the LLM read file/diff/message bodies
-          // un-escaped while still parsing structured metadata from content[0].
-          content = [{ type: 'text', text: JSON.stringify(result.meta ?? null) }];
-          for (const b of result.bodies) content.push({ type: 'text', text: String(b) });
-        } else {
-          content = [{ type: 'text', text: JSON.stringify(result ?? null) }];
-        }
-        if (ctx.coreTools.has(tool)) content = boundResult(tool, content);
-        return rpcResult(id, { content });
-      } catch (e) {
-        // Errors read best as prose for an LLM (content[0]); a structured
-        // {error, code, statusCode} block follows for machine handling.
-        const sc = errStatus(e);
-        const code = errCode(e) ?? codeForStatus(sc);
-        return rpcResult(id, { content: errorContent(name, errMsg(e), code, sc), isError: true });
-      }
+      return rpcResult(id, boundToolCall(await toolsCall(params, ctx), ctx.coreTools));
     }
     if (isNotification) return null;
     return rpcError(id, -32601, `method not found: ${method}`);

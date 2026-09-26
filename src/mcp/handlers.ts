@@ -2659,7 +2659,12 @@ export async function projectRead({ project, worktree, relativePath,
   // lineCount reflects lines in the bytes we have; if truncated it may be
   // partial (the truncated flag already signals that to the caller).
   const lineParamsActive = lineNumbers || offset !== 1 || limit != null;
-  if (!lineParamsActive) {
+  // A cut with no newline in it means the FIRST line alone is longer than the
+  // cap: that is the one mid-line cut, and it is served by the line path below
+  // so it is signalled the same way whatever the params (marker, lineTruncated,
+  // endLine).
+  const firstLineOverCap = truncatedByBytes && !buf.includes(0x0a);
+  if (!lineParamsActive && !firstLineOverCap) {
     const text = buf.toString('utf8');
     const rawLines = text.split('\n');
     const lineCount = text.endsWith('\n') ? rawLines.length - 1 : rawLines.length;
@@ -2706,8 +2711,11 @@ export async function projectRead({ project, worktree, relativePath,
     if (bytes + add > cap) {
       truncated = true;
       if (out.length === 0) {
+        // The marker rides only where it fits: the body never exceeds maxBytes,
+        // and lineTruncated signals the cut either way.
         const marker = ` … [line cut: ${Buffer.byteLength(slicedLines[i], 'utf8')} bytes]`;
-        out.push(utf8Prefix(rendered, Math.max(0, cap - Buffer.byteLength(marker, 'utf8'))) + marker);
+        const markerBytes = Buffer.byteLength(marker, 'utf8');
+        out.push(markerBytes <= cap ? utf8Prefix(rendered, cap - markerBytes) + marker : utf8Prefix(rendered, cap));
         lineTruncated = true;
       }
       break;

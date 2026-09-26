@@ -1165,7 +1165,8 @@ export function buildTools(): Tool[] {
         'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
         '(default and maximum per the schema — the most one result carries); `truncated` says when. A cut line-range ' +
         'read ends on a whole line and endLine names it, so offset:endLine+1 continues — except a single line longer ' +
-        'than maxBytes, which is cut mid-line with an in-band "… [line cut: N bytes]" marker and lineTruncated:true; ' +
+        'than maxBytes, which (with or without line params) is cut mid-line with an in-band "… [line cut: N bytes]" ' +
+        'marker (when it fits within maxBytes), lineTruncated:true and endLine; ' +
         'no offset reaches the rest of that line, so read it with project_bash (e.g. cut/head -c).',
       inputSchema: {
         type: 'object',

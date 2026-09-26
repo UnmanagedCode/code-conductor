@@ -1420,6 +1420,10 @@ test('project_read reads UTF-8 by relative path, rejects traversal, caps at maxB
   }));
   assert.equal(cut.content, 'hello');
   assert.equal(cut.truncated, true);
+  // Invariant: "hello world" is one line longer than the cap — flagged as the
+  // mid-line cut, but the marker does not fit 5 bytes, so the body stays
+  // within maxBytes and carries none.
+  assert.equal(cut.lineTruncated, true);
 
   // Traversal: blocked.
   const { body: trav } = await rpc(baseUrl, 'tools/call', {
