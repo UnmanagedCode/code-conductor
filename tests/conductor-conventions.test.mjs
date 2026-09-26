@@ -65,6 +65,52 @@ test('composeConduct(all) = core + all convention bodies + footer', async () => 
   assert.match(doc, /generated from `conventions\/conductor\/core\.md`/, 'footer last');
 });
 
+// Invariant: the call-form instruction has exactly one home, the toolbelt.
+test('the call-name rule is stated once, inside the MCP toolbelt section', async () => {
+  const RULE = '`mcp__code-conductor__<name>`';
+  const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
+  assert.equal(doc.split(RULE).length - 1, 1, 'stated exactly once in the composed doc');
+  const start = doc.indexOf('## MCP toolbelt');
+  const end = doc.indexOf('\n## ', start + 1);
+  const at = doc.indexOf(RULE);
+  assert.ok(start >= 0 && at > start && (end < 0 || at < end), 'inside the MCP toolbelt section');
+
+  const dir = path.join(__dirname, '..', 'conventions', 'conductor');
+  const homes = [];
+  for (const f of (await fs.readdir(dir)).filter(f => f.endsWith('.md'))) {
+    if ((await fs.readFile(path.join(dir, f), 'utf8')).includes(RULE)) homes.push(f);
+  }
+  assert.deepEqual(homes, ['core.md'], 'only core.md carries it');
+});
+
+// Invariant: pins the Model-choice bullet's conditioned wording — not the
+// property across the whole doc.
+test('Model choice conditions the tier on the stage not pinning model', async () => {
+  const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
+  const line = doc.split('\n').find(l => l.startsWith('- **Model choice.**'));
+  assert.ok(line, 'the Model choice bullet is composed');
+  assert.doesNotMatch(line, /^- \*\*Model choice\.\*\* Pass /);
+  assert.ok(line.includes('Omit `model` where the stage pins it'), 'pinned model is omitted');
+});
+
+// Invariant: every composed spawn_instance example that passes `model` names a
+// playbook stage that does not pin `model` — a literal example copied into a
+// pinned stage is the ARG_PIN_CONFLICT the Model-choice bullet guards against.
+test('every spawn_instance example passing model names a stage that leaves model unpinned', async () => {
+  const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
+  const { playbooks } = await loadPlaybooks();
+  const examples = [...doc.matchAll(/spawn_instance\(\{([^}]*)\}\)/g)].map(m => m[1])
+    .filter(args => /\bmodel\s*:/.test(args));
+  assert.ok(examples.length > 0, 'at least one example passes model (non-vacuity)');
+  for (const args of examples) {
+    const pb = playbooks.get(args.match(/\bplaybook\s*:\s*'([^']+)'/)?.[1]);
+    const stage = pb?.stages[args.match(/\bstage\s*:\s*'([^']+)'/)?.[1]];
+    assert.ok(stage, `names a loaded playbook stage: ${args}`);
+    const policy = stage.tools.spawn_instance;
+    assert.ok(!(typeof policy === 'object' && 'model' in policy.pin), `stage leaves model unpinned: ${args}`);
+  }
+});
+
 test('composeConduct([]) = core + footer only (no convention headings)', async () => {
   const doc = await composeConduct([]);
   assert.ok(doc.startsWith('# Conductor role'));
