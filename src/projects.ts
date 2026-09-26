@@ -350,7 +350,7 @@ interface LineageRowLike { current: string }
 
 export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
-    throw httpError(400, `invalid project name ${JSON.stringify(name)} — pass the project's NAME as list_projects prints it (^[a-zA-Z0-9._-]+$), not its path`);
+    throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
   }
   // `.` and `..` pass NAME_RE (it has no positional rules) but they are PATH
   // TRAVERSAL, not names: `path.join(projectsRoot(), '..')` escapes the root
@@ -363,6 +363,18 @@ export function validateName(name: string): string {
     throw httpError(400, `invalid project name '${name}' (a dot-only name is a path traversal, not a project)`);
   }
   return name;
+}
+
+// validateName for an argument that ADDRESSES an existing project (the MCP
+// tools' `project`): same rule, but the refusal names the valid form — the
+// NAME list_projects prints, not the path a caller most often passes instead.
+// validateName itself stays neutral, since it also guards names being created.
+export function validateProjectRef(name: string): string {
+  try {
+    return validateName(name);
+  } catch {
+    throw httpError(400, `invalid project name ${JSON.stringify(name)} — pass the project's NAME as list_projects prints it (^[a-zA-Z0-9._-]+$), not its path`);
+  }
 }
 
 export interface ProjectInfo {

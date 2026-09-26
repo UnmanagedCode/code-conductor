@@ -728,9 +728,9 @@ export function createPluginHost(opts: {
       next = { type: 'main' };
     } else if (ver?.type === 'worktree') {
       if (typeof ver.name !== 'string' || ver.name === '') throw httpError(400, "worktree version requires a 'name'");
-      const { getWorktree } = await import('../worktrees.ts');
-      const meta = await getWorktree(entry.project, ver.name);
-      if (!meta?.worktreePath) throw httpError(404, `worktree '${ver.name}' of project '${entry.project}' not found`);
+      // A miss is a 404 listing the project's worktrees by exact name.
+      const { requireWorktree } = await import('../worktrees.ts');
+      const meta = await requireWorktree(entry.project, ver.name);
       const result = await readManifest(await resolveSystem(entry.project), meta.worktreePath);
       if (!result) throw httpError(400, `no conductor.plugin.json in worktree '${ver.name}'`);
       if ('errors' in result) throw httpError(400, `manifest in worktree '${ver.name}' is invalid: ${result.errors.join('; ')}`);

@@ -791,3 +791,18 @@ test('project_diff summary: a change set one char over the budget as one page is
   assert.equal(whole.files.length, 301 + k);
   assert.equal(JSON.stringify(whole).length, MCP_RESULT_CHAR_BUDGET + 1);
 });
+
+// Invariant: the list_projects/NAME/not-a-path guidance belongs to ADDRESSING
+// an existing project only — creating one (REST POST /api/projects, the
+// new-project dialog) gets the neutral regex refusal, while the MCP `project`
+// argument gets the guidance.
+test('an invalid name: neutral on REST create, addressing guidance on an MCP project argument', async () => {
+  const created = await api(baseUrl, 'POST', '/api/projects', { name: '/tmp/not a name' });
+  assert.equal(created.status, 400);
+  assert.equal(created.body.error, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
+
+  const addressed = await callTool('list_worktrees', { project: '/tmp/not a name' });
+  assert.equal(addressed.isError, true);
+  assert.match(errText(addressed), /invalid project name "\/tmp\/not a name" — pass the project's NAME as list_projects prints it/);
+  assert.match(errText(addressed), /not its path/);
+});

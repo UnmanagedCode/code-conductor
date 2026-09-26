@@ -218,6 +218,25 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.match(text, /SYSTEM_UNREACHABLE/, text);
   });
 
+  // PINS: an UNREGISTERED worktree name is a 404 listing the real worktrees even
+  // while the project's system is unreachable — the lookup is store-derived and
+  // runs before the system is resolved, on every land-back surface (MCP merge,
+  // MCP sync, and the shared merge the REST route uses).
+  test('an unregistered worktree name on an unreachable system 404s listing the exact names', async () => {
+    await adoptRemote();
+    const wt = await createWorktree('app', { name: 'feature' });
+    disposeSystemHandles();
+    await updateSystem(remote.id, { launch: null });
+    const listing = `worktree 'nope' not found under project 'app' — its worktrees, by exact name: ${wt.worktreeName}`;
+    for (const tool of ['merge_worktree', 'sync_worktree']) {
+      const r = await callTool(baseUrl, tool, { project: 'app', worktree: 'nope' });
+      assert.equal(r.isError, true, `${tool}: ${JSON.stringify(r)}`);
+      assert.equal(JSON.parse(r.content[1].text).error, listing, tool);
+      assert.equal(JSON.parse(r.content[1].text).statusCode, 404, tool);
+    }
+    await assert.rejects(mergeWorktreeIntoParent('app', 'nope'), e => e.statusCode === 404 && e.message === listing);
+  });
+
   // ── Bucket 3: the store-sourced post-worktree hook ───────────────────
 
   // PINS: a hook script that lives in cc's OWN STORE is not run on a remote

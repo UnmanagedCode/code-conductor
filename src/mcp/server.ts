@@ -12,6 +12,7 @@ import { buildTools } from './tools.ts';
 import { isTextPayload, isTextResult, codeForStatus, MCP_RESULT_CHAR_BUDGET } from './content.ts';
 import { validateArgs } from './argValidation.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
+import { validateProjectRef } from '../projects.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
@@ -360,6 +361,12 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
       }
       args = gate.args;
       try {
+        // Every core tool's `project` names an existing project (creation takes
+        // `name`), so a malformed one — most often a path — is refused here with
+        // the addressing guidance, through the same error envelope.
+        if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string') {
+          validateProjectRef(args.project);
+        }
         const result = await tool.handler(args, ctx);
         // Ledger the move only now that it has actually happened. A throw skips
         // this entirely (see the catch below); a soft refusal is filtered inside

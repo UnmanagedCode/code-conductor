@@ -1966,16 +1966,12 @@ export async function syncWorktree({ project, worktree }: { project: string; wor
 }
 
 export async function mergeWorktree({ project, worktree, allowDirty }: { project: string; worktree: string; allowDirty?: boolean }) {
-  // The canonical-name lookup reads the project, so an unreachable system
-  // refuses HERE, before mergeWorktreeIntoParent can convert it. Converted the
-  // same way for the same reason: this tool answers with a structured refusal,
-  // and a conductor acts on the code.
-  let wt;
-  try { wt = await requireWorktree(project, worktree); }
-  catch (e) {
-    if (!isSystemRefusal(e)) throw e;
-    return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: e.message };
-  }
+  // The canonical-name lookup is store-derived — listWorktrees degrades an
+  // unreachable system to an unfiltered listing — so it never raises a system
+  // refusal: an unregistered name 404s listing the real worktrees whatever the
+  // system's state, and an unreachable system on a registered one is converted
+  // to SYSTEM_UNREACHABLE by mergeWorktreeIntoParent below.
+  const wt = await requireWorktree(project, worktree);
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
   const result = await mergeWorktreeIntoParent(project, wt.worktreeName, { allowDirty: allowDirty === true });
