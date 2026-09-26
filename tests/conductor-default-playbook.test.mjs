@@ -374,6 +374,20 @@ test('drift proof: a pin edit changes the rendered convention', async () => {
     'capacity and pin flags share one parenthetical');
 });
 
+// Invariant: the rendered pins come from the exact `spawn_instance` entry. Another
+// tool's pin, ordered first in `tools`, is a legal definition the renderer must
+// not pick up.
+test('only the spawn_instance pin renders when another tool\'s pin precedes it', async () => {
+  const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
+  def.stages.alpha.tools = {
+    set_mode: { pin: { mode: 'acceptEdits' } },
+    spawn_instance: { pin: { mode: 'bypassPermissions' } },
+  };
+  const out = await renderFixture(def);
+  assert.ok(out.includes('- **alpha** (pins mode="bypassPermissions") — A.'), 'spawn_instance pin rendered');
+  assert.ok(!out.includes('acceptEdits'), "the other tool's pin value is absent");
+});
+
 // Invariant: every spawn_instance pin in a shipped definition appears on its
 // stage's line, and no unpinned stage is marked pinned.
 test('every built-in stage\'s spawn_instance pins render on its stage line', async () => {

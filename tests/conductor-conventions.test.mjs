@@ -83,7 +83,8 @@ test('the call-name rule is stated once, inside the MCP toolbelt section', async
   assert.deepEqual(homes, ['core.md'], 'only core.md carries it');
 });
 
-// Invariant: the Model-choice bullet never says to pass `model` unconditionally.
+// Invariant: pins the Model-choice bullet's conditioned wording — not the
+// property across the whole doc.
 test('Model choice conditions the tier on the stage not pinning model', async () => {
   const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
   const line = doc.split('\n').find(l => l.startsWith('- **Model choice.**'));
