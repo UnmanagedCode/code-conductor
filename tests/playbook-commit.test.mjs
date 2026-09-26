@@ -234,3 +234,101 @@ test('two CONCURRENT commits naming the same session write one `spawn` and one `
     assert.deepEqual({ stage: st.stage, history: st.stageHistory }, { stage: 'loose', history: ['loose'] });
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+// ── forwardSessionId on transition rows ────────────────────────────────────
+//
+// A ledgered `transition` — a real move or a declared self-loop — records the
+// send_prompt forward source it was handed, so the audit trail shows whose
+// output crossed the move. The source id appears nowhere else in the run, so no
+// row can carry it by copying `sessionId` or a `provenance` value. `appended`
+// holds every argument handed to append(): JSON drops an `undefined` key, so only
+// the argument can tell "omitted" from "written as undefined".
+
+const RUN = [
+  { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
+  { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
+  { kind: 'spawn', sessionId: 'a1', playbook: 'gatelab', stage: 'audit', provenance: { build: 'w1' } },
+];
+const IN_AMEND = [...RUN,
+  { kind: 'transition', sessionId: 'w1', from: 'build', to: 'amend', via: 'send_prompt', provenance: { audit: 'a1' } }];
+const FORWARD_SOURCE = 'planner-1';
+
+async function tmpLedgerAppends(events) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbcommit-'));
+  const file = path.join(dir, 'playbook-ledger.jsonl');
+  await fs.writeFile(file, events.map((e, i) =>
+    JSON.stringify({ seq: i + 1, ts: `2026-09-06T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');
+  const real = createPlaybookLedger({ file: () => file });
+  const appended = [];
+  const ledger = { ...real, append(ev) { appended.push(ev); return real.append(ev); } };
+  const gate = createPlaybookGate({ instances: stubManagerRecording({ live: ['w1', 'a1'] }), ledger });
+  return { dir, file, gate, appended };
+}
+
+async function sendPromptCommitted(gate, args) {
+  const outcome = await gate.check({ toolName: 'send_prompt', args, callerId: CONDUCTOR_ID });
+  assert.ok(!('refusal' in outcome), `premise: this send_prompt must be allowed; got ${JSON.stringify(outcome.refusal)}`);
+  assert.ok(typeof outcome.commit === 'function', 'premise: an allowed send_prompt carries a commit');
+  await outcome.commit({});
+}
+
+async function lastRow(file) {
+  const { seq, ts, ...row } = (await readEvents(file)).at(-1);
+  return row;
+}
+
+test('a real transition records the forward source as forwardSessionId', async () => {
+  const { dir, file, gate } = await tmpLedgerAppends(RUN);
+  try {
+    await sendPromptCommitted(gate, {
+      sessionId: 'w1', text: 'go', stage: 'amend', provenance: { audit: 'a1' }, forward: { sessionId: FORWARD_SOURCE },
+    });
+    assert.deepEqual(await lastRow(file), {
+      kind: 'transition', sessionId: 'w1', from: 'build', to: 'amend', via: 'send_prompt',
+      provenance: { audit: 'a1' }, forwardSessionId: FORWARD_SOURCE,
+    });
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a declared self-loop records the forward source as forwardSessionId', async () => {
+  const { dir, file, gate } = await tmpLedgerAppends(IN_AMEND);
+  try {
+    await sendPromptCommitted(gate, {
+      sessionId: 'w1', text: 'round 2', stage: 'amend', forward: { sessionId: FORWARD_SOURCE },
+    });
+    assert.deepEqual(await lastRow(file), {
+      kind: 'transition', sessionId: 'w1', from: 'amend', to: 'amend', via: 'send_prompt',
+      forwardSessionId: FORWARD_SOURCE,
+    });
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a transition without a forward omits forwardSessionId — the key, not just its value', async (t) => {
+  const arms = [
+    { name: 'real move', seed: RUN, args: { sessionId: 'w1', text: 'go', stage: 'amend', provenance: { audit: 'a1' } }, from: 'build' },
+    { name: 'declared self-loop', seed: IN_AMEND, args: { sessionId: 'w1', text: 'round 2', stage: 'amend' }, from: 'amend' },
+  ];
+  for (const arm of arms) {
+    await t.test(arm.name, async () => {
+      const { dir, file, gate, appended } = await tmpLedgerAppends(arm.seed);
+      try {
+        await sendPromptCommitted(gate, arm.args);
+        const row = appended.find(e => e.kind === 'transition');
+        assert.ok(row, 'premise: the move was ledgered');
+        assert.deepEqual({ from: row.from, to: row.to }, { from: arm.from, to: 'amend' }, 'premise: the intended arm ran');
+        assert.equal(Object.hasOwn(row, 'forwardSessionId'), false, 'append() must not be handed the key at all');
+        assert.equal(Object.hasOwn(await lastRow(file), 'forwardSessionId'), false);
+      } finally { await fs.rm(dir, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test('an undeclared self-edge with a forward is still not ledgered', async () => {
+  // INVARIANT: carrying a forward does not make an undeclared self-edge worth a
+  // row — `build` declares no build->build.
+  const { dir, gate, appended } = await tmpLedgerAppends(RUN);
+  try {
+    await sendPromptCommitted(gate, { sessionId: 'w1', text: 'x', stage: 'build', forward: { sessionId: FORWARD_SOURCE } });
+    assert.equal(appended.length, 0);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
