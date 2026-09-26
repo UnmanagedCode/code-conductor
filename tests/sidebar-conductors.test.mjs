@@ -4,8 +4,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { assertNull } from './dom-assert.mjs';
-import { setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
+import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
 
 const conductorOf = (list, sid) => list.querySelector(`[data-key="conductor:${sid}"]`);
 const titles = (root) => [...root.querySelectorAll(':scope > li.conductor-block .conductor-title')].map(t => t.textContent);
@@ -335,7 +337,8 @@ test('every conductor row, live and inactive, ends in a × archive button; the w
     const row = conductorOf(conductorList, sid).querySelector('.conductor-row');
     const x = row.querySelector(':scope > .session-delete');
     assert.ok(x, `${sid}: the row has a × button`);
-    assert.equal(row.lastElementChild, x, `${sid}: the × is the row's last child`);
+    assert.equal(row.lastElementChild.dataset.key, 'delete', `${sid}: the × is the row's last child`);
+    assert.ok(row.lastElementChild === x, `${sid}: the last child is the × button`);
     assert.equal(x.tagName, 'BUTTON');
     assert.equal(x.textContent, '×');
     assert.equal(x.title, 'archive session (keeps history)');
@@ -386,17 +389,19 @@ test('the × reads the freshest conductor after a re-render', async () => {
   sidebar.setInstances([conductor('A', { title: 'Renamed' })]);
   await tick();
   const after = conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete');
-  assert.equal(after, before, 'the button is reused, not rebuilt');
+  assert.ok(after === before, 'the button is reused, not rebuilt');
   after.click();
   assert.deepEqual(calls.delete, [
     { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Renamed', synthetic: false },
   ]);
 });
 
-test('archiving the only conductor leaves the empty state', async () => {
-  const { conductorList, sidebar } = await setupSidebar();
-  await render(sidebar, { instances: [conductor('A')] });
-  assert.ok(conductorOf(conductorList, 'A'));
+test('the × on the only conductor archives it; applying the refresh leaves the empty state', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
+  conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete').click();
+  assert.deepEqual(calls.delete.map(d => d.sessionId), ['A'], 'onDeleteSession fired for the only conductor');
+  // What deleteSession's refreshProjects/refreshInstances deliver once it is archived.
   sidebar.setInstances([]);
   sidebar.setConductSessions([]);
   await tick();
@@ -404,4 +409,43 @@ test('archiving the only conductor leaves the empty state', async () => {
   const empty = conductorList.querySelector('.conductor-empty');
   assert.ok(empty, 'the empty-state row is rendered');
   assert.equal(empty.textContent, 'no conductors yet — tap 🎼 Conduct');
+});
+
+// Top-level rules of a stylesheet as { selectors, decls }; at-rule blocks
+// (@media etc.) are skipped, so a match is one that applies unconditionally.
+function topLevelRules(css) {
+  css = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [];
+  let depth = 0, start = 0, head = '';
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === '{') {
+      if (depth === 0) { head = css.slice(start, i).trim(); start = i + 1; }
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        if (!head.startsWith('@')) {
+          const decls = new Map();
+          for (const d of css.slice(start, i).split(';')) {
+            const c = d.indexOf(':');
+            if (c > 0) decls.set(d.slice(0, c).trim(), d.slice(c + 1).trim());
+          }
+          rules.push({ selectors: head.split(',').map(x => x.trim().replace(/\s+/g, ' ')), decls });
+        }
+        start = i + 1;
+      }
+    }
+  }
+  return rules;
+}
+
+test('styles.css: hovering a conductor row reveals its × (a top-level rule for .conductor-row:hover .session-delete sets opacity 1)', async () => {
+  const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));
+  assert.ok(rules.some(r => r.selectors.includes('.session-row:hover .session-delete') && r.decls.get('opacity') === '1'),
+    'sanity: the parser finds the session-row hover reveal');
+  const hover = rules.filter(r => r.selectors.includes('.conductor-row:hover .session-delete'));
+  assert.ok(hover.length > 0, 'a rule selects .conductor-row:hover .session-delete');
+  assert.ok(hover.some(r => r.decls.get('opacity') === '1'),
+    `that rule sets opacity: 1 (found: ${JSON.stringify(hover.map(r => r.decls.get('opacity') ?? null))})`);
 });
