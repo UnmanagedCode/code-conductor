@@ -188,6 +188,26 @@ export function boundResult(
   return [{ type: 'text', text: JSON.stringify({ ok: false, code: 'RESULT_OVER_BUDGET', tool: tool.name, chars, budget, completed, reason }) }];
 }
 
+// The isError envelope for a thrown handler error: prose first (it reads best
+// for an LLM), then a structured {error, code, statusCode} block. Error prose
+// can echo an argument (a path, a worktree name) and the envelope carries the
+// message twice, so it is bounded too: over MCP_RESULT_CHAR_BUDGET the message
+// is cut to ERROR_MESSAGE_CAP chars with an in-band marker — the code and
+// statusCode, which carry the error's meaning, are kept whole — and logged.
+const ERROR_MESSAGE_CAP = MCP_RESULT_CHAR_BUDGET / 8;
+export function errorContent(
+  toolName: unknown, msg: string, code: string | null | undefined, sc: number | null,
+): TextContent {
+  const build = (m: string): TextContent => [
+    { type: 'text', text: sc ? `${m} (HTTP ${sc})` : m },
+    { type: 'text', text: JSON.stringify({ error: m, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}) }) },
+  ];
+  const full = build(msg);
+  if (full[0].text.length + full[1].text.length <= MCP_RESULT_CHAR_BUDGET) return full;
+  console.error(`mcp: ${String(toolName)} error message of ${msg.length} chars cut to fit the MCP result budget`);
+  return build(`${msg.slice(0, ERROR_MESSAGE_CAP)}… [error message cut: ${msg.length} chars]`);
+}
+
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
   if (!isJsonRecord(msg) || msg.jsonrpc !== JSONRPC) {
     return rpcError(rpcRequestId(msg) ?? null, -32600, 'invalid JSON-RPC request');
@@ -366,15 +386,7 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         // {error, code, statusCode} block follows for machine handling.
         const sc = errStatus(e);
         const code = errCode(e) ?? codeForStatus(sc);
-        const msg = errMsg(e);
-        const prose = sc ? `${msg} (HTTP ${sc})` : msg;
-        return rpcResult(id, {
-          content: [
-            { type: 'text', text: prose },
-            { type: 'text', text: JSON.stringify({ error: msg, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}) }) },
-          ],
-          isError: true,
-        });
+        return rpcResult(id, { content: errorContent(name, errMsg(e), code, sc), isError: true });
       }
     }
     if (isNotification) return null;

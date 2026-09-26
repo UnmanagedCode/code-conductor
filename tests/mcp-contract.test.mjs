@@ -756,3 +756,38 @@ test('project_diff: over ~1500 changed files, omittedFiles is capped with omitte
   assert.equal(m.omittedFilesTotal, 1500 - includedCount, 'the total counts every file this page omits');
   assert.ok(m.omittedFiles.length < m.omittedFilesTotal);
 });
+
+// Invariant: a summary page sized at the exact budget boundary never exceeds
+// it — the frame it is fitted against is the longer of the two
+// truncated/nextOffset spellings ({false, null} beats {true, <3 digits>}). The
+// change set is calibrated so ALL files as one page would render at exactly
+// MCP_RESULT_CHAR_BUDGET + 1 chars; that page must be cut, not returned whole.
+test('project_diff summary: a change set one char over the budget as one page is cut, never over the budget', async () => {
+  const wt = await worktreeWithCommit(manyFiles(300, () => 'x\n'));
+  const probe = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  const pm = meta(probe);
+  assert.equal(pm.truncated, false, 'premise: the probe is one whole page');
+  const r = JSON.stringify(pm.files[0]).length + 1; // one uniform row, with its comma
+  const needed = MCP_RESULT_CHAR_BUDGET + 1 - resultChars(probe);
+  const k = Math.floor(needed / r) - 1;
+  const rem = needed - k * r; // in [r, 2r): one row of padded name
+  const extra = {};
+  for (let i = 300; i < 300 + k; i++) extra[`dir/file-${String(i).padStart(4, '0')}.txt`] = 'x\n';
+  extra[`dir/file-${String(300 + k).padStart(4, '0')}${'p'.repeat(rem - r)}.txt`] = 'x\n';
+  for (const [rel, body] of Object.entries(extra)) await fs.writeFile(path.join(wt.worktreePath, rel), body);
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'to the boundary');
+
+  const first = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  assertInBudget(first, 'boundary page');
+  const p1 = meta(first);
+  assert.notEqual(p1.code, 'RESULT_OVER_BUDGET');
+  assert.equal(p1.truncated, true, 'the boundary page is cut');
+  const p2 = meta(await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true, offset: p1.nextOffset }));
+  assert.equal(p2.truncated, false);
+  // The fixture really sits on the boundary: every file as one last page
+  // renders at exactly budget + 1.
+  const whole = { ...p1, truncated: false, nextOffset: null, files: [...p1.files, ...p2.files] };
+  assert.equal(whole.files.length, 301 + k);
+  assert.equal(JSON.stringify(whole).length, MCP_RESULT_CHAR_BUDGET + 1);
+});

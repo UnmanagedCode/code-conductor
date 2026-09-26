@@ -994,14 +994,16 @@ export function buildTools(): Tool[] {
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
         'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, hasPlan?, planTruncated?, planPath?, questionCount?, blocks?, blocksOmitted?}], source:"ring"|"disk", ' +
+        'textTruncated, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
+        'source:"ring"|"disk", ' +
         'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
         'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
         'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated), and so is the whole ' +
-        'result: over one MCP result\'s budget, text, plan (planTruncated) and block inputs are cut shorter, then the ' +
+        'result: over one MCP result\'s budget, text, plan (planTruncated), questions (questionsTruncated) and block ' +
+        'inputs are cut shorter, then the ' +
         'oldest messages are dropped (omittedForBudget + hint) — a plan/questions message last; ' +
         '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
         '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
@@ -1155,14 +1157,16 @@ export function buildTools(): Tool[] {
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
         'guarded. OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
-        'lineCountExact, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+        'lineCountExact, lineTruncated?, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
         'file body. `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
         '`offset` (1-based start line, default 1) and `limit` (max lines, default: to EOF) for range reads. Set ' +
         '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
         'full file). Metadata includes `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
         'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
         '(default and maximum per the schema — the most one result carries); `truncated` says when. A cut line-range ' +
-        'read ends on a whole line and endLine names it, so offset:endLine+1 continues.',
+        'read ends on a whole line and endLine names it, so offset:endLine+1 continues — except a single line longer ' +
+        'than maxBytes, which is cut mid-line with an in-band "… [line cut: N bytes]" marker and lineTruncated:true; ' +
+        'no offset reaches the rest of that line, so read it with project_bash (e.g. cut/head -c).',
       inputSchema: {
         type: 'object',
         properties: {

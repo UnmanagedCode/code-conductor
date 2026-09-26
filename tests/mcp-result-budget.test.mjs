@@ -80,3 +80,43 @@ test('dispatch: an overflowing core read tool answers RESULT_OVER_BUDGET instead
     assert.ok(logged.some(l => l.includes('RESULT_OVER_BUDGET') && l.includes('project_status')), 'the overflow is logged');
   } finally { console.error = origError; await ctx.close(); }
 });
+
+// Invariant: a thrown error's isError envelope is bounded too — error prose that
+// echoes a huge argument is cut with an in-band marker, the code/statusCode that
+// carry the error's meaning survive whole, and the cut is logged.
+test('dispatch: an error echoing a huge argument is cut to the budget, keeping its code', async () => {
+  const ctx = await bootServer({});
+  const origError = console.error;
+  const logged = [];
+  console.error = (...a) => { logged.push(a.join(' ')); };
+  const call = async (name, args) => {
+    const res = await fetch(ctx.baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const { result } = await res.json();
+    assert.equal(result.isError, true, name);
+    assert.equal(result.content.length, 2, `${name}: still the prose + structured envelope`);
+    const chars = result.content.reduce((n, c) => n + c.text.length, 0);
+    assert.ok(chars <= MCP_RESULT_CHAR_BUDGET, `${name}: ${chars} chars`);
+    const structured = JSON.parse(result.content[1].text);
+    assert.match(structured.error, /… \[error message cut: \d+ chars\]$/, name);
+    assert.ok(result.content[0].text.startsWith(structured.error), `${name}: both blocks carry the same cut message`);
+    assert.ok(logged.some(l => l.includes(name) && l.includes('cut to fit')), `${name}: the cut is logged`);
+    return { prose: result.content[0].text, structured };
+  };
+  try {
+    const dir = path.join(ctx.projectsRoot, 'errp');
+    await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('errp', dir);
+
+    const read = await call('project_read', { project: 'errp', relativePath: 'nope/' + 'x'.repeat(60_000) });
+    assert.equal(read.structured.code, 'ENAMETOOLONG');
+
+    const diff = await call('project_diff', { project: 'errp', worktree: 'w'.repeat(60_000) });
+    assert.equal(diff.structured.code, 'NOT_FOUND');
+    assert.equal(diff.structured.statusCode, 404);
+    assert.match(diff.prose, /\(HTTP 404\)$/);
+  } finally { console.error = origError; await ctx.close(); }
+});

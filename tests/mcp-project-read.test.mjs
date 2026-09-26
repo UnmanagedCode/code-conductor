@@ -211,3 +211,24 @@ test('project_read: a 100 KB binary file comes back base64 within the budget, tr
       'the body is a prefix of the file');
   } finally { await ctx.close(); }
 });
+
+// Invariant: a line longer than the cap is the one mid-line cut, and it is
+// never silent — the body carries an in-band marker with the line's full size
+// and the metadata says lineTruncated, within the budget.
+test('project_read: a first line longer than the cap is cut with a marker and lineTruncated', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const longLine = 'L'.repeat(MCP_BODY_BUDGET + 5000);
+    await fs.writeFile(path.join(repoPath, 'wide.txt'), `${longLine}\nsecond\n`);
+    for (const args of [{ lineNumbers: true }, { offset: 1, limit: 2 }]) {
+      const r = await callTool(ctx.baseUrl, 'project_read', { project: 'demo', relativePath: 'wide.txt', ...args });
+      assert.ok(resultChars(r) <= MCP_RESULT_CHAR_BUDGET, `${JSON.stringify(args)}: ${resultChars(r)} chars`);
+      const m = unwrap(r);
+      assert.equal(m.lineTruncated, true, JSON.stringify(args));
+      assert.equal(m.truncated, true);
+      assert.equal(m.endLine, 1, 'the cut line is the one line served');
+      assert.ok(m.content.endsWith(` … [line cut: ${longLine.length} bytes]`), `${JSON.stringify(args)}: ends ${JSON.stringify(m.content.slice(-60))}`);
+    }
+  } finally { await ctx.close(); }
+});

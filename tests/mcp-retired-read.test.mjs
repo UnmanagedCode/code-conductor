@@ -553,3 +553,74 @@ test('get_recent_messages: a default call on a 60 KB plan plus trailing prose ke
     assert.match(bodies[plan.index], /--- plan ---\nPLAN s+/);
   } finally { await ctx.close(); }
 });
+
+// Invariant: the rendered questions are a string the budget fit can shrink —
+// an oversized option description is cut, flagged questionsTruncated, the
+// questions message kept, and the result fits (no backstop refusal).
+test('get_recent_messages: a questions body over the budget is cut, flagged questionsTruncated, and kept', async () => {
+  const lines = [
+    userLine('u0', 'ask me'),
+    { type: 'assistant', uuid: 'aQ', message: { id: 'm_q', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tu_q', name: 'AskUserQuestion', input: { questions: [
+        { question: 'Pick one', header: 'Pick', multiSelect: false,
+          options: [{ label: 'Alpha', description: 'd'.repeat(200_000) }, { label: 'Beta' }] },
+      ] } },
+    ] } },
+  ];
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'budgetquestions', lines);
+    const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 1 });
+    assertInBudget(r, 'count:1');
+    const { meta, bodies } = unwrapMsgs(r);
+    assert.notEqual(meta.code, 'RESULT_OVER_BUDGET');
+    assert.equal(meta.messages.length, 1);
+    assert.equal(meta.messages[0].msgId, 'm_q', 'the questions message is kept');
+    assert.equal(meta.messages[0].questionCount, 1);
+    assert.equal(meta.messages[0].questionsTruncated, true);
+    assert.match(bodies[0], /^--- questions ---\n1\. Pick one/);
+  } finally { await ctx.close(); }
+});
+
+// Invariant: a get_transcript page sized at the exact budget boundary never
+// exceeds it — the frame it is fitted against spells every placeholder at its
+// longest (a last page says hasMore:false, one char longer than true). The
+// fixture is calibrated so the whole transcript as ONE page would be exactly
+// MCP_RESULT_CHAR_BUDGET + 1 chars; that page must be cut, not returned whole.
+test('get_transcript: a transcript one char over the budget as one page is cut, never over the budget', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const name = 'budgetedge';
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', { project: name, mode: 'bypassPermissions' }));
+    const sid = spawn.sessionId;
+    await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
+    const backing = instForSession(ctx.instances, sid).backingSessionId;
+    const place = localPlace(path.join(ctx.projectsRoot, name));
+    const linesFor = n => [userLine('u0', 'go'), proseLine('a0', 'm_0', 'small'), proseLine('a1', 'm_1', 'a'.repeat(n))];
+    await seedSessionJsonl(place, backing, linesFor(1000));
+    unwrap(await callTool(ctx.baseUrl, 'kill_instance', { sessionId: sid }));
+    await waitFor(() => ctx.instances.idsForSession(sid).length === 0);
+
+    // Calibrate: one whole page at n=1000, then grow the last text so the
+    // whole-page rendering is exactly budget + 1 (plain 'a's add 1:1).
+    const probe = await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0 });
+    assert.equal(unwrap(probe).hasMore, false, 'premise: the probe is one whole page');
+    const n = 1000 + (MCP_RESULT_CHAR_BUDGET + 1 - resultChars(probe));
+    await seedSessionJsonl(place, backing, linesFor(n));
+
+    const first = await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0 });
+    assertInBudget(first, 'boundary page');
+    const p1 = unwrap(first);
+    assert.notEqual(p1.code, 'RESULT_OVER_BUDGET');
+    assert.equal(p1.hasMore, true, 'the boundary page is cut');
+    const p2 = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: p1.nextFrom }));
+    assert.equal(p2.hasMore, false);
+    // The fixture really sits on the boundary: the whole transcript as one
+    // last page renders at exactly budget + 1.
+    const whole = { ...p1, events: [...p1.events, ...p2.events], hasMore: false, nextFrom: p2.nextFrom };
+    assert.equal(JSON.stringify(whole).length, MCP_RESULT_CHAR_BUDGET + 1);
+    assert.ok(whole.events.some(e => e.omitted !== true && JSON.stringify(e).includes('a'.repeat(n))),
+      'the big event arrives whole, not stubbed');
+  } finally { await ctx.close(); }
+});

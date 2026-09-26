@@ -874,12 +874,13 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
     };
   // Fit the page to one MCP result: keep the longest prefix of events whose
   // compact-JSON result stays within MCP_RESULT_CHAR_BUDGET, measured against
-  // the result's widest possible frame (hasMore true, nextFrom one past the
-  // largest seq). An event too large for ANY page becomes a stub that still
+  // the result's widest possible frame — each placeholder at its longest
+  // spelling: hasMore `false` (one char longer than `true`), nextFrom one past
+  // the largest seq. An event too large for ANY page becomes a stub that still
   // carries its `_seq`, so the cursor advances past it.
   const frame = JSON.stringify({
     status, sessionId: resolvedSessionId, source, events: [],
-    lastSeq: page.lastSeq, trimmedBefore: page.trimmedBefore, hasMore: true,
+    lastSeq: page.lastSeq, trimmedBefore: page.trimmedBefore, hasMore: false,
     nextFrom: Math.max(page.lastSeq, ...page.events.map(e => (typeof e._seq === 'number' ? e._seq : 0))) + 1,
   }).length;
   const room = MCP_RESULT_CHAR_BUDGET - frame;
@@ -1776,10 +1777,14 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     }
 
     // Page `files` by index: fill rows until the next would push the result
-    // past the budget, measured against the widest frame (truncated, the
-    // largest nextOffset) with the capped `uncommitted` section included.
+    // past the budget, measured against the widest frame with the capped
+    // `uncommitted` section included. A page is either {truncated:true,
+    // nextOffset:<n>} or {truncated:false, nextOffset:null}, and which is longer
+    // depends on the digits of n — so the frame is the longer of the two.
     const head0 = { project, worktree: wt.worktreeName, baseRef: ref, head, summary: true, ahead, totals };
-    let used = JSON.stringify({ ...head0, offset: startAt, truncated: true, nextOffset: files.length, files: [], uncommitted }).length;
+    const frameOf = (truncated: boolean, nextOffset: number | null) =>
+      JSON.stringify({ ...head0, offset: startAt, truncated, nextOffset, files: [], uncommitted }).length;
+    let used = Math.max(frameOf(true, files.length), frameOf(false, null));
     const page: DiffFileRow[] = [];
     for (let i = startAt; i < files.length; i++) {
       const add = JSON.stringify(files[i]).length + (page.length > 0 ? 1 : 0);
@@ -1848,15 +1853,18 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     ahead,
   };
   // The page gets whatever one result has left once the metadata is at its
-  // WIDEST: truncated, the largest nextOffset, a cut line, and both file lists
-  // at their cap (a placeholder string whose JSON is exactly that long).
+  // WIDEST: a cut line, both file lists at their cap (a placeholder string whose
+  // JSON is exactly that long), and the longer of the two truncated/nextOffset
+  // spellings — {true, <largest n>} or {false, null}, which one depends on the
+  // digits of n.
   const capPlaceholder = 'x'.repeat(sideListChars - 2);
-  const widest = {
-    ...meta, truncated: true, nextOffset: totalLines, lineTruncated: true,
+  const widestOf = (truncated: boolean, nextOffset: number | null) => JSON.stringify({
+    ...meta, truncated, nextOffset, lineTruncated: true,
     includedFiles: capPlaceholder, includedFilesTruncated: true, includedFilesTotal: allPaths.length,
     omittedFiles: capPlaceholder, omittedFilesTruncated: true, omittedFilesTotal: allPaths.length,
-  };
-  const pageCap = MCP_RESULT_CHAR_BUDGET - JSON.stringify(widest).length - 64;
+  }).length;
+  const widest = Math.max(widestOf(true, totalLines), widestOf(false, null));
+  const pageCap = MCP_RESULT_CHAR_BUDGET - widest - 64;
   const { diff, cutoff, lineTruncated } = paginateDiff(lines, startLine, pageCap, idx);
   // `truncated` means more pages remain after this one; drain by re-calling
   // with offset:nextOffset until truncated:false.
@@ -2176,7 +2184,10 @@ function renderQuestions(questions: Question[]): string {
 // questionsSeq) — NOT hardcoded prose-then-plan — so the body reflects the
 // order those blocks actually occurred in the turn. A segment missing its seq
 // (shouldn't happen) sorts last rather than throwing.
-function renderMessageBody(m: ReconMessage, cappedText: string): string {
+//
+// `questionsText`, when given, replaces the rendered questions segment — the
+// result-budget fit passes a capped rendering (renderRecentMessages).
+function renderMessageBody(m: ReconMessage, cappedText: string, questionsText?: string): string {
   const segments: Array<{ pos: number; text: string }> = [];
   if (cappedText) segments.push({ pos: m.textSeq ?? Infinity, text: cappedText });
   if (m.plan || m.planPath) {
@@ -2185,7 +2196,7 @@ function renderMessageBody(m: ReconMessage, cappedText: string): string {
     const header = m.planPath ? `--- plan · saved to ${m.planPath} ---` : '--- plan ---';
     segments.push({ pos: m.planSeq ?? Infinity, text: m.plan ? `${header}\n${m.plan}` : header });
   }
-  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: renderQuestions(m.questions as Question[]) });
+  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: questionsText ?? renderQuestions(m.questions as Question[]) });
   segments.sort((a, b) => a.pos - b.pos);
   return segments.map(s => s.text).join('\n');
 }
@@ -2250,9 +2261,9 @@ function renderForwardFrame(messages: ReconMessage[], guidingText: string): stri
 // RESULT BUDGET (this MCP path only — send_prompt's forward and the idle-wake
 // fold are not MCP results and keep the plain selection + caps): a rendering
 // over MCP_RESULT_CHAR_BUDGET is fitted in stages, stopping at the first that
-// fits — (1) as built; (2) re-rendered with every string (prose, plan, block
-// inputs, thinking) capped shorter, halving down to TOOL_ARG_VALUE_CAP, each cut
-// flagged by its existing field or planTruncated; (3) the oldest messages
+// fits — (1) as built; (2) re-rendered with every string (prose, plan, questions,
+// block inputs, thinking) capped shorter, halving down to TOOL_ARG_VALUE_CAP, each
+// cut flagged by its existing field or planTruncated/questionsTruncated; (3) the oldest messages
 // dropped, a plan/questions message last, reported as omittedForBudget + hint;
 // and if the one message left still overflows, its trailing blocks dropped
 // (blocksOmitted on that entry).
@@ -2398,8 +2409,9 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 }
 
 // The rendering half of buildRecentMessages. `stringCap`, when set, caps every
-// string the result carries — prose, the plan text (planTruncated), tool inputs
-// and thinking — below their usual MSG_TEXT_CAP; unset, the rendering is
+// string the result carries — prose, the plan text (planTruncated), the rendered
+// questions (questionsTruncated), tool inputs and thinking — below their usual
+// MSG_TEXT_CAP; unset, the rendering is
 // exactly the uncapped-by-budget one. Only getRecentMessages' budget fit sets it.
 function renderRecentMessages(
   sel: Exclude<Awaited<ReturnType<typeof selectRecentMessages>>, { soft: SoftRefusal }>,
@@ -2426,7 +2438,9 @@ function renderRecentMessages(
     const textChars = (m.text ?? '').length;
     const capped = capText(m.text ?? '', textCap);
     const plan = stringCap !== undefined && m.plan ? capText(m.plan, stringCap) : null;
-    const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text);
+    const questions = stringCap !== undefined && m.questions
+      ? capText(renderQuestions(m.questions as Question[]), stringCap) : null;
+    const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text, questions?.text);
     const body = total > 1
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
       : rendered;
@@ -2442,6 +2456,7 @@ function renderRecentMessages(
     if (plan?.truncated) entry.planTruncated = true;
     if (m.planPath) entry.planPath = m.planPath;
     if (m.questions) entry.questionCount = (m.questions as Question[]).length;
+    if (questions?.truncated) entry.questionsTruncated = true;
     if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls, textCap));
     return entry;
   });
@@ -2680,18 +2695,25 @@ export async function projectRead({ project, worktree, relativePath,
 
   // Reassemble under the byte cap, WHOLE LINES ONLY: a cut read ends on the
   // last line that fits, and endLine names it, so offset:endLine+1 continues
-  // with nothing lost or repeated. Only a single line longer than the cap is
-  // cut mid-line (it is then both the first and the last line served).
+  // with nothing lost or repeated. The one exception is a single line longer
+  // than the cap: it is cut mid-line with an in-band marker and lineTruncated
+  // (it is then both the first and the last line served, and no cursor reaches
+  // its remainder).
   const w = String(lineCount).length;
   const out: string[] = [];
   let bytes = 0;
   let truncated = false;
+  let lineTruncated = false;
   for (let i = 0; i < slicedLines.length; i++) {
     const rendered = lineNumbers ? String(startLine + i).padStart(w) + '\t' + slicedLines[i] : slicedLines[i];
     const add = Buffer.byteLength(rendered, 'utf8') + (i > 0 ? 1 : 0);
     if (bytes + add > cap) {
       truncated = true;
-      if (out.length === 0) out.push(utf8Prefix(rendered, cap));
+      if (out.length === 0) {
+        const marker = ` … [line cut: ${Buffer.byteLength(slicedLines[i], 'utf8')} bytes]`;
+        out.push(utf8Prefix(rendered, Math.max(0, cap - Buffer.byteLength(marker, 'utf8'))) + marker);
+        lineTruncated = true;
+      }
       break;
     }
     out.push(rendered);
@@ -2709,11 +2731,12 @@ export async function projectRead({ project, worktree, relativePath,
   // Slow path read the full file, so lineCount covers the whole file.
   const meta: {
     path: string; size: number; truncated: boolean; encoding: string;
-    lineCount: number; lineCountExact: boolean; startLine?: number; endLine?: number;
+    lineCount: number; lineCountExact: boolean; lineTruncated?: boolean; startLine?: number; endLine?: number;
   } = {
     path: relativePath, size: stat.size, truncated, encoding: 'utf8',
     lineCount, lineCountExact: true,
   };
+  if (lineTruncated) meta.lineTruncated = true;
   if (offset !== 1 || limit != null || truncated) {
     meta.startLine = startLine;
     meta.endLine = endLine;
