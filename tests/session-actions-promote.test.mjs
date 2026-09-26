@@ -41,7 +41,7 @@ async function setup({ statuses = [200], confirmAnswer = true } = {}) {
 
 const CONDUCTOR = { projectName: '.conduct', instanceId: 'inst-C', preview: 'Alpha' };
 
-test('promoting a conductor asks to keep it, POSTs promote, then refreshes instances and projects', async () => {
+test('promoting a conductor asks to keep it, POSTs promote, then refreshes instances only, like a worker', async () => {
   const t = await setup();
   await t.promoteSession(CONDUCTOR);
   assert.deepEqual(t.confirms, [
@@ -49,7 +49,7 @@ test('promoting a conductor asks to keep it, POSTs promote, then refreshes insta
   ]);
   assert.ok(!t.confirms[0].includes('.conduct'), 'the confirm never names the .conduct project');
   assert.deepEqual(t.fetches, [{ url: '/api/instances/inst-C/promote', method: 'POST' }]);
-  assert.deepEqual(t.refreshes, { projects: 1, instances: 1 });
+  assert.deepEqual(t.refreshes, { projects: 0, instances: 1 });
   assert.deepEqual(t.alerts, []);
 });
 

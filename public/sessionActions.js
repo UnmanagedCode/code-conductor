@@ -45,9 +45,7 @@ export function installSessionActions({
   // temp flag, writes the resume-picker metadata, and broadcasts the
   // status change — the sidebar's `instances` re-fetch then migrates the
   // row from the Temp Sessions subnode into the regular Sessions list. A
-  // conductor (`.conduct`) also re-fetches projects: promote broadcasts no
-  // projects event, and until its transcript is listed its × would take the
-  // kill-only path instead of archiving.
+  // conductor (`.conduct`) gets its own confirm.
   async function promoteSession({ projectName, instanceId, preview }) {
     if (!instanceId) return;
     const isConductor = projectName === '.conduct';
@@ -64,7 +62,6 @@ export function installSessionActions({
         method: 'POST', headers: { 'content-type': 'application/json' },
       });
       await refreshInstances();
-      if (isConductor) await refreshProjects();
     } catch (e) {
       alert(`Failed to promote: ${e.message}`);
     }

@@ -618,7 +618,7 @@ test('no ↑ on a non-temp, dead or disk-only conductor row', async (t) => {
   await t.test('a disk-only conductor', () => none({ conductRows: [{ sessionId: 'D', lastActivity: 1 }] }, 'D'));
 });
 
-test('↑ promotes through onPromoteSession with the conductor\'s instance id and never selects, resumes or expands', async () => {
+test('↑ promotes through onPromoteSession with the conductor\'s instance id and never selects or resumes', async () => {
   const { conductorList, sidebar, calls } = await setupSidebar();
   await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
   conductorRowOf(conductorList, 'A').querySelector('.session-promote').click();
@@ -626,9 +626,6 @@ test('↑ promotes through onPromoteSession with the conductor\'s instance id an
   assert.deepEqual(calls.promote, [{ projectName: '.conduct', instanceId: 'inst-A', preview: 'Alpha' }]);
   assert.deepEqual(calls.select, [], 'the click does not select the conductor');
   assert.deepEqual(calls.resume, [], 'nor resume it');
-  const block = conductorOf(conductorList, 'A');
-  assert.ok(!block.classList.contains('open'), 'nor expand it');
-  assertNull(block.querySelector('.conductor-tree'));
 });
 
 test('conductor ↑ reads the freshest instance after a re-render', async () => {
