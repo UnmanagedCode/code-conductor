@@ -1069,18 +1069,47 @@ test('replay: a persisted deny tool_result is tagged yielded, same as live', () 
   assert.equal(ev.yielded, true);
 });
 
-test('replay: a persisted deny carrying an earlier wording of the message is tagged yielded', () => {
-  const earlier = 'Delivered — the user can see your request in the orchestrator UI now. '
+// Hardcoded copies of every deny wording, current and earlier, so dropping one
+// from AWAITING_INPUT_MESSAGE / EARLIER_AWAITING_INPUT_MESSAGES turns its own
+// subtest red.
+const DENY_WORDINGS = [
+  ['the current wording',
+    'Delivered — the user can see your request in the orchestrator UI now. '
     + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
     + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
-    + "End your turn now with no further tool calls; the user's reply comes as a later message.";
-  assert.notEqual(earlier, AWAITING_INPUT_MESSAGE);
+    + "End your turn now with no further tool calls and wait for the user's reply; it arrives as a new message."],
+  ['the hook-era wording',
+    'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.'],
+  ['the arrives-meanwhile wording',
+    'Delivered — the user can see your request in the orchestrator UI now. '
+    + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
+    + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
+    + 'End your turn now with no further tool calls unless another message arrives meanwhile — '
+    + "handle that one as normal; the user's reply comes as a later message."],
+  ['the later-message wording',
+    'Delivered — the user can see your request in the orchestrator UI now. '
+    + 'The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. '
+    + 'Do not repeat the call, do not answer or decide it yourself, and do not start other work. '
+    + "End your turn now with no further tool calls; the user's reply comes as a later message."],
+];
+
+function replayedDeny(content) {
   const line = {
     type: 'user', uuid: 'u-deny-earlier',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_q', content: earlier, is_error: true }] },
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_q', content, is_error: true }] },
   };
-  const ev = replayPersistedLine(line).find(e => e.kind === 'tool_result');
-  assert.ok(ev, 'replay must emit the tool_result');
-  assert.equal(ev.yielded, true);
-  assert.equal(ev.isError, true);
+  return replayPersistedLine(line).find(e => e.kind === 'tool_result');
+}
+
+test('replay: a persisted deny in every wording, current and earlier, is tagged yielded; a trailing space is not', async (t) => {
+  for (const [name, wording] of DENY_WORDINGS) {
+    await t.test(name, () => {
+      const ev = replayedDeny(wording);
+      assert.ok(ev, 'replay must emit the tool_result');
+      assert.equal(ev.yielded, true);
+      assert.equal(ev.isError, true);
+      const near = replayedDeny(wording + ' ');
+      assert.ok(!('yielded' in near), 'a trailing space must not match');
+    });
+  }
 });
