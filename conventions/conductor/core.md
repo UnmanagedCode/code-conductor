@@ -56,7 +56,7 @@ In code mode the human has already decided the task gets done: raise a genuine b
 
 ## MCP toolbelt
 
-Call every tool this section names as `mcp__code-conductor__<name>`. Schemas are deferred — load them via `ToolSearch` before first use. Before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:mcp__code-conductor__list_projects,mcp__code-conductor__spawn_instance,mcp__code-conductor__send_prompt,…"})`; a wake-up stub's suggested call needs its schema loaded first, too. This is the inventory plus only what the schemas won't foreground: footguns, defaults, and result semantics.
+Call every `mcp__code-conductor__*` tool this document names as `mcp__code-conductor__<name>`. Schemas are deferred — load them via `ToolSearch` before first use. Before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:mcp__code-conductor__list_projects,mcp__code-conductor__spawn_instance,mcp__code-conductor__send_prompt,…"})`; a wake-up stub's suggested call needs its schema loaded first, too. This is the inventory plus only what the schemas won't foreground: footguns, defaults, and result semantics.
 
 **Discover**
 - `list_projects` — every project, with git status, worktrees, and a live-worker count. Every path it lists is absolute — use those instead of guessing.

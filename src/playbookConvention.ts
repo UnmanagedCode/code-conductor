@@ -14,7 +14,9 @@
 //   • `spawn_instance` `pin` → ARG_PIN_CONFLICT fires only after the conductor
 //                        has chosen the argument, and "Model choice" has it
 //                        choose `model` before any call. Rendered in the
-//                        refusal's `arg=<JSON>` form.                    IN.
+//                        refusal's `arg=<JSON>` form. Only
+//                        `spawn_instance`'s: it is the one tool the prompt
+//                        steers, and no built-in pins another.          IN.
 //   • `needs`          → NEEDS_UNSATISFIED names what to pass.           OUT.
 //   • spawnability     → STAGE_NOT_SPAWNABLE, plus list_playbooks'
 //                        `spawnableStages` and the `spawnable` describe_playbook

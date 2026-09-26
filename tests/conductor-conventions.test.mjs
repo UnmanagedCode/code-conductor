@@ -83,14 +83,31 @@ test('the call-name rule is stated once, inside the MCP toolbelt section', async
   assert.deepEqual(homes, ['core.md'], 'only core.md carries it');
 });
 
-// Invariant: the prompt never instructs an unconditional `model`, which is what
-// ARG_PIN_CONFLICT refuses in a stage that pins it.
+// Invariant: the Model-choice bullet never says to pass `model` unconditionally.
 test('Model choice conditions the tier on the stage not pinning model', async () => {
   const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
   const line = doc.split('\n').find(l => l.startsWith('- **Model choice.**'));
   assert.ok(line, 'the Model choice bullet is composed');
   assert.doesNotMatch(line, /^- \*\*Model choice\.\*\* Pass /);
   assert.ok(line.includes('Omit `model` where the stage pins it'), 'pinned model is omitted');
+});
+
+// Invariant: every composed spawn_instance example that passes `model` names a
+// playbook stage that does not pin `model` — a literal example copied into a
+// pinned stage is the ARG_PIN_CONFLICT the Model-choice bullet guards against.
+test('every spawn_instance example passing model names a stage that leaves model unpinned', async () => {
+  const doc = await composeConduct(SEED_CONVENTIONS.map(m => m.slug));
+  const { playbooks } = await loadPlaybooks();
+  const examples = [...doc.matchAll(/spawn_instance\(\{([^}]*)\}\)/g)].map(m => m[1])
+    .filter(args => /\bmodel\s*:/.test(args));
+  assert.ok(examples.length > 0, 'at least one example passes model (non-vacuity)');
+  for (const args of examples) {
+    const pb = playbooks.get(args.match(/\bplaybook\s*:\s*'([^']+)'/)?.[1]);
+    const stage = pb?.stages[args.match(/\bstage\s*:\s*'([^']+)'/)?.[1]];
+    assert.ok(stage, `names a loaded playbook stage: ${args}`);
+    const policy = stage.tools.spawn_instance;
+    assert.ok(!(typeof policy === 'object' && 'model' in policy.pin), `stage leaves model unpinned: ${args}`);
+  }
 });
 
 test('composeConduct([]) = core + footer only (no convention headings)', async () => {
