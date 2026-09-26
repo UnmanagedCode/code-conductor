@@ -357,9 +357,10 @@ export class Sidebar {
   // at the right position without disturbing the always-present children.
   //   showOwner — draw the conductor bar for a live conducted session (the
   //               Projects lens, where no worktree row carries it instead).
-  //   readOnly  — no promote / archive buttons (the Conductors tree).
+  //   showDelete — the archive × (off in the Conductors tree, where archiving
+  //               would kill a conducted worker).
   //   showStage — the playbook · stage line under the label (Conductors tree).
-  _sessionRow(existing, { session, projectName, worktreeName, showOwner = false, readOnly = false, showStage = false }) {
+  _sessionRow(existing, { session, projectName, worktreeName, showOwner = false, showDelete = true, showStage = false }) {
     let li = existing, row, holder;
     if (!li) {
       li = el('li', {});
@@ -404,13 +405,13 @@ export class Sidebar {
     row.title = tooltipParts.join('\n');
 
     const resumeLabel = session.autoResumeAt ? formatAutoResumeTime(session.autoResumeAt) : null;
-    const showPromote = !readOnly && session.instanceTemp && session.instanceId;
+    const showPromote = session.instanceTemp && isLive && isLiveStatus(status);
     const stage = showStage ? stageText(session) : null;
     const keys = ['dot', 'ago', showStage ? 'labelcol' : 'preview'];
     if (unread > 0) keys.push('unread');
     if (resumeLabel) keys.push('resume');
     if (showPromote) keys.push('promote');
-    if (!readOnly) keys.push('delete');
+    if (showDelete) keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
@@ -456,8 +457,9 @@ export class Sidebar {
         return b;
       }
       if (k === 'promote') {
-        // Live temp instance → promote button to the left of ×. Always
-        // visible (no opacity:0 hover) so mobile users can tap it.
+        // Live temp instance → promote button trailing the row, left of ×
+        // where the row has one. Always visible (no opacity:0 hover) so
+        // mobile users can tap it.
         return ex ?? el('button', {
           class: 'session-promote', title: 'promote to normal session',
           onclick: (e) => {
@@ -1237,7 +1239,8 @@ export class Sidebar {
   }
 
   // Create-or-update one conductor block: its row, its project chips, and —
-  // while expanded — the read-only tree of this conductor's live workers.
+  // while expanded — the tree of this conductor's live workers (no structural
+  // actions, only ↑ promote on a live temp worker).
   // The block alone carries the conductor's bar; nothing inside repeats it.
   _conductorItem(existing, conductor) {
     let li = existing, holder;
@@ -1354,7 +1357,8 @@ export class Sidebar {
 
   // Expanded conductor: per project (sorted), the project row, then the workers
   // in its main checkout, then each worktree (sorted by name) holding one with
-  // its workers. Only this conductor's live workers, all read-only.
+  // its workers. Only this conductor's live workers, with no structural actions
+  // (only ↑ promote on a live temp worker).
   _conductorTree(existing, workers, projects) {
     const ul = existing ?? el('ul', { class: 'conductor-tree' });
     const projByName = new Map(this.projects.map(p => [p.name, p]));
@@ -1403,7 +1407,7 @@ export class Sidebar {
       .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
     const bySid = new Map(rows.map(r => [r.sessionId, r]));
     reconcileChildren(ul, rows.map(r => `sess:${r.sessionId}`), (k, ex) => this._sessionRow(ex, {
-      session: bySid.get(k.slice(5)), projectName, worktreeName, readOnly: true, showStage: true,
+      session: bySid.get(k.slice(5)), projectName, worktreeName, showDelete: false, showStage: true,
     }));
     return ul;
   }

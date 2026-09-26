@@ -1,6 +1,6 @@
 // The sidebar's Conductors lens (#conductor-list): one block per conductor, live
 // ones first, the rest under a collapsed Inactive group, each expandable into a
-// read-only tree of that conductor's live workers.
+// tree of that conductor's live workers.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,7 +66,7 @@ const TREE_FIXTURE = {
   ],
 };
 
-test('a conductor is collapsed by default; the caret expands a read-only tree in order project row → main-checkout workers → worktree row → workers', async () => {
+test('a conductor is collapsed by default; the caret expands a tree with no structural actions in order project row → main-checkout workers → worktree row → workers', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, TREE_FIXTURE);
   const m = conductorOf(conductorList, 'A');
@@ -85,7 +85,7 @@ test('a conductor is collapsed by default; the caret expands a read-only tree in
   const wtA = wtHead(tree, 'wt-a').closest('.worktree-item');
   assert.deepEqual([...wtA.querySelectorAll('.session-row')].map(r => r.title.split('\n')[0]), ['wa2', 'wa1'],
     'workers newest first under their worktree row');
-  for (const sel of ['.add-instance', '.delete-project', '.wt-spawn', '.wt-remove', '.session-delete', '.session-promote']) {
+  for (const sel of ['.add-instance', '.delete-project', '.wt-spawn', '.wt-remove', '.session-delete']) {
     assertNull(tree.querySelector(sel), `no ${sel} inside a conductor tree`);
   }
   assert.ok(tree.querySelector('.commit-log'), '≡ commit log stays');
@@ -448,4 +448,126 @@ test('styles.css: hovering a conductor row reveals its × (a top-level rule for 
   assert.ok(hover.length > 0, 'a rule selects .conductor-row:hover .session-delete');
   assert.ok(hover.some(r => r.decls.get('opacity') === '1'),
     `that rule sets opacity: 1 (found: ${JSON.stringify(hover.map(r => r.decls.get('opacity') ?? null))})`);
+});
+
+const expandA = (conductorList) => {
+  conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
+  return conductorOf(conductorList, 'A').querySelector('.conductor-tree');
+};
+
+test('a live temp worker row ends in the ↑ promote button; a non-temp worker has none', async (t) => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('proj', { worktrees: ['wt1'] })],
+    instances: [
+      conductor('A'),
+      worker('t', 'A', 'proj', null, { temp: true }),
+      worker('tw', 'A', 'proj', 'wt1', { temp: true }),
+      worker('n', 'A', 'proj'),
+    ],
+  });
+  const tree = expandA(conductorList);
+  for (const sid of ['t', 'tw']) {
+    await t.test(`temp worker ${sid}`, () => {
+      const row = rowOf(tree, sid);
+      assert.ok(row, 'the worker row renders');
+      const ups = row.querySelectorAll('.session-promote');
+      assert.equal(ups.length, 1, 'exactly one ↑');
+      const btn = ups[0];
+      assert.equal(btn.tagName, 'BUTTON');
+      assert.equal(btn.textContent, '↑');
+      assert.equal(btn.title, 'promote to normal session');
+      assert.ok(row.lastElementChild === btn, 'the ↑ is the row\'s last child');
+      assert.equal(btn.dataset.key, 'promote');
+      assertNull(row.querySelector('.session-delete'), 'no × beside it');
+    });
+  }
+  await t.test('non-temp worker', () => {
+    const row = rowOf(tree, 'n');
+    assert.ok(row, 'the worker row renders');
+    assertNull(row.querySelector('.session-promote'), 'no ↑ on a non-temp worker');
+    assertNull(row.querySelector('.session-delete'), 'and no ×');
+  });
+});
+
+test('an exited or crashed temp worker has no ↑', async (t) => {
+  for (const status of ['exited', 'crashed']) {
+    await t.test(status, async () => {
+      const { conductorList, sidebar } = await setupSidebar();
+      await render(sidebar, {
+        projects: [project('proj')],
+        instances: [conductor('A'), worker('x', 'A', 'proj', null, { temp: true, status })],
+      });
+      const row = rowOf(expandA(conductorList), 'x');
+      assert.ok(row, 'the dead worker still has a row in the tree');
+      assertNull(row.querySelector('.session-promote'), `no ↑ on a ${status} temp worker`);
+    });
+  }
+});
+
+test('↑ promotes through onPromoteSession with the worker\'s instance id and never selects or resumes', async (t) => {
+  for (const wt of [null, 'wt1']) {
+    await t.test(wt ? 'in a worktree' : 'in the main checkout', async () => {
+      const { conductorList, sidebar, calls } = await setupSidebar();
+      await render(sidebar, {
+        projects: [project('proj', { worktrees: ['wt1'] })],
+        instances: [conductor('A'), worker('t', 'A', 'proj', wt, { temp: true, firstPrompt: 'do the work' })],
+      });
+      rowOf(expandA(conductorList), 't').querySelector('.session-promote').click();
+      assert.deepEqual(calls.promote, [{ projectName: 'proj', instanceId: 'inst-t', preview: 'do the work' }]);
+      assert.deepEqual(calls.select, [], 'the click does not select the worker');
+      assert.deepEqual(calls.resume, [], 'nor resume it');
+    });
+  }
+});
+
+test('↑ reads the freshest instance after a re-render', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('proj')],
+    instances: [conductor('A'), worker('t', 'A', 'proj', null, { temp: true })],
+  });
+  const tree = expandA(conductorList);
+  const before = rowOf(tree, 't').querySelector('.session-promote');
+  sidebar.setInstances([conductor('A'), worker('t', 'A', 'proj', null, { temp: true, id: 'inst-t2' })]);
+  await tick();
+  const after = rowOf(tree, 't').querySelector('.session-promote');
+  assert.ok(after === before, 'the button is reused, not rebuilt');
+  after.click();
+  assert.equal(calls.promote.length, 1);
+  assert.equal(calls.promote[0].instanceId, 'inst-t2');
+});
+
+test('promoting drops the ↑ in place; the worker stays in the tree', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('proj')],
+    instances: [conductor('A'), worker('t', 'A', 'proj', null, { temp: true })],
+  });
+  const tree = expandA(conductorList);
+  const row = rowOf(tree, 't');
+  assert.ok(row.querySelector('.session-promote'), 'sanity: ↑ before the promote');
+  assert.ok(row.classList.contains('temp'));
+  sidebar.setInstances([conductor('A'), worker('t', 'A', 'proj', null, { temp: false })]);
+  await tick();
+  const after = rowOf(conductorOf(conductorList, 'A').querySelector('.conductor-tree'), 't');
+  assert.ok(after === row, 'the same row node stays under the conductor tree');
+  assertNull(after.querySelector('.session-promote'), 'the ↑ is gone');
+  assert.ok(!after.classList.contains('temp'), 'the live temp:false is authoritative');
+});
+
+test('a worker dying drops the ↑ in place', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('proj')],
+    instances: [conductor('A'), worker('t', 'A', 'proj', null, { temp: true })],
+  });
+  const tree = expandA(conductorList);
+  const row = rowOf(tree, 't');
+  assert.ok(row.querySelector('.session-promote'), 'sanity: ↑ while idle');
+  sidebar.setInstances([conductor('A'), worker('t', 'A', 'proj', null, { temp: true, status: 'exited' })]);
+  await tick();
+  const after = rowOf(conductorOf(conductorList, 'A').querySelector('.conductor-tree'), 't');
+  assert.ok(after === row, 'the same row node');
+  assertNull(after.querySelector('.session-promote'), 'the ↑ is gone once the worker exits');
 });
