@@ -211,3 +211,19 @@ test('onDisk says whether the .conduct list carries the conductor\'s transcript'
   assert.equal(all.get('both').onDisk, true, 'disk row merged with an instance');
   assert.equal(all.get('only').onDisk, false, 'instance-only');
 });
+
+test('instanceTemp comes from a live instance; a disk-only row is false', () => {
+  const { live, inactive } = M.deriveConductors({
+    conductRows: [
+      { sessionId: 'disk', lastActivity: 1, temp: true },
+      { sessionId: 'both', lastActivity: 2 },
+    ],
+    instances: [
+      inst({ id: 'b', project: '.conduct', sessionId: 'both', temp: true }),
+      inst({ id: 'o', project: '.conduct', sessionId: 'only', temp: true }),
+      inst({ id: 'n', project: '.conduct', sessionId: 'normal', temp: false }),
+    ],
+  });
+  const temp = Object.fromEntries([...live, ...inactive].map(c => [c.sessionId, c.instanceTemp]));
+  assert.deepEqual(temp, { disk: false, both: true, only: true, normal: false });
+});

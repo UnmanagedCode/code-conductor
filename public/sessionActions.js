@@ -44,13 +44,19 @@ export function installSessionActions({
   // Promote a live temp session into a regular one. The server flips the
   // temp flag, writes the resume-picker metadata, and broadcasts the
   // status change — the sidebar's `instances` re-fetch then migrates the
-  // row from the Temp Sessions subnode into the regular Sessions list.
+  // row from the Temp Sessions subnode into the regular Sessions list. A
+  // conductor (`.conduct`) also re-fetches projects: promote broadcasts no
+  // projects event, and until its transcript is listed its × would take the
+  // kill-only path instead of archiving.
   async function promoteSession({ projectName, instanceId, preview }) {
     if (!instanceId) return;
-    const ok = confirm(
-      `Promote this temp session to a normal session in '${projectName}'?\n\n` +
-      `${preview || '(no preview yet)'}\n\n` +
-      `The transcript will be preserved when the session ends.`,
+    const isConductor = projectName === '.conduct';
+    const ok = confirm(isConductor
+      ? `Keep this conductor?\n\n${preview || '(no preview yet)'}\n\n` +
+        `It will move to Inactive instead of being archived when it exits.`
+      : `Promote this temp session to a normal session in '${projectName}'?\n\n` +
+        `${preview || '(no preview yet)'}\n\n` +
+        `The transcript will be preserved when the session ends.`,
     );
     if (!ok) return;
     try {
@@ -58,6 +64,7 @@ export function installSessionActions({
         method: 'POST', headers: { 'content-type': 'application/json' },
       });
       await refreshInstances();
+      if (isConductor) await refreshProjects();
     } catch (e) {
       alert(`Failed to promote: ${e.message}`);
     }

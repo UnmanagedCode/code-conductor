@@ -571,3 +571,105 @@ test('a worker dying drops the ↑ in place', async () => {
   assert.ok(after === row, 'the same row node');
   assertNull(after.querySelector('.session-promote'), 'the ↑ is gone once the worker exits');
 });
+
+const conductorRowOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-row');
+
+test('a live temp conductor row carries ↑ immediately left of ×', async (t) => {
+  const check = (row) => {
+    const ups = row.querySelectorAll(':scope > .session-promote');
+    assert.equal(ups.length, 1, 'exactly one ↑');
+    const btn = ups[0];
+    assert.equal(btn.tagName, 'BUTTON');
+    assert.equal(btn.textContent, '↑');
+    assert.equal(btn.title, 'promote to normal session');
+    assert.equal(btn.dataset.key, 'promote');
+    assert.ok(btn.nextElementSibling === row.querySelector(':scope > .session-delete'), 'the × follows the ↑');
+    assert.equal(row.lastElementChild.dataset.key, 'delete', 'the × is still the last child');
+    return btn;
+  };
+  await t.test('without an unread pill', async () => {
+    const { conductorList, sidebar } = await setupSidebar();
+    await render(sidebar, { instances: [conductor('A')] });
+    check(conductorRowOf(conductorList, 'A'));
+  });
+  await t.test('with an unread pill: unread → ↑ → ×', async () => {
+    const { conductorList, sidebar } = await setupSidebar();
+    await render(sidebar, { instances: [conductor('A')] });
+    sidebar.setUnread(new Map([['A', 3]]));
+    await tick();
+    const btn = check(conductorRowOf(conductorList, 'A'));
+    assert.equal(btn.previousElementSibling.dataset.key, 'unread', 'the unread pill precedes the ↑');
+  });
+});
+
+test('no ↑ on a non-temp, dead or disk-only conductor row', async (t) => {
+  const none = async ({ conductRows = [], instances = [] }, sid) => {
+    const { conductorList, sidebar } = await setupSidebar();
+    await render(sidebar, { conductRows, instances });
+    const row = conductorRowOf(conductorList, sid);
+    assert.ok(row, 'the conductor row renders');
+    assertNull(row.querySelector('.session-promote'), 'no ↑');
+    assert.ok(row.querySelector(':scope > .session-delete'), 'the × is still there');
+  };
+  await t.test('a live non-temp conductor', () => none({ instances: [conductor('A', { temp: false })] }, 'A'));
+  for (const status of ['exited', 'crashed']) {
+    await t.test(`an ${status} temp conductor`, () => none({ instances: [conductor('A', { status })] }, 'A'));
+  }
+  await t.test('a disk-only conductor', () => none({ conductRows: [{ sessionId: 'D', lastActivity: 1 }] }, 'D'));
+});
+
+test('↑ promotes through onPromoteSession with the conductor\'s instance id and never selects, resumes or expands', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
+  conductorRowOf(conductorList, 'A').querySelector('.session-promote').click();
+  await tick();
+  assert.deepEqual(calls.promote, [{ projectName: '.conduct', instanceId: 'inst-A', preview: 'Alpha' }]);
+  assert.deepEqual(calls.select, [], 'the click does not select the conductor');
+  assert.deepEqual(calls.resume, [], 'nor resume it');
+  const block = conductorOf(conductorList, 'A');
+  assert.ok(!block.classList.contains('open'), 'nor expand it');
+  assertNull(block.querySelector('.conductor-tree'));
+});
+
+test('conductor ↑ reads the freshest instance after a re-render', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A')] });
+  const before = conductorRowOf(conductorList, 'A').querySelector('.session-promote');
+  sidebar.setInstances([conductor('A', { id: 'inst-A2', title: 'Renamed' })]);
+  await tick();
+  const after = conductorRowOf(conductorList, 'A').querySelector('.session-promote');
+  assert.ok(after === before, 'the button is reused, not rebuilt');
+  after.click();
+  assert.deepEqual(calls.promote, [{ projectName: '.conduct', instanceId: 'inst-A2', preview: 'Renamed' }]);
+});
+
+test('promoting a conductor drops the ↑ in place; a later onDisk merge does not duplicate the row', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
+  const row = conductorRowOf(conductorList, 'A');
+  assert.ok(row.querySelector('.session-promote'), 'sanity: ↑ before the promote');
+  sidebar.setInstances([conductor('A', { title: 'Alpha', temp: false })]);
+  await tick();
+  assert.ok(conductorRowOf(conductorList, 'A') === row, 'the same row node');
+  assertNull(row.querySelector('.session-promote'), 'the ↑ is gone');
+  assert.ok(!conductorOf(conductorList, 'A').classList.contains('inactive'), 'still in the live list');
+  sidebar.setConductSessions([{ sessionId: 'A', lastActivity: 1 }]);
+  await tick();
+  assert.equal(conductorList.querySelectorAll('[data-key="conductor:A"]').length, 1, 'one block for the conductor');
+  assert.ok(conductorRowOf(conductorList, 'A') === row, 'still the same row node');
+  row.querySelector(':scope > .session-delete').click();
+  assert.deepEqual(calls.delete, [
+    { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Alpha', synthetic: false },
+  ], 'once listed, the × takes the archive route');
+});
+
+test('a temp conductor dying loses its ↑ as it moves to Inactive', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A')] });
+  assert.ok(conductorRowOf(conductorList, 'A').querySelector('.session-promote'), 'sanity: ↑ while idle');
+  sidebar.setInstances([conductor('A', { status: 'exited' })]);
+  await tick();
+  const block = conductorOf(conductorList, 'A');
+  assert.ok(block.closest('.conductor-inactive-list'), 'the conductor now sits under Inactive');
+  assertNull(block.querySelector('.session-promote'), 'the ↑ is gone once the conductor exits');
+});

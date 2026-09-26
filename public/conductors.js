@@ -67,6 +67,8 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
       // its disk row reports.
       awaitingUser: null,
       awaitingUserSource: null,
+      // Instance-only: only a live instance can be promoted.
+      instanceTemp: false,
       live: false,
       onDisk: true,
     });
@@ -82,6 +84,7 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
     row.instanceAwaitingWake = !!inst.awaitingWake;
     row.awaitingUser = inst.awaitingUser ?? null;
     row.awaitingUserSource = inst.awaitingUserSource ?? null;
+    row.instanceTemp = !!inst.temp;
     if (inst.title) row.title = inst.title;
     if (!row.firstPrompt && inst.firstPrompt) row.firstPrompt = inst.firstPrompt;
     row.lastActivity = Math.max(row.lastActivity ?? 0, inst.lastResponseAt ?? inst.createdAt ?? 0);
