@@ -573,3 +573,17 @@ test('a filesystem path as project is refused naming the expected form', async (
   const lp = body.result.tools.find(x => x.name === 'list_projects');
   assert.match(lp.description, /NAME is the `project` argument/);
 });
+
+// Invariant: a resume whose location cannot be recovered is refused naming
+// list_sessions as the recovery; a fresh spawn's refusal stays the plain
+// `project required` and never mentions it.
+test('spawn_instance: the resume "project required" names list_sessions, the fresh-spawn one does not', async () => {
+  const resumed = await callTool('spawn_instance', { resume: '0badc0de-0000-4000-8000-000000000000' });
+  assert.equal(resumed.isError, true, JSON.stringify(resumed));
+  assert.match(errText(resumed), /^project required: .*list_sessions/);
+
+  const fresh = await callTool('spawn_instance', {});
+  assert.equal(fresh.isError, true, JSON.stringify(fresh));
+  assert.equal(JSON.parse(fresh.content[1].text).error, 'project required');
+  assert.doesNotMatch(errText(fresh), /list_sessions/);
+});

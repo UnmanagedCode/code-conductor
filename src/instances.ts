@@ -4707,7 +4707,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     }
     if (!project) {
-      throw httpError(400, 'project required');
+      throw httpError(400, resume
+        ? `project required: session ${publicId ?? resume} has no recorded location under a registered project or worktree — list_sessions lists every resumable session under its project and worktree; pass those as project (and worktree)`
+        : 'project required');
     }
     const proj = await getProject(project);
     // A worker on a NON-LOCAL system still runs the CLI here — the CLI is

@@ -573,7 +573,7 @@ describe('a session on a project on a system', () => {
   // `cwd` equal to the tree path the two old derivations returned — so the new
   // required field and the derivation it replaced AGREE, rather than that being
   // a paragraph a future editor can contradict. Third arm: a genuinely unknown
-  // id still gets the literal `400 {"error":"project required"}`.
+  // id still gets `400 project required`, naming list_sessions as the recovery.
   // Scoped to sessions on LOCAL projects.
   test('T10: CONTROL — local project and local worktree sessions are unchanged', async () => {
     assert.equal((await api(baseUrl, 'POST', '/api/projects', { name: 'host' })).status, 201);
@@ -592,7 +592,7 @@ describe('a session on a project on a system', () => {
 
     const r = await api(baseUrl, 'POST', '/api/instances', { resume: UNKNOWN_ID });
     assert.equal(r.status, 400);
-    assert.deepEqual(r.body, { error: 'project required' });
+    assert.match(r.body.error, /^project required: .*list_sessions/);
   });
 
   // ── T11 ─────────────────────────────────────────────────────────────

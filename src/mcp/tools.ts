@@ -245,9 +245,8 @@ export function buildTools(): Tool[] {
         'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
         'The session is archived on subprocess exit (transcript retained and still resumable, just out of the ' +
         'default list_sessions view); mode still defaults to plan (NOT bypassPermissions) so workers plan before acting. ' +
-        'project is required for a fresh spawn, but optional when resume is given: if worktree is also ' +
-        'omitted, the session\'s recorded project + worktree are recovered automatically so ' +
-        'spawn_instance({resume:sessionId}) alone re-attaches the right cwd/branch and its prior history. ' +
+        'spawn_instance({resume:sessionId}) alone re-attaches a session at its recorded project + worktree, ' +
+        'with its prior history — see `project` for when that holds. ' +
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
         'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where. ' +
@@ -257,7 +256,7 @@ export function buildTools(): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
+          project: { type: 'string', description: 'Required for a fresh spawn. On a `resume` with `worktree` also omitted it may be omitted too, but only when the session\'s recorded location resolves — its transcript lies under a registered project or worktree.' },
           mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
