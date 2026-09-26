@@ -949,7 +949,7 @@ export function buildTools(): Tool[] {
         'and `history` is the run\'s ledger events oldest-first (capped; see historyTruncated). ' +
         'Each move is evaluated as the BARE call, with no `provenance` supplied, so an edge into a stage ' +
         'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
-        '— that is not "impossible", it is "pass the argument": the `reason` names exactly what to pass. ' +
+        '— the `reason` names what to pass and which workers of the run satisfy it, or that none does. ' +
         'WITHOUT sessionId: {tracked:false, runs, enforcement} — every run at once. ' +
         'An untracked worker is a normal {tracked:false} answer, not a refusal. ' +
         'Note the no-argument form names no worker, so it is never subject to a stage\'s tool policy: ' +

@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, validateSlug, type ExtraEntry } from './fragmentCatalog.ts';
 import {
-  type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runRootOf, sameRun,
+  type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runMembers, runRootOf, sameRun,
 } from './playbookLedger.ts';
 
 // EXPORTED FOR DISK-BINDING IN TESTS, for the same reason the validator's
@@ -1312,64 +1312,102 @@ function checkNeeds(
     projection: Projection; subject: string | null; isLive: (sessionId: string) => boolean },
 ): Decision | null {
   const moves = legalMovesFrom(playbook, stageName);
+  // Run scoping's anchor. On a TRANSITION the subject already belongs to a run,
+  // so a worker from another run cannot satisfy its entry conditions — this is
+  // what keeps two concurrent runs of the same playbook independent. On a SPAWN
+  // the `needs` edges are what DEFINE the run, so there is nothing to compare
+  // against yet; instead every named worker must already share one component,
+  // or the new worker's run would be ambiguous.
+  const anchor = subject ?? Object.values(suppliedProvenance)[0];
   for (const need of stage.needs) {
     const sid = suppliedProvenance[need.stage];
     if (!sid) {
       return refuse('NEEDS_UNSATISFIED',
         `stage '${stageName}' of playbook '${playbook.id}' requires a ${describeNeed(need)}: ` +
-        `pass provenance: { "${need.stage}": "<sessionId>" }.`,
+        `pass provenance: { "${need.stage}": "<sessionId>" }.` +
+        needCensus({ need, playbook, projection, anchor, isLive, moves }),
         moves);
     }
-    const target = projection.bySession.get(sid);
-    if (!target) {
-      return refuse('NEEDS_UNSATISFIED',
-        `needs.${need.stage} names sessionId '${sid}', which is not a playbook-tracked worker.`, moves);
-    }
-    if (target.playbook !== playbook.id) {
-      return refuse('PLAYBOOK_MISMATCH',
-        `needs.${need.stage} names a worker on playbook '${target.playbook}', not '${playbook.id}'.`, moves);
-    }
-    // PROVENANCE — the anchor. Always required; it is what the `needs` key means.
-    if (!hasEverBeen(projection, sid, need.stage)) {
-      return refuse('NEEDS_UNSATISFIED',
-        `needs.${need.stage} requires worker ${short(sid)} to have passed through stage '${need.stage}', but its ` +
-        `history is: ${target.stageHistory.join(' -> ')}.`, moves);
-    }
-    // LIVENESS — before position (see the header).
-    if (need.liveness === 'live' && !isLive(sid)) {
-      return refuse('NEEDS_WORKER_GONE',
-        `needs.${need.stage} requires worker ${short(sid)} to still be running, but it has no running process ` +
-        `(last known stage '${target.stage}'). This is not a wiring mistake: the worker you named is gone. Spawn ` +
-        `a replacement and name that one, or use a stage whose needs declare liveness:"any".`,
-        moves);
-    }
-    if (need.liveness === 'retired' && isLive(sid)) {
-      return refuse('NEEDS_UNSATISFIED',
-        `needs.${need.stage} requires worker ${short(sid)} to be RETIRED before this stage is entered, but it is ` +
-        `still running (in '${target.stage}'). Retire it first: kill_instance({sessionId: "${short(sid)}"}).`,
-        moves);
-    }
-    // POSITION — the acceptable current stages.
-    if (!need.position.includes(WILDCARD) && !need.position.includes(target.stage)) {
-      return refuse('NEEDS_UNSATISFIED',
-        `needs.${need.stage} accepts worker ${short(sid)} only in ${need.position.map(s => `'${s}'`).join(' or ')}, ` +
-        `but it is in '${target.stage}'. If '${target.stage}' should be acceptable here, add it to that stage's ` +
-        'needs.position.',
-        moves);
-    }
-    // Run scoping. On a TRANSITION the subject already belongs to a run, so a
-    // worker from another run cannot satisfy its entry conditions — this is what
-    // keeps two concurrent runs of the same playbook independent. On a SPAWN the
-    // `needs` edges are what DEFINE the run, so there is nothing to compare
-    // against yet; instead every named worker must already share one component,
-    // or the new worker's run would be ambiguous.
-    const anchor = subject ?? Object.values(suppliedProvenance)[0];
-    if (anchor && anchor !== sid && runRootOf(projection, anchor) !== null && !sameRun(projection, anchor, sid)) {
-      return refuse('NEEDS_UNSATISFIED',
-        `needs.${need.stage} names worker ${short(sid)}, which belongs to a different run than ` +
-        `${short(anchor)}. \`needs\` is scoped to one run — a worker from another run cannot satisfy it.`,
-        moves);
-    }
+    const refusal = checkNeedEntry({ need, sid, playbook, projection, anchor, isLive, moves });
+    if (refusal) return refusal;
+  }
+  return null;
+}
+
+// The run census appended to the "you did not pass it" refusal: which workers
+// of the anchor's run would satisfy the need, or that none does and which
+// passed through its stage but are gone. Every candidate is judged by
+// checkNeedEntry — the gate's own per-worker check — so the census never names
+// a worker the gate would then refuse. Provenance is never filled in from it.
+// No anchor (a run-root spawn with no provenance) ⇒ no run to count, no census.
+function needCensus(
+  { need, playbook, projection, anchor, isLive, moves }:
+  { need: NeedsEntry; playbook: Playbook; projection: Projection; anchor: string | undefined;
+    isLive: (sessionId: string) => boolean; moves: LegalMoves },
+): string {
+  if (!anchor || runRootOf(projection, anchor) === null) return '';
+  const members = runMembers(projection, anchor);
+  const satisfiers = members.filter(m => checkNeedEntry({ need, sid: m, playbook, projection, anchor, isLive, moves }) === null);
+  if (satisfiers.length > 0) return ` Workers in this run that satisfy it: ${satisfiers.map(short).join(', ')}.`;
+  const gone = need.liveness === 'live'
+    ? members.filter(m => hasEverBeen(projection, m, need.stage) && !isLive(m))
+    : [];
+  return ' No worker in this run satisfies it right now.' + (gone.length === 0 ? '' :
+    ` ${gone.map(short).join(', ')} passed through '${need.stage}' but ${gone.length === 1 ? 'has' : 'have'} ` +
+    'no running process — spawn a replacement and name that one.');
+}
+
+// One named worker against one `needs` entry: tracked, same playbook,
+// provenance, liveness, retirement, position, run scope — in that order.
+// null ⇒ it satisfies the entry.
+function checkNeedEntry(
+  { need, sid, playbook, projection, anchor, isLive, moves }:
+  { need: NeedsEntry; sid: string; playbook: Playbook; projection: Projection; anchor: string | undefined;
+    isLive: (sessionId: string) => boolean; moves: LegalMoves },
+): Decision | null {
+  const target = projection.bySession.get(sid);
+  if (!target) {
+    return refuse('NEEDS_UNSATISFIED',
+      `needs.${need.stage} names sessionId '${sid}', which is not a playbook-tracked worker.`, moves);
+  }
+  if (target.playbook !== playbook.id) {
+    return refuse('PLAYBOOK_MISMATCH',
+      `needs.${need.stage} names a worker on playbook '${target.playbook}', not '${playbook.id}'.`, moves);
+  }
+  // PROVENANCE — the anchor. Always required; it is what the `needs` key means.
+  if (!hasEverBeen(projection, sid, need.stage)) {
+    return refuse('NEEDS_UNSATISFIED',
+      `needs.${need.stage} requires worker ${short(sid)} to have passed through stage '${need.stage}', but its ` +
+      `history is: ${target.stageHistory.join(' -> ')}.`, moves);
+  }
+  // LIVENESS — before position (see the header).
+  if (need.liveness === 'live' && !isLive(sid)) {
+    return refuse('NEEDS_WORKER_GONE',
+      `needs.${need.stage} requires worker ${short(sid)} to still be running, but it has no running process ` +
+      `(last known stage '${target.stage}'). This is not a wiring mistake: the worker you named is gone. Spawn ` +
+      `a replacement and name that one, or use a stage whose needs declare liveness:"any".`,
+      moves);
+  }
+  if (need.liveness === 'retired' && isLive(sid)) {
+    return refuse('NEEDS_UNSATISFIED',
+      `needs.${need.stage} requires worker ${short(sid)} to be RETIRED before this stage is entered, but it is ` +
+      `still running (in '${target.stage}'). Retire it first: kill_instance({sessionId: "${short(sid)}"}).`,
+      moves);
+  }
+  // POSITION — the acceptable current stages.
+  if (!need.position.includes(WILDCARD) && !need.position.includes(target.stage)) {
+    return refuse('NEEDS_UNSATISFIED',
+      `needs.${need.stage} accepts worker ${short(sid)} only in ${need.position.map(s => `'${s}'`).join(' or ')}, ` +
+      `but it is in '${target.stage}'. If '${target.stage}' should be acceptable here, add it to that stage's ` +
+      'needs.position.',
+      moves);
+  }
+  // RUN SCOPE — see checkNeeds' anchor.
+  if (anchor && anchor !== sid && runRootOf(projection, anchor) !== null && !sameRun(projection, anchor, sid)) {
+    return refuse('NEEDS_UNSATISFIED',
+      `needs.${need.stage} names worker ${short(sid)}, which belongs to a different run than ` +
+      `${short(anchor)}. \`needs\` is scoped to one run — a worker from another run cannot satisfy it.`,
+      moves);
   }
   return null;
 }

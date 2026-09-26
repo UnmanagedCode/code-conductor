@@ -443,6 +443,52 @@ test('needs is enforced on TRANSITION-entry too, not only on spawn', () => {
   assert.deepEqual(res.move, { kind: 'transition', from: 'build', to: 'amend', via: 'send_prompt' });
 });
 
+// ── NEEDS_UNSATISFIED carries a census of the run ──────────────────────────
+//
+// One test per case, not a table: each is its own red/green.
+const short8 = sid => sid.slice(0, 8);
+const AUDITOR_RETIRED = [...GATELAB_RUN, { kind: 'retire', sessionId: 'w-auditor-1', reason: 'killed' }];
+
+// Invariant: the census names the run's valid satisfiers — and provenance is
+// never filled in from it: the bare call is still refused.
+test('a transition missing provenance is refused naming the live satisfier in its run', () => {
+  const res = refusal(d('send_prompt', { sessionId: 'w-drafter-1', text: 'go', stage: 'amend' }, GATELAB_RUN),
+    'NEEDS_UNSATISFIED');
+  assert.match(res.reason, /pass provenance: \{ "audit": "<sessionId>" \}\./);
+  assert.ok(res.reason.includes(`Workers in this run that satisfy it: ${short8('w-auditor-1')}.`), res.reason);
+});
+
+// Invariant: a gone worker is reported in the FIRST refusal, not a second call.
+test('with the only satisfier retired, the census says none satisfies it and names the gone worker', () => {
+  const res = refusal(d('send_prompt', { sessionId: 'w-drafter-1', text: 'go', stage: 'amend' }, AUDITOR_RETIRED),
+    'NEEDS_UNSATISFIED');
+  assert.match(res.reason, /No worker in this run satisfies it right now\./);
+  assert.ok(res.reason.includes(`${short8('w-auditor-1')} passed through 'audit'`), res.reason);
+  assert.match(res.reason, /spawn a replacement/);
+  assert.doesNotMatch(res.reason, /Workers in this run that satisfy it/);
+});
+
+// Invariant: the census runs over the run of the worker the caller DID name,
+// so a provenance passed under the wrong key still leads to the right worker.
+test('a spawn passing provenance under the wrong key gets a census naming the right worker', () => {
+  const res = refusal(d('spawn_instance',
+    { playbook: 'gatelab', stage: 'audit', provenance: { draft: 'w-drafter-1' } }, GATELAB_RUN.slice(0, 2)),
+  'NEEDS_UNSATISFIED');
+  assert.match(res.reason, /pass provenance: \{ "build": "<sessionId>" \}/);
+  assert.ok(res.reason.includes(`Workers in this run that satisfy it: ${short8('w-drafter-1')}.`), res.reason);
+});
+
+// Invariant: census and gate agree — the worker the census names is one the
+// gate then accepts.
+test('the worker a census names is accepted when passed back as provenance', () => {
+  const res = refusal(d('send_prompt', { sessionId: 'w-drafter-1', text: 'go', stage: 'amend' }, GATELAB_RUN),
+    'NEEDS_UNSATISFIED');
+  const named = ['w-drafter-1', 'w-auditor-1'].filter(sid => res.reason.includes(`satisfy it: ${short8(sid)}`));
+  assert.deepEqual(named, ['w-auditor-1']);
+  allowed(d('send_prompt',
+    { sessionId: 'w-drafter-1', text: 'go', stage: 'amend', provenance: { audit: named[0] } }, GATELAB_RUN));
+});
+
 // ── the joint capacity + position invariant ────────────────────────────────
 //
 // The single most load-bearing case here. It needs BOTH halves at once:
