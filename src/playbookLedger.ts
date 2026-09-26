@@ -52,7 +52,10 @@ export type LedgerEvent =
   | { seq: number; ts: string; kind: 'spawn'; sessionId: string; playbook: string; stage: string;
       provenance?: Record<string, string>; project?: string; worktree?: string }
   | { seq: number; ts: string; kind: 'transition'; sessionId: string; from: string; to: string;
-      via: string; provenance?: Record<string, string> }
+      via: string; provenance?: Record<string, string>;
+      // send_prompt's forward source, present only when the call named one.
+      // Audit-only: applyEvent never reads it.
+      forwardSessionId?: string }
   | { seq: number; ts: string; kind: 'retire'; sessionId: string; reason: string }
   // A resumed worker coming back to life. NOT a second `spawn`: the spawn arm
   // below REPLACES the worker's state (stageHistory reset to the entered stage,

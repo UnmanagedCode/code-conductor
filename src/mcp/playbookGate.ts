@@ -391,7 +391,9 @@ export function createPlaybookGate(
     // A DECLARED self-loop is ledgered by this same path: the round it closes is
     // the thing worth counting, and writing it as a transition from===to is what
     // makes `stageHistory` show `refine -> refine` per round. It carries no
-    // `provenance` — a self-edge never re-runs `needs`, so there is none.
+    // `provenance` — a self-edge never re-runs `needs`, so there is none — but it
+    // does carry the forward source like a real move, since that round's handoff
+    // is what the row audits.
     if (move.kind === 'transition' && move.from && move.to) {
       const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
       if (!sessionId) return;
@@ -402,6 +404,7 @@ export function createPlaybookGate(
         to: move.to,
         via: move.via ?? toolName,
         ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
+        ...forwardSubject(args),
       });
       return;
     }
@@ -409,7 +412,14 @@ export function createPlaybookGate(
     if (move.kind === 'self' && move.recorded && move.from && move.to) {
       const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
       if (!sessionId) return;
-      await append({ kind: 'transition', sessionId, from: move.from, to: move.to, via: move.via ?? toolName });
+      await append({
+        kind: 'transition',
+        sessionId,
+        from: move.from,
+        to: move.to,
+        via: move.via ?? toolName,
+        ...forwardSubject(args),
+      });
       return;
     }
 
@@ -458,16 +468,22 @@ export function createPlaybookGate(
 // EVERY WORKER THE CALL NAMED, for the refusal row and the `playbook_warn`
 // bubble alike — one rule, no branch on which side was refused (`code` says
 // that). `forwardSessionId` is send_prompt's forward source, a policy subject in
-// its own right (see checkForwardSource in ../playbooks.ts). Keys are OMITTED
-// rather than set to undefined: the raw `_emitUi` payload is asserted on.
+// its own right (see checkForwardSource in ../playbooks.ts); forwardSubject also
+// feeds it to every ledgered `transition` row. Keys are OMITTED rather than set
+// to undefined, on both: the raw `_emitUi` payload and append()'s argument are
+// asserted on.
 function subjects(args: Record<string, unknown>): { sessionId?: string; forwardSessionId?: string } {
-  const forward = asRecord(args.forward);
   return {
     ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
-    ...(typeof forward.sessionId === 'string' && forward.sessionId
-      ? { forwardSessionId: forward.sessionId }
-      : {}),
+    ...forwardSubject(args),
   };
+}
+
+function forwardSubject(args: Record<string, unknown>): { forwardSessionId?: string } {
+  const forward = asRecord(args.forward);
+  return typeof forward.sessionId === 'string' && forward.sessionId
+    ? { forwardSessionId: forward.sessionId }
+    : {};
 }
 
 function suppliedProvenance(v: unknown): Record<string, string> {
