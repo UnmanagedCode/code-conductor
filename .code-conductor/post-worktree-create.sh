@@ -18,10 +18,20 @@ else
     echo "[post-worktree-create] Symlinked node_modules from ${PARENT_NM}."
 fi
 
+# Keep .wiki out of `git status`. info/exclude lives in the common git dir
+# (`--git-path` resolves there from a worktree), so one entry covers the main
+# checkout and every worktree. `/.wiki` has no trailing slash so it matches the
+# symlink created below as well as the main checkout's directory.
+EXCLUDE="$(git rev-parse --git-path info/exclude)"
+if ! grep -qxF '/.wiki' "$EXCLUDE" 2>/dev/null; then
+    mkdir -p "$(dirname "$EXCLUDE")"
+    # Terminate a last line that lacks a newline so the entry isn't glued onto it.
+    if [ -s "$EXCLUDE" ] && [ -n "$(tail -c1 "$EXCLUDE")" ]; then echo >> "$EXCLUDE"; fi
+    echo '/.wiki' >> "$EXCLUDE"
+    echo "[post-worktree-create] Added /.wiki to ${EXCLUDE}."
+fi
+
 # Symlink the out-of-tree wiki from the parent repo into this worktree.
-# .git/info/exclude is shared across all worktrees (it lives in the common
-# git dir), so the parent's existing ".wiki" exclude entry already covers
-# every worktree — nothing to add here.
 PARENT_WIKI="${PARENT}/.wiki"
 
 if [ -e .wiki ] || [ -L .wiki ]; then
