@@ -156,7 +156,7 @@ export function buildTools(): Tool[] {
               + 'pass it when you know the project.',
           },
           worktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description: 'Narrow to one worktree of `project`, by its exact registered name. Requires `project`.',
           },
           includeArchived: {
@@ -282,7 +282,7 @@ export function buildTools(): Tool[] {
               '`model` comes back on the model it last ran.',
           },
           worktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description: 'Name of an existing worktree to spawn into. To create a fresh one instead, use createWorktree:true.',
           },
           createWorktree: {
@@ -290,7 +290,7 @@ export function buildTools(): Tool[] {
             description: 'If true, create a fresh worktree off the project\'s HEAD and spawn into it. Takes precedence over worktree.',
           },
           baseWorktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description: 'Requires createWorktree:true (else refused). Same meaning as create_worktree\'s — see that tool\'s schema.',
           },
           name: {
@@ -588,7 +588,7 @@ export function buildTools(): Tool[] {
         properties: {
           project: { type: 'string' },
           baseWorktree: {
-            type: 'string',
+            type: 'string', minLength: 1,
             description:
               'Base the new worktree on this existing worktree of the project instead of the project\'s HEAD, ' +
               'so it syncs against and merges into that worktree — how a multi-task feature integrates as a unit ' +
@@ -618,7 +618,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string' },
+          worktree: { type: 'string', minLength: 1 },
           force: { type: 'boolean' },
         },
         required: ['project', 'worktree'],
@@ -644,7 +644,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Parent project holding the worktree.' },
-          worktree: { type: 'string', description: 'Worktree name (see list_worktrees).' },
+          worktree: { type: 'string', minLength: 1, description: 'Worktree name (see list_worktrees).' },
         },
         required: ['project', 'worktree'],
       },
@@ -667,7 +667,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Parent project holding the worktree.' },
-          worktree: { type: 'string', description: 'Worktree name (see list_worktrees).' },
+          worktree: { type: 'string', minLength: 1, description: 'Worktree name (see list_worktrees).' },
           allowDirty: { type: 'boolean', description: 'Merge even though the worktree has uncommitted/untracked changes (they will not be included in the merge commit).' },
         },
         required: ['project', 'worktree'],
@@ -1036,7 +1036,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           logLimit: { type: 'integer', default: 20, description: 'Number of recent commits to include. Default 20. 0 disables.' },
         },
         required: ['project'],
@@ -1069,7 +1069,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string' },
+          worktree: { type: 'string', minLength: 1 },
           baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
           contextLines: { type: 'integer', minimum: 0, maximum: 50, default: 3, description: 'Lines of context around each hunk (per the schema range/default).' },
           summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
@@ -1099,7 +1099,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project:  { type: 'string' },
-          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           command:  { type: 'string', description: 'The bash command to run.' },
           description: BASH_DESCRIPTION_PROP,
           timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `clampBashTimeoutMs` are clamped.' },
@@ -1155,7 +1155,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
           maxBytes: { type: 'integer', minimum: 1, default: 262144, description: 'Cap on bytes returned (default per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
           lineNumbers: { type: 'boolean', default: false, description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },

@@ -30,7 +30,7 @@ import {
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
-  createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
+  createWorktree as fsCreateWorktree, removeWorktree, getWorktree, requireWorktree, unknownWorktreeMessage,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
   listDependentWorktrees, dependentsRefusal, resolveProjectCwd,
@@ -527,8 +527,12 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // The project-root target carries `worktree: null`, so an unmatched name
     // must filter to nothing rather than fall through to the root and report
     // the project's own sessions as the worktree's.
+    const all = targets;
     targets = targets.filter(t => t.worktree === worktreeArg);
-    if (!targets.length) throw new Error(`worktree '${worktreeArg}' not found under project '${project}'`);
+    if (!targets.length) {
+      const names = all.flatMap(t => (t.worktree === null ? [] : [t.worktree]));
+      throw new Error(unknownWorktreeMessage(project as string, worktreeArg, names));
+    }
   }
 
   const groups = await Promise.all(targets.map(async t => {
@@ -1646,8 +1650,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   if (!project || !worktree) {
     throw new Error('project_diff requires {project, worktree}');
   }
-  const wt = await getWorktree(project, worktree);
-  if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
+  const wt = await requireWorktree(project, worktree);
   const system = await resolveSystem(project);
   // Resolve the worktree's current HEAD sha (the right edge of the diff).
   const headR = await runGit(system, wt.worktreePath, ['rev-parse', 'HEAD']);
@@ -1875,8 +1878,7 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
 }
 
 export async function syncWorktree({ project, worktree }: { project: string; worktree: string }) {
-  const wt = await getWorktree(project, worktree);
-  if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
+  const wt = await requireWorktree(project, worktree);
   // Resolve once and pass the canonical name down (same reason as deleteWorktree).
   return fsSyncWorktree(project, wt.worktreeName);
 }
@@ -1887,12 +1889,11 @@ export async function mergeWorktree({ project, worktree, allowDirty }: { project
   // same way for the same reason: this tool answers with a structured refusal,
   // and a conductor acts on the code.
   let wt;
-  try { wt = await getWorktree(project, worktree); }
+  try { wt = await requireWorktree(project, worktree); }
   catch (e) {
     if (!isSystemRefusal(e)) throw e;
     return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: e.message };
   }
-  if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
   const result = await mergeWorktreeIntoParent(project, wt.worktreeName, { allowDirty: allowDirty === true });

@@ -473,10 +473,7 @@ export async function createWorktree(
   let baseLabel = `project '${projectName}'`;
   let baseWorktreeName: string | undefined;
   if (baseWorktree !== undefined) {
-    const base = await getWorktree(projectName, baseWorktree);
-    if (!base) {
-      throw httpError(404, `base worktree '${baseWorktree}' not found under project '${projectName}'`);
-    }
+    const base = await requireWorktree(projectName, baseWorktree, 'base worktree');
     // The base may itself have a base: chains nest to any depth. Two structural
     // facts hold that up, and the obvious "improvements" undo them:
     //   - `baseWorktree` is written at ONE site (the meta literal below), at
@@ -683,6 +680,27 @@ export async function getWorktree(projectName: string, worktreeName: string): Pr
   return all.find(w => w.worktreeName === worktreeName) ?? null;
 }
 
+// The unknown-worktree refusal text, in one place: it lists what IS valid —
+// the project's worktrees by exact name — since the match stays exact and a
+// near-miss (a slug, a branch) is the usual cause.
+export function unknownWorktreeMessage(
+  projectName: string, worktreeName: string, names: string[], what = 'worktree',
+): string {
+  return `${what} '${worktreeName}' not found under project '${projectName}' — `
+    + (names.length ? `its worktrees, by exact name: ${names.join(', ')}` : `project '${projectName}' has no worktrees`);
+}
+
+// getWorktree, or a 404 naming the project's worktrees — both from ONE
+// listWorktrees read, so the list cannot disagree with the miss.
+export async function requireWorktree(
+  projectName: string, worktreeName: string, what?: string,
+): Promise<WorktreeMeta> {
+  const all = await listWorktrees(projectName);
+  const hit = all.find(w => w.worktreeName === worktreeName);
+  if (hit) return hit;
+  throw httpError(404, unknownWorktreeMessage(projectName, worktreeName, all.map(w => w.worktreeName), what));
+}
+
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
 // useful message if either is missing.
 // THE ONE project-or-worktree resolver: every `project_*` MCP tool, the REST
@@ -694,10 +712,9 @@ export async function getWorktree(projectName: string, worktreeName: string): Pr
 export async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string; system: System }> {
   const proj = await getProject(projectName);
   if (worktreeName) {
-    const wt = await getWorktree(projectName, worktreeName);
     // 404, not a bare Error: on REST this is an addressing miss like any other
     // unknown name, and MCP reads `.message` either way.
-    if (!wt) throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
+    const wt = await requireWorktree(projectName, worktreeName);
     return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path, system: proj.system };
   }
   return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path, system: proj.system };
@@ -840,10 +857,7 @@ export async function removeWorktree(
   worktreeName: string,
   { force = false }: { force?: boolean } = {},
 ): Promise<WorktreeMeta> {
-  const meta = await getWorktree(projectName, worktreeName);
-  if (!meta) {
-    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
-  }
+  const meta = await requireWorktree(projectName, worktreeName);
   const system = await resolveSystem(projectName);
   const parentPath = meta.parentPath;
 
@@ -1072,11 +1086,8 @@ export async function mergeWorktreeIntoParent(
   }
 
   async function runMerge(): Promise<MergeSuccess | MergeFailure> {
-  const meta = await getWorktree(projectName, worktreeName);
+  const meta = await requireWorktree(projectName, worktreeName);
   const system = await resolveSystem(projectName);
-  if (!meta) {
-    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
-  }
   // 0. Refuse if another worktree is based on this one. THIS merge moves their
   //    base on its own: step 7 below fast-forwards this worktree's own branch
   //    onto the merge commit, and that branch IS what the children were created
@@ -1278,10 +1289,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   }
 
   async function runSync(): Promise<SyncResult> {
-  const meta = await getWorktree(projectName, worktreeName);
-  if (!meta) {
-    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
-  }
+  const meta = await requireWorktree(projectName, worktreeName);
   const system = await resolveSystem(projectName);
   // Refuse before anything is computed or touched if another worktree is based
   // on this one: every sync path below rewrites or moves this branch, which is

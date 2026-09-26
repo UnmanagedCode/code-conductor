@@ -587,3 +587,53 @@ test('spawn_instance: the resume "project required" names list_sessions, the fre
   assert.equal(JSON.parse(fresh.content[1].text).error, 'project required');
   assert.doesNotMatch(errText(fresh), /list_sessions/);
 });
+
+// Invariant: `worktree:""` is refused by the schema on every MCP tool that
+// takes a worktree — a census over tools/list, so a future tool's
+// worktree/baseWorktree property is covered by construction.
+test('every worktree param is minLength 1', async () => {
+  const { body } = await rpc('tools/list');
+  let seen = 0;
+  for (const t of body.result.tools) {
+    for (const [k, p] of Object.entries(t.inputSchema.properties ?? {})) {
+      if (k !== 'worktree' && k !== 'baseWorktree') continue;
+      seen++;
+      assert.equal(p.minLength, 1, `${t.name}.${k} must declare minLength: 1`);
+    }
+  }
+  assert.ok(seen > 0, 'premise: some tool takes a worktree');
+});
+
+// Invariant: `worktree:""` never reaches a handler — no filtering to nothing,
+// no "not found", and above all no silent fall-through to the project root.
+// One top-level test per tool (the file's beforeEach resets the store, which a
+// subtest would inherit).
+for (const [tool, args] of [
+  ['list_sessions', { project: 'empt', worktree: '' }],
+  ['project_diff', { project: 'empt', worktree: '' }],
+  ['project_bash', { project: 'empt', worktree: '', command: 'pwd' }],
+]) {
+  test(`worktree:"" is refused by the schema, not run at the project root: ${tool}`, async () => {
+    await makeRealRepo('empt');
+    const r = await callTool(tool, args);
+    assert.equal(r.isError, true, JSON.stringify(r));
+    assert.equal(errText(r), "argument 'worktree' must be at least 1 character(s)");
+  });
+}
+
+// Invariant: an unknown worktree's refusal lists the project's worktrees by
+// exact name, on every surface that resolves one — and the match stays exact:
+// a near-miss is refused, never resolved.
+for (const tool of ['project_diff', 'list_sessions', 'spawn_instance']) {
+  test(`unknown worktree lists exact names: ${tool}`, async () => {
+    await makeRealRepo('names');
+    const a = meta(await callTool('create_worktree', { project: 'names', name: 'alpha-one' }));
+    const b = meta(await callTool('create_worktree', { project: 'names', name: 'beta-two' }));
+    assert.ok(a.worktree && b.worktree, `premise: two worktrees: ${JSON.stringify([a, b])}`);
+    const r = await callTool(tool, { project: 'names', worktree: 'alpha' });
+    assert.equal(r.isError, true, JSON.stringify(r));
+    const msg = errText(r);
+    assert.match(msg, /worktree 'alpha' not found under project 'names' — its worktrees, by exact name: /);
+    assert.ok(msg.includes(a.worktree) && msg.includes(b.worktree), msg);
+  });
+}
