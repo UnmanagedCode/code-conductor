@@ -190,7 +190,7 @@ a user-visible difference, **and a test that runs the fallback**.
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
-| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
+| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None in traffic or geometry: a session on such a system is byte-identical to one before the capability existed. **Known wording defect:** an `outside-mirror-root` refusal still calls that default root "the mirror root that system advertises" and names the one path twice (`outsideMirrorRefusal`, `src/systems/fuse/tierTable.ts`, receives no advertised-vs-defaulted signal) | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename` | **not in the protocol** | — | cc never renames on a system: a cross-tier rename is `EXDEV` and a project-tier directory rename refuses, so nothing can ask for one | — |
@@ -219,6 +219,13 @@ cc  →  {"type":"describeRemote","id":"d1","remoteId":"ctr-a"}
   heard of the frame.
 - **Sent once per connection generation.** cc memoises the answer on the
   handshake, so a provider restart re-asks and nothing else does.
+- **Every no-advertisement route lands on the narrowest geometry** —
+  `remoteDescriptors` falsy (`NO_ADVERTISEMENT`, `src/systems/providerSystem.ts`),
+  `EUNSUPPORTED`, or `mirrorRoot` absent/`null` all resolve `noMirror(systemPath)`
+  (`src/systems/mirror.ts`). A wider-root remote tier and the `exclude` → `fail`
+  tier are unreachable through such a provider. The reference provider advertises
+  only when given `--mirror` (`remoteDescriptors: mirrors.size > 0`,
+  `src/systems/referenceProvider.ts`).
 - Error answers: **`ENOREMOTE`**, id-addressed (§9); **`EUNSUPPORTED`** if a
   provider answers it despite advertising the capability — cc treats that as "I
   advertise nothing" rather than failing the session.
@@ -253,7 +260,7 @@ the mirror):
 |---|---|
 | the mirror root is not an ancestor of, or equal to, the project path | **`MIRROR_ROOT_EXCLUDES_PROJECT`** (501) |
 | an exclude entry covers or equals the project path | **`MIRROR_EXCLUDE_COVERS_PROJECT`** (501) |
-| an exclude entry lies outside the mirror root | **inert** — reported on the session's event stream, once per launch, never a refusal |
+| an exclude entry lies outside the mirror root | **inert** — reported on the session's event stream as `system/stderr`, once at create (before the first launch, so it precedes the CLI's own events in the ring), never a refusal |
 
 Containment throughout is `path.posix.relative`, never a string prefix, so
 `/app-backup` is not inside `/app`. cc **never stats the mirror root**: it is a
@@ -457,7 +464,16 @@ both capability configurations:
 
 The backstop above is still what bounds a command that produces **no sentinel at
 all** — the shell died, the provider wedged. That is a different failure mode,
-not a redundant guard.
+not a redundant guard. It is also the only bound on a stream-held `exec` the
+provider cannot reap: measured on the reference provider, its own `timeoutMs`
+does not settle one under `processGroupSignal: false`, and a `setsid` job
+escapes the group kill in both configurations.
+
+**Why a background job outlives its command locally:** the CLI's local Bash
+hands the command's stdout a deleted file, not a pipe, so the command returns
+at process exit, the job survives at ppid 1 and its later output is dropped.
+Settling on the sentinel and sending `detach` is what reproduces that over a
+provider.
 
 **CAPTURE, NOT CARRY.** cc reads `$PWD` back so it can TELL the worker where its
 command ended; it never feeds that value into the next command's `cwd`. Every

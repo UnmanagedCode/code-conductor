@@ -122,14 +122,25 @@ The consequences of being a substitution backend:
 - **Off-spec stream framing is coded for, not assumed away.** A gateway may frame a
   content block so its close never reaches the parser — `content_block_start` with no
   `content_block.type`, or a `type` of `"output_text"`: the block opens on its first
-  `text_delta` and its `content_block_stop` emits nothing. That is what made the soft
-  interrupt appear to be a no-op against these backends (card 2026-0230), and why
+  `text_delta` and its `content_block_stop` emits nothing. Unhandled, that makes the soft
+  interrupt a no-op against these backends, which is why
   `QuiescenceScan` retires a block on the next `${msgId}:${blockIdx}` key as well as on
   its own close — see [protocol.md](protocol.md) → Two-tier interrupt. Third coded-for
   off-spec trait alongside the all-zero `message_start.usage` block (above) and the
   wrapper-crash `launch_failed`. There is still **no** per-backend adapter: every
   backend runs the same `claude` CLI, so each such trait is handled once, in the shared
   parser/instance path.
+- **Any bookkeeping derived from MATCHED open/close events is forgeable by a gateway**
+  — the bug class to check first when a defect looks backend-specific. The interrupt,
+  control-request and drain paths (`Instance.interrupt`, `_openDrainWindow`,
+  `_closeDrainWindow`) never read `CLAUDE_BACKEND_ID`.
+- **No gateway `stream_event` capture is in `tests/fixtures/`.** The all-zero-start +
+  real-delta fixture `scenario-zero-usage-delta.json` is authored; only its event-level
+  `usage` envelope is modelled on the real capture `scenario-live-skill-load.json`. A
+  gateway framing trait is therefore provably *reachable* from the parser's branches,
+  not attested on the wire. A wrong envelope floors to `ctx —`, never a wrong number.
+  For cross-backend questions about what was persisted, the session jsonls are a corpus,
+  attributable per session via `<store>/session-backends.json`.
 - **No `cost_usd`** is persisted for its turns (`src/costTracking.ts`): the CLI's
   `total_cost_usd` is Anthropic list pricing applied to someone else's model. The
   *absence* of `cost_usd` is the canonical "tokens not countable" marker the cost
@@ -364,6 +375,15 @@ backend's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 `summary()`, the MCP projection, the header ctx chip, forks, and the resume
 manifest. **Unknown capacity is `null` and renders as `ctx —`** — never a
 fabricated default.
+
+- **The substitution denominator is static.** Nothing in `src/` reads an Ollama
+  `num_ctx`; the window is the custom-model row's `contextWindow`, else
+  `OLLAMA_CLOUD_MODELS` (`src/ollamaCloudModels.ts`), else `null`.
+- **`addCustomModel` checks `contextWindow` only for a finite value > 0**, never
+  against the model's real window.
+- **The fill readout does not clamp.** `currentFillPct` / `formatPct`
+  (`public/usage.js`) render an understated window as >100%. Triage a >100% chip by
+  reading the session's model and its window row first.
 
 A binding is exactly `{backend, model}`. Sidecar and manifest records carry
 `contextWindowTokens` as a **fallback only**, used when the model's custom-model
