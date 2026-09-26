@@ -15,6 +15,7 @@ import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 import { MAX_TITLE_LEN } from '../sessionTitles.ts';
+import { MCP_BODY_BUDGET } from './content.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
@@ -223,7 +224,9 @@ export function buildTools(): Tool[] {
         'nextFrom}. Event kinds: text_delta, tool_use, ' +
         'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
-        'mid-turn use get_recent_messages.)',
+        'mid-turn use get_recent_messages.) A page stops short of `limit` when the next event would push the ' +
+        'result past the MCP result budget — hasMore/nextFrom continue from there; an event too large for any ' +
+        'page arrives as {_seq, kind, omitted:true, chars} (read its prose via get_recent_messages).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -991,13 +994,15 @@ export function buildTools(): Tool[] {
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
         'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, hasPlan?, planPath?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
-        'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
+        'textTruncated, hasPlan?, planTruncated?, planPath?, questionCount?, blocks?, blocksOmitted?}], source:"ring"|"disk", ' +
+        'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
         'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
-        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); ' +
+        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated), and so is the whole ' +
+        'result: over one MCP result\'s budget, text, plan (planTruncated) and block inputs are cut shorter, then the ' +
+        'oldest messages are dropped (omittedForBudget + hint) — a plan/questions message last; ' +
         '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
         '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
         'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
@@ -1051,18 +1056,24 @@ export function buildTools(): Tool[] {
         'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
         '(per the contextLines schema range/default) sets hunk context. The supported modes keep this usable at any size: (1) summary:true returns a ' +
         'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +
-        'diff — always small, never truncated, single JSON block. (2) paths:[...] scopes the diff (or summary) to ' +
-        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns at most `DIFF_BYTE_CAP` of whole ' +
-        'lines starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
+        'diff, in one JSON block; totals always cover the whole change set, and files pages by offset (a file index in ' +
+        'this mode) with truncated/nextOffset like diff mode. (2) paths:[...] scopes the diff (or summary) to ' +
+        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns as many whole lines as fit ' +
+        'one MCP result (a single over-long line is cut, lineTruncated:true), ' +
+        'starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
         'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
-        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], ahead, includedFiles?, omittedFiles?} ' +
+        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], untrackedTruncated?, untrackedTotal?, ' +
+        'ahead, lineTruncated?, includedFiles?, includedFilesTruncated?, includedFilesTotal?, omittedFiles?, ' +
+        'omittedFilesTruncated?, omittedFilesTotal?} ' +
         'PLUS a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset ' +
         'until truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a ' +
         'truncated page lists includedFiles/omittedFiles. Never silently cuts. Staged + unstaged changes vs HEAD ' +
         '(git diff HEAD) are always appended after the committed diff behind a `@@@ uncommitted working tree changes ' +
         '(git diff HEAD) @@@` separator whenever any exist (absent on a clean tree); untracked files never-git-added ' +
         'are always listed in `untracked`. summary:true likewise always includes `ahead` and an ' +
-        '`uncommitted:{totals, files, untracked}` section. `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
+        '`uncommitted:{totals, files, untracked}` section. untracked, uncommitted.files and includedFiles/omittedFiles ' +
+        'are capped, flagged <list>Truncated + <list>Total; project_bash\'s git ls-files --others --exclude-standard / ' +
+        'git diff --name-status give the full lists. `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
         'hasUncommittedChanges:true is the signal that nothing will land if you merge_worktree right now. ' +
         'Complements project_status.',
       inputSchema: {
@@ -1072,9 +1083,9 @@ export function buildTools(): Tool[] {
           worktree: { type: 'string', minLength: 1 },
           baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
           contextLines: { type: 'integer', minimum: 0, maximum: 50, default: 3, description: 'Lines of context around each hunk (per the schema range/default).' },
-          summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
+          summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff.' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
-          offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
+          offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0); in summary mode, a 0-based index into files. Use nextOffset from the previous call to paginate.' },
         },
         required: ['project', 'worktree'],
       },
@@ -1148,16 +1159,17 @@ export function buildTools(): Tool[] {
         'file body. `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
         '`offset` (1-based start line, default 1) and `limit` (max lines, default: to EOF) for range reads. Set ' +
         '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
-        'full file). Metadata includes `startLine`/`endLine` when a range is requested. Binary files come back as a ' +
+        'full file). Metadata includes `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
         'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
-        '(default per the schema); the `truncated` flag tells you when that happened.',
+        '(default and maximum per the schema — the most one result carries); `truncated` says when. A cut line-range ' +
+        'read ends on a whole line and endLine names it, so offset:endLine+1 continues.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
           worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
-          maxBytes: { type: 'integer', minimum: 1, default: 262144, description: 'Cap on bytes returned (default per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
+          maxBytes: { type: 'integer', minimum: 1, maximum: MCP_BODY_BUDGET, default: MCP_BODY_BUDGET, description: 'Cap on bytes returned (default and maximum per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
           lineNumbers: { type: 'boolean', default: false, description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
           offset: { type: 'integer', minimum: 1, default: 1, description: '1-based line number to start at (default 1). Ignored for binary files.' },
           limit: { type: 'integer', minimum: 1, description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },

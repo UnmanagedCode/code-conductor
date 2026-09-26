@@ -8,6 +8,39 @@
 // block PLUS one raw, UNESCAPED text block per body — far cheaper and more
 // legible for the consuming LLM than escaping the body into a JSON string.
 
+// THE MCP RESULT BUDGET: the most text (summed `content[].text` length) one
+// tool result may carry. The Claude Code harness caps an MCP result at
+// MAX_MCP_OUTPUT_TOKENS (default 25,000 tokens); a result whose chars/4
+// estimate is at most half that is accepted without counting, while a larger
+// one is token-counted and, over the limit, rejected outright
+// ("result (N characters) exceeds maximum allowed tokens"). 50,000 chars is
+// therefore the largest result every harness default accepts unconditionally.
+export const MCP_RESULT_CHAR_BUDGET = 50_000;
+
+// The budget for a raw body beside a metadata block whose one unbounded field is
+// a path (PATH_MAX). A byte cap also bounds UTF-16 length (every code unit is
+// at least one UTF-8 byte), so a byte cap at this value keeps the result inside
+// the char budget.
+export const MCP_BODY_BUDGET = MCP_RESULT_CHAR_BUDGET - 8 * 1024;
+
+// The longest prefix of `s` that fits `maxBytes` of UTF-8, cut on a character
+// boundary (never mid-sequence, so decoding adds no replacement char).
+export function utf8Prefix(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, 'utf8');
+  if (buf.length <= maxBytes) return s;
+  let n = Math.max(0, maxBytes);
+  while (n > 0 && (buf[n] & 0xc0) === 0x80) n--;
+  return buf.subarray(0, n).toString('utf8');
+}
+
+// The summed text length of a (meta, bodies) payload exactly as the MCP server
+// emits it — the quantity MCP_RESULT_CHAR_BUDGET bounds.
+export function payloadChars(meta: unknown, bodies: unknown[]): number {
+  let n = JSON.stringify(meta ?? null).length;
+  for (const b of bodies) n += String(b).length;
+  return n;
+}
+
 const PAYLOAD = Symbol('mcpTextPayload');
 
 export interface TextPayload {

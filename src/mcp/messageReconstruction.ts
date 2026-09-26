@@ -209,11 +209,13 @@ function describeToolInput(input: Record<string, unknown> | null | undefined): {
 // A thinking block is unchanged on both paths — includeThinking already gates it,
 // and its text is prose through the same cap as message text, not JSON-escaped
 // tool arguments.
-export function capBlockInput(b: ReconBlockOut, verbatim: boolean) {
+//
+// `cap` lowers that ceiling for get_recent_messages' result-budget fit only.
+export function capBlockInput(b: ReconBlockOut, verbatim: boolean, cap = MSG_TEXT_CAP) {
   if (b.type === 'tool_use') {
     const described = verbatim ? { input: b.input ?? null, omitted: false } : describeToolInput(b.input as Record<string, unknown> | null | undefined);
     const json = JSON.stringify(described.input ?? null);
-    const { text, truncated } = capText(json, MSG_TEXT_CAP);
+    const { text, truncated } = capText(json, cap);
     return {
       type: 'tool_use', name: b.name, toolUseId: b.toolUseId,
       input: truncated ? text : described.input,
@@ -221,7 +223,7 @@ export function capBlockInput(b: ReconBlockOut, verbatim: boolean) {
     };
   }
   if (b.type === 'thinking') {
-    const { text, truncated } = capText(b.text ?? '', MSG_TEXT_CAP);
+    const { text, truncated } = capText(b.text ?? '', cap);
     return { type: 'thinking', text, inputTruncated: truncated };
   }
   return b;

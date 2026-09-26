@@ -36,7 +36,7 @@ import {
   listDependentWorktrees, dependentsRefusal, resolveProjectCwd,
   type WorktreeMeta,
 } from '../worktrees.ts';
-import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
+import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
@@ -49,15 +49,17 @@ import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../pr
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
-import { textPayload, textResult, type TextPayload } from './content.ts';
+import {
+  textPayload, textResult, type TextPayload, MCP_RESULT_CHAR_BUDGET, MCP_BODY_BUDGET, utf8Prefix, payloadChars,
+} from './content.ts';
 import {
   renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
   renderPlaybook,
 } from './readRenderers.ts';
 import { pageInstanceEvents, pagePersistedEvents } from '../eventArchive.ts';
-import { indexDiffLines, paginateDiff } from './diffPaging.ts';
+import { indexDiffLines, paginateDiff, capPathList } from './diffPaging.ts';
 import {
-  capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
+  capText, MSG_TEXT_CAP, TOOL_ARG_VALUE_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, loadDiskSelection,
   type ReconMessage,
 } from './messageReconstruction.ts';
@@ -870,17 +872,49 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
       status: r.inst.status, resolvedSessionId: r.inst.sessionId, source: 'ring',
       page: await pageInstanceEvents(r.inst, { limit, ...after }),
     };
-  const events = page.events;
+  // Fit the page to one MCP result: keep the longest prefix of events whose
+  // compact-JSON result stays within MCP_RESULT_CHAR_BUDGET, measured against
+  // the result's widest possible frame (hasMore true, nextFrom one past the
+  // largest seq). An event too large for ANY page becomes a stub that still
+  // carries its `_seq`, so the cursor advances past it.
+  const frame = JSON.stringify({
+    status, sessionId: resolvedSessionId, source, events: [],
+    lastSeq: page.lastSeq, trimmedBefore: page.trimmedBefore, hasMore: true,
+    nextFrom: Math.max(page.lastSeq, ...page.events.map(e => (typeof e._seq === 'number' ? e._seq : 0))) + 1,
+  }).length;
+  const room = MCP_RESULT_CHAR_BUDGET - frame;
+  const events: UiEvent[] = [];
+  let used = 0;
+  for (const ev of page.events) {
+    let fitted: UiEvent = ev;
+    let chars = JSON.stringify(ev).length;
+    if (chars > room) {
+      fitted = { _seq: ev._seq, kind: ev.kind, omitted: true, chars };
+      chars = JSON.stringify(fitted).length;
+    }
+    const add = chars + (events.length > 0 ? 1 : 0);
+    if (used + add > room) break;
+    events.push(fitted);
+    used += add;
+  }
+  const cut = events.length < page.events.length;
   // The cursor comes from the last event that HAS a `_seq`, not from the last
   // event: a page can END on a SYNTHETIC one — `task_completion` is spliced in
   // after the TaskUpdate that completed a batch, `history_gap` at the archive
   // seam — and both carry no `_seq` by design (see eventArchive.ts SeqEvent).
   // Reading the array's tail blindly yields `undefined + 1` → NaN, which
-  // serializes as null and strands the poller with no way to continue.
+  // serializes as null and strands the poller with no way to continue. On a
+  // budget cut it is the last KEPT one, so the next poll resumes exactly at the
+  // first event this page dropped.
   let nextFrom = page.lastSeq + 1;
+  let found = false;
   for (let i = events.length - 1; i >= 0; i--) {
     const seq = events[i]._seq;
-    if (typeof seq === 'number') { nextFrom = seq + 1; break; }
+    if (typeof seq === 'number') { nextFrom = seq + 1; found = true; break; }
+  }
+  if (cut && !found) {
+    const firstDropped = page.events.slice(events.length).find(e => typeof e._seq === 'number');
+    if (firstDropped) nextFrom = firstDropped._seq as number;
   }
   return {
     status,
@@ -889,7 +923,7 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
     events,
     lastSeq: page.lastSeq,
     trimmedBefore: page.trimmedBefore,
-    hasMore: page.hasMore,
+    hasMore: page.hasMore || cut,
     // Forward cursor for the next incremental poll: poll again with
     // fromSeq = nextFrom to get only events since this batch.
     nextFrom,
@@ -1633,16 +1667,19 @@ export async function answerQuestion(
 // Tiered drill-down diff for a worktree relative to <baseRef>...HEAD.
 // baseRef defaults to the worktree's recorded baseBranch (the branch it
 // was created from). Several modes keep the tool usable at any size (see the branches below):
-//   - summary:true  -> a structured per-file stat (never truncated)
+//   - summary:true  -> a structured per-file stat; totals cover the whole
+//                       change set, `files` pages by index (offset)
 //   - paths:[...]    -> scope the diff (or summary) to specific files
-//   - offset:<line>  -> line-based pagination; each page is <= DIFF_BYTE_CAP
-//                       of whole lines, mid-file pages re-emit file/hunk
-//                       headers so each page parses standalone.
-// The byte cap is the per-page ceiling, never a silent terminal cut.
-// DIFF_BYTE_CAP / parseNumstat / parseNameStatus are imported from
-// ../gitDiff.ts (single source of truth, shared with the REST diff surface).
-// The line-index + pager engine lives in ./diffPaging.ts (indexDiffLines /
-// paginateDiff), imported above.
+//   - offset:<line>  -> line-based pagination; each page is as many whole
+//                       lines as fit one MCP result (MCP_RESULT_CHAR_BUDGET
+//                       less the metadata at its widest), mid-file pages
+//                       re-emit file/hunk headers so each page parses
+//                       standalone.
+// The budget is the per-page ceiling, never a silent terminal cut: every cut
+// is flagged (truncated/nextOffset, lineTruncated, <list>Truncated).
+// parseNumstat / parseNameStatus are imported from ../gitDiff.ts (shared with
+// the REST diff surface, which pages by its own cap). The line-index,
+// pager and side-list capper live in ./diffPaging.ts, imported above.
 
 export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }: {
   project: string; worktree: string; baseRef?: string; contextLines?: number; summary?: boolean; paths?: string[]; offset?: number;
@@ -1667,7 +1704,12 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   const pathspec = pathArgs.length ? ['--', ...pathArgs] : [];
   const lsPathspec = pathArgs.length ? ['--', ...pathArgs] : [];
 
-  // ---- summary mode: structured per-file stat, never truncated ----
+  // Every side list is capped to this many chars of JSON, so the metadata that
+  // rides beside a page can never crowd it out of one MCP result.
+  const sideListChars = MCP_RESULT_CHAR_BUDGET / 8;
+  const startAt = Number.isInteger(offset) && offset > 0 ? offset : 0;
+
+  // ---- summary mode: structured per-file stat, `files` paged by index ----
   if (summary === true) {
     // Identical flags (incl. -M) so --numstat and --name-status list files
     // in the same order and zip cleanly by index.
@@ -1687,26 +1729,19 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       if (s.oldPath) entry.oldPath = s.oldPath;
       return entry;
     });
+    // Totals always cover the WHOLE change set, whichever page this is.
     const totals = {
       files: files.length,
       additions: files.reduce((acc, f) => acc + f.additions, 0),
       deletions: files.reduce((acc, f) => acc + f.deletions, 0),
     };
-    const result: {
-      project: string; worktree: string; baseRef: string; head: string | null;
-      summary: boolean; ahead: number | null; totals: typeof totals; files: DiffFileRow[];
-      uncommitted?:
-        | { totals: typeof totals; files: DiffFileRow[]; untracked: string[] }
-        // `unknown` instead of the shape above when the uncommitted diff could
-        // not be read: absent counts, not zeroed ones.
-        | { unknown: true; reason: string };
-    } = { project, worktree: wt.worktreeName, baseRef: ref, head, summary: true, ahead, totals, files };
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
     const [rnu, rnsu] = await Promise.all([
       runGit(system, wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
       runGit(system, wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
     ]);
+    let uncommitted: Record<string, unknown>;
     // A diff that did NOT answer is reported as unknown, never as zero files.
     // The committed half above THROWS on the same failure, so rendering this
     // half as "no uncommitted changes" made one function give two different
@@ -1714,28 +1749,47 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     // names `hasUncommittedChanges` as the signal that nothing will land on a
     // merge, which is exactly the decision a false zero corrupts.
     if (rnu.code !== 0 || rnsu.code !== 0) {
-      result.uncommitted = { unknown: true, reason: (rnu.stderr || rnsu.stderr).trim() || 'git diff did not answer' };
-      return result;
+      uncommitted = { unknown: true, reason: (rnu.stderr || rnsu.stderr).trim() || 'git diff did not answer' };
+    } else {
+      const uNums = parseNumstat(rnu.stdout);
+      const uStats = parseNameStatus(rnsu.stdout);
+      const uFiles = uStats.map((s, i): DiffFileRow => {
+        const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
+        const entry: DiffFileRow = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
+        if (s.oldPath) entry.oldPath = s.oldPath;
+        return entry;
+      });
+      const uTotals = {
+        files: uFiles.length,
+        additions: uFiles.reduce((acc, f) => acc + f.additions, 0),
+        deletions: uFiles.reduce((acc, f) => acc + f.deletions, 0),
+      };
+      const utR = await runGit(system, wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+      const untracked = utR.code === 0
+        ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+        : [];
+      const cf = capPathList(uFiles, sideListChars);
+      const cu = capPathList(untracked, sideListChars);
+      uncommitted = { totals: uTotals, files: cf.kept, untracked: cu.kept };
+      if (cf.truncated) Object.assign(uncommitted, { filesTruncated: true, filesTotal: cf.total });
+      if (cu.truncated) Object.assign(uncommitted, { untrackedTruncated: true, untrackedTotal: cu.total });
     }
-    const uNums = parseNumstat(rnu.stdout);
-    const uStats = parseNameStatus(rnsu.stdout);
-    const uFiles = uStats.map((s, i): DiffFileRow => {
-      const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
-      const entry: DiffFileRow = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
-      if (s.oldPath) entry.oldPath = s.oldPath;
-      return entry;
-    });
-    const uTotals = {
-      files: uFiles.length,
-      additions: uFiles.reduce((acc, f) => acc + f.additions, 0),
-      deletions: uFiles.reduce((acc, f) => acc + f.deletions, 0),
-    };
-    const utR = await runGit(system, wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
-    const untracked = utR.code === 0
-      ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-      : [];
-    result.uncommitted = { totals: uTotals, files: uFiles, untracked };
-    return result;
+
+    // Page `files` by index: fill rows until the next would push the result
+    // past the budget, measured against the widest frame (truncated, the
+    // largest nextOffset) with the capped `uncommitted` section included.
+    const head0 = { project, worktree: wt.worktreeName, baseRef: ref, head, summary: true, ahead, totals };
+    let used = JSON.stringify({ ...head0, offset: startAt, truncated: true, nextOffset: files.length, files: [], uncommitted }).length;
+    const page: DiffFileRow[] = [];
+    for (let i = startAt; i < files.length; i++) {
+      const add = JSON.stringify(files[i]).length + (page.length > 0 ? 1 : 0);
+      if (used + add > MCP_RESULT_CHAR_BUDGET && page.length > 0) break;
+      page.push(files[i]);
+      used += add;
+    }
+    const end = startAt + page.length;
+    const truncated = end < files.length;
+    return { ...head0, offset: startAt, truncated, nextOffset: truncated ? end : null, files: page, uncommitted };
   }
 
   // ---- diff mode: full diff with line-based pagination ----
@@ -1767,32 +1821,49 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   const lines = full.length ? full.split('\n') : [];
   if (lines.length && lines[lines.length - 1] === '') lines.pop();
   const totalLines = lines.length;
-  const startLine = Number.isInteger(offset) && offset > 0 ? offset : 0;
+  const startLine = startAt;
 
   const idx = indexDiffLines(lines);
-  const { diff, cutoff } = paginateDiff(lines, startLine, DIFF_BYTE_CAP, idx);
-  // `truncated` means more pages remain after this one; drain by re-calling
-  // with offset:nextOffset until truncated:false.
-  const truncated = cutoff < totalLines;
-  const nextOffset = truncated ? cutoff : null;
+  const allPaths = idx.files.map(f => f.path).filter((p): p is string => !!p);
+  const cu = capPathList(untracked, sideListChars);
 
   const meta: {
     project: string; worktree: string; baseRef: string; head: string | null;
     contextLines: number; offset: number; truncated: boolean; nextOffset: number | null;
-    totalLines: number; totalBytes: number; hasUncommittedChanges: boolean; untracked: string[]; ahead: number | null;
-    includedFiles?: string[]; omittedFiles?: string[];
+    totalLines: number; totalBytes: number; hasUncommittedChanges: boolean; untracked: string[];
+    untrackedTruncated?: boolean; untrackedTotal?: number; ahead: number | null; lineTruncated?: boolean;
+    includedFiles?: string[]; includedFilesTruncated?: boolean; includedFilesTotal?: number;
+    omittedFiles?: string[]; omittedFilesTruncated?: boolean; omittedFilesTotal?: number;
   } = {
     project, worktree: wt.worktreeName, baseRef: ref, head,
     contextLines: ctx,
     offset: startLine,
-    truncated,
-    nextOffset,
+    truncated: false,
+    nextOffset: null,
     totalLines,
     totalBytes,
     hasUncommittedChanges: uncommittedDiff.trim().length > 0,
-    untracked,
+    untracked: cu.kept,
+    ...(cu.truncated ? { untrackedTruncated: true, untrackedTotal: cu.total } : {}),
     ahead,
   };
+  // The page gets whatever one result has left once the metadata is at its
+  // WIDEST: truncated, the largest nextOffset, a cut line, and both file lists
+  // at their cap (a placeholder string whose JSON is exactly that long).
+  const capPlaceholder = 'x'.repeat(sideListChars - 2);
+  const widest = {
+    ...meta, truncated: true, nextOffset: totalLines, lineTruncated: true,
+    includedFiles: capPlaceholder, includedFilesTruncated: true, includedFilesTotal: allPaths.length,
+    omittedFiles: capPlaceholder, omittedFilesTruncated: true, omittedFilesTotal: allPaths.length,
+  };
+  const pageCap = MCP_RESULT_CHAR_BUDGET - JSON.stringify(widest).length - 64;
+  const { diff, cutoff, lineTruncated } = paginateDiff(lines, startLine, pageCap, idx);
+  // `truncated` means more pages remain after this one; drain by re-calling
+  // with offset:nextOffset until truncated:false.
+  const truncated = cutoff < totalLines;
+  meta.truncated = truncated;
+  meta.nextOffset = truncated ? cutoff : null;
+  if (lineTruncated) meta.lineTruncated = true;
   // Explicit truncation metadata: which files this page covers vs omits.
   if (truncated) {
     const included = new Set<string>();
@@ -1800,9 +1871,12 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       const fi = idx.fileOf[i];
       if (fi >= 0 && idx.files[fi].path) included.add(idx.files[fi].path);
     }
-    const allPaths = idx.files.map(f => f.path).filter((p): p is string => !!p);
-    meta.includedFiles = allPaths.filter(p => included.has(p));
-    meta.omittedFiles = allPaths.filter(p => !included.has(p));
+    const inc = capPathList(allPaths.filter(p => included.has(p)), sideListChars);
+    const om = capPathList(allPaths.filter(p => !included.has(p)), sideListChars);
+    meta.includedFiles = inc.kept;
+    if (inc.truncated) { meta.includedFilesTruncated = true; meta.includedFilesTotal = inc.total; }
+    meta.omittedFiles = om.kept;
+    if (om.truncated) { meta.omittedFilesTruncated = true; meta.omittedFilesTotal = om.total; }
   }
   // Metadata block + a separate raw, un-escaped diff text block.
   return textPayload(meta, diff);
@@ -2172,9 +2246,50 @@ function renderForwardFrame(messages: ReconMessage[], guidingText: string): stri
 // the ring's turn_end seqs, so a plan from a previous turn is never pulled in.
 // A message that already carries its own plan/questions is returned alone.
 // Explicit `count` (including `count:1`) is always literal.
+//
+// RESULT BUDGET (this MCP path only — send_prompt's forward and the idle-wake
+// fold are not MCP results and keep the plain selection + caps): a rendering
+// over MCP_RESULT_CHAR_BUDGET is fitted in stages, stopping at the first that
+// fits — (1) as built; (2) re-rendered with every string (prose, plan, block
+// inputs, thinking) capped shorter, halving down to TOOL_ARG_VALUE_CAP, each cut
+// flagged by its existing field or planTruncated; (3) the oldest messages
+// dropped, a plan/questions message last, reported as omittedForBudget + hint;
+// and if the one message left still overflows, its trailing blocks dropped
+// (blocksOmitted on that entry).
 export async function getRecentMessages(args: McpArgs, ctx: McpCtx) {
-  const r = await buildRecentMessages(args as { sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean }, ctx);
-  if ('soft' in r) return r.soft;
+  const a = args as { sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean };
+  const sel = await selectRecentMessages(a, ctx);
+  if ('soft' in sel) return sel.soft;
+  const verbatim = a.includeToolCalls === true;
+  const fits = (r: { meta: Record<string, unknown>; bodies: string[] }) =>
+    payloadChars(r.meta, r.bodies) <= MCP_RESULT_CHAR_BUDGET;
+
+  let r = renderRecentMessages(sel, verbatim);
+  if (fits(r)) return textPayload(r.meta, r.bodies);
+  for (let cap = MSG_TEXT_CAP / 2; cap >= TOOL_ARG_VALUE_CAP; cap /= 2) {
+    r = renderRecentMessages(sel, verbatim, cap);
+    if (fits(r)) return textPayload(r.meta, r.bodies);
+  }
+
+  const messages = sel.messages.slice();
+  let omitted = 0;
+  while (messages.length > 1 && !fits(r)) {
+    const i = messages.findIndex(m => !hasPlanOrQuestions(m));
+    messages.splice(i < 0 ? 0 : i, 1);
+    omitted++;
+    r = renderRecentMessages({ ...sel, messages }, verbatim, TOOL_ARG_VALUE_CAP);
+  }
+  if (omitted > 0) {
+    const prior = typeof r.meta.hint === 'string' ? ` ${r.meta.hint}` : '';
+    r.meta.omittedForBudget = omitted;
+    r.meta.hint = `${omitted} older message(s) omitted to fit one MCP result — pass a smaller count, or read them via get_transcript.${prior}`;
+  }
+  const last = (r.meta.messages as Array<Record<string, unknown>>)[0];
+  const blocks = Array.isArray(last?.blocks) ? last.blocks : [];
+  for (let k = blocks.length - 1; k >= 0 && !fits(r); k--) {
+    last.blocks = blocks.slice(0, k);
+    last.blocksOmitted = blocks.length - k;
+  }
   return textPayload(r.meta, r.bodies);
 }
 
@@ -2279,8 +2394,21 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 }, ctx: McpCtx): Promise<{ meta: Record<string, unknown>; bodies: string[] } | { soft: SoftRefusal }> {
   const sel = await selectRecentMessages({ sessionId, count, includeToolCalls, includeThinking }, ctx);
   if ('soft' in sel) return sel;
+  return renderRecentMessages(sel, includeToolCalls);
+}
+
+// The rendering half of buildRecentMessages. `stringCap`, when set, caps every
+// string the result carries — prose, the plan text (planTruncated), tool inputs
+// and thinking — below their usual MSG_TEXT_CAP; unset, the rendering is
+// exactly the uncapped-by-budget one. Only getRecentMessages' budget fit sets it.
+function renderRecentMessages(
+  sel: Exclude<Awaited<ReturnType<typeof selectRecentMessages>>, { soft: SoftRefusal }>,
+  includeToolCalls: boolean,
+  stringCap?: number,
+): { meta: Record<string, unknown>; bodies: string[] } {
   const { ring, messages, source, omittedToolOnly, requested: n, live } = sel;
   const trimmedBefore = sel.trimmedBefore;
+  const textCap = stringCap ?? MSG_TEXT_CAP;
 
   // Multi-block: metadata block describes each message; one raw text block per
   // message carries its rendered body (prose + plan/questions, order-faithful
@@ -2296,8 +2424,9 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
   const total = messages.length;
   const metaMessages = messages.map((m, index) => {
     const textChars = (m.text ?? '').length;
-    const capped = capText(m.text ?? '', MSG_TEXT_CAP);
-    const rendered = renderMessageBody(m, capped.text);
+    const capped = capText(m.text ?? '', textCap);
+    const plan = stringCap !== undefined && m.plan ? capText(m.plan, stringCap) : null;
+    const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text);
     const body = total > 1
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
       : rendered;
@@ -2310,9 +2439,10 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
       textTruncated: capped.truncated,
     };
     if (m.plan || m.planPath) entry.hasPlan = true;
+    if (plan?.truncated) entry.planTruncated = true;
     if (m.planPath) entry.planPath = m.planPath;
     if (m.questions) entry.questionCount = (m.questions as Question[]).length;
-    if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls));
+    if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls, textCap));
     return entry;
   });
 
@@ -2464,7 +2594,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
 // Optional line params (text only): offset (1-based start line, default per projectRead),
 // limit (max lines, default: to EOF), lineNumbers (cat-n prefix).
 export async function projectRead({ project, worktree, relativePath,
-  maxBytes = 256 * 1024, lineNumbers = false, offset = 1, limit }: {
+  maxBytes = MCP_BODY_BUDGET, lineNumbers = false, offset = 1, limit }: {
   project: string; worktree?: string; relativePath: string;
   maxBytes?: number; lineNumbers?: boolean; offset?: number; limit?: number;
 }) {
@@ -2491,7 +2621,9 @@ export async function projectRead({ project, worktree, relativePath,
   if (stat.kind !== 'file') {
     throw new Error(`'${relativePath}' is not a regular file`);
   }
-  const cap = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
+  // The schema bounds maxBytes to [1, MCP_BODY_BUDGET]; validateArgs refuses
+  // anything larger, so nothing here clamps it.
+  const cap = maxBytes;
 
   // Always read up to cap bytes first (preserves existing binary behaviour and
   // avoids loading huge files on the fast path).
@@ -2503,9 +2635,12 @@ export async function projectRead({ project, worktree, relativePath,
   const isBinary = probe.includes(0);
   if (isBinary) {
     // Binary: line params ignored. Metadata block + a base64 body block.
+    // Base64 grows 4/3, so the raw bytes are cut to 3/4 of the cap to keep
+    // the ENCODED body within it.
+    const rawCap = Math.floor(cap * 3 / 4);
     return textPayload(
-      { path: relativePath, size: stat.size, truncated: truncatedByBytes, encoding: 'base64' },
-      buf.toString('base64'),
+      { path: relativePath, size: stat.size, truncated: stat.size > rawCap, encoding: 'base64' },
+      buf.subarray(0, rawCap).toString('base64'),
     );
   }
 
@@ -2542,28 +2677,33 @@ export async function projectRead({ project, worktree, relativePath,
 
   const slicedLines = allLines.slice(startIdx, endIdx); // empty [] if past EOF
   const startLine = startIdx + 1;
-  // endLine: last line number served; equals startLine when slice is empty
-  const endLine = Math.max(startLine, startLine + slicedLines.length - 1);
 
-  // Reassemble; restore trailing newline when the slice ends at the last line.
-  const atEof = slicedLines.length > 0 && endLine >= lineCount;
-  let content: string;
-  if (lineNumbers) {
-    const w = String(lineCount).length;
-    content = slicedLines
-      .map((line, i) => String(startLine + i).padStart(w) + '\t' + line)
-      .join('\n');
-    if (atEof && hasTrailingNL) content += '\n';
-  } else {
-    content = slicedLines.join('\n');
-    if (atEof && hasTrailingNL) content += '\n';
-  }
-
-  // Final byte-cap: safety net so a large slice can't produce a huge response.
+  // Reassemble under the byte cap, WHOLE LINES ONLY: a cut read ends on the
+  // last line that fits, and endLine names it, so offset:endLine+1 continues
+  // with nothing lost or repeated. Only a single line longer than the cap is
+  // cut mid-line (it is then both the first and the last line served).
+  const w = String(lineCount).length;
+  const out: string[] = [];
+  let bytes = 0;
   let truncated = false;
-  if (Buffer.byteLength(content, 'utf8') > cap) {
-    content = Buffer.from(content, 'utf8').subarray(0, cap).toString('utf8');
-    truncated = true;
+  for (let i = 0; i < slicedLines.length; i++) {
+    const rendered = lineNumbers ? String(startLine + i).padStart(w) + '\t' + slicedLines[i] : slicedLines[i];
+    const add = Buffer.byteLength(rendered, 'utf8') + (i > 0 ? 1 : 0);
+    if (bytes + add > cap) {
+      truncated = true;
+      if (out.length === 0) out.push(utf8Prefix(rendered, cap));
+      break;
+    }
+    out.push(rendered);
+    bytes += add;
+  }
+  // endLine: last line number served; equals startLine when nothing is.
+  const endLine = Math.max(startLine, startLine + out.length - 1);
+  let content = out.join('\n');
+  // Restore the trailing newline when the slice ends at the file's last line.
+  if (!truncated && out.length > 0 && endLine >= lineCount && hasTrailingNL) {
+    if (bytes + 1 <= cap) content += '\n';
+    else truncated = true;
   }
 
   // Slow path read the full file, so lineCount covers the whole file.
@@ -2574,7 +2714,7 @@ export async function projectRead({ project, worktree, relativePath,
     path: relativePath, size: stat.size, truncated, encoding: 'utf8',
     lineCount, lineCountExact: true,
   };
-  if (offset !== 1 || limit != null) {
+  if (offset !== 1 || limit != null || truncated) {
     meta.startLine = startLine;
     meta.endLine = endLine;
   }
@@ -2583,7 +2723,7 @@ export async function projectRead({ project, worktree, relativePath,
 
 // ---- project_bash / system_bash ----
 
-const BASH_OUTPUT_CAP = 200 * 1024; // matches the old grep content-mode cap (DIFF_BYTE_CAP)
+const BASH_OUTPUT_CAP = MCP_BODY_BUDGET;
 const BASH_DEFAULT_TIMEOUT_MS = 120_000; // matches the built-in Bash tool's default
 const BASH_MAX_TIMEOUT_MS = 600_000;     // matches the built-in Bash tool's documented max
 
@@ -2624,13 +2764,18 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult): TextP
       r.spawnError,
     );
   }
-  const output = r.truncated ? r.output + '\n… [truncated at the output cap]' : r.output;
+  // headCapBytes admits the whole chunk that crosses it, so the retained output
+  // can overshoot the cap by up to one chunk — cut it back here, where the
+  // result budget is owed.
+  const capped = utf8Prefix(r.output, BASH_OUTPUT_CAP);
+  const truncated = r.truncated || capped.length < r.output.length;
+  const output = truncated ? capped + '\n… [truncated at the output cap]' : r.output;
   const meta: Record<string, unknown> = {
     ...place,
     exitCode: r.timedOut ? null : r.code,
     durationMs: r.durationMs,
   };
-  if (r.truncated) meta.truncated = true;
+  if (truncated) meta.truncated = true;
   if (r.timedOut) meta.timedOut = true;
   // The command was killed on a system whose provider cannot signal a process
   // GROUP, so only the direct child was reached. Surfaced because the caller's

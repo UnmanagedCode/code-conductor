@@ -15,6 +15,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, registerLocalProject} from './helpers.mjs';
 import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../src/idleSubscriptions.ts';
+import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -637,3 +638,121 @@ for (const tool of ['project_diff', 'list_sessions', 'spawn_instance']) {
     assert.ok(msg.includes(a.worktree) && msg.includes(b.worktree), msg);
   });
 }
+
+// ---------- project_diff within the MCP result budget ----------
+// Every page's summed content[].text stays within MCP_RESULT_CHAR_BUDGET,
+// every cut is flagged, and paging loses nothing.
+const resultChars = r => r.content.reduce((n, c) => n + c.text.length, 0);
+function assertInBudget(r, what) {
+  assert.ok(resultChars(r) <= MCP_RESULT_CHAR_BUDGET, `${what}: ${resultChars(r)} chars, over ${MCP_RESULT_CHAR_BUDGET}`);
+}
+async function worktreeWithCommit(files) {
+  await makeRealRepo('demo');
+  const wt = meta(await callTool('create_worktree', { project: 'demo' }));
+  for (const [rel, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(wt.worktreePath, rel)), { recursive: true });
+    await fs.writeFile(path.join(wt.worktreePath, rel), body);
+  }
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'bulk');
+  return wt;
+}
+const manyFiles = (n, body) => Object.fromEntries(
+  Array.from({ length: n }, (_, i) => [`dir/file-${String(i).padStart(4, '0')}.txt`, body(i)]));
+
+// Invariant: diff pages tile [0, totalLines) exactly — each page starts where
+// the last one's nextOffset pointed — and every page fits the budget.
+test('project_diff: a ~300 KB diff pages within the budget and the pages tile every line', async () => {
+  const wt = await worktreeWithCommit({ 'big.txt': Array.from({ length: 3000 }, (_, i) => `line ${i} ${'z'.repeat(90)}`).join('\n') + '\n' });
+  let offset = 0;
+  let totalLines = null;
+  for (let guard = 0; guard < 50; guard++) {
+    const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, offset });
+    assertInBudget(r, `page at ${offset}`);
+    const m = meta(r);
+    assert.equal(m.offset, offset, 'each page starts at the previous nextOffset');
+    totalLines ??= m.totalLines;
+    if (!m.truncated) { assert.equal(m.nextOffset, null); offset = totalLines; break; }
+    assert.ok(m.nextOffset > offset, 'offset advances');
+    offset = m.nextOffset;
+  }
+  assert.ok(totalLines > 3000, 'premise: the diff is bigger than one page');
+  assert.equal(offset, totalLines, 'the last page ends at totalLines');
+});
+
+// Invariant: a line no page can hold is cut to fit and flagged, never emitted
+// whole past the budget.
+test('project_diff: a single 120 KB line is cut, flagged lineTruncated, within the budget', async () => {
+  const wt = await worktreeWithCommit({ 'wide.txt': 'w'.repeat(120 * 1024) + '\n' });
+  let offset = 0;
+  let sawCut = false;
+  for (let guard = 0; guard < 10; guard++) {
+    const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, offset });
+    assertInBudget(r, `page at ${offset}`);
+    const m = meta(r);
+    if (m.lineTruncated === true) sawCut = true;
+    if (!m.truncated) break;
+    offset = m.nextOffset;
+  }
+  assert.ok(sawCut, 'some page reports lineTruncated:true');
+});
+
+// Invariant: summary mode pages `files` by index — every page fits the budget,
+// the union of pages is every changed file exactly once, and totals always
+// cover the whole change set.
+test('project_diff summary: ~1500 changed files page within the budget and lose none', async () => {
+  const wt = await worktreeWithCommit(manyFiles(1500, i => `${i}\n`));
+  const seen = [];
+  let offset = 0;
+  for (let guard = 0; guard < 50; guard++) {
+    const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true, offset });
+    assert.equal(r.content.length, 1, 'summary is one JSON block');
+    assertInBudget(r, `summary page at ${offset}`);
+    const m = meta(r);
+    assert.equal(m.totals.files, 1500, 'totals cover the whole change set on every page');
+    seen.push(...m.files.map(f => f.path));
+    if (!m.truncated) { assert.equal(m.nextOffset, null); break; }
+    assert.equal(m.nextOffset, offset + m.files.length);
+    offset = m.nextOffset;
+  }
+  assert.ok(offset > 0, 'premise: more than one page');
+  assert.deepEqual([...seen].sort(), Object.keys(manyFiles(1500, () => '')).sort());
+  assert.equal(new Set(seen).size, seen.length, 'no file on two pages');
+});
+
+// Invariant: the untracked side list is capped and flagged with the full count,
+// in both modes, and the result stays within the budget.
+test('project_diff: ~1500 untracked files are capped with untrackedTruncated + untrackedTotal in both modes', async () => {
+  const wt = await worktreeWithCommit({ 'a.txt': 'a\n' });
+  for (const [rel, body] of Object.entries(manyFiles(1500, i => `${i}\n`))) {
+    await fs.mkdir(path.dirname(path.join(wt.worktreePath, rel)), { recursive: true });
+    await fs.writeFile(path.join(wt.worktreePath, rel), body);
+  }
+  const d = await callTool('project_diff', { project: 'demo', worktree: wt.worktree });
+  assertInBudget(d, 'diff mode');
+  const dm = meta(d);
+  assert.equal(dm.untrackedTruncated, true);
+  assert.equal(dm.untrackedTotal, 1500);
+  assert.ok(dm.untracked.length > 0 && dm.untracked.length < 1500);
+
+  const s = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  assertInBudget(s, 'summary mode');
+  const sm = meta(s);
+  assert.equal(sm.uncommitted.untrackedTruncated, true);
+  assert.equal(sm.uncommitted.untrackedTotal, 1500);
+  assert.ok(sm.uncommitted.untracked.length > 0 && sm.uncommitted.untracked.length < 1500);
+});
+
+// Invariant: diff mode's file lists are capped and flagged with the full count,
+// so a page over a wide change set still fits the budget.
+test('project_diff: over ~1500 changed files, omittedFiles is capped with omittedFilesTruncated + omittedFilesTotal', async () => {
+  const wt = await worktreeWithCommit(manyFiles(1500, i => `${i}\n`));
+  const r = await callTool('project_diff', { project: 'demo', worktree: wt.worktree });
+  assertInBudget(r, 'first diff page');
+  const m = meta(r);
+  assert.equal(m.truncated, true, 'premise: more than one page');
+  assert.equal(m.omittedFilesTruncated, true);
+  const includedCount = m.includedFilesTotal ?? m.includedFiles.length;
+  assert.equal(m.omittedFilesTotal, 1500 - includedCount, 'the total counts every file this page omits');
+  assert.ok(m.omittedFiles.length < m.omittedFilesTotal);
+});

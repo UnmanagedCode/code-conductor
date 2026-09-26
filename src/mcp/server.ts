@@ -9,7 +9,7 @@
 
 import express from 'express';
 import { buildTools } from './tools.ts';
-import { isTextPayload, isTextResult, codeForStatus } from './content.ts';
+import { isTextPayload, isTextResult, codeForStatus, MCP_RESULT_CHAR_BUDGET } from './content.ts';
 import { validateArgs } from './argValidation.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
 import type { PlaybookGate } from './playbookGate.ts';
@@ -34,6 +34,9 @@ interface JsonRpcResponse {
 interface McpCtx {
   instances?: InstanceManagerLike | null;
   tools: McpTool[];
+  // The core tools (buildTools()), the ones boundResult guards. Plugin bridge
+  // tools are not in it.
+  coreTools: ReadonlySet<McpTool>;
   callerId: string | null;
   playbookGate: PlaybookGate;
 }
@@ -159,6 +162,30 @@ function ambiguousRefusal(
     ? `session prefix "${input}" (${where}) is too short — pass at least ${SESSION_PREFIX_MIN} characters or a full sessionId. Candidates: ${matches.join(', ')}.`
     : `session prefix "${input}" (${where}) matches ${ref.ambiguous.length} sessions — pass more characters or a full sessionId. Candidates: ${matches.join(', ')}.`;
   return { ok: false, code: 'SESSION_AMBIGUOUS', sessionId: input, reason, matches };
+}
+
+type TextContent = Array<{ type: 'text'; text: string }>;
+
+// THE BACKSTOP for MCP_RESULT_CHAR_BUDGET. Every core tool bounds its own
+// result (paging, caps, flags); this catches one that does not — a cc defect —
+// before the harness rejects it, replacing the content with a logged soft
+// refusal that says so. `completed` tells the caller whether the call already
+// took effect: a tool that is not read-only (bash included) ran, and re-running
+// it blindly could repeat what it did.
+export function boundResult(
+  tool: { name: string; annotations?: { readOnlyHint?: boolean } },
+  content: TextContent,
+): TextContent {
+  let chars = 0;
+  for (const c of content) chars += c.text.length;
+  if (chars <= MCP_RESULT_CHAR_BUDGET) return content;
+  const completed = !tool.annotations?.readOnlyHint;
+  const budget = MCP_RESULT_CHAR_BUDGET;
+  const reason = completed
+    ? `${tool.name} completed, but its result (${chars} chars) is over the MCP result budget and was withheld — do not re-run it blindly`
+    : `${tool.name} produced ${chars} chars, over the ${budget}-char MCP result budget — a cc defect; narrow the call (a filter, a smaller count/limit/maxBytes, a paths scope) and retry`;
+  console.error(`mcp: RESULT_OVER_BUDGET — ${tool.name} produced ${chars} chars (budget ${budget})`);
+  return [{ type: 'text', text: JSON.stringify({ ok: false, code: 'RESULT_OVER_BUDGET', tool: tool.name, chars, budget, completed, reason }) }];
 }
 
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
@@ -318,7 +345,7 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         // this entirely (see the catch below); a soft refusal is filtered inside
         // commit().
         if (gate.commit) await gate.commit(result);
-        let content: Array<{ type: 'text'; text: string }>;
+        let content: TextContent;
         if (isTextResult(result)) {
           // The rendering IS the whole result — one raw block, no metadata
           // block to parse (src/mcp/content.ts).
@@ -332,6 +359,7 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         } else {
           content = [{ type: 'text', text: JSON.stringify(result ?? null) }];
         }
+        if (ctx.coreTools.has(tool)) content = boundResult(tool, content);
         return rpcResult(id, { content });
       } catch (e) {
         // Errors read best as prose for an LLM (content[0]); a structured
@@ -365,6 +393,7 @@ export function buildMcpRouter(
   r.use(express.json({ limit: '8mb' }));
 
   const coreTools = buildTools();
+  const coreToolSet: ReadonlySet<McpTool> = new Set<McpTool>(coreTools);
 
   r.post('/', async (req, res) => {
     // Each spawned worker registers the MCP URL with its own stable INSTANCE id
@@ -391,7 +420,7 @@ export function buildMcpRouter(
         console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
       }
     }
-    const ctx: McpCtx = { instances, tools, callerId, playbookGate };
+    const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {
