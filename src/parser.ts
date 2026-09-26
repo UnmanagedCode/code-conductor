@@ -31,7 +31,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { planPathFromInput } from './planFile.ts';
-import { AWAITING_INPUT_MESSAGE } from './settings.ts';
+import { AWAITING_INPUT_MESSAGE, EARLIER_AWAITING_INPUT_MESSAGES } from './settings.ts';
 
 // UI event shape. `kind` is the discriminator; the per-kind payload fields
 // ride on the index signature (consumers read what they know).
@@ -688,6 +688,10 @@ export function extractAttachedMarkers(text: string): { text: string; attachment
   return { text: keptLines.join('\n'), attachments };
 }
 
+// Every text the orchestrator's interactive-tool deny carries, current and
+// earlier; matched exactly.
+const YIELDED_RESULT_TEXTS: ReadonlySet<unknown> = new Set([AWAITING_INPUT_MESSAGE, ...EARLIER_AWAITING_INPUT_MESSAGES]);
+
 // Consolidate one user message's content blocks into UI events: each
 // tool_result becomes its own event, and all text blocks (minus mid-turn
 // notes and `Attached file:` marker lines) are joined into a single
@@ -709,7 +713,7 @@ export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
         isError: !!block.is_error,
         // The orchestrator's own can_use_tool deny of an interactive tool:
         // handed to the user, not a failure. isError stays for the model's view.
-        ...(block.content === AWAITING_INPUT_MESSAGE ? { yielded: true } : {}),
+        ...(YIELDED_RESULT_TEXTS.has(block.content) ? { yielded: true } : {}),
         finishedAt: Date.now(),
       });
     } else if (block.type === 'text') {
