@@ -5,7 +5,10 @@
 // lines — the same lines that emit a `user_echo` UI event when replayed.
 // This keeps the index the UI hands back from a click on a user bubble
 // in sync with what we count in the jsonl. See `isPureUserPromptLine`
-// in transcript.ts for the predicate definition.
+// in transcript.ts for the predicate definition. The index is a FILE ordinal:
+// a caller holding a live bubble ordinal translates it first
+// (Instance._fileOrdinalFor). Every edit also takes the bubble's text and refuses,
+// changing nothing, when the prompt at that index replays to different text.
 //
 // File rewrites are atomic: write a sibling tmp file, rename over
 // the target. The companion sub-agent directory (sibling to the jsonl,
@@ -17,8 +20,8 @@
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sessionFilePath, writeFileAtomic, type TranscriptPlacement } from './projects.ts';
-import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
-import { extractAttachedMarkers, type WireContentBlock } from './parser.ts';
+import { isPureUserPromptLine, replayPersistedLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
+import { extractAttachedMarkers, isLocalCommandCaveatLine, isOuterUserEcho, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
 
 // Parse one trimmed jsonl line, swallowing parse errors (mirrors the
@@ -58,15 +61,45 @@ function extractUserPromptText(obj: PersistedLine | null | undefined): string {
   return parts.join('\n');
 }
 
+// Message prefix of the 409 an edit refuses with when the prompt at the index
+// is not the one the caller clicked.
+export const PROMPT_MISMATCH = 'prompt text does not match the transcript';
+
+// The comparison form of a bubble's text: CRLF → LF, trimmed, and a CLI
+// command wrapper (only `<command-name>`/`<command-message>`/`<command-args>`
+// tags and whitespace) rewritten to the `/name args` a live echo carries.
+const COMMAND_TAG_RE = /<(command-name|command-message|command-args)>([\s\S]*?)<\/\1>/g;
+
+function normalizePromptText(text: string): string {
+  const t = text.replace(/\r\n/g, '\n').trim();
+  const tags = new Map<string, string>();
+  const rest = t.replace(COMMAND_TAG_RE, (_m, tag: string, body: string) => { tags.set(tag, body); return ''; });
+  const name = tags.get('command-name')?.trim();
+  if (!name || rest.trim() !== '') return t;
+  const args = (tags.get('command-args') ?? '').trim();
+  return (name.startsWith('/') ? name : `/${name}`) + (args ? ` ${args}` : '');
+}
+
+// The text the target line's bubble shows: its replayed outer echo — the same
+// function every replayed or archived bubble came from.
+function replayedPromptText(obj: PersistedLine): string {
+  const echo = replayPersistedLine(obj).find(isOuterUserEcho);
+  return typeof echo?.text === 'string' ? echo.text : '';
+}
+
 // Read the jsonl, walk it line-by-line, and return:
 //   - prefixLines: the raw lines (objects) that survive before the target
 //   - droppedLines: the lines from the target onward (including the user
 //     line itself)
 //   - droppedText: the prompt text of the target user message
 //   - lastSurvivingUuid: uuid of the last prefix line, or null
-// Throws { statusCode: 400 } if the target index isn't found.
-async function readAndSplit({ place, sessionId, userMessageIndex }: {
-  place: TranscriptPlacement; sessionId: string; userMessageIndex: number;
+// Throws { statusCode: 400 } if the target index isn't found, and a
+// PROMPT_MISMATCH 409 if the target's replayed text is not `expectedText`.
+// A split landing right after a local-command caveat moves the caveat to the
+// dropped side: it belongs to the command line being dropped, and left behind
+// its "do not respond" text would precede the next prompt.
+async function readAndSplit({ place, sessionId, userMessageIndex, expectedText }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string;
 }): Promise<{
   prefix: Array<{ raw: string; obj: PersistedLine | null }>;
   dropped: Array<{ raw: string; obj: PersistedLine | null }>;
@@ -123,6 +156,16 @@ async function readAndSplit({ place, sessionId, userMessageIndex }: {
   if (!target) {
     throw httpError(400, `userMessageIndex ${userMessageIndex} out of range (session has ${userCount} user prompts)`);
   }
+  const found = replayedPromptText(target);
+  if (normalizePromptText(found) !== normalizePromptText(expectedText)) {
+    throw httpError(409, `${PROMPT_MISMATCH}: expected ${JSON.stringify(expectedText)} at prompt ${userMessageIndex}, found ${JSON.stringify(found)} — nothing was changed`);
+  }
+  const last = prefix.at(-1);
+  if (last?.obj && isLocalCommandCaveatLine(last.obj)) {
+    dropped.unshift(prefix.pop() as typeof last);
+    const leaf = prefix.findLast(e => typeof e.obj?.uuid === 'string')?.obj?.uuid;
+    lastSurvivingUuid = typeof leaf === 'string' ? leaf : null;
+  }
 
   return {
     prefix,
@@ -138,6 +181,14 @@ function joinLines(entries: Array<{ raw: string }>): string {
   return entries.map(e => e.raw).join('\n') + '\n';
 }
 
+// Read-only: throws exactly what truncate/fork would at this index and text,
+// without touching the file — lets a caller refuse before a destructive step.
+export async function verifyUserPrompt({ place, sessionId, userMessageIndex, expectedText }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string;
+}): Promise<void> {
+  await readAndSplit({ place, sessionId, userMessageIndex, expectedText });
+}
+
 // Truncate <cwd>/<sessionId>.jsonl so that everything from the Nth pure
 // user-prompt line onward is dropped. Returns { droppedText, droppedLineCount,
 // remainingLineCount, lastSurvivingUuid }.
@@ -145,15 +196,15 @@ function joinLines(entries: Array<{ raw: string }>): string {
 // After the rewrite, appends a fresh last-prompt / permission-mode metadata
 // pair pointing at lastSurvivingUuid (skipped when N==0 — the empty-history
 // case where no leaf exists to anchor the picker).
-export async function truncateSessionAtUserMessage({ place, sessionId, userMessageIndex, mode }: {
-  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; mode: string;
+export async function truncateSessionAtUserMessage({ place, sessionId, userMessageIndex, expectedText, mode }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string; mode: string;
 }): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null }> {
   if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, dropped, droppedText, lastSurvivingUuid } =
-    await readAndSplit({ place, sessionId, userMessageIndex });
+    await readAndSplit({ place, sessionId, userMessageIndex, expectedText });
 
   const file = sessionFilePath(place, sessionId);
   await writeFileAtomic(file, joinLines(prefix));
@@ -183,15 +234,15 @@ export async function truncateSessionAtUserMessage({ place, sessionId, userMessa
 // copied line to the new id — purely cosmetic (the filename is what
 // `--resume` reads) but keeps the file self-consistent for any downstream
 // tooling. Returns { newSessionId, droppedText, lastSurvivingUuid }.
-export async function forkSessionAtUserMessage({ place, sessionId, userMessageIndex, mode, newSessionId }: {
-  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; mode: string; newSessionId?: string;
+export async function forkSessionAtUserMessage({ place, sessionId, userMessageIndex, expectedText, mode, newSessionId }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string; mode: string; newSessionId?: string;
 }): Promise<{ newSessionId: string; droppedText: string; lastSurvivingUuid: string | null }> {
   if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, droppedText, lastSurvivingUuid } =
-    await readAndSplit({ place, sessionId, userMessageIndex });
+    await readAndSplit({ place, sessionId, userMessageIndex, expectedText });
 
   const newSid = newSessionId ?? randomUUID();
   const newFile = sessionFilePath(place, newSid);

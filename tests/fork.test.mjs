@@ -78,7 +78,7 @@ test('fork preserves original session and spawns a new instance against the pref
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     assert.ok(fk.body.newSessionId && fk.body.newSessionId !== sid);
     assert.equal(fk.body.droppedText, 'second');
@@ -141,7 +141,7 @@ test('a fork mints its OWN public id and never joins its ancestor\'s lineage', a
     // full UUID it already had (the store's base case).
     assert.equal(parent.sessionId, sid);
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${parent.id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${parent.id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     const child = ctx.instances.get(fk.body.instance.id);
     await waitFor(() => child.status === 'idle');
@@ -193,7 +193,7 @@ test('fork prefill rides the new instance\'s first snapshot frame, consumed once
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     const newId = fk.body.instance.id;
     // Server stored the prefill on the new instance for its first snapshot.
@@ -271,7 +271,7 @@ test('fork on a temp session succeeds, and the fork is itself temp', async () =>
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201, 'a temp session is forkable');
     assert.ok(fk.body.newSessionId && fk.body.newSessionId !== sid);
     assert.equal(fk.body.instance.temp, true, 'the fork summary reports temp');
@@ -299,7 +299,7 @@ test('a fork of a non-temp session is not temp', async () => {
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     assert.equal(fk.body.instance.temp, false, 'temp-ness is inherited, not asserted');
 
@@ -323,7 +323,7 @@ test('the fork of a temp session is archived on its own exit, like any other tem
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     const newSid = fk.body.newSessionId;
     const newId = fk.body.instance.id;
@@ -362,7 +362,7 @@ test('a temp source killed mid-fork does not corrupt the copy, and archives only
     const inst = ctx.instances.get(id);
     // Overlap the two on purpose — no await between them, so the source's
     // on-exit archive lands somewhere inside the fork's read/write window.
-    const forking = inst.forkAtUserMessage(1);
+    const forking = inst.forkAtUserMessage(1, 'second');
     const killing = inst.kill({ graceMs: 0 });
     const [forked] = await Promise.all([forking, killing]);
 
@@ -416,7 +416,7 @@ test('fork refuses 409 while another rewrite holds the _mutating flag', async ()
 
     // Stand in for a rewind/prune mid-flight on the same instance.
     ctx.instances.get(id)._mutating = true;
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0, text: 'first' });
     assert.equal(fk.status, 409);
     assert.match(fk.body.error, /another rewind\/fork\/prune is in progress/);
   } finally { await ctx.close(); }
@@ -445,13 +445,13 @@ test('a successful fork releases the _mutating flag', async () => {
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     assert.equal(ctx.instances.get(id)._mutating, false,
       'the finally released the flag, so a second fork is not locked out');
 
     // Proof the release is real and not just observably-false: fork again.
-    const again = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const again = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(again.status, 201);
   } finally { await ctx.close(); }
 });
@@ -470,7 +470,7 @@ test('fork on an instance that never took a turn is refused 400', async () => {
     // first turn has produced a transcript.
     ctx.instances.get(id).backingSessionId = null;
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0, text: 'first' });
     assert.equal(fk.status, 400);
     assert.match(fk.body.error, /has not yet received a turn/);
   } finally { await ctx.close(); }
@@ -515,7 +515,7 @@ test('fork carries backend + exact model + capacity to the new instance', async 
     assert.equal(r.body.backend, 'codex');
     assert.equal(r.body.contextWindowTokens, 1_000_000);
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
 
     const forked = fk.body.instance;
@@ -557,7 +557,7 @@ test('the forked sessionId is recorded in the backend sidecar, so a later cold r
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
     const newSid = fk.body.newSessionId;
     await waitFor(() => ctx.instances.get(fk.body.instance.id)?.status === 'idle');
@@ -609,7 +609,7 @@ test('a fork prefers the live registry window over the carried one when they dis
     const src = ctx.instances.get(id);
     src.contextWindowTokens = 999_999;
 
-    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
 
     // The fork must adopt the registry's CURRENT number, not the value it was

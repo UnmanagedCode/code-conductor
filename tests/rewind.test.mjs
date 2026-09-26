@@ -83,7 +83,7 @@ test('rewind drops the chosen user message + tail, ring is rebuilt from truncate
   instances.on('snapshot_reset', (snap) => {
     if (snap.id === id) resets.push(snap);
   });
-  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1 });
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1, text: 'second prompt' });
   assert.equal(rew.status, 200);
   assert.equal(rew.body.droppedText, 'second prompt');
 
@@ -137,7 +137,7 @@ test('rewind to index 0 wipes the session and respawns under the same sessionId'
   instances.on('snapshot_reset', (snap) => {
     if (snap.id === id) resets.push(snap);
   });
-  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0, text: 'only prompt' });
   assert.equal(rew.status, 200);
   assert.equal(rew.body.droppedText, 'only prompt');
   assert.equal(resets.length, 1, 'snapshot_reset emitted exactly once');
@@ -184,7 +184,7 @@ test('rewind during a running turn is refused 409', async () => {
     await instances.get(id).prompt('hang');
     await waitFor(() => instances.get(id).status === 'turn');
 
-    const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
+    const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0, text: 'first' });
     assert.equal(rew.status, 409, 'rewind refuses while a turn is running');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
@@ -208,7 +208,7 @@ test('rewind on a temp session succeeds', async () => {
   const id = r.body.id;
   await waitFor(() => instances.get(id).status === 'idle');
 
-  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0, text: 'first prompt' });
   assert.equal(rew.status, 200, 'temp session rewind is allowed');
   assert.equal(rew.body.droppedText, 'first prompt');
 
@@ -263,7 +263,7 @@ test('user_echo events carry absolute userIndex; rewind by stamp survives ring t
 
     // Rewind by the STAMPED index → drops exactly that prompt.
     const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`,
-      { userMessageIndex: target.userIndex });
+      { userMessageIndex: target.userIndex, text: target.text });
     assert.equal(rew.status, 200);
     assert.equal(rew.body.droppedText, target.text, 'rewind hit the stamped jsonl line');
 
@@ -301,6 +301,6 @@ test('rewind with out-of-range index returns 400', async () => {
   const id = r.body.id;
   await waitFor(() => instances.get(id).status === 'idle');
 
-  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 5 });
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 5, text: 'only' });
   assert.equal(rew.status, 400);
 });

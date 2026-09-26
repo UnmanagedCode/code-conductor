@@ -948,10 +948,10 @@ test('the interlock covers the RESEED window, not just arming', async () => {
     const pr = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 0 });
     assert.equal(pr.status, 409, `prune must be refused mid-reseed: ${JSON.stringify(pr.body)}`);
     assert.match(pr.body.error, /renewal is in progress/i);
-    const rw = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/rewind`, { userMessageIndex: 0 });
+    const rw = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/rewind`, { userMessageIndex: 0, text: 'go1' });
     assert.equal(rw.status, 409, `rewind must be refused mid-reseed: ${JSON.stringify(rw.body)}`);
     assert.match(rw.body.error, /renewal is in progress/i);
-    const fk = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { userMessageIndex: 0 });
+    const fk = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { userMessageIndex: 0, text: 'go1' });
     assert.equal(fk.status, 409, `fork must be refused mid-reseed: ${JSON.stringify(fk.body)}`);
     // Same message as prune/rewind now: fork routes through the shared
     // _assertNoRotationInFlight rather than re-checking the two flags locally.

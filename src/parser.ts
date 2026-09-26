@@ -554,6 +554,8 @@ export class Parser {
     // carries this (hidden from the feed by default), so this would be a
     // duplicate, and it never produced a user_echo live.
     if (isTaskNotificationContent(content)) return [];
+    // The CLI's local-command caveat — never a bubble (isLocalCommandCaveatLine).
+    if (isLocalCommandCaveatLine(obj)) return [];
     if (typeof content === 'string') {
       return stampCliInjected([{ kind: 'user_echo', text: content }], obj);
     }
@@ -656,6 +658,21 @@ export function isTaskNotificationContent(content: unknown): boolean {
   if (typeof content === 'string') return isTag(content);
   if (!Array.isArray(content)) return false;
   return content.some((b) => b && typeof b === 'object' && (b as { type?: unknown; text?: unknown }).type === 'text' && isTag((b as { text?: unknown }).text));
+}
+
+// True for the CLI's `<local-command-caveat>` line: the isMeta (jsonl) /
+// isSynthetic (stdout) user line it writes directly before a local slash
+// command's `<command-name>` line. That command line is the prompt a live
+// bubble corresponds to; the caveat never produced one, so it is filtered at the
+// same three sites as SOFT_INTERRUPT_MARKER. Requires the CLI's own mark and
+// string content that is nothing but the tag, so a user prompt that merely
+// mentions the tag keeps counting.
+const LOCAL_COMMAND_CAVEAT_RE = /^<local-command-caveat>[\s\S]*<\/local-command-caveat>$/;
+
+export function isLocalCommandCaveatLine(obj: WireEnvelope): boolean {
+  const content = obj?.message?.content;
+  return obj?.type === 'user' && isCliInjectedLine(obj)
+    && typeof content === 'string' && LOCAL_COMMAND_CAVEAT_RE.test(content.trim());
 }
 
 // True when a single text block is the mid-turn annotation prepended by

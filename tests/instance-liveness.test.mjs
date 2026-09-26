@@ -216,7 +216,7 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
       observedDuringLaunch = instances.isSessionLive(publicId);
       return realLaunch(opts);
     };
-    await inst.rewindToUserMessage(1);
+    await inst.rewindToUserMessage(1, 'second prompt');
     assert.equal(observedDuringLaunch, true,
       'isSessionLive must read live at the instant launch() is invoked — proc is null there, only `_relaunching` says this worker is coming back');
     await waitFor(() => instances.get(id).status === 'idle');
@@ -277,7 +277,7 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
     const publicId = inst.sessionId;
     const id = inst.id;
 
-    await inst.rewindToUserMessage(1);
+    await inst.rewindToUserMessage(1, 'second prompt');
     await waitFor(() => instances.get(id).status === 'idle');
     assert.equal(instances.isSessionLive(publicId), true, 'premise: live once the rewind has landed');
 

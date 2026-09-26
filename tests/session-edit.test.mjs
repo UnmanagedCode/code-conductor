@@ -78,7 +78,7 @@ test('truncate at N=1 drops everything from the 2nd user prompt onward', async (
   ];
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'second',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'second');
@@ -104,7 +104,7 @@ test('truncate at N=0 empties the file, no metadata appended', async () => {
   ];
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0, expectedText: 'first',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'first');
@@ -120,7 +120,7 @@ test('truncate out-of-range throws 400', async () => {
   ];
   const { cwd, sid } = await makeFixture(lines);
   await assert.rejects(
-    truncateSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 5 }),
+    truncateSessionAtUserMessage({ place: localPlace(cwd), sessionId: sid, userMessageIndex: 5, expectedText: 'first' }),
     (e) => e.statusCode === 400 && /out of range/.test(e.message),
   );
 });
@@ -140,7 +140,7 @@ test('fork copies the prefix to a new sessionId and leaves the original intact',
   const originalBytes = await fs.readFile(file);
 
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'second',
     mode: 'bypassPermissions',
   });
   assert.ok(result.newSessionId && result.newSessionId !== sid, 'fresh sessionId');
@@ -191,7 +191,7 @@ test('predicate: tool_result-only user lines do NOT increment the user-message c
   ];
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'second',
     mode: 'bypassPermissions',
   });
   // We expect droppedText='second' (the 2nd real user prompt), not the tool_result.
@@ -283,7 +283,7 @@ test('fork targeting a queued_command auto-approve mid-session succeeds and pref
 
   // The 4th forkable bubble (index 3) is "Please start" — must succeed.
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 3,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 3, expectedText: 'Please start',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'Please start',
@@ -337,7 +337,7 @@ test('fork targeting a real prompt after a background-subagent task-notification
   // Bubble index 2 (0-based) is "third prompt" — the 3rd real user_echo the
   // UI ever rendered. Must not drift because of the task-notification line.
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 2,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 2, expectedText: 'third prompt',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'third prompt',
@@ -370,7 +370,7 @@ test('fork targeting the queued_command itself prefills the queued text and drop
   ];
   const { cwd, sid, dir } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, expectedText: 'I approve the plan. Please proceed with the implementation.',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText,
@@ -398,7 +398,7 @@ test('fork with attachment-bearing user message strips the marker from droppedTe
   ];
   const { cwd, sid } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
-    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0,
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0, expectedText: 'look at this',
     mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'look at this',

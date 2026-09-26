@@ -129,7 +129,7 @@ for (const [mode, other] of MODE_CASES) {
   test(`forking a \`${mode}\` session records \`${mode}\` in the fork transcript`, async () => {
     const { id, dir, restore } = await resumeSeeded(`fork-${mode}`, sidFor(1, mode), mode);
     try {
-      const r = await api(baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+      const r = await api(baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
       assert.equal(r.status, 201);
       const markers = await markersIn(dir, r.body.newSessionId);
       assert.ok(markers.length > 0, 'the fork carries a permission-mode marker');
@@ -148,7 +148,7 @@ for (const [mode, other] of MODE_CASES) {
     const sid = sidFor(3, mode);
     const { id, dir, restore } = await resumeSeeded(`rewind-${mode}`, sid, mode);
     try {
-      const r = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1 });
+      const r = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1, text: 'second' });
       assert.equal(r.status, 200);
       await waitFor(() => instances.get(id).status === 'idle');
       const markers = await markersIn(dir, sid);

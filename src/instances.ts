@@ -101,12 +101,12 @@ import { PlanFileTracker } from './planFile.ts';
 import { cliEnvBase } from './cliEnv.ts';
 import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
-import { truncateSessionAtUserMessage } from './sessionEdit.ts';
+import { truncateSessionAtUserMessage, verifyUserPrompt } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from './planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
-import { buildArchive, currentSegmentScope } from './eventArchive.ts';
+import { buildArchive, currentSegmentScope, measureSegmentEchoOffset } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
@@ -572,6 +572,10 @@ export class EventLog {
   clear(): void { this.buf.length = 0; this.nextSeq = 0; this.seams = []; }
 }
 
+// Message prefix of the 409 fork/rewind refuse with when a live bubble ordinal
+// cannot be placed in the rotated backing file (Instance._fileOrdinalFor).
+export const PROMPT_UNRESOLVED = 'prompt position unresolved';
+
 export class Instance extends EventEmitter implements InstanceLike {
   // All fields are assigned in the constructor below (with the three
   // post-construction additions _mutating/_skipUsageSeed/_spawnArgv/_overageGate
@@ -882,12 +886,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._procEnded = Promise.resolve();
     this.parser = new Parser();
     this.ring = new EventLog();
-    // Absolute ordinal of the next outer user_echo, stamped onto the event
-    // as `userIndex` in _emitUi. Counts exactly the events that correspond
-    // 1:1 to `isPureUserPromptLine` jsonl lines (the rewind/fork anchor),
-    // so the index stays correct even after the ring trims away early
-    // bubbles — the client must NOT derive it by counting rendered bubbles.
-    // Reset alongside the ring in _wipeForResume (replay recounts from 0).
+    // Absolute LIVE ordinal of the next outer user_echo, stamped onto the event
+    // as `userIndex` in _emitUi. Within one segment it counts exactly the
+    // events that correspond 1:1 to `isPureUserPromptLine` jsonl lines (the
+    // rewind/fork anchor), so the index stays correct even after the ring trims
+    // away early bubbles — the client must NOT derive it by counting rendered
+    // bubbles. It runs on across a live rotation, where fork/rewind translate it
+    // into the new file (_fileOrdinalFor). Reset alongside the ring in
+    // _wipeForResume (replay recounts from 0).
     this._userEchoCount = 0;
     // Ephemeral live thinking-token estimate for the OPEN thinking block, or
     // null when none is streaming. The per-token system/thinking_tokens events
@@ -1607,8 +1613,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       wrapped.estimatedTokens = this._liveThinkingTokens;
     }
     // Every outer user_echo funnels through here (live prompt(), parser
-    // queued-prompt echoes, jsonl replay), so this counter matches the
-    // Nth-pure-user-prompt-line semantics sessionEdit.ts truncates by.
+    // queued-prompt echoes, jsonl replay), so within a segment this counter
+    // matches the Nth-pure-user-prompt-line semantics sessionEdit.ts truncates
+    // by; across a live rotation fork/rewind translate it (_fileOrdinalFor).
     if (isOuterUserEcho(wrapped)) {
       wrapped.userIndex = this._userEchoCount;
       this._userEchoCount += 1;
@@ -3325,9 +3332,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw httpError(409, 'cannot change effort during a running turn — interrupt first');
     }
     if (!this.proc || !this.proc.stdin || !this.proc.stdin.writable) throw new Error('not running');
-    // The echo is load-bearing, not cosmetic: the CLI persists this line as a
-    // `type:"user"` jsonl line, which isPureUserPromptLine counts — so a missing
-    // live bubble would shift every rewind/fork userMessageIndex by one.
+    // The echo is load-bearing, not cosmetic: the CLI persists the command as a
+    // `<command-name>` jsonl line, which isPureUserPromptLine counts (its caveat
+    // line it does not) — so a missing live bubble would shift every rewind/fork
+    // userMessageIndex by one.
     this._emitUi({ kind: 'user_echo', text: `/effort ${effort}` });
     this._sendRaw({
       type: 'user',
@@ -3727,9 +3735,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // their conversation view, then respawns with `--resume <sessionId>` so
   // the freshly-truncated history is replayed into the ring.
   //
+  // `userMessageIndex` is the bubble's live ordinal and `expectedText` its text;
+  // both are checked against the file BEFORE the kill, so a refusal leaves the
+  // process, the ring and the file untouched.
+  //
   // Returns { droppedText }: the prompt text of the dropped user message,
   // so the frontend can prefill it back into the composer.
-  async rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }> {
+  async rewindToUserMessage(userMessageIndex: number, expectedText: string): Promise<{ droppedText: string }> {
     // Same interlock as pruneSession, for the same reason: a rewind kills the proc
     // and rewrites the transcript, so one landing inside a renewal's reseed window
     // makes the reseed 409 and loses the handoff summary.
@@ -3745,12 +3757,16 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw httpError(409, 'cannot rewind during a running turn — interrupt first');
     }
     this._mutating = true;
-    // Marks the kill→relaunch window for isSessionLive — see the
-    // `_relaunching` field comment. Deliberately NOT beginRotation: this is
-    // not a `renew`/`prune` rotation (no reason string, no rotation_complete
-    // event, no interaction with _assertNoRotationInFlight's messaging).
-    this._relaunching = true;
     try {
+      // prompt() refuses while `_mutating` is set, so no turn can start
+      // between this check and the kill.
+      const fileIdx = await this._fileOrdinalFor(userMessageIndex);
+      await verifyUserPrompt({ place: this.transcriptPlace, sessionId: backingId, userMessageIndex: fileIdx, expectedText });
+      // Marks the kill→relaunch window for isSessionLive — see the
+      // `_relaunching` field comment. Deliberately NOT beginRotation: this is
+      // not a `renew`/`prune` rotation (no reason string, no rotation_complete
+      // event, no interaction with _assertNoRotationInFlight's messaging).
+      this._relaunching = true;
       // Kill the subprocess first so the CLI can't flush a stale tail
       // into the jsonl mid-truncate. Suppress the temp-archive-on-exit
       // behavior in _handleExit — a rewind respawns right after, so a temp
@@ -3764,7 +3780,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       const result = await truncateSessionAtUserMessage({
         place: this.transcriptPlace,
         sessionId: backingId,
-        userMessageIndex,
+        userMessageIndex: fileIdx,
+        expectedText,
         mode: this.mode,
       });
 
@@ -3800,7 +3817,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // fork with — every one of those fields is read off THIS instance, so deriving
   // them belongs here and not in the route. The spawn itself stays with the caller:
   // an Instance holds no manager reference.
-  async forkAtUserMessage(userMessageIndex: number): Promise<{
+  async forkAtUserMessage(userMessageIndex: number, expectedText: string): Promise<{
     newSessionId: string; droppedText: string; createArgs: CreateInstanceInput;
   }> {
     // A rewind/prune on the SAME instance rewrites (or truncates) the very
@@ -3843,7 +3860,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       forked = await forkSessionAtUserMessage({
         place: this.transcriptPlace,
         sessionId: backingId,
-        userMessageIndex,
+        userMessageIndex: await this._fileOrdinalFor(userMessageIndex),
+        expectedText,
         mode: this.mode,
       });
     } finally {
@@ -3888,6 +3906,27 @@ export class Instance extends EventEmitter implements InstanceLike {
         prefill: forked.droppedText,
       },
     };
+  }
+
+  // A bubble's live ordinal → the backing file's prompt ordinal. Without a live
+  // rotation (the current segment's ring content starts at seq 0: single
+  // segment, or a ring refilled from this file by resume/rewind/prune) the two
+  // are the same. After one, the offset is measured from the current segment's
+  // ring content only — an earlier segment's echo must not calibrate it — and
+  // an unmeasurable offset refuses rather than guesses.
+  async _fileOrdinalFor(liveIndex: number): Promise<number> {
+    const scope = currentSegmentScope(this);
+    if (scope.startSeq === 0) return liveIndex;
+    const offset = await measureSegmentEchoOffset({
+      place: this.transcriptPlace, sessionId: this.backingSessionId as string,
+      ring: this.ringSnapshot().filter(e => e._seq >= scope.startSeq),
+    });
+    if (offset === null) {
+      throw httpError(409, `${PROMPT_UNRESOLVED}: can't place this prompt in the current transcript yet — retry once the turn has finished`);
+    }
+    const fileIdx = liveIndex + offset;
+    if (fileIdx < 0) throw httpError(400, `userMessageIndex ${liveIndex} out of range (it precedes the current transcript)`);
+    return fileIdx;
   }
 
   // Prune this session's context: write a stubbed COPY of the jsonl under a

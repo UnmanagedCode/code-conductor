@@ -14,7 +14,7 @@ import { sessionFilePath, subAgentDirPath, type TranscriptPlacement } from './pr
 import { MODES } from './sessionModes.ts';
 import {
   consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
-  isTaskNotificationContent, attachSkillLoad, stampCliInjected,
+  isTaskNotificationContent, isLocalCommandCaveatLine, attachSkillLoad, stampCliInjected,
   type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
@@ -74,6 +74,8 @@ export function isPureUserPromptLine(obj: unknown): boolean {
     // Background-subagent completion ping — dropped silently, never a
     // user_echo. See parser.ts:_handleUser.
     if (isTaskNotificationContent(content)) return false;
+    // The CLI's local-command caveat — its `<command-name>` line is the prompt.
+    if (isLocalCommandCaveatLine(line)) return false;
     if (typeof content === 'string') return content.length > 0;
     if (!Array.isArray(content)) return false;
     return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
@@ -149,6 +151,8 @@ export function replayPersistedLine(
     // streaming system/task_notification event, and never produced a
     // user_echo live.
     if (isTaskNotificationContent(content)) return tagAndReturn();
+    // The CLI's local-command caveat — never a bubble, same as live.
+    if (isLocalCommandCaveatLine(line)) return tagAndReturn();
     if (typeof content === 'string') {
       events.push(...stampCliInjected([{ kind: 'user_echo', text: content }], line));
       return tagAndReturn();

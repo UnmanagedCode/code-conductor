@@ -509,7 +509,9 @@ interface PruneRecord { raw: string; obj: PersistedLine | null; turn: number; pr
 // 0-based index among pure user-prompt lines — the SAME index space fork/rewind
 // use (`isPureUserPromptLine`) and the same `userIndex` the conversation view
 // stamps on user bubbles, which is what makes the slider snap to turn boundaries
-// structurally rather than cosmetically. Lines before the first prompt ride turn 0.
+// structurally rather than cosmetically. Lines before the first prompt ride turn 0,
+// and a local-command caveat (not a prompt line) rides the turn before its
+// command.
 //
 // Everything before the LAST compaction boundary has left the model's context:
 // neither prunable nor in context, so no estimate counts it and the transform

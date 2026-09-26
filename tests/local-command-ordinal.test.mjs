@@ -85,10 +85,13 @@ async function commandThenPrompt({ inst, file }, { run, name, args, commandText 
   return { cmd, later };
 }
 
+// A jsonl's conversation records: the resume-picker metadata cc appends is not
+// part of what a fork is asserted to copy.
+const conversation = (text) => parseLines(text).filter(r => r.type !== 'last-prompt' && r.type !== 'permission-mode');
+
 async function assertForks(inst, id, file, { cmd, later }) {
-  const src = parseLines(await fs.readFile(file, 'utf8'));
-  const readFork = async (sid) => parseLines(await fs.readFile(sessionFilePath(inst.transcriptPlace, sid), 'utf8'))
-    .filter(r => r.type !== 'last-prompt' && r.type !== 'permission-mode');
+  const src = conversation(await fs.readFile(file, 'utf8'));
+  const readFork = async (sid) => conversation(await fs.readFile(sessionFilePath(inst.transcriptPlace, sid), 'utf8'));
 
   const fkLater = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: later.userIndex, text: later.text });
   assert.equal(fkLater.status, 201, JSON.stringify(fkLater.body));

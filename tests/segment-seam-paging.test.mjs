@@ -196,7 +196,7 @@ test('T2 case B backward: the current file is cut at the ring head with the offs
   const { inst, id, crossed } = await bootCaseB('t2');
   const { ring, k } = assertCaseBPreconditions(inst);
   // Production live shape at the seam: the rotation init, then the first REAL
-  // prompt — the live ring never carries RENEW_HEAD's replay-only echoes, so the
+  // prompt — the live ring never carries RENEW_HEAD's replay-only echo, so the
   // live ordinal of `post i` differs from its file ordinal and only a measured
   // offset cuts the file at the ring head.
   const headTexts = new Set(RENEW_HEAD.map(r => r.message?.content).filter(Boolean));
@@ -205,22 +205,22 @@ test('T2 case B backward: the current file is cut at the ring head with the offs
   assert.ok(!crossed[0].some(e => headTexts.has(e.text)), 'precondition: no RENEW_HEAD echo reached the live ring');
   const liveHead = ring[0].userIndex;
   assert.equal(liveHead, 3 + k, 'precondition: live ordinal of post k counts the 3 pre echoes');
-  // Its file ordinal counts RENEW_HEAD's 2 echoes instead, so live ≠ file.
+  // Its file ordinal counts RENEW_HEAD's one echo instead, so live ≠ file.
 
   const all = await pageAll(id);
   // Includes the evicted post turns, served from the file across RENEW_HEAD's
-  // replay-only echoes — an ordinal rebase that ignores them lands off by their
+  // replay-only echo — an ordinal rebase that ignores them lands off by their
   // count.
   assertPostOnceInOrder(all, 12);
   assert.ok(!all.some(e => /^pre /.test(e.text ?? '')), 'no pre content: its events were evicted and are not in this file');
   // Floor, real: the pre-renew ring events were evicted and this pager never
-  // reads the pre file. It sits before the file's first event (the caveat echo).
+  // reads the pre file. It sits before the file's first event (the /clear echo).
   assert.equal(all[0].kind, GAP, 'the walk opens on the floor marker');
   assert.equal(all[1].kind, 'user_echo');
-  assert.equal(all[1].text, RENEW_HEAD[0].message.content, 'directly followed by the file\'s first event');
+  assert.equal(all[1].text, RENEW_HEAD[1].message.content, 'directly followed by the file\'s first event');
   // No seam marker: the calibrated cut is exact, and it is not clamped because
   // tb − cut = <pre-renew ring events> + <the rotation init> − <RENEW_HEAD's
-  // replay-only echoes>, and the pre span alone outnumbers those echoes.
+  // replay-only echo>, and the pre span alone outnumbers it.
   assert.equal(gapCount(all), 1, 'the floor is the only marker');
   const headAt = all.findIndex(e => e._seq === ring[0]._seq && e.kind === 'user_echo' && e.text === `post prompt ${k}`);
   assert.ok(headAt > 0, 'the ring head is served');
@@ -256,11 +256,11 @@ test('T3 live get_transcript shares the pager: forward walk from 0, default page
     assertPostOnceInOrder(walk, 12);
     assert.ok(!walk.some(e => /^pre /.test(e.text ?? '')));
     assert.equal(walk[0].kind, GAP, 'fromSeq 0 walk opens on the floor');
-    assert.equal(walk[1].text, RENEW_HEAD[0].message.content, 'directly followed by the file\'s first event');
+    assert.equal(walk[1].text, RENEW_HEAD[1].message.content, 'directly followed by the file\'s first event');
     assert.equal(gapCount(walk), 1);
     const dflt = await getTranscript({ sessionId: inst.sessionId });
     assert.equal(dflt.events[0].kind, GAP);
-    assert.equal(dflt.events[1].text, RENEW_HEAD[0].message.content);
+    assert.equal(dflt.events[1].text, RENEW_HEAD[1].message.content);
     assert.equal(gapCount(dflt.events), 1);
     const poll = await getTranscript({ sessionId: inst.sessionId, fromSeq: tb });
     assert.equal(gapCount(poll.events), 0, 'a poll from the ring head carries no marker');
@@ -327,7 +327,7 @@ test('T4 case B, uncorrelated mid-turn head: calibrated fallback cut, floor and 
   assert.equal(gapCount(all), 2, 'two distinct losses, two markers');
   // Floor, real: the pre-renew ring events were evicted; it precedes the file's first event.
   assert.equal(all[0].kind, GAP);
-  assert.equal(all[1].text, RENEW_HEAD[0].message.content);
+  assert.equal(all[1].text, RENEW_HEAD[1].message.content);
   // Seam, real: the turn-5 span between post 5's echo and the live5 head is
   // gone from the ring and the file never had live5.
   const seam = all.findIndex((e, i) => i > 0 && isGap(e));
@@ -348,7 +348,7 @@ test('T5 case B, nothing calibratable: nothing is served from the file, one mark
   assert.ok(place, 'the post file exists on disk');
 
   const all = await pageAll(id);
-  assert.ok(!all.some(e => /^post /.test(e.text ?? '') || e.text === RENEW_HEAD[0].message.content),
+  assert.ok(!all.some(e => /^post /.test(e.text ?? '') || e.text === RENEW_HEAD[1].message.content),
     'no file content is served: no ring turn correlates, so no ordinal was measured');
   // Real: the earlier-segment events and the evicted live turns are adjacent
   // losses below the ring head, so one divider marks both.
@@ -479,7 +479,7 @@ test('T8 a wipe then a fill leaves exactly one seam at 0 for the current segment
   assert.deepEqual(inst.ring.seams, [{ segmentId: POST, startSeq: 0 }]);
   const all = await pageAll(id);
   assert.equal(gapCount(all), 0, 'a resumed segment pages with no marker');
-  assert.deepEqual(textsOf(all, 'user_echo'), [RENEW_HEAD[0].message.content, RENEW_HEAD[1].message.content, 'post prompt 0'],
+  assert.deepEqual(textsOf(all, 'user_echo'), [RENEW_HEAD[1].message.content, 'post prompt 0'],
     'the current file, whole');
 });
 
@@ -495,8 +495,8 @@ test('T9 a renewed session resumed cold pages its current file exactly as before
   const all = await pageAll(id);
   assert.equal(gapCount(all), 0, 'no marker');
   assert.deepEqual(textsOf(all, 'user_echo'),
-    [RENEW_HEAD[0].message.content, RENEW_HEAD[1].message.content, ...Array.from({ length: 12 }, (_, i) => `post prompt ${i}`)],
-    'the full current-file history, RENEW_HEAD echoes included');
+    [RENEW_HEAD[1].message.content, ...Array.from({ length: 12 }, (_, i) => `post prompt ${i}`)],
+    'the full current-file history, RENEW_HEAD\'s echo included');
   assertPostOnceInOrder(all, 12);
 });
 
@@ -625,12 +625,12 @@ test('T13 a disk read (pagePersistedEvents) never marks a floor', async () => {
   }
   assert.equal(gapCount(all), 0, 'no history_gap on a disk walk');
   assert.deepEqual(textsOf(all, 'user_echo'),
-    [RENEW_HEAD[0].message.content, RENEW_HEAD[1].message.content, ...Array.from({ length: 12 }, (_, i) => `post prompt ${i}`)]);
-  assert.equal(all[0].text, RENEW_HEAD[0].message.content, 'the walk opens on the file\'s first event');
+    [RENEW_HEAD[1].message.content, ...Array.from({ length: 12 }, (_, i) => `post prompt ${i}`)]);
+  assert.equal(all[0].text, RENEW_HEAD[1].message.content, 'the walk opens on the file\'s first event');
 });
 
 test('T14 reconstructActiveTasks, case B: the current file is cut with the calibrated offset', async () => {
-  // One pre echo against RENEW_HEAD's two: the file ordinal of every post turn
+  // No pre echo against RENEW_HEAD's one: the file ordinal of every post turn
   // is one ABOVE its live ordinal, so an uncalibrated cut stops one turn early —
   // exactly at the turn holding the TaskCreate the ring evicted.
   const post = [
@@ -645,7 +645,7 @@ test('T14 reconstructActiveTasks, case B: the current file is cut with the calib
   const { inst, crossed } = await bootLiveAcrossSeams({
     ctx, project: 't14', publicId: PUBLIC, ringCap: 8,
     segments: [
-      { id: PRE, reason: 'initial', records: segmentTurns('pre', 1) },
+      { id: PRE, reason: 'initial', records: [asstText('pre-a0', 'pre-m0', 'pre reply 0')] },
       { id: POST, reason: 'renew', records: post },
     ],
   });
