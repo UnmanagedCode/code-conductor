@@ -107,3 +107,15 @@ test('exclude without trailing newline: entry lands on its own line', async () =
   assert.equal(r.code, 0, r.stderr);
   assert.equal(await fs.readFile(exclude, 'utf8'), 'foo\n/.wiki\n');
 });
+
+test('near-miss /.wiki/ entry: hook still appends its own /.wiki line', async () => {
+  const { main, wt } = await makeRepo();
+  await addWiki(main);
+  const exclude = await commonExclude(main);
+  await fs.writeFile(exclude, '/.wiki/\n');
+  const r = await runHook(wt, main);
+  assert.equal(r.code, 0, r.stderr);
+  const lines = (await fs.readFile(exclude, 'utf8')).split('\n');
+  assert.equal(lines.filter((l) => l === '/.wiki').length, 1);
+  assert.deepEqual(await wikiLines(wt), []);
+});
