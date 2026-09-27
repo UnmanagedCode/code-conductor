@@ -7,7 +7,7 @@ import { httpError } from './httpError.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
 // Self-update operates on cc's OWN checkout — always the local system, never a
 // project on one.
-import { localSystem } from './systems/registry.ts';
+import { localSystem, LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { findSelfProject } from './projects.ts';
 import { pullPastGeneratedConventions } from './conventionsCheckout.ts';
 
@@ -128,8 +128,11 @@ export async function applySelfUpdate({
   // A checkout registered as a project carries cc's own regenerated
   // CONVENTIONS.md/CLAUDE.md; they are discarded before the pull and
   // regenerated after it (src/conventionsCheckout.ts). An unregistered one is
-  // never written by cc, so it is pulled untouched.
-  const project = (await findSelfProject(repoRoot))?.name ?? null;
+  // never written by cc, so it is pulled untouched — and so is one paired only
+  // with a project on another system, which regeneration would write through
+  // while classification reads this local tree.
+  const self = await findSelfProject(repoRoot);
+  const project = self && self.system === LOCAL_SYSTEM_ID ? self.name : null;
   await pullPastGeneratedConventions({
     system: localSystem(), dir: repoRoot, project,
     note: (t) => onChunk?.('pull', t),

@@ -826,16 +826,19 @@ const UPSTREAM_CONVENTIONS = '<!-- cc:conventions -->\n\nThe author\'s own regen
 // Bare remote + seed + clone at <env.root>/code-x, registered, with a library
 // entry. The seed's CLAUDE.md has no import and its CONVENTIONS.md carries a
 // marker, so regeneration leaves both ` M`.
-async function setupConventionsRepo(env) {
+// `seedFiles` replaces the seed's tracked files (a missing CLAUDE.md or
+// CONVENTIONS.md makes cc's copy untracked).
+async function setupConventionsRepo(env, seedFiles = { 'file.txt': 'v1', 'CLAUDE.md': UPSTREAM_CLAUDE, 'CONVENTIONS.md': UPSTREAM_CONVENTIONS }) {
   const remote = await mkdtemp('lib-cremote-');
   const seed = await mkdtemp('lib-cseed-');
   await git(remote, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
   await git(seed, '-c', 'init.defaultBranch=main', 'init', '-q');
   await git(seed, 'config', 'user.email', 'test@test');
   await git(seed, 'config', 'user.name', 'test');
-  await fs.writeFile(path.join(seed, 'file.txt'), 'v1');
-  await fs.writeFile(path.join(seed, 'CLAUDE.md'), UPSTREAM_CLAUDE);
-  await fs.writeFile(path.join(seed, 'CONVENTIONS.md'), UPSTREAM_CONVENTIONS);
+  for (const [rel, content] of Object.entries(seedFiles)) {
+    await fs.mkdir(path.dirname(path.join(seed, rel)), { recursive: true });
+    await fs.writeFile(path.join(seed, rel), content);
+  }
   await git(seed, 'add', '-A');
   await git(seed, 'commit', '-q', '-m', 'v1');
   await git(seed, 'remote', 'add', 'origin', remote);
@@ -854,7 +857,10 @@ async function setupConventionsRepo(env) {
       assert.equal(r.regenerated, true, 'precondition: the generator wrote the file');
     },
     async pushUpstream(files) {
-      for (const [rel, content] of Object.entries(files)) await fs.writeFile(path.join(seed, rel), content);
+      for (const [rel, content] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(seed, rel)), { recursive: true });
+        await fs.writeFile(path.join(seed, rel), content);
+      }
       await git(seed, 'add', '-A');
       await git(seed, 'commit', '-q', '-m', 'upstream');
       await git(seed, 'push', '-q', 'origin', 'main');
@@ -1075,6 +1081,234 @@ test('update(): the discard and the regeneration are reported as pull-phase chun
     const regen = chunks.findIndex(c => c.phase === 'pull' && /regenerated CONVENTIONS\.md/.test(c.text));
     assert.ok(discard >= 0, `a discard line naming both files: ${JSON.stringify(chunks)}`);
     assert.ok(regen > discard, `a regeneration line after it: ${JSON.stringify(chunks)}`);
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+// The paths a failed update names as "local changes cc did not generate".
+function namedOtherDirt(e) {
+  const m = / local changes cc did not generate: ([^;]*)/.exec(e.message);
+  return m ? m[1].split(', ') : [];
+}
+
+test('update(): a non-empty selection in HEAD\'s marker still classifies cc\'s regenerated file as generated', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env, {
+    'file.txt': 'v1', 'CLAUDE.md': UPSTREAM_CLAUDE,
+    'CONVENTIONS.md': '<!-- cc:conventions design-guidelines -->\n\nThe author\'s copy.\n',
+  });
+  try {
+    await r.regenerate();
+    assert.match(await r.status(), /^ M CONVENTIONS\.md$/m, 'precondition: CONVENTIONS.md is dirty');
+    await r.pushUpstream({ 'CONVENTIONS.md': '<!-- cc:conventions design-guidelines -->\n\nA newer author copy.\n' });
+
+    await createPluginLibrary().update('code-x');
+    assert.equal(await r.head(), await r.remoteHead());
+    const after = await r.read('CONVENTIONS.md');
+    assert.match(after, /^<!-- cc:conventions design-guidelines -->\n/);
+    await r.regenerate();
+    assert.equal(await r.read('CONVENTIONS.md'), after, 'CONVENTIONS.md is a fresh regeneration');
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('update(): a CLAUDE.md differing from the writer\'s output only by whitespace is a hand edit', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env);
+  try {
+    await r.regenerate();
+    await fs.appendFile(path.join(r.clone, 'CLAUDE.md'), '\n');
+    const before = await r.snapshot();
+    await r.pushUpstream({ 'CLAUDE.md': '# Plugin\n\nRevised.\n' });
+
+    const e = await rejectsWithStatus(createPluginLibrary().update('code-x'), 502);
+    assert.deepEqual(namedOtherDirt(e), ['CLAUDE.md']);
+    assert.deepEqual(await r.snapshot(), before);
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('update(): a repo that tracks neither file — cc\'s untracked copies are discarded and regenerated', async (t) => {
+  await t.test('upstream changes an unrelated file; an untracked notes.txt survives', async () => {
+    const env = await makePluginRoot();
+    const r = await setupConventionsRepo(env, { 'file.txt': 'v1' });
+    try {
+      await r.regenerate();
+      assert.match(await r.status(), /^\?\? CLAUDE\.md$/m, 'precondition: CLAUDE.md is untracked');
+      assert.match(await r.status(), /^\?\? CONVENTIONS\.md$/m, 'precondition: CONVENTIONS.md is untracked');
+      await fs.writeFile(path.join(r.clone, 'notes.txt'), 'mine\n');
+      const before = await r.snapshot();
+      await r.pushUpstream({ 'file.txt': 'v2' });
+
+      const chunks = [];
+      await createPluginLibrary().update('code-x', { onChunk: (phase, text) => chunks.push(text) });
+      assert.equal(await r.head(), await r.remoteHead());
+      assert.ok(chunks.some(c => /discarded cc-generated/.test(c) && /CLAUDE\.md/.test(c) && /CONVENTIONS\.md/.test(c)),
+        `both untracked files went through the discard: ${JSON.stringify(chunks)}`);
+      assert.deepEqual(await r.snapshot(), before, 'regenerated');
+      assert.equal(await r.read('notes.txt'), 'mine\n');
+    } finally {
+      await r.cleanup();
+      await env.restore();
+    }
+  });
+
+  await t.test('upstream adds its own CONVENTIONS.md and CLAUDE.md; the import is re-derived', async () => {
+    const env = await makePluginRoot();
+    const r = await setupConventionsRepo(env, { 'file.txt': 'v1' });
+    try {
+      await r.regenerate();
+      await r.pushUpstream({ 'CLAUDE.md': '# Up\n', 'CONVENTIONS.md': '<!-- cc:conventions -->\n\nAn author copy.\n' });
+
+      await createPluginLibrary().update('code-x');
+      assert.equal(await r.head(), await r.remoteHead());
+      assert.equal(await r.read('CLAUDE.md'), '@CONVENTIONS.md\n# Up\n');
+      const after = await r.read('CONVENTIONS.md');
+      await r.regenerate();
+      assert.equal(await r.read('CONVENTIONS.md'), after, 'CONVENTIONS.md is a fresh regeneration');
+    } finally {
+      await r.cleanup();
+      await env.restore();
+    }
+  });
+});
+
+test('update(): an untracked CLAUDE.md whose deletion is staged is never removed, and is named once', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env);
+  try {
+    await r.regenerate();
+    await git(r.clone, 'rm', '-q', '--cached', 'CLAUDE.md');
+    assert.match(await r.status(), /^D  CLAUDE\.md$/m, 'precondition: deletion staged');
+    assert.match(await r.status(), /^\?\? CLAUDE\.md$/m, 'precondition: the file is untracked');
+    const claude = await r.read('CLAUDE.md');
+    assert.equal(claude, `@CONVENTIONS.md\n${UPSTREAM_CLAUDE}`, 'precondition: the bytes are the writer\'s output for HEAD');
+    await r.pushUpstream({ 'CLAUDE.md': '# Plugin\n\nRevised.\n' });
+
+    const e = await rejectsWithStatus(createPluginLibrary().update('code-x'), 502);
+    assert.deepEqual(namedOtherDirt(e), ['CLAUDE.md']);
+    assert.equal(await r.read('CLAUDE.md'), claude);
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('update(): nothing is discarded while a rebase is in progress', async (t) => {
+  for (const name of ['rebase-merge', 'rebase-apply']) {
+    await t.test(name, async () => {
+      const env = await makePluginRoot();
+      const r = await setupConventionsRepo(env);
+      try {
+        await r.regenerate();
+        const gitPath = (await run('git', ['-C', r.clone, 'rev-parse', '--git-path', name])).stdout.trim();
+        await fs.mkdir(path.resolve(r.clone, gitPath), { recursive: true });
+        const before = await r.snapshot();
+        const statusBefore = await r.status();
+        let atPull = null;
+        const lib = createPluginLibrary({
+          _pullImpl: async () => {
+            atPull = { files: await r.snapshot(), status: await r.status() };
+            return { code: 1, stdout: '', stderr: 'rebase in progress' };
+          },
+        });
+
+        await rejectsWithStatus(lib.update('code-x'), 502);
+        assert.deepEqual(atPull, { files: before, status: statusBefore }, 'the tree the pull saw is the untouched one');
+      } finally {
+        await r.cleanup();
+        await env.restore();
+      }
+    });
+  }
+});
+
+test('update(): a nested CLAUDE.md or CONVENTIONS.md is never a discard candidate', async (t) => {
+  const rows = [
+    ['sub/CLAUDE.md', '# Sub\n', '@CONVENTIONS.md\n# Sub\n'],
+    ['docs/CONVENTIONS.md', UPSTREAM_CONVENTIONS, '<!-- cc:conventions -->\n\nA body cc could have written.\n'],
+  ];
+  for (const [rel, headContent, local] of rows) {
+    await t.test(rel, async () => {
+      const env = await makePluginRoot();
+      const r = await setupConventionsRepo(env, { 'file.txt': 'v1', [rel]: headContent });
+      try {
+        await fs.writeFile(path.join(r.clone, rel), local);
+        const head = await r.head();
+        await r.pushUpstream({ [rel]: 'upstream revision\n' });
+
+        const e = await rejectsWithStatus(createPluginLibrary().update('code-x'), 502);
+        assert.deepEqual(namedOtherDirt(e), [rel]);
+        assert.equal(await r.read(rel), local);
+        assert.equal(await r.head(), head);
+      } finally {
+        await r.cleanup();
+        await env.restore();
+      }
+    });
+  }
+});
+
+test('update(): a rename elsewhere names exactly its two real paths', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env);
+  try {
+    await r.regenerate();
+    await git(r.clone, 'mv', 'file.txt', 'moved.txt');
+    assert.match(await r.status(), /^R  file\.txt -> moved\.txt$/m, 'precondition: a staged rename');
+    await r.pushUpstream({ 'file.txt': 'v2' });
+
+    const e = await rejectsWithStatus(createPluginLibrary().update('code-x'), 502);
+    assert.deepEqual(namedOtherDirt(e).sort(), ['file.txt', 'moved.txt']);
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('update(): when the pull and the regeneration both fail, the error says both', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env);
+  try {
+    await r.regenerate();
+    const lib = createPluginLibrary({
+      // The pull leaves CONVENTIONS.md as a directory, so regeneration can't write it.
+      _pullImpl: async (cwd) => {
+        await fs.rm(path.join(cwd, 'CONVENTIONS.md'));
+        await fs.mkdir(path.join(cwd, 'CONVENTIONS.md'));
+        return { code: 1, stdout: '', stderr: 'boom' };
+      },
+    });
+
+    const e = await rejectsWithStatus(lib.update('code-x'), 502);
+    assert.match(e.message, /^git pull failed for 'code-x'/);
+    assert.match(e.message, /regenerating CONVENTIONS\.md failed/);
+    assert.equal(e.tail, 'boom');
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('update(): classification I/O failure never blocks the pull — a dangling-symlink CLAUDE.md', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env, { 'file.txt': 'v1', 'CONVENTIONS.md': UPSTREAM_CONVENTIONS });
+  try {
+    await r.regenerate();
+    await fs.rm(path.join(r.clone, 'CLAUDE.md'));
+    await fs.symlink(path.join(r.clone, 'nowhere'), path.join(r.clone, 'CLAUDE.md'));
+    assert.match(await r.status(), /^\?\? CLAUDE\.md$/m, 'precondition: the symlink is untracked');
+    await r.pushUpstream({ 'file.txt': 'v2' });
+
+    await createPluginLibrary().update('code-x');
+    assert.equal(await r.head(), await r.remoteHead());
+    assert.equal((await fs.lstat(path.join(r.clone, 'CLAUDE.md'))).isSymbolicLink(), true, 'the symlink is left alone');
   } finally {
     await r.cleanup();
     await env.restore();

@@ -49,7 +49,7 @@ export async function pullPastGeneratedConventions<T>({ system, dir, project, no
   run: () => Promise<T>;
 }): Promise<T> {
   if (project === null) return run();
-  const dirt = await classify(system, dir);
+  const dirt = await classifyOrNull(system, dir);
   if (dirt === null) return run();
 
   const generated = [...dirt.tracked, ...dirt.untracked];
@@ -76,7 +76,16 @@ export async function pullPastGeneratedConventions<T>({ system, dir, project, no
   return result;
 }
 
-// null = can't classify (not a repo, a mid-operation tree): leave it to the pull.
+// null = can't classify (not a repo, a mid-operation tree, any I/O failure such
+// as a dangling-symlink candidate): leave it to the pull, exactly as without cc.
+async function classifyOrNull(system: System, dir: string): Promise<Dirt | null> {
+  try { return await classify(system, dir); }
+  catch (e) {
+    console.warn(`conventionsCheckout: can't classify ${dir}, pulling as-is: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 async function classify(system: System, dir: string): Promise<Dirt | null> {
   const status = await runGit(system, dir, ['-c', 'status.relativePaths=true', 'status', '--porcelain=v1', '-z', '--untracked-files=all']);
   if (status.code !== 0) return null;
@@ -96,12 +105,14 @@ async function classify(system: System, dir: string): Promise<Dirt | null> {
     if (!entry) continue;
     const xy = entry.slice(0, 2);
     const file = entry.slice(3);
-    // A rename/copy carries its source as the next field.
-    if (xy[0] === 'R' || xy[0] === 'C') i++;
+    // A rename/copy carries its source as the next field; both paths are dirt.
+    if (xy[0] === 'R' || xy[0] === 'C') dirt.other.push(fields[++i]);
     const kind = xy === ' M' ? 'tracked' : xy === '??' ? 'untracked' : null;
     if (kind && CANDIDATES.has(file) && await isGenerated(system, dir, file, kind)) dirt[kind].push(file);
     else dirt.other.push(file);
   }
+  // One path can hold two entries (a staged deletion beside its untracked copy).
+  dirt.other = [...new Set(dirt.other)];
   return dirt;
 }
 

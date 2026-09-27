@@ -12,6 +12,9 @@ import { buildRoutes } from '../src/routes.ts';
 import { ensureProjectConventionsMd } from '../src/projectClaudeMd.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
 import { registerLocalProject } from './helpers.mjs';
+import { bindRemoteSystem } from './remoteSystem.mjs';
+import { adoptProject, findSelfProject } from '../src/projects.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
@@ -295,6 +298,32 @@ test('applySelfUpdate: an unregistered checkout is never touched — the same di
     assert.equal(err?.statusCode, 502);
     assert.deepEqual(await snapshot(r.clone), before);
   } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('applySelfUpdate: a checkout matched only by a project on a remote system is treated as unregistered', async () => {
+  const env = await makePluginRoot();
+  const r = await setupRegisterableRepo();
+  try {
+    // The reference provider IS this machine, so a remote project at the
+    // checkout's own absolute path resolves to the same tree by realpath.
+    const remote = await bindRemoteSystem();
+    const adopted = await adoptProject('cc-remote', await fs.realpath(r.clone), { system: remote.id });
+    assert.equal(adopted.ok, true, JSON.stringify(adopted));
+    assert.equal((await findSelfProject(r.clone))?.name, 'cc-remote', 'precondition: findSelfProject pairs them');
+    await ensureProjectConventionsMd('cc-remote');
+    const before = await snapshot(r.clone);
+    assert.notEqual(before.claude, '# cc\n', 'precondition: the generator wrote the import');
+    await r.pushUpstream('v2', { 'CONVENTIONS.md': '<!-- cc:conventions -->\n\nA newer copy.\n' });
+
+    let err;
+    try { await applySelfUpdate({ repoRoot: r.clone, npmCmd: 'true' }); } catch (e) { err = e; }
+    assert.equal(err?.statusCode, 502);
+    assert.deepEqual(await snapshot(r.clone), before);
+  } finally {
+    disposeSystemHandles();
     await r.cleanup();
     await env.restore();
   }
