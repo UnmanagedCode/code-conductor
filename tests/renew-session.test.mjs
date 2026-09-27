@@ -22,11 +22,8 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
 import { RENEW_SUMMARY_TEMPLATE, LINEAGE_RETRY_ATTEMPTS } from '../src/sessionRenew.ts';
 import { MECHANICAL_STATE_HEADER } from '../public/renewSeed.js';
-import { isConducted } from '../src/conductedSessions.ts';
-import { isTemp } from '../src/tempSessions.ts';
-import { isArchived } from '../src/archivedSessions.ts';
-import { getTitle } from '../src/sessionTitles.ts';
-import { getSessionMode } from '../src/sessionModes.ts';
+import { isConducted, isTemp, isArchived, getTitle, getSessionMode } from '../src/sessionStore.ts';
+import { rotate } from './segmentChain.mjs';
 import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -481,7 +478,7 @@ test('no duplicate worker: the public id still resolves live after a rotation', 
   }
 });
 
-test('renew_session carries the durable temp + conducted markers onto the rotated id and archives the old one', async () => {
+test('renew_session keeps temp + conducted through the rotation and archives the pre-clear segment', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -493,18 +490,13 @@ test('renew_session carries the durable temp + conducted markers onto the rotate
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
     const id = inst.id;
-    // The temp/conducted/title/mode/backend sidecars are keyed to the TRANSCRIPT,
-    // deliberately: listSessionsForCwdWithCounts looks them up by filename, so
-    // re-keying them to public ids would have needed a migration. That makes the
-    // carry a backing→backing move, and both ends of it are named here.
+    // Conducted is a SESSION fact (keyed by the public id); temp is a TRANSCRIPT
+    // fact, on the segment each backing id names. Both are durable from spawn.
     const oldBacking = inst.backingSessionId;
     assert.notEqual(oldBacking, sid1, 'precondition: the two ids have diverged');
     assert.equal(inst.conducted, true, 'spawn_instance yields a conducted worker');
     assert.equal(inst.temp, true, 'spawn_instance yields a temp worker');
-    // temp is durably marked at spawn; conducted is marked on the first turn_end
-    // (_writeSessionMetadata), i.e. by the armed 'go1' turn below — so only assert
-    // the temp sidecar pre-renewal.
-    await waitFor(async () => await isTemp(oldBacking));
+    await waitFor(async () => (await isTemp(oldBacking)) && (await isConducted(sid1)));
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on with the migration' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
@@ -514,30 +506,21 @@ test('renew_session carries the durable temp + conducted markers onto the rotate
     assert.equal(rotated.id, id, 'same Instance across the clear');
     assert.equal(rotated.conducted, true, 'rotated session is still conducted');
     assert.equal(rotated.temp, true, 'rotated session is still temp');
-    // Both durable markers followed the rotation onto the new sessionId — the
-    // explicit carry at rotation, independent of the reseed turn_end's incidental
-    // _writeSessionMetadata re-write.
-    await waitFor(async () => (await isConducted(NEW_SID)) && (await isTemp(NEW_SID)));
-    // The abandoned pre-clear id is archived (retained-but-hidden) and its stale
-    // temp marker is cleaned. (We deliberately do NOT unmarkConducted the old id —
-    // mirroring _archiveTempSession, a conducted marker stays meaningful on an
-    // archived row — but the fixture never durably writes one on the old id, so
-    // there is nothing to assert there.)
-    await waitFor(async () => await isArchived(oldBacking));
-    assert.equal(await isTemp(oldBacking), false, 'stale temp marker on the old id was cleaned');
+    // The rotation write itself (kicked in system/init, flushed before the
+    // reseed) gives the new segment the temp flag and archives the pre-clear one.
+    // Conducted never moved: it is on the session, which both ids resolve to.
+    assert.equal(await isTemp(NEW_SID), true, 'the new segment inherited temp');
+    assert.equal(await isConducted(NEW_SID), true, 'the new segment resolves to the conducted session');
+    assert.equal(await isArchived(oldBacking), true, 'the pre-clear segment is archived');
+    assert.equal(await isTemp(oldBacking), false, 'and no longer temp');
     // …and the session's own identity is untouched by any of it.
-    assert.equal(rotated.sessionId, sid1, 'the public id is pinned across the carry');
-
-    // The mode record is NOT asserted here: the system/init handler records the
-    // rotated id on the reseed turn anyway, so an assertion here would pass with
-    // the carry's mode line deleted. The dedicated carry test at the end of this
-    // file isolates that line.
+    assert.equal(rotated.sessionId, sid1, 'the public id is pinned across the rotation');
   } finally {
     await srv.close();
   }
 });
 
-test('renew_session carries a custom session title onto the rotated id', async () => {
+test('renew_session keeps a custom session title on the session', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -547,22 +530,21 @@ test('renew_session carries a custom session title onto the rotated id', async (
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
 
     // Persist a custom title through the route, addressed by the PUBLIC id — the
-    // only id a UI client has. The route resolves it to the backing id, because
-    // that is what the sidecar is keyed to; it also sets the instance's in-memory
-    // this.title, which the carry reads.
-    const oldBacking = instForSession(srv.instances, sid1).backingSessionId;
+    // only id a UI client has.
     const TITLE = 'Migration follow-up';
     const put = await api(srv.baseUrl, 'PUT', `/api/sessions/${sid1}/title`, { title: TITLE });
     assert.equal(put.status, 200);
-    await waitFor(async () => (await getTitle(oldBacking)) === TITLE);
+    assert.equal(await getTitle(sid1), TITLE);
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'keep the title' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
     await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
 
-    // No turn_end path writes the title sidecar, so this is proof of the explicit
-    // carry — the rotated id inherits the title (and the in-memory title too).
-    await waitFor(async () => (await getTitle(NEW_SID)) === TITLE);
+    // Nothing writes the title during a rotation: it is on the session, so the
+    // public id and the new segment both read it.
+    await instForSession(srv.instances, NEW_SID).flushLineage();
+    assert.equal(await getTitle(sid1), TITLE, 'the session keeps its title');
+    assert.equal(await getTitle(NEW_SID), TITLE, 'the new segment resolves to the titled session');
     assert.equal(instForSession(srv.instances, NEW_SID).title, TITLE, 'in-memory title survived the rotation');
   } finally {
     await srv.close();
@@ -1003,7 +985,7 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
     let flushCalls = 0;
     inst.flushLineage = async () => {
       flushCalls++;
-      throw new Error(`ENOSPC writing session-lineage.json (attempt ${flushCalls})`);
+      throw new Error(`ENOSPC writing sessions.json (attempt ${flushCalls})`);
     };
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'survives a failed flush' }, { caller: sid1 });
@@ -1014,7 +996,7 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
     // orphan risk rather than a generic error.
     const errEv = await waitFor(() => inst.ringSnapshot().find(ev => ev.kind === 'system'
       && ev.subtype === 'renew_error' && ev.data?.stage === 'lineage'));
-    assert.match(errEv.data.message, /ENOSPC writing session-lineage\.json/, 'carries the cause');
+    assert.match(errEv.data.message, /ENOSPC writing sessions\.json/, 'carries the cause');
     assert.match(errEv.data.message, /in memory\s+but not on disk/, 'and names the orphan risk');
     // …and specifically the LAST attempt's cause, not the first. A loop that
     // remembered the first failure and never overwrote it would satisfy every
@@ -1074,9 +1056,10 @@ test('a TRANSIENT lineage-flush failure is retried, leaving the store correct an
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
 
+    const firstBacking = inst.backingSessionId;
     // A directory where the store file belongs: loadStrict's readFile throws
     // EISDIR inside the lock, so recordRotation aborts without clobbering.
-    const storeFile = path.join(srv.projectsRoot, '.code-conductor', 'session-lineage.json');
+    const storeFile = path.join(srv.projectsRoot, '.code-conductor', 'sessions.json');
     await fs.rm(storeFile, { force: true });
     await fs.mkdir(storeFile, { recursive: true });
 
@@ -1104,13 +1087,13 @@ test('a TRANSIENT lineage-flush failure is retried, leaving the store correct an
     assert.match(seedEcho.text, /Your context was just renewed/, 'the real seed, not a stray echo');
 
     // (1) The store is actually CORRECT afterwards — the whole point, and the
-    //     damage a missing retry does. The row was destroyed with the obstruction,
-    //     so recordRotation recreates it lazily from the base case (the public id
-    //     as its own `initial` segment).
+    //     damage a missing retry does. The primary was destroyed with the
+    //     obstruction, so the retry's strict read recovers the record from the
+    //     rolling `.bak` and appends the rotation to it.
     const { segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
     assert.deepEqual((await segmentsFor(sid1)).map(g => [g.id, g.reason]),
-      [[sid1, 'initial'], [NEW_SID, 'renew']],
-      'the retry landed the rotation on a lazily recreated row');
+      [[firstBacking, 'initial'], [NEW_SID, 'renew']],
+      'the retry landed the rotation on the record recovered from .bak');
     assert.equal(await resolveBacking(sid1), NEW_SID,
       'so the public id resolves to the POST-clear transcript, not the pre-clear one');
     // (2) A recovered failure is NOT reported. The renew_error is reserved for an
@@ -1256,11 +1239,10 @@ test('renew_session against the real claude binary rotates the BACKING id and pi
   }
 });
 
-test("renewal carry records the rotated id's mode before any init reports it", async () => {
-  // Invariant: carryMarkersAcrossRenewal writes the rotated id's mode record
-  // itself. The fresh id below is one no system/init has seen and no spawn
-  // recorded, so the carry's markSessionMode line is the only writer of it —
-  // the test fails if that line is deleted. Unrecorded, the id would resolve to
+test("a rotation no init reports a mode for keeps the worker's recorded mode", async () => {
+  // Invariant: the mode is a session fact, so a rotation cannot leave the new
+  // transcript unrecorded. The fresh id below is one no system/init has reported
+  // a mode for; were the mode keyed per transcript, it would resolve to
   // DEFAULT_RESUME_MODE and a `plan` worker would resume ungated.
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
@@ -1270,18 +1252,13 @@ test("renewal carry records the rotated id's mode before any init reports it", a
     const sid1 = spawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
-    const old = inst.backingSessionId;
-    await waitFor(async () => (await getSessionMode(old)) === 'plan');
+    await waitFor(async () => (await getSessionMode(sid1)) === 'plan');
 
     const fresh = randomUUID();
-    assert.equal(await getSessionMode(fresh), null, 'precondition: the fresh id is unrecorded');
-    inst.backingSessionId = fresh;
-    await inst.carryMarkersAcrossRenewal(old);
+    await rotate(inst, fresh); // its init carries no permissionMode
 
-    assert.equal(await getSessionMode(fresh), 'plan', 'the rotated id carries the worker\'s mode');
-    // The old id KEEPS its record: it survives as an archived, still-listable
-    // row whose resumes-hot flag has to stay accurate.
-    assert.equal(await getSessionMode(old), 'plan', 'the pre-rotation id keeps its mode record');
+    assert.equal(await getSessionMode(fresh), 'plan', 'the new transcript resolves to the worker\'s mode');
+    assert.equal(await getSessionMode(sid1), 'plan', 'the session keeps its mode');
   } finally {
     await srv.close();
   }

@@ -214,7 +214,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // only if the model's custom-model row is gone by the time we boot; live
       // registry resolution wins otherwise.
       contextWindowTokens: (s.contextWindowTokens ?? null) as number | null,
-      // Backend id. The durable session-backends sidecar is the authority on
+      // Backend id. The session store's recorded backend is the authority on
       // resume; carried here too as belt-and-braces so a restart reconstructs it
       // directly. The model itself rides in `model` above (recovered from jsonl
       // uniformly for every backend).

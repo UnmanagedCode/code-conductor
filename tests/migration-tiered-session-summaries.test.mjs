@@ -8,6 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0008 from '../migrations/0008-migrate-tiered-session-summaries.mjs';
+import * as m0039 from '../migrations/0039-unified-session-store.mjs';
 
 async function mkTmp() {
   return mkdtemp('cc-tiered-summaries-');
@@ -90,15 +91,18 @@ test('mixed old + new shape: only the old-shape entry is converted', async () =>
 });
 
 test('post-migration, getSummaries reads the converted entry correctly', async () => {
+  // 0039 merges the converted file into sessions.json, the store getSummaries
+  // reads — so the tiered shape 0008 writes is the one the merge accepts.
   const root = await mkTmp();
   await writeSummaries(root, {
     'old-sid': { summary: 'Old summary.', length: 'medium', generatedAt: 999, messageCount: 7 },
   });
   await m0008.run({ root, log: () => {} });
+  await m0039.run({ root, log: () => {} });
 
   process.env.PROJECTS_ROOT = root;
   try {
-    const { getSummaries } = await import('../src/sessionSummaries.ts');
+    const { getSummaries } = await import('../src/sessionStore.ts');
     const tiers = await getSummaries('old-sid');
     assert.equal(tiers.medium?.summary, 'Old summary.');
     assert.equal(tiers.medium?.messageCount, 7);

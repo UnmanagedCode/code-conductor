@@ -8,7 +8,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
-import { getTitle, loadAll, MAX_TITLE_LEN } from '../src/sessionTitles.ts';
+import { MAX_TITLE_LEN } from '../src/sessionTitles.ts';
+import { getTitle, loadSessions } from '../src/sessionStore.ts';
 import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,11 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 // scenario-renew's `/clear` turn emits a system/init with this fixed backing id.
 const SCENARIO_RENEW = path.join(__dirname, 'fixtures', 'scenario-renew.json');
 const RENEWED_BACKING = 'c0000000-0000-4000-8000-000000000001';
+
+// Every record in the store that carries a title.
+async function titledRecords() {
+  return [...(await loadSessions()).byPublic].filter(([, rec]) => rec.title !== undefined);
+}
 
 let nextRpcId = 1;
 // `?caller=` carries the stable INSTANCE id (what Instance.spawn bakes), so a
@@ -47,10 +53,10 @@ async function spawnIdle(srv, project) {
   return instForSession(srv.instances, sid);
 }
 
-test('set_session_title titles the caller: sidecar under backing id, live summary, sidebar row', async () => {
-  // Pins: the tool writes at the key every reader uses (the BACKING id), sets the
-  // live instance's title immediately, and the sidebar row (listed under the
-  // public id) carries it.
+test('set_session_title titles the caller: store record under public id, live summary, sidebar row', async () => {
+  // Pins: the tool writes the title onto the session's record (keyed by the
+  // PUBLIC id), which the backing id also resolves to; sets the live instance's
+  // title immediately; and the sidebar row (listed under the public id) carries it.
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -62,8 +68,11 @@ test('set_session_title titles the caller: sidecar under backing id, live summar
 
     const res = await callTool(srv.baseUrl, 'set_session_title', { title: '  Auth refactor  ' }, { caller: publicId });
     assert.deepEqual(res, { sessionId: publicId, title: 'Auth refactor' }, 'bare data, trimmed, no ok');
-    assert.equal(await getTitle(backing), 'Auth refactor', 'stored under the backing id');
-    assert.equal(await getTitle(publicId), null, 'nothing stored under the public id');
+    const rec = (await loadSessions()).byPublic.get(publicId);
+    assert.equal(rec?.title, 'Auth refactor', 'stored on the public-id record');
+    assert.equal(rec.current, backing, 'on the record whose current segment is the backing id');
+    assert.equal(await getTitle(publicId), 'Auth refactor', 'read back by the public id');
+    assert.equal(await getTitle(backing), 'Auth refactor', 'the backing id resolves to the same record');
     assert.equal(inst.title, 'Auth refactor', 'live instance title set immediately');
 
     const dir = path.join(srv.claudeProjectsRoot, encodeCwd(inst.cwd));
@@ -118,7 +127,7 @@ test('set_session_title refuses a sessionId argument', async () => {
     assert.match(r.content[0].text, /unexpected argument 'sessionId'/);
     assert.equal(other.title, null, 'the other session\'s live title is unchanged');
     assert.equal(caller.title, null, 'the caller was not titled either');
-    assert.equal((await loadAll()).size, 0, 'no sidecar entry written');
+    assert.deepEqual(await titledRecords(), [], 'no title written to the store');
   } finally {
     await srv.close();
   }
@@ -136,7 +145,7 @@ test('set_session_title without ?caller= errors', async () => {
     assert.equal(r.isError, true);
     assert.match(r.content[0].text, /caller identity missing/);
     assert.equal(inst.title, null);
-    assert.equal((await loadAll()).size, 0, 'no sidecar entry written');
+    assert.deepEqual(await titledRecords(), [], 'no title written to the store');
   } finally {
     await srv.close();
   }
@@ -170,7 +179,7 @@ test('set_session_title rejects empty/whitespace and over-long titles', async (t
       assert.match(r.content[0].text, /argument 'title' must be at most/);
     });
     assert.equal(inst.title, 'keep', 'live title unchanged');
-    assert.equal(await getTitle(inst.backingSessionId), 'keep', 'stored title unchanged');
+    assert.equal(await getTitle(sid), 'keep', 'stored title unchanged');
   } finally {
     await srv.close();
   }
@@ -178,7 +187,7 @@ test('set_session_title rejects empty/whitespace and over-long titles', async (t
 
 test('a self-set title survives resume', async () => {
   // Pins: a fresh Instance resumed on the public id re-acquires the self-set
-  // title from the sidecar (_hydrateTitle).
+  // title from the store (_hydrateTitle).
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -203,9 +212,10 @@ test('a self-set title survives resume', async () => {
 });
 
 test('a self-set title survives renew_session', async () => {
-  // Pins: the renewal carries the self-set title onto the rotated backing id,
-  // both in the sidecar and in memory — i.e. the tool set inst.title, which
-  // carryMarkersAcrossRenewal reads.
+  // Pins: the self-set title lives on the public-id record, so the rotation
+  // leaves it in place — the record's current segment moves to the rotated
+  // backing id, which resolves to the same title — and the in-memory title
+  // survives too.
   const srv = await bootServer({ scenarioPath: SCENARIO_RENEW });
   mgr = srv.instances;
   try {
@@ -220,7 +230,9 @@ test('a self-set title survives renew_session', async () => {
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid, text: 'go1' });
     await waitFor(() => instForSession(srv.instances, RENEWED_BACKING)?.backingSessionId === RENEWED_BACKING);
 
-    await waitFor(async () => (await getTitle(RENEWED_BACKING)) === TITLE);
+    await waitFor(async () => (await loadSessions()).byPublic.get(sid)?.current === RENEWED_BACKING);
+    assert.equal((await loadSessions()).byPublic.get(sid).title, TITLE, 'the title stays on the public-id record');
+    assert.equal(await getTitle(RENEWED_BACKING), TITLE, 'the rotated backing id resolves to the titled record');
     assert.equal(instForSession(srv.instances, sid).title, TITLE, 'in-memory title survived the rotation');
   } finally {
     await srv.close();

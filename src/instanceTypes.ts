@@ -166,7 +166,6 @@ export interface InstanceLike {
   beginRenewal(): void;
   endRenewal(): void;
   signalRotationTurnLost(reason: 'renew' | 'prune'): void;
-  carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
   // Await this instance's durable session-lineage writes, rethrowing the first
   // failure since the last flush (see src/instances.ts). SessionRenewController
   // waits on this before reseeding a rotated session.

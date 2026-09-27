@@ -2,9 +2,9 @@
 // state, plus the in-memory projection folded from it.
 //
 // APPEND-ONLY, `fs.appendFile`, NEVER writeFileAtomic or a rewritten JSON
-// document: the `archive-store-corruption` wiki page records
-// archived-sessions.json wiping itself when pre-commit tests leaked into the
-// real store from a worktree. An append-only file removes that class outright.
+// document: the `archive-store-corruption` wiki page records the archived-
+// session store wiping itself when pre-commit tests leaked into the real store
+// from a worktree. An append-only file removes that class outright.
 //
 // The store path resolves through a LAZY per-call function (`ledgerFile`, and
 // the injectable `file` option), the discipline fragmentCatalog.ts documents for

@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { InstanceManager, SESSION_PREFIX_MIN } from '../src/instances.ts';
 import { orchStoreRoot, localPlace} from '../src/projects.ts';
+import { writeLineageRow } from './segmentChain.mjs';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn,
          seedSessionJsonl } from './helpers.mjs';
 
@@ -284,16 +285,8 @@ async function seedTranscript(sessionId, cwd) {
 // `backingIds` entry makes it a ROTATED session, where `current` is the last and
 // the earlier ones are still individually addressable.
 async function seedLineageRow(publicId, ...backingIds) {
-  const file = path.join(orchStoreRoot(), 'session-lineage.json');
-  let sessions = {};
-  try { ({ sessions } = JSON.parse(await fs.readFile(file, 'utf8'))); } catch { /* first row */ }
-  sessions[publicId] = {
-    current: backingIds[backingIds.length - 1],
-    segments: backingIds.map((id, i) => (
-      { id, reason: i === 0 ? 'initial' : 'renew', at: `2026-09-0${6 + i}T00:00:00Z` })),
-  };
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  await fs.writeFile(file, JSON.stringify({ sessions }, null, 2) + '\n');
+  await writeLineageRow(publicId, backingIds.map((id, i) => (
+    { id, reason: i === 0 ? 'initial' : 'renew', at: `2026-09-0${6 + i}T00:00:00Z` })));
 }
 
 test('resume is prefix-resolved at the same chokepoint as sessionId', async () => {

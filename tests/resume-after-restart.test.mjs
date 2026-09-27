@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
-import { setTitle, deleteTitle } from '../src/sessionTitles.ts';
+import { setTitle, getTitle } from '../src/sessionStore.ts';
 import { SOFT_INTERRUPT_MARKER } from '../src/parser.ts';
 import {
   resumeManifestPath,
@@ -640,13 +640,13 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
 
 test('drainToManifest captures a custom title; restoreFromResumeManifest restores it', async () => {
   // Pins: the restart manifest carries summary().title and restore re-applies it
-  // via inst.setTitle. The sidecar entry is deleted before restore, so
+  // via inst.setTitle. The stored title is cleared before restore, so
   // _hydrateTitle has nothing to find and the manifest is the only source.
   await api(baseUrl, 'POST', '/api/projects', { name: 'title-roundtrip' });
   const res = await api(baseUrl, 'POST', '/api/instances', { project: 'title-roundtrip', temp: true });
   const inst = instances.get(res.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  await setTitle(inst.backingSessionId, 'Restart survivor');
+  await setTitle(inst.sessionId, 'Restart survivor');
   inst.setTitle('Restart survivor');
 
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
@@ -658,7 +658,8 @@ test('drainToManifest captures a custom title; restoreFromResumeManifest restore
   assert.equal(entries[0].title, 'Restart survivor', 'title persisted to manifest');
 
   await waitFor(() => inst.proc === null, { timeout: 20000 });
-  await deleteTitle(inst.backingSessionId);
+  await setTitle(inst.sessionId, '');
+  assert.equal(await getTitle(inst.sessionId), null, 'the stored title is cleared before restore');
 
   const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
   assert.equal(restored, 1, 'one session restored');

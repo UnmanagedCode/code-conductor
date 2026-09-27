@@ -32,7 +32,7 @@ export function formatAgo(ms) {
 // added as synthetic "fresh" entries at the top.
 function mergeLive(onDisk, liveInstances) {
   // Seed instanceTemp from the durable on-disk `temp` flag (set by
-  // listSessionsForCwd from temp-sessions.json) so an exited/re-discovered
+  // listSessionsForCwd from the transcript's segment) so an exited/re-discovered
   // temp session classifies correctly even with no live instance. The live
   // overlay below overrides this with the authoritative inst.temp when an
   // instance exists (so a just-promoted session de-temps immediately).

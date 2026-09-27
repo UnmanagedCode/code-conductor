@@ -1097,7 +1097,7 @@ export function resolveRoleEffort(role: string): EffortLevel {
 // effort level a spawn runs at, so a refusal would be the harsher error.
 //
 // Paths with no tier/role at hand land on step 4 and keep today's behaviour: a
-// resume recovers its model from the jsonl/sidecar, not from a binding, so there is
+// resume recovers its model from the jsonl/session store, not from a binding, so there is
 // no row to inherit an effort from. That is the sidebar one-click resume, the anchor
 // auto-resume, and spawn_instance({resume}). Two other relaunch paths never reach
 // step 4 at all: the restart manifest passes the recorded `effort` explicitly (step

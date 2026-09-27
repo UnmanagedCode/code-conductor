@@ -110,8 +110,11 @@ describe('criterion 8: a remote session composes no session root', () => {
     // which is precisely where a regression would put one.
     const FARM_SESSIONS_LINK =
       new RegExp(`^${CLAUDE_CONFIG_FARM_DIRNAME}/[^/]+/\\.claude/sessions(/|$)`);
+    // And the session store's own top-level files (src/sessionStore.ts), which
+    // hold facts about sessions, not a root for one.
+    const SESSION_STORE_FILE = /^sessions\.json(\.bak|\.lock)?$/;
     const all = await walk(orchStoreRoot());
-    const under = all.filter(p => !FARM_SESSIONS_LINK.test(p));
+    const under = all.filter(p => !FARM_SESSIONS_LINK.test(p) && !SESSION_STORE_FILE.test(p));
     // NON-VACUITY: the net really does reach into the farm, so the exemption
     // above is narrow rather than a subtree the walk simply stopped covering.
     assert.ok(under.some(p => p.startsWith(`${CLAUDE_CONFIG_FARM_DIRNAME}/`)

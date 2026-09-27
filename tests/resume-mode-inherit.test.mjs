@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { getSessionMode, markSessionMode } from '../src/sessionModes.ts';
+import { getSessionMode, setSessionMode } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_RESUME = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -55,7 +55,7 @@ async function resume(project, body) {
 test('a recorded plan session resumes in plan, not bypassPermissions', async () => {
   const sid = '11111111-1111-4111-8111-111111111111';
   await seedSession('inherit-plan', sid);
-  await markSessionMode(sid, 'plan');
+  await setSessionMode(sid, 'plan');
 
   const inst = await resume('inherit-plan', { resume: sid });
   assert.equal(inst.mode, 'plan',
@@ -67,13 +67,13 @@ test('an explicit mode beats the recorded one', async () => {
   // just ignores one of the two inputs.
   const cold = '33333333-3333-4333-8333-333333333333';
   await seedSession('inherit-explicit', cold);
-  await markSessionMode(cold, 'plan');
+  await setSessionMode(cold, 'plan');
   const hot = await resume('inherit-explicit', { resume: cold, mode: 'bypassPermissions' });
   assert.equal(hot.mode, 'bypassPermissions', 'an explicit mode must override a recorded plan');
 
   const hotSid = '44444444-4444-4444-8444-444444444444';
   await seedSession('inherit-explicit', hotSid);
-  await markSessionMode(hotSid, 'bypassPermissions');
+  await setSessionMode(hotSid, 'bypassPermissions');
   const cooled = await resume('inherit-explicit', { resume: hotSid, mode: 'plan' });
   assert.equal(cooled.mode, 'plan', 'an explicit mode must override a recorded bypassPermissions');
 });
@@ -96,7 +96,7 @@ test('a spawn records its mode, so the next resume can inherit it', async () => 
   assert.equal(first.status, 201);
   const inst = instances.get(first.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sid = inst.backingSessionId;
+  const sid = inst.sessionId;
 
   await waitFor(async () => (await getSessionMode(sid)) === 'plan');
   assert.equal(await getSessionMode(sid), 'plan', 'a spawn must record the mode it launched in');
@@ -107,7 +107,7 @@ test('set_mode updates the record, so a resume follows the latest mode', async (
   const res = await api(baseUrl, 'POST', '/api/instances', { project: 'record-setmode', mode: 'plan' });
   const inst = instances.get(res.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sid = inst.backingSessionId;
+  const sid = inst.sessionId;
   await waitFor(async () => (await getSessionMode(sid)) === 'plan');
 
   await inst.setMode('bypassPermissions');
@@ -140,14 +140,14 @@ test('the CLI-reported mode at system/init is recorded, not just the launched on
     const inst = srv.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     // The spawn-time record is written fire-and-forget, so wait for it.
-    await waitFor(async () => (await getSessionMode(inst.backingSessionId)) === 'bypassPermissions');
+    await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'bypassPermissions');
 
     inst.prompt('go');
     await waitFor(() => inst.mode === 'plan');
     assert.equal(inst.mode, 'plan', 'the CLI reported plan, so the instance is in plan');
 
-    await waitFor(async () => (await getSessionMode(inst.backingSessionId)) === 'plan');
-    assert.equal(await getSessionMode(inst.backingSessionId), 'plan',
+    await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'plan');
+    assert.equal(await getSessionMode(inst.sessionId), 'plan',
       'the record must follow the CLI-reported mode, not the mode we asked for');
   } finally {
     await srv.instances.shutdown();

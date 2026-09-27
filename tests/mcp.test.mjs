@@ -483,11 +483,9 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   const condInst = instForSession(instances, cond.sessionId);
   await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
   await condInst.promoteToNormal();
-  // Drive a turn so the durable marker is persisted on turn_end.
-  await driveTurn(instances, cond.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: cond.sessionId, text: 'go' }));
   // BOTH ids are needed here, and keeping them apart is the point: a LIVE row is
-  // rendered from the instance (public id) while an inactive row and the durable
-  // sidecar both come off disk (backing id).
+  // rendered from the instance (public id) and the durable marker sits on the
+  // public-id record, while an inactive row comes off its transcript (backing id).
   const condSid = condInst.sessionId;
   const condBacking = condInst.backingSessionId;
 
@@ -499,12 +497,17 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   const httpSid = httpInst.sessionId;
   const httpBacking = httpInst.backingSessionId;
 
-  // The durable marker lands in the central-store sidecar.
-  const sidecar = path.join(projectsRoot, '.code-conductor', 'conducted-sessions.json');
-  await waitFor(async () => {
-    try { return JSON.parse(await fs.readFile(sidecar, 'utf8')).sessions?.includes(condBacking); }
-    catch { return false; }
-  });
+  // The durable marker lands on the session's record in the central store at
+  // spawn time — no turn has run.
+  const sessionsFile = path.join(projectsRoot, '.code-conductor', 'sessions.json');
+  const readRecords = async () => {
+    try { return JSON.parse(await fs.readFile(sessionsFile, 'utf8')).sessions ?? {}; }
+    catch { return {}; }
+  };
+  await waitFor(async () => (await readRecords())[condSid]?.conducted === true);
+  const records = await readRecords();
+  assert.equal(records[condSid].current, condBacking, 'the marked record is the one whose current segment is the transcript');
+  assert.equal(records[httpSid]?.conducted, undefined, 'the HTTP session\'s record carries no marker');
 
   // Materialize both jsonls (the fake CLI doesn't write them).
   const dir = path.join(claudeProjectsRoot, encodeCwd(condInst.cwd));
@@ -532,27 +535,26 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
 
   // The marker is durable: it survives the live instance going away
   // (simulating restart/resume recognition) because it reads from the
-  // on-disk sidecar, not the in-memory instance.
+  // on-disk store, not the in-memory instance.
   await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
   const out2 = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  // Now an INACTIVE row off its own transcript. It still reports the session's
-  // PUBLIC id (that transcript is `current`), while the durable marker it is
-  // flagged from is looked up by filename — the two ids doing their own jobs.
+  // Now an INACTIVE row off its own transcript. The filename resolves to its
+  // owning record, so the row reports the session's PUBLIC id and is flagged
+  // from that record's marker — the two ids doing their own jobs.
   assert.match(entryFor(condSid, out2) ?? '', /\bconducted\b/,
     'conducted marker persists after the instance exits');
 });
 
 test('temp conducted session persists the conducted marker and recovers it on resume', async () => {
-  // Regression: a default MCP-spawned worker is BOTH temp:true and
-  // conducted:true. The durable conducted marker must be written DESPITE temp
-  // (i.e. before the `if (this.temp) return;` early-return in
-  // _writeSessionMetadata) — otherwise an orchestrator SIGKILL (where the
-  // on-exit _archiveTempSession never runs, so the jsonl + sidecars survive)
-  // leaves nothing for create() to recover and the session resumes with
-  // conducted falsy. This exercises both halves: the durable WRITE (a live
-  // temp+conducted turn) and the RECOVERY (create({resume}) reading sidecars).
-  const { isConducted, markConducted } = await import('../src/conductedSessions.ts');
-  const { isTemp, markTemp } = await import('../src/tempSessions.ts');
+  // A default MCP-spawned worker is BOTH temp:true and conducted:true. The
+  // durable conducted marker must be written DESPITE temp (at spawn, and
+  // re-asserted in _writeSessionMetadata before its `if (this.temp) return;`)
+  // — otherwise an orchestrator SIGKILL (where the on-exit _archiveTempSession
+  // never runs, so the jsonl + store facts survive) leaves nothing for
+  // create() to recover and the session resumes with conducted falsy. This
+  // exercises both halves: the durable WRITE (a live temp+conducted turn) and
+  // the RECOVERY (create({resume}) reading the store).
+  const { isConducted, markConducted, isTemp, setSegmentTemp } = await import('../src/sessionStore.ts');
   const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
@@ -563,33 +565,33 @@ test('temp conducted session persists the conducted marker and recovers it on re
   assert.equal(spawn.temp, true, 'MCP spawn defaults to temp:true');
   const inst = instForSession(instances, spawn.sessionId);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sid = inst.backingSessionId;   // both sidecars are transcript-keyed
+  const sid = inst.sessionId;               // conducted is a session fact
+  const backing = inst.backingSessionId;   // temp is a transcript (segment) fact
 
   // Drive a turn so _writeSessionMetadata() runs. Both durable markers must
-  // land even though the session is temp. (Before the fix, isConducted(sid)
-  // would be false here — markConducted sat after the temp early-return.)
+  // be in place even though the session is temp.
   await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
   await waitFor(async () => (await isConducted(sid)) === true);
   assert.equal(await isConducted(sid), true, 'conducted marker persisted for a temp session');
-  assert.equal(await isTemp(sid), true, 'temp marker persisted (shared code path)');
+  assert.equal(await isTemp(backing), true, 'temp marker persisted on the live segment');
 
   // --- RECOVERY side ---
   // Simulate the post-orchestrator-SIGKILL state directly: the jsonl and
-  // both sidecar markers survived because _handleExit never ran. (We can't
+  // both store markers survived because _handleExit never ran. (We can't
   // reproduce that by killing the live child here — _handleExit WOULD fire
-  // and _deleteTempArtifacts would wipe the markers.) Resuming by id, with
-  // NO temp/conducted passed, must re-acquire BOTH flags from the sidecars.
+  // and retire the segment.) Resuming by id, with NO temp/conducted passed,
+  // must re-acquire BOTH flags from the store.
   const survivedSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-  await markConducted(survivedSid);
-  await markTemp(survivedSid);
+  assert.equal(await markConducted(survivedSid), true, 'precondition: conducted recorded');
+  assert.equal(await setSegmentTemp(survivedSid, true), true, 'precondition: temp recorded');
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${survivedSid}.jsonl`),
     '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
 
   const recovered = await instances.create({ project: 'a', resume: survivedSid });
-  assert.equal(recovered.conducted, true, 'conducted recovered on resume from sidecar');
-  assert.equal(recovered.temp, true, 'temp recovered on resume from sidecar');
+  assert.equal(recovered.conducted, true, 'conducted recovered on resume from the store');
+  assert.equal(recovered.temp, true, 'temp recovered on resume from the store');
 });
 
 test('argument validation rejects a missing required field via isError', async () => {
@@ -735,7 +737,7 @@ test('describe_session still describes an ARCHIVED session', async () => {
   unwrap(await callTool(baseUrl, 'kill_instance', { sessionId: sid }));
   await waitFor(() => instances.idsForSession(sid).length === 0);
   // _archiveTempSession is fire-and-forget off the exit path.
-  const { isArchived } = await import('../src/archivedSessions.ts');
+  const { isArchived } = await import('../src/sessionStore.ts');
   await waitFor(() => isArchived(backingId));
 
   const out = text(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
@@ -1929,29 +1931,29 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
   }
 });
 
-test('spawn_instance({resume}) recovers temp:true from the durable sidecar after a SIGKILL-survived exit', async () => {
+test('spawn_instance({resume}) recovers temp:true from the durable store after a SIGKILL-survived exit', async () => {
   // A graceful kill_instance runs _handleExit → _archiveTempSession(), which
-  // intentionally unmarks temp (the session becomes an archived-but-resumable
-  // regular session) — that's existing, correct behavior, not this bug. The
-  // scenario this test guards is the *other* one tempSessions.ts exists for:
-  // an orchestrator SIGKILL where _handleExit never runs, so the jsonl and
-  // the durable temp sidecar marker both survive with no in-memory record.
-  // Resuming that session must recover temp:true from the sidecar — not get
+  // retires the segment (the session becomes an archived-but-resumable
+  // regular session) — that's correct behavior, not this scenario. The
+  // scenario this test guards is the *other* one the segment's temp flag
+  // exists for: an orchestrator SIGKILL where _handleExit never runs, so the
+  // jsonl and the durable temp flag both survive with no in-memory record.
+  // Resuming that session must recover temp:true from the store — not get
   // silently forced true by a blanket default, and not silently dropped to
   // false either.
-  const { markTemp } = await import('../src/tempSessions.ts');
+  const { setSegmentTemp } = await import('../src/sessionStore.ts');
   const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   const survivedSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-  await markTemp(survivedSid);
+  assert.equal(await setSegmentTemp(survivedSid, true), true, 'precondition: temp recorded');
   const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a')));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${survivedSid}.jsonl`),
     '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
 
   const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', resume: survivedSid }));
-  assert.equal(resumeSpawn.temp, true, 'temp recovered from the durable sidecar on resume, not forced or dropped');
+  assert.equal(resumeSpawn.temp, true, 'temp recovered from the durable store on resume, not forced or dropped');
 });
 
 

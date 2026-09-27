@@ -1,29 +1,22 @@
-// Regression test for audit finding F1: sessionTitles and sessionSummaries were
-// the two sidecar stores that never took the cross-process advisory lock.
+// The session store's writes under cross-process contention. The contended
+// window is a hot restart: the exiting old server and the booting new one both
+// load -> mutate -> write the whole `<store>/sessions.json`, so without the
+// advisory lock one process's update is lost to the other's.
 //
-// The other four (conducted / temp / backends / archived) were hardened against
-// a lost update after archived sessions silently un-archived themselves around
-// restarts — the old server exiting and the new one booting are the one window
-// with genuine cross-process contention on `<store>/*.json`. Titles and
-// summaries do the same load -> mutate -> write-whole-document dance, so they
-// had the same bug; nobody had noticed because losing a custom title is quieter
-// than losing an archive flag.
-//
-// The race is made DETERMINISTIC rather than probabilistic, using the same
+// The race is DETERMINISTIC rather than probabilistic, using the same
 // holder/waiter shape as tests/archived-lock-lost-update.test.mjs:
 //
 //   1. HOLDER plants a lockfile naming its own live pid (a live owner is never
 //      evicted), reads the store, signals ready, sleeps, then commits its own
 //      document.
-//   2. WAITER waits for the ready signal, then calls the REAL setTitle /
-//      setSummary once, in its own process, against the same store root.
+//   2. WAITER waits for the ready signal, then calls the REAL store writer once,
+//      in its own process, against the same store root.
 //
-// WITH the lock: the waiter blocks until the holder releases, re-reads the
-// holder's committed document, and adds to it — everything survives.
-// WITHOUT it (HEAD before this fix): the waiter reads the pre-holder snapshot
-// and writes immediately, and the holder's later write clobbers the waiter's
-// entry. The holder's sleep guarantees that ordering, so the failure is not a
-// coin flip.
+// With the lock, the waiter blocks until the holder releases, re-reads the
+// holder's committed document, and adds to it — everything survives. Without
+// it, the waiter reads the pre-holder snapshot and writes immediately, and the
+// holder's later write clobbers the waiter's update. The holder's sleep
+// guarantees that ordering, so the failure is not a coin flip.
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -80,7 +73,9 @@ function waiterSource(moduleFile, call) {
   ].join('\n');
 }
 
-async function runRace({ storeFileName, moduleFile, waiterCall, holderDoc }) {
+async function runRace({ waiterCall, holderDoc }) {
+  const storeFileName = 'sessions.json';
+  const moduleFile = 'sessionStore.ts';
   const dir = await fs.mkdtemp(path.join(tmp, 'race-'));
   const storeRoot = path.join(dir, '.code-conductor');
   await fs.mkdir(storeRoot, { recursive: true });
@@ -102,41 +97,38 @@ async function runRace({ storeFileName, moduleFile, waiterCall, holderDoc }) {
   return JSON.parse(await fs.readFile(dataFile, 'utf8'));
 }
 
-// FAILS on HEAD before F1 (sessionTitles took no lock → the holder's later write
-// clobbers the waiter's title); PASSES once setTitle mutates under withLock.
-test('a concurrent title write is not lost to another process', { timeout: 30000 }, async () => {
-  const doc = await runRace({
-    storeFileName: 'session-titles.json',
-    moduleFile: 'sessionTitles.ts',
-    waiterCall: `await m.setTitle('waiter-sid', 'waiter title');`,
-    holderDoc: { titles: { 'holder-sid-1': 'holder one', 'holder-sid-2': 'holder two' } },
+const record = (id, extra = {}) => ({ current: id, segments: [{ id, reason: 'initial', at: '' }], ...extra });
+const H1 = 'hhhhhhhh-0000-4000-8000-000000000001';
+const H2 = 'hhhhhhhh-0000-4000-8000-000000000002';
+const W = 'wwwwwwww-0000-4000-8000-000000000003';
+
+test('a concurrent write to another session is not lost to another process', { timeout: 30000 }, async () => {
+  const { sessions } = await runRace({
+    waiterCall: `await m.setTitle(${JSON.stringify(W)}, 'waiter title');`,
+    holderDoc: { sessions: {
+      [H1]: record(H1, { title: 'holder one' }),
+      [H2]: { current: H2, segments: [{ id: H2, reason: 'initial', at: '', archived: true }] },
+    } },
   });
-  assert.equal(doc.titles['holder-sid-1'], 'holder one', "the holder's title was lost");
-  assert.equal(doc.titles['holder-sid-2'], 'holder two', "the holder's title was lost");
-  assert.equal(doc.titles['waiter-sid'], 'waiter title',
-    "the waiter's title was lost — setTitle read a snapshot the holder then clobbered");
+  assert.equal(sessions[H1]?.title, 'holder one', "the holder's title was lost");
+  assert.equal(sessions[H2]?.segments[0].archived, true, "the holder's archived flag was lost");
+  assert.equal(sessions[W]?.title, 'waiter title',
+    "the waiter's title was lost — it read a snapshot the holder then clobbered");
 });
 
-// Same shape for the summaries store, which had the identical gap.
-test('a concurrent summary write is not lost to another process', { timeout: 30000 }, async () => {
-  const doc = await runRace({
-    storeFileName: 'session-summaries.json',
-    moduleFile: 'sessionSummaries.ts',
-    waiterCall: `await m.setSummary('waiter-sid', 'short', { summary: 'waiter summary', generatedAt: 1, messageCount: 2 });`,
-    holderDoc: {
-      summaries: { 'holder-sid': { short: { summary: 'holder summary', generatedAt: 1, messageCount: 1 } } },
-    },
+test('a concurrent write to another field of the same session is not lost to another process', { timeout: 30000 }, async () => {
+  const { sessions } = await runRace({
+    waiterCall: `await m.setSummary(${JSON.stringify(H1)}, 'short', { summary: 'waiter summary', generatedAt: 1, messageCount: 2 });`,
+    holderDoc: { sessions: { [H1]: record(H1, { title: 'holder title' }) } },
   });
-  assert.equal(doc.summaries['holder-sid']?.short?.summary, 'holder summary',
-    "the holder's summary was lost");
-  assert.equal(doc.summaries['waiter-sid']?.short?.summary, 'waiter summary',
-    "the waiter's summary was lost — setSummary read a snapshot the holder then clobbered");
+  assert.equal(sessions[H1]?.title, 'holder title', "the holder's title was lost");
+  assert.equal(sessions[H1]?.summaries?.short?.summary, 'waiter summary',
+    "the waiter's summary was lost — it read a snapshot the holder then clobbered");
 });
 
-// In-process companion to the cross-process races above. Every store does a
-// load -> mutate -> write-the-whole-document, so N concurrent mutations from one
-// process must all survive: whichever ordering the chain picks, no write may be
-// based on a snapshot another write has already superseded.
+// In-process companion to the cross-process races above: N concurrent
+// mutations from one process must all survive, whichever ordering the chain
+// picks — no write may be based on a snapshot another write has superseded.
 //
 // Scoped honestly: this pins CORRECTNESS, which `withLock` alone also provides
 // (it is O_EXCL, so it excludes same-process callers too). It does NOT pin the
@@ -145,12 +137,10 @@ test('a concurrent summary write is not lost to another process', { timeout: 300
 test('concurrent same-process title writes all survive', async () => {
   const dir = await fs.mkdtemp(path.join(tmp, 'inproc-'));
   process.env.PROJECTS_ROOT = dir;
-  const titles = await import('file://' + path.join(srcDir, 'sessionTitles.ts'));
+  const store = await import('file://' + path.join(srcDir, 'sessionStore.ts'));
 
   const ids = Array.from({ length: 25 }, (_, i) => `sid-${String(i).padStart(2, '0')}`);
-  await Promise.all(ids.map(id => titles.setTitle(id, `title ${id}`)));
+  await Promise.all(ids.map(id => store.setTitle(id, `title ${id}`)));
 
-  const got = await titles.loadAll();
-  assert.equal(got.size, ids.length, `expected all ${ids.length} titles, got ${got.size}`);
-  for (const id of ids) assert.equal(got.get(id), `title ${id}`, `title for '${id}' was lost`);
+  for (const id of ids) assert.equal(await store.getTitle(id), `title ${id}`, `title for '${id}' was lost`);
 });

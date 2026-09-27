@@ -12,7 +12,7 @@ import { sweepFuseSessions } from './src/systems/fuse/sweep.ts';
 import { attachWsHub } from './src/wsHub.ts';
 import { initCostTracking } from './src/costTracking.ts';
 import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/projects.ts';
-import { loadAllArchived } from './src/archivedSessions.ts';
+import { loadSessions } from './src/sessionStore.ts';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
 import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
@@ -171,7 +171,8 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // path-divergence reset (a relaunch with a different PROJECTS_ROOT/cwd
   // reading a *different*, empty store) is visible in the logs. Non-fatal.
   try {
-    const n = (await loadAllArchived()).size;
+    let n = 0;
+    for (const rec of (await loadSessions()).byPublic.values()) n += rec.segments.filter(s => s.archived).length;
     const src = process.env.PROJECTS_ROOT ? 'PROJECTS_ROOT env' : 'default (repo parent)';
     console.log(`store: ${orchStoreRoot()} [${src}] — ${n} archived session(s)`);
   } catch { /* diagnostic only */ }

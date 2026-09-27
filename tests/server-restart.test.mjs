@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import { waitForBanner } from './serverBanner.mjs';
+import { flaggedIdsIn } from './sessionFacts.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -283,9 +284,9 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   await assert.rejects(() => fs.access(subagents), 'temp subagents dir must be swept');
   await assert.rejects(() => fs.access(manifest), 'manifest must be unlinked');
 
-  // The session must be recorded in the grandchild's archived set.
-  const archived = JSON.parse(
-    await fs.readFile(path.join(storeDir, 'archived-sessions.json'), 'utf8'),
+  // The grandchild's sweep must have flagged the session's segment archived.
+  const sessions = JSON.parse(
+    await fs.readFile(path.join(storeDir, 'sessions.json'), 'utf8'),
   );
-  assert.ok(archived.sessions.includes(sid), 'session must be archived after sweep');
+  assert.ok(flaggedIdsIn(sessions, 'archived').has(sid), 'session must be archived after sweep');
 });

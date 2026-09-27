@@ -4,19 +4,16 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import {
-  setTitle, getTitle, deleteTitle, loadAll, MAX_TITLE_LEN,
-} from '../src/sessionTitles.ts';
+import { MAX_TITLE_LEN } from '../src/sessionTitles.ts';
+import { setTitle, getTitle, isArchived } from '../src/sessionStore.ts';
 import { orchStoreRoot, encodeCwd } from '../src/projects.ts';
-import { isArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 
 // One server shared across the file; each test gets a fresh PROJECTS_ROOT
-// (so the session-titles / archived-sessions sidecars start empty — the
-// "deleting last entry removes the sidecar" test depends on that) and the
-// spawned instances are cleared between tests. The jsonl-planting tests use
+// (so the session store starts empty) and the spawned instances are cleared
+// between tests. The jsonl-planting tests use
 // the per-test `projectsRoot` / `claudeProjectsRoot` vars set in beforeEach,
 // NOT the boot-time roots. See helpers → freshProjectsRoot.
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
@@ -28,19 +25,16 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot, claudeProjectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-test('sessionTitles: set / get / delete round-trip persists to disk', async () => {
+test('sessionTitles: set / get round-trip persists to disk', async () => {
   {
     assert.equal(await getTitle('sid-A'), null);
     await setTitle('sid-A', 'hello world');
     assert.equal(await getTitle('sid-A'), 'hello world');
 
-    // Verify disk shape
-    const file = path.join(orchStoreRoot(), 'session-titles.json');
+    // Verify disk shape: the `title` field of the session's record.
+    const file = path.join(orchStoreRoot(), 'sessions.json');
     const raw = JSON.parse(await fs.readFile(file, 'utf8'));
-    assert.equal(raw.titles['sid-A'], 'hello world');
-
-    await deleteTitle('sid-A');
-    assert.equal(await getTitle('sid-A'), null);
+    assert.equal(raw.sessions['sid-A'].title, 'hello world');
   }
 });
 
@@ -75,23 +69,11 @@ test('sessionTitles: concurrent writes do not lose entries', async () => {
       setTitle('sid-4', 'four'),
       setTitle('sid-5', 'five'),
     ]);
-    const all = await loadAll();
-    assert.equal(all.get('sid-1'), 'one');
-    assert.equal(all.get('sid-2'), 'two');
-    assert.equal(all.get('sid-3'), 'three');
-    assert.equal(all.get('sid-4'), 'four');
-    assert.equal(all.get('sid-5'), 'five');
-  }
-});
-
-test('sessionTitles: deleting last entry removes the sidecar file', async () => {
-  {
-    await setTitle('sid-A', 'only one');
-    await deleteTitle('sid-A');
-    const file = path.join(orchStoreRoot(), 'session-titles.json');
-    let exists = true;
-    try { await fs.stat(file); } catch (e) { if (e.code === 'ENOENT') exists = false; else throw e; }
-    assert.equal(exists, false, 'sidecar should be unlinked when empty');
+    assert.equal(await getTitle('sid-1'), 'one');
+    assert.equal(await getTitle('sid-2'), 'two');
+    assert.equal(await getTitle('sid-3'), 'three');
+    assert.equal(await getTitle('sid-4'), 'four');
+    assert.equal(await getTitle('sid-5'), 'five');
   }
 });
 
@@ -189,7 +171,7 @@ test('rename pushes updated title onto a live instance summary', async () => {
   }
 });
 
-test('temp session exit preserves its custom title in the sidecar', async () => {
+test('temp session exit preserves its custom title on the session', async () => {
   {
     await api(baseUrl, 'POST', '/api/projects', { name: 'temp-titled' });
     const r = await api(baseUrl, 'POST', '/api/instances', {
@@ -198,7 +180,7 @@ test('temp session exit preserves its custom title in the sidecar', async () => 
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && !!inst.sessionId);
-    const sid = inst.backingSessionId;   // the title/archived sidecars are transcript-keyed
+    const sid = inst.backingSessionId;   // archived is a transcript fact; a segment id reads the title too
 
     await api(baseUrl, 'PUT', `/api/sessions/${sid}/title`, { title: 'ephemeral' });
     assert.equal(await getTitle(sid), 'ephemeral');
@@ -212,13 +194,11 @@ test('temp session exit preserves its custom title in the sidecar', async () => 
 });
 
 // ---------------------------------------------------------------------------
-// THE regression this pair exists to pin (card 2026-0126). A UI client only ever
-// holds the session's PUBLIC id, while session-titles.json is keyed to the
-// TRANSCRIPT filename — which is what both readers use: the sidebar row (via
-// listSessionsForCwdWithCounts' bulk title load, matched by filename) and
-// Instance._hydrateTitle on a resume. A route that wrote the title under the id it
-// was handed would write somewhere no reader looks, so the title would live in
-// memory and then vanish the next time the session came back.
+// A UI client only ever holds the session's PUBLIC id, and the title has two
+// readers: the sidebar row (listSessionsForCwdWithCounts, which reaches the
+// record from the transcript FILENAME) and Instance._hydrateTitle on a resume.
+// A title written where either reader does not look would live in memory and
+// then vanish the next time the session came back.
 // ---------------------------------------------------------------------------
 
 test('a title PUT by PUBLIC id survives a resume and reaches the sidebar row', async () => {
@@ -237,8 +217,7 @@ test('a title PUT by PUBLIC id survives a resume and reaches the sidebar row', a
   assert.equal(put.body.sessionId, publicId, 'the response echoes the caller\'s id');
   assert.equal(inst.title, 'keep me', 'in-memory title set immediately');
 
-  // READER 1 — the sidebar row. listSessionsForCwdWithCounts looks titles up by
-  // FILENAME, so this is false if the route wrote under the public id.
+  // READER 1 — the sidebar row, which reaches the record from the FILENAME.
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${backing}.jsonl`),
@@ -249,7 +228,7 @@ test('a title PUT by PUBLIC id survives a resume and reaches the sidebar row', a
   assert.equal(row.title, 'keep me', 'the sidebar row carries the title');
 
   // READER 2 — _hydrateTitle on a resume. A fresh Instance starts with title:null
-  // and must re-acquire it from the sidecar.
+  // and must re-acquire it from the store.
   await instances.remove(inst.id);
   const resumed = await instances.create({ project: 'title-public', resume: publicId });
   await waitFor(() => resumed.status === 'idle');
@@ -261,22 +240,26 @@ test('a title PUT by PUBLIC id survives a resume and reaches the sidebar row', a
   const cleared = await api(baseUrl, 'PUT', `/api/sessions/${publicId}/title`, { title: '' });
   assert.equal(cleared.status, 200);
   assert.equal(cleared.body.title, null);
-  assert.equal(await getTitle(backing), null, 'cleared at the key the readers use');
+  assert.equal(await getTitle(publicId), null, 'cleared on the session');
+  assert.equal(await getTitle(backing), null, 'and so for every segment');
 });
 
-test('a title PUT by a SEGMENT id still addresses that segment', async () => {
-  // The permanent full-id guarantee, on a write path: naming a backing/segment id
-  // directly resolves to that segment rather than being redirected to `current`,
-  // so an old wiki page or an archived row can still be renamed.
+test('a title PUT by a SEGMENT id lands on its session', async () => {
+  // The title is a session-level fact: naming any segment of a session renames
+  // the session, so an old wiki page or an archived row can still rename it.
   await api(baseUrl, 'POST', '/api/projects', { name: 'title-seg' });
   const r = await api(baseUrl, 'POST', '/api/instances', { project: 'title-seg', mode: 'bypassPermissions' });
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   const backing = inst.backingSessionId;
+  assert.notEqual(backing, inst.sessionId, 'precondition: the two ids have diverged');
 
   const put = await api(baseUrl, 'PUT', `/api/sessions/${backing}/title`, { title: 'by backing id' });
   assert.equal(put.status, 200);
-  assert.equal(await getTitle(backing), 'by backing id');
+  assert.equal(await getTitle(inst.sessionId), 'by backing id', 'the public id reads the title');
+  assert.equal(inst.title, 'by backing id', 'the live instance shows it');
+  const { sessions } = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'sessions.json'), 'utf8'));
+  assert.equal(sessions[backing], undefined, 'no second record under the segment id');
 });
 
 test('resuming a crashed session recovers firstPrompt from disk instead of losing it to the next message', async () => {

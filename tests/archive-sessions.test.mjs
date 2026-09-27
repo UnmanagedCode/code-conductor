@@ -10,13 +10,16 @@ import {
   writePendingTempCleanup,
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.ts';
-import { loadAllArchived, isArchived, markArchived } from '../src/archivedSessions.ts';
+import { isArchived, isTemp, setSegmentArchived } from '../src/sessionStore.ts';
+import { archivedIds as loadAllArchived } from './sessionFacts.mjs';
+
+const markArchived = (id) => setSegmentArchived(id, true);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 
 // One server shared across the file; each test gets a fresh PROJECTS_ROOT (so
-// archived-sessions / temp sidecars start empty) and spawned instances are
+// the session store starts empty) and spawned instances are
 // cleared between tests. Tests use the per-test `claudeProjectsRoot` var set in
 // beforeEach when planting jsonl, NOT the boot-time root.
 let ctx, baseUrl, instances, claudeProjectsRoot, projectsRoot, home;
@@ -112,7 +115,7 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     assert.equal(res.status, 201);
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
 
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
@@ -125,13 +128,12 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     // .jsonl must still exist (archived, not deleted).
     await fs.access(jsonlFile);
 
-    // archived-sessions.json must contain the session.
+    // Its segment is archived…
     await waitFor(async () => (await isArchived(sid)));
     assert.equal(await isArchived(sid), true);
 
-    // temp-sessions.json must NOT contain it any more.
-    const { loadAllTemps } = await import('../src/tempSessions.ts');
-    assert.equal((await loadAllTemps()).has(sid), false);
+    // …and no longer temp.
+    assert.equal(await isTemp(sid), false);
   }
 });
 
@@ -142,7 +144,7 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivelist', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -183,7 +185,7 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archiverestore', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -213,14 +215,14 @@ test('killing a non-temp instance does NOT archive it', async () => {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivenotemp', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
     await api(baseUrl, 'DELETE', `/api/instances/${inst.id}`);
     await waitFor(() => !instances.get(inst.id));
 
-    // Give any async sidecar writes a moment to settle.
+    // Give any async store writes a moment to settle.
     await new Promise(r => setTimeout(r, 100));
 
     assert.equal(await isArchived(sid), false, 'non-temp session must NOT be archived on kill');
@@ -234,7 +236,7 @@ test('MCP kill_instance archives temp session', async () => {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivemcp', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -263,7 +265,7 @@ test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir rem
     const res = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
     const inst = rp.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
 
     const dir = path.join(rp.claudeProjectsRoot, encodeCwd(inst.cwd));
@@ -371,7 +373,6 @@ test('restore endpoint with missing .jsonl degrades gracefully (idempotent unmar
     await api(baseUrl, 'POST', '/api/projects', { name: 'archiveghost' });
 
     // Manually mark a session as archived without a .jsonl file.
-    const { markArchived } = await import('../src/archivedSessions.ts');
     const ghostSid = 'cccccccc-dddd-eeee-ffff-111111111111';
     await markArchived(ghostSid);
     assert.equal(await isArchived(ghostSid), true);

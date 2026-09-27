@@ -39,14 +39,18 @@ const E = 'e5e50472-0000-4000-8000-00000000000e';
 const P = A.slice(0, 8);
 const Q = D.slice(0, 8);
 
-const storeFile = () => path.join(orchStoreRoot(), 'session-lineage.json');
+const storeFile = () => path.join(orchStoreRoot(), 'sessions.json');
+const resetStore = async () => {
+  await fs.rm(storeFile(), { force: true });
+  await fs.rm(storeFile() + '.bak', { force: true });
+};
 async function rawStore() {
   try { return JSON.parse(await fs.readFile(storeFile(), 'utf8')).sessions; } catch (e) {
     if (e.code === 'ENOENT') return {};
     throw e;
   }
 }
-const statStore = async () => { const s = await fs.stat(storeFile()); return { ino: s.ino, mtimeMs: s.mtimeMs }; };
+const statStore = async () => { const s = await fs.stat(storeFile(), { bigint: true }); return { ino: s.ino, mtimeNs: s.mtimeNs }; };
 const seg = (id, reason, extra = {}) => ({ id, reason, ...extra });
 
 test('TL1 dropSegment tombstones in place, moves current to the newest live entry, and a repeat drop writes nothing', async () => {
@@ -171,7 +175,9 @@ test('TL3 Settings → Archived → Delete and loadHistory\'s missing-transcript
 
   const store = await rawStore();
   assert.equal(store[P2].segments.find(s => s.id === B2)?.dropped, true, 'the missing-transcript branch tombstones B2');
-  const norm = (row, names) => JSON.parse(JSON.stringify(row).replaceAll(names.A, 'A').replaceAll(names.B, 'B'));
+  // The chain only: the relaunch also recorded P2's session facts (its mode).
+  const norm = ({ current, segments }, names) =>
+    JSON.parse(JSON.stringify({ current, segments }).replaceAll(names.A, 'A').replaceAll(names.B, 'B'));
   const n1 = norm(store[P1], { A: A1, B: B1 });
   const n2 = norm(store[P2], { A: A2, B: B2 });
   assert.deepEqual(n1, n2, 'both paths write the same row');
@@ -198,7 +204,7 @@ test('TL4 mutations keep the row invariant: at least one live entry, and current
   });
 
   await t.test('(b) revertRotation removes the last LIVE entry and keeps a trailing tombstone', async () => {
-    await fs.rm(storeFile(), { force: true });
+    await resetStore();
     await writeLineageRow(P, [seg(A, 'initial'), seg(B, 'renew'), seg(C, 'renew', { dropped: true })]);
     await revertRotation(P, B);
     const row = (await rawStore())[P];
@@ -207,7 +213,7 @@ test('TL4 mutations keep the row invariant: at least one live entry, and current
   });
 
   await t.test('(c) dropping the last live entry removes the row', async () => {
-    await fs.rm(storeFile(), { force: true });
+    await resetStore();
     await writeLineageRow(P, [seg(A, 'initial', { dropped: true }), seg(B, 'renew')]);
     await dropSegment(B);
     assert.equal((await rawStore())[P], undefined, 'the row is gone');
@@ -215,7 +221,7 @@ test('TL4 mutations keep the row invariant: at least one live entry, and current
   });
 
   await t.test('(d) recordRotation after a tombstone appends, and is idempotent against the last live entry', async () => {
-    await fs.rm(storeFile(), { force: true });
+    await resetStore();
     await writeLineageRow(P, [seg(A, 'initial'), seg(B, 'renew', { dropped: true })]);
     await recordRotation(P, C, 'renew');
     let row = (await rawStore())[P];
@@ -231,12 +237,15 @@ test('TL4 mutations keep the row invariant: at least one live entry, and current
     assert.deepEqual(row.segments.map(s => s.id), [A, C, D], 'current C is the last LIVE entry, so nothing is appended');
   });
 
-  await t.test('(e) a row that falls back to its own live initial entry is deleted', async () => {
-    await fs.rm(storeFile(), { force: true });
+  await t.test('(e) a row that falls back to its own live initial entry is kept, at the base case', async () => {
+    await resetStore();
     const self = 'f6f60472';
     await writeLineageRow(self, [seg(self, 'initial'), seg(B, 'renew', { dropped: true }), seg(C, 'renew')]);
     await revertRotation(self, C);
-    assert.equal((await rawStore())[self], undefined, 'the base case is restored');
+    const row = (await rawStore())[self];
+    assert.ok(row, 'the record — and any fact on it — survives the revert');
+    assert.equal(row.current, self);
+    assert.equal(await resolveBacking(self), self, 'and resolves exactly as the base case');
   });
 
   await t.test('(f) a hand-written row with no live entry parses as absent', async () => {

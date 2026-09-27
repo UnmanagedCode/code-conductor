@@ -10,8 +10,8 @@
 // restart is the only window with cross-process contention — hence "recurs
 // around restarts."
 //
-// This test models the storeLock read-modify-write pattern that
-// archivedSessions.ts uses (strict-load → mutate → atomic write, under withLock)
+// This test models the storeLock read-modify-write pattern the session store
+// uses (strict-load → mutate → atomic write, under withLock)
 // with a HOLDER process that acquires the lock, is slow, and whose lock has aged
 // past the old pre-fix threshold, while a WAITER process concurrently adds its
 // own entries. Live owners are never evicted on age → the waiter waits the

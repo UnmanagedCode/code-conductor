@@ -62,7 +62,7 @@ import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { getWorktree, createWorktree } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { setSummary } from '../src/sessionSummaries.ts';
+import { setSummary, setSegmentArchived } from '../src/sessionStore.ts';
 import { recordRotation } from '../src/sessionLineage.ts';
 
 // A UUID nothing on this host answers to. The pre-fix refusal for a session on
@@ -227,9 +227,8 @@ describe('a session on a project on a system', () => {
 
     const root = await retiredSession({ project: 'app' });
     const inWt = await retiredSession({ project: 'app', worktree: wt.worktreeName });
-    const { markArchived } = await import('../src/archivedSessions.ts');
-    await markArchived(root.backingSessionId);
-    await markArchived(inWt.backingSessionId);
+    await setSegmentArchived(root.backingSessionId, true);
+    await setSegmentArchived(inWt.backingSessionId, true);
 
     const r = await api(baseUrl, 'GET', '/api/archived');
     assert.equal(r.status, 200, JSON.stringify(r.body));

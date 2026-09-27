@@ -55,7 +55,7 @@ export async function sweepSessionTmpDirs(liveIds: Iterable<string>): Promise<vo
 }
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
-  trackLineageWrite, loadLineage, type Lineage,
+  retireSegment, retireSegments, trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, requireWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
@@ -70,16 +70,12 @@ import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
 import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
-import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
-import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
 import {
-  MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode,
-  getSessionMode, markSessionMode, unmarkSessionMode,
-} from './sessionModes.ts';
-import { isConducted, markConducted, unmarkConducted } from './conductedSessions.ts';
+  getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
+  isConducted, markConducted, isTemp, setSegmentTemp, type SessionBackendRecord,
+} from './sessionStore.ts';
+import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
-import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
-import { markArchived } from './archivedSessions.ts';
 import { isConductorInstance, materializeCurrentConduct } from './conduct.ts';
 import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // The DEFAULT is imported rather than restated: a second copy of the level this
@@ -218,6 +214,7 @@ interface InstanceConstructorInput {
   temp?: boolean;
   conducted?: boolean;
   callerInstanceId?: string | null;
+  parentSessionId?: string | null;
   rootOwnerSessionId?: string | null;
   debug?: boolean;
   claudePluginDirs?: string[];
@@ -624,6 +621,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   temp: boolean;
   conducted: boolean;
   callerInstanceId: string | null;
+  // Public sessionId of the conductor that spawned this worker, resolved once at
+  // create. Recorded on the session as `parent` at spawn.
+  parentSessionId: string | null;
   // Public sessionId of the root of this instance's live spawn chain, resolved
   // once at create (see _doCreateResolved) and never persisted. Reported as
   // summary().ownerSessionId only while this conducted instance is live.
@@ -780,7 +780,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -839,8 +839,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // When true, this session was spawned via the MCP `spawn_instance`
     // tool (orchestrator-driven) — a *conducted* worker, as opposed to a
     // session from the browser UI / HTTP spawn path. Orthogonal to
-    // `temp`. Persisted durably to the `<store>/conducted-sessions.json`
-    // sidecar (see _writeSessionMetadata) so it survives exit / restart /
+    // `temp`. Persisted durably as the session's `conducted` fact in the
+    // session store at spawn (see spawn), so it survives exit / restart /
     // --resume; the sidebar groups these under a `— conducted —`
     // separator. A marker + display axis; its one behavioural divergence is
     // that a conducted worker never carries `awaitingUser`.
@@ -850,6 +850,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // path. Surfaced in summary() so GET /api/instances lets the frontend
     // build a caller→workers map for the sub-agent panel.
     this.callerInstanceId = callerInstanceId ?? null;
+    this.parentSessionId = parentSessionId ?? null;
     this.rootOwnerSessionId = rootOwnerSessionId ?? null;
     this._awaitingUser = null;
     this._liveAsk = new LiveAskFacts(() => this._planAutoApproves());
@@ -1303,13 +1304,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.emit('status', this.summary());
   }
 
-  // Hydrate the in-memory title from the sidecar. Called after the
+  // Hydrate the in-memory title from the session store. Called after the
   // sessionId becomes known so the active header chip survives a
   // resume/respawn without the user re-typing.
   async _hydrateTitle(): Promise<void> {
-    if (!this.backingSessionId) return;
+    if (!this.sessionId) return;
     try {
-      const t = await getSessionTitle(this.backingSessionId);
+      const t = await getSessionTitle(this.sessionId);
       if (t && this.title !== t) {
         this.title = t;
         this.emit('status', this.summary());
@@ -1659,8 +1660,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // only *lossy* reports was not enough: anything else fell through and
     // overwrote `this.model`, which for these backends IS the registry key. That
     // breaks the next resume's `<template> --model <key>`, drops the context env
-    // vars, and poisons `session-backends.json` (now the authority for both the
-    // id and the capacity) with a foreign model.
+    // vars, and poisons the session's recorded backend (the authority for both
+    // the id and the capacity) with a foreign model.
     //
     // Unconditional is correct rather than merely safe: live model changes are
     // already refused for these backends (`setModel` → 409 BACKEND_LOCKED), so
@@ -1699,7 +1700,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // rather than a user-visible switch. Adopt silently: no model_changed event,
       // since nothing changed from the user's view.
       //
-      // Reachable only on a RESUME whose model couldn't be recovered — no sidecar,
+      // Reachable only on a RESUME whose model couldn't be recovered — no recorded backend model,
       // no assistant model in the jsonl yet. Every FRESH spawn now settles a model
       // before launch or refuses: both surfaces resolve a Settings → Models row, and
       // a named backend with no model is filled from a matching row or refused
@@ -1763,12 +1764,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     });
     if (!result) {
       // ENOENT: the transcript this segment named is gone (Claude prunes its own
-      // ~/.claude/projects after ~30 days). Drop it from the lineage row so the
-      // chain stops pointing at a missing file. This is the ONE opportunistic
-      // self-prune, and it is here because this path is async, off the hot read
-      // path, and already holds the cwd — reads themselves stay write-free
-      // (findSessionLocation tolerates the gap instead).
-      this._kickLineageWrite(() => dropSegment(backingId));
+      // ~/.claude/projects after ~30 days). Drop it from the chain so it stops
+      // pointing at a missing file. This is the ONE opportunistic self-prune,
+      // and it is here because this path is async, off the hot read path, and
+      // already holds the cwd — reads themselves stay write-free
+      // (findSessionLocation tolerates the gap instead). `unlessLast`: a session
+      // killed before its first turn has no transcript yet, and dropping its
+      // only segment would delete the record and every fact on it.
+      this._kickLineageWrite(() => dropSegment(backingId, { unlessLast: true }));
       return; // silent no-op for the replay itself
     }
     for (const line of result.lines) {
@@ -2051,14 +2054,23 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Re-kick the CURRENT rotation's durable write. Called by
-  // SessionRenewController when the first flush failed: `recordRotation` is
-  // idempotent (src/sessionLineage.ts), so a re-kick either lands the missing
-  // segment or no-ops on one already written.
+  // SessionRenewController when the first flush failed: `recordRotation` and
+  // `retireSegment` are both idempotent (src/sessionLineage.ts), so a re-kick
+  // either lands what is missing or no-ops on what was already written.
   retryRotationWrite(): void {
     const publicId = this.sessionId;
     const backingId = this.backingSessionId;
     if (!publicId || !backingId) return;
-    this._kickLineageWrite(() => recordRotation(publicId, backingId, 'renew'));
+    this._kickLineageWrite(this._rotationWrite(publicId, backingId, this._segments.at(-2) ?? null));
+  }
+
+  // The durable half of a `/clear` rotation, typed or managed, as ONE kicked
+  // item: record the new segment (inheriting temp), then archive the old one.
+  _rotationWrite(publicId: string, newBacking: string, oldBacking: string | null): () => Promise<void> {
+    return async () => {
+      await recordRotation(publicId, newBacking, 'renew');
+      if (oldBacking && oldBacking !== newBacking) await retireSegment(oldBacking);
+    };
   }
 
   spawn({ resume }: { resume?: string } = {}): void {
@@ -2157,25 +2169,33 @@ export class Instance extends EventEmitter implements InstanceLike {
     // `{ backingId, 0 }` — including over diagnostics the create path emitted
     // before launch() — and precedes the loadHistory replay below.
     this.ring.markSeam(backingId);
-    // Persist the temp marker at spawn time so it survives a SIGKILL that
-    // happens before the first turn_end (where _writeSessionMetadata also
-    // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
-    if (this.temp) markTemp(backingId).catch(() => {});
+    // Persist the temp flag on this transcript's segment at spawn time so it
+    // survives a SIGKILL that happens before the first turn_end (where
+    // _writeSessionMetadata also sets it). Fire-and-forget — spawn() must stay
+    // synchronous.
+    if (this.temp) setSegmentTemp(backingId, true, { owner: this.sessionId }).catch(() => {});
     // Persist the backend id + exact model durably (the things jsonl can't carry
     // — which backend ran it, and the full model id the inner CLI reports
     // lossily) so every resume path re-acquires them. The capacity rides along
     // as a last-known fallback for a resume after the custom-model row is
-    // deleted. Runs on every spawn/resume, so a legacy model-unknown entry
-    // self-heals once this.model holds a real id. Fire-and-forget for the same
-    // reason as the temp marker above — spawn() is synchronous and nothing
-    // downstream of this call reads the write (the only reader is
-    // _doCreate's resume branch, `catch { best-effort }`), so a post-spawn
-    // TEST must wait for the write (settledSessionBackend in helpers.mjs),
-    // not sample it.
+    // deleted. Runs on every spawn/resume, so a model-unknown record self-heals
+    // once this.model holds a real id. Fire-and-forget for the same reason as
+    // the temp flag above — spawn() is synchronous and nothing downstream of
+    // this call reads the write (the only reader is _doCreate's resume branch,
+    // `catch { best-effort }`), so a post-spawn TEST must wait for the write
+    // (settledSessionBackend in helpers.mjs), not sample it.
     if (this.backend !== CLAUDE_BACKEND_ID) {
-      markSessionBackend(backingId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
+      setSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
     }
-    // Same reason as the temp marker: this is the first point a fresh spawn has
+    // A conducted worker's spawn-time facts: who spawned it and where it runs.
+    // Here, not at the first turn_end, so a worker killed mid-first-turn is
+    // still recorded as conducted.
+    if (this.conducted) {
+      markConducted(this.sessionId, {
+        parent: this.parentSessionId, project: this.project, worktree: this.worktree?.worktreeName ?? null,
+      }).catch(() => {});
+    }
+    // Same reason as the temp flag: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
     // exists). Every later mode change goes through _recordMode.
     this._recordMode(this.mode);
@@ -2490,14 +2510,19 @@ export class Instance extends EventEmitter implements InstanceLike {
           //
           // `this.sessionId` is NOT reassigned — pinning it across this rotation
           // is the whole point of the public id.
+          //
+          // A typed `/clear` and a managed renew take this same path: the kicked
+          // item records the new segment (which inherits temp) and archives the
+          // pre-clear one. Session facts — title, mode, backend, conducted — are
+          // keyed by the public id, so there is nothing to carry.
           const publicId = this.sessionId;
+          const oldBacking = this.backingSessionId;
           this.backingSessionId = sid;
           this._segments.push(sid);
           // The rotation seam: this init is emitted below, so it takes the
           // seam's own startSeq.
           this.ring.markSeam(sid);
-          if (publicId) this._kickLineageWrite(() => recordRotation(publicId, sid, 'renew'));
-          this._hydrateTitle().catch(() => {});
+          if (publicId) this._kickLineageWrite(this._rotationWrite(publicId, sid, oldBacking));
         }
         const mode = data?.permissionMode;
         if (mode && typeof mode === 'string' && VALID_MODES.has(mode)) {
@@ -2795,18 +2820,19 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async _writeSessionMetadata(): Promise<void> {
-    // Persist the durable temp + conducted markers BEFORE the temp early
-    // return, so a temp session that survives SIGKILL recovers BOTH flags on
-    // respawn (InstanceManager.create() OR-recovers them via isTemp/isConducted).
-    // These only need sessionId, not the leaf uuid. The last-prompt /
-    // permission-mode write below stays after the early return — it exists
-    // only to surface a session in the shell-side `claude --resume` picker,
-    // which temp sessions must not appear in.
+    // Re-assert the durable temp + conducted flags BEFORE the temp early
+    // return, so a temp session that survives SIGKILL recovers BOTH on respawn
+    // (InstanceManager.create() OR-recovers them via isTemp/isConducted). In
+    // steady state both are no-ops that cost a stat each (the store's
+    // precheck); they self-heal a spawn-time write that failed. The
+    // last-prompt / permission-mode write below stays after the early return —
+    // it exists only to surface a session in the shell-side `claude --resume`
+    // picker, which temp sessions must not appear in.
     if (this.temp && this.backingSessionId) {
-      try { await markTemp(this.backingSessionId); } catch { /* best effort */ }
+      try { await setSegmentTemp(this.backingSessionId, true, { owner: this.sessionId }); } catch { /* best effort */ }
     }
-    if (this.conducted && this.backingSessionId) {
-      try { await markConducted(this.backingSessionId); } catch { /* best effort */ }
+    if (this.conducted && this.sessionId) {
+      try { await markConducted(this.sessionId); } catch { /* best effort */ }
     }
     if (this.temp) return;
     if (!this.backingSessionId || !this._lastLeafUuid) return;
@@ -2865,27 +2891,30 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Archive a killed temp session: retain the .jsonl (stays resumable) but
-  // mark it archived so it disappears from the normal session list and
-  // surfaces in the — archived — section instead. The sub-agent dir is
-  // still cleaned up (it is ephemeral; only the main .jsonl matters for
-  // restore). Title and conducted markers are kept — they are still
+  // retire its segment (temp off, archived on) so it disappears from the
+  // normal session list and surfaces in the — archived — section instead. The
+  // sub-agent dir is still cleaned up (it is ephemeral; only the main .jsonl
+  // matters for restore). The session's facts are untouched — they are still
   // meaningful on an archived session.
   //
   // Reached by a session whose spawn FAILED as well as by a killed one
   // there is no jsonl, so this marks a sessionId no file
   // backs. Inert only because every reader stat-gates the file first (see
-  // src/archivedSessions.ts's header + src/projects.ts's session-row build); a
-  // reader that enumerates the set without that stat would surface a phantom
-  // row. Not a NEW state: markTemp fires at spawn time, so before the terminal
-  // latch a stranded failure kept its TEMP marker until the next graceful
-  // restart, whose orphan sweep (scheduleRestart → orphanedTempIdsSync, plus
-  // shutdownTempSync) does this same unmarkTemp+markArchived pair. The latch
-  // changes WHEN that archived marker appears, not WHETHER.
+  // src/projects.ts's session-row build); a reader that enumerates segments
+  // without that stat would surface a phantom row. Not a NEW state: the temp
+  // flag is set at spawn time, so before the terminal latch a stranded failure
+  // kept it until the next graceful restart, whose orphan sweep
+  // (scheduleRestart → orphanedTempIdsSync, plus shutdownTempSync) does this
+  // same retirement. The latch changes WHEN the archived flag appears, not
+  // WHETHER.
+  //
+  // Awaits this instance's own lineage chain first: a rotation kicked just
+  // before the exit must have recorded the segment this retires.
   async _archiveTempSession(): Promise<void> {
     if (!this.backingSessionId) return;
     await fsp.rm(subAgentDirPath(this.transcriptPlace, this.backingSessionId), { recursive: true, force: true });
-    try { await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
-    try { await markArchived(this.backingSessionId); } catch { /* best-effort */ }
+    await this._lineageWrite;
+    try { await retireSegment(this.backingSessionId, { owner: this.sessionId }); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj: unknown): void {
@@ -3175,46 +3204,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     });
   }
 
-  // Carry this instance's durable, sessionId-keyed state across a managed
-  // `/clear` renewal and retire the abandoned pre-clear id. Called by the
-  // SessionRenewController once the rotation is confirmed (this.sessionId is
-  // already the NEW id; `oldSid` is the pre-clear one). Why this is needed even
-  // though _writeSessionMetadata re-writes temp/conducted on the next turn_end:
-  //   - it closes the window between rotation and that reseed turn_end, during
-  //     which a spawn_instance({resume:newId}) would read isTemp/isConducted on
-  //     the new id and get false — silently dropping the flag;
-  //   - the title sidecar is carried by NO turn_end path, so without this a
-  //     renewed session with a custom title loses it on a later resume/restart;
-  //   - and it archives the old id (which `/clear` leaves as a stale, orphaned,
-  //     non-archived row) + drops its now-stale temp marker.
-  // ORDER MATTERS: mark the NEW id first, retire the old id last, so a crash
-  // mid-way can never leave the new id unmarked while the old id is archived.
-  // Best-effort throughout (never throws into the reseed path). Mirrors
-  // _archiveTempSession for the old id: unmarkTemp + markArchived, keeping the
-  // conducted/title markers — they stay meaningful on the archived row.
-  async carryMarkersAcrossRenewal(oldSid: string | null): Promise<void> {
-    const newSid = this.backingSessionId;
-    if (!newSid || !oldSid || newSid === oldSid) return;
-    try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
-    try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
-    try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
-    // Records the rotated id's mode here, at rotation, so the new id is never
-    // left unrecorded: an unrecorded id resumes as DEFAULT_RESUME_MODE, so a
-    // `plan` worker would come back ungated. This holds whether or not a later
-    // system/init reports the mode. Like the conducted/title markers, the old id
-    // KEEPS its mode record: the archived row is still listed under
-    // includeArchived, and its resumes-hot flag should stay accurate.
-    try { await markSessionMode(newSid, this.mode); } catch { /* best-effort */ }
-    try {
-      if (this.backend !== CLAUDE_BACKEND_ID) {
-        await markSessionBackend(newSid, this.backend, this.model, this.contextWindowTokens);
-        await unmarkSessionBackend(oldSid);
-      }
-    } catch { /* best-effort */ }
-    try { await unmarkTemp(oldSid); } catch { /* best-effort */ }
-    try { await markArchived(oldSid); } catch { /* best-effort */ }
-  }
-
   async _controlRequest(request: Record<string, unknown>, { timeout = 5000 }: { timeout?: number } = {}): Promise<unknown> {
     const requestId = randomUUID();
     const p = new Promise<unknown>((resolve, reject) => {
@@ -3236,13 +3225,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Persist the mode a resume should come back up in. Best-effort and
-  // fire-and-forget, like the temp/conducted/backend markers beside it: a
-  // failed write leaves the session unrecorded, which resolves to
-  // DEFAULT_RESUME_MODE — the pre-store behaviour, never a wrong-and-colder
-  // one. Every `this.mode` assignment after the sessionId exists routes here.
+  // fire-and-forget, like the temp/conducted/backend facts beside it: a failed
+  // write is logged by the store and retried by the next call (the store's
+  // precheck still sees the old value). Every `this.mode` assignment after the
+  // sessionId exists routes here.
   _recordMode(mode: string): void {
-    if (!this.backingSessionId) return;
-    markSessionMode(this.backingSessionId, mode).catch(() => {});
+    if (!this.sessionId) return;
+    setSessionMode(this.sessionId, mode).catch(() => {});
   }
 
   async setMode(mode: string): Promise<unknown> {
@@ -3358,7 +3347,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   async promoteToNormal(): Promise<InstanceSummary> {
     if (!this.temp) throw httpError(400, 'instance is not temp');
     this.temp = false;
-    try { if (this.backingSessionId) await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
+    try {
+      if (this.backingSessionId) await setSegmentTemp(this.backingSessionId, false, { owner: this.sessionId });
+    } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
     // `claude --resume` picker sees this session immediately — without
     // waiting for the next turn-end / setMode cycle to trigger it.
@@ -3873,8 +3864,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       newSessionId: forked.newSessionId,
       droppedText: forked.droppedText,
       // `backend` is REQUIRED here, not optional: forkSessionAtUserMessage
-      // copies the jsonl but writes no backend sidecar for the new sessionId,
-      // so create()'s sidecar recovery finds nothing. Omitting it silently
+      // copies the jsonl but records no backend for the new sessionId, so
+      // create()'s session-store recovery finds nothing. Omitting it silently
       // falls back to the identity `claude` backend while this.model keeps the
       // substitution backend's foreign model id — and because that model is
       // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
@@ -3891,7 +3882,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         contextWindowTokens: this.contextWindowTokens,
         worktree: this.worktree?.worktreeName ?? null,
         // EXPLICIT, not inferable: forkSessionAtUserMessage writes no temp
-        // marker for the new id, and create()'s sidecar recovery only ORs temp
+        // flag for the new id, and create()'s store recovery only ORs temp
         // in when the flag is already falsy AND the resumed id is marked — so
         // without this the fork of a temp session comes out silently
         // persistent. Set, spawn() marks the new backing id and the child runs
@@ -4021,11 +4012,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       // The public id is pinned across this rotation — only backingSessionId
       // moves, and spawn() sets it from `resume`.
       await this.launch({ resume: newSid });
-      // Carry temp/conducted/title/backend onto the new id and archive the old
-      // one. Reads backingSessionId as the NEW id, so it must follow the launch.
-      // Awaited (unlike the renewal path, which can't block its reseed turn) so
-      // the REST response can't beat the archive into the sidebar refresh.
-      await this.carryMarkersAcrossRenewal(oldSid).catch(() => {});
+      // Archive the pre-prune transcript now that the pruned one is running (the
+      // new segment already inherited temp in recordRotation). Awaited so the
+      // REST response can't beat the archive into the sidebar refresh.
+      await retireSegment(oldSid).catch(() => {});
 
       rotationOk = true;
       return { oldSessionId: oldSid, newSessionId: newSid, turnCount, cutTurnIndex: cut, saved };
@@ -4737,7 +4727,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // resolves to DEFAULT_RESUME_MODE, i.e. exactly the previous behaviour.
     // An explicit `mode` still wins, via the `??` below.
     const defaultMode = resume
-      ? effectiveResumeMode(await getSessionMode(resume).catch(() => null))
+      ? effectiveResumeMode(await getSessionMode(publicId ?? resume).catch(() => null))
       : DEFAULT_MODE;
     const finalMode = mode ?? defaultMode;
     if (!VALID_MODES.has(finalMode)) {
@@ -4761,7 +4751,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // model-recovery below apply uniformly. Sources, in priority order:
     //   (a) explicit `backend` param — fresh spawn (client/handlers resolved
     //       the tier to {backend, model}) and restart-manifest restore.
-    //   (b) resume with no explicit backend — the durable sidecar records which
+    //   (b) resume with no explicit backend — the session store records which
     //       backend ran the session (one of the two bits jsonl can't carry),
     //       covering UI resume / crash / anchor auto-resume uniformly.
     // An EXPLICIT backend that isn't in the registry must refuse, not fall back to
@@ -4778,17 +4768,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     let backend = explicitBackend || CLAUDE_BACKEND_ID;
     if (!explicitBackend && resume) {
       let rec: SessionBackendRecord | null = null;
-      try { rec = await getSessionBackend(resume); } catch { /* best-effort */ }
+      try { rec = await getSessionBackend(publicId ?? resume); } catch { /* best-effort */ }
       if (rec) {
         // The recorded backend may have been REMOVED from the registry since this
         // session last ran. Refuse cleanly: the constructor would normalize the
-        // unknown id back to `claude` while finalModel keeps the sidecar's foreign
+        // unknown id back to `claude` while finalModel keeps the record's foreign
         // model id, which spawns a real `claude --model <foreign-id>` that fails
         // opaquely deep in the CLI.
-        // Deliberately BEFORE the session-existence checks further down: the
-        // sidecar is never garbage-collected (unmarkSessionBackend runs only on an
-        // in-place /clear renewal), so a stale entry for a long-deleted session
-        // reports this instead of a 404. Accepted — the backend error is the more
+        // Deliberately BEFORE the session-existence checks further down: a
+        // session's record outlives its transcripts until an explicit delete, so
+        // a record whose transcript went missing reports this instead of a 404. Accepted — the backend error is the more
         // actionable of the two, and a resume that would otherwise launch the real
         // `claude` with a foreign model id must never get further than here.
         if (!isKnownBackend(rec.backend)) {
@@ -4798,7 +4787,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           );
         }
         backend = rec.backend;
-        // The sidecar carries the FULL exact model id; the jsonl only holds the
+        // The record carries the FULL exact model id; the jsonl only holds the
         // CLI's lossy (tag-stripped) report. Prefer the sidecar's — this is what
         // stops `deepseek-v4-flash:cloud` resuming as the unpullable tagless
         // `deepseek-v4-flash`, and `gpt-5.6-sol[1m]` resuming as an id the
@@ -5103,14 +5092,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       ?? (Number.isFinite(carriedContextWindowTokens) ? carriedContextWindowTokens : null);
 
     // The conducted marker is set explicitly on the MCP spawn path. When
-    // resuming a historical session, recover it from the durable sidecar
+    // resuming a historical session, recover it from the session store
     // so a UI-resumed conducted session re-acquires the marker (survives
     // --resume). Per-session and immutable, so OR-ing the two is safe.
     let conductedFlag = !!conducted;
     if (!conductedFlag && resume) {
-      try { conductedFlag = await isConducted(resume); } catch { /* best-effort */ }
+      try { conductedFlag = await isConducted(publicId ?? resume); } catch { /* best-effort */ }
     }
-    // Recover temp flag from durable sidecar on resume so a session that
+    // Recover temp flag from the resumed segment on resume so a session that
     // survived SIGKILL comes back temp rather than silently going persistent.
     if (!temp && resume) {
       try { if (await isTemp(resume)) temp = true; } catch { /* best-effort */ }
@@ -5152,6 +5141,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       temp: !!temp,
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
+      parentSessionId: (callerInstanceId ? this.byId.get(callerInstanceId)?.sessionId : null) ?? null,
       rootOwnerSessionId: rootOwnerOf(callerInstanceId ? this.byId.get(callerInstanceId) : undefined),
       // `debug` falls back to the persisted conductor-wide default only when
       // the caller omitted it (undefined) — an explicit true/false always wins.
@@ -6115,15 +6105,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     wipe();
     Atomics.wait(sab, 0, 0, 30);
     wipe();
-    // Mark each session archived + unmark temp. Fire-and-forget — the sidecar
-    // writes are async and the restart path is about to exit; if they don't
-    // land in time the next boot's sweepPendingTempCleanup will pick up the
-    // slack via the manifest (which now carries action:"archive").
-    for (const inst of temps) {
-      if (!inst.backingSessionId) continue;
-      unmarkTemp(inst.backingSessionId).catch(() => {});
-      markArchived(inst.backingSessionId).catch(() => {});
-    }
+    // Retire every temp segment in ONE store write. Fire-and-forget — the
+    // write is async and the restart path is about to exit; if it doesn't land
+    // in time the next boot's sweepPendingTempCleanup will pick up the slack
+    // via the manifest (which now carries action:"archive").
+    retireSegments(temps.map(inst => inst.backingSessionId).filter((id): id is string => !!id)).catch(() => {});
   }
 
   // Resume-restart counterpart of shutdownTempSync: gracefully close every live

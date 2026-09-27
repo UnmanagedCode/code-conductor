@@ -1068,7 +1068,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
     // checkbox (which the REST route maps to bypassPermissions), temp here
     // does NOT affect the mode default — create() leaves it at plan, so
     // workers plan before acting. On resume, leave it undefined rather than
-    // forcing true — create()'s sidecar recovery (isTemp(resume)) decides the
+    // forcing true — create()'s store recovery (isTemp(resume)) decides the
     // session's actual persisted state; forcing true would silently re-temp a
     // session the human promoted, on every MCP resume.
     temp: args.resume ? undefined : true,

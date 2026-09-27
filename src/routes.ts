@@ -72,12 +72,12 @@ import {
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
 import { applySessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
-import { getSummaries, setSummary, deleteSummaries, SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
+import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
+import { getSummaries, setSummary, isArchived, setSegmentArchived } from './sessionStore.ts';
 import { resolveBacking } from './sessionLineage.ts';
 import { generateSummary, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import { getCostSummary, getSessionStats } from './costTracking.ts';
-import { isArchived, unmarkArchived } from './archivedSessions.ts';
 import {
   getCatalog as getProjectConventionsCatalog,
   addCustomConvention as addProjectConvention,
@@ -140,19 +140,16 @@ function intQueryParam(v: unknown, name: string): number | null {
 
 // THE shared read for every session-scoped route's `:sessionId` path param.
 //
-// A client only ever holds the PUBLIC id — that is the whole point of the
-// pinned-identity change — while the transcript jsonl and the filename-keyed
-// sidecars (session-titles, archived-sessions, session-modes, session-backends)
-// are all keyed to the CURRENT backing id. A route that wrote a sidecar under the
-// id it was handed would write somewhere no reader looks: a title set in the UI
-// would survive in memory and then vanish on the next resume.
+// A client only ever holds the PUBLIC id, while the transcript jsonl and its
+// segment's archived flag are keyed to a BACKING id. Session-level facts
+// (title, summaries) resolve any id form inside the session store, so only the
+// transcript reads and the segment flags need `backing`.
 //
 // `sid` stays the caller's id (that is what the response echoes and what the
-// client keeps using); `backing` is for the filesystem and those sidecars.
+// client keeps using); `backing` is for the filesystem and the segment flags.
 // Naming a SEGMENT directly resolves to that segment, so an archived row stays
 // individually addressable, and an unknown id passes through unchanged (the
-// lineage store's base case) — which is what keeps every pre-rotation session
-// working with no migration.
+// lineage base case).
 async function sidParam(raw: unknown): Promise<{ sid: string; backing: string }> {
   const sid = String(raw || '');
   assertValidSid(sid);
@@ -793,8 +790,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     if (!removed) {
       throw httpError(404, `session ${sessionId} not found`);
     }
-    // Best-effort — a missing summary never fails a delete.
-    deleteSummaries(sessionId).catch(() => {});
   }
 
   r.delete('/projects/:name/sessions/:sid', async (req, res, next) => {
@@ -868,7 +863,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   r.post('/projects/:name/sessions/:sid/restore', async (req, res, next) => {
     try {
       const { backing } = await sidParam(req.params.sid);
-      await unmarkArchived(backing);
+      await setSegmentArchived(backing, false);
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -876,7 +871,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   r.post('/projects/:name/worktrees/:wt/sessions/:sid/restore', async (req, res, next) => {
     try {
       const { backing } = await sidParam(req.params.sid);
-      await unmarkArchived(backing);
+      await setSegmentArchived(backing, false);
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -1082,9 +1077,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // Returns { short, medium, long, title } where each tier is null when absent.
   r.get('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
-      // `sid` keys the summaries store, which is cc-owned (<store>/session-
-      // summaries.json) and NOT filename-keyed, so it needs no resolve — only the
-      // transcript read below does.
+      // Summaries are a session-level fact: `sid` (a public id or any segment)
+      // resolves to its session's record inside the store, so it needs no
+      // resolve here — only the transcript read below does.
       const { sid, backing } = await sidParam(req.params.sessionId);
       const tiers = await getSummaries(sid);
       let currentCount = 0;
@@ -1121,8 +1116,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       // getProject refusing) that could disagree with the probe; nothing
       // re-derives now, and the read below takes the probe's own place rather
       // than rebuilding one.
-      // The transcript reads take the backing id; the summaries store keeps the
-      // caller's id (cc-owned, not filename-keyed — see the GET above).
+      // The transcript reads take the backing id; the summary lands on the
+      // session `sid` resolves to (see the GET above).
       const place = hit.place;
       const { summary, messageCount, costUsd } = await generateSummary(backing, place, length as SummaryLength);
       await setSummary(sid, length as SummaryLength, { summary, generatedAt: Date.now(), messageCount });

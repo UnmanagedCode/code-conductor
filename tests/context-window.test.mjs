@@ -255,7 +255,7 @@ test('_trackModel never adopts ANY report on a substitution backend, lossy or no
       // 4. THE REGRESSION: a report that is NOT a lossy rendering of the
       //    configured id at all. Matching only lossy shapes let this through, so
       //    the foreign id replaced the registry key — and `spawn()` then wrote it,
-      //    with the wrong capacity, into session-backends.json, which this design
+      //    with the wrong capacity, into the session record's backend, which this design
       //    makes the authority for both. Reproduced in the suite via
       //    scenario-basic.json, whose system/init hardcodes a Claude id.
       'claude-sonnet-4-6',
@@ -405,8 +405,8 @@ test('a respawn after the custom-model row is DELETED still injects the resolved
   assert.equal(inst.contextWindowTokens, 1_000_000, 'the session keeps the number it was created with');
   const sessionId = inst.backingSessionId;
 
-  // Relaunch the session (kill + resume, the real path a user takes). The sidecar
-  // carries the last known capacity, `_doCreate` falls back to it, and the env
+  // Relaunch the session (kill + resume, the real path a user takes). The session
+  // record carries the last known capacity, `_doCreate` falls back to it, and the env
   // block hands the child THAT number. A live per-spawn re-resolve would now
   // yield null and silently omit both env vars, quietly reverting the session to
   // the CLI's ~200k assumption for an unrecognised model.
@@ -429,8 +429,8 @@ test('a respawn after the custom-model row is DELETED still injects the resolved
     });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     await waitFor(() => instances.get(r.body.id).status === 'idle');
-    assert.equal(r.body.backend, 'codex', 'the backend is recovered from the sidecar');
-    assert.equal(r.body.model, 'gpt-5.6-sol[1m]', 'the exact id is recovered from the sidecar');
+    assert.equal(r.body.backend, 'codex', 'the backend is recovered from the session record');
+    assert.equal(r.body.model, 'gpt-5.6-sol[1m]', 'the exact id is recovered from the session record');
     assert.equal(r.body.contextWindowTokens, 1_000_000, 'carried capacity survives the deleted row');
 
     await waitFor(async () => { try { await fs.stat(envDump); return true; } catch { return false; } });

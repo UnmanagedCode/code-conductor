@@ -18,6 +18,7 @@ const store = await import('../src/sessionStore.ts');
 const {
   loadSessions, loadSessionsSync, mutateSessions, orphanedTempIdsSync,
   getTitle, setTitle, getSessionMode, setSessionMode, setSegmentTemp, isTemp, setSummary, getSummaries,
+  setSessionBackend, getSessionBackend, markConducted, isConducted, setSegmentArchived, isArchived,
 } = store;
 
 let testNo = 0;
@@ -246,4 +247,100 @@ test('a segment write naming an owner that lacks the segment is refused', async 
   assert.equal(value, false);
   assert.ok(lines.some(l => l.includes(`setSegmentTemp ${B} refused`)), JSON.stringify(lines));
   assert.deepEqual(Object.keys((await readJson(storeFile(root))).sessions), [A], 'no stray record for B');
+});
+
+test('a segment write after a kicked rotation lands on the new segment', async () => {
+  const root = await freshRoot();
+  const { recordRotation, trackLineageWrite } = await import('../src/sessionLineage.ts');
+  await setTitle(A, 'owner');
+  // A rotation write kicked but not yet landed, as Instance._kickLineageWrite
+  // leaves it between `system/init` and the store write.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  trackLineageWrite(gate.then(() => recordRotation(A, B, 'renew')));
+  const write = setSegmentTemp(B, true, { owner: A });
+  release();
+  assert.equal(await write, true);
+  const sessions = (await readJson(storeFile(root))).sessions;
+  assert.deepEqual(Object.keys(sessions), [A], 'no stray base-case record for the new id');
+  assert.equal(sessions[A].segments.find(s => s.id === B)?.temp, true, 'the flag is on the recorded segment');
+});
+
+test('session facts and segment flags round-trip in the documented shape', async () => {
+  const root = await freshRoot();
+  await setTitle(A, '  A title  ');
+  await setSessionMode(A, 'plan');
+  await setSessionBackend(A, 'ollama');
+  await markConducted(A, { parent: 'cafe0123', project: 'p', worktree: 'wt' });
+  await setSummary(A, 'short', { summary: 'sum', generatedAt: 7, messageCount: 3 });
+  await setSegmentTemp(A, true);
+  await setSegmentArchived(A, true);
+  const rec = (await readJson(storeFile(root))).sessions[A];
+  assert.equal(typeof rec.segments[0].at, 'string');
+  delete rec.segments[0].at;
+  assert.deepEqual(rec, {
+    current: A,
+    segments: [{ id: A, reason: 'initial', temp: true, archived: true }],
+    title: 'A title',
+    mode: 'plan',
+    backend: { backend: 'ollama', model: null, contextWindowTokens: null },
+    summaries: { short: { summary: 'sum', generatedAt: 7, messageCount: 3 } },
+    conducted: true, parent: 'cafe0123', project: 'p', worktree: 'wt',
+  });
+  assert.equal(await getTitle(A), 'A title');
+  assert.equal(await getSessionMode(A), 'plan');
+  assert.deepEqual(await getSessionBackend(A), { backend: 'ollama', model: null, contextWindowTokens: null });
+  assert.equal(await isConducted(A), true);
+  assert.equal(await isTemp(A), true);
+  assert.equal(await isArchived(A), true);
+  assert.equal(await isTemp(B), false, 'an unknown id carries no flag');
+  assert.equal(await getSessionBackend(B), null, 'absence means the claude backend');
+});
+
+test('a segment id reads and writes its session\'s facts', async () => {
+  const root = await freshRoot();
+  const { recordRotation } = await import('../src/sessionLineage.ts');
+  await setTitle(A, 'session title');
+  await recordRotation(A, B, 'renew');
+  assert.equal(await getTitle(B), 'session title', 'a segment id reads the session-level fact');
+  await setSessionMode(B, 'plan');
+  const sessions = (await readJson(storeFile(root))).sessions;
+  assert.deepEqual(Object.keys(sessions), [A], 'no second record for the segment id');
+  assert.equal(sessions[A].mode, 'plan');
+});
+
+test('markConducted patches its extras and never clears one with null', async () => {
+  const root = await freshRoot();
+  await markConducted(A, { parent: 'cafe0123', project: 'p', worktree: 'wt' });
+  await markConducted(A, { parent: null, project: null, worktree: null });
+  await markConducted(A);
+  const rec = (await readJson(storeFile(root))).sessions[A];
+  assert.deepEqual([rec.parent, rec.project, rec.worktree], ['cafe0123', 'p', 'wt']);
+  await markConducted(A, { project: 'q' });
+  assert.equal((await readJson(storeFile(root))).sessions[A].project, 'q');
+});
+
+test('guards: an empty id, empty backend, or unknown mode refuse and store nothing', async () => {
+  const root = await freshRoot();
+  assert.equal(await setSessionBackend('', 'ollama'), false);
+  assert.equal(await setSessionBackend(A, ''), false);
+  assert.equal(await setSessionMode(A, 'default'), false);
+  assert.equal(await setSessionMode('', 'plan'), false);
+  assert.equal(await setTitle('', 't'), null);
+  assert.equal(await setSegmentTemp('', true), false);
+  assert.equal(await setSummary(A, 'huge', { summary: 's' }), null);
+  await assert.rejects(fs.stat(storeFile(root)), { code: 'ENOENT' }, 'nothing was written');
+});
+
+test('an on-disk value outside the schema is dropped, not trusted', async () => {
+  const root = await freshRoot();
+  await fs.writeFile(storeFile(root), JSON.stringify({ sessions: {
+    [A]: { current: A, segments: [{ id: A, reason: 'initial', at: '', temp: 'yes' }],
+      mode: 'default', backend: { backend: '' }, title: '   ', conducted: 'true' },
+    [B]: { current: B, segments: [{ id: B, reason: 'bogus', at: '' }] },
+  } }));
+  const idx = await loadSessions();
+  assert.deepEqual([...idx.byPublic.keys()], [A], 'a record with no valid segment is dropped');
+  assert.deepEqual(idx.byPublic.get(A), { current: A, segments: [{ id: A, reason: 'initial', at: '' }] },
+    'every malformed fact is dropped');
 });

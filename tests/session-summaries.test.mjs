@@ -5,9 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
-import {
-  setSummary, getSummaries, deleteSummaries, loadAll,
-} from '../src/sessionSummaries.ts';
+import { setSummary, getSummaries } from '../src/sessionStore.ts';
 import { orchStoreRoot, findSessionLocation, encodeCwd, localPlace} from '../src/projects.ts';
 import { summarySpawnDir } from '../src/summarize.ts';
 import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.ts';
@@ -43,11 +41,11 @@ test('setSummary / getSummaries round-trip persists to disk', async () => {
   assert.equal(tiers.medium, undefined);
   assert.equal(tiers.long, undefined);
 
-  // Disk shape
-  const file = path.join(orchStoreRoot(), 'session-summaries.json');
+  // Disk shape: the `summaries` map of the session's record.
+  const file = path.join(orchStoreRoot(), 'sessions.json');
   const raw = JSON.parse(await fs.readFile(file, 'utf8'));
-  assert.equal(raw.summaries['sid-A'].short.summary, 'Short gist.');
-  assert.equal(raw.summaries['sid-A'].medium, undefined);
+  assert.equal(raw.sessions['sid-A'].summaries.short.summary, 'Short gist.');
+  assert.equal(raw.sessions['sid-A'].summaries.medium, undefined);
 });
 
 test('multiple tiers coexist for one session; setSummary does not clobber others', async () => {
@@ -92,25 +90,11 @@ test('concurrent writes do not lose entries', async () => {
     setSummary('sid-1', 'medium', { summary: 'one-med', generatedAt: 4, messageCount: 1 }),
     setSummary('sid-2', 'long', { summary: 'two-long', generatedAt: 5, messageCount: 2 }),
   ]);
-  const all = await loadAll();
-  assert.equal(all.get('sid-1').short.summary, 'one');
-  assert.equal(all.get('sid-1').medium.summary, 'one-med');
-  assert.equal(all.get('sid-2').medium.summary, 'two');
-  assert.equal(all.get('sid-2').long.summary, 'two-long');
-  assert.equal(all.get('sid-3').long.summary, 'three');
-});
-
-test('deleteSummaries removes all tiers and unlinks file when empty', async () => {
-  await setSummary('sid-A', 'short', { summary: 'x', generatedAt: 1, messageCount: 1 });
-  await setSummary('sid-A', 'long', { summary: 'y', generatedAt: 2, messageCount: 1 });
-
-  await deleteSummaries('sid-A');
-  assert.deepEqual(await getSummaries('sid-A'), {});
-
-  const file = path.join(orchStoreRoot(), 'session-summaries.json');
-  let exists = true;
-  try { await fs.stat(file); } catch (e) { if (e.code === 'ENOENT') exists = false; else throw e; }
-  assert.equal(exists, false, 'sidecar should be unlinked when empty');
+  assert.equal((await getSummaries('sid-1')).short.summary, 'one');
+  assert.equal((await getSummaries('sid-1')).medium.summary, 'one-med');
+  assert.equal((await getSummaries('sid-2')).medium.summary, 'two');
+  assert.equal((await getSummaries('sid-2')).long.summary, 'two-long');
+  assert.equal((await getSummaries('sid-3')).long.summary, 'three');
 });
 
 // ---------------------------------------------------------------------------
@@ -302,9 +286,9 @@ test('POST returns an ephemeral costUsd that is never persisted nor returned by 
     // carries a cost field.
     const tiers = await getSummaries(sid);
     assert.equal(tiers.short.costUsd, undefined);
-    const file = path.join(orchStoreRoot(), 'session-summaries.json');
+    const file = path.join(orchStoreRoot(), 'sessions.json');
     const raw = JSON.parse(await fs.readFile(file, 'utf8'));
-    assert.deepEqual(Object.keys(raw.summaries[sid].short).sort(), ['generatedAt', 'messageCount', 'summary']);
+    assert.deepEqual(Object.keys(raw.sessions[sid].summaries.short).sort(), ['generatedAt', 'messageCount', 'summary']);
 
     // Not in GET.
     const get = await api(baseUrl, 'GET', `/api/sessions/${sid}/summary`);
@@ -328,7 +312,7 @@ test('DELETE /api/projects/:name/sessions/:sid removes all tiers', async () => {
   const del = await api(baseUrl, 'DELETE', `/api/projects/del-sum/sessions/${sid}`);
   assert.equal(del.status, 200);
 
-  await new Promise(r => setTimeout(r, 50));
+  // Deleting the session's only transcript deletes its record, tiers included.
   assert.deepEqual(await getSummaries(sid), {});
 });
 

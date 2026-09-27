@@ -14,8 +14,7 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, settledSessionBackend } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.ts';
-import { isTemp, markTemp } from '../src/tempSessions.ts';
-import { isArchived } from '../src/archivedSessions.ts';
+import { isTemp, isArchived, setSegmentTemp, getSessionMode } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -137,7 +136,7 @@ test('a fork mints its OWN public id and never joins its ancestor\'s lineage', a
     });
     const parent = ctx.instances.get(r.body.id);
     await waitFor(() => parent.status === 'idle');
-    // Resumed from a seeded jsonl with no lineage row, so its public id is the
+    // Resumed from a seeded jsonl with no minted record, so its public id is the
     // full UUID it already had (the store's base case).
     assert.equal(parent.sessionId, sid);
 
@@ -153,11 +152,16 @@ test('a fork mints its OWN public id and never joins its ancestor\'s lineage', a
     // The fork has its own identity, and neither resolves to the other.
     assert.notEqual(child.sessionId, parent.sessionId);
     assert.equal(child.sessionId, fk.body.newSessionId,
-      'the fork\'s public id is its own fresh id (base case: no row, so id == filename)');
+      'the fork\'s public id is its own fresh id (base case: id == filename)');
     const { segmentsFor, publicIdFor, resolveBacking } = await import('../src/sessionLineage.ts');
-    assert.deepEqual(await segmentsFor(parent.sessionId), [],
+    // Each spawn's mode write gives its session a base-case record; wait for
+    // both so the chains below are read at rest.
+    await waitFor(async () => (await getSessionMode(parent.sessionId)) !== null);
+    await waitFor(async () => (await getSessionMode(child.sessionId)) !== null);
+    const chainOf = async (publicId) => (await segmentsFor(publicId)).map(s => [s.id, s.reason]);
+    assert.deepEqual(await chainOf(parent.sessionId), [[parent.sessionId, 'initial']],
       'the ancestor gained no segment — a fork is not a rotation');
-    assert.deepEqual(await segmentsFor(child.sessionId), []);
+    assert.deepEqual(await chainOf(child.sessionId), [[child.sessionId, 'initial']]);
     assert.equal(await publicIdFor(child.backingSessionId), child.sessionId,
       'the fork does not resolve to its ancestor');
     assert.equal(await resolveBacking(parent.sessionId), parent.sessionId,
@@ -226,16 +230,16 @@ test('fork prefill rides the new instance\'s first snapshot frame, consumed once
 // A fork of a temp session is itself temp, and the source is left alone. The
 // two footprints are disjoint by construction: the fork READS the source jsonl
 // and writes only the new id's jsonl + metadata, while a temp source's on-exit
-// archive touches only the sub-agent dir and the marker stores, both keyed on
+// archive touches only the sub-agent dir and the source's own segment, both keyed on
 // the SOURCE id. `_archiveTempSession` itself deletes no jsonl.
 
-// The temp marker lands via a fire-and-forget `markTemp()` in spawn(), so a
+// The temp flag lands via a fire-and-forget `setSegmentTemp()` in spawn(), so a
 // NEGATIVE assertion ("this id is not temp") has to be ordered after any write
 // the store already has queued. Every mutation runs on one per-process write
 // chain, so awaiting a mutation enqueued now resolves only once the ones ahead
-// of it have written. A positive assertion can just waitFor the marker.
+// of it have written. A positive assertion can just waitFor the flag.
 const FLUSH_SENTINEL = 'f1u5hf1u-5hf1-u5hf-1u5h-f1u5hf1u5hf1';
-async function flushTempStore() { await markTemp(FLUSH_SENTINEL); }
+async function flushTempStore() { await setSegmentTemp(FLUSH_SENTINEL, true); }
 
 // Two user prompts so a fork at index 1 copies a non-trivial prefix.
 const TEMP_SEED_LINES = [
@@ -276,7 +280,7 @@ test('fork on a temp session succeeds, and the fork is itself temp', async () =>
     assert.ok(fk.body.newSessionId && fk.body.newSessionId !== sid);
     assert.equal(fk.body.instance.temp, true, 'the fork summary reports temp');
 
-    // …and durably, not just on the summary: spawn() persists the marker.
+    // …and durably, not just on the summary: spawn() persists the flag.
     await waitFor(() => isTemp(fk.body.newSessionId));
 
     // The source is untouched — still temp, not archived, byte-identical.
@@ -305,7 +309,7 @@ test('a fork of a non-temp session is not temp', async () => {
 
     await flushTempStore();
     assert.equal(await isTemp(fk.body.newSessionId), false,
-      'no temp marker is written for a fork of a persistent session');
+      'no temp flag is written for a fork of a persistent session');
   } finally { await ctx.close(); }
 });
 
@@ -478,8 +482,8 @@ test('fork on an instance that never took a turn is refused 400', async () => {
 
 
 // ── the fork must carry the BACKEND ──────────────────────────────────────
-// forkSessionAtUserMessage copies the jsonl but writes no backend sidecar for
-// the new sessionId, so create()'s sidecar recovery finds nothing. If the fork
+// forkSessionAtUserMessage copies the jsonl but writes no backend record for
+// the new sessionId, so create()'s recorded-backend recovery finds nothing. If the fork
 // route omits `backend`, the new instance silently falls back to the identity
 // `claude` backend while keeping the substitution backend's foreign model id —
 // and because that model is non-null, the BACKEND_MODEL_MISSING guard never
@@ -532,7 +536,7 @@ test('fork carries backend + exact model + capacity to the new instance', async 
   } finally { await ctx.close(); }
 });
 
-test('the forked sessionId is recorded in the backend sidecar, so a later cold resume finds it', async () => {
+test('the forked sessionId has its backend recorded, so a later cold resume finds it', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await addBackend({

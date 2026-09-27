@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.ts';
 import { encodeCwd, transcriptRoot, localPlace } from '../src/projects.ts';
-import { getSessionBackend } from '../src/sessionBackends.ts';
+import { getSessionBackend } from '../src/sessionStore.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
@@ -227,11 +227,12 @@ export async function settle(turns = 3) {
   for (let i = 0; i < turns; i++) await new Promise(r => setImmediate(r));
 }
 
-// The sidecar backend record for a session, once spawn()'s write has landed.
-// spawn() is synchronous and fires markSessionBackend without awaiting it (see
-// src/instances.ts spawn()), so a 201 / `idle` / argv-dump wait can beat the
-// write by a handful of filesystem ops. Every post-spawn read of this store
-// waits here rather than sampling; returns the record.
+// A session's backend record, once spawn()'s write has landed. `sessionId` is
+// the PUBLIC id (or any of its segments). spawn() is synchronous and fires
+// setSessionBackend without awaiting it (see src/instances.ts spawn()), so a
+// 201 / `idle` / argv-dump wait can beat the write by a handful of filesystem
+// ops. Every post-spawn read of this fact waits here rather than sampling;
+// returns the record.
 export function settledSessionBackend(sessionId, opts) {
   return waitFor(async () => await getSessionBackend(sessionId), opts);
 }

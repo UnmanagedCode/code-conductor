@@ -12,7 +12,7 @@ import {
   findSelfProject, ensureSelfProjectWorkspace,
   adoptProject, listProjects, localPlace,
 } from '../src/projects.ts';
-import { markArchived } from '../src/archivedSessions.ts';
+import { setSegmentArchived } from '../src/sessionStore.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { localSystem } from '../src/systems/registry.ts';
 
@@ -539,7 +539,7 @@ test('GET /api/sessions/:sid/locate reports archived:true for an archived sessio
   await fs.mkdir(dir, { recursive: true });
   const sid = '77777777-8888-9999-aaaa-bbbbbbbbbbbb';
   await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
-  await markArchived(sid);
+  assert.equal(await setSegmentArchived(sid, true), true, 'precondition: the segment is archived');
   const r = await api(baseUrl, 'GET', `/api/sessions/${sid}/locate`);
   assert.equal(r.status, 200);
   assert.deepEqual(r.body, { project: 'host', worktreeName: null, archived: true });
