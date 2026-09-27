@@ -1046,10 +1046,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // currently attached to this sessionId so the active header chip
   // re-renders without a page reload.
   //
-  // 404 for an id no session answers to — no live instance, no store record,
-  // no transcript on disk. The store would otherwise create a base-case record
-  // for any well-formed id, and a mistyped one would join the prefix universe
-  // (InstanceManager._refOwners) for good.
+  // 404 for an id no session answers to — no in-memory instance answering to
+  // it, no store record, no transcript on disk. The store would otherwise create
+  // a base-case record for any non-minted-shaped id, and a mistyped one would
+  // join the prefix universe (InstanceManager._refOwners) for good. The checks
+  // run cheapest first: the transcript probe (findSessionLocation) can walk
+  // every project's places, remote worktree listings included.
   r.put('/sessions/:sessionId/title', async (req, res, next) => {
     try {
       const { sid } = await sidParam(req.params.sessionId);

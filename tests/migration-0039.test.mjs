@@ -205,6 +205,68 @@ test('a record whose segments all fail validation is dropped and counted', async
   assert.equal(res.summary.invalid, 2, 'one base record and one legacy row');
 });
 
+const baseRec = (id, extra = {}) => ({ current: id, segments: [{ id, reason: 'initial', at: '' }], ...extra });
+const R1 = '11111111-0000-4000-8000-000000000001';
+const R2 = '22222222-0000-4000-8000-000000000002';
+const R3 = '33333333-0000-4000-8000-000000000003';
+
+test('a missing primary merges onto its .bak, and both keep every record', async () => {
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json.bak', { sessions: { [R1]: baseRec(R1), [R2]: baseRec(R2), [R3]: baseRec(R3) } });
+  await writeJson(root, 'session-titles.json', { titles: { [LONE]: 'lone' } });
+  await run(root);
+  const all = [R1, R2, R3, LONE].sort();
+  assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json'))).sessions).sort(), all,
+    'the base is the backup, not an empty store');
+  assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json.bak'))).sessions).sort(), all);
+});
+
+test('a primary much thinner than .bak never overwrites the backup', async () => {
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: {} });
+  const bak = { sessions: { [R1]: baseRec(R1), [R2]: baseRec(R2), [R3]: baseRec(R3) } };
+  await writeJson(root, 'sessions.json.bak', bak);
+  await writeJson(root, 'session-titles.json', { titles: { [LONE]: 'lone' } });
+  await run(root);
+  assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json'))).sessions), [LONE]);
+  assert.deepEqual(await readJson(file(root, 'sessions.json.bak')), bak, 'the last-good backup survives');
+});
+
+// Every segment id → the records holding it.
+function owners(sessions) {
+  const out = new Map();
+  for (const [pub, rec] of Object.entries(sessions)) {
+    for (const seg of rec.segments) out.set(seg.id, [...(out.get(seg.id) ?? []), pub]);
+  }
+  return out;
+}
+
+test('a base-owned segment named by another record\'s legacy row stays in one record', async () => {
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: { [R1]: baseRec(R1), [R2]: baseRec(R2) } });
+  // R2's stale legacy row also names R1's segment, plus one of its own.
+  await writeJson(root, 'session-lineage.json', { sessions: { [R2]: { current: R3, segments: [
+    { id: R2, reason: 'initial', at: '' }, { id: R1, reason: 'renew', at: '' }, { id: R3, reason: 'renew', at: '' },
+  ] } } });
+  await run(root);
+  const { sessions } = await readJson(file(root, 'sessions.json'));
+  for (const [id, pubs] of owners(sessions)) assert.equal(pubs.length, 1, `${id} is in ${pubs.join(', ')}`);
+  assert.deepEqual(owners(sessions).get(R1), [R1]);
+  assert.deepEqual(sessions[R2].segments.map(s => s.id), [R2, R3], 'only the unclaimed segment is appended');
+});
+
+test('two legacy rows naming one segment leave it in one record', async () => {
+  const root = await mkRoot();
+  await writeJson(root, 'session-lineage.json', { sessions: {
+    aaaaaaaa: { current: R1, segments: [{ id: R1, reason: 'initial', at: '' }] },
+    bbbbbbbb: { current: R1, segments: [{ id: R2, reason: 'initial', at: '' }, { id: R1, reason: 'renew', at: '' }] },
+  } });
+  await run(root);
+  const { sessions } = await readJson(file(root, 'sessions.json'));
+  for (const [id, pubs] of owners(sessions)) assert.equal(pubs.length, 1, `${id} is in ${pubs.join(', ')}`);
+  assert.equal(sessions.bbbbbbbb.current, R2, 'current falls to a live segment the record actually holds');
+});
+
 test('(g) an absent archived primary falls back to its .bak', async () => {
   const root = await mkRoot();
   await fs.writeFile(file(root, 'archived-sessions.json.bak'), JSON.stringify({ sessions: [LONE] }));

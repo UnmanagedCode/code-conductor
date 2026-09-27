@@ -1668,7 +1668,7 @@ test('temp: archives session jsonl + removes subagents dir on subprocess exit', 
 
   const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
   assert.equal(del.status, 200);
-  // Wait for _archiveTempSession to complete — markArchived is the last write.
+  // Wait for _archiveTempSession to complete — retireSegment is the last write.
   await waitFor(() => isArchived(inst.backingSessionId));
   // .jsonl is retained for resumability — must still be on disk.
   await fsp.access(file);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { MAX_TITLE_LEN } from '../src/sessionTitles.ts';
-import { setTitle, getTitle, isArchived } from '../src/sessionStore.ts';
+import { setTitle, getTitle, isArchived, setSessionMode } from '../src/sessionStore.ts';
 import { orchStoreRoot, encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,6 +116,35 @@ test('PUT /api/sessions/:sid/title 404s for an id no session answers to, and wri
   const hit = await api(baseUrl, 'PUT', '/api/sessions/abc-123-real/title', { title: 'found' });
   assert.equal(hit.status, 200);
   assert.equal(await getTitle('abc-123-real'), 'found');
+});
+
+test('PUT /api/sessions/:sid/title accepts an id only the session store knows', async () => {
+  // No transcript on disk, no instance: the store record alone makes it a session.
+  const sid = 'rec-only-0000-4000-8000-000000000001';
+  await setSessionMode(sid, 'plan');
+  const put = await api(baseUrl, 'PUT', `/api/sessions/${sid}/title`, { title: 'from the record' });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(await getTitle(sid), 'from the record');
+});
+
+test('PUT /api/sessions/:sid/title accepts an id only a live instance answers to', async () => {
+  // A base-case session resumed live, then its transcript and its store record
+  // both lost underneath it (external loss): the in-memory instance is the only
+  // thing that still knows the id.
+  const sid = 'live-only-0000-4000-8000-000000000002';
+  await plantTranscript('live-only', sid);
+  const inst = await instances.create({ project: 'live-only', resume: sid });
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.sessionId, sid, 'premise: a base-case session is its own public id');
+  await fs.rm(path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'live-only')), `${sid}.jsonl`));
+  await fs.rm(path.join(orchStoreRoot(), 'sessions.json'), { force: true });
+  await fs.rm(path.join(orchStoreRoot(), 'sessions.json.bak'), { force: true });
+  assert.equal(await getTitle(sid), null, 'premise: the store has no record for it');
+
+  const put = await api(baseUrl, 'PUT', `/api/sessions/${sid}/title`, { title: 'from the instance' });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(inst.title, 'from the instance');
+  assert.equal(await getTitle(sid), 'from the instance');
 });
 
 test('PUT /api/sessions/:sid/title rejects bad input', async () => {

@@ -1294,9 +1294,10 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // Update the cached custom session title and broadcast the new
   // summary so all subscribed clients re-render the active header chip.
-  // Pass null/'' to clear. Callers (the PUT route, the resume hydration
-  // path) are responsible for the store write; this just updates the
-  // in-memory mirror.
+  // Pass null/'' to clear. This only updates the in-memory mirror: the one
+  // store writer is applySessionTitle (the PUT route and MCP
+  // set_session_title); the resume path's _hydrateTitle only reads the
+  // store into memory.
   setTitle(title: string | null): void {
     const next = (typeof title === 'string' && title.trim()) ? title.trim() : null;
     if (this.title === next) return;
@@ -2151,8 +2152,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and every resume path has already set it.
     if (resume) this.backingSessionId = resume;
     // Local capture: launch() has minted one by here on a fresh spawn, and the
-    // later method calls (setSegmentTemp / _hydrateTitle / getBackend) would reset
-    // property narrowing — the args block below needs a non-null id.
+    // method calls made after this point would reset property narrowing — the
+    // args block below needs a non-null id.
     const backingId = this.backingSessionId;
     if (!backingId) {
       // Unreachable via launch(), which is spawn()'s only caller: it mints when

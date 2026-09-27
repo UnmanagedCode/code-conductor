@@ -204,10 +204,14 @@ test('the .bak refresh refuses a write that drops two archived segments', async 
   assert.equal(bak[C].title, 'seed .bak');
 });
 
-test('an I/O error reading the primary aborts the mutation instead of reading as empty', async () => {
+test('an I/O error reading the primary aborts the mutation instead of reading as empty', async (t) => {
   // Unreadable (mode 000) but still replaceable by rename — so a mutation that
   // laundered the read error into an empty store would WRITE, and the primary's
-  // records would be gone. Needs a non-root uid: root reads through mode 000.
+  // records would be gone.
+  if (process.getuid?.() === 0) {
+    t.skip('runs as root: chmod 000 does not stop root reading, so the induced read error would not occur');
+    return;
+  }
   const root = await freshRoot();
   await setTitle(A, 'a');
   await fs.chmod(storeFile(root), 0o000);
@@ -230,14 +234,16 @@ test('an in-place rewrite that keeps inode, size and mtime is still seen (ctime)
   assert.equal(await getTitle(A), 'first', 'the cache is primed');
   const primed = await fs.stat(f, { bigint: true });
   const next = (await fs.readFile(f, 'utf8')).replace('"first"', '"other"');
-  // ctime ticks at the filesystem's timestamp granularity: rewrite until it moves.
+  // ctime ticks at the filesystem's timestamp granularity — as coarse as one
+  // second — so rewrite until it moves, for up to ~2.5 s; on a fine-grained
+  // filesystem the first pass already does.
   let after;
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 250; i++) {
     await fs.writeFile(f, next); // in place: same inode
     await fs.utimes(f, T, T);
     after = await fs.stat(f, { bigint: true });
     if (after.ctimeNs !== primed.ctimeNs) break;
-    await new Promise(r => setTimeout(r, 2));
+    await new Promise(r => setTimeout(r, 10));
   }
   assert.equal(after.ino, primed.ino, 'guard: same inode');
   assert.equal(after.size, primed.size, 'guard: same size');
