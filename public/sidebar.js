@@ -203,8 +203,8 @@ export class Sidebar {
     // The `.conduct` disk rows (GET /api/projects/.conduct/sessions): the
     // conductors that are not live, for the Conductors *Inactive* group.
     this.conductRows = [];
-    // GET /api/conductors/projects: root conductor sessionId → the projects it
-    // has ever spawned into, newest first. Feeds only the idle chips.
+    // GET /api/conductors/projects: root owner sessionId → the projects it has
+    // ever had a worker spawned into, newest first. Feeds only the idle chips.
     this.conductorSpawns = {};
     this.expandedConductors = new Set();    // key: conductor sessionId
     this.inactiveOpen = false;

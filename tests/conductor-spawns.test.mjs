@@ -89,7 +89,7 @@ test('spawnedProjectsByRoot attributes nested workers to the root, one entry per
 });
 
 test('the newest at wins across records whatever order they are stored in', () => {
-  // Map order is insertion order: W-a (newer) is visited before W-b (older).
+  // Map order is insertion order, so W-a is visited before W-b; both orders are checked.
   const doc = docOf({
     C: {},
     'W-a': { conducted: true, parent: 'C', project: 'p', ats: [T3] },
@@ -97,6 +97,13 @@ test('the newest at wins across records whatever order they are stored in', () =
   });
   assert.deepEqual([...doc.keys()], ['C', 'W-a', 'W-b'], 'fixture: the newer record is visited first');
   assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3 }]);
+  const mirrored = docOf({
+    C: {},
+    'W-a': { conducted: true, parent: 'C', project: 'p', ats: [T1] },
+    'W-b': { conducted: true, parent: 'C', project: 'p', ats: [T3] },
+  });
+  assert.deepEqual([...mirrored.keys()], ['C', 'W-a', 'W-b'], 'fixture: the older record is visited first');
+  assert.deepEqual(spawnedProjectsByRoot(mirrored).C, [{ project: 'p', lastSpawnAt: T3 }]);
 });
 
 test('lastSpawnAt counts a rotation segment, not only the initial one', () => {

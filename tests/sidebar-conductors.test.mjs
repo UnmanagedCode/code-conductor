@@ -95,6 +95,19 @@ test('a conductor with only recorded projects shows idle chips and no "no live w
   assert.deepEqual(chipsOf(conductorList, 'A'), ['p(idle)']);
 });
 
+test('a conductor whose recorded projects are all unregistered shows "no live workers"', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('other')],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'gone-1', lastSpawnAt: at(2) }, { project: 'gone-2', lastSpawnAt: at(1) }] },
+  });
+  const chips = [...conductorOf(conductorList, 'A').querySelectorAll('.conductor-chip')];
+  assert.equal(chips.length, 1);
+  assert.ok(chips[0].classList.contains('conductor-chip-none'));
+  assert.equal(chips[0].textContent, 'no live workers');
+});
+
 test('an inactive conductor shows its recorded projects as idle chips', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, {

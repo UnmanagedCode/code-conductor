@@ -1,4 +1,4 @@
-// GET /api/conductors/projects: the per-root-conductor spawned-projects map
+// GET /api/conductors/projects: the per-root-owner spawned-projects map
 // the Conductors lens's idle chips read, served over REST.
 
 import { test } from 'node:test';
@@ -10,7 +10,7 @@ const C = 'cccccccc-0000-4000-8000-000000000003';
 const W1 = 'dddddddd-0000-4000-8000-000000000004';
 const W2 = 'eeeeeeee-0000-4000-8000-000000000005';
 
-test('GET /api/conductors/projects returns each root conductor\'s spawned projects', async () => {
+test('GET /api/conductors/projects returns each root owner\'s spawned projects', async () => {
   const { baseUrl, close } = await bootServer();
   try {
     await setTitle(C, 'the conductor');

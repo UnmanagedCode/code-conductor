@@ -16,7 +16,7 @@ const APP = path.resolve(__dirname, '..', 'public', 'app.js');
 async function loadRefreshProjects() {
   const src = await fs.readFile(APP, 'utf8');
   const m = src.match(/^async function refreshProjects\(\) \{\n[\s\S]*?\n\}\n/m);
-  assert.ok(m, 'app.js defines a top-level async function refreshProjects()');
+  assert.ok(m, 'refreshProjects was renamed or reshaped; update this test\'s slice');
   return new Function('fetch', 'sidebar', 'state', `${m[0]}\nreturn refreshProjects;`);
 }
 

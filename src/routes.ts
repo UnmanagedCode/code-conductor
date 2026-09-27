@@ -1143,7 +1143,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     } catch (e) { next(e); }
   });
 
-  // Root conductor → the projects it has ever spawned a worker into (the
+  // Root owner → the projects it has ever had a worker spawned into (the
   // Conductors lens's idle chips). Read-only over the session store.
   r.get('/conductors/projects', async (_req, res, next) => {
     try { res.json(await conductorSpawnedProjects()); } catch (e) { next(e); }
