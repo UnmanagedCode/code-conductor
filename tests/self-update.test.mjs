@@ -9,6 +9,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getSelfUpdateStatus, applySelfUpdate } from '../src/selfUpdate.ts';
 import { buildRoutes } from '../src/routes.ts';
+import { ensureProjectConventionsMd } from '../src/projectClaudeMd.ts';
+import { makePluginRoot } from './plugin-helpers.mjs';
+import { registerLocalProject } from './helpers.mjs';
+import { bindRemoteSystem } from './remoteSystem.mjs';
+import { adoptProject, findSelfProject } from '../src/projects.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
@@ -229,5 +235,96 @@ test('routes: GET /api/settings/self-update returns status; POST streams NDJSON 
     if (prevRoot === undefined) delete process.env.SELF_UPDATE_REPO_ROOT; else process.env.SELF_UPDATE_REPO_ROOT = prevRoot;
     if (prevNpm === undefined) delete process.env.SELF_UPDATE_NPM_CMD; else process.env.SELF_UPDATE_NPM_CMD = prevNpm;
     await r.cleanup();
+  }
+});
+
+// ── Pulling past cc's own regenerated convention files ───────────────────────
+//
+// When cc's checkout is itself a registered project, cc regenerates its tracked
+// CONVENTIONS.md and prepends the import to its CLAUDE.md — the dirt below is
+// made by the real generator. The seed carries both files so both go ` M`.
+async function setupRegisterableRepo() {
+  const r = await setupRepo();
+  await r.pushUpstream('conventions', {
+    'CLAUDE.md': '# cc\n',
+    'CONVENTIONS.md': '<!-- cc:conventions -->\n\nAn upstream copy.\n',
+  });
+  await git(r.clone, 'pull', '-q', '--ff-only');
+  return r;
+}
+
+const snapshot = async (dir) => ({
+  conv: await fs.readFile(path.join(dir, 'CONVENTIONS.md'), 'utf8'),
+  claude: await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf8'),
+});
+
+test('applySelfUpdate: a registered checkout with cc-generated dirt pulls an upstream CONVENTIONS.md change', async () => {
+  const env = await makePluginRoot();
+  const r = await setupRegisterableRepo();
+  try {
+    await registerLocalProject('cc-self', r.clone);
+    assert.equal((await ensureProjectConventionsMd('cc-self')).regenerated, true, 'precondition: the generator wrote the file');
+    await r.pushUpstream('v2', { 'CONVENTIONS.md': '<!-- cc:conventions -->\n\nA newer copy.\n', 'server.txt': 'v2' });
+
+    const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: 'true' });
+    assert.equal(result.ok, true);
+    assert.equal(await fs.readFile(path.join(r.clone, 'server.txt'), 'utf8'), 'v2');
+    const after = await snapshot(r.clone);
+    await ensureProjectConventionsMd('cc-self');
+    assert.deepEqual(await snapshot(r.clone), after, 'the checkout holds a fresh regeneration');
+    assert.equal(after.claude, '@CONVENTIONS.md\n# cc\n');
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('applySelfUpdate: an unregistered checkout is never touched — the same dirt refuses with 502 as before', async () => {
+  const env = await makePluginRoot();
+  const r = await setupRegisterableRepo();
+  try {
+    // The generator's bytes, carried over from a registered twin, so the dirt is
+    // exactly what cc would write — but no project names this checkout.
+    const twin = path.join(env.root, 'twin');
+    await git(env.root, 'clone', '-q', r.remote, 'twin');
+    await registerLocalProject('twin', twin);
+    await ensureProjectConventionsMd('twin');
+    for (const f of ['CONVENTIONS.md', 'CLAUDE.md']) await fs.copyFile(path.join(twin, f), path.join(r.clone, f));
+    const before = await snapshot(r.clone);
+    await r.pushUpstream('v2', { 'CONVENTIONS.md': '<!-- cc:conventions -->\n\nA newer copy.\n' });
+
+    let err;
+    try { await applySelfUpdate({ repoRoot: r.clone, npmCmd: 'true' }); } catch (e) { err = e; }
+    assert.equal(err?.statusCode, 502);
+    assert.deepEqual(await snapshot(r.clone), before);
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});
+
+test('applySelfUpdate: a checkout matched only by a project on a remote system is treated as unregistered', async () => {
+  const env = await makePluginRoot();
+  const r = await setupRegisterableRepo();
+  try {
+    // The reference provider IS this machine, so a remote project at the
+    // checkout's own absolute path resolves to the same tree by realpath.
+    const remote = await bindRemoteSystem();
+    const adopted = await adoptProject('cc-remote', await fs.realpath(r.clone), { system: remote.id });
+    assert.equal(adopted.ok, true, JSON.stringify(adopted));
+    assert.equal((await findSelfProject(r.clone))?.name, 'cc-remote', 'precondition: findSelfProject pairs them');
+    await ensureProjectConventionsMd('cc-remote');
+    const before = await snapshot(r.clone);
+    assert.notEqual(before.claude, '# cc\n', 'precondition: the generator wrote the import');
+    await r.pushUpstream('v2', { 'CONVENTIONS.md': '<!-- cc:conventions -->\n\nA newer copy.\n' });
+
+    let err;
+    try { await applySelfUpdate({ repoRoot: r.clone, npmCmd: 'true' }); } catch (e) { err = e; }
+    assert.equal(err?.statusCode, 502);
+    assert.deepEqual(await snapshot(r.clone), before);
+  } finally {
+    disposeSystemHandles();
+    await r.cleanup();
+    await env.restore();
   }
 });

@@ -7,7 +7,9 @@ import { httpError } from './httpError.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
 // Self-update operates on cc's OWN checkout — always the local system, never a
 // project on one.
-import { localSystem } from './systems/registry.ts';
+import { localSystem, LOCAL_SYSTEM_ID } from './systems/registry.ts';
+import { findSelfProject } from './projects.ts';
+import { pullPastGeneratedConventions } from './conventionsCheckout.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.ts). The conductor is distributed as a git clone
@@ -94,7 +96,9 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
 
 // Apply an update: `git pull --ff-only` in the repo root, then `npm install`
 // iff the pull moved a dependency manifest. `--ff-only` never mutates on
-// failure (diverged/dirty/no-remote all refuse cleanly) — surface the tail.
+// failure (diverged/dirty/no-remote all refuse cleanly) — surface the tail;
+// the only pre-pull change is the discard of cc's own generated files, which
+// the regeneration after the pull restores either way.
 // onValidated flips the route into NDJSON streaming (nothing done before it);
 // onChunk(phase, text) streams live pull/npm output. Returns restartRequired
 // so the caller knows to bounce the process; the restart itself is NOT done
@@ -121,11 +125,25 @@ export async function applySelfUpdate({
 
   onValidated?.();
 
-  const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t) });
-  if (pull.code !== 0) {
-    const tail = (pull.stderr || pull.stdout || '').slice(-TAIL_CAP);
-    throw httpError(502, 'git pull --ff-only failed', { tail });
-  }
+  // A checkout registered as a project carries cc's own regenerated
+  // CONVENTIONS.md/CLAUDE.md; they are discarded before the pull and
+  // regenerated after it (src/conventionsCheckout.ts). An unregistered one is
+  // never written by cc, so it is pulled untouched — and so is one paired only
+  // with a project on another system, which regeneration would write through
+  // while classification reads this local tree.
+  const self = await findSelfProject(repoRoot);
+  const project = self && self.system === LOCAL_SYSTEM_ID ? self.name : null;
+  await pullPastGeneratedConventions({
+    system: localSystem(), dir: repoRoot, project,
+    note: (t) => onChunk?.('pull', t),
+    run: async () => {
+      const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t) });
+      if (pull.code !== 0) {
+        const tail = (pull.stderr || pull.stdout || '').slice(-TAIL_CAP);
+        throw httpError(502, 'git pull --ff-only failed', { tail });
+      }
+    },
+  });
 
   // Which tracked files did the pull move? If any is a dependency manifest,
   // run npm install before the restart so the new deps are on disk. If the

@@ -10,6 +10,7 @@ import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import { localSystem } from '../systems/registry.ts';
+import { pullPastGeneratedConventions } from '../conventionsCheckout.ts';
 import { getPluginLibrarySettings } from '../appSettings.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
@@ -528,24 +529,34 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
     const { name } = projectNameFor(entry);
 
-    let target: string | null = null;
-    try { target = (await resolveProjectDir(name))?.path ?? null; } catch { target = null; }
-    if (!target) throw httpError(404, `'${name}' is not installed`);
+    let resolved: Awaited<ReturnType<typeof resolveProjectDir>> = null;
+    try { resolved = await resolveProjectDir(name); } catch { resolved = null; }
+    if (!resolved) throw httpError(404, `'${name}' is not installed`);
+    const target = resolved.path;
 
     // Past this point we're actually doing work (pull + hook) — the route
     // uses this as the signal to switch its response into streaming mode.
     onValidated?.();
 
-    // ff-only never mutates on failure (diverged/dirty/no-remote/not-a-repo
-    // all refuse cleanly) — surface the tail rather than attempting a merge.
-    const pullResult = await pull(target, { onChunk: (text) => onChunk?.('pull', text) });
-    if (pullResult.code !== 0) {
-      const tail = (pullResult.stderr || pullResult.stdout || '').slice(-4000);
-      throw httpError(502, `git pull failed for '${name}'`, { tail });
-    }
-
-    // A pulled manifest/version bump should surface immediately, same as install().
-    if (pluginHost) await pluginHost.rescan();
+    // cc's own regenerated CONVENTIONS.md/CLAUDE.md are discarded before the
+    // pull and regenerated after it, on failure too (src/conventionsCheckout.ts).
+    // ff-only itself never mutates on failure (diverged/dirty/no-remote/
+    // not-a-repo all refuse cleanly) — surface the tail rather than attempting
+    // a merge. The rescan runs before the regeneration so a plugin selecting
+    // its own fragments composes them from the pulled text.
+    await pullPastGeneratedConventions({
+      system: resolved.system, dir: target, project: name,
+      note: (text) => onChunk?.('pull', text),
+      run: async () => {
+        const pullResult = await pull(target, { onChunk: (text) => onChunk?.('pull', text) });
+        if (pullResult.code !== 0) {
+          const tail = (pullResult.stderr || pullResult.stdout || '').slice(-4000);
+          throw httpError(502, `git pull failed for '${name}'`, { tail });
+        }
+        // A pulled manifest/version bump should surface immediately, same as install().
+        if (pluginHost) await pluginHost.rescan();
+      },
+    });
 
     const postPull = await runHook(entry.postPull, target, (text) => onChunk?.('hook', text));
     // Resolve the eligible-to-restart set FIRST, before looking at postPull —
