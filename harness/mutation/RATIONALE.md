@@ -130,11 +130,11 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
 - **The miss this rule exists to prevent:** naming "three files that use `describe`" —
   `backend-spawn`, `backend-registry`, `mcp-inspect-tools` — with "everything else is top-level" as
   the implied consequence is wrong. Re-derived
-  (`rg -l '^describe\(' tests/*.test.mjs`), the real count is **eight**: those three plus
-  `mcp-instance-order`, `model-versions`, `session-backends`, `mcp-text-render`, `spawn-effort`. Such
+  (`rg -l '^describe\(' tests/*.test.mjs`), the real set was larger: those three plus
+  `mcp-instance-order`, `model-versions`, `mcp-text-render`, `spawn-effort` and more. Such
   a list goes stale silently — nothing re-checks an enumeration like that — and "everything else is
   top-level" is precisely the false reassurance rule 1 exists to prevent: it sends an agent
-  hand-constructing a leaf-only id against one of the five missing files, straight into the
+  hand-constructing a leaf-only id against one of the missing files, straight into the
   `IMPRECISE (extra-failures)` trap above. The fix is to never enumerate the files at all — check
   with the `rg` command above, which cannot go stale because it *is* the definition — which is why
   README rule 1 does not name any files.

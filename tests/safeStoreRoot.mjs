@@ -1,9 +1,9 @@
-// Test-suite store isolation. The orchestrator's sidecar stores resolve their
+// Test-suite store isolation. The orchestrator's stores resolve their
 // on-disk root from `PROJECTS_ROOT` (src/projects.ts), falling back to a
 // SOURCE-RELATIVE default (`src/../..`) when it is unset — which, run from this
 // checkout, is the parent of the repo: the REAL production `.code-conductor`.
 // A test that touches a store with `PROJECTS_ROOT` unset therefore corrupts the
-// live archived-sessions store. This module is the backstop: `run.mjs` pins the
+// live session store (`sessions.json`). This module is the backstop: `run.mjs` pins the
 // whole run to a throwaway temp root, `helpers.mjs` restores to it, and
 // `assertStoreIsolated` fails loudly if any resolved store path would still land
 // in the real workspace.
@@ -43,7 +43,7 @@ export function assertStoreIsolated(storeRoot) {
   const resolved = path.resolve(storeRoot);
   if (resolved === REAL_STORE_DIR || resolved.startsWith(REAL_STORE_DIR + path.sep)) {
     throw new Error(
-      `test isolation breach: archived-sessions store would resolve to the REAL ` +
+      `test isolation breach: the session store (sessions.json) would resolve to the REAL ` +
       `production workspace store at ${resolved} — refusing to run (set PROJECTS_ROOT).`,
     );
   }

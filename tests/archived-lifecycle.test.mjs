@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { ensureConductProject } from '../src/conduct.ts';
 import { encodeCwd, projectsRoot } from '../src/projects.ts';
-import { isArchived, markArchived } from '../src/archivedSessions.ts';
+import { isArchived, setSegmentArchived } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -29,7 +29,7 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived sidecar
+    const sid = inst.backingSessionId;   // filenames + the archived segment flag
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const cwd = inst.cwd;
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, cwd, sid);
@@ -69,7 +69,7 @@ test('restore drops the session from /api/archived and clears the archived flag'
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife2', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived sidecar
+    const sid = inst.backingSessionId;   // filenames + the archived segment flag
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst.cwd, sid);
 
@@ -95,7 +95,7 @@ test('permanent delete from the archive removes the .jsonl AND unmarks archived 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife3', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived sidecar
+    const sid = inst.backingSessionId;   // filenames + the archived segment flag
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst.cwd, sid);
 
@@ -148,7 +148,7 @@ test('.conduct archived sessions appear in /api/archived and are restorable', as
     await fs.writeFile(path.join(sessionDir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
 
     // Mark it archived (simulates what happens when a conductor temp session is killed).
-    await markArchived(sid);
+    await setSegmentArchived(sid, true);
     assert.equal(await isArchived(sid), true);
 
     // /api/archived must include a group for .conduct containing our session.

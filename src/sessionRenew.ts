@@ -325,19 +325,13 @@ export class SessionRenewController {
     // tool call and the actual clear firing.
     const stateBlock = buildStateBlock(this.manager, id);
     const seed = buildRenewSeed({ ...p.opts, stateBlock });
-    const oldSid = p.oldSid;
     // One-shot: settle state — and CLOSE the rotation window — before the reseed
     // turn opens, so the hub stops deferring and the reseed's turn_end is what
     // delivers the wake. comesUpIdle:false: that turn follows by construction.
     this._clear(id, { ok: true });
-    // Carry the caller's durable, sessionId-keyed markers (temp/conducted/title)
-    // onto the rotated id and archive the abandoned pre-clear session. This is
-    // the ONE place holding both ids, so it owns the carry. Fire-and-forget: the
-    // method self-sequences (new id marked first, old id archived last) and is
-    // best-effort, so it never blocks or throws into the reseed below. See
-    // Instance.carryMarkersAcrossRenewal for why _writeSessionMetadata's
-    // incidental re-write on the next turn_end isn't sufficient.
-    inst.carryMarkersAcrossRenewal(oldSid).catch(() => {});
+    // Nothing to carry: session facts are keyed by the public id, and the
+    // rotation write kicked in system/init already archived the pre-clear
+    // segment and passed temp to the new one.
     // Wait for the rotation to be DURABLE before the reseed opens a turn against
     // the new backing id. The write was kicked in the system/init handler (the
     // earliest possible moment), so this normally resolves instantly. On failure

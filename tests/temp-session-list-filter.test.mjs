@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
+import { isArchived } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -80,8 +81,7 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     const del = await api(baseUrl, 'DELETE', `/api/instances/${tempId}`);
     assert.equal(del.status, 200);
     await waitFor(() => !instances.get(tempId));
-    // Give the async archive sidecar write a moment to land.
-    const { isArchived } = await import('../src/archivedSessions.ts');
+    // Give the async archive write to the session store a moment to land.
     await waitFor(async () => isArchived(tempSid));
 
     // .jsonl is kept (archived, not deleted).
@@ -122,7 +122,6 @@ test('temp session jsonl that survives on disk reappears in the list after the l
     // the default list but visible via ?includeArchived=1.
     await api(baseUrl, 'DELETE', `/api/instances/${tempRes.body.id}`);
     await waitFor(() => instances.get(tempRes.body.id) === undefined);
-    const { isArchived } = await import('../src/archivedSessions.ts');
     await waitFor(async () => isArchived(tempSid));
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });

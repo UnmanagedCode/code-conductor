@@ -1,7 +1,7 @@
 // Spawn on a SUBSTITUTION backend: the uniform `{TEMPLATE} {CLAUDE_ARGS}` builder
 // (the backend's template + the SAME claude args, so `--model <id>` appears twice
-// — confirmed harmless), the backend's env injection, the sid→{backend,model}
-// sidecar written at spawn + the tagged model recovered on resume (over the CLI's
+// — confirmed harmless), the backend's env injection, the session record's
+// {backend,model} written at spawn + the tagged model recovered on resume (over the CLI's
 // bare jsonl report), the setModel live-switch gate, tier/role→{backend,model} MCP
 // resolution, the launch_failed crash signal, the null-model guards, and the bare
 // MCP resume restoring the recorded backend (the one surface that alone dropped it).
@@ -23,8 +23,8 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBacken
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
-import { hasSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
-import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from '../src/projects.ts';
+import { getSessionBackend, setSessionBackend, sessionsFile } from '../src/sessionStore.ts';
+import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -86,17 +86,18 @@ describe('substitution-backend spawn command/args', () => {
     assert.equal(summary.backendKind, undefined); // renamed away, not aliased
   });
 
-  test('the backend id + tagged model is written to the sidecar at spawn', async () => {
+  test('the backend id + tagged model is written to the session record at spawn', async () => {
     const { inst } = await spawnOnBackend({ model: 'gemma4:cloud' });
-    const rec = await settledSessionBackend(inst.backingSessionId);
-    assert.equal(await hasSessionBackend(inst.backingSessionId), true);
+    const rec = await settledSessionBackend(inst.sessionId);
+    const doc = JSON.parse(await fs.readFile(sessionsFile(), 'utf8'));
+    assert.deepEqual(doc.sessions[inst.sessionId]?.backend, rec, 'the backend sits on the public-id record');
     // `gemma4:cloud` is neither a curated preset nor a custom-model row here, so
     // its capacity is genuinely unknown — recorded as null, never a 200k guess.
     assert.deepEqual(rec, { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
   });
 
   // The generalization under test: a USER-DEFINED row drives the launch from its
-  // own template, gets its own env injected, and records its own id in the sidecar.
+  // own template, gets its own env injected, and records its own id on the session.
   test('a user-defined backend launches from its template, injects its env, and marks its own id', async () => {
     await addBackend({
       id: 'my-proxy', label: 'My Proxy',
@@ -115,7 +116,7 @@ describe('substitution-backend spawn command/args', () => {
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
     assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
     assert.equal(summary.contextWindowTokens, 300_000);
-    assert.deepEqual(await settledSessionBackend(inst.backingSessionId),
+    assert.deepEqual(await settledSessionBackend(inst.sessionId),
       { backend: 'my-proxy', model: 'mine:v2', contextWindowTokens: 300_000 });
   });
 
@@ -296,36 +297,48 @@ describe('substitution-backend spawn command/args', () => {
   });
 });
 
-// The write at src/instances.ts spawn() is fire-and-forget, so the 201 + idle can
-// beat it by a handful of filesystem ops (1 failure in 26 full-suite runs before
-// this test existed). Forced deterministically here by holding the store's own
-// advisory lock across the spawn: storeLock.ts reclaims a held lock ONLY when the
-// owner PID is dead, so while this test's live PID owns it, withLock inside
-// markSessionBackend cannot enter and the write CANNOT have landed. That is a hard
-// mutual-exclusion barrier, not a delay — no sleeps, no wall-clock thresholds, and
-// the guarantee does not weaken under host load.
-describe('a sidecar write that lands after the spawn response', () => {
+// The backend write in Instance.spawn() is fire-and-forget, so the 201 + idle can
+// beat it by a handful of filesystem ops. Forced deterministically here by
+// holding the store's own advisory lock across the spawn: storeLock.ts reclaims a
+// held lock ONLY when the owner PID is dead, so while this test's live PID owns
+// it, withLock inside setSessionBackend cannot enter and the write CANNOT have
+// landed. That is a hard mutual-exclusion barrier, not a delay — no sleeps, no
+// wall-clock thresholds, and the guarantee does not weaken under host load.
+// Driven through a RESUME with an explicit backend + model: a fresh spawn awaits
+// mintPublicId under the same lock before spawn(), so holding it would stall the
+// launch itself rather than just the backend write.
+describe('a session-backend write that lands after the spawn response', () => {
   test('is waited for, not sampled', async () => {
-    const lockPath = path.join(orchStoreRoot(), 'session-backends.json.lock');
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const cwd = path.join(projectsRoot, 'p');
+    const sid = 'abababab-0000-0000-0000-000000000000';
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
+    const lockPath = sessionsFile() + '.lock';
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
     await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
     let released = false;
     try {
-      const { inst } = await spawnOnBackend({ model: 'gemma4:cloud' });
-      const sid = inst.backingSessionId;
+      const inst = await instances.create({
+        project: 'p', resume: sid, mode: 'bypassPermissions', backend: 'ollama', model: 'gemma4:cloud',
+      });
+      await waitFor(() => inst.status === 'idle');
+      assert.equal(inst.sessionId, sid, 'premise: an unrotated session resumes under its own id');
       // THE FORCING ASSERTION. With the lock held the write cannot have landed, so
       // an un-waited read must miss. If this ever passes, the forcing silently
       // stopped working (store path/filename moved, or the write stopped being
       // lock-guarded) and everything below it would prove nothing.
-      assert.equal(await hasSessionBackend(sid), false,
-        'forcing engaged: the sidecar write is blocked on the held lock');
+      assert.equal(await getSessionBackend(sid), null,
+        'forcing engaged: the session-backend write is blocked on the held lock');
       await fs.unlink(lockPath); released = true;
       // NEGATIVE CONTROL — to re-verify this test still bites, change
       // `settledSessionBackend(sid)` below to `getSessionBackend(sid)` and re-run
       // this file alone: it should fail with `AssertionError: null !== { … }` on
       // the overwhelming majority of runs. This is NOT fully deterministic like
       // the forcing assertion above: once the lock is unlinked, the pending
-      // `markSessionBackend` write is still racing its own retry backoff timer
+      // `setSessionBackend` write is still racing its own retry backoff timer
       // (storeLock.ts) against this immediate read, with nothing synchronizing
       // the two — on rare adverse scheduling the retry could win and the swap
       // would pass. A pass on this recipe means "re-run it", not "this test no
@@ -681,7 +694,7 @@ describe('null-model guards', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
-    await markSessionBackend(sid, 'fixedwrap');
+    await setSessionBackend(sid, 'fixedwrap');
 
     await assert.rejects(
       () => instances.create({ project: 'p', resume: sid }),
@@ -703,7 +716,7 @@ describe('null-model guards', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
-    await markSessionBackend(sid, 'ollama'); // sidecar says which backend, model unknown
+    await setSessionBackend(sid, 'ollama'); // the record says which backend, model unknown
     await assert.rejects(
       () => instances.create({ project: 'p', resume: sid }),
       /no resolvable model|BACKEND_MODEL_MISSING/,
@@ -712,7 +725,7 @@ describe('null-model guards', () => {
 });
 
 // A backend can be removed while a session that ran on it still exists. The
-// sidecar still names it, so resume must refuse clearly rather than fall back to
+// session record still names it, so resume must refuse clearly rather than fall back to
 // `claude` while keeping the foreign model id — which spawns a real
 // `claude --model <foreign-id>` that fails deep inside the CLI.
 describe('resume onto a since-removed backend', () => {
@@ -724,8 +737,8 @@ describe('resume onto a since-removed backend', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
-    // The sidecar names a backend that was never registered (equivalently: removed).
-    await markSessionBackend(sid, 'gone-proxy', 'mine:v1');
+    // The session record names a backend that was never registered (equivalently: removed).
+    await setSessionBackend(sid, 'gone-proxy', 'mine:v1');
 
     await assert.rejects(
       () => instances.create({ project: 'p', resume: sid }),
@@ -746,13 +759,13 @@ describe('resume onto a since-removed backend', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
-    await markSessionBackend(sid, 'back-again', 'mine:v1');
+    await setSessionBackend(sid, 'back-again', 'mine:v1');
 
     await addBackend({ id: 'back-again', label: 'Back Again', template: 'backagain claude --model {model} --' });
     const inst = await instances.create({ project: 'p', resume: sid });
     await waitFor(() => inst.status === 'idle');
     assert.equal(inst.backend, 'back-again');
-    assert.equal(inst.model, 'mine:v1', "the sidecar's tagged model is still preferred");
+    assert.equal(inst.model, 'mine:v1', "the recorded tagged model is still preferred");
   });
 });
 
@@ -1016,7 +1029,7 @@ describe('resume recovers the tagged model from the backend store', () => {
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n' +
         JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'deepseek-v4-flash', content: [] }, sessionId: sid }) + '\n');
       // Store holds the FULL tag (written at the original spawn).
-      await markSessionBackend(sid, 'ollama', 'deepseek-v4-flash:cloud');
+      await setSessionBackend(sid, 'ollama', 'deepseek-v4-flash:cloud');
 
       const inst = await instances.create({ project: 'p', resume: sid }); // no explicit model
       await waitFor(() => inst.status === 'idle');
@@ -1034,12 +1047,12 @@ describe('resume recovers the tagged model from the backend store', () => {
 });
 
 // ── MCP resume restores the recorded backend ────────────────────────────────
-// REST leaves `backend` null on a resume, so _doCreateResolved's sidecar
+// REST leaves `backend` null on a resume, so _doCreateResolved's recorded-backend
 // recovery runs there — every describe above pins it through instances.create().
 // The MCP surface alone did NOT: resolveSpawnModel initialised `backend` to
 // 'claude' unconditionally, so a bare spawn_instance({resume}) forwarded
 // backend:'claude' as if the caller had named it, explicitBackend was truthy,
-// the whole sidecar block was skipped, and the session came back on the real
+// the whole recorded-backend block was skipped, and the session came back on the real
 // Anthropic CLI keeping its foreign --model. These tests drive BOTH spawns
 // through the real /mcp transport — nothing here may go through
 // instances.create(), which is the surface that already worked.
@@ -1057,7 +1070,7 @@ describe('MCP resume restores the recorded backend', () => {
   }
   const meta = (result) => JSON.parse(result.content[0].text);
   // The decoy model written into the seeded jsonl — deliberately different
-  // from the sidecar's `stealth/ox-alpha` so the sidecar-over-jsonl precedence
+  // from the recorded `stealth/ox-alpha` so the record-over-jsonl precedence
   // pins can discriminate. The fixture guard in spawnThenResume asserts both
   // halves of that "deliberately".
   const DECOY_JSONL_MODEL = 'claude-opus-4-8';
@@ -1088,17 +1101,18 @@ describe('MCP resume restores the recorded backend', () => {
       const first = meta(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'stealth/ox-alpha' }));
       const sid = first.sessionId; // the PUBLIC id — the conductor's only handle
       await waitFor(() => liveForSession(sid)?.status === 'idle');
-      // The sidecar and the transcript are keyed by the BACKING id (the CLI-
-      // minted one), not the public handle; resolve it off the tracked instance.
+      // The transcript is named by the BACKING id (the CLI-minted one), not the
+      // public handle; resolve it off the tracked instance. The backend record
+      // is keyed by the public handle.
       const inst0 = instances.get(instances.idsForSession(sid)[0]);
       const backing = inst0.backingSessionId;
-      const rec = await settledSessionBackend(backing); // spawn()'s write is fire-and-forget
+      const rec = await settledSessionBackend(sid); // spawn()'s write is fire-and-forget
 
       // The fake engine writes no transcript, so seed the resumable jsonl by
       // hand (hasResumableConversation gates the resume at _doCreateResolved);
       // the file is named by the backing id, like every real transcript. Its
-      // assistant line reports a DIFFERENT model than the sidecar carries, so
-      // the resume assertions below also pin sidecar-over-jsonl precedence —
+      // assistant line reports a DIFFERENT model than the record carries, so
+      // the resume assertions below also pin record-over-jsonl precedence —
       // they fail if that ordering is ever inverted.
       const cwd = path.join(projectsRoot, 'p');
       const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
@@ -1107,9 +1121,9 @@ describe('MCP resume restores the recorded backend', () => {
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: backing }) + '\n' +
         JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: DECOY_JSONL_MODEL, content: [] }, sessionId: backing }) + '\n');
 
-      // FIXTURE GUARD: the sidecar-over-jsonl precedence pins below are only
+      // FIXTURE GUARD: the record-over-jsonl precedence pins below are only
       // discriminating while the two recovery sources DISAGREE — if this seed
-      // ever decays into agreement with the sidecar, dropping the sidecar's
+      // ever decays into agreement with the record, dropping the record's
       // model recovery would turn those assertions green. Fail loudly here
       // instead of proving nothing.
       const seededLines = (await fs.readFile(path.join(dir, `${backing}.jsonl`), 'utf8'))
@@ -1117,7 +1131,7 @@ describe('MCP resume restores the recorded backend', () => {
       const seededModel = seededLines.find(l => l.type === 'assistant')?.message?.model;
       assert.equal(seededModel, DECOY_JSONL_MODEL, 'the decoy assistant line landed in the seeded jsonl');
       assert.notEqual(seededModel, rec?.model,
-        'fixture decayed: the seeded jsonl agrees with the sidecar model, so the sidecar-over-jsonl assertions below are vacuous');
+        'fixture decayed: the seeded jsonl agrees with the recorded model, so the record-over-jsonl assertions below are vacuous');
 
       // REQUIRED before resuming: create() REFUSES a resume whose session is
       // still attached to a running instance (409, src/instances.ts create()),
@@ -1132,7 +1146,7 @@ describe('MCP resume restores the recorded backend', () => {
       if (argvDump) process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
       // Resume by the PUBLIC handle — the exact call the card reported. Bare
       // unless the caller overrides: no model, no backend, everything recovered
-      // from the sidecar.
+      // from the session record.
       const resumed = meta(await callTool('spawn_instance', { project: 'p', resume: sid, ...resumeArgs }));
       await waitFor(() => liveForSession(sid)?.status === 'idle');
       return { first, sid, resumed };
@@ -1154,11 +1168,11 @@ describe('MCP resume restores the recorded backend', () => {
       assert.equal(first.model, 'stealth/ox-alpha');
       assert.equal(first.contextWindowTokens, 321_000);
 
-      // The bare resume recovers all three from the sidecar.
+      // The bare resume recovers all three from the session record.
       assert.equal(resumed.sessionId, sid);
       assert.equal(resumed.backend, 'openrouter-test', 'the recorded backend, not claude');
       assert.equal(resumed.model, 'stealth/ox-alpha',
-        "the sidecar's exact model, not the jsonl's claude-opus-4-8 report");
+        "the recorded exact model, not the jsonl's claude-opus-4-8 report");
       assert.equal(resumed.contextWindowTokens, 321_000);
 
       // The real launch, not just the summary field: the resumed worker actually
@@ -1186,15 +1200,15 @@ describe('MCP resume restores the recorded backend', () => {
   });
 
   // The other half of the recovery contract, pinned nowhere else in the suite:
-  // an EXPLICITLY named model on a resume wins over the session's sidecar
+  // an EXPLICITLY named model on a resume wins over the session's backend
   // record — both axes, because naming a model whose registry row binds
   // elsewhere names its backend through resolveSpawnModel (spawn_instance has
   // no `backend` argument). The chosen model therefore belongs to a DIFFERENT
-  // backend than the sidecar's, so losing the override is observable in which
+  // backend than the recorded one, so losing the override is observable in which
   // launch template fires — not just in the summary field.
-  test('an MCP resume with an explicitly named model beats the sidecar pair', async () => {
+  test('an MCP resume with an explicitly named model beats the recorded pair', async () => {
     // gemma4:cloud → ollama: resuming with it names backend 'ollama' while the
-    // sidecar still says openrouter-test/stealth/ox-alpha.
+    // record still says openrouter-test/stealth/ox-alpha.
     await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 111_000 });
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-resume-explicit-'));
     try {
@@ -1203,7 +1217,7 @@ describe('MCP resume restores the recorded backend', () => {
 
       assert.equal(resumed.model, 'gemma4:cloud');
       assert.equal(resumed.backend, 'ollama',
-        'the explicitly resolved backend wins — the sidecar record must not overwrite it');
+        'the explicitly resolved backend wins — the session record must not overwrite it');
 
       // The override reaches the real launch: ollama's template prefix (after
       // token 0), not openrouter-test's.
@@ -1216,7 +1230,7 @@ describe('MCP resume restores the recorded backend', () => {
     }
   });
 
-  // The sidecar BACKEND_GONE door (_doCreateResolved, claimed by docs/models.md
+  // The recorded-backend BACKEND_GONE door (_doCreateResolved, claimed by docs/models.md
   // "Missing backends are refused") was dead code from MCP before the fix: the
   // asserted 'claude' bypassed it and such a resume launched real
   // `claude --model <foreign-id>` — billed. Mirrors the REST-side test in
@@ -1229,9 +1243,9 @@ describe('MCP resume restores the recorded backend', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
-    // A genuinely resumable session whose sidecar names a never-registered
+    // A genuinely resumable session whose record names a never-registered
     // (equivalently: removed) backend.
-    await markSessionBackend(sid, 'gone-proxy', 'mine:v1');
+    await setSessionBackend(sid, 'gone-proxy', 'mine:v1');
 
     const result = await callTool('spawn_instance', { project: 'p', resume: sid }); // no model, no backend
     assert.equal(result.isError, true, JSON.stringify(result));

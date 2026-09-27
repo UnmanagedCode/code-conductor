@@ -447,7 +447,7 @@ export async function loadPersistedTranscript(options: {
 //
 // The CLI records this id LOSSILY (any `[1m]` build tag and `:tag` variant
 // dropped), so it is a last-resort recovery source only: on a substitution
-// backend the session sidecar's exact id wins, because that string is the
+// backend the session store's exact id wins, because that string is the
 // registry key. For a `claude` session the bare id is enough — canonicalizeModel
 // re-applies the catalog launch tag, and capacity comes from the catalog rather
 // than from anything persisted here.

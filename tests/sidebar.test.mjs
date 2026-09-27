@@ -717,12 +717,11 @@ test('Regular (non-temp) session rows do NOT show the promote button', async () 
   assertNull(promoteBtn, 'no promote button on non-temp rows');
 });
 
-// Regression: after a host crash + restart, sessions are re-discovered from
-// disk with NO live instance. The durable temp/conducted flags (from
-// temp-sessions.json / conducted-sessions.json, surfaced by listSessionsForCwd
-// as `temp` / `conducted`) must still drive the sidebar grouping — previously
-// the temp grouping keyed off the live-only `instanceTemp` and dropped exited
-// temp sessions into the normal group until they were resumed.
+// After a host crash + restart, sessions are re-discovered from disk with NO
+// live instance. The durable temp/conducted flags (from the session store,
+// surfaced by listSessionsForCwd as `temp` / `conducted`) must still drive the
+// sidebar grouping, not the live-only `instanceTemp` — or exited temp sessions
+// drop into the normal group until they are resumed.
 
 test('Re-discovered temp session with NO live instance groups under — temp —', async () => {
   const now = Date.now();

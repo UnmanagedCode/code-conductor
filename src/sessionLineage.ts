@@ -1,19 +1,19 @@
-// Sidecar JSON store mapping a session's PERMANENT public id to the chain of
-// rotating CLI-side *backing* ids it has run under. Single global file at
-// `<store>/session-lineage.json` because session ids are globally unique — no
-// need to scope per project/worktree.
+// A session's IDENTITY: its PERMANENT public id and the chain of rotating
+// CLI-side *backing* ids it has run under. The chain is the `current` +
+// `segments` of the session's record in the unified store (src/sessionStore.ts);
+// this module owns the rules for it and runs over that store's `mutateSessions`
+// and `loadSessions`.
 //
 // A session's public id is minted once (mintPublicId) from the first 8 hex chars
 // of its first backing id and never changes again. Every later rotation — a
-// managed `/clear` (`renew`) or a context prune (`prune`) — appends a segment
-// and advances `current`. That is what lets a conductor hold one id for the life
-// of a worker while the CLI rotates its own `session_id` underneath.
+// `/clear` (`renew`, managed or typed) or a context prune (`prune`) — appends a
+// segment and advances `current`. That is what lets a conductor hold one id for
+// the life of a worker while the CLI rotates its own `session_id` underneath.
 //
-// BASE CASE, not a legacy branch: a session with NO row here has public id ==
-// backing id. Every resolver below returns its input unchanged for an unknown
-// id, so pre-existing sessions (and any session that has never rotated and was
-// never minted) work with no migration and no backfill. Nothing anywhere asks
-// "is this a legacy id?".
+// BASE CASE, not a legacy branch: a session with no record, or whose record is a
+// single `initial` segment named by its own key, has public id == backing id.
+// Every resolver below returns its input unchanged for an unknown id, so a
+// session that has never rotated and was never minted needs nothing recorded.
 //
 // `reason` is load-bearing, not polish. Every segment's file survives on disk in
 // both mechanisms, so segments are uniform for IDENTITY — but not for CONTENT: a
@@ -23,46 +23,29 @@
 // must never be concatenated. `reason` alone carries this — do NOT add a second
 // boolean that can disagree with it.
 //
-// The reverse index (backing → public) is built in memory at load and NEVER
-// persisted: a second on-disk copy is a divergence surface.
+// ROTATION, one path for all three mechanisms: recordRotation appends the new
+// segment — which inherits its predecessor's `temp` in the same write — and
+// retireSegment then archives the old segment (temp off, archived on). Session
+// facts are keyed by the public id, so a rotation never touches them.
 //
 // TOMBSTONES. A segment whose transcript is gone for good is not removed but
 // marked `dropped: true` in place (dropSegment), so the one reader that walks the
 // chain's SHAPE — the lineage scroll-back (src/lineagePager.ts, via chainFor) —
-// still sees where it was: which renew boundary it sat on, and whether it was the
-// original a later prune copied. Every other reader sees `liveSegments` only,
-// which is exactly the chain a removal would have left. Row invariant, kept by
-// every mutation: a persisted row has at least one live entry, and `current` is
-// live; a mutation that would leave none deletes the row.
-//
-// Atomic writes (write tmp + rename) and a cross-process advisory lockfile
-// around every mutation, mirroring `src/tempSessions.ts`. Missing file = empty.
+// still sees where it was. Every other reader sees live segments only. The
+// record invariant (src/sessionStore.ts) holds across every mutation here: a
+// mutation that would leave no live segment deletes the record, and with it
+// every session fact — so only the explicit session delete is allowed to.
 
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import { orchStoreRoot } from './projects.ts';
-import { withLock } from './storeLock.ts';
+import {
+  mutateSessions, loadSessions, liveSegments, ensureSegment, trackLineageWrite, VALID_REASONS,
+  type RotationReason, type Segment, type SessionRecord, type SessionIndex, type SessionsDoc,
+} from './sessionStore.ts';
 
-export type RotationReason = 'initial' | 'renew' | 'prune';
-
-export interface LineageSegment {
-  id: string;
-  reason: RotationReason;
-  at: string;
-  dropped?: true;
-}
-
-// `chain` is the full chain, tombstones included (persisted under `segments`).
-export interface LineageRow {
-  current: string;
-  chain: LineageSegment[];
-}
-
-export interface Lineage {
-  byPublic: Map<string, LineageRow>;
-  // backing id → the public id that owns it. Built at load, never persisted.
-  byBacking: Map<string, string>;
-}
+export { trackLineageWrite };
+export type { RotationReason };
+export type LineageSegment = Segment;
+export type LineageRow = SessionRecord;
+export type Lineage = SessionIndex;
 
 // The public id is the first 8 hex chars of the first backing id. A UUID has no
 // dash in its first 8 chars, so this is 8 hex digits — the form the conductor
@@ -73,190 +56,39 @@ export const PUBLIC_ID_LEN = 8;
 // stops being prefix-resolvable.
 export const PUBLIC_ID_LEN_EXTENDED = 13;
 
-const VALID_REASONS = new Set<RotationReason>(['initial', 'renew', 'prune']);
-
-function lineageFile(): string {
-  return path.join(orchStoreRoot(), 'session-lineage.json');
-}
-
-function parseLineageJson(raw: string): Map<string, LineageRow> {
-  const obj: unknown = JSON.parse(raw); // throws SyntaxError on corrupt JSON
-  const out = new Map<string, LineageRow>();
-  if (typeof obj !== 'object' || obj === null) return out;
-  const sessions = (obj as { sessions?: unknown }).sessions;
-  if (typeof sessions !== 'object' || sessions === null) return out;
-  for (const [publicId, value] of Object.entries(sessions as Record<string, unknown>)) {
-    if (!publicId || typeof value !== 'object' || value === null) continue;
-    const { current, segments } = value as { current?: unknown; segments?: unknown };
-    if (typeof current !== 'string' || !current) continue;
-    if (!Array.isArray(segments)) continue;
-    const rows: LineageSegment[] = [];
-    for (const seg of segments) {
-      if (typeof seg !== 'object' || seg === null) continue;
-      const { id, reason, at, dropped } = seg as { id?: unknown; reason?: unknown; at?: unknown; dropped?: unknown };
-      if (typeof id !== 'string' || !id) continue;
-      if (typeof reason !== 'string' || !VALID_REASONS.has(reason as RotationReason)) continue;
-      rows.push({ id, reason: reason as RotationReason, at: typeof at === 'string' ? at : '', ...(dropped === true ? { dropped: true as const } : {}) });
-    }
-    const row = { current, chain: rows };
-    if (liveSegments(row).length === 0) continue;
-    out.set(publicId, row);
-  }
-  return out;
-}
-
-// The row's chain minus its tombstones — what every reader but chainFor sees.
-function liveSegments(row: LineageRow): LineageSegment[] {
-  return row.chain.filter(s => !s.dropped);
-}
-
-// A row's live segment ids, oldest first — segmentsFor's answer for a caller
-// already holding the Lineage, so a per-row loop never re-reads the store.
+// A record's live segment ids, oldest first — segmentsFor's answer for a caller
+// already holding the index, so a per-row loop never re-reads the store.
 export function liveSegmentIdsOf(row: LineageRow): string[] {
   return liveSegments(row).map(s => s.id);
 }
 
-function indexBacking(byPublic: Map<string, LineageRow>): Map<string, string> {
-  const byBacking = new Map<string, string>();
-  for (const [publicId, row] of byPublic) {
-    for (const seg of liveSegments(row)) byBacking.set(seg.id, publicId);
-  }
-  return byBacking;
-}
-
-// KICK-ANCHORED READ BARRIER. Durable lineage writes are normally awaited in
-// place by their caller, but two are kicked fire-and-forget onto an instance's
-// `_lineageWrite` chain (`Instance._kickLineageWrite`: the `renew` rotation seen
-// in `system/init`, and `dropSegment` on a missing-transcript replay). A read
-// landing inside that window returns the PRE-rotation row — and the damaging
-// reader is the resume path (`publicIdFor` → `resolveBacking` in
-// `InstanceManager._doCreate`), which then `--resume`s the pre-clear transcript
-// and orphans the renewed session's tail.
-//
-// So the barrier is anchored at the KICK, not at `serialize` below: `serialize`
-// only orders a read behind writes already INSIDE it, while a kicked write sits
-// upstream on the per-instance chain and has not enrolled yet. It is registered
-// by `_kickLineageWrite` and awaited in `loadLineage` — the single chokepoint
-// every reader funnels through (the three resolvers here, the transport's
-// `resolveResumeRef` in `src/instances.ts`, and the session-list scan in
-// `src/projects.ts`), so one await covers every one of them.
-//
-// Three facts a future editor needs:
-//   - NO SELF-DEADLOCK: every mutation reads through `loadStrict`, never
-//     `loadLineage`, so a write can never wait on this barrier. A new mutation
-//     must keep using `loadStrict` or it wedges every read behind itself.
-//   - A REJECTED WRITE IS SWALLOWED HERE, deliberately, and the read must still
-//     proceed either way. For the ROTATION writer — the one this barrier exists
-//     for — the failure already has an owner (`Instance._lineageError` →
-//     `flushLineage` → `renew_error`), so warning again would double-report. The
-//     `dropSegment` kick also lands in `_lineageError`, but nothing calls
-//     `flushLineage` on that path, so its failure is reported only if a later
-//     renew flush happens to pick it up. That gap predates this barrier and is
-//     not closed here — the claim above is scoped to the rotation writer, not to
-//     every kicked write.
-//   - `mintPublicId` IS DELIBERATELY UNTRACKED (it is awaited in `launch()`), so
-//     a read racing a fresh spawn can miss the brand-new row. Harmless: that is
-//     the store's base case, where public id == backing id. Do not widen for it.
-const inFlightWrites = new Set<Promise<unknown>>();
-
-export function trackLineageWrite(p: Promise<unknown>): void {
-  const tracked = p.then(() => {}, () => {});
-  inFlightWrites.add(tracked);
-  // DELIBERATELY UNPINNED — no test will catch you deleting this line. Shedding a
-  // settled entry is a MEMORY property, not a behavioural one: `Promise.all` over
-  // already-settled promises still resolves in a microtask, so a set that never
-  // shrinks reads identically. Without it the set grows for the life of the
-  // process and every lineage read iterates all of it. Pinning that would mean
-  // exporting an introspection seam purely for the test, so review is the only
-  // guard — hence this warning rather than a test.
-  void tracked.then(() => { inFlightWrites.delete(tracked); });
-}
-
-// Bulk load, tolerant: a missing file is the legitimate empty base case, and a
-// corrupt one degrades to empty (loudly) rather than breaking every read path.
+// The store index, behind the kicked-write read barrier (src/sessionStore.ts).
 export async function loadLineage(): Promise<Lineage> {
-  // ONE snapshot, not a drain loop: the invariant is "a read sees every write
-  // kicked BEFORE the read began". A loop would starve under a steady write
-  // stream and buys nothing. Empty set (every read outside a rotation or a
-  // pruned-transcript replay) ⇒ one microtask, zero I/O.
-  await Promise.all([...inFlightWrites]);
-  let byPublic: Map<string, LineageRow>;
-  try {
-    byPublic = parseLineageJson(await fs.readFile(lineageFile(), 'utf8'));
-  } catch (e) {
-    if (errCode(e) !== 'ENOENT') {
-      console.warn(`sessionLineage: failed to read ${lineageFile()}: ${errMsg(e)}`);
-    }
-    byPublic = new Map();
-  }
-  return { byPublic, byBacking: indexBacking(byPublic) };
+  return loadSessions();
 }
 
-// Like loadLineage but used inside mutations (under the cross-process lock).
-// Throws on I/O errors and JSON corruption rather than returning an empty map,
-// so we never overwrite the store based on a failed read. ENOENT is the one
-// legitimate empty base case.
-async function loadStrict(): Promise<Map<string, LineageRow>> {
-  try {
-    return parseLineageJson(await fs.readFile(lineageFile(), 'utf8'));
-  } catch (e) {
-    if (errCode(e) === 'ENOENT') return new Map(); // legitimately empty
-    throw e; // I/O error or corrupt JSON — abort the mutation
-  }
-}
+const unchanged = { changed: false, value: undefined } as const;
+const wrote = { changed: true, value: undefined } as const;
 
-// Serialise concurrent writers behind a per-process promise chain. We
-// load → mutate → write the whole store, so without this two concurrent writers
-// could race on the read-modify-write and lose a row.
-let writeChain: Promise<unknown> = Promise.resolve();
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const next = writeChain.then(fn, fn);
-  writeChain = next.catch(() => {});
-  return next;
-}
-
-async function writeStore(byPublic: Map<string, LineageRow>): Promise<void> {
-  const file = lineageFile();
-  if (byPublic.size === 0) {
-    try { await fs.unlink(file); } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
-    return;
-  }
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  const sessions: Record<string, { current: string; segments: LineageSegment[] }> = {};
-  for (const key of [...byPublic.keys()].sort((a, b) => a.localeCompare(b))) {
-    const row = byPublic.get(key) as LineageRow;
-    sessions[key] = { current: row.current, segments: row.chain };
-  }
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, JSON.stringify({ sessions }, null, 2) + '\n');
-  await fs.rename(tmp, file);
-}
-
-// Derive-check-extend AND PERSIST the `initial` row, atomically under the lock.
-// The write is part of the mint on purpose: derive-check without a write lets two
-// concurrent spawns reserve the same id.
+// Derive-check-extend AND PERSIST the `initial` segment, atomically under the
+// lock. The write is part of the mint on purpose: derive-check without a write
+// lets two concurrent spawns reserve the same id.
 //
 // Collision universe = every PUBLIC id the store knows about, and only those.
-//
-// Backing ids are deliberately NOT in it. A candidate is a `slice(0, 8)` or
-// `slice(0, 13)` of a UUID, so it can never equal a full 36-char backing id —
-// testing them would be dead code in every branch. Nor is the omission a gap: the
-// case it looks like it should cover is a minted public id that happens to be a
-// PREFIX of another session's segment, and that is resolved one layer up, where
-// an exact match always beats a prefix match (InstanceManager.resolveSessionRef;
-// pinned by tests/session-prefix.test.mjs → "an exact public-id match beats a
-// longer session's segment prefix"). A check here could not add anything that
-// resolution does not already decide, so there is nothing for a test to kill.
+// A candidate is a `slice(0, 8)` or `slice(0, 13)` of a UUID, so it can never
+// equal a full 36-char backing id. The case it looks like it should cover — a
+// minted public id that is a PREFIX of another session's segment — is resolved
+// one layer up, where an exact match always beats a prefix match
+// (InstanceManager.resolveSessionRef; pinned by tests/session-prefix.test.mjs →
+// "an exact public-id match beats a longer session's segment prefix").
 //
 // Only caller: Instance.launch() on a fresh spawn.
 export function mintPublicId(firstBackingId: string): Promise<string> {
-  return serialize(() => withLock(lineageFile(), async () => {
-    const byPublic = await loadStrict(); // canonical re-read under lock
-    const taken = new Set<string>(byPublic.keys());
+  return mutateSessions('mintPublicId', firstBackingId, (doc) => {
     let publicId = firstBackingId.slice(0, PUBLIC_ID_LEN);
-    if (taken.has(publicId)) {
+    if (doc.has(publicId)) {
       publicId = firstBackingId.slice(0, PUBLIC_ID_LEN_EXTENDED);
-      if (taken.has(publicId)) {
+      if (doc.has(publicId)) {
         // Unique by construction (the caller minted a fresh UUID), and it lands
         // in the store's base case — but loud, because reaching here means the
         // 12-hex space collided too.
@@ -265,69 +97,97 @@ export function mintPublicId(firstBackingId: string): Promise<string> {
         publicId = firstBackingId;
       }
     }
-    byPublic.set(publicId, {
+    doc.set(publicId, {
       current: firstBackingId,
-      chain: [{ id: firstBackingId, reason: 'initial', at: new Date().toISOString() }],
+      segments: [{ id: firstBackingId, reason: 'initial', at: new Date().toISOString() }],
     });
-    await writeStore(byPublic);
-    return publicId;
-  }));
+    return { changed: true, value: publicId };
+  });
 }
 
-// Append `backingId` as the newest segment and advance `current`.
+// Append `backingId` as the newest segment and advance `current`. The new
+// segment inherits its predecessor's `temp` flag in the same write, so a temp
+// session never has a window where its live transcript reads as persistent.
 //
-// Creates the row LAZILY for a previously row-less session: for such a session
-// the public id IS its first backing id (the base case), so promoting it to an
-// `initial` segment costs nothing and is exact. Never mints.
+// Creates the record LAZILY for a previously record-less session: for such a
+// session the public id IS its first backing id (the base case), so promoting it
+// to an `initial` segment costs nothing and is exact. Never mints.
 //
 // Idempotent: a no-op when `current` already is `backingId` and the newest LIVE
 // segment already carries it, so a retried write cannot double-append.
 export function recordRotation(publicId: string, backingId: string, reason: RotationReason): Promise<void> {
-  return serialize(() => withLock(lineageFile(), async () => {
-    if (!publicId || !backingId) return;
-    if (!VALID_REASONS.has(reason)) throw new Error(`sessionLineage: invalid reason '${reason}'`);
-    const byPublic = await loadStrict(); // canonical re-read under lock
+  if (!publicId || !backingId) return Promise.resolve();
+  if (!VALID_REASONS.has(reason)) return Promise.reject(new Error(`sessionLineage: invalid reason '${reason}'`));
+  const done = (rec: SessionRecord | undefined): boolean =>
+    rec?.current === backingId && liveSegments(rec).at(-1)?.id === backingId;
+  return mutateSessions('recordRotation', backingId, (doc) => {
     const at = new Date().toISOString();
-    const row = byPublic.get(publicId)
-      ?? { current: publicId, chain: [{ id: publicId, reason: 'initial' as RotationReason, at }] };
-    if (row.current === backingId && liveSegments(row).at(-1)?.id === backingId) return;
-    row.chain.push({ id: backingId, reason, at });
-    row.current = backingId;
-    byPublic.set(publicId, row);
-    await writeStore(byPublic);
-  }));
+    const rec = doc.get(publicId) ?? { current: publicId, segments: [{ id: publicId, reason: 'initial' as RotationReason, at }] };
+    if (done(rec)) return unchanged;
+    const predecessor = rec.segments.find(s => s.id === rec.current && !s.dropped);
+    rec.segments.push({ id: backingId, reason, at, ...(predecessor?.temp ? { temp: true as const } : {}) });
+    rec.current = backingId;
+    doc.set(publicId, rec);
+    return wrote;
+  }, (doc) => (done(doc.get(publicId)) ? { value: undefined } : null));
+}
+
+function retired(seg: Segment): boolean {
+  return seg.archived === true && seg.temp !== true;
+}
+
+// Retire transcripts no process will write again: temp off, archived on, in ONE
+// mutation however many ids. A dropped segment is left alone, and a segment
+// write naming an `owner` that lacks the segment is refused (sessionStore's
+// ensureSegment). Reachable from kicked writes, so it never awaits the barrier.
+export function retireSegments(backingIds: string[], { owner }: { owner?: string | null } = {}): Promise<void> {
+  const ids = [...new Set(backingIds.filter(id => typeof id === 'string' && id))];
+  if (ids.length === 0) return Promise.resolve();
+  const allRetired = (doc: SessionsDoc): boolean => ids.every((id) => {
+    const hit = ensureSegment(doc, id, { owner, create: false });
+    return hit !== null && !('refused' in hit) && retired(hit.segment);
+  });
+  return mutateSessions('retireSegment', ids.join(','), (doc) => {
+    let changed = false;
+    for (const id of ids) {
+      const hit = ensureSegment(doc, id, { owner });
+      if (hit === null || 'refused' in hit) {
+        console.warn(`sessionStore: retireSegment ${id} refused: ${hit ? hit.refused : 'unresolvable'}`);
+        continue;
+      }
+      if (retired(hit.segment)) continue;
+      delete hit.segment.temp;
+      hit.segment.archived = true;
+      changed = true;
+    }
+    return { changed, value: undefined };
+  }, (doc) => (allRetired(doc) ? { value: undefined } : null));
+}
+
+export function retireSegment(backingId: string | null | undefined, opts: { owner?: string | null } = {}): Promise<void> {
+  return backingId ? retireSegments([backingId], opts) : Promise.resolve();
 }
 
 // Undo the newest LIVE segment IFF it is `backingId` (trailing tombstones stay),
-// restoring `current` to the newest live segment left. A row left with no live
-// segment, or whose live segments are exactly one `initial` segment whose id
-// equals the public id, is DELETED — restoring the base case exactly, so a rolled
-// back rotation leaves no trace. Any tombstone in such a row sits after its
-// initial entry, so none is older than a servable segment.
+// restoring `current` to the newest live segment left. The record is KEPT even
+// when what remains is the base case: it holds the session's facts, and a
+// single-`initial` record resolves exactly as no record does.
 //
 // Only caller: pruneSession's rollback catch, so a throw inside launch() cannot
 // leave a recorded segment the process never ran.
 export function revertRotation(publicId: string, backingId: string): Promise<void> {
-  return serialize(() => withLock(lineageFile(), async () => {
-    if (!publicId || !backingId) return;
-    const byPublic = await loadStrict(); // canonical re-read under lock
-    const row = byPublic.get(publicId);
-    if (!row) return;
-    const target = liveSegments(row).at(-1);
-    if (target?.id !== backingId) return;
-    row.chain.splice(row.chain.lastIndexOf(target), 1);
-    const live = liveSegments(row);
-    const last = live.at(-1);
-    if (!last) {
-      byPublic.delete(publicId);
-    } else {
-      row.current = last.id;
-      const baseCase = live.length === 1 && last.reason === 'initial' && last.id === publicId;
-      if (baseCase) byPublic.delete(publicId);
-      else byPublic.set(publicId, row);
-    }
-    await writeStore(byPublic);
-  }));
+  if (!publicId || !backingId) return Promise.resolve();
+  return mutateSessions('revertRotation', backingId, (doc) => {
+    const rec = doc.get(publicId);
+    if (!rec) return unchanged;
+    const target = liveSegments(rec).at(-1);
+    if (target?.id !== backingId) return unchanged;
+    rec.segments.splice(rec.segments.lastIndexOf(target), 1);
+    const last = liveSegments(rec).at(-1);
+    if (!last) doc.delete(publicId);
+    else rec.current = last.id;
+    return wrote;
+  });
 }
 
 // public id → its CURRENT backing id; a known segment → ITSELF; anything unknown
@@ -338,11 +198,8 @@ export function revertRotation(publicId: string, backingId: string): Promise<voi
 // THAT transcript, not silently redirect to the newest one.
 export async function resolveBacking(id: string): Promise<string> {
   if (!id) return id;
-  const { byPublic, byBacking } = await loadLineage();
-  const row = byPublic.get(id);
-  if (row) return row.current;
-  if (byBacking.has(id)) return id;
-  return id;
+  const { byPublic } = await loadLineage();
+  return byPublic.get(id)?.current ?? id;
 }
 
 // A known segment → its public id; a known public id → itself; anything unknown
@@ -354,60 +211,50 @@ export async function publicIdFor(id: string): Promise<string> {
   return byBacking.get(id) ?? id;
 }
 
-// The live segment chain, oldest first. `[]` when there is no row.
+// The live segment chain, oldest first. `[]` when there is no record.
 export async function segmentsFor(publicId: string): Promise<LineageSegment[]> {
   if (!publicId) return [];
-  const { byPublic } = await loadLineage();
-  const row = byPublic.get(publicId);
+  const row = (await loadLineage()).byPublic.get(publicId);
   return row ? liveSegments(row) : [];
 }
 
-// The FULL chain, tombstones included, oldest first. `[]` when there is no row.
+// The FULL chain, tombstones included, oldest first. `[]` when there is no record.
 // Only the lineage scroll-back reads this; every other reader wants segmentsFor.
 export async function chainFor(publicId: string): Promise<LineageSegment[]> {
   if (!publicId) return [];
-  const { byPublic } = await loadLineage();
-  return byPublic.get(publicId)?.chain ?? [];
+  return (await loadLineage()).byPublic.get(publicId)?.segments ?? [];
 }
 
-// Tombstone `backingId` in whichever row owns it. If it was `current`, `current`
-// falls back to the newest live segment; the row is deleted once none is left.
-// An already-tombstoned id is a no-op with no write. Called from the two paths
-// that KNOW a transcript is gone — the explicit archive delete and loadHistory's
-// ENOENT branch — so no reader but chainFor sees a segment without a file.
-export function dropSegment(backingId: string): Promise<void> {
-  return serialize(() => withLock(lineageFile(), async () => {
-    if (!backingId) return;
-    const byPublic = await loadStrict(); // canonical re-read under lock
+// Tombstone `backingId` in whichever record owns it, clearing its temp/archived
+// flags. If it was `current`, `current` falls back to the newest live segment;
+// the record — and every session fact on it — is deleted once none is left. An
+// already-tombstoned id is a no-op with no write.
+//
+// `unlessLast`: do nothing when this is the record's LAST live segment. Every
+// caller but the explicit session delete passes it — a respawn of a session
+// killed before its first turn finds no transcript, and must not take the
+// session's temp/title/mode with it.
+export function dropSegment(backingId: string, { unlessLast = false }: { unlessLast?: boolean } = {}): Promise<void> {
+  if (!backingId) return Promise.resolve();
+  return mutateSessions('dropSegment', backingId, (doc) => {
     let ownerId: string | null = null;
-    for (const [publicId, row] of byPublic) {
-      if (row.chain.some(s => s.id === backingId)) { ownerId = publicId; break; }
+    for (const [publicId, rec] of doc) {
+      if (rec.segments.some(s => s.id === backingId)) { ownerId = publicId; break; }
     }
-    if (ownerId === null) return;
-    const row = byPublic.get(ownerId) as LineageRow;
-    const entry = row.chain.find(s => s.id === backingId) as LineageSegment;
-    if (entry.dropped) return;
+    if (ownerId === null) return unchanged;
+    const rec = doc.get(ownerId) as SessionRecord;
+    const entry = rec.segments.find(s => s.id === backingId) as Segment;
+    if (entry.dropped) return unchanged;
+    const rest = liveSegments(rec).filter(s => s !== entry);
+    if (rest.length === 0) {
+      if (unlessLast) return unchanged;
+      doc.delete(ownerId);
+      return wrote;
+    }
     entry.dropped = true;
-    const last = liveSegments(row).at(-1);
-    if (!last) byPublic.delete(ownerId);
-    else {
-      if (row.current === backingId) row.current = last.id;
-      byPublic.set(ownerId, row);
-    }
-    await writeStore(byPublic);
-  }));
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+    delete entry.temp;
+    delete entry.archived;
+    if (rec.current === backingId) rec.current = (rest.at(-1) as Segment).id;
+    return wrote;
+  });
 }

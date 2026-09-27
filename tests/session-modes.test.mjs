@@ -1,5 +1,6 @@
-// The session-mode sidecar and, more importantly, the EFFECTIVE-mode rule
-// layered on top of it.
+// The session-mode record (the `mode` fact on a session's record in
+// src/sessionStore.ts) and, more importantly, the EFFECTIVE-mode rule layered on
+// top of it.
 //
 // The rule: a resume comes up in the recorded mode, or DEFAULT_RESUME_MODE
 // (bypassPermissions) when there is no record. There is deliberately no
@@ -14,10 +15,8 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import {
-  MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode, resumesHot,
-  loadAll, getSessionMode, markSessionMode, unmarkSessionMode,
-} from '../src/sessionModes.ts';
+import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode, resumesHot } from '../src/sessionModes.ts';
+import { getSessionMode, setSessionMode as markSessionMode } from '../src/sessionStore.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { renderSessions } from '../src/mcp/readRenderers.ts';
 
@@ -29,7 +28,7 @@ let home;
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await rmrf(home); });
 
-const storeFile = () => path.join(orchStoreRoot(), 'session-modes.json');
+const storeFile = () => path.join(orchStoreRoot(), 'sessions.json');
 const readStore = async () => JSON.parse(await fs.readFile(storeFile(), 'utf8'));
 
 // ---------- the effective-mode rule ----------
@@ -104,19 +103,15 @@ test('the flag tracks the mode, row by row, in one listing', () => {
 
 // ---------- the store ----------
 
-test('mark then read round-trips, and unmark removes it', async () => {
+test('mark then read round-trips, and a later mark wins', async () => {
   assert.equal(await getSessionMode(SID_A), null, 'absent before anything is written');
+  // An unrecorded session is hot — absence must not read as "cold".
+  assert.equal(resumesHot(effectiveResumeMode(await getSessionMode(SID_A))), true);
   await markSessionMode(SID_A, 'plan');
   assert.equal(await getSessionMode(SID_A), 'plan');
-  assert.equal((await loadAll()).get(SID_A), 'plan');
 
   await markSessionMode(SID_A, 'bypassPermissions');
   assert.equal(await getSessionMode(SID_A), 'bypassPermissions', 'a later mark wins');
-
-  assert.equal(await unmarkSessionMode(SID_A), true);
-  assert.equal(await getSessionMode(SID_A), null);
-  // An unrecorded session is hot again — removal must not read as "cold".
-  assert.equal(resumesHot(effectiveResumeMode(await getSessionMode(SID_A))), true);
 });
 
 test('the store keys by session, so one session cannot overwrite another', async () => {
@@ -128,15 +123,11 @@ test('the store keys by session, so one session cannot overwrite another', async
 
 test('a re-mark of the same value does not rewrite the file', async () => {
   await markSessionMode(SID_A, 'plan');
-  const before = (await fs.stat(storeFile())).mtimeMs;
+  const before = await fs.stat(storeFile(), { bigint: true });
   await markSessionMode(SID_A, 'plan');
-  assert.equal((await fs.stat(storeFile())).mtimeMs, before, 'idempotent mark must be a no-op');
-});
-
-test('the file is removed once the last entry goes', async () => {
-  await markSessionMode(SID_A, 'plan');
-  await unmarkSessionMode(SID_A);
-  await assert.rejects(fs.stat(storeFile()), { code: 'ENOENT' });
+  const after = await fs.stat(storeFile(), { bigint: true });
+  assert.equal(after.mtimeNs, before.mtimeNs, 'idempotent mark must be a no-op');
+  assert.equal(after.ino, before.ino, 'and must not replace the file');
 });
 
 test('a mode outside the vocabulary is refused, not stored', async () => {
@@ -150,14 +141,12 @@ test('an empty or missing sessionId is refused', async () => {
   assert.equal(await markSessionMode('', 'plan'), false);
   assert.equal(await markSessionMode(undefined, 'plan'), false);
   assert.equal(await getSessionMode(''), null);
-  assert.equal(await unmarkSessionMode(''), false);
 });
 
 test('a corrupt store degrades to empty rather than throwing — so a resume still works', async () => {
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   await fs.writeFile(storeFile(), '{ this is not json');
-  assert.deepEqual([...(await loadAll())], []);
-  // And the session resolves to the hot default, not to a crash or a fake cold.
+  // The session resolves to the hot default, not to a crash or a fake cold.
   assert.equal(effectiveResumeMode(await getSessionMode(SID_A)), 'bypassPermissions');
 });
 
@@ -165,19 +154,21 @@ test('a corrupt store degrades to empty rather than throwing — so a resume sti
 // its session degrades to the unrecorded default.
 test('an on-disk entry with an unknown mode is dropped, not trusted', async () => {
   await fs.mkdir(orchStoreRoot(), { recursive: true });
+  const rec = (id, mode) => ({ current: id, segments: [{ id, reason: 'initial', at: '' }], mode });
   await fs.writeFile(storeFile(), JSON.stringify({
-    sessions: { [SID_A]: 'acceptEdits', [SID_B]: 'plan', [SID_ASK]: 'ask' },
+    sessions: { [SID_A]: rec(SID_A, 'acceptEdits'), [SID_B]: rec(SID_B, 'plan'), [SID_ASK]: rec(SID_ASK, 'ask') },
   }));
-  const map = await loadAll();
-  assert.equal(map.has(SID_A), false, 'an invalid mode must not reach a spawn');
-  assert.equal(map.has(SID_ASK), false, 'a stored ask is dropped');
-  assert.equal(map.get(SID_B), 'plan', 'valid siblings survive');
+  assert.equal(await getSessionMode(SID_A), null, 'an invalid mode must not reach a spawn');
+  assert.equal(await getSessionMode(SID_ASK), null, 'a stored ask is dropped');
+  assert.equal(await getSessionMode(SID_B), 'plan', 'valid siblings survive');
   // Dropped ⇒ unrecorded ⇒ hot. Degrading to a *colder* mode would be the
   // wrong direction: it would silently change what a resume can do.
-  assert.equal(effectiveResumeMode(map.get(SID_A) ?? null), 'bypassPermissions');
+  assert.equal(effectiveResumeMode(await getSessionMode(SID_A)), 'bypassPermissions');
 });
 
-test('the persisted shape is the documented {sessions:{sid:mode}} map', async () => {
+test('the persisted shape is the `mode` field of the session record', async () => {
   await markSessionMode(SID_A, 'plan');
-  assert.deepEqual(await readStore(), { sessions: { [SID_A]: 'plan' } });
+  const { sessions } = await readStore();
+  assert.deepEqual(Object.keys(sessions), [SID_A]);
+  assert.equal(sessions[SID_A].mode, 'plan');
 });

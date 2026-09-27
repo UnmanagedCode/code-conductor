@@ -5,8 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot, localPlace} from '../src/projects.ts';
-import { isTemp, markTemp, orphanedTempIdsSync } from '../src/tempSessions.ts';
-import { isArchived } from '../src/archivedSessions.ts';
+import { isTemp, isArchived, setSegmentTemp, orphanedTempIdsSync } from '../src/sessionStore.ts';
 import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
@@ -171,11 +170,11 @@ test('shutdownTempSync is a safe no-op when there are no temp instances', async 
 });
 
 test('temp marker is written at spawn time, before any turn_end', async () => {
-  // Regression: markTemp() was only called at turn_end. A SIGKILL before
-  // the first turn completed left the sessionId absent from temp-sessions.json,
-  // so the orphaned .jsonl was re-adopted as a persistent session on the next
-  // boot. The fix calls markTemp() at spawn time (fire-and-forget) so the
-  // sidecar is durable from the moment the subprocess starts.
+  // A SIGKILL before the first turn completes must not leave the segment
+  // without its `temp` flag in sessions.json, or the orphaned .jsonl is
+  // re-adopted as a persistent session on the next boot. The flag is written
+  // at spawn time (fire-and-forget), so it is durable from the moment the
+  // subprocess starts.
   await api(baseUrl, 'POST', '/api/projects', { name: 'spawnmarker' });
   const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'spawnmarker', temp: true });
   assert.equal(tempRes.status, 201);
@@ -186,15 +185,15 @@ test('temp marker is written at spawn time, before any turn_end', async () => {
   await waitFor(() => !!tempInst.sessionId);
   const sid = tempInst.backingSessionId;
 
-  // The markTemp() fire-and-forget write should land almost immediately
+  // The fire-and-forget temp write should land almost immediately
   // (local file write). Poll until it does — no artificial sleep needed.
   await waitFor(async () => isTemp(sid), { timeout: 3000 });
 
   assert.equal(await isTemp(sid), true,
-    'temp marker must be in temp-sessions.json before any turn_end fires');
+    'temp flag must be on the segment in sessions.json before any turn_end fires');
 });
 
-// Crash-orphaned temps: recorded in temp-sessions.json but with no live
+// Crash-orphaned temps: flagged temp in sessions.json but with no live
 // instance (e.g. a prior hard crash before this restart). shutdownTempSync's
 // kill/wipe loop never sees these since it only iterates live instances —
 // runTempCleanup must archive them too so a plain restart clears every
@@ -203,8 +202,8 @@ test('temp marker is written at spawn time, before any turn_end', async () => {
 test('orphanedTempIdsSync returns durable temp ids with no matching live instance', async () => {
   const liveSid = 'ffffffff-0000-1111-2222-333333333333';
   const orphanSid = '00000000-1111-2222-3333-444444444444';
-  await markTemp(liveSid);
-  await markTemp(orphanSid);
+  await setSegmentTemp(liveSid, true);
+  await setSegmentTemp(orphanSid, true);
 
   const orphaned = orphanedTempIdsSync([liveSid]);
   assert.deepEqual(orphaned, [orphanSid]);
@@ -212,7 +211,7 @@ test('orphanedTempIdsSync returns durable temp ids with no matching live instanc
 
 test('runTempCleanup archives a crash-orphaned temp session with no live instance', async () => {
   const orphanSid = 'dddddddd-eeee-ffff-0000-111111111111';
-  await markTemp(orphanSid);
+  await setSegmentTemp(orphanSid, true);
   assert.equal(await isTemp(orphanSid), true);
 
   runTempCleanup({ instances, log: { warn() {}, log() {} } });
@@ -231,7 +230,7 @@ test('runTempCleanup archives a live temp and a crash-orphaned temp without doub
   await waitFor(async () => isTemp(liveSid));
 
   const orphanSid = 'eeeeeeee-ffff-0000-1111-222222222222';
-  await markTemp(orphanSid);
+  await setSegmentTemp(orphanSid, true);
 
   // The live sessionId must be excluded from the orphaned set — it's handled
   // by shutdownTempSync, not the orphan path — so it's never processed twice.
@@ -270,7 +269,7 @@ test('Restart + Resume (drainToManifest) archives nothing — live and orphaned 
   await waitFor(async () => isTemp(liveSid));
 
   const orphanSid = '22222222-bbbb-cccc-dddd-eeeeeeeeeeee';
-  await markTemp(orphanSid);
+  await setSegmentTemp(orphanSid, true);
 
   await drainToManifest({
     server: null, wss: null, instances,

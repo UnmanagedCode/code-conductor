@@ -275,7 +275,7 @@ export function claudeContextWindowTokens(modelId: unknown): number | null {
 // byte-exact registry key that may legitimately end in `[1m]` or look
 // Claude-shaped, and stripping it desynchronises this.model from the key the
 // registry is stored under — which silently drops the context env vars, breaks
-// `{model}` substitution, and poisons the session sidecar.
+// `{model}` substitution, and poisons the session's recorded backend.
 //
 // Omitting the argument yields `undefined !== CLAUDE_BACKEND_ID` → verbatim,
 // i.e. it fails toward preserving the caller's id rather than mangling it.

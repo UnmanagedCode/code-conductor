@@ -283,9 +283,12 @@ test('the full migration chain leaves a legacy store on the current shape', asyn
   assert.deepEqual(s.tierBackend.fast, { backend: 'ollama', model: 'gemma4:cloud' });
   assert.equal(s.customModels[0].backend, 'ollama');
   assert.ok(Number.isFinite(s.customModels[0].contextWindow));
-  // 0026 backfills the sidecar's capacity from the custom-model row 0018b created.
-  assert.deepEqual((await readJson(sidecarFile(root))).sessions,
-    { 'sid-1': { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: 200000 } });
+  // 0026 backfills the sidecar's capacity from the custom-model row 0018b
+  // created; 0039 then merges the sidecar onto the session's record.
+  const sessions = (await readJson(path.join(root, '.code-conductor', 'sessions.json'))).sessions;
+  assert.deepEqual(sessions['sid-1'].backend,
+    { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: 200000 });
+  assert.equal(await exists(sidecarFile(root)), false, 'the legacy sidecar is moved aside by 0039');
 
   // Re-running the whole chain changes nothing further.
   const logs = [];

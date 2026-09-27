@@ -44,7 +44,7 @@ How `public/` is tested: the happy-dom suite, what happy-dom gets wrong, and wha
 | A dead worker's session row changing in place | conducted workers are temp, so killing one archives it and its row leaves the list. A persistent node (a worktree head) still shows in-place changes; a session row's change needs a happy-dom test |
 
 **Reachable with seeding:**
-- **A session on disk after exit** (Inactive/archived rows, resume): seed a jsonl named by the session's **backing** id, read from the sandbox store's `session-lineage.json`. A file named by the public id matches no archive marker, and a check can go green on it by accident.
+- **A session on disk after exit** (Inactive/archived rows, resume): seed a jsonl named by the session's **backing** id, read from the sandbox store's `sessions.json` → `.sessions[<publicId>].current`. A file named by the public id matches no archive marker, and a check can go green on it by accident.
 - **A harness conductor that spawns unbound workers** needs `playbookEnforcement: 'warn'`.
 - **`awaitingUser`:**
   - Text ask: a scenario turn ending in `?` with `stop_reason: "end_turn"`, sent to a REST-spawned (non-conducted) session.

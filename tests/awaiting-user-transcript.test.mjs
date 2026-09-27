@@ -10,8 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { deriveAwaitingUser, chainEndingAt } from '../src/awaitingUserTranscript.ts';
 import { localPlace, sessionFilePath, listSessionsForCwdWithCounts } from '../src/projects.ts';
-import { markArchived } from '../src/archivedSessions.ts';
-import { markConducted } from '../src/conductedSessions.ts';
+import { setSegmentArchived, markConducted } from '../src/sessionStore.ts';
 import { buildWakeStub } from '../public/wakeCallback.js';
 import { mintPublicId, recordRotation } from '../src/sessionLineage.ts';
 import { freshProjectsRoot, seedSessionJsonl, rmrf } from './helpers.mjs';
@@ -236,7 +235,7 @@ test('deriveAwaitingFor names a renewed session by its public id and derives acr
   const publicId = await mintPublicId(first);
   await recordRotation(publicId, second, 'renew');
   assert.notEqual(publicId, second, 'premise: the public id is not the current backing sid');
-  await markArchived(second);
+  await setSegmentArchived(second, true);
   const rowOf = async (opts) => (await listSessionsForCwdWithCounts(p, null, { includeArchived: true, ...opts })).rows
     .find(r => r.sessionId === publicId);
   assert.equal((await rowOf({})).awaitingUser, null, 'premise: archived, so a plain list read does not derive it');
@@ -251,7 +250,7 @@ test('SessionRow: list reads leave archived and conducted rows null; deriveAwait
   const [live, archived, conducted] = [sid(), sid(), sid()];
   const records = [user('go'), asst('m1', [askTool('tq')], 'tool_use')];
   for (const s of [live, archived, conducted]) await seedSessionJsonl(p, s, records);
-  await markArchived(archived);
+  await setSegmentArchived(archived, true);
   await markConducted(conducted);
 
   const rowsOf = async (opts) => new Map((await listSessionsForCwdWithCounts(p, null, { includeArchived: true, ...opts })).rows
@@ -274,7 +273,7 @@ test('deriveAwaitingFor on an archived CONDUCTED row with a pending tool ask rep
   const p = place('conducted-archived');
   const s = sid();
   await seedSessionJsonl(p, s, [user('go'), asst('m1', [askTool('tq')], 'tool_use')]);
-  await markArchived(s);
+  await setSegmentArchived(s, true);
   await markConducted(s);
   const row = (await listSessionsForCwdWithCounts(p, null, { includeArchived: true, deriveAwaitingFor: s })).rows
     .find(r => r.sessionId === s);

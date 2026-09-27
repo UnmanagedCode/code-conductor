@@ -1,15 +1,16 @@
-// Unit tests for the session-lineage store (src/sessionLineage.ts) — the
-// public-id ↔ backing-id chain that makes a session's public identity permanent
-// across a `/clear` renewal or a prune.
+// Unit tests for session lineage (src/sessionLineage.ts over the unified store,
+// src/sessionStore.ts) — the public-id ↔ backing-id chain that makes a session's
+// public identity permanent across a `/clear` renewal or a prune.
 //
 // The contract these pin, in order of how much depends on them:
-//   1. BASE CASE — no row ⇒ every resolver is the identity function. This is what
-//      makes the store additive with no migration and no backfill.
+//   1. BASE CASE — no record (or a single `initial` record named by its own key)
+//      ⇒ every resolver is the identity function.
 //   2. MINTING — 8 hex from the first backing id, extended to 13 on a collision
 //      against the PUBLIC ids only (backing ids are not in the universe and cannot
 //      be: a candidate is a slice of a UUID), full id as the loud last resort.
-//   3. ROTATION — append + advance, lazy row creation from the base case,
-//      idempotent on a retry, and exactly reversible by revertRotation.
+//   3. ROTATION — append + advance, lazy record creation from the base case,
+//      idempotent on a retry, and reversible by revertRotation (which keeps the
+//      record: it holds the session's facts).
 //   4. READ TOLERANCE — dropSegment keeps a chain from pointing at a missing file.
 //   5. READ BARRIER — a read waits behind writes kicked fire-and-forget before it
 //      began (trackLineageWrite), and resolves rather than hangs or throws when
@@ -37,12 +38,13 @@ const {
   PUBLIC_ID_LEN, PUBLIC_ID_LEN_EXTENDED,
 } = await import('../src/sessionLineage.ts');
 
-const STORE_FILE = () => path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'session-lineage.json');
+const STORE_FILE = () => path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'sessions.json');
 
-// Every test starts from an empty store — the file is unlinked when the last row
-// goes, so removing it IS the reset.
+// Every test starts from an empty store: the primary AND its `.bak`, or a missing
+// primary recovers the previous test's records from the backup.
 async function reset() {
   await fs.rm(STORE_FILE(), { force: true });
+  await fs.rm(STORE_FILE() + '.bak', { force: true });
 }
 
 // A deterministic UUID-shaped backing id. `head` is the first 8 hex chars (what a
@@ -194,18 +196,18 @@ test('revertRotation drops the trailing segment and restores current', async () 
   assert.deepEqual((await segmentsFor(pub)).map(s => s.id), [first, mid]);
 });
 
-test('revertRotation restores the base case EXACTLY for a row-less session', async () => {
+test('revertRotation leaves a record-less session at the base case, record kept', async () => {
   await reset();
   const legacy = backing('0f0f0f0f');
   const rotated = backing('f0f0f0f0');
-  await recordRotation(legacy, rotated, 'prune');   // lazily created the row
+  await recordRotation(legacy, rotated, 'prune');   // lazily created the record
   await revertRotation(legacy, rotated);
 
-  assert.deepEqual(await segmentsFor(legacy), [], 'the row is gone, not left as a stub');
+  assert.deepEqual((await segmentsFor(legacy)).map(s => [s.id, s.reason]), [[legacy, 'initial']],
+    'the reverted segment is gone; the single-initial record resolves as the base case');
   assert.equal(await resolveBacking(legacy), legacy);
   assert.equal(await publicIdFor(legacy), legacy);
-  assert.equal((await loadLineage()).byPublic.size, 0);
-  await assert.rejects(fs.access(STORE_FILE()), 'emptying the store unlinks the file');
+  assert.equal(await publicIdFor(rotated), rotated, 'the reverted id is unknown again');
 });
 
 test('revertRotation on a minted session keeps the row (initial id !== public id)', async () => {
@@ -351,15 +353,13 @@ test('crash safety: a rotation lost before its persist still resolves to a real 
   assert.equal(await resolveBacking(publicId), rotatedButUnrecorded);
 });
 
-test('loadLineage tolerates a malformed sidecar', async () => {
+test('loadLineage tolerates a malformed store', async () => {
   await reset();
   await fs.mkdir(path.dirname(STORE_FILE()), { recursive: true });
   await fs.writeFile(STORE_FILE(), 'not json{');
   const { byPublic } = await loadLineage();
-  assert.equal(byPublic.size, 0, 'garbage parses to an empty store, not a throw');
-  // …but a MUTATION must refuse to clobber a store it could not read.
-  await assert.rejects(() => recordRotation('somepub', 'somebacking', 'renew'));
-  await fs.rm(STORE_FILE(), { force: true });
+  assert.equal(byPublic.size, 0, 'garbage with no .bak reads as an empty store, not a throw');
+  await reset();
 });
 
 test('a row whose segments are all unparseable is dropped, not half-loaded', async () => {
@@ -375,7 +375,7 @@ test('a row whose segments are all unparseable is dropped, not half-loaded', asy
   const { byPublic, byBacking } = await loadLineage();
   assert.deepEqual([...byPublic.keys()], ['good']);
   assert.deepEqual([...byBacking.keys()], ['x']);
-  await fs.rm(STORE_FILE(), { force: true });
+  await reset();
 });
 
 // ---------------------------------------------------------------------------
@@ -496,7 +496,7 @@ test('the barrier tolerates a write that REJECTS: the read resolves, stale, not 
   // The rejection already has an owner — Instance._lineageError → flushLineage →
   // renew_error — so the barrier swallows it and the read must still proceed.
   trackLineageWrite(Promise.reject(
-    new Error('storeLock: could not acquire session-lineage.json after 25 retries (owner still alive)')));
+    new Error('storeLock: could not acquire sessions.json after 25 retries (owner still alive)')));
 
   assert.equal(await resolveBacking(publicId), first,
     'the read returns the (stale) row rather than hanging or rethrowing the write failure');

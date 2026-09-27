@@ -1,5 +1,6 @@
-// Tests for cross-process safety of archivedSessions.ts.
-// The core bug: during a hot restart the old process fires markArchived()
+// Tests for cross-process safety of the session store's archived flag
+// (src/sessionStore.ts → setSegmentArchived).
+// The core bug: during a hot restart the old process fires an archive write
 // fire-and-forget while the new process boots and calls sweepPendingTempCleanup
 // — two independent writeChains racing on the same file, last-writer-wins.
 // The fix: a cross-process O_EXCL lockfile around each mutation, with a strict
@@ -21,15 +22,17 @@ const srcDir = path.join(__dirname, '..', 'src');
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-conc-'));
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 
-const { markArchived, unmarkArchived, loadAllArchived } =
-  await import('../src/archivedSessions.ts');
+const { setSegmentArchived } = await import('../src/sessionStore.ts');
+const { archivedIds: loadAllArchived, flaggedIdsIn } = await import('./sessionFacts.mjs');
+const markArchived = (id) => setSegmentArchived(id, true);
+const unmarkArchived = (id) => setSegmentArchived(id, false);
 
 after(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
 function storeFile() {
-  return path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'archived-sessions.json');
+  return path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'sessions.json');
 }
 function bakFile() {
   return storeFile() + '.bak';
@@ -56,7 +59,7 @@ function waitForExit(proc) {
 
 // ── Test 1: within-process concurrent writes ─────────────────────────────────
 
-test('concurrent within-process markArchived preserves all entries', async () => {
+test('concurrent within-process archive writes preserve all entries', async () => {
   await resetStore();
 
   const ids = Array.from({ length: 10 }, (_, i) => `wp-${i}`);
@@ -71,7 +74,7 @@ test('concurrent within-process markArchived preserves all entries', async () =>
 
 // ── Test 2: interleaved mark + unmark — other entries must not be clobbered ──
 
-test('unmarkArchived under concurrent writes does not clobber other entries', async () => {
+test('un-archiving under concurrent writes does not clobber other entries', async () => {
   await resetStore();
 
   const toKeep = ['keep-1', 'keep-2', 'keep-3'];
@@ -96,18 +99,18 @@ test('unmarkArchived under concurrent writes does not clobber other entries', as
 
 // ── Test 3: two concurrent child processes — the actual hot-restart race ─────
 
-test('two concurrent child processes both markArchived → all entries preserved', { timeout: 30000 }, async () => {
+test('two concurrent child processes both archiving → all entries preserved', { timeout: 30000 }, async () => {
   const xTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-xproc-'));
   const xRoot = path.join(xTmp, 'projects');
 
-  // Worker script: sets PROJECTS_ROOT from env, imports archivedSessions.ts
+  // Worker script: sets PROJECTS_ROOT from env, imports sessionStore.ts
   // via absolute path (relative imports inside the module still resolve
-  // from the module's own location in src/), marks each argv session ID.
+  // from the module's own location in src/), archives each argv session ID.
   const workerPath = path.join(xTmp, 'worker.mjs');
-  const archivedMod = JSON.stringify('file://' + path.join(srcDir, 'archivedSessions.ts'));
+  const storeMod = JSON.stringify('file://' + path.join(srcDir, 'sessionStore.ts'));
   await fs.writeFile(workerPath, [
-    `const { markArchived } = await import(${archivedMod});`,
-    `for (const id of process.argv.slice(2)) { await markArchived(id); }`,
+    `const { setSegmentArchived } = await import(${storeMod});`,
+    `for (const id of process.argv.slice(2)) { await setSegmentArchived(id, true); }`,
   ].join('\n'));
 
   const idsA = ['pa-1', 'pa-2', 'pa-3', 'pa-4', 'pa-5'];
@@ -120,9 +123,8 @@ test('two concurrent child processes both markArchived → all entries preserved
   await Promise.all([waitForExit(p1), waitForExit(p2)]);
 
   // Read the file directly (can't reuse the cached module with a different root)
-  const archivedFile = path.join(xRoot, '.code-conductor', 'archived-sessions.json');
-  const { sessions } = JSON.parse(await fs.readFile(archivedFile, 'utf8'));
-  const got = new Set(sessions);
+  const archivedFile = path.join(xRoot, '.code-conductor', 'sessions.json');
+  const got = flaggedIdsIn(JSON.parse(await fs.readFile(archivedFile, 'utf8')), 'archived');
 
   for (const id of [...idsA, ...idsB]) {
     assert.ok(got.has(id), `missing ${id}; got [${[...got].join(', ')}]`);
@@ -132,14 +134,14 @@ test('two concurrent child processes both markArchived → all entries preserved
   // The rolling backup must be a valid, non-empty snapshot after the race —
   // it's the recovery source if the primary is ever lost.
   const bak = JSON.parse(await fs.readFile(archivedFile + '.bak', 'utf8'));
-  assert.ok(Array.isArray(bak.sessions) && bak.sessions.length > 0, 'backup should hold a non-empty snapshot');
+  assert.ok(flaggedIdsIn(bak, 'archived').size > 0, 'backup should hold a non-empty snapshot');
 
   await fs.rm(xTmp, { recursive: true, force: true });
 });
 
 // ── Test 4: stale lock file is detected and cleared ──────────────────────────
 
-test('stale lock file does not block markArchived', async () => {
+test('stale lock file does not block an archive write', async () => {
   await resetStore();
   await fs.rm(lockFile(), { force: true });
   await fs.mkdir(path.dirname(lockFile()), { recursive: true });

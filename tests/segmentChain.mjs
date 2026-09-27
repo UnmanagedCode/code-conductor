@@ -65,13 +65,14 @@ export async function seedSegmentChain({ place, publicId, segments, rowThrough =
   await writeLineageRow(publicId, segments.slice(0, rowThrough + 1));
 }
 
-// Write ONE `session-lineage.json` row, preserving every other row in the
-// store. No shape check on the chain: this is how a test writes a row the
-// production writers could not (a legacy row whose oldest entry is not
-// `initial`). `current` is derived — the newest entry without `dropped: true`
-// — and one must exist, as the store's row invariant requires.
+// Write ONE record's chain into `sessions.json`, preserving every other record
+// and this record's session facts. No shape check on the chain: this is how a
+// test writes a row the production writers could not (a legacy row whose oldest
+// entry is not `initial`). `current` is derived — the newest entry without
+// `dropped: true` — and one must exist, as the store's record invariant
+// requires. Written with a rename, so the store's stat-validated cache sees it.
 export async function writeLineageRow(publicId, segments) {
-  const file = path.join(orchStoreRoot(), 'session-lineage.json');
+  const file = path.join(orchStoreRoot(), 'sessions.json');
   let sessions = {};
   try { ({ sessions } = JSON.parse(await fs.readFile(file, 'utf8'))); } catch (e) {
     if (e.code !== 'ENOENT') throw e;
@@ -79,13 +80,17 @@ export async function writeLineageRow(publicId, segments) {
   const live = segments.filter(s => s.dropped !== true);
   assert.ok(live.length > 0, `writeLineageRow: row ${publicId} has no live entry`);
   sessions[publicId] = {
+    ...sessions[publicId],
     current: live[live.length - 1].id,
     segments: segments.map((s, i) => ({
       id: s.id, reason: s.reason, at: s.at ?? atFor(i), ...(s.dropped === true ? { dropped: true } : {}),
+      ...(s.temp === true ? { temp: true } : {}), ...(s.archived === true ? { archived: true } : {}),
     })),
   };
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  await fs.writeFile(file, JSON.stringify({ sessions }, null, 2) + '\n');
+  const tmp = `${file}.seed-${process.pid}`;
+  await fs.writeFile(tmp, JSON.stringify({ sessions }, null, 2) + '\n');
+  await fs.rename(tmp, file);
 }
 
 // A prune-style copy of `records`: every tool_result's content replaced by

@@ -34,7 +34,7 @@ Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 
 | Field | Notes |
 |---|---|
-| `id` | `^[a-z][a-z0-9-]*$`, ≤40 chars, unique (incl. against managed ids). The value stored in `Instance.backend`, tier/role bindings, the session sidecar, and the resume manifest. |
+| `id` | `^[a-z][a-z0-9-]*$`, ≤40 chars, unique (incl. against managed ids). The value stored in `Instance.backend`, tier/role bindings, the session store's `backend` record, and the resume manifest. |
 | `label` | Display name. Required. |
 | `template` | **Required on a USER row** (400 if blank — see below). Blank on the managed `claude` row ⇒ identity. Any non-blank template refuses to launch without a resolved model, **unconditionally** — a template that never names `{model}` is no exception, because the model still rides in the forwarded claude args and drives the context-window env. |
 | `env` | Key/value pairs injected into the child's env at spawn. Keys match `^[A-Za-z_][A-Za-z0-9_]*$`. |
@@ -103,7 +103,7 @@ The consequences of being a substitution backend:
   terminal `[…]` build tag dropped) and may report an unrelated id altogether;
   `this.model` is the registry KEY for these backends, so adopting any of that
   breaks the next resume's `--model <key>`, drops the context env vars, and writes
-  a foreign id + capacity into `session-backends.json`. Suppressing only the
+  a foreign id + capacity into the session's recorded `backend`. Suppressing only the
   *lossy* shapes left exactly that hole. Unconditional is correct rather than
   merely safe: live model changes are already refused here (below), so the
   configured id is authoritative by construction. The guard is keyed on
@@ -140,7 +140,7 @@ The consequences of being a substitution backend:
   gateway framing trait is therefore provably *reachable* from the parser's branches,
   not attested on the wire. A wrong envelope floors to `ctx —`, never a wrong number.
   For cross-backend questions about what was persisted, the session jsonls are a corpus,
-  attributable per session via `<store>/session-backends.json`.
+  attributable per session via the `backend` field of its record in `<store>/sessions.json`.
 - **No `cost_usd`** is persisted for its turns (`src/costTracking.ts`): the CLI's
   `total_cost_usd` is Anthropic list pricing applied to someone else's model. The
   *absence* of `cost_usd` is the canonical "tokens not countable" marker the cost
@@ -153,11 +153,14 @@ The consequences of being a substitution backend:
   Claude agent is exempt from the overage stop/resume flow — membership is resolved
   from the tree's root, so every member of a tree containing any Claude agent is in.
   Adding a monitor later is one `Set` entry (`src/usageWindowDomains.ts`).
-- **The session sidecar records it** — `<store>/session-backends.json` maps
-  `sid → {backend, model, contextWindowTokens?}`. Two things the CLI jsonl can't
+- **The session record holds it** — the `backend` field of the session's record in
+  `<store>/sessions.json` (`src/sessionStore.ts`), keyed by the PUBLIC id, is
+  `{backend, model, contextWindowTokens}`, written at every spawn/resume onto a
+  substitution backend (a `claude` session records none); a rotation
+  (`/clear`, prune) never touches it. Two things the CLI jsonl can't
   carry: which backend ran the session, and the model id in full. Absence of a record
   means plain `claude`; a `null` model means backend-known/model-unknown (resume falls
-  back to the jsonl and the next mark self-heals it). `contextWindowTokens` is a
+  back to the jsonl and the next spawn self-heals it). `contextWindowTokens` is a
   fallback used only when the model's custom-model row has since been deleted. If the recorded backend has since been REMOVED from the
   registry, resume is refused `422 BACKEND_GONE` (below).
 
@@ -175,7 +178,7 @@ purpose: each closes a distinct route, and none subsumes another.
 | Door | Where | Refusal |
 |---|---|---|
 | Create with an **explicit** unknown backend (`POST /api/instances`, restart replay) | `_doCreate`, `src/instances.ts` | `422 BACKEND_GONE` |
-| Resume whose **sidecar** backend was removed since | `_doCreate`, same guard | `422 BACKEND_GONE` |
+| Resume whose **recorded** backend was removed since | `_doCreate`, same guard | `422 BACKEND_GONE` |
 | Spawn/respawn after the row was removed **under a tracked instance** | `Instance.spawn()`, `src/instances.ts` | throws, instance → `crashed` (visible), instead of taking `resolveBackendLaunch`'s identity branch |
 | **Removing** a row that anything still references | `removeBackend()`, `src/appSettings.ts` | `409` — see [Settings → Backends](#settings--backends) |
 
@@ -324,7 +327,7 @@ so a changed default moves *new spawns*, never anything already running:
 | Path | Effort |
 |---|---|
 | Fresh spawn (dialog / Conduct / `spawn_instance` with a tier or role) | resolved through the chain above |
-| Resume via `_doCreate` with no tier/role — sidebar one-click, anchor auto-resume, `spawn_instance({resume})` | step 4, `DEFAULT_EFFORT`: a resume recovers its model from the jsonl/sidecar, not from a binding, so there is no row to inherit from |
+| Resume via `_doCreate` with no tier/role — sidebar one-click, anchor auto-resume, `spawn_instance({resume})` | step 4, `DEFAULT_EFFORT`: a resume recovers its model from the jsonl/session store, not from a binding, so there is no row to inherit from |
 | Restart manifest (`src/resumeRestart.ts`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
 | `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
@@ -385,8 +388,8 @@ fabricated default.
   (`public/usage.js`) render an understated window as >100%. Triage a >100% chip by
   reading the session's model and its window row first.
 
-A binding is exactly `{backend, model}`. Sidecar and manifest records carry
-`contextWindowTokens` as a **fallback only**, used when the model's custom-model
+A binding is exactly `{backend, model}`. The session record's `backend` (in
+`<store>/sessions.json`) and the resume manifest carry `contextWindowTokens` as a **fallback only**, used when the model's custom-model
 row was deleted since the session last ran; live registry resolution wins
 whenever it succeeds.
 
@@ -399,7 +402,7 @@ backend short-circuits to `true`, a custom-model row wins over a curated preset,
 the model-id match is **exact**, and anything unknown resolves `true` (the
 pre-flag behaviour). `Instance` stores it as `acceptsMidTurnSteering`, re-resolved
 alongside capacity by `_refreshModelCapabilities()` whenever the model changes.
-Never persisted in the sidecar or the resume manifest — a deleted row degrades to
+Never persisted in the session store or the resume manifest — a deleted row degrades to
 `true`, which is what "nothing declared" means.
 
 `false` changes the injection route and the wake route, both documented in

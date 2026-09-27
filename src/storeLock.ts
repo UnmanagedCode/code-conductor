@@ -1,4 +1,6 @@
-// Cross-process advisory lock for sidecar JSON stores.
+// Cross-process advisory lock — the shared primitive behind the session store's
+// read-modify-write (src/sessionStore.ts) and the FUSE union binary's build
+// (src/systems/fuse/build.ts).
 //
 // Uses an O_EXCL lockfile (atomic create — fails with EEXIST if another
 // process already holds the lock) to serialise read-modify-write mutations

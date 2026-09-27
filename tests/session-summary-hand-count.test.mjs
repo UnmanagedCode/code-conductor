@@ -9,14 +9,13 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 // Both roots are read at call time, so setting them before import isolates
-// the conducted/archived sidecars and the transcripts.
+// the session store and the transcripts.
 const tmp = await mkdtemp('cc-hand-count-');
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
 
 const { summarizeSessions, encodeCwd, localPlace } = await import('../src/projects.ts');
-const { markConducted } = await import('../src/conductedSessions.ts');
-const { markArchived } = await import('../src/archivedSessions.ts');
+const { markConducted, setSegmentArchived } = await import('../src/sessionStore.ts');
 
 async function writeTranscript(dir, sid, timestamp) {
   await fs.writeFile(path.join(dir, `${sid}.jsonl`),
@@ -39,8 +38,8 @@ test('handCount counts only non-archived, non-conducted transcripts', async () =
   await markConducted('conducted');
   await markConducted('conducted-2');
   await markConducted('archived-conducted');
-  await markArchived('archived-hand');
-  await markArchived('archived-conducted');
+  await setSegmentArchived('archived-hand', true);
+  await setSegmentArchived('archived-conducted', true);
 
   assert.deepEqual(await summarizeSessions(localPlace(cwd)), {
     count: 3, archivedCount: 2, handCount: 1, lastActivity: Date.parse('2026-08-07T07:00:00.000Z'),

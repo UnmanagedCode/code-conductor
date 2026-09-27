@@ -2,7 +2,7 @@
 // env injection, custom models (backend + required contextWindow), tier/role
 // bindings on the {backend, model} shape (validation gates + no-silent-revert),
 // the Claude-only familyOf (canonicalize no-op for non-Claude ids), the
-// {backend,model}-shaped session sidecar, and the Settings routes — plus
+// {backend,model}-shaped session backend record, and the Settings routes — plus
 // `src/claudeLauncher.ts`'s launch-resolution primitives, of which
 // `resolveBackendLaunch` is one and `resolveClaudeBin` the other.
 
@@ -24,9 +24,7 @@ import {
 } from '../src/modelVersions.ts';
 import { resolveBackendLaunch, backendEnv, resolveClaudeBin } from '../src/claudeLauncher.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
-import {
-  hasSessionBackend, getSessionBackend, markSessionBackend, unmarkSessionBackend, loadAll,
-} from '../src/sessionBackends.ts';
+import { getSessionBackend, setSessionBackend, sessionsFile } from '../src/sessionStore.ts';
 
 const CLAUDE_BIN = { command: '/usr/bin/claude', prefixArgs: [] };
 
@@ -200,7 +198,7 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
   });
 });
 
-// ── registry + custom models + bindings + sidecar (fresh store) ─────────────
+// ── registry + custom models + bindings + session backend (fresh store) ─────
 describe('backend registry data model', () => {
   let home;
   beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
@@ -525,47 +523,44 @@ describe('backend registry data model', () => {
     await assert.rejects(() => setRoleBinding('bogus', { kind: 'tier', tier: 'fast' }), /known/);
   });
 
-  test('session sidecar is a Map sid→{backend,model}: mark / get / upsert / unmark / cleanup', async () => {
-    assert.equal(await hasSessionBackend('sid-1'), false);
+  test('a session backend is a {backend,model,contextWindowTokens} field on its sessions.json record: set / get / upsert', async () => {
     assert.equal(await getSessionBackend('sid-1'), null);
 
-    await markSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000);
-    assert.equal(await hasSessionBackend('sid-1'), true);
+    await setSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000);
     assert.deepEqual(await getSessionBackend('sid-1'),
       { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: 200_000 });
 
-    await markSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000); // idempotent
-    assert.equal((await loadAll()).size, 1);
+    await setSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000); // idempotent
+    const doc = JSON.parse(await fs.readFile(sessionsFile(), 'utf8'));
+    assert.deepEqual(Object.keys(doc.sessions), ['sid-1'], 'one record, keyed by the session id');
+    assert.deepEqual(doc.sessions['sid-1'].backend,
+      { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: 200_000 });
 
-    // Re-mark with a different model upserts (the self-heal path).
-    await markSessionBackend('sid-1', 'ollama', 'deepseek-v4-flash:cloud', 1_000_000);
+    // Re-set with a different model upserts (the self-heal path).
+    await setSessionBackend('sid-1', 'ollama', 'deepseek-v4-flash:cloud', 1_000_000);
     assert.deepEqual(await getSessionBackend('sid-1'),
       { backend: 'ollama', model: 'deepseek-v4-flash:cloud', contextWindowTokens: 1_000_000 });
 
-    // A mark with no model stores null (backend known, model unknown); an
+    // A set with no model stores null (backend known, model unknown); an
     // unknown capacity stores null too rather than a guessed default.
-    await markSessionBackend('sid-2', 'ollama');
+    await setSessionBackend('sid-2', 'ollama');
     assert.deepEqual(await getSessionBackend('sid-2'),
       { backend: 'ollama', model: null, contextWindowTokens: null });
-    // …and re-marking it WITH a model self-heals the legacy entry.
-    await markSessionBackend('sid-2', 'ollama', 'qwen3.5:cloud', 256_000);
+    // …and re-setting it WITH a model self-heals the entry.
+    await setSessionBackend('sid-2', 'ollama', 'qwen3.5:cloud', 256_000);
     assert.deepEqual(await getSessionBackend('sid-2'),
       { backend: 'ollama', model: 'qwen3.5:cloud', contextWindowTokens: 256_000 });
 
     // A user-defined backend id round-trips just the same.
-    await markSessionBackend('sid-3', 'my-proxy', 'mine:v1', 42_000);
+    await setSessionBackend('sid-3', 'my-proxy', 'mine:v1', 42_000);
     assert.deepEqual(await getSessionBackend('sid-3'),
       { backend: 'my-proxy', model: 'mine:v1', contextWindowTokens: 42_000 });
 
-    // A mark with no backend is refused (absence must mean "plain claude").
-    assert.equal(await markSessionBackend('sid-4', null, 'x'), false);
-    assert.equal(await hasSessionBackend('sid-4'), false);
-
-    assert.equal(await unmarkSessionBackend('sid-1'), true);
-    assert.equal(await unmarkSessionBackend('sid-2'), true);
-    assert.equal(await unmarkSessionBackend('sid-3'), true);
-    assert.equal(await hasSessionBackend('sid-1'), false);
-    assert.equal((await loadAll()).size, 0);
+    // A set with no backend is refused (absence must mean "plain claude").
+    assert.equal(await setSessionBackend('sid-4', null, 'x'), false);
+    assert.equal(await getSessionBackend('sid-4'), null);
+    const after = JSON.parse(await fs.readFile(sessionsFile(), 'utf8'));
+    assert.ok(!('sid-4' in after.sessions), 'a refused set writes no record');
   });
 });
 

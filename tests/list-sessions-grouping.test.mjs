@@ -25,7 +25,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { markSessionMode, getSessionMode } from '../src/sessionModes.ts';
+import { setSessionMode, getSessionMode } from '../src/sessionStore.ts';
 
 const execFileP = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,8 +65,8 @@ async function call(name, args = {}) {
   return body.result.content[0].text;
 }
 
-// Put a resumable transcript on disk for a cwd. No instance, no sidecar entry
-// unless the caller adds one — i.e. exactly the shape of a legacy session.
+// Put a resumable transcript on disk for a cwd. No instance, no session record
+// unless the caller adds one — i.e. exactly the shape of a session cc never recorded.
 async function seedSession(cwd, sid) {
   const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
   await fs.mkdir(dir, { recursive: true });
@@ -108,7 +108,7 @@ test('a session on disk with NO recorded mode renders resumes-hot', async () => 
 test('a session recorded as plan renders no flag — so the flag is not a constant', async () => {
   const repoPath = await makeRealRepo('demo');
   await seedSession(repoPath, SID_PLAN);
-  await markSessionMode(SID_PLAN, 'plan');
+  await setSessionMode(SID_PLAN, 'plan');
 
   const out = await call('list_sessions', { project: 'demo' });
   const row = rowFor(out, SID_PLAN);
@@ -122,7 +122,7 @@ test('both rows in ONE listing: recorded-plan cold, unrecorded hot', async () =>
   const repoPath = await makeRealRepo('demo');
   await seedSession(repoPath, SID_NO_RECORD);
   await seedSession(repoPath, SID_PLAN);
-  await markSessionMode(SID_PLAN, 'plan');
+  await setSessionMode(SID_PLAN, 'plan');
 
   const out = await call('list_sessions', { project: 'demo' });
   assert.match(rowFor(out, SID_NO_RECORD), /resumes-hot/, `unrecorded must flag:\n${out}`);

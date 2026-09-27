@@ -88,12 +88,12 @@ async function wsPrompt(instanceId, text) {
 
 // Append one record to an instance's session jsonl (fake-claude writes none).
 // The file is named by the BACKING session id, which the API withholds; the
-// sandbox store's session-lineage.json maps the public id to it.
+// sandbox store's sessions.json maps the public id to it (`.sessions[publicId].current`).
 async function appendTranscript(instanceId, record) {
   const i = await inst(x => x.id === instanceId);
-  const lineage = JSON.parse(await fs.readFile(
-    path.join(orch.sandbox.dirs.PROJECTS_ROOT, '.code-conductor', 'session-lineage.json'), 'utf8'));
-  const backing = lineage.sessions?.[i.sessionId]?.current;
+  const store = JSON.parse(await fs.readFile(
+    path.join(orch.sandbox.dirs.PROJECTS_ROOT, '.code-conductor', 'sessions.json'), 'utf8'));
+  const backing = store.sessions?.[i.sessionId]?.current;
   if (!backing) throw new Error(`no backing id recorded for session ${i.sessionId}`);
   const dir = path.join(orch.sandbox.dirs.CLAUDE_PROJECTS_ROOT, i.cwd.replace(/[^A-Za-z0-9-]/g, '-'));
   await fs.mkdir(dir, { recursive: true });

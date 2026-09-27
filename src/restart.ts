@@ -20,8 +20,8 @@ import { spawn } from 'node:child_process';
 import type { Server } from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { writePendingTempCleanup } from './tempCleanup.ts';
-import { orphanedTempIdsSync, unmarkTemp } from './tempSessions.ts';
-import { markArchived } from './archivedSessions.ts';
+import { orphanedTempIdsSync } from './sessionStore.ts';
+import { retireSegments } from './sessionLineage.ts';
 
 // The InstanceManager surface the restart path reads. Every method is
 // optional because runTempCleanup/scheduleRestart guard each call (the
@@ -40,8 +40,8 @@ interface RestartLog {
 }
 
 // Archive every temp session on a plain restart: live-attached ones (via
-// instances.shutdownTempSync()) AND crash-orphaned ones that are recorded in
-// temp-sessions.json but have no live instance (e.g. a prior hard crash).
+// instances.shutdownTempSync()) AND crash-orphaned ones: a temp segment in the
+// session store with no live instance (e.g. a prior hard crash).
 // Kept separate from scheduleRestart (no process.exit inside) so it's
 // directly unit-testable, mirroring how shutdownTempSync/writePendingTempCleanup
 // /sweepPendingTempCleanup are already tested standalone.
@@ -68,18 +68,15 @@ export function runTempCleanup({ instances, log = console }: { instances?: Resta
   try { instances.shutdownTempSync(); }
   catch (e) { log.warn?.('restart: temp cleanup error', e); }
 
-  // Crash-orphaned temp sessions: recorded in temp-sessions.json but with no
+  // Crash-orphaned temp sessions: a temp segment in the session store with no
   // live instance, so the kill/wipe loop above never sees them. There's no
-  // cwd on record for these (temp-sessions.json stores sessionIds only), so
-  // there's no subagents dir to locate/clean — just the sidecar bookkeeping.
+  // placement on record for a segment, so there's no subagents dir to
+  // locate/clean — just the store bookkeeping, in one write.
   let orphanedIds: string[] = [];
   try {
     orphanedIds = orphanedTempIdsSync(snapshot.map((e) => e.sessionId));
   } catch (e) { log.warn?.('restart: orphaned temp lookup error', e); }
-  for (const sid of orphanedIds) {
-    unmarkTemp(sid).catch(() => {});
-    markArchived(sid).catch(() => {});
-  }
+  retireSegments(orphanedIds).catch(() => {});
 
   try {
     writePendingTempCleanup([...snapshot, ...orphanedIds.map((sessionId) => ({ sessionId }))]);

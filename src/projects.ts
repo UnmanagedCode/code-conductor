@@ -3,11 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
-import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.ts';
-import { loadAllTemps } from './tempSessions.ts';
-import { loadAllArchived, markArchived, unmarkArchived } from './archivedSessions.ts';
-import { loadAll as loadAllSessionModes, effectiveResumeMode, unmarkSessionMode } from './sessionModes.ts';
+import { loadSessions, fileFacts, setSegmentArchived, type SessionIndex } from './sessionStore.ts';
+import { effectiveResumeMode } from './sessionModes.ts';
 import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
@@ -337,16 +334,11 @@ export async function resolveToBackingId(sessionId: string): Promise<string | nu
 // individual files — and every superseded segment of a session shares one public
 // id, so projecting them would collapse distinct rows onto a single ambiguous
 // handle and point Delete at the live transcript instead of the archived one.
-function projectRowId(
-  filename: string,
-  lineage: { byPublic: Map<string, LineageRowLike>; byBacking: Map<string, string> },
-): string {
-  const publicId = lineage.byBacking.get(filename);
-  if (!publicId) return filename; // no row ⇒ public id IS the filename
-  return lineage.byPublic.get(publicId)?.current === filename ? publicId : filename;
+function projectRowId(filename: string, index: SessionIndex): string {
+  const publicId = index.byBacking.get(filename);
+  if (!publicId) return filename; // no record ⇒ public id IS the filename
+  return index.byPublic.get(publicId)?.current === filename ? publicId : filename;
 }
-
-interface LineageRowLike { current: string }
 
 export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
@@ -1826,17 +1818,9 @@ export async function listSessionsForCwdWithCounts(
     if (errCode(e) === 'ENOENT') return { rows: [], archivedCount: 0 };
     throw e;
   }
-  const titles = await loadAllTitles();
-  const conducted = await loadAllConducted();
-  const temps = await loadAllTemps();
-  const archived = await loadAllArchived();
-  // One bulk read per scanned cwd, like the four sidecars above — never a file
-  // open per session.
-  const modes = await loadAllSessionModes();
-  // Sixth bulk load, same rule. Lazy import: sessionLineage.ts imports
-  // orchStoreRoot() from here, so a static edge would close a cycle.
-  const { loadLineage, liveSegmentIdsOf } = await import('./sessionLineage.ts');
-  const lineage = await loadLineage();
+  // ONE store read per scanned cwd — never a file open per session.
+  const index = await loadSessions();
+  const { liveSegmentIdsOf } = await import('./sessionLineage.ts');
   // Same cycle as above: the scanner reads transcripts through this module.
   const { deriveAwaitingUser, chainEndingAt } = await import('./awaitingUserTranscript.ts');
   const out: SessionRow[] = [];
@@ -1848,7 +1832,10 @@ export async function listSessionsForCwdWithCounts(
     // tempSessionIdsForPlace and liveBackingIdsForPlace yield backing ids, because
     // what they exclude is a FILE. Projecting first would make every set miss.
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
-    const isArchived = archived.has(sid);
+    // Session facts come off the record; temp/archived off this file's segment.
+    const { record, segment } = fileFacts(index, sid);
+    const isArchived = segment?.archived === true;
+    const isConducted = record?.conducted === true;
     const full = path.join(dir, name);
     // Stat before the archived branch: the count must include only real files,
     // and it is the same stat a listed row needs anyway.
@@ -1861,30 +1848,29 @@ export async function listSessionsForCwdWithCounts(
     }
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
-    const rowId = projectRowId(sid, lineage);
+    const rowId = projectRowId(sid, index);
     // Cost bound: archived rows (every exited conductor, being temp) are not
     // derived in a list read unless `deriveAwaitingFor` names the row. A
     // conducted row never is — it never carries the flag, on any surface.
     let ask: Awaited<ReturnType<typeof deriveAwaitingUser>> = null;
-    if (!conducted.has(sid) && (!isArchived || rowId === deriveAwaitingFor)) {
-      const lineageRow = rowId === sid ? null : lineage.byPublic.get(rowId);
+    if (!isConducted && (!isArchived || rowId === deriveAwaitingFor)) {
+      const lineageRow = rowId === sid ? null : index.byPublic.get(rowId);
       const chain = lineageRow ? chainEndingAt(liveSegmentIdsOf(lineageRow), sid) : [sid];
       try { ask = await deriveAwaitingUser(place, chain); }
       catch (e) { console.warn(`awaiting-user: scan of ${sid} failed: ${(e as Error).message}`); }
     }
     out.push({
-      // The one projected field. Every sidecar below stays keyed to the FILENAME
-      // — that is what they are keyed to on disk, and re-keying them would have
-      // needed a migration, deliberately not written.
+      // The one projected field. A superseded segment's row shows its
+      // session's title, conducted flag and mode, and its own temp/archived.
       sessionId: rowId,
       firstPrompt,
-      title: titles.get(sid) ?? null,
-      conducted: conducted.has(sid),
-      temp: temps.has(sid),
+      title: record?.title ?? null,
+      conducted: isConducted,
+      temp: segment?.temp === true,
       archived: isArchived,
       lastActivity: await lastActivityOf(full, stat),
       size: stat.size,
-      resumeMode: effectiveResumeMode(modes.get(sid) ?? null),
+      resumeMode: effectiveResumeMode(record?.mode ?? null),
       awaitingUser: ask?.kind ?? null,
       awaitingUserSource: ask?.source ?? null,
     });
@@ -1917,9 +1903,8 @@ export async function projectRootPlace(projectName: string, treePath: string): P
 }
 
 // Archive the session at the conventional path: keep the jsonl (so it
-// stays resumable) and just record the sessionId in the global archived
-// set. Title + conducted markers are intentionally kept so a restore
-// brings the session back intact. Returns true on success, false if the
+// stays resumable) and just flag its segment archived. The session's facts
+// are untouched, so a restore brings the session back intact. Returns true on success, false if the
 // jsonl didn't exist (404 path from the route). This is the single
 // "remove from the normal list" action — it never deletes from disk.
 export async function archiveSessionForCwd(place: TranscriptPlacement, sessionId: string): Promise<boolean> {
@@ -1932,7 +1917,7 @@ export async function archiveSessionForCwd(place: TranscriptPlacement, sessionId
     if (errCode(e) === 'ENOENT') return false;
     throw e;
   }
-  await markArchived(backingId);
+  await setSegmentArchived(backingId, true);
   return true;
 }
 
@@ -1949,14 +1934,11 @@ export async function deleteSessionForCwd(place: TranscriptPlacement, sessionId:
   const file = sessionFilePath(place, backingId);
   try {
     await fs.unlink(file);
-    try { await deleteSessionTitle(backingId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkConducted(backingId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkArchived(backingId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkSessionMode(backingId); } catch { /* sidecar cleanup is best-effort */ }
-    // Chain integrity: the transcript this segment named is gone for good, so drop
-    // it from its lineage row rather than leave `current`/`segments` pointing at a
-    // missing file. Deliberately on the DELETE path, not on reads — a write inside
-    // a read path races concurrent readers.
+    // The transcript this segment named is gone for good: tombstone the segment
+    // (clearing its flags), and once no live segment is left, delete the
+    // session's record with every fact on it — the only path that may.
+    // Deliberately on the DELETE path, not on reads — a write inside a read path
+    // races concurrent readers.
     try { const { dropSegment } = await import('./sessionLineage.ts'); await dropSegment(backingId); }
     catch { /* best-effort */ }
     return true;
@@ -2229,8 +2211,8 @@ export interface ArchivedSessionRow {
 }
 
 // List every archived session, grouped by the project (and worktree)
-// that owns it. archived-sessions.json only stores sessionIds, so we
-// enumerate known project + worktree paths and keep the rows
+// that owns it. The archived flag is on a transcript's segment, which records
+// no location, so we enumerate known project + worktree paths and keep the rows
 // listSessionsForCwd already flags as archived (it also reads firstPrompt
 // + title). Used by the Settings → Archived page. Only projects with at
 // least one archived session are returned; sessions are lastActivity-desc.
@@ -2239,7 +2221,7 @@ export interface ArchivedSessionRow {
 // filter to run BEFORE the row projection wherever it is used (both exclusion sets
 // yield backing ids, because what they exclude is a FILE) — but there is no filter
 // to order here, and adding one would be wrong: both sets name LIVE sessions, and
-// a live session's transcript is never in the archived set (archiving force-kills
+// a live session's transcript is never archived (archiving force-kills
 // the instance first). So the archived view has nothing to exclude, and it keeps
 // the behaviour it had before this change. The row ids it reports come already
 // projected from listSessionsForCwd, whose rule keeps a SUPERSEDED segment's
@@ -2292,8 +2274,8 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
 //
 // `handCount` is the non-conducted subset of `count` — what the sidebar's
 // Hand-spawned only filter reads to decide whether a place holds a session it
-// would list, before any Sessions subnode has loaded its rows. It costs one
-// more sidecar load per walk, not a read per transcript.
+// would list, before any Sessions subnode has loaded its rows. It rides the one
+// session-store read per walk, not a read per transcript.
 export async function summarizeSessions(
   place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
@@ -2302,8 +2284,7 @@ export async function summarizeSessions(
   let entries: string[];
   try { entries = await fs.readdir(dir); }
   catch (e) { if (errCode(e) === 'ENOENT') return { count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 }; throw e; }
-  const archivedSet = await loadAllArchived();
-  const conducted = await loadAllConducted();
+  const index = await loadSessions();
   let count = 0;
   let archivedCount = 0;
   let handCount = 0;
@@ -2316,11 +2297,12 @@ export async function summarizeSessions(
     let stat: Awaited<ReturnType<typeof fs.stat>>;
     try { stat = await fs.stat(full); } catch { continue; }
     if (!stat.isFile()) continue;
-    if (archivedSet.has(sid)) {
+    const { record, segment } = fileFacts(index, sid);
+    if (segment?.archived) {
       archivedCount++;
     } else {
       count++;
-      if (!conducted.has(sid)) handCount++;
+      if (!record?.conducted) handCount++;
       const ts = await lastActivityOf(full, stat);
       if (ts > lastActivity) lastActivity = ts;
     }

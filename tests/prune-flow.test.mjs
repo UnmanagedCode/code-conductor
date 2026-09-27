@@ -117,7 +117,7 @@ test('prune rotates the BACKING id, PINS the public id, archives the original, a
     assert.deepEqual(await fs.readFile(file), originalBytes, 'original jsonl untouched');
     // …and archived, so it shows up under Settings → Archived rather than as a
     // stale live row.
-    const { isArchived } = await import('../src/archivedSessions.ts');
+    const { isArchived } = await import('../src/sessionStore.ts');
     assert.equal(await isArchived(sid), true, 'the abandoned session is archived');
 
     // The pruned copy carries the stub and still has both user turns.
@@ -442,7 +442,9 @@ test('a failed prune reverts the recorded rotation — no segment the process ne
     await waitFor(() => ctx.instances.get(id).status === 'idle');
     const inst = ctx.instances.get(id);
     const { segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
-    assert.deepEqual(await segmentsFor(sid), [], 'precondition: no lineage row yet (base case)');
+    const chain = async () => (await segmentsFor(sid)).map(g => [g.id, g.reason]);
+    assert.deepEqual(await chain(), [[sid, 'initial']],
+      'precondition: the base case — a single `initial` segment named by the public id');
 
     // Fail the pruned launch only; let the recovery launch succeed. This is the
     // exact window the revert protects: after recordRotation, before the process
@@ -462,9 +464,9 @@ test('a failed prune reverts the recorded rotation — no segment the process ne
     assert.equal(inst.sessionId, sid, 'the public id never moved');
     assert.equal(inst.backingSessionId, sid, 'the backing id is restored to the pre-prune segment');
     assert.deepEqual(inst._segments, [sid], 'and the in-memory chain has no phantom segment');
-    // revertRotation dropped the trailing `initial`-only row entirely, restoring
-    // the base case EXACTLY — not a stub row that merely happens to resolve.
-    assert.deepEqual(await segmentsFor(sid), [], 'the lazily-created row is gone');
+    // revertRotation removes only the pruned segment: the record (and every fact
+    // on it) stays, back at the base case.
+    assert.deepEqual(await chain(), [[sid, 'initial']], 'the pruned segment is gone, the record kept');
     assert.equal(await resolveBacking(sid), sid, 'so the public id resolves to the intact original');
   } finally { await ctx.close(); }
 });
