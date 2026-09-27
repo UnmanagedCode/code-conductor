@@ -2,7 +2,9 @@
 // CONVENTIONS.md". Shared by `.conduct` (src/conduct.ts) and every project
 // (src/projectClaudeMd.ts): both deliver a generated CONVENTIONS.md through
 // the same `@`-import channel, and a CONVENTIONS.md nothing imports delivers
-// nothing.
+// nothing. The content half (withConventionsImport) is also what
+// src/conventionsCheckout.ts compares a working-tree CLAUDE.md against to tell
+// cc's own write from a hand edit — so it must stay the writer's exact bytes.
 //
 // migrations/0031-conduct-conventions-import.mjs duplicates the literal and the
 // prepend shape (built-ins only — see migrations/migrations.md); all three must
@@ -37,8 +39,16 @@ export async function ensureConventionsImport(system: System, dir: string): Prom
     if (errCode(e) !== 'EEXIST') throw e;
     existing = await system.readFile(target);
   }
-  if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return;
-  await system.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n${existing}`, { atomic: true });
+  const next = withConventionsImport(existing);
+  if (next !== null) await system.writeFile(target, next, { atomic: true });
+}
+
+// The bytes ensureConventionsImport writes for a CLAUDE.md holding `existing`
+// (null: absent), or null when it writes nothing.
+export function withConventionsImport(existing: string | null): string | null {
+  if (existing === null) return `${CONVENTIONS_IMPORT_LINE}\n`;
+  if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return null;
+  return `${CONVENTIONS_IMPORT_LINE}\n${existing}`;
 }
 
 // The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the

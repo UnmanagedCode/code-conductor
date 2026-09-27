@@ -133,6 +133,13 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
   return inner === '' ? [] : inner.split(',').map(s => s.trim()).filter(Boolean);
 }
 
+// The project selection a CONVENTIONS.md holding `existing` (null: absent)
+// regenerates with — its line-1 marker's slugs, else none. Also how
+// src/conventionsCheckout.ts derives the marker cc would write from HEAD's copy.
+export function selectionOf(existing: string | null): string[] {
+  return (existing === null ? null : parseMarker(existing.split('\n', 1)[0])) ?? [];
+}
+
 // Full CONVENTIONS.md document for a project selection: marker, the composed
 // workspace conventions, then the project ones under their own H1.
 // `missing` (marker slugs that don't resolve here) is kept in the MARKER — so the
@@ -219,7 +226,7 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   try { existing = await system.readFile(target); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 
-  const slugs = (existing === null ? null : parseMarker(existing.split('\n', 1)[0])) ?? [];
+  const slugs = selectionOf(existing);
 
   const catalog = await getCatalog();
   // Resolve against the local catalog. Unresolvable slugs (a custom convention
