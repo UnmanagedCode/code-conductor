@@ -192,6 +192,15 @@ test('the .bak refresh survives a single delete and refuses a two-record drop', 
     'a write two records short of .bak leaves it alone');
 });
 
+test('a corrupt .bak is replaced on the next write', async () => {
+  const root = await freshRoot();
+  await setTitle(A, 'a');
+  await fs.writeFile(bakFile(root), '{ "sessions": ');
+  await setTitle(B, 'b');
+  assert.deepEqual(Object.keys((await readJson(bakFile(root))).sessions).sort(), [A, B],
+    'a worthless backup is refreshed rather than kept');
+});
+
 test('the .bak refresh refuses a write that drops two archived segments', async () => {
   const root = await freshRoot();
   await fs.writeFile(storeFile(root), doc([A, B, C], { archived: [A, B] }));

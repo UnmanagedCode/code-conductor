@@ -21,16 +21,19 @@
 // by 0005 from a stray conductor-sessions.json) is merged on the next boot.
 //
 // MERGE RULES
-//   - Base: the existing sessions.json, if any. Unparseable → throw (boot aborts).
-//     Missing → its `sessions.json.bak`, by the store's recovery rule (absent →
-//     empty; corrupt → set aside, empty).
+//   - Base: the existing sessions.json, if any. Missing, or unparseable (then
+//     quarantined to `.corrupt-<pid>-<ts>` first) → its `sessions.json.bak`, by
+//     the store's recovery rule (absent → empty; corrupt → set aside, empty).
+//     Only a genuine I/O error reading either throws (boot aborts).
 //   - Lineage rows are copied verbatim into records, tombstones included. When
 //     the base already holds the record and the legacy row's chain has segments
 //     the record lacks (an old-version process rotated after an earlier merge),
 //     those segments are appended in chain order and `current` advances to the
 //     legacy `current` when that segment is live; a legacy chain that adds
 //     nothing is skipped. A segment some record already holds is never taken
-//     by another, so every segment ends up in at most one record.
+//     by another, so every segment the migration PLACES has one owner. The base
+//     itself is not deduplicated; every store writer already keeps one owner.
+//     A row that places nothing is counted (`skipped`).
 //   - A record none of whose segments survives validation is dropped and
 //     counted (`invalid`): the store's parser would never see it.
 //   - Each legacy key is attributed: a record key; else the owner of any segment
@@ -63,10 +66,10 @@
 // backstopped by the orphan sweeps above, an archived flag only by the restart
 // manifest (pending-temp-cleanup.json).
 //
-// `sessions.json.bak` is written beside the primary under the store's own
-// refresh guard — when absent or corrupt, or when the merged doc drops no more
-// than one record and one archived segment against it — so the recovery net
-// exists before the store's first mutation and a thin base never overwrites it.
+// `sessions.json.bak` is written beside the primary only when it is absent or
+// corrupt, or when the merged doc holds every store-readable record it holds
+// (shouldWriteBackup) — so the recovery net exists before the store's first
+// mutation and a thin base never overwrites it.
 //
 // Frozen artifact — do not edit. Uses Node built-ins only.
 
@@ -155,23 +158,28 @@ function normTier(r) {
   };
 }
 
-// The whole target file as-is, records keyed by public id. Throws on an
-// unparseable primary: the merge must never overwrite what it cannot read. A
-// MISSING primary is external loss (the store always writes one), so the base
-// is its `.bak`, by the store's own recovery rule: absent `.bak` → empty;
-// corrupt `.bak` → set aside as `.corrupt-<pid>-<ts>`, empty; any other I/O
+// The whole target file as-is, records keyed by public id. A MISSING primary
+// is external loss (the store always writes one) and an UNPARSEABLE one is
+// quarantined to `.corrupt-<pid>-<ts>`, exactly as the store's strict read
+// does; either way the base is its `.bak`, by the store's own recovery rule:
+// absent `.bak` → empty; corrupt `.bak` → set aside, empty; any other I/O
 // error → throw.
-async function readBase(file) {
+async function readBase(file, log) {
   let raw;
   try { raw = await fs.readFile(file, 'utf8'); }
   catch (e) {
     if (e?.code !== 'ENOENT') throw e;
     return readBackupBase(`${file}.bak`);
   }
-  let obj;
-  try { obj = JSON.parse(raw); }
-  catch (e) { throw new Error(`${name}: ${file} is unparseable (${e.message}); refusing to merge over it`); }
-  return isObj(obj?.sessions) ? { ...obj.sessions } : {};
+  try {
+    const obj = JSON.parse(raw);
+    return isObj(obj?.sessions) ? { ...obj.sessions } : {};
+  } catch (e) {
+    const dest = `${file}.corrupt-${process.pid}-${Date.now()}`;
+    await fs.rename(file, dest);
+    log(`  ! ${path.basename(file)} is unparseable (${e.message}); quarantined to ${path.basename(dest)}, merging onto its .bak`);
+    return readBackupBase(`${file}.bak`);
+  }
 }
 
 async function readBackupBase(bak) {
@@ -187,13 +195,18 @@ async function readBackupBase(bak) {
   }
 }
 
-const archivedCount = (sessions) =>
-  Object.values(sessions).reduce((n, r) => n + (Array.isArray(r?.segments) ? r.segments.filter((s) => s?.archived === true).length : 0), 0);
+// A record the store's parser would keep: at least one live, valid segment.
+const readable = (rec) => isObj(rec) && parseSegments(rec.segments).some((s) => !s.dropped);
 
-// The store's `.bak` refresh guard: write it when absent or corrupt, never
-// when unreadable, and never when the new doc would drop more than one record
-// or more than one archived segment against it — a thin base must not canonize
-// itself over the last-good backup.
+// Whether to REPLACE `.bak` with the merged doc: when it is absent or corrupt,
+// never when unreadable, and otherwise only when the merged doc holds every
+// store-readable record the `.bak` holds. Stricter than the store's own
+// drop-at-most-one refresh rule on purpose: one store mutation removes at most
+// one record, but this write derives from a primary that may be thin, so any
+// missing record means `.bak` is the only copy left. There is no archived-flag
+// clause: this merge never clears a flag, so a merged doc that keeps every
+// record keeps every flag its primary holds, and a flag the primary lacks
+// against `.bak` is an un-archive the store itself already accepted.
 async function shouldWriteBackup(bak, sessions) {
   let raw;
   try { raw = await fs.readFile(bak, 'utf8'); }
@@ -201,8 +214,7 @@ async function shouldWriteBackup(bak, sessions) {
   let old;
   try { old = JSON.parse(raw)?.sessions; } catch { return true; }
   if (!isObj(old)) return true;
-  return Object.keys(old).length - Object.keys(sessions).length <= 1
-    && archivedCount(old) - archivedCount(sessions) <= 1;
+  return Object.entries(old).every(([pub, rec]) => !readable(rec) || pub in sessions);
 }
 
 function mapOf(obj, key) {
@@ -224,7 +236,7 @@ export async function run({ root, log = console.log } = {}) {
   if (present.length === 0) return { applied: false };
 
   const target = path.join(store, TARGET);
-  const sessions = await readBase(target);
+  const sessions = await readBase(target, log);
   const file = (k) => path.join(store, LEGACY[k]);
 
   // 0. The base, validated. Its segment ids are what "new to the base" is
@@ -245,6 +257,7 @@ export async function run({ root, log = console.log } = {}) {
   //    the segments it lacks, appended in chain order.
   const lineage = await readLegacy(file('lineage'), log);
   let advanced = 0;
+  let skipped = 0;
   for (const [pub, row] of mapOf(lineage, 'sessions')) {
     if (!isObj(row) || typeof row.current !== 'string' || !row.current) { invalid++; continue; }
     const segments = parseSegments(row.segments);
@@ -253,13 +266,13 @@ export async function run({ root, log = console.log } = {}) {
     const rec = sessions[pub];
     if (!rec) {
       const liveKept = unclaimed.filter((seg) => !seg.dropped);
-      if (liveKept.length === 0) continue; // every live segment is another record's
+      if (liveKept.length === 0) { skipped++; continue; } // every live segment is another record's
       for (const seg of unclaimed) claimed.add(seg.id);
       const cur = liveKept.find((seg) => seg.id === row.current) ?? liveKept.at(-1);
       sessions[pub] = { current: cur.id, segments: unclaimed };
       continue;
     }
-    if (unclaimed.length === 0) continue;
+    if (unclaimed.length === 0) { skipped++; continue; }
     for (const seg of unclaimed) claimed.add(seg.id);
     rec.segments.push(...unclaimed);
     const cur = rec.segments.find((seg) => seg.id === row.current && !seg.dropped);
@@ -379,6 +392,6 @@ export async function run({ root, log = console.log } = {}) {
   log(`  ✓ merged ${present.length} legacy session file(s) into ${target}`);
   return {
     applied: true,
-    summary: { records: Object.keys(ordered).length, created, advanced, invalid, facts, unattributable: unattributable.size },
+    summary: { records: Object.keys(ordered).length, created, advanced, skipped, invalid, facts, unattributable: unattributable.size },
   };
 }

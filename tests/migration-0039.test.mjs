@@ -168,6 +168,7 @@ test('a legacy lineage row that adds nothing leaves the merged record alone', as
   const res = await run(root);
   assert.deepEqual((await readJson(file(root, 'sessions.json'))).sessions[PUB], merged);
   assert.equal(res.summary.advanced, 0);
+  assert.equal(res.summary.skipped, 1, 'the row that placed nothing is counted');
 });
 
 test('a stale legacy flag never re-applies to a segment the merged store already owns', async () => {
@@ -221,15 +222,40 @@ test('a missing primary merges onto its .bak, and both keep every record', async
   assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json.bak'))).sessions).sort(), all);
 });
 
-test('a primary much thinner than .bak never overwrites the backup', async () => {
+test('a thin primary never overwrites a .bak holding records it lacks', async (t) => {
+  // One subtest per size, so the boundary (1 and 2 records) is each its own red.
+  for (const n of [1, 2, 3]) {
+    await t.test(`.bak with ${n} record(s)`, async () => {
+      const root = await mkRoot();
+      await writeJson(root, 'sessions.json', { sessions: {} });
+      const bak = { sessions: Object.fromEntries([R1, R2, R3].slice(0, n).map(id => [id, baseRec(id)])) };
+      await writeJson(root, 'sessions.json.bak', bak);
+      await writeJson(root, 'session-titles.json', { titles: { [LONE]: 'lone' } });
+      await run(root);
+      assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json'))).sessions), [LONE]);
+      assert.deepEqual(await readJson(file(root, 'sessions.json.bak')), bak, 'the last-good backup survives');
+    });
+  }
+});
+
+test('a .bak record the store cannot read does not hold back the refresh', async () => {
   const root = await mkRoot();
-  await writeJson(root, 'sessions.json', { sessions: {} });
-  const bak = { sessions: { [R1]: baseRec(R1), [R2]: baseRec(R2), [R3]: baseRec(R3) } };
-  await writeJson(root, 'sessions.json.bak', bak);
+  await writeJson(root, 'sessions.json', { sessions: { [R1]: baseRec(R1) } });
+  await writeJson(root, 'sessions.json.bak', { sessions: {
+    [R1]: baseRec(R1), broken: { current: 'x', segments: [{ id: 'x', reason: 'bogus' }] },
+  } });
   await writeJson(root, 'session-titles.json', { titles: { [LONE]: 'lone' } });
   await run(root);
-  assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json'))).sessions), [LONE]);
-  assert.deepEqual(await readJson(file(root, 'sessions.json.bak')), bak, 'the last-good backup survives');
+  assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json.bak'))).sessions).sort(), [R1, LONE].sort());
+});
+
+test('a corrupt .bak is replaced by the merged doc', async () => {
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: { [R1]: baseRec(R1) } });
+  await fs.writeFile(file(root, 'sessions.json.bak'), '{ "sessions": ');
+  await writeJson(root, 'session-titles.json', { titles: { [LONE]: 'lone' } });
+  await run(root);
+  assert.deepEqual(await readJson(file(root, 'sessions.json.bak')), await readJson(file(root, 'sessions.json')));
 });
 
 // Every segment id → the records holding it.
@@ -267,6 +293,63 @@ test('two legacy rows naming one segment leave it in one record', async () => {
   assert.equal(sessions.bbbbbbbb.current, R2, 'current falls to a live segment the record actually holds');
 });
 
+test('a segment appended to an existing record is not taken by a later row', async () => {
+  const S = '44444444-0000-4000-8000-000000000004';
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: { [R1]: baseRec(R1), [R2]: baseRec(R2) } });
+  await writeJson(root, 'session-lineage.json', { sessions: {
+    [R1]: { current: S, segments: [{ id: R1, reason: 'initial', at: '' }, { id: S, reason: 'renew', at: '' }] },
+    [R2]: { current: S, segments: [{ id: R2, reason: 'initial', at: '' }, { id: S, reason: 'renew', at: '' }] },
+  } });
+  const res = await run(root);
+  const { sessions } = await readJson(file(root, 'sessions.json'));
+  assert.deepEqual(owners(sessions).get(S), [R1], 'the first row to place it owns it');
+  assert.deepEqual(sessions[R2].segments.map(s => s.id), [R2]);
+  assert.equal(res.summary.skipped, 1);
+});
+
+test('a new record whose legacy current is claimed falls back to its newest kept live segment', async () => {
+  const [A, B, C] = [R1, R2, R3];
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: { [C]: baseRec(C) } });
+  await writeJson(root, 'session-lineage.json', { sessions: { cccccccc: { current: C, segments: [
+    { id: A, reason: 'initial', at: '' }, { id: B, reason: 'renew', at: '' }, { id: C, reason: 'renew', at: '' },
+  ] } } });
+  await run(root);
+  const rec = (await readJson(file(root, 'sessions.json'))).sessions.cccccccc;
+  assert.deepEqual(rec.segments.map(s => s.id), [A, B]);
+  assert.equal(rec.current, B, 'the newest kept live segment, not the oldest');
+});
+
+test('an appended row never advances current onto a tombstoned segment', async () => {
+  const T = '55555555-0000-4000-8000-000000000005';
+  const U = '66666666-0000-4000-8000-000000000006';
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: { [R1]: { current: R1, segments: [
+    { id: R1, reason: 'initial', at: '' }, { id: T, reason: 'renew', at: '', dropped: true },
+  ] } } });
+  // A stale row from before T's transcript was deleted names it as current.
+  await writeJson(root, 'session-lineage.json', { sessions: { [R1]: { current: T, segments: [
+    { id: R1, reason: 'initial', at: '' }, { id: T, reason: 'renew', at: '' }, { id: U, reason: 'renew', at: '' },
+  ] } } });
+  await run(root);
+  const rec = (await readJson(file(root, 'sessions.json'))).sessions[R1];
+  assert.equal(rec.current, R1, 'current stays on a live segment');
+  assert.notEqual(rec.segments.find(s => s.id === rec.current)?.dropped, true);
+});
+
+test('a new-record row with only tombstones unclaimed is skipped, not written', async () => {
+  const D = '77777777-0000-4000-8000-000000000007';
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: { [R1]: baseRec(R1) } });
+  await writeJson(root, 'session-lineage.json', { sessions: { dddddddd: { current: R1, segments: [
+    { id: D, reason: 'initial', at: '', dropped: true }, { id: R1, reason: 'renew', at: '' },
+  ] } } });
+  const res = await run(root);
+  assert.equal((await readJson(file(root, 'sessions.json'))).sessions.dddddddd, undefined, 'no tombstone-only record');
+  assert.equal(res.summary.skipped, 1);
+});
+
 test('(g) an absent archived primary falls back to its .bak', async () => {
   const root = await mkRoot();
   await fs.writeFile(file(root, 'archived-sessions.json.bak'), JSON.stringify({ sessions: [LONE] }));
@@ -275,12 +358,20 @@ test('(g) an absent archived primary falls back to its .bak', async () => {
   assert.equal(rec.segments[0].archived, true);
 });
 
-test('an unparseable sessions.json aborts the merge', async () => {
+test('an unparseable sessions.json is quarantined and the merge lands on its .bak', async () => {
   const root = await mkRoot();
   await seedLegacy(root);
-  await fs.writeFile(file(root, 'sessions.json'), '{ "sessions": ');
-  await assert.rejects(run(root), /unparseable/);
-  assert.equal(await exists(file(root, 'session-titles.json')), true, 'nothing moved');
+  const corrupt = '{ "sessions": ';
+  await fs.writeFile(file(root, 'sessions.json'), corrupt);
+  await writeJson(root, 'sessions.json.bak', { sessions: { [R1]: baseRec(R1) } });
+  const res = await run(root);
+  assert.equal(res.applied, true, 'boot is not aborted');
+  const quarantined = (await fs.readdir(store(root))).filter(n => n.startsWith('sessions.json.corrupt-'));
+  assert.equal(quarantined.length, 1, 'the corrupt primary is set aside');
+  assert.equal(await fs.readFile(file(root, quarantined[0]), 'utf8'), corrupt, 'byte-for-byte');
+  const { sessions } = await readJson(file(root, 'sessions.json'));
+  assert.ok(sessions[R1], 'the .bak record is the base');
+  assert.equal(sessions[PUB].title, 'new title', 'and the legacy merge lands on it');
 });
 
 test('after the merge, the whole chain over the store is silent', async () => {

@@ -388,8 +388,8 @@ fabricated default.
   (`public/usage.js`) render an understated window as >100%. Triage a >100% chip by
   reading the session's model and its window row first.
 
-A binding is exactly `{backend, model}`. Sidecar and manifest records carry
-`contextWindowTokens` as a **fallback only**, used when the model's custom-model
+A binding is exactly `{backend, model}`. The session record's `backend` (in
+`<store>/sessions.json`) and the resume manifest carry `contextWindowTokens` as a **fallback only**, used when the model's custom-model
 row was deleted since the session last ran; live registry resolution wins
 whenever it succeeds.
 

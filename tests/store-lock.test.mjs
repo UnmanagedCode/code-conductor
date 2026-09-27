@@ -126,9 +126,9 @@ async function lockVanishesWithin(lockPath, budgetMs) {
 // is what suspends inside the `try`, so `finally`'s releaseLock runs only once
 // the body is done. Weakening it to `return fn()` makes `finally` run at the
 // return statement itself, unlinking the lockfile while the body is still in
-// flight — every session-store read-modify-write (src/sessionStore.ts, whose
-// lock this is) would then complete UNLOCKED, silently reopening the
-// cross-process lost-update window the lock exists to close.
+// flight — every caller of this shared primitive (the session store's
+// read-modify-write, the FUSE union build) would then run its critical section
+// UNLOCKED, silently reopening the cross-process race the lock exists to close.
 //
 // The test above ('runs fn under the lock and releases it after') cannot catch
 // that: its body never parks, so its own `fs.stat` races the erroneous release.
