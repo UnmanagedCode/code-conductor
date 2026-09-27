@@ -234,3 +234,17 @@ test('the filter falls back to All when the selected owner no longer has a live 
   assert.ok(projectNames(root).includes('beta'), 'the full tree is back');
   assert.equal([...select.options].some(o => o.value === 'B'), false, 'B is no longer offered');
 });
+
+test('a conductor with only idle chips is not offered in the filter, and selecting it still falls back to All', async () => {
+  const { root, select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  sidebar.setConductorSpawns({ D: [{ project: 'alpha', lastSpawnAt: '2026-01-01T00:00:00.000Z' }] });
+  sidebar.setConductSessions([{ sessionId: 'D', title: 'Dormant', lastActivity: 1 }]);
+  await tick();
+  assert.equal([...select.options].some(o => o.value === 'D'), false, 'spawn history offers no filter option');
+  sidebar.filter = 'D';
+  sidebar.render();
+  await tick();
+  assert.equal(sidebar.filter, '');
+  assert.ok(projectNames(root).includes('beta'), 'the full tree is shown');
+});

@@ -5,7 +5,9 @@
 // Ownership is live-only by construction: the server reports `ownerSessionId`
 // only on a live conducted instance (null on a hand-spawned session and on
 // anything dead, never on a disk row), so nothing here needs its own liveness
-// check to decide what a conductor owns.
+// check to decide what a conductor owns. Spawn history is a separate,
+// disk-derived input (`GET /api/conductors/projects`) that feeds only the
+// chips (conductorChips), never ownership.
 
 // The client-side spelling of the server's isDeadStatus.
 export function isLiveStatus(status) {
@@ -118,6 +120,21 @@ export function workersOf(conductorSid, instances) {
 // The distinct projects a set of workers sits in, sorted.
 export function conductorProjects(workers) {
   return [...new Set(workers.map(w => w.project))].sort((a, b) => a.localeCompare(b));
+}
+
+// A conductor's chips: one per project it has a live owned worker in (live,
+// by name), then one per other project it has ever spawned into (idle, newest
+// spawn first). An idle project that is no longer registered is dropped.
+export function conductorChips({ workers, spawned = [], registered }) {
+  const live = conductorProjects(workers);
+  const liveSet = new Set(live);
+  const idle = spawned
+    .filter(e => !liveSet.has(e.project) && registered.has(e.project))
+    .sort((a, b) => (a.lastSpawnAt < b.lastSpawnAt ? 1 : a.lastSpawnAt > b.lastSpawnAt ? -1 : a.project.localeCompare(b.project)));
+  return [
+    ...live.map(project => ({ project, live: true })),
+    ...idle.map(e => ({ project: e.project, live: false })),
+  ];
 }
 
 // The place key sidebar.js buckets instances by: the project for its main

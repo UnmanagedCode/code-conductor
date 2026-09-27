@@ -772,16 +772,18 @@ const pruneHandle = installPruneDialog({
 });
 
 async function refreshProjects() {
-  const [projects, workspaces, conductSessions] = await Promise.all([
+  const [projects, workspaces, conductSessions, conductorSpawns] = await Promise.all([
     fetch('/api/projects').then(r => r.json()),
     fetch('/api/workspaces').then(r => r.json()).catch(() => []),
     fetch('/api/projects/.conduct/sessions').then(r => r.ok ? r.json() : []).catch(() => []),
+    fetch('/api/conductors/projects').then(r => r.ok ? r.json() : {}).catch(() => ({})),
   ]);
   state.projects = projects;
   sidebar.setProjects(projects);
   const names = Array.isArray(workspaces) ? workspaces.map(w => w.name).filter(Boolean) : [];
   sidebar.setWorkspaces(names);
   sidebar.setConductSessions(Array.isArray(conductSessions) ? conductSessions : []);
+  sidebar.setConductorSpawns(conductorSpawns);
 }
 const instancesGuard = latestOnly();
 async function refreshInstances() {

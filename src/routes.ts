@@ -13,6 +13,7 @@ import {
   summarizeWorkspaces, validateName, placeOf, projectRootPlace, type TranscriptPlacement,
 } from './projects.ts';
 import { suggestAdoptableDirs } from './projectSuggestions.ts';
+import { conductorSpawnedProjects } from './conductorSpawns.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, requireWorktree, removeAllWorktreesForProject,
@@ -1140,6 +1141,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       // (no field on TierRecord) and absent from the GET response.
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount), costUsd });
     } catch (e) { next(e); }
+  });
+
+  // Root conductor → the projects it has ever spawned a worker into (the
+  // Conductors lens's idle chips). Read-only over the session store.
+  r.get('/conductors/projects', async (_req, res, next) => {
+    try { res.json(await conductorSpawnedProjects()); } catch (e) { next(e); }
   });
 
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
