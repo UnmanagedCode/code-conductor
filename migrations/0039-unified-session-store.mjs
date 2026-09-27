@@ -22,9 +22,10 @@
 //
 // MERGE RULES
 //   - Base: the existing sessions.json, if any. Missing, or unparseable (then
-//     quarantined to `.corrupt-<pid>-<ts>` first) → its `sessions.json.bak`, by
-//     the store's recovery rule (absent → empty; corrupt → set aside, empty).
-//     Only a genuine I/O error reading either throws (boot aborts).
+//     quarantined, best-effort, to `.corrupt-<pid>-<ts>` first) → its
+//     `sessions.json.bak`, by the store's recovery rule (absent → empty;
+//     corrupt → set aside, empty). Only a genuine I/O error reading either
+//     throws (boot aborts).
 //   - Lineage rows are copied verbatim into records, tombstones included. When
 //     the base already holds the record and the legacy row's chain has segments
 //     the record lacks (an old-version process rotated after an earlier merge),
@@ -175,9 +176,15 @@ async function readBase(file, log) {
     const obj = JSON.parse(raw);
     return isObj(obj?.sessions) ? { ...obj.sessions } : {};
   } catch (e) {
+    // Best-effort, like the store's quarantine(): a failed rename is logged and
+    // the merge still bases on `.bak` (the write below replaces the primary).
     const dest = `${file}.corrupt-${process.pid}-${Date.now()}`;
-    await fs.rename(file, dest);
-    log(`  ! ${path.basename(file)} is unparseable (${e.message}); quarantined to ${path.basename(dest)}, merging onto its .bak`);
+    try {
+      await fs.rename(file, dest);
+      log(`  ! ${path.basename(file)} is unparseable (${e.message}); quarantined to ${path.basename(dest)}, merging onto its .bak`);
+    } catch (re) {
+      log(`  ! ${path.basename(file)} is unparseable (${e.message}); could not quarantine it (${re?.message ?? re}), merging onto its .bak`);
+    }
     return readBackupBase(`${file}.bak`);
   }
 }
@@ -196,7 +203,8 @@ async function readBackupBase(bak) {
 }
 
 // A record the store's parser would keep: at least one live, valid segment.
-const readable = (rec) => isObj(rec) && parseSegments(rec.segments).some((s) => !s.dropped);
+const readable = (rec) => isObj(rec) && typeof rec.current === 'string' && rec.current !== ''
+  && parseSegments(rec.segments).some((s) => !s.dropped);
 
 // Whether to REPLACE `.bak` with the merged doc: when it is absent or corrupt,
 // never when unreadable, and otherwise only when the merged doc holds every
@@ -214,7 +222,7 @@ async function shouldWriteBackup(bak, sessions) {
   let old;
   try { old = JSON.parse(raw)?.sessions; } catch { return true; }
   if (!isObj(old)) return true;
-  return Object.entries(old).every(([pub, rec]) => !readable(rec) || pub in sessions);
+  return Object.entries(old).every(([pub, rec]) => !readable(rec) || Object.hasOwn(sessions, pub));
 }
 
 function mapOf(obj, key) {
