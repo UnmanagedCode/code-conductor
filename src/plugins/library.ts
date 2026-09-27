@@ -136,6 +136,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-playbook',
+    name: 'Code Playbook',
+    description: 'View the playbooks conductors run under, and author your own in a structured form editor.',
+    repo: 'https://github.com/UnmanagedCode/code-playbook',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
