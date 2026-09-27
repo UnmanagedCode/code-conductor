@@ -978,7 +978,7 @@ export function resolveSpawnModel(
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - omitted on a FRESH spawn → the Settings default tier's binding;
   //   - omitted on a RESUME → nothing at all: both stay undefined, deferring to
-  //     _doCreate's sidecar recovery — an asserted 'claude' here would make
+  //     _doCreate's session-store recovery — an asserted 'claude' here would make
   //     explicitBackend truthy and suppress it;
   //   - anything else → reject, rather than silently spawn a broken claude.
   let model: string | null | undefined = input;

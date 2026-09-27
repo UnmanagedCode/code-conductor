@@ -204,17 +204,46 @@ test('the .bak refresh refuses a write that drops two archived segments', async 
   assert.equal(bak[C].title, 'seed .bak');
 });
 
-test('an unrecoverable I/O error on the primary aborts the mutation', async () => {
+test('an I/O error reading the primary aborts the mutation instead of reading as empty', async () => {
+  // Unreadable (mode 000) but still replaceable by rename — so a mutation that
+  // laundered the read error into an empty store would WRITE, and the primary's
+  // records would be gone. Needs a non-root uid: root reads through mode 000.
   const root = await freshRoot();
   await setTitle(A, 'a');
-  await fs.rm(storeFile(root));
-  await fs.mkdir(storeFile(root)); // EISDIR on read
+  await fs.chmod(storeFile(root), 0o000);
   try {
-    await captureWarn(() => assert.rejects(setTitle(B, 'b')));
-    assert.deepEqual(Object.keys((await readJson(bakFile(root))).sessions), [A], '.bak untouched');
+    await captureWarn(() => assert.rejects(setTitle(B, 'b'), { code: 'EACCES' }));
   } finally {
-    await fs.rm(storeFile(root), { recursive: true, force: true });
+    await fs.chmod(storeFile(root), 0o644);
   }
+  const { sessions } = await readJson(storeFile(root));
+  assert.deepEqual(Object.keys(sessions), [A], 'the primary still holds its records, and only them');
+  assert.equal(sessions[A].title, 'a');
+});
+
+test('an in-place rewrite that keeps inode, size and mtime is still seen (ctime)', async () => {
+  const root = await freshRoot();
+  const f = storeFile(root);
+  const T = new Date('2026-01-01T00:00:00Z'); // whole seconds: utimes restores it exactly
+  await setTitle(A, 'first');
+  await fs.utimes(f, T, T);
+  assert.equal(await getTitle(A), 'first', 'the cache is primed');
+  const primed = await fs.stat(f, { bigint: true });
+  const next = (await fs.readFile(f, 'utf8')).replace('"first"', '"other"');
+  // ctime ticks at the filesystem's timestamp granularity: rewrite until it moves.
+  let after;
+  for (let i = 0; i < 50; i++) {
+    await fs.writeFile(f, next); // in place: same inode
+    await fs.utimes(f, T, T);
+    after = await fs.stat(f, { bigint: true });
+    if (after.ctimeNs !== primed.ctimeNs) break;
+    await new Promise(r => setTimeout(r, 2));
+  }
+  assert.equal(after.ino, primed.ino, 'guard: same inode');
+  assert.equal(after.size, primed.size, 'guard: same size');
+  assert.equal(after.mtimeNs, primed.mtimeNs, 'guard: mtime restored');
+  assert.notEqual(after.ctimeNs, primed.ctimeNs, 'guard: only ctime moved');
+  assert.equal(await getTitle(A), 'other', 'the ctime component invalidates the cache');
 });
 
 test('a session-level write for an unknown minted-shaped id is refused', async () => {

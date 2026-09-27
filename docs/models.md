@@ -155,7 +155,8 @@ The consequences of being a substitution backend:
   Adding a monitor later is one `Set` entry (`src/usageWindowDomains.ts`).
 - **The session record holds it** — the `backend` field of the session's record in
   `<store>/sessions.json` (`src/sessionStore.ts`), keyed by the PUBLIC id, is
-  `{backend, model, contextWindowTokens}`, written at every spawn/resume; a rotation
+  `{backend, model, contextWindowTokens}`, written at every spawn/resume onto a
+  substitution backend (a `claude` session records none); a rotation
   (`/clear`, prune) never touches it. Two things the CLI jsonl can't
   carry: which backend ran the session, and the model id in full. Absence of a record
   means plain `claude`; a `null` model means backend-known/model-unknown (resume falls

@@ -124,15 +124,85 @@ test('(f) a recreated legacy file re-merges additively without clobbering a sess
   await run(root);
   // An exiting old server writes after the merge.
   await writeJson(root, 'session-titles.json', { titles: { [SEG2]: 'stale title' } });
-  await writeJson(root, 'temp-sessions.json', { sessions: [SEG1] });
+  await writeJson(root, 'session-modes.json', { sessions: { [LONE]: 'plan' } });
   const res = await run(root);
   assert.equal(res.applied, true);
-  const rec = (await readJson(file(root, 'sessions.json'))).sessions[PUB];
-  assert.equal(rec.title, 'new title', 'the merged store\'s fact wins');
-  assert.equal(rec.segments[0].temp, true, 'a gap is filled');
+  const { sessions } = await readJson(file(root, 'sessions.json'));
+  assert.equal(sessions[PUB].title, 'new title', 'the merged store\'s fact wins');
+  assert.equal(sessions[LONE].mode, 'plan', 'a gap is filled');
   const backups = await fs.readdir(file(root, 'migrated-backup-0039'));
   assert.equal(backups.filter(n => n.startsWith('session-titles.json')).length, 2,
     'the second copy is kept beside the first under a suffixed name');
+});
+
+test('a legacy lineage row AHEAD of the merged record appends its segments and advances current', async () => {
+  const root = await mkRoot();
+  // The merged store, as a previous run left it: PUB on SEG1 alone.
+  await writeJson(root, 'sessions.json', { sessions: {
+    [PUB]: { current: SEG1, segments: [{ id: SEG1, reason: 'initial', at: '2026-09-01T00:00:00Z' }], title: 'kept' },
+  } });
+  // An old-version process rotated PUB onto SEG2 after that merge.
+  await writeJson(root, 'session-lineage.json', { sessions: { [PUB]: { current: SEG2, segments: [
+    { id: SEG1, reason: 'initial', at: '2026-09-01T00:00:00Z' },
+    { id: SEG2, reason: 'renew', at: '2026-09-02T00:00:00Z' },
+  ] } } });
+  await writeJson(root, 'temp-sessions.json', { sessions: [SEG2] });
+  const res = await run(root);
+  const { sessions } = await readJson(file(root, 'sessions.json'));
+  assert.equal(sessions[PUB].current, SEG2, 'current follows the newer chain');
+  assert.deepEqual(sessions[PUB].segments.map(s => [s.id, s.reason]), [[SEG1, 'initial'], [SEG2, 'renew']]);
+  assert.equal(sessions[SEG2], undefined, 'the post-rotation transcript is not forked into its own record');
+  assert.equal(sessions[PUB].segments[1].temp, true, 'a flag lands on the segment new to the base');
+  assert.equal(sessions[PUB].title, 'kept');
+  assert.equal(res.summary.advanced, 1);
+});
+
+test('a legacy lineage row that adds nothing leaves the merged record alone', async () => {
+  const root = await mkRoot();
+  const merged = { current: SEG2, segments: [
+    { id: SEG1, reason: 'initial', at: '2026-09-01T00:00:00Z' },
+    { id: SEG2, reason: 'renew', at: '2026-09-02T00:00:00Z' },
+  ] };
+  await writeJson(root, 'sessions.json', { sessions: { [PUB]: merged } });
+  await writeJson(root, 'session-lineage.json', { sessions: { [PUB]: { current: SEG1, segments: [merged.segments[0]] } } });
+  const res = await run(root);
+  assert.deepEqual((await readJson(file(root, 'sessions.json'))).sessions[PUB], merged);
+  assert.equal(res.summary.advanced, 0);
+});
+
+test('a stale legacy flag never re-applies to a segment the merged store already owns', async () => {
+  const root = await mkRoot();
+  // The user restored SEG1 after the merge; an old server's archived file still lists it.
+  await writeJson(root, 'sessions.json', { sessions: {
+    [SEG1]: { current: SEG1, segments: [{ id: SEG1, reason: 'initial', at: '' }] },
+  } });
+  await writeJson(root, 'archived-sessions.json', { sessions: [SEG1] });
+  await writeJson(root, 'temp-sessions.json', { sessions: [SEG1] });
+  await run(root);
+  const seg = (await readJson(file(root, 'sessions.json'))).sessions[SEG1].segments[0];
+  assert.equal(seg.archived, undefined, 'the restored segment stays restored');
+  assert.equal(seg.temp, undefined);
+});
+
+test('the merge seeds sessions.json.bak with the written doc', async () => {
+  const root = await mkRoot();
+  await seedLegacy(root);
+  await run(root);
+  assert.deepEqual(await readJson(file(root, 'sessions.json.bak')), await readJson(file(root, 'sessions.json')));
+});
+
+test('a record whose segments all fail validation is dropped and counted', async () => {
+  const root = await mkRoot();
+  await writeJson(root, 'sessions.json', { sessions: {
+    [SEG1]: { current: SEG1, segments: [{ id: SEG1, reason: 'initial', at: '' }] },
+    broken: { current: 'x', segments: [{ id: 'x', reason: 'not-a-reason' }] },
+  } });
+  await writeJson(root, 'session-lineage.json', { sessions: {
+    [PUB]: { current: SEG2, segments: [{ id: SEG2, reason: 'bogus' }] },
+  } });
+  const res = await run(root);
+  assert.deepEqual(Object.keys((await readJson(file(root, 'sessions.json'))).sessions), [SEG1]);
+  assert.equal(res.summary.invalid, 2, 'one base record and one legacy row');
 });
 
 test('(g) an absent archived primary falls back to its .bak', async () => {

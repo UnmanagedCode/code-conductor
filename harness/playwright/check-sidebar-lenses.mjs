@@ -78,9 +78,9 @@ async function spawnWorker(caller, args) {
 // to it (`.sessions[publicId].current`).
 async function seedTranscript(instanceId, text) {
   const inst = (await insts()).find(i => i.id === instanceId);
-  const lineage = JSON.parse(await fs.readFile(
+  const store = JSON.parse(await fs.readFile(
     path.join(orch.sandbox.dirs.PROJECTS_ROOT, '.code-conductor', 'sessions.json'), 'utf8'));
-  const backing = lineage.sessions?.[inst.sessionId]?.current;
+  const backing = store.sessions?.[inst.sessionId]?.current;
   if (!backing) throw new Error(`no backing id recorded for session ${inst.sessionId}`);
   const dir = path.join(orch.sandbox.dirs.CLAUDE_PROJECTS_ROOT, inst.cwd.replace(/[^A-Za-z0-9-]/g, '-'));
   await fs.mkdir(dir, { recursive: true });

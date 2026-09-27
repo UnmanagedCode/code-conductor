@@ -50,7 +50,7 @@ export interface InstanceSummary {
 // InstanceManager.create()/_doCreate() input — the REST/MCP spawn surface, and
 // the argument list Instance.forkAtUserMessage() hands back for its respawn.
 // `tier`/`role` resolve the default effort only (never stored); `backend` is
-// the registry id (explicit wins; a resume without one recovers the sidecar's).
+// the registry id (explicit wins; a resume without one recovers the session store's).
 export interface CreateInstanceInput {
   // Optional on the type only so `create(opts = {})` compiles; _doCreate
   // validates it (throws 400 'project required') and every caller passes it.

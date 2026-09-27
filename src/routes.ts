@@ -73,7 +73,7 @@ import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
 import { applySessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
-import { getSummaries, setSummary, isArchived, setSegmentArchived } from './sessionStore.ts';
+import { getSummaries, setSummary, isArchived, setSegmentArchived, loadSessions, resolveOwner } from './sessionStore.ts';
 import { resolveBacking } from './sessionLineage.ts';
 import { generateSummary, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
@@ -818,8 +818,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // deleteSessionAtCwd's running-instance guard: a session attached to a
   // live instance refuses with 409 unless ?force=1, which stops the
   // instance first (so the archived session leaves the sidebar cleanly).
-  // Unlike delete, this keeps the jsonl — it only records the sessionId
-  // in the global archived set.
+  // Unlike delete, this keeps the jsonl — it only flags the transcript's
+  // segment archived in the session store.
   async function archiveSessionAtCwd({ place, sessionId, force }: { place: TranscriptPlacement; sessionId: string; force: boolean }): Promise<void> {
     await detachInstancesForSession({ sessionId, force, verb: 'stop it first' });
     const archived = await archiveSessionForCwd(place, sessionId);
@@ -1045,6 +1045,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // refetch, and pushes the updated summary to any live instance(s)
   // currently attached to this sessionId so the active header chip
   // re-renders without a page reload.
+  //
+  // 404 for an id no session answers to — no live instance, no store record,
+  // no transcript on disk. The store would otherwise create a base-case record
+  // for any well-formed id, and a mistyped one would join the prefix universe
+  // (InstanceManager._refOwners) for good.
   r.put('/sessions/:sessionId/title', async (req, res, next) => {
     try {
       const { sid } = await sidParam(req.params.sessionId);
@@ -1052,6 +1057,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       if (raw != null && typeof raw !== 'string') {
         throw httpError(400, 'title must be a string');
       }
+      const known = (instances?.idsForSession(sid).length ?? 0) > 0
+        || resolveOwner(await loadSessions(), sid) !== null
+        || (await findSessionLocation(sid)) !== null;
+      if (!known) throw httpError(404, 'session not found');
       const stored = await applySessionTitle(instances, sid, raw ?? '');
       broadcastProjects();
       res.json({ ok: true, sessionId: sid, title: stored, maxLength: MAX_TITLE_LEN });

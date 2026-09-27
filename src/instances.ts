@@ -939,9 +939,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.firstPrompt = null;
     // Custom human-readable label set via the ⋮ menu's Rename session
     // action. When set, the sidebar + header render this in place of the
-    // first-prompt preview. Loaded from the sidecar `<store>/session-
-    // titles.json` after sessionId is known; mutated by setTitle() from
-    // the PUT /api/sessions/:sid/title route.
+    // first-prompt preview. Loaded from the session's record in the session
+    // store after sessionId is known; mutated by setTitle() from the PUT
+    // /api/sessions/:sid/title route.
     this.title = null;
     // When true and the instance is in plan mode, an incoming
     // plan_request is auto-approved server-side (mode flip + approval
@@ -1295,7 +1295,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Update the cached custom session title and broadcast the new
   // summary so all subscribed clients re-render the active header chip.
   // Pass null/'' to clear. Callers (the PUT route, the resume hydration
-  // path) are responsible for the sidecar write; this just updates the
+  // path) are responsible for the store write; this just updates the
   // in-memory mirror.
   setTitle(title: string | null): void {
     const next = (typeof title === 'string' && title.trim()) ? title.trim() : null;
@@ -1315,7 +1315,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         this.title = t;
         this.emit('status', this.summary());
       }
-    } catch { /* sidecar read is best-effort */ }
+    } catch { /* store read is best-effort */ }
   }
 
   ringSnapshot(): Array<UiEvent & { _seq: number }> { return this.ring.toArray(); }
@@ -2151,7 +2151,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and every resume path has already set it.
     if (resume) this.backingSessionId = resume;
     // Local capture: launch() has minted one by here on a fresh spawn, and the
-    // later method calls (markTemp / _hydrateTitle / getBackend) would reset
+    // later method calls (setSegmentTemp / _hydrateTitle / getBackend) would reset
     // property narrowing — the args block below needs a non-null id.
     const backingId = this.backingSessionId;
     if (!backingId) {
@@ -2161,7 +2161,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw new Error('spawn(): no backing session id — launch() must mint or resolve one first');
     }
     // Everything downstream of here — the `--resume`/`--session-id` argv below
-    // and the transcript-keyed sidecar markers — is a backing-id consumer. One
+    // and the segment's temp flag — is a backing-id consumer. One
     // assertion at the capture point covers all of them.
     assertBackingId(backingId, 'Instance.spawn');
     // The fill seam. Every launch() caller runs on a ring with no seams (a new
@@ -3891,8 +3891,8 @@ export class Instance extends EventEmitter implements InstanceLike {
         // prune do: those kill their source and respawn it, so the archive
         // would fire on a session about to come back. Fork never kills
         // anything, so a source exiting mid-fork is a REAL exit and must
-        // archive — and that archive's writes (sub-agent dir + the
-        // temp/archived marker stores, all keyed on the SOURCE id) are disjoint
+        // archive — and that archive's writes (sub-agent dir + the SOURCE
+        // transcript's segment flags) are disjoint
         // from this fork's (source jsonl read-only, new id's jsonl + metadata
         // written).
         temp: this.temp,
@@ -4633,7 +4633,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // manifest), as ANY segment id (a wiki page, an old kanban card, an archived
   // sidebar row), or — for a session with no lineage row — as both at once.
   // Everything downstream consumes the BACKING id (cwd probe, resume pre-flight,
-  // sidecar recovery, the `--resume` argv), so `resume` is rebound here and every
+  // the segment's temp flag, the `--resume` argv), so `resume` is rebound here and every
   // one of those consumers is correct with no further edit. Naming a SEGMENT
   // resolves to that segment, not to the newest one, so clicking an archived row
   // opens the transcript it names.
@@ -4788,7 +4788,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         }
         backend = rec.backend;
         // The record carries the FULL exact model id; the jsonl only holds the
-        // CLI's lossy (tag-stripped) report. Prefer the sidecar's — this is what
+        // CLI's lossy (tag-stripped) report. Prefer the record's — this is what
         // stops `deepseek-v4-flash:cloud` resuming as the unpullable tagless
         // `deepseek-v4-flash`, and `gpt-5.6-sol[1m]` resuming as an id the
         // registry doesn't know. A null (legacy) model falls through to the
@@ -5082,7 +5082,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     //
     // The live registry WINS over any carried value: a custom model's window is
     // user-editable, so a session resumed after the row was corrected must pick
-    // up the correction. `carriedContextWindowTokens` (from the session sidecar,
+    // up the correction. `carriedContextWindowTokens` (from the session record,
     // the restart manifest, or a fork) is the fallback for exactly one case —
     // the custom-model row was DELETED since the session last ran, so the
     // registry can no longer resolve it. Keeping the last known real number

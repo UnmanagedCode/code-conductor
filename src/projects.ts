@@ -2221,7 +2221,7 @@ export interface ArchivedSessionRow {
 // filter to run BEFORE the row projection wherever it is used (both exclusion sets
 // yield backing ids, because what they exclude is a FILE) — but there is no filter
 // to order here, and adding one would be wrong: both sets name LIVE sessions, and
-// a live session's transcript is never in the archived set (archiving force-kills
+// a live session's transcript is never archived (archiving force-kills
 // the instance first). So the archived view has nothing to exclude, and it keeps
 // the behaviour it had before this change. The row ids it reports come already
 // projected from listSessionsForCwd, whose rule keeps a SUPERSEDED segment's
@@ -2274,8 +2274,8 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
 //
 // `handCount` is the non-conducted subset of `count` — what the sidebar's
 // Hand-spawned only filter reads to decide whether a place holds a session it
-// would list, before any Sessions subnode has loaded its rows. It costs one
-// more sidecar load per walk, not a read per transcript.
+// would list, before any Sessions subnode has loaded its rows. It rides the one
+// session-store read per walk, not a read per transcript.
 export async function summarizeSessions(
   place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,

@@ -77,8 +77,18 @@ test('sessionTitles: concurrent writes do not lose entries', async () => {
   }
 });
 
+// A session known only by its transcript on disk (the base case: no record).
+async function plantTranscript(project, sid) {
+  await api(baseUrl, 'POST', '/api/projects', { name: project });
+  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, project)));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }) + '\n');
+}
+
 test('PUT /api/sessions/:sid/title sets and clears the title', async () => {
   {
+    await plantTranscript('put-title', 'abc-123');
     const set = await api(baseUrl, 'PUT', '/api/sessions/abc-123/title', { title: 'my label' });
     assert.equal(set.status, 200);
     assert.equal(set.body.ok, true);
@@ -91,6 +101,21 @@ test('PUT /api/sessions/:sid/title sets and clears the title', async () => {
     assert.equal(cleared.body.title, null);
     assert.equal(await getTitle('abc-123'), null);
   }
+});
+
+test('PUT /api/sessions/:sid/title 404s for an id no session answers to, and writes no record', async () => {
+  // A mistyped or truncated id must not become a permanent record: it would
+  // join the prefix-resolution universe and could hijack or ambiguate it.
+  await plantTranscript('put-title-miss', 'abc-123-real');
+  const miss = await api(baseUrl, 'PUT', '/api/sessions/abc-123-typo/title', { title: 'lost' });
+  assert.equal(miss.status, 404, JSON.stringify(miss.body));
+  const { sessions } = await fs.readFile(path.join(orchStoreRoot(), 'sessions.json'), 'utf8')
+    .then(JSON.parse, (e) => { if (e.code === 'ENOENT') return { sessions: {} }; throw e; });
+  assert.deepEqual(Object.keys(sessions), [], 'no record was created for the unknown id');
+  // The known one still takes a title.
+  const hit = await api(baseUrl, 'PUT', '/api/sessions/abc-123-real/title', { title: 'found' });
+  assert.equal(hit.status, 200);
+  assert.equal(await getTitle('abc-123-real'), 'found');
 });
 
 test('PUT /api/sessions/:sid/title rejects bad input', async () => {

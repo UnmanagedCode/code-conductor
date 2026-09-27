@@ -22,7 +22,13 @@
 //
 // MERGE RULES
 //   - Base: the existing sessions.json, if any. Unparseable → throw (boot aborts).
-//   - Lineage rows are copied verbatim into records, tombstones included.
+//   - Lineage rows are copied verbatim into records, tombstones included. When
+//     the base already holds the record and the legacy row's chain has segments
+//     the record lacks (an old-version process rotated after an earlier merge),
+//     those segments are appended in chain order and `current` advances to the
+//     legacy `current`; a legacy chain that adds nothing is skipped.
+//   - A record none of whose segments survives validation is dropped and
+//     counted (`invalid`): the store's parser would never see it.
 //   - Each legacy key is attributed: a record key; else the owner of any segment
 //     (tombstones included); else, if minted-shaped (8 hex, or 8-4), it is
 //     UNATTRIBUTABLE — counted, logged, and left in the backup dir; else a new
@@ -34,15 +40,22 @@
 //   - Conducted: true if any segment or the public id is in the set.
 //   - Summaries: every key that maps to the record merges; per tier, the larger
 //     `generatedAt` wins.
-//   - Temp, archived: set on the LIVE segment whose id is the key. Archived comes
-//     from the primary, or from `.bak` when the primary is absent or corrupt.
+//   - Temp, archived: set on the LIVE segment whose id is the key — only on a
+//     segment NEW to the base, so a stale legacy file cannot re-archive a
+//     segment the user has since restored. Archived comes from the primary, or
+//     from `.bak` when the primary is absent or corrupt.
 //   - `parent`/`project`/`worktree` are not backfilled.
 //
 // KNOWN LIMITS (best-effort by design): no store locks are taken; a crash
 // between the write and the move re-merges additively next boot. A hot-restart
 // old server's temp unmark can land in a legacy file after the move; the boot
 // sweep of pending-temp-cleanup.json and the next restart's orphan sweep retire
-// such segments anyway.
+// such segments anyway. A stale legacy lineage row naming a session the user has
+// since DELETED re-creates that session's record (its chain only; the deleted
+// facts do not come back).
+//
+// The primary is written with a matching `sessions.json.bak`, so the store's
+// recovery net exists before its first mutation.
 //
 // Frozen artifact — do not edit. Uses Node built-ins only.
 
@@ -165,17 +178,33 @@ export async function run({ root, log = console.log } = {}) {
   const sessions = await readBase(target);
   const file = (k) => path.join(store, LEGACY[k]);
 
-  // 1. Lineage rows, verbatim, where the base has no record for them yet.
-  const lineage = await readLegacy(file('lineage'), log);
-  for (const [pub, row] of mapOf(lineage, 'sessions')) {
-    if (sessions[pub] || !isObj(row) || typeof row.current !== 'string' || !row.current) continue;
-    const segments = parseSegments(row.segments);
-    if (!segments.some((s) => !s.dropped)) continue;
-    sessions[pub] = { current: row.current, segments };
-  }
+  // 0. The base, validated. Its segment ids are what "new to the base" is
+  //    measured against in step 5.
+  let invalid = 0;
   for (const [pub, rec] of Object.entries(sessions)) {
-    if (!isObj(rec) || !Array.isArray(rec.segments)) { delete sessions[pub]; continue; }
+    if (!isObj(rec) || !Array.isArray(rec.segments)) { delete sessions[pub]; invalid++; continue; }
     rec.segments = parseSegments(rec.segments);
+    if (!rec.segments.some((s) => !s.dropped)) { delete sessions[pub]; invalid++; }
+  }
+  const baseSegmentIds = new Set();
+  for (const rec of Object.values(sessions)) for (const s of rec.segments) baseSegmentIds.add(s.id);
+
+  // 1. Lineage rows: verbatim for a record the base lacks; for one it holds,
+  //    the segments it lacks, appended in chain order.
+  const lineage = await readLegacy(file('lineage'), log);
+  let advanced = 0;
+  for (const [pub, row] of mapOf(lineage, 'sessions')) {
+    if (!isObj(row) || typeof row.current !== 'string' || !row.current) { invalid++; continue; }
+    const segments = parseSegments(row.segments);
+    if (!segments.some((s) => !s.dropped)) { invalid++; continue; }
+    const rec = sessions[pub];
+    if (!rec) { sessions[pub] = { current: row.current, segments }; continue; }
+    const missing = segments.filter((s) => !baseSegmentIds.has(s.id));
+    if (missing.length === 0) continue;
+    rec.segments.push(...missing);
+    const cur = rec.segments.find((s) => s.id === row.current && !s.dropped);
+    if (cur) rec.current = cur.id;
+    advanced++;
   }
 
   // 2. The legacy stores.
@@ -257,6 +286,7 @@ export async function run({ root, log = console.log } = {}) {
       const pub = owner.get(id);
       const seg = pub ? sessions[pub].segments.find((s) => s.id === id && !s.dropped) : null;
       if (!seg) { if (!pub) unattributable.add(id); continue; }
+      if (baseSegmentIds.has(id)) continue; // the merged store already owns this segment's flags
       if (seg[flag] !== true) { seg[flag] = true; facts[flag]++; }
     }
   }
@@ -270,9 +300,12 @@ export async function run({ root, log = console.log } = {}) {
   const ordered = {};
   for (const k of Object.keys(sessions).sort((a, b) => a.localeCompare(b))) ordered[k] = sessions[k];
   await fs.mkdir(store, { recursive: true });
-  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, JSON.stringify({ sessions: ordered }, null, 2) + '\n');
-  await fs.rename(tmp, target);
+  const json = JSON.stringify({ sessions: ordered }, null, 2) + '\n';
+  for (const dest of [target, `${target}.bak`]) {
+    const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+    await fs.writeFile(tmp, json);
+    await fs.rename(tmp, dest);
+  }
 
   const backupDir = path.join(store, BACKUP_DIR);
   await fs.mkdir(backupDir, { recursive: true });
@@ -284,6 +317,6 @@ export async function run({ root, log = console.log } = {}) {
   log(`  ✓ merged ${present.length} legacy session file(s) into ${target}`);
   return {
     applied: true,
-    summary: { records: Object.keys(ordered).length, created, facts, unattributable: unattributable.size },
+    summary: { records: Object.keys(ordered).length, created, advanced, invalid, facts, unattributable: unattributable.size },
   };
 }

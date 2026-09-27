@@ -1,4 +1,4 @@
-// Cross-process advisory lock for sidecar JSON stores.
+// Cross-process advisory lock for cc's JSON stores.
 //
 // Uses an O_EXCL lockfile (atomic create — fails with EEXIST if another
 // process already holds the lock) to serialise read-modify-write mutations
