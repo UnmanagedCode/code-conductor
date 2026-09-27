@@ -241,7 +241,7 @@ test('installing a plugin enables it by default and activates its conventions', 
       _cloneImpl: async (url, destDir) => {
         await fs.mkdir(destDir, { recursive: true });
         await writeManifest(destDir, {
-          id: 'code-share', name: 'Code Share', version: '1.0.0', pluginApi: 1,
+          id: 'code-wiki', name: 'Code Karpathy Wiki', version: '1.0.0', pluginApi: 1,
           conventions: [{ slug: 'a', name: 'Conv A', description: 'd', file: 'conv.md', scope: 'conductor' }],
         });
         await fs.writeFile(path.join(destDir, 'conv.md'), '## Installed convention\n- x');
@@ -249,12 +249,12 @@ test('installing a plugin enables it by default and activates its conventions', 
       },
     });
 
-    await lib.install('code-share');
+    await lib.install('code-wiki');
 
-    const row = (await host.list()).find(r => r.id === 'code-share');
+    const row = (await host.list()).find(r => r.id === 'code-wiki');
     assert.ok(row, 'plugin discovered');
     assert.equal(row.enabled, true, 'freshly installed plugin is enabled by default');
-    assert.ok((await getSelection()).includes('code-share/a'), 'its conductor convention is active');
+    assert.ok((await getSelection()).includes('code-wiki/a'), 'its conductor convention is active');
   } finally {
     setPluginConductorConventionsProvider(null);
     await env.restore();
