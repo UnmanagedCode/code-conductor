@@ -83,6 +83,8 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     name: 'Code Share',
     description: 'Share code snippets and sync files between conductor projects.',
     repo: 'https://github.com/UnmanagedCode/code-share',
+    postClone: 'npm install',
+    postPull: 'npm install',
   },
   {
     id: 'code-playwright',
