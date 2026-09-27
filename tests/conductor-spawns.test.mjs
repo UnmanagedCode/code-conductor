@@ -1,4 +1,4 @@
-// Unit tests for src/conductorSpawns.ts: the root-conductor walk over recorded
+// Unit tests for src/conductorSpawns.ts: the root-owner walk over recorded
 // `parent` links and the per-root spawned-projects derivation behind the
 // Conductors lens's idle chips.
 
@@ -53,13 +53,14 @@ test('rootOf climbs conducted parents to the first non-conducted session', () =>
   assert.equal(rootOf(doc, 'W1'), 'C');
 });
 
-test('rootOf is null through a missing link, a pre-migration conducted ancestor, and a cycle', async (t) => {
+test('rootOf is null through a missing link, a parentless conducted ancestor, and a cycle', async (t) => {
   await t.test('an absent parent record', () => {
     assert.equal(rootOf(docOf({ W: { conducted: true, parent: 'GONE', project: 'p' } }), 'W'), null);
   });
   await t.test('a conducted ancestor with no parent', () => {
     const doc = docOf({ W1: { conducted: true, project: 'p' }, W2: { conducted: true, parent: 'W1', project: 'p' } });
     assert.equal(rootOf(doc, 'W2'), null);
+    assert.equal(rootOf(doc, 'W1'), null, "the worker's own record with no parent");
   });
   await t.test('a cycle terminates as null', () => {
     const doc = docOf({ W1: { conducted: true, parent: 'W2', project: 'p' }, W2: { conducted: true, parent: 'W1', project: 'p' } });
@@ -87,6 +88,17 @@ test('spawnedProjectsByRoot attributes nested workers to the root, one entry per
   ]);
 });
 
+test('the newest at wins across records whatever order they are stored in', () => {
+  // Map order is insertion order: W-a (newer) is visited before W-b (older).
+  const doc = docOf({
+    C: {},
+    'W-a': { conducted: true, parent: 'C', project: 'p', ats: [T3] },
+    'W-b': { conducted: true, parent: 'C', project: 'p', ats: [T1] },
+  });
+  assert.deepEqual([...doc.keys()], ['C', 'W-a', 'W-b'], 'fixture: the newer record is visited first');
+  assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3 }]);
+});
+
 test('lastSpawnAt counts a rotation segment, not only the initial one', () => {
   const doc = docOf({ C: {}, W: { conducted: true, parent: 'C', project: 'p', ats: [T1, T3] } });
   assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3 }]);
@@ -109,6 +121,23 @@ test('a root whose current segment is archived is omitted', () => {
     W2: { conducted: true, parent: 'KEPT', project: 'q', ats: [T1] },
   });
   assert.deepEqual(spawnedProjectsByRoot(doc), { KEPT: [{ project: 'q', lastSpawnAt: T1 }] });
+});
+
+test('the archived-root check reads the current segment, not the first', async (t) => {
+  // Two segments; the current one is the last (rec() names it after the record).
+  const multi = (archivedIdx) => {
+    const d = docOf({ R: { ats: [T1, T2] }, W: { conducted: true, parent: 'R', project: 'p', ats: [T1] } });
+    d.get('R').segments[archivedIdx].archived = true;
+    return d;
+  };
+  await t.test('only the current segment archived: omitted', () => {
+    const d = multi(1);
+    assert.equal(d.get('R').segments[1].id, d.get('R').current, 'fixture: segment 1 is current');
+    assert.deepEqual(spawnedProjectsByRoot(d), {});
+  });
+  await t.test('only an older segment archived: kept', () => {
+    assert.deepEqual(spawnedProjectsByRoot(multi(0)), { R: [{ project: 'p', lastSpawnAt: T1 }] });
+  });
 });
 
 test('the result is memoised per doc object', () => {

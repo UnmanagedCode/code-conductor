@@ -116,6 +116,29 @@ test('a chip that goes live replaces its idle chip in place', async () => {
   assert.deepEqual(chipsOf(conductorList, 'A'), ['p(live)']);
 });
 
+test('setConductorSpawns re-renders the chips on its own', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, { projects: [project('p')], instances: [conductor('A')] });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['no live workers(?)']);
+  sidebar.setConductorSpawns({ A: [{ project: 'p', lastSpawnAt: at(1) }] });
+  await tick();
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['p(idle)']);
+});
+
+test('the expanded tree holds live projects only: spawn history adds no project row', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('live-p'), project('idle-p')],
+    instances: [conductor('A'), worker('w', 'A', 'live-p')],
+    spawns: { A: [{ project: 'idle-p', lastSpawnAt: at(1) }] },
+  });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['live-p(live)', 'idle-p(idle)'], 'fixture: idle-p is an idle chip');
+  conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
+  const tree = conductorOf(conductorList, 'A').querySelector('.conductor-tree');
+  assert.ok(tree, 'the tree is expanded');
+  assert.deepEqual([...tree.querySelectorAll('.project-name')].map(n => n.textContent), ['live-p']);
+});
+
 test('project chips are display-only: neither kind is a button, and clicking either fires no callback', async () => {
   const { conductorList, sidebar, calls } = await setupSidebar();
   await render(sidebar, {

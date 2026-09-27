@@ -159,6 +159,16 @@ test('conductorChips puts live projects first by name, then idle spawned project
   ], 'zeta has a live worker, so it is one live chip and never an idle duplicate');
 });
 
+test('conductorChips orders idle chips with an equal lastSpawnAt by name', () => {
+  const tie = '2026-01-01T00:00:00.000Z';
+  const chips = M.conductorChips({
+    workers: [],
+    spawned: [{ project: 'zulu', lastSpawnAt: tie }, { project: 'bravo', lastSpawnAt: tie }, { project: 'mike', lastSpawnAt: tie }],
+    registered: new Set(['zulu', 'bravo', 'mike']),
+  });
+  assert.deepEqual(chips.map(c => c.project), ['bravo', 'mike', 'zulu']);
+});
+
 test('conductorChips drops an idle project that is no longer registered, never a live one', () => {
   const chips = M.conductorChips({
     workers: [inst({ project: 'live-gone' })],
