@@ -18,7 +18,7 @@ function titlesFile(): string {
   return path.join(orchStoreRoot(), 'session-titles.json');
 }
 
-function normalizeTitle(title: unknown): string {
+export function normalizeTitle(title: unknown): string {
   if (typeof title !== 'string') return '';
   return title.trim().slice(0, MAX_TITLE_LEN);
 }

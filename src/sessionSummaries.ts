@@ -18,19 +18,20 @@ export const SUMMARY_LENGTHS = ['short', 'medium', 'long', 'title'] as const;
 export type SummaryLength = typeof SUMMARY_LENGTHS[number];
 const VALID_LENGTHS = new Set<string>(SUMMARY_LENGTHS);
 
-interface TierRecord {
+export interface TierRecord {
   summary: string;
   generatedAt: number;
   messageCount: number;
 }
 
-type SessionEntry = Partial<Record<SummaryLength, TierRecord>>;
+export type SummaryTiers = Partial<Record<SummaryLength, TierRecord>>;
+type SessionEntry = SummaryTiers;
 
 function summariesFile(): string {
   return path.join(orchStoreRoot(), 'session-summaries.json');
 }
 
-function normalizeTierRecord(rec: unknown): TierRecord | null {
+export function normalizeTierRecord(rec: unknown): TierRecord | null {
   if (!rec || typeof rec !== 'object') return null;
   const r = rec as { summary?: unknown; generatedAt?: unknown; messageCount?: unknown };
   if (typeof r.summary !== 'string' || !r.summary.trim()) return null;
@@ -42,7 +43,7 @@ function normalizeTierRecord(rec: unknown): TierRecord | null {
 }
 
 // Normalise a raw per-session entry to { short?, medium?, long? }.
-function normalizeEntry(raw: unknown): SessionEntry | null {
+export function normalizeSummaryTiers(raw: unknown): SessionEntry | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const entry: SessionEntry = {};
@@ -62,7 +63,7 @@ function parseMap(obj: unknown): Map<string, SessionEntry> {
   if (typeof summaries !== 'object' || summaries === null) return out;
   for (const [sid, rawEntry] of Object.entries(summaries as Record<string, unknown>)) {
     if (typeof sid !== 'string') continue;
-    const entry = normalizeEntry(rawEntry);
+    const entry = normalizeSummaryTiers(rawEntry);
     if (entry) out.set(sid, entry);
   }
   return out;
