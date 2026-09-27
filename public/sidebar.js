@@ -2,7 +2,7 @@ import { el } from './dom.js';
 import { formatAutoResumeTime } from './usage.js';
 import { conductorColor } from './conductorColor.js';
 import {
-  sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorProjects,
+  sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorProjects, conductorChips,
   ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
 } from './conductors.js';
 import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
@@ -203,6 +203,9 @@ export class Sidebar {
     // The `.conduct` disk rows (GET /api/projects/.conduct/sessions): the
     // conductors that are not live, for the Conductors *Inactive* group.
     this.conductRows = [];
+    // GET /api/conductors/projects: root owner sessionId → the projects it has
+    // ever had a worker spawned into, newest first. Feeds only the idle chips.
+    this.conductorSpawns = {};
     this.expandedConductors = new Set();    // key: conductor sessionId
     this.inactiveOpen = false;
     // Conductor filter: '' (all), 'hand' (hand-spawned only) or an owner
@@ -229,6 +232,10 @@ export class Sidebar {
   setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
   setConductSessions(rows) {
     this.conductRows = Array.isArray(rows) ? rows : [];
+    this.render();
+  }
+  setConductorSpawns(map) {
+    this.conductorSpawns = map && typeof map === 'object' && !Array.isArray(map) ? map : {};
     this.render();
   }
   setInstances(instances) {
@@ -1246,7 +1253,8 @@ export class Sidebar {
   // Create-or-update one conductor block: its row, its project chips, and —
   // while expanded — the tree of this conductor's live workers (no structural
   // actions, only ↑ promote on a live temp worker). The row itself carries ↑
-  // on a live temp conductor.
+  // on a live temp conductor. A chip is live (a live owned worker there) or
+  // idle (a recorded spawn there, nothing live); both are display-only.
   // The block alone carries the conductor's bar; nothing inside repeats it.
   _conductorItem(existing, conductor) {
     let li = existing, holder;
@@ -1263,7 +1271,11 @@ export class Sidebar {
     li.className = 'conductor-block' + (conductor.live ? '' : ' inactive') + (open ? ' open' : '');
     li.style.setProperty('--owner-color', conductorColor(sid));
     const workers = workersOf(sid, this.instances);
-    const projects = conductorProjects(workers);
+    const chipList = conductorChips({
+      workers,
+      spawned: this.conductorSpawns[sid] ?? [],
+      registered: new Set(this.projects.map(p => p.name)),
+    });
 
     const keys = ['row', 'chips'];
     if (open) keys.push('tree');
@@ -1271,16 +1283,16 @@ export class Sidebar {
       if (k === 'row') return this._conductorRow(ex, holder, open);
       if (k === 'chips') {
         const chips = ex ?? el('div', { class: 'conductor-chips' });
-        const ck = projects.length > 0 ? projects.map(p => `chip:${p}`) : ['none'];
+        // The kind is in the key, so a chip that flips live ↔ idle is rebuilt.
+        const ck = chipList.length > 0 ? chipList.map(c => `${c.live ? 'live' : 'idle'}:${c.project}`) : ['none'];
         reconcileChildren(chips, ck, (c, cex) => {
           if (c === 'none') return cex ?? el('span', { class: 'conductor-chip conductor-chip-none' }, 'no live workers');
-          const chip = cex ?? el('span', { class: 'conductor-chip' });
-          chip.textContent = c.slice(5);
-          return chip;
+          const sep = c.indexOf(':');
+          return cex ?? el('span', { class: `conductor-chip ${c.slice(0, sep)}` }, c.slice(sep + 1));
         });
         return chips;
       }
-      return this._conductorTree(ex, workers, projects);
+      return this._conductorTree(ex, workers, conductorProjects(workers));
     });
     return li;
   }

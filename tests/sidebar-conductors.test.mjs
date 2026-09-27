@@ -12,9 +12,10 @@ import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHea
 const conductorOf = (list, sid) => list.querySelector(`[data-key="conductor:${sid}"]`);
 const titles = (root) => [...root.querySelectorAll(':scope > li.conductor-block .conductor-title')].map(t => t.textContent);
 
-async function render(sidebar, { projects = [], instances = [], conductRows = [] } = {}) {
+async function render(sidebar, { projects = [], instances = [], conductRows = [], spawns = {} } = {}) {
   sidebar.setProjects(projects);
   sidebar.setConductSessions(conductRows);
+  sidebar.setConductorSpawns(spawns);
   sidebar.setInstances(instances);
   await tick();
 }
@@ -35,7 +36,7 @@ test('conductor rows list live conductors, titled with first-prompt fallback', a
   assert.equal(b.classList.contains('untitled'), true, 'the first-prompt fallback is flagged untitled');
 });
 
-test('grey project chips: one per project with a live owned worker; "no live workers" when none', async () => {
+test('live project chips: one per project with a live owned worker; "no live workers" when a conductor has no live or recorded project', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, {
     projects: [project('zeta'), project('alpha', { worktrees: ['wt1'] })],
@@ -47,10 +48,126 @@ test('grey project chips: one per project with a live owned worker; "no live wor
   });
   const chipsA = [...conductorOf(conductorList, 'A').querySelectorAll('.conductor-chip')].map(c => c.textContent);
   assert.deepEqual(chipsA, ['alpha', 'zeta'], 'sorted, distinct, live-owned only');
+  assert.ok([...conductorOf(conductorList, 'A').querySelectorAll('.conductor-chip')].every(c => c.classList.contains('live')),
+    'every chip of A is live');
   const chipsB = [...conductorOf(conductorList, 'B').querySelectorAll('.conductor-chip')];
   assert.equal(chipsB.length, 1);
   assert.ok(chipsB[0].classList.contains('conductor-chip-none'));
   assert.equal(chipsB[0].textContent, 'no live workers');
+});
+
+const chipsOf = (list, sid) => [...conductorOf(list, sid).querySelectorAll('.conductor-chip')]
+  .map(c => `${c.textContent}(${c.classList.contains('live') ? 'live' : c.classList.contains('idle') ? 'idle' : '?'})`);
+const at = (m) => `2026-0${m}-01T00:00:00.000Z`;
+
+test('idle chips follow the live chips, newest spawn first, and a project with a live worker is never also idle', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: ['alpha', 'zeta', 'older', 'newer'].map(n => project(n)),
+    instances: [conductor('A'), worker('w1', 'A', 'zeta'), worker('w2', 'A', 'alpha')],
+    spawns: { A: [
+      { project: 'zeta', lastSpawnAt: at(5) },
+      { project: 'newer', lastSpawnAt: at(3) },
+      { project: 'older', lastSpawnAt: at(1) },
+    ] },
+  });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['alpha(live)', 'zeta(live)', 'newer(idle)', 'older(idle)']);
+});
+
+test('an idle chip for a project that is no longer registered is not shown', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('kept')],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'removed', lastSpawnAt: at(2) }, { project: 'kept', lastSpawnAt: at(1) }] },
+  });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['kept(idle)']);
+});
+
+test('a conductor with only recorded projects shows idle chips and no "no live workers" chip', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p')],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1) }] },
+  });
+  assertNull(conductorOf(conductorList, 'A').querySelector('.conductor-chip-none'));
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['p(idle)']);
+});
+
+test('a conductor whose recorded projects are all unregistered shows "no live workers"', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('other')],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'gone-1', lastSpawnAt: at(2) }, { project: 'gone-2', lastSpawnAt: at(1) }] },
+  });
+  const chips = [...conductorOf(conductorList, 'A').querySelectorAll('.conductor-chip')];
+  assert.equal(chips.length, 1);
+  assert.ok(chips[0].classList.contains('conductor-chip-none'));
+  assert.equal(chips[0].textContent, 'no live workers');
+});
+
+test('an inactive conductor shows its recorded projects as idle chips', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p'), project('q')],
+    conductRows: [{ sessionId: 'D', title: 'Done', lastActivity: 1 }],
+    spawns: { D: [{ project: 'q', lastSpawnAt: at(2) }, { project: 'p', lastSpawnAt: at(1) }] },
+  });
+  const det = conductorList.querySelector('details.conductor-inactive');
+  assert.ok(det.contains(conductorOf(conductorList, 'D')), 'D sits in the Inactive group');
+  assert.deepEqual(chipsOf(conductorList, 'D'), ['q(idle)', 'p(idle)']);
+});
+
+test('a chip that goes live replaces its idle chip in place', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const base = { projects: [project('p')], spawns: { A: [{ project: 'p', lastSpawnAt: at(1) }] } };
+  await render(sidebar, { ...base, instances: [conductor('A')] });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['p(idle)']);
+  await render(sidebar, { ...base, instances: [conductor('A'), worker('w', 'A', 'p')] });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['p(live)']);
+});
+
+test('setConductorSpawns re-renders the chips on its own', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, { projects: [project('p')], instances: [conductor('A')] });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['no live workers(?)']);
+  sidebar.setConductorSpawns({ A: [{ project: 'p', lastSpawnAt: at(1) }] });
+  await tick();
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['p(idle)']);
+});
+
+test('the expanded tree holds live projects only: spawn history adds no project row', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('live-p'), project('idle-p')],
+    instances: [conductor('A'), worker('w', 'A', 'live-p')],
+    spawns: { A: [{ project: 'idle-p', lastSpawnAt: at(1) }] },
+  });
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['live-p(live)', 'idle-p(idle)'], 'fixture: idle-p is an idle chip');
+  conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
+  const tree = conductorOf(conductorList, 'A').querySelector('.conductor-tree');
+  assert.ok(tree, 'the tree is expanded');
+  assert.deepEqual([...tree.querySelectorAll('.project-name')].map(n => n.textContent), ['live-p']);
+});
+
+test('project chips are display-only: neither kind is a button, and clicking either fires no callback', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p'), project('q')],
+    instances: [conductor('A'), worker('w', 'A', 'p')],
+    spawns: { A: [{ project: 'q', lastSpawnAt: at(1) }] },
+  });
+  const chips = [...conductorOf(conductorList, 'A').querySelectorAll('.conductor-chip')];
+  assert.deepEqual(chips.map(c => c.className), ['conductor-chip live', 'conductor-chip idle']);
+  for (const c of chips) {
+    assert.equal(c.tagName, 'SPAN');
+    assert.equal(c.hasAttribute('tabindex'), false);
+    c.click();
+  }
+  await tick();
+  assert.deepEqual(calls, { select: [], resume: [], create: [], delete: [], promote: [] });
 });
 
 const TREE_FIXTURE = {

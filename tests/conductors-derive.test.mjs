@@ -141,6 +141,46 @@ test('conductorProjects is the sorted distinct projects of live owned workers', 
   assert.deepEqual(M.conductorProjects([]), []);
 });
 
+test('conductorChips puts live projects first by name, then idle spawned projects newest first', () => {
+  const chips = M.conductorChips({
+    workers: [inst({ project: 'zeta' }), inst({ project: 'alpha' })],
+    spawned: [
+      { project: 'older', lastSpawnAt: '2026-01-01T00:00:00.000Z' },
+      { project: 'zeta', lastSpawnAt: '2026-04-01T00:00:00.000Z' },
+      { project: 'newer', lastSpawnAt: '2026-03-01T00:00:00.000Z' },
+    ],
+    registered: new Set(['alpha', 'zeta', 'older', 'newer']),
+  });
+  assert.deepEqual(chips, [
+    { project: 'alpha', live: true },
+    { project: 'zeta', live: true },
+    { project: 'newer', live: false },
+    { project: 'older', live: false },
+  ], 'zeta has a live worker, so it is one live chip and never an idle duplicate');
+});
+
+test('conductorChips orders idle chips with an equal lastSpawnAt by name', () => {
+  const tie = '2026-01-01T00:00:00.000Z';
+  const chips = M.conductorChips({
+    workers: [],
+    spawned: [{ project: 'zulu', lastSpawnAt: tie }, { project: 'bravo', lastSpawnAt: tie }, { project: 'mike', lastSpawnAt: tie }],
+    registered: new Set(['zulu', 'bravo', 'mike']),
+  });
+  assert.deepEqual(chips.map(c => c.project), ['bravo', 'mike', 'zulu']);
+});
+
+test('conductorChips drops an idle project that is no longer registered, never a live one', () => {
+  const chips = M.conductorChips({
+    workers: [inst({ project: 'live-gone' })],
+    spawned: [
+      { project: 'kept', lastSpawnAt: '2026-01-01T00:00:00.000Z' },
+      { project: 'removed', lastSpawnAt: '2026-02-01T00:00:00.000Z' },
+    ],
+    registered: new Set(['kept']),
+  });
+  assert.deepEqual(chips, [{ project: 'live-gone', live: true }, { project: 'kept', live: false }]);
+});
+
 test('worktreeOwnership is none / single / mixed over all owners in the place', () => {
   const owners = M.ownersByPlace([
     inst({ project: 'p', worktree: { worktreeName: 'solo' }, ownerSessionId: 'A' }),

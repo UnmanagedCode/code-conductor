@@ -520,6 +520,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   border: 1px solid var(--border);
 }
 .conductor-chip-none { font-style: italic; }
+.conductor-chip.live { color: var(--text); border-color: var(--muted); }
+.conductor-chip.idle { border-style: dashed; opacity: .7; }
 .conductor-tree { list-style: none; margin: 2px 0 0; padding: 0 4px 0 22px; }
 .conductor-tree .project-row { padding: 3px 6px; }
 .conductor-tree .project-name { font-size: 12px; }
