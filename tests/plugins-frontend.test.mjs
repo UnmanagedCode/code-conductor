@@ -685,6 +685,8 @@ test('pluginManager: update — a skipped restart (failed postPull) tells the us
   assert.match(dom.libStatus.textContent, /post-update command failed/);
   assert.match(dom.libStatus.textContent, /left running the old code/i);
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false, 'the failed hook output is still shown');
+  assert.match(dom.tailPre.textContent, /npm ERR! boom/);
 });
 
 // ── Plugin Library: Update all ───────────────────────────────────────────
