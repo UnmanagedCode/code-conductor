@@ -6,8 +6,9 @@
 // only on a live conducted instance (null on a hand-spawned session and on
 // anything dead, never on a disk row), so nothing here needs its own liveness
 // check to decide what a conductor owns. Spawn history is a separate,
-// disk-derived input (`GET /api/conductors/projects`) that feeds only the
-// chips (conductorChips), never ownership.
+// disk-derived input (`GET /api/conductors/projects`) that reaches the sidebar
+// only through conductorChips (the chips, the Conductors tree, the filter),
+// never ownership.
 
 // The client-side spelling of the server's isDeadStatus.
 export function isLiveStatus(status) {

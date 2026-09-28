@@ -1,6 +1,6 @@
 // The sidebar's Conductors lens (#conductor-list): one block per conductor, live
 // ones first, the rest under a collapsed Inactive group, each expandable into a
-// tree of that conductor's live workers.
+// tree of that conductor's chip projects and its live workers in them.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -138,18 +138,78 @@ test('setConductorSpawns re-renders the chips on its own', async () => {
   assert.deepEqual(chipsOf(conductorList, 'A'), ['p(idle)']);
 });
 
-test('the expanded tree holds live projects only: spawn history adds no project row', async () => {
+const treeOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-tree');
+const treeLi = (tree, name) => [...tree.querySelectorAll('.project-name')].find(n => n.textContent === name)?.closest('li') ?? null;
+const kidClasses = (li) => [...li.children].map(c => c.className);
+
+test('the expanded tree lists live projects then idle projects in chip order; an idle project is its project row alone', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, {
-    projects: [project('live-p'), project('idle-p')],
+    projects: [project('live-p'), project('idle-a', { worktrees: ['wt'] }), project('idle-b')],
     instances: [conductor('A'), worker('w', 'A', 'live-p')],
-    spawns: { A: [{ project: 'idle-p', lastSpawnAt: at(1) }] },
+    spawns: { A: [{ project: 'idle-b', lastSpawnAt: at(1) }, { project: 'idle-a', lastSpawnAt: at(2) }] },
   });
-  assert.deepEqual(chipsOf(conductorList, 'A'), ['live-p(live)', 'idle-p(idle)'], 'fixture: idle-p is an idle chip');
+  assert.deepEqual(chipsOf(conductorList, 'A'), ['live-p(live)', 'idle-a(idle)', 'idle-b(idle)'], 'fixture: the chip order');
   conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
-  const tree = conductorOf(conductorList, 'A').querySelector('.conductor-tree');
+  const tree = treeOf(conductorList, 'A');
   assert.ok(tree, 'the tree is expanded');
-  assert.deepEqual([...tree.querySelectorAll('.project-name')].map(n => n.textContent), ['live-p']);
+  assert.deepEqual([...tree.querySelectorAll('.project-name')].map(n => n.textContent), ['live-p', 'idle-a', 'idle-b'],
+    'the tree names the chip projects, in chip order');
+  for (const name of ['idle-a', 'idle-b']) {
+    const li = treeLi(tree, name);
+    assert.deepEqual(kidClasses(li), ['project-row'], `${name}: no session rows and no worktree list`);
+    assert.equal(li.querySelectorAll('.session-row').length, 0);
+    assertNull(li.querySelector('.add-instance'), `${name}: no + in the tree`);
+    assertNull(li.querySelector('.delete-project'), `${name}: no × in the tree`);
+  }
+  assert.deepEqual(kidClasses(treeLi(tree, 'live-p')), ['project-row', 'sessions-list conductor-direct'], 'the live project keeps its subtree');
+  assert.ok(rowOf(tree, 'w'), 'and its worker row');
+});
+
+test('an inactive conductor with only idle chips expands into its registered idle projects, with no session rows', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p'), project('q')],
+    conductRows: [{ sessionId: 'D', title: 'Done', lastActivity: 1 }],
+    spawns: { D: [
+      { project: 'removed', lastSpawnAt: at(3) },
+      { project: 'q', lastSpawnAt: at(2) },
+      { project: 'p', lastSpawnAt: at(1) },
+    ] },
+  });
+  const det = conductorList.querySelector('details.conductor-inactive');
+  det.open = true;
+  const d = conductorOf(conductorList, 'D');
+  assert.ok(det.contains(d), 'fixture: D sits in the Inactive group');
+  d.querySelector('.conductor-caret').click();
+  const tree = treeOf(conductorList, 'D');
+  assert.ok(tree, 'the tree is expanded');
+  assert.deepEqual([...tree.querySelectorAll('.project-name')].map(n => n.textContent), ['q', 'p'],
+    'the registered idle projects, newest spawn first; the unregistered one is absent');
+  assert.equal(tree.querySelectorAll('.session-row').length, 0);
+});
+
+test('a tree project flipping idle → live gains its worker rows in place, and loses them when the worker exits', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p')],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1) }] },
+  });
+  conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
+  const li = treeLi(treeOf(conductorList, 'A'), 'p');
+  assert.deepEqual(kidClasses(li), ['project-row'], 'fixture: p starts idle');
+  sidebar.setInstances([conductor('A'), worker('w', 'A', 'p')]);
+  await tick();
+  const liveLi = treeLi(treeOf(conductorList, 'A'), 'p');
+  assert.ok(liveLi === li, 'the same project item after going live');
+  assert.deepEqual(kidClasses(li), ['project-row', 'sessions-list conductor-direct']);
+  assert.ok(rowOf(li, 'w'), 'the worker row appears under it');
+  sidebar.setInstances([conductor('A')]);
+  await tick();
+  const idleLi = treeLi(treeOf(conductorList, 'A'), 'p');
+  assert.ok(idleLi === li, 'the same project item after going idle again');
+  assert.deepEqual(kidClasses(li), ['project-row'], 'back to the project row alone');
 });
 
 test('project chips are display-only: neither kind is a button, and clicking either fires no callback', async () => {

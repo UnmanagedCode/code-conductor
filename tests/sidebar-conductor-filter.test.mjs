@@ -1,7 +1,7 @@
 // The Projects lens's conductor filter (#conductor-filter <select>): All /
-// Hand-spawned only / one entry per live owner. A selected conductor narrows
-// the tree to where it has live sessions; the ownership classification still
-// reads every instance.
+// Hand-spawned only / one entry per owner with a chip. A selected owner narrows
+// the tree to its chip projects, and inside them to where it has live
+// sessions; the ownership classification still reads every instance.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -223,7 +223,7 @@ test('clearing the filter restores the user\'s own worktree expansion', async ()
   assert.equal(sidebar.expandedWorktrees.has('alpha'), false);
 });
 
-test('the filter falls back to All when the selected owner no longer has a live session', async () => {
+test('the filter falls back to All when the selected owner no longer has a live session or an idle chip', async () => {
   const { root, select, sidebar } = await setupSidebar();
   await render(sidebar);
   await choose(select, 'B');
@@ -235,16 +235,90 @@ test('the filter falls back to All when the selected owner no longer has a live 
   assert.equal([...select.options].some(o => o.value === 'B'), false, 'B is no longer offered');
 });
 
-test('a conductor with only idle chips is not offered in the filter, and selecting it still falls back to All', async () => {
+const at = (m) => `2026-0${m}-01T00:00:00.000Z`;
+const optionValues = (select) => [...select.options].map(o => o.value);
+const projectLi = (root, name) => [...root.querySelectorAll('.project-name')].find(n => n.textContent === name)?.closest('li') ?? null;
+const kidClasses = (li) => [...li.children].map(c => c.className);
+
+test('a conductor with only idle chips is offered among the conductors, and selecting it lists its idle projects as bare project rows', async () => {
   const { root, select, sidebar } = await setupSidebar();
   await render(sidebar);
-  sidebar.setConductorSpawns({ D: [{ project: 'alpha', lastSpawnAt: '2026-01-01T00:00:00.000Z' }] });
   sidebar.setConductSessions([{ sessionId: 'D', title: 'Dormant', lastActivity: 1 }]);
+  sidebar.setConductorSpawns({ D: [{ project: 'alpha', lastSpawnAt: at(2) }, { project: 'gamma', lastSpawnAt: at(1) }] });
   await tick();
-  assert.equal([...select.options].some(o => o.value === 'D'), false, 'spawn history offers no filter option');
+  assert.deepEqual(optionValues(select), ['', 'hand', 'A', 'B', 'D', 'H'], 'live conductors, the inactive conductor, then non-conductor owners');
+  assert.equal([...select.options].find(o => o.value === 'D').textContent, 'Dormant');
+  await choose(select, 'D');
+  assert.deepEqual(projectNames(root), ['gamma', 'alpha'], 'its chip projects, workspace members first');
+  assert.deepEqual([...root.querySelectorAll('.project-workspace-name')].map(n => n.textContent), ['WS']);
+  assert.equal(root.querySelectorAll('.session-row').length, 0);
+  assertNull(root.querySelector('details.worktree-group'), 'no Worktrees group');
+  assertNull(root.querySelector('.sessions-group'), 'no Sessions subnode');
+  assertNull(root.querySelector('.empty-project-hint'), 'no hint');
+  sidebar.setInstances(INSTANCES);
+  await tick();
+  assert.equal(sidebar.filter, 'D', 'no fallback while D is offered');
+});
+
+test('a live conductor\'s selection adds its idle projects as bare rows beside its live ones', async () => {
+  const { root, select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  sidebar.setConductorSpawns({ A: [{ project: 'beta', lastSpawnAt: at(1) }] });
+  await tick();
+  await choose(select, 'A');
+  assert.deepEqual(projectNames(root), ['gamma', 'alpha', 'beta']);
+  assert.deepEqual(kidClasses(projectLi(root, 'beta')), ['project-row'], 'beta holds only H\'s and h1\'s sessions: its row alone');
+  const group = projectLi(root, 'alpha').querySelector('details.worktree-group');
+  assert.equal(group.open, true, 'alpha\'s Worktrees group is still forced open');
+  await tick();
+  assert.deepEqual([...group.querySelectorAll('.worktree-name')].map(n => n.textContent), ['solo-a', 'mixed']);
+  assert.ok(rowOf(root, 'a2'));
+  assertNull(rowOf(root, 'b1'), 'another conductor\'s row is still dropped');
+});
+
+test('a conductor keeps its filter entry after its last live worker exits while it has an idle chip', async () => {
+  const { root, select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  sidebar.setConductorSpawns({ B: [{ project: 'alpha', lastSpawnAt: at(2) }, { project: 'delta', lastSpawnAt: at(1) }] });
+  await tick();
+  await choose(select, 'B');
+  sidebar.setInstances(INSTANCES.map(i => (i.ownerSessionId === 'B' ? { ...i, status: 'exited', ownerSessionId: null } : i)));
+  await tick();
+  assert.equal(sidebar.filter, 'B');
+  assert.equal(select.value, 'B');
+  assert.deepEqual(projectNames(root), ['delta', 'alpha']);
+  assert.equal(root.querySelectorAll('.session-row').length, 0);
+});
+
+test('a conductor whose recorded projects are all unregistered is not offered, and selecting it falls back to All', async () => {
+  const { root, select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  sidebar.setConductSessions([{ sessionId: 'D', title: 'Dormant', lastActivity: 1 }]);
+  sidebar.setConductorSpawns({ D: [{ project: 'removed', lastSpawnAt: at(1) }] });
+  await tick();
+  assert.equal(optionValues(select).includes('D'), false);
   sidebar.filter = 'D';
   sidebar.render();
   await tick();
   assert.equal(sidebar.filter, '');
   assert.ok(projectNames(root).includes('beta'), 'the full tree is shown');
+});
+
+test('a root with only spawn history that is not a conductor is not offered', async () => {
+  const { select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  sidebar.setConductorSpawns({ X: [{ project: 'alpha', lastSpawnAt: at(1) }] });
+  await tick();
+  assert.equal(optionValues(select).includes('X'), false);
+});
+
+test('a live non-conductor owner\'s selection also lists its spawn-history projects as bare rows', async () => {
+  const { root, select, sidebar } = await setupSidebar();
+  await render(sidebar);
+  sidebar.setConductorSpawns({ H: [{ project: 'gamma', lastSpawnAt: at(1) }] });
+  await tick();
+  await choose(select, 'H');
+  assert.deepEqual(projectNames(root), ['gamma', 'beta']);
+  assert.deepEqual(kidClasses(projectLi(root, 'gamma')), ['project-row']);
+  assert.ok(rowOf(root, 'h1'), 'its live worker is still listed');
 });

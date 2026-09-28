@@ -2,7 +2,7 @@ import { el } from './dom.js';
 import { formatAutoResumeTime } from './usage.js';
 import { conductorColor } from './conductorColor.js';
 import {
-  sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorProjects, conductorChips,
+  sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorChips,
   ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
 } from './conductors.js';
 import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
@@ -204,7 +204,8 @@ export class Sidebar {
     // conductors that are not live, for the Conductors *Inactive* group.
     this.conductRows = [];
     // GET /api/conductors/projects: root owner sessionId → the projects it has
-    // ever had a worker spawned into, newest first. Feeds only the idle chips.
+    // ever had a worker spawned into, newest first. Feeds the idle chips, the
+    // Conductors tree's idle rows and the filter, all through _chipsOf.
     this.conductorSpawns = {};
     this.expandedConductors = new Set();    // key: conductor sessionId
     this.inactiveOpen = false;
@@ -221,6 +222,7 @@ export class Sidebar {
     // Per-render derivations shared by the row builders (see render()).
     this._owners = new Map();
     this._conductors = { live: [], inactive: [] };
+    this._registered = new Set();
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -1015,13 +1017,38 @@ export class Sidebar {
     return this.filter && this.filter !== 'hand' ? this.filter : null;
   }
 
+  // An owner's chips: the one project set the chips, the Conductors tree and
+  // the filter all read.
+  _chipsOf(sid) {
+    return conductorChips({
+      workers: workersOf(sid, this.instances),
+      spawned: this.conductorSpawns[sid] ?? [],
+      registered: this._registered,
+    });
+  }
+
+  // The owners the filter offers, in order: live conductors, then inactive
+  // conductors, each only with a chip; then each live owner that is not a
+  // conductor. A live owner always has a live chip.
+  _filterOwners(liveOwners) {
+    const order = [];
+    for (const c of [...this._conductors.live, ...this._conductors.inactive]) {
+      if (this._chipsOf(c.sessionId).length > 0) order.push(c.sessionId);
+    }
+    for (const sid of liveOwners) if (!order.includes(sid)) order.push(sid);
+    return order;
+  }
+
   render() {
-    // A selected conductor that owns no live instance any more falls back to
-    // All: an empty tree would be a filter nothing can clear by itself.
     const liveOwners = new Set(this.instances.map(i => i.ownerSessionId).filter(Boolean));
-    if (this._filterOwner() && !liveOwners.has(this.filter)) this.filter = '';
     this._owners = ownersByPlace(this.instances);
     this._conductors = deriveConductors({ conductRows: this.conductRows, instances: this.instances });
+    this._registered = new Set(this.projects.map(p => p.name));
+    const offered = this._filterOwners(liveOwners);
+    // A selected owner that is no longer offered (no live session and no
+    // registered idle chip) falls back to All: an empty tree would be a filter
+    // nothing can clear by itself.
+    if (this._filterOwner() && !offered.includes(this.filter)) this.filter = '';
 
     // Bucket live instances by (project, worktree?) so the per-subnode
     // merge into Sessions has only the relevant live overlay.
@@ -1040,7 +1067,7 @@ export class Sidebar {
       }
     }
 
-    this._renderFilter(liveOwners);
+    this._renderFilter(offered);
     this._renderProjects({ directByProject, byWorktree });
     if (this.conductorList) this._renderConductors();
     if (this.stripRoot) this._renderStrip();
@@ -1115,16 +1142,12 @@ export class Sidebar {
   }
 
   // Reconcile the conductor filter's options: All, Hand-spawned only, then one
-  // per live owner — live conductors, inactive conductors, then owners that are not
-  // conductors (a hand-spawned session that spawned workers).
-  _renderFilter(liveOwners) {
+  // per owner with a chip, in `order` — live conductors, inactive conductors,
+  // then live owners that are not conductors (a hand-spawned session that
+  // spawned workers).
+  _renderFilter(order) {
     const select = this._filterSelect;
     if (!select) return;
-    const order = [];
-    for (const c of [...this._conductors.live, ...this._conductors.inactive]) {
-      if (liveOwners.has(c.sessionId)) order.push(c.sessionId);
-    }
-    for (const sid of liveOwners) if (!order.includes(sid)) order.push(sid);
     const opts = [['', 'All sessions'], ['hand', 'Hand-spawned only'],
       ...order.map(sid => [sid, this._ownerLabel(sid)])];
     const labelOf = new Map(opts);
@@ -1145,12 +1168,11 @@ export class Sidebar {
       return;
     }
 
-    // Under a selected conductor only the projects holding one of its live
-    // sessions are listed; under Hand-spawned only, only those whose main
+    // Under a selected owner only its chip projects are listed; under Hand-spawned only, only those whose main
     // checkout or a worktree holds a hand-spawned session. Either way a
     // workspace is listed only with a visible member.
     const filterOwner = this._filterOwner();
-    const ownedProjects = new Set(this.instances.filter(i => filterOwner && i.ownerSessionId === filterOwner).map(i => i.project));
+    const ownedProjects = new Set(filterOwner ? this._chipsOf(filterOwner).map(c => c.project) : []);
     const hasHand = (p) => this._hasHandSession({ liveInstances: directByProject.get(p.name) ?? [], summary: p.sessions })
       || (Array.isArray(p.worktrees) ? p.worktrees : []).some(wt => this._hasHandSession({
         liveInstances: byWorktree.get(`${p.name}:${wt.worktreeName}`) ?? [], summary: wt.sessions,
@@ -1251,8 +1273,8 @@ export class Sidebar {
   }
 
   // Create-or-update one conductor block: its row, its project chips, and —
-  // while expanded — the tree of this conductor's live workers (no structural
-  // actions, only ↑ promote on a live temp worker). The row itself carries ↑
+  // while expanded — the tree of its chip projects and its live workers in them
+  // (no structural actions, only ↑ promote on a live temp worker). The row itself carries ↑
   // on a live temp conductor. A chip is live (a live owned worker there) or
   // idle (a recorded spawn there, nothing live); both are display-only.
   // The block alone carries the conductor's bar; nothing inside repeats it.
@@ -1271,11 +1293,7 @@ export class Sidebar {
     li.className = 'conductor-block' + (conductor.live ? '' : ' inactive') + (open ? ' open' : '');
     li.style.setProperty('--owner-color', conductorColor(sid));
     const workers = workersOf(sid, this.instances);
-    const chipList = conductorChips({
-      workers,
-      spawned: this.conductorSpawns[sid] ?? [],
-      registered: new Set(this.projects.map(p => p.name)),
-    });
+    const chipList = this._chipsOf(sid);
 
     const keys = ['row', 'chips'];
     if (open) keys.push('tree');
@@ -1292,7 +1310,7 @@ export class Sidebar {
         });
         return chips;
       }
-      return this._conductorTree(ex, workers, conductorProjects(workers));
+      return this._conductorTree(ex, workers, chipList.map(c => c.project));
     });
     return li;
   }
@@ -1380,9 +1398,10 @@ export class Sidebar {
     return row;
   }
 
-  // Expanded conductor: per project (sorted), the project row, then the workers
-  // in its main checkout, then each worktree (sorted by name) holding one with
-  // its workers. Only this conductor's live workers, with no structural actions
+  // Expanded conductor: per chip project, in chip order. A live one is the
+  // project row, then the workers in its main checkout, then each worktree
+  // (sorted by name) holding one with its workers; an idle one is its project
+  // row alone. Only this conductor's live workers, with no structural actions
   // (only ↑ promote on a live temp worker).
   _conductorTree(existing, workers, projects) {
     const ul = existing ?? el('ul', { class: 'conductor-tree' });
