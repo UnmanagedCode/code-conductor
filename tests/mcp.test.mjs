@@ -569,9 +569,12 @@ test('temp conducted session persists the conducted marker and recovers it on re
   const backing = inst.backingSessionId;   // temp is a transcript (segment) fact
 
   // Drive a turn so _writeSessionMetadata() runs. Both durable markers must
-  // be in place even though the session is temp.
+  // be in place even though the session is temp. Each is its own
+  // fire-and-forget store write (at spawn, re-asserted at turn end), and
+  // setSegmentTemp joins the serialized chain behind markConducted — so one
+  // marker landing is no barrier for the other: wait on both.
   await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
-  await waitFor(async () => (await isConducted(sid)) === true);
+  await waitFor(async () => (await isConducted(sid)) && (await isTemp(backing)));
   assert.equal(await isConducted(sid), true, 'conducted marker persisted for a temp session');
   assert.equal(await isTemp(backing), true, 'temp marker persisted on the live segment');
 
