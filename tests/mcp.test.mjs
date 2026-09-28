@@ -1556,10 +1556,10 @@ test('spawn_instance: sonnet alias resolves to the family default at its native 
       typeof summary.model === 'string' && summary.model.startsWith('claude-sonnet-'),
       `expected concrete sonnet model id, got: ${summary.model}`,
     );
-    // The sonnet family default is Sonnet 5, which is natively 1M and so launches
+    // The sonnet family default is Sonnet 5.5, which is natively 1M and so launches
     // BARE — the `[1m]` tag exists only for Sonnet 4.x, which ships separate
     // 200k/1M builds. Capacity is reported as a number, not inferred from a suffix.
-    assert.equal(summary.model, 'claude-sonnet-5');
+    assert.equal(summary.model, 'claude-sonnet-5-5');
     assert.equal(summary.contextWindowTokens, 1_000_000);
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;

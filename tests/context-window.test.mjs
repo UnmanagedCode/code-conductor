@@ -126,6 +126,7 @@ test('canonicalizeModel is verbatim for ANY non-claude backend, including Claude
 test('claudeContextWindowTokens reports one capacity per version, null when unknown', () => {
   assert.equal(claudeContextWindowTokens('claude-haiku-4-5'), 200_000);
   assert.equal(claudeContextWindowTokens('claude-sonnet-5'), 1_000_000);
+  assert.equal(claudeContextWindowTokens('claude-sonnet-5-5'), 1_000_000);
   assert.equal(claudeContextWindowTokens('claude-opus-4-8'), 1_000_000);
   assert.equal(claudeContextWindowTokens('claude-fable-5'), 1_000_000);
   // Tolerates the launch tag on the way in.

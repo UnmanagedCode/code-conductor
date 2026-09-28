@@ -559,9 +559,9 @@ test('model switch via WS resolves the tier\'s CURRENT binding and acks', async 
   const { baseUrl, wsUrl, instances, close } = await setup();
   let c = null;
   try {
-    // Bound away from `balanced`'s OWN default (claude-sonnet-5): a resolver
+    // Bound away from `balanced`'s OWN default (claude-sonnet-5-5): a resolver
     // that fell back to DEFAULT_TIER_BACKEND instead of reading the stored
-    // binding would still pass the sonnet-5 case, so this has to differ from
+    // binding would still pass the sonnet-5-5 case, so this has to differ from
     // the tier's default to actually discriminate.
     await setTierBackend('balanced', { backend: 'claude', model: 'claude-haiku-4-5' });
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });

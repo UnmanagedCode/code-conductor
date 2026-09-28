@@ -147,7 +147,7 @@ test('GET /api/settings/models returns the registry, catalog, and {backend,model
     assert.deepEqual(r.body.tiers.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
     // Unset → default {backend,model} bindings (each family's default version).
     assert.deepEqual(r.body.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-5-5' });
-    assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-5' });
+    assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-5-5' });
   }
 });
 
