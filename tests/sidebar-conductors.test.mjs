@@ -352,7 +352,7 @@ test('a live worktree row\'s head reads the listed worktree\'s meta, not the wor
   await render(sidebar, {
     projects: [p],
     instances: [conductor('A'), worker('w', 'A', 'p', 'wt', {
-      worktree: { worktreeName: 'wt', branch: 'cc/instance', baseBranch: 'dev', baseSha: 'instsha00000000' },
+      worktree: { worktreeName: 'wt', branch: 'cc/instance', baseBranch: 'dev', baseSha: 'instsha00000000', mergeStatus: { ahead: 9, behind: 9 } },
     })],
   });
   const item = wtItem(await expand(conductorList, 'A'), 'wt');
@@ -362,6 +362,7 @@ test('a live worktree row\'s head reads the listed worktree\'s meta, not the wor
   assert.equal(head.querySelector('.worktree-name').title, 'cc/listed\nfrom main @ listedsha000');
   assert.equal(head.querySelector('.worktree-base').textContent, '← main');
   assert.equal(head.querySelector('.wt-unmerged')?.textContent, '↑2', 'the listed merge pill');
+  assert.ok(!/9/.test(head.querySelector('.wt-unmerged').textContent), 'not the instance copy\'s ↑9 ↓9');
 });
 
 test('project chips are display-only: neither kind is a button, and clicking either fires no callback', async () => {
