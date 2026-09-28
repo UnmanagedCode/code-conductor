@@ -98,8 +98,9 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = [
   {
     family: 'sonnet',
     label: 'Sonnet',
-    default: 'claude-sonnet-5',
+    default: 'claude-sonnet-5-5',
     versions: [
+      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', contextWindow: 1_000_000 },
       { id: 'claude-sonnet-5', label: 'Sonnet 5', contextWindow: 1_000_000 },
       // Sonnet 4.x is the only family with separate 200k/1M builds; its 1M
       // capacity is reachable only via the `[1m]` tag, so it always launches

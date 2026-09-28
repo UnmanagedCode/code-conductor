@@ -43,7 +43,7 @@ describe('catalog well-formedness', () => {
     assert.deepEqual(DEFAULT_VERSIONS, {
       fable: 'claude-fable-5-1',
       opus: 'claude-opus-5-5',
-      sonnet: 'claude-sonnet-5',
+      sonnet: 'claude-sonnet-5-5',
       haiku: 'claude-haiku-4-5',
     });
   });
@@ -58,6 +58,7 @@ describe('canonicalizeModel — launch-tag policy', () => {
     assert.equal(canonicalizeModel('claude-sonnet-4-6[1m]', CLAUDE_BACKEND_ID), 'claude-sonnet-4-6[1m]');
     assert.equal(canonicalizeModel('claude-opus-4-8', CLAUDE_BACKEND_ID), 'claude-opus-4-8');
     assert.equal(canonicalizeModel('claude-sonnet-5', CLAUDE_BACKEND_ID), 'claude-sonnet-5');
+    assert.equal(canonicalizeModel('claude-sonnet-5-5', CLAUDE_BACKEND_ID), 'claude-sonnet-5-5');
   });
 
   test('returns a substitution-backend id BYTE-EXACT, even when [1m]-suffixed', () => {
@@ -119,10 +120,12 @@ describe('known-* guards and defaultVersion', () => {
 
   test('isKnownVersion / isKnownClaudeModel / defaultVersion', () => {
     assert.ok(isKnownVersion('sonnet', 'claude-sonnet-5'));
+    assert.ok(isKnownVersion('sonnet', 'claude-sonnet-5-5'));
     assert.ok(!isKnownVersion('sonnet', 'claude-opus-5'));
     assert.ok(isKnownClaudeModel('claude-opus-4-7'));
     assert.ok(!isKnownClaudeModel('ollama'));
     assert.equal(defaultVersion('haiku'), 'claude-haiku-4-5');
+    assert.equal(defaultVersion('sonnet'), 'claude-sonnet-5-5');
     assert.equal(defaultVersion('nope'), null);
   });
 });

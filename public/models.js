@@ -17,7 +17,7 @@
 // default tier bindings before the boot fetch resolves.
 const DEFAULT_VERSIONS = {
   fable: 'claude-fable-5-1',
-  sonnet: 'claude-sonnet-5',
+  sonnet: 'claude-sonnet-5-5',
   opus: 'claude-opus-5-5',
   haiku: 'claude-haiku-4-5',
 };
@@ -26,7 +26,7 @@ const DEFAULT_VERSIONS = {
 // shipped catalog's per-version `label` field once loadModelVersions() resolves.
 const DEFAULT_VERSION_LABELS = {
   'claude-fable-5-1': 'Fable 5.1',
-  'claude-sonnet-5': 'Sonnet 5',
+  'claude-sonnet-5-5': 'Sonnet 5.5',
   'claude-opus-5-5': 'Opus 5.5',
   'claude-haiku-4-5': 'Haiku 4.5',
 };
