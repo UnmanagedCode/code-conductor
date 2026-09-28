@@ -383,6 +383,9 @@ export function installPluginManager({ onCatalogChange } = {}) {
       }
       li.appendChild(actions);
 
+      // A mid-run reload must not hand back per-row actions the run's busy
+      // guard would refuse anyway.
+      if (updatingAll) for (const b of actions.querySelectorAll('button')) b.disabled = true;
       libraryListEl.appendChild(li);
     }
     syncUpdateAllBtn();
@@ -487,25 +490,28 @@ export function installPluginManager({ onCatalogChange } = {}) {
   async function updateEntry(row, li, buttonEl) {
     if (busy) return;
     busy = true;
-    setStatusEl(libraryStatusEl, `Updating ${row.name}…`);
-    clearLibraryTail();
-    const outcome = await streamUpdate(row, li, buttonEl);
-    if (outcome.ok) {
-      await load();
-      onCatalogChange?.();
-      // Surfaced AFTER load() so it isn't clobbered by render()'s own status text.
-      const warning = updateWarning(row.name, outcome.result);
-      if (warning) {
-        setStatusEl(libraryStatusEl, warning.text, true);
-        if (warning.tail) showLibraryTail(warning.tail);
+    try {
+      setStatusEl(libraryStatusEl, `Updating ${row.name}…`);
+      clearLibraryTail();
+      const outcome = await streamUpdate(row, li, buttonEl);
+      if (outcome.ok) {
+        await load();
+        onCatalogChange?.();
+        // Surfaced AFTER load() so it isn't clobbered by render()'s own status text.
+        const warning = updateWarning(row.name, outcome.result);
+        if (warning) {
+          setStatusEl(libraryStatusEl, warning.text, true);
+          if (warning.tail) showLibraryTail(warning.tail);
+        }
+      } else {
+        buttonEl.disabled = false;
+        buttonEl.textContent = 'Update';
+        setStatusEl(libraryStatusEl, `Updating ${row.name} failed: ${outcome.error}`, true);
+        if (outcome.tail) showLibraryTail(outcome.tail);
       }
-    } else {
-      buttonEl.disabled = false;
-      buttonEl.textContent = 'Update';
-      setStatusEl(libraryStatusEl, `Updating ${row.name} failed: ${outcome.error}`, true);
-      if (outcome.tail) showLibraryTail(outcome.tail);
+    } finally {
+      busy = false;
     }
-    busy = false;
   }
 
   // One at a time: each update rescans the registry, restarts backends and
@@ -515,38 +521,45 @@ export function installPluginManager({ onCatalogChange } = {}) {
     if (busy || updatables.length === 0) return;
     busy = true;
     updatingAll = true;
-    const targets = updatables.slice();
-    const n = targets.length;
-    updateAllBtn.disabled = true;
-    for (const b of libraryListEl.querySelectorAll('button')) b.disabled = true;
-    clearLibraryTail();
-    const outcomes = [];
-    for (const [i, { row, li, button }] of targets.entries()) {
-      updateAllBtn.textContent = `Updating ${i + 1}/${n}…`;
-      setStatusEl(libraryStatusEl, `Updating ${row.name} (${i + 1}/${n})…`);
-      outcomes.push({ name: row.name, ...await streamUpdate(row, li, button) });
-    }
-    updatingAll = false;
-    await load();
-    const okCount = outcomes.filter(o => o.ok).length;
-    if (okCount > 0) onCatalogChange?.();
-    const problems = [];
-    for (const o of outcomes) {
-      if (!o.ok) {
-        problems.push({ name: o.name, text: `${o.name} failed: ${o.error}`, tail: o.tail });
-      } else {
-        const warning = updateWarning(o.name, o.result);
-        if (warning) problems.push({ name: o.name, text: warning.text, tail: warning.tail });
+    try {
+      const targets = updatables.slice();
+      const n = targets.length;
+      updateAllBtn.disabled = true;
+      for (const b of libraryListEl.querySelectorAll('button')) b.disabled = true;
+      clearLibraryTail();
+      const outcomes = [];
+      for (const [i, { row, li, button }] of targets.entries()) {
+        updateAllBtn.textContent = `Updating ${i + 1}/${n}…`;
+        setStatusEl(libraryStatusEl, `Updating ${row.name} (${i + 1}/${n})…`);
+        outcomes.push({ name: row.name, ...await streamUpdate(row, li, button) });
       }
+      updatingAll = false;
+      await load();
+      const okCount = outcomes.filter(o => o.ok).length;
+      if (okCount > 0) onCatalogChange?.();
+      const problems = [];
+      for (const o of outcomes) {
+        if (!o.ok) {
+          problems.push({ name: o.name, text: `${o.name} failed: ${o.error}`, tail: o.tail });
+        } else {
+          const warning = updateWarning(o.name, o.result);
+          if (warning) problems.push({ name: o.name, text: warning.text, tail: warning.tail });
+        }
+      }
+      setStatusEl(libraryStatusEl,
+        `Updated ${okCount} of ${n} plugin${n === 1 ? '' : 's'}`
+        + (problems.length ? ` — ${problems.map(p => p.text).join('; ')}` : ''),
+        problems.length > 0);
+      const tails = problems.filter(p => p.tail);
+      // The reload dropped every row's live box, so the tails are collected here.
+      if (tails.length) showLibraryTail(tails.map(p => `── ${p.name} ──\n${p.tail}`).join('\n\n'));
+    } finally {
+      updatingAll = false;
+      // load() swallows its own failure without re-rendering, so the button's
+      // terminal state is set here from the last rendered list.
+      syncUpdateAllBtn();
+      busy = false;
     }
-    setStatusEl(libraryStatusEl,
-      `Updated ${okCount} of ${n} plugin${n === 1 ? '' : 's'}`
-      + (problems.length ? ` — ${problems.map(p => p.text).join('; ')}` : ''),
-      problems.length > 0);
-    const tails = problems.filter(p => p.tail);
-    // The reload dropped every row's live box, so the tails are collected here.
-    if (tails.length) showLibraryTail(tails.map(p => `── ${p.name} ──\n${p.tail}`).join('\n\n'));
-    busy = false;
   }
 
   async function load() {
