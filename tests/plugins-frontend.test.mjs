@@ -236,9 +236,11 @@ function buildPluginManagerDom(document) {
   tail.hidden = true;
   const tailPre = mk('pre', 'pll-tail-pre');
   tail.appendChild(tailPre);
-  group.append(status, list, rescan, libStatus, libList, tail);
+  const updateAll = mk('button', 'pll-update-all-btn');
+  updateAll.disabled = true;
+  group.append(status, list, rescan, updateAll, libStatus, libList, tail);
   document.body.appendChild(group);
-  return { status, list, rescan, libStatus, libList, tail, tailPre };
+  return { status, list, rescan, updateAll, libStatus, libList, tail, tailPre };
 }
 
 // Fakes a fetch Response whose body streams NDJSON lines (one per `read()`
@@ -316,6 +318,56 @@ function stubPluginManagerFetch({
   };
   return calls;
 }
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(r => { resolve = r; });
+  return { promise, resolve };
+}
+
+// Multi-entry library for the Update all tests. `entries` are
+// {id, name, installed, updateAvailable}; `updates[id]` is awaited per update
+// POST (so a deferred's promise holds that update in flight) and is either
+// 'fail' or {postPull?, restarted?}. A successful update clears that entry's
+// updateAvailable, as the next list() would. The library GET answers 500
+// while `libraryFails()` is true.
+function stubLibraryFetch({ entries, updates = {}, libraryFails = () => false }) {
+  const calls = [];
+  const state = entries.map(e => ({ ...e }));
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = opts.method || 'GET';
+    calls.push(`${method} ${url}`);
+    if (url === '/api/plugins') return { ok: true, json: async () => ({ rows: [], notices: [] }) };
+    if (url === '/api/projects') return { ok: true, json: async () => [] };
+    if (url === '/api/plugins/library') {
+      if (libraryFails()) return { ok: false, status: 500, json: async () => ({ error: 'library unavailable' }) };
+      return { ok: true, json: async () => ({ entries: state.map(e => ({
+        ...e, description: `${e.name} plugin.`, repo: `https://example.test/${e.id}`,
+        installedAs: e.installed ? e.id : null, behind: e.updateAvailable ? 1 : 0,
+      })), skipped: [] }) };
+    }
+    const m = /^\/api\/plugins\/library\/([^/]+)\/update$/.exec(url);
+    if (m && method === 'POST') {
+      const id = m[1];
+      const spec = await (updates[id] ?? {});
+      if (spec === 'fail') {
+        return ndjsonResponse([
+          { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+          { type: 'result', ok: false, error: 'git pull failed', tail: `fatal: ${id} diverged` },
+        ]);
+      }
+      state.find(e => e.id === id).updateAvailable = false;
+      return ndjsonResponse([
+        { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+        { type: 'result', ok: true, result: { id, name: id, postPull: spec.postPull ?? null, restarted: spec.restarted ?? null } },
+      ]);
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  return calls;
+}
+
+const updatePosts = calls => calls.filter(c => /^POST \/api\/plugins\/library\/[^/]+\/update$/.test(c));
 
 // ── the load-failure notices actually reach the user ─────────────────────────
 // These two are the acceptance bar for the F17 (b)/(c) surfacing: the difference
@@ -633,6 +685,293 @@ test('pluginManager: update — a skipped restart (failed postPull) tells the us
   assert.match(dom.libStatus.textContent, /post-update command failed/);
   assert.match(dom.libStatus.textContent, /left running the old code/i);
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false, 'the failed hook output is still shown');
+  assert.match(dom.tailPre.textContent, /npm ERR! boom/);
+});
+
+// ── Plugin Library: Update all ───────────────────────────────────────────
+
+// Pins: Update all is enabled only by an `installed && updateAvailable` entry.
+test('pluginManager: Update all is disabled when no library entry has an update', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubLibraryFetch({ entries: [
+    { id: 'a', name: 'a', installed: true, updateAvailable: false },
+    { id: 'b', name: 'b', installed: false, updateAvailable: false },
+  ] });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  assert.equal(dom.updateAll.disabled, true);
+  assert.equal(dom.updateAll.textContent, 'Update all');
+});
+
+// Pins: the count equals the rows showing a per-row Update button.
+test('pluginManager: Update all is enabled and counts the entries with an update', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubLibraryFetch({ entries: [
+    { id: 'a', name: 'a', installed: true, updateAvailable: true },
+    { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    { id: 'c', name: 'c', installed: true, updateAvailable: false },
+  ] });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  assert.equal(dom.updateAll.disabled, false);
+  assert.equal(dom.updateAll.textContent, 'Update all (2)');
+});
+
+// Pins: updates run sequentially, never in parallel; up-to-date entries are
+// skipped; the run refreshes the list exactly once, after its last update,
+// and notifies the catalog once.
+test('pluginManager: Update all updates each updatable entry one at a time, then refreshes', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const gateA = deferred();
+  const calls = stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+      { id: 'c', name: 'c', installed: true, updateAvailable: false },
+    ],
+    updates: { a: gateA.promise },
+  });
+  let catalogChanges = 0;
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager({ onCatalogChange: () => { catalogChanges++; } }).load();
+
+  dom.updateAll.click();
+  await tick();
+
+  assert.deepEqual(updatePosts(calls), ['POST /api/plugins/library/a/update']);
+  assert.equal(dom.updateAll.disabled, true);
+  assert.equal(dom.updateAll.textContent, 'Updating 1/2…');
+  assert.match(dom.libStatus.textContent, /Updating a \(1\/2\)/);
+  const rowButtons = [...dom.libList.querySelectorAll('button')];
+  assert.ok(rowButtons.length > 0);
+  assert.ok(rowButtons.every(b => b.disabled), 'every library row button is disabled during the run');
+
+  gateA.resolve({});
+  await tick(30);
+
+  assert.deepEqual(updatePosts(calls), [
+    'POST /api/plugins/library/a/update',
+    'POST /api/plugins/library/b/update',
+  ]);
+  const firstPost = calls.indexOf('POST /api/plugins/library/a/update');
+  const lastPost = calls.indexOf('POST /api/plugins/library/b/update');
+  const runGets = calls.map((c, i) => [c, i]).filter(([c, i]) => i > firstPost && c === 'GET /api/plugins/library');
+  assert.equal(runGets.length, 1, 'the run reloads the list exactly once');
+  assert.ok(runGets[0][1] > lastPost, 'the one reload comes after the last update');
+  assert.equal(dom.libStatus.textContent, 'Updated 2 of 2 plugins');
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), false);
+  assert.equal(dom.updateAll.disabled, true);
+  assert.equal(dom.updateAll.textContent, 'Update all');
+  assert.equal(catalogChanges, 1);
+});
+
+// Pins: one failure does not stop the run; its error and tail are surfaced
+// per plugin; the failed entry stays updatable for a retry.
+test('pluginManager: Update all continues past a failed update and names it in the summary', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const calls = stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    ],
+    updates: { a: 'fail' },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  dom.updateAll.click();
+  await tick(30);
+
+  assert.deepEqual(updatePosts(calls), [
+    'POST /api/plugins/library/a/update',
+    'POST /api/plugins/library/b/update',
+  ]);
+  assert.match(dom.libStatus.textContent, /Updated 1 of 2 plugins/);
+  assert.match(dom.libStatus.textContent, /a failed: git pull failed/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false);
+  assert.match(dom.tailPre.textContent, /── a ──/);
+  assert.match(dom.tailPre.textContent, /fatal: a diverged/);
+  assert.equal(dom.updateAll.disabled, false);
+  assert.equal(dom.updateAll.textContent, 'Update all (1)');
+});
+
+// Pins: a soft post-update warning uses the single-update wording, is listed
+// with its tail, and does not reduce the success count.
+test('pluginManager: Update all reports a post-update warning per plugin without counting it as a failure', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    ],
+    updates: { a: { postPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! a' } } },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  dom.updateAll.click();
+  await tick(30);
+
+  assert.match(dom.libStatus.textContent, /Updated 2 of 2 plugins/);
+  assert.match(dom.libStatus.textContent, /Updated a, but its post-update command failed/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false);
+  assert.match(dom.tailPre.textContent, /npm ERR! a/);
+});
+
+// Pins: the run holds the shared busy guard, so other plugin actions no-op.
+test('pluginManager: other plugin actions are blocked while Update all runs', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const gateA = deferred();
+  const calls = stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    ],
+    updates: { a: gateA.promise },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  dom.updateAll.click();
+  await tick();
+  dom.rescan.click();
+  await tick();
+  assert.ok(!calls.includes('POST /api/plugins/rescan'), 'Rescan is a no-op during the run');
+
+  gateA.resolve({});
+  await tick(30);
+});
+
+// Pins: a load() during the run cannot re-arm Update all or any row button.
+test('pluginManager: a reload during Update all keeps the button disabled', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const gateA = deferred();
+  stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    ],
+    updates: { a: gateA.promise },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  dom.updateAll.click();
+  await tick();
+  await mgr.load();
+  assert.equal(dom.updateAll.disabled, true);
+  assert.equal(dom.updateAll.textContent, 'Updating 1/2…');
+  const rowButtons = [...dom.libList.querySelectorAll('button')];
+  assert.ok(rowButtons.length > 0);
+  assert.ok(rowButtons.every(b => b.disabled), 'the re-rendered row buttons stay disabled during the run');
+
+  gateA.resolve({});
+  await tick(30);
+});
+
+// Pins: Update all starts no update while another plugin action is in flight
+// (the button stays clickable then, so the busy guard is what refuses it).
+test('pluginManager: Update all starts no update while another plugin action is in flight', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const gateA = deferred();
+  const calls = stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    ],
+    updates: { a: gateA.promise },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update').click();
+  await tick();
+  dom.updateAll.click();
+  gateA.resolve({});
+  await tick(30);
+
+  assert.deepEqual(updatePosts(calls), ['POST /api/plugins/library/a/update']);
+});
+
+// Pins: the run ends with Update all re-armed even when the closing reload fails.
+test('pluginManager: Update all re-arms its button when the reload after the run fails', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  let libraryDown = false;
+  stubLibraryFetch({
+    entries: [
+      { id: 'a', name: 'a', installed: true, updateAvailable: true },
+      { id: 'b', name: 'b', installed: true, updateAvailable: true },
+    ],
+    libraryFails: () => libraryDown,
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  libraryDown = true;
+  dom.updateAll.click();
+  await tick(30);
+
+  assert.equal(dom.updateAll.disabled, false);
+  assert.equal(dom.updateAll.textContent, 'Update all (2)');
+});
+
+// Pins: a single row Update releases the shared busy guard when it ends,
+// whether it succeeded or failed, so later plugin actions still run.
+test('pluginManager: a plugin action still runs after a single row Update ends', async (t) => {
+  for (const [label, update] of [['succeeded', {}], ['failed', 'fail']]) {
+    await t.test(label, async () => {
+      const window = makeWindow();
+      const dom = buildPluginManagerDom(window.document);
+      const calls = stubLibraryFetch({
+        entries: [{ id: 'a', name: 'a', installed: true, updateAvailable: true }],
+        updates: { a: update },
+      });
+      const { installPluginManager } = await freshImport('pluginManager.js');
+      await installPluginManager().load();
+
+      [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update').click();
+      await tick(30);
+      assert.deepEqual(updatePosts(calls), ['POST /api/plugins/library/a/update']);
+      dom.rescan.click();
+      await tick();
+      assert.ok(calls.includes('POST /api/plugins/rescan'), 'Rescan runs once the update has ended');
+    });
+  }
+});
+
+// Pins: a reload that empties the library disarms an armed Update all.
+test('pluginManager: Update all disarms when a reload finds the library empty', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubLibraryFetch({ entries: [
+    { id: 'a', name: 'a', installed: true, updateAvailable: true },
+    { id: 'b', name: 'b', installed: true, updateAvailable: true },
+  ] });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+  assert.equal(dom.updateAll.disabled, false);
+  assert.equal(dom.updateAll.textContent, 'Update all (2)');
+
+  stubLibraryFetch({ entries: [] });
+  await mgr.load();
+  assert.equal(dom.updateAll.disabled, true);
+  assert.equal(dom.updateAll.textContent, 'Update all');
 });
 
 test('pluginManager: empty library renders the empty-state message', async () => {
