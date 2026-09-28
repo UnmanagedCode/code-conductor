@@ -23,7 +23,7 @@ async function freshRoot() {
 }
 
 // One record per entry: `ats` are its segments' `at`s (the last is current).
-function rec({ conducted = false, parent, project, ats = [''], archived = false } = {}, id) {
+function rec({ conducted = false, parent, project, worktree, ats = [''], archived = false } = {}, id) {
   const segments = ats.map((at, i) => ({ id: i === ats.length - 1 ? id : `${id}-old${i}`, reason: i === 0 ? 'initial' : 'renew', at }));
   if (archived) segments[segments.length - 1].archived = true;
   return {
@@ -31,6 +31,7 @@ function rec({ conducted = false, parent, project, ats = [''], archived = false 
     ...(conducted ? { conducted: true } : {}),
     ...(parent ? { parent } : {}),
     ...(project ? { project } : {}),
+    ...(worktree ? { worktree } : {}),
   };
 }
 function docOf(spec) {
@@ -81,10 +82,10 @@ test('spawnedProjectsByRoot attributes nested workers to the root, one entry per
   const out = spawnedProjectsByRoot(doc);
   assert.deepEqual(Object.keys(out), ['C'], 'nothing is attributed to the intermediate W1');
   assert.deepEqual(out.C, [
-    { project: 'dup', lastSpawnAt: T3 },
-    { project: 'mid', lastSpawnAt: T2 },
-    { project: 'alpha', lastSpawnAt: T1 },
-    { project: 'grand', lastSpawnAt: T1 },
+    { project: 'dup', lastSpawnAt: T3, worktrees: [] },
+    { project: 'mid', lastSpawnAt: T2, worktrees: [] },
+    { project: 'alpha', lastSpawnAt: T1, worktrees: [] },
+    { project: 'grand', lastSpawnAt: T1, worktrees: [] },
   ]);
 });
 
@@ -96,19 +97,48 @@ test('the newest at wins across records whatever order they are stored in', () =
     'W-b': { conducted: true, parent: 'C', project: 'p', ats: [T1] },
   });
   assert.deepEqual([...doc.keys()], ['C', 'W-a', 'W-b'], 'fixture: the newer record is visited first');
-  assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3 }]);
+  assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3, worktrees: [] }]);
   const mirrored = docOf({
     C: {},
     'W-a': { conducted: true, parent: 'C', project: 'p', ats: [T1] },
     'W-b': { conducted: true, parent: 'C', project: 'p', ats: [T3] },
   });
   assert.deepEqual([...mirrored.keys()], ['C', 'W-a', 'W-b'], 'fixture: the older record is visited first');
-  assert.deepEqual(spawnedProjectsByRoot(mirrored).C, [{ project: 'p', lastSpawnAt: T3 }]);
+  assert.deepEqual(spawnedProjectsByRoot(mirrored).C, [{ project: 'p', lastSpawnAt: T3, worktrees: [] }]);
 });
 
 test('lastSpawnAt counts a rotation segment, not only the initial one', () => {
   const doc = docOf({ C: {}, W: { conducted: true, parent: 'C', project: 'p', ats: [T1, T3] } });
-  assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3 }]);
+  assert.deepEqual(spawnedProjectsByRoot(doc).C, [{ project: 'p', lastSpawnAt: T3, worktrees: [] }]);
+});
+
+test('each project entry lists the distinct worktrees its workers ran in, sorted by name', () => {
+  const doc = docOf({
+    C: {},
+    W1: { conducted: true, parent: 'C', project: 'p', worktree: 'wt-b', ats: [T1] },
+    W2: { conducted: true, parent: 'W1', project: 'p', worktree: 'wt-a', ats: [T1] },
+    W3: { conducted: true, parent: 'C', project: 'p', worktree: 'wt-b', ats: [T1] },
+    W4: { conducted: true, parent: 'C', project: 'p', ats: [T1] },
+    W5: { conducted: true, parent: 'C', project: 'q', worktree: 'wt-q', ats: [T2] },
+    W6: { conducted: true, parent: 'C', project: 'main-only', ats: [T1] },
+  });
+  assert.deepEqual(spawnedProjectsByRoot(doc).C, [
+    { project: 'q', lastSpawnAt: T2, worktrees: ['wt-q'] },
+    { project: 'main-only', lastSpawnAt: T1, worktrees: [] },
+    { project: 'p', lastSpawnAt: T1, worktrees: ['wt-a', 'wt-b'] },
+  ], 'nested W2 counts for C; the two wt-b workers collapse to one name; wt-q stays under q; a main-checkout worker adds none');
+});
+
+test('a worktree of another root is not attributed', () => {
+  const doc = docOf({
+    C1: {}, C2: {},
+    W1: { conducted: true, parent: 'C1', project: 'p', worktree: 'one', ats: [T1] },
+    W2: { conducted: true, parent: 'C2', project: 'p', worktree: 'two', ats: [T1] },
+  });
+  assert.deepEqual(spawnedProjectsByRoot(doc), {
+    C1: [{ project: 'p', lastSpawnAt: T1, worktrees: ['one'] }],
+    C2: [{ project: 'p', lastSpawnAt: T1, worktrees: ['two'] }],
+  });
 });
 
 test('records that are not conducted, or carry no project, contribute nothing', () => {
@@ -127,7 +157,7 @@ test('a root whose current segment is archived is omitted', () => {
     W1: { conducted: true, parent: 'GONE', project: 'p', ats: [T1] },
     W2: { conducted: true, parent: 'KEPT', project: 'q', ats: [T1] },
   });
-  assert.deepEqual(spawnedProjectsByRoot(doc), { KEPT: [{ project: 'q', lastSpawnAt: T1 }] });
+  assert.deepEqual(spawnedProjectsByRoot(doc), { KEPT: [{ project: 'q', lastSpawnAt: T1, worktrees: [] }] });
 });
 
 test('the archived-root check reads the current segment, not the first', async (t) => {
@@ -143,7 +173,7 @@ test('the archived-root check reads the current segment, not the first', async (
     assert.deepEqual(spawnedProjectsByRoot(d), {});
   });
   await t.test('only an older segment archived: kept', () => {
-    assert.deepEqual(spawnedProjectsByRoot(multi(0)), { R: [{ project: 'p', lastSpawnAt: T1 }] });
+    assert.deepEqual(spawnedProjectsByRoot(multi(0)), { R: [{ project: 'p', lastSpawnAt: T1, worktrees: [] }] });
   });
 });
 
@@ -163,10 +193,11 @@ test('conductorSpawnedProjects reads the store: a markConducted write shows up o
   const W = 'dddddddd-0000-4000-8000-000000000004';
   await setTitle(C, 'the conductor');
   assert.deepEqual(await conductorSpawnedProjects(), {});
-  await markConducted(W, { parent: C, project: 'p' });
+  await markConducted(W, { parent: C, project: 'p', worktree: 'wt' });
   const out = await conductorSpawnedProjects();
   assert.deepEqual(Object.keys(out), [C]);
   assert.deepEqual(out[C].map(e => e.project), ['p']);
+  assert.deepEqual(out[C][0].worktrees, ['wt'], 'the recorded worktree name');
   assert.equal(typeof out[C][0].lastSpawnAt, 'string');
   assert.ok(out[C][0].lastSpawnAt.length > 0);
 });

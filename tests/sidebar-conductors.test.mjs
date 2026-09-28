@@ -142,7 +142,7 @@ const treeOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-t
 const treeLi = (tree, name) => [...tree.querySelectorAll('.project-name')].find(n => n.textContent === name)?.closest('li') ?? null;
 const kidClasses = (li) => [...li.children].map(c => c.className);
 
-test('the expanded tree lists live projects then idle projects in chip order; an idle project is its project row alone', async () => {
+test('the expanded tree lists live projects then idle projects in chip order; an idle project with no surviving recorded worktree is its project row alone', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, {
     projects: [project('live-p'), project('idle-a', { worktrees: ['wt'] }), project('idle-b')],
@@ -210,6 +210,139 @@ test('a tree project flipping idle → live gains its worker rows in place, and 
   const idleLi = treeLi(treeOf(conductorList, 'A'), 'p');
   assert.ok(idleLi === li, 'the same project item after going idle again');
   assert.deepEqual(kidClasses(li), ['project-row'], 'back to the project row alone');
+});
+
+const wtNamesOf = (root) => [...root.querySelectorAll('.worktree-name')].map(n => n.textContent);
+const wtItem = (root, name) => wtHead(root, name)?.closest('.worktree-item') ?? null;
+async function expand(conductorList, sid) {
+  conductorOf(conductorList, sid).querySelector('.conductor-caret').click();
+  await tick();
+  return treeOf(conductorList, sid);
+}
+
+test('an idle project lists its recorded worktrees that still exist, sorted by name, as read-only heads with no session rows', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt-z', 'wt-a', 'unrecorded'] })],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt-z', 'deleted', 'wt-a'] }] },
+  });
+  const tree = await expand(conductorList, 'A');
+  const li = treeLi(tree, 'p');
+  assert.deepEqual(kidClasses(li), ['project-row', 'worktree-list']);
+  assert.deepEqual(wtNamesOf(li), ['wt-a', 'wt-z'], 'only recorded names still listed, sorted; neither the deleted nor the unrecorded one');
+  for (const name of ['wt-a', 'wt-z']) {
+    const item = wtItem(li, name);
+    assert.equal(item.className, 'worktree-item idle', `${name}: dimmed`);
+    assert.deepEqual(kidClasses(item), ['worktree-row'], `${name}: the head alone`);
+    assertNull(item.querySelector('.wt-spawn'), `${name}: no +`);
+    assertNull(item.querySelector('.wt-remove'), `${name}: no ×`);
+    assert.ok(item.querySelector('.commit-log'), `${name}: ≡ stays`);
+    assert.ok(item.querySelector('.wt-review'), `${name}: ± stays`);
+  }
+  assert.equal(li.querySelectorAll('.session-row').length, 0);
+});
+
+test('an active project lists its live worktrees with their workers and its recorded-only worktrees without; a worktree with a live worker renders once', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt-live', 'wt-old'] })],
+    instances: [conductor('A'), worker('w', 'A', 'p', 'wt-live')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt-live', 'wt-old'] }] },
+  });
+  const tree = await expand(conductorList, 'A');
+  assert.deepEqual(wtNamesOf(tree), ['wt-live', 'wt-old'], 'each name once');
+  const live = wtItem(tree, 'wt-live');
+  assert.equal(live.className, 'worktree-item');
+  assert.deepEqual(kidClasses(live), ['worktree-row', 'sessions-list']);
+  assert.ok(rowOf(live, 'w'), 'the live worker under its worktree');
+  const old = wtItem(tree, 'wt-old');
+  assert.equal(old.className, 'worktree-item idle');
+  assert.deepEqual(kidClasses(old), ['worktree-row'], 'no sessions list');
+});
+
+test('a recorded worktree going live gains its worker rows in the same item, and loses them (back to idle) when the worker exits', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt'] })],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt'] }] },
+  });
+  const item = wtItem(await expand(conductorList, 'A'), 'wt');
+  const head = item.querySelector('.worktree-row');
+  assert.equal(item.className, 'worktree-item idle', 'fixture: starts recorded-only');
+  sidebar.setInstances([conductor('A'), worker('w', 'A', 'p', 'wt')]);
+  await tick();
+  assert.ok(wtItem(treeOf(conductorList, 'A'), 'wt') === item, 'the same item after going live');
+  assert.ok(item.querySelector('.worktree-row') === head, 'the same head');
+  assert.equal(item.className, 'worktree-item');
+  assert.deepEqual(kidClasses(item), ['worktree-row', 'sessions-list']);
+  assert.ok(rowOf(item, 'w'));
+  sidebar.setInstances([conductor('A')]);
+  await tick();
+  assert.ok(wtItem(treeOf(conductorList, 'A'), 'wt') === item, 'the same item after the worker exits');
+  assert.equal(item.className, 'worktree-item idle');
+  assert.deepEqual(kidClasses(item), ['worktree-row']);
+});
+
+test('a recorded worktree dropped from the project\'s worktrees disappears from the tree; the project row stays', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt'] })],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt'] }] },
+  });
+  const tree = await expand(conductorList, 'A');
+  assert.deepEqual(wtNamesOf(tree), ['wt'], 'fixture: listed while it exists');
+  sidebar.setProjects([project('p')]);
+  await tick();
+  const li = treeLi(treeOf(conductorList, 'A'), 'p');
+  assert.ok(li, 'the project row stays');
+  assert.deepEqual(kidClasses(li), ['project-row']);
+  assert.deepEqual(wtNamesOf(treeOf(conductorList, 'A')), []);
+});
+
+test('a recorded worktree with another conductor\'s live worker renders idle under this conductor, with no rows', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt'] })],
+    instances: [conductor('A'), conductor('B'), worker('bw', 'B', 'p', 'wt')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt'] }] },
+  });
+  const tree = await expand(conductorList, 'A');
+  const item = wtItem(tree, 'wt');
+  assert.equal(item.className, 'worktree-item idle');
+  assert.deepEqual(kidClasses(item), ['worktree-row']);
+  assertNull(rowOf(tree, 'bw'), 'B\'s worker is not listed under A');
+});
+
+test('≡ and ± on a recorded-only worktree call onShowCommits / onReviewWorktree with (project, worktree)', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const seen = [];
+  sidebar.onShowCommits = (p, w) => seen.push(['commits', p, w]);
+  sidebar.onReviewWorktree = (p, w) => seen.push(['review', p, w]);
+  await render(sidebar, {
+    projects: [project('p', { worktrees: ['wt'] })],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt'] }] },
+  });
+  const item = wtItem(await expand(conductorList, 'A'), 'wt');
+  item.querySelector('.commit-log').click();
+  item.querySelector('.wt-review').click();
+  assert.deepEqual(seen, [['commits', 'p', 'wt'], ['review', 'p', 'wt']]);
+});
+
+test('a recorded worktree matches by name: its head shows the listed worktree\'s current branch', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const p = project('p', { worktrees: ['wt'] });
+  p.worktrees[0].branch = 'cc/recreated';
+  await render(sidebar, {
+    projects: [p],
+    instances: [conductor('A')],
+    spawns: { A: [{ project: 'p', lastSpawnAt: at(1), worktrees: ['wt'] }] },
+  });
+  const name = wtHead(await expand(conductorList, 'A'), 'wt').querySelector('.worktree-name');
+  assert.ok(name.title.startsWith('cc/recreated\n'), `the current meta's branch, got ${JSON.stringify(name.title)}`);
 });
 
 test('project chips are display-only: neither kind is a button, and clicking either fires no callback', async () => {

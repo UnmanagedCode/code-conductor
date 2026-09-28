@@ -1,11 +1,12 @@
-// Which projects each root owner has ever had a worker spawned into, derived
-// from the spawn-time facts `markConducted` records (`parent` / `project`).
+// Which projects each root owner has ever had a worker spawned into, and the
+// worktrees those workers ran in, derived from the spawn-time facts
+// `markConducted` records (`parent` / `project` / `worktree`).
 // A read-only consumer of the session store: everything goes through
 // `loadSessions()`, nothing here writes.
 
 import { loadSessions, type SessionsDoc } from './sessionStore.ts';
 
-export interface SpawnedProject { project: string; lastSpawnAt: string }
+export interface SpawnedProject { project: string; lastSpawnAt: string; worktrees: string[] }
 export type SpawnedProjectsByRoot = Record<string, SpawnedProject[]>;
 
 // The root owner a conducted session was spawned under — the rule
@@ -35,28 +36,34 @@ const memo = new WeakMap<SessionsDoc, SpawnedProjectsByRoot>();
 // newest `lastSpawnAt` first, then by name. `lastSpawnAt` is the newest segment
 // `at` across that root's workers in the project: a segment is minted at the
 // conducted spawn and at every renew/prune, so a conductor resuming an existing
-// worker does not bump it. A root whose current segment is archived is omitted.
+// worker does not bump it. `worktrees` is the distinct recorded `worktree`
+// names of those workers, sorted by name — a main-checkout worker adds none,
+// and nothing checks the worktree still exists (the client filters against
+// the project's worktree list). A root whose current segment is archived is
+// omitted.
 // Memoised per doc object: `loadSessions()` hands back the same doc until the
 // file changes.
 export function spawnedProjectsByRoot(doc: SessionsDoc): SpawnedProjectsByRoot {
   const hit = memo.get(doc);
   if (hit) return hit;
-  const byRoot = new Map<string, Map<string, string>>();
+  const byRoot = new Map<string, Map<string, { newest: string; worktrees: Set<string> }>>();
   for (const [publicId, rec] of doc) {
     if (rec.conducted !== true || !rec.project) continue;
     const root = rootOf(doc, publicId);
     if (!root) continue;
     let projects = byRoot.get(root);
     if (!projects) { projects = new Map(); byRoot.set(root, projects); }
-    let newest = projects.get(rec.project) ?? '';
-    for (const s of rec.segments) if (s.at > newest) newest = s.at;
-    projects.set(rec.project, newest);
+    let entry = projects.get(rec.project);
+    if (!entry) { entry = { newest: '', worktrees: new Set() }; projects.set(rec.project, entry); }
+    for (const s of rec.segments) if (s.at > entry.newest) entry.newest = s.at;
+    if (rec.worktree) entry.worktrees.add(rec.worktree);
   }
   const out: SpawnedProjectsByRoot = {};
   for (const [root, projects] of byRoot) {
     const rootRec = doc.get(root);
     if (rootRec?.segments.find(s => s.id === rootRec.current)?.archived) continue;
-    out[root] = [...projects].map(([project, lastSpawnAt]) => ({ project, lastSpawnAt }))
+    out[root] = [...projects]
+      .map(([project, e]) => ({ project, lastSpawnAt: e.newest, worktrees: [...e.worktrees].sort((a, b) => a.localeCompare(b)) }))
       .sort((a, b) => (a.lastSpawnAt < b.lastSpawnAt ? 1 : a.lastSpawnAt > b.lastSpawnAt ? -1 : a.project.localeCompare(b.project)));
   }
   memo.set(doc, out);
