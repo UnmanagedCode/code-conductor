@@ -6,9 +6,10 @@
 // only on a live conducted instance (null on a hand-spawned session and on
 // anything dead, never on a disk row), so nothing here needs its own liveness
 // check to decide what a conductor owns. Spawn history is a separate,
-// disk-derived input (`GET /api/conductors/projects`) that reaches the sidebar
-// only through conductorChips (the chips, the Conductors tree, the filter),
-// never ownership.
+// disk-derived input (`GET /api/conductors/projects`: the projects and the
+// recorded worktree names) that reaches the sidebar only through
+// conductorChips (the chips, the Conductors tree, the filter), never
+// ownership.
 
 // The client-side spelling of the server's isDeadStatus.
 export function isLiveStatus(status) {
@@ -126,15 +127,19 @@ export function conductorProjects(workers) {
 // A conductor's chips: one per project it has a live owned worker in (live,
 // by name), then one per other project it has ever spawned into (idle, newest
 // spawn first). An idle project that is no longer registered is dropped.
+// Each chip carries `worktrees`, the recorded worktree names of its project's
+// spawned entry (none when it has no entry).
 export function conductorChips({ workers, spawned = [], registered }) {
   const live = conductorProjects(workers);
   const liveSet = new Set(live);
+  const recorded = (e) => (Array.isArray(e?.worktrees) ? e.worktrees : []);
+  const byProject = new Map(spawned.map(e => [e.project, e]));
   const idle = spawned
     .filter(e => !liveSet.has(e.project) && registered.has(e.project))
     .sort((a, b) => (a.lastSpawnAt < b.lastSpawnAt ? 1 : a.lastSpawnAt > b.lastSpawnAt ? -1 : a.project.localeCompare(b.project)));
   return [
-    ...live.map(project => ({ project, live: true })),
-    ...idle.map(e => ({ project: e.project, live: false })),
+    ...live.map(project => ({ project, live: true, worktrees: recorded(byProject.get(project)) })),
+    ...idle.map(e => ({ project: e.project, live: false, worktrees: recorded(e) })),
   ];
 }
 

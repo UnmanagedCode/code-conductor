@@ -152,10 +152,10 @@ test('conductorChips puts live projects first by name, then idle spawned project
     registered: new Set(['alpha', 'zeta', 'older', 'newer']),
   });
   assert.deepEqual(chips, [
-    { project: 'alpha', live: true },
-    { project: 'zeta', live: true },
-    { project: 'newer', live: false },
-    { project: 'older', live: false },
+    { project: 'alpha', live: true, worktrees: [] },
+    { project: 'zeta', live: true, worktrees: [] },
+    { project: 'newer', live: false, worktrees: [] },
+    { project: 'older', live: false, worktrees: [] },
   ], 'zeta has a live worker, so it is one live chip and never an idle duplicate');
 });
 
@@ -178,7 +178,25 @@ test('conductorChips drops an idle project that is no longer registered, never a
     ],
     registered: new Set(['kept']),
   });
-  assert.deepEqual(chips, [{ project: 'live-gone', live: true }, { project: 'kept', live: false }]);
+  assert.deepEqual(chips, [{ project: 'live-gone', live: true, worktrees: [] }, { project: 'kept', live: false, worktrees: [] }]);
+});
+
+test('conductorChips carries each project\'s recorded worktrees: an idle chip its own entry\'s, a live chip its same-project entry\'s, else none', () => {
+  const chips = M.conductorChips({
+    workers: [inst({ project: 'live-rec' }), inst({ project: 'live-norec' })],
+    spawned: [
+      { project: 'live-rec', lastSpawnAt: '2026-03-01T00:00:00.000Z', worktrees: ['wt-l'] },
+      { project: 'idle-rec', lastSpawnAt: '2026-02-01T00:00:00.000Z', worktrees: ['wt-a', 'wt-b'] },
+      { project: 'idle-nofield', lastSpawnAt: '2026-01-01T00:00:00.000Z' },
+    ],
+    registered: new Set(['live-rec', 'live-norec', 'idle-rec', 'idle-nofield']),
+  });
+  assert.deepEqual(chips, [
+    { project: 'live-norec', live: true, worktrees: [] },
+    { project: 'live-rec', live: true, worktrees: ['wt-l'] },
+    { project: 'idle-rec', live: false, worktrees: ['wt-a', 'wt-b'] },
+    { project: 'idle-nofield', live: false, worktrees: [] },
+  ]);
 });
 
 test('worktreeOwnership is none / single / mixed over all owners in the place', () => {

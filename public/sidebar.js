@@ -204,8 +204,10 @@ export class Sidebar {
     // conductors that are not live, for the Conductors *Inactive* group.
     this.conductRows = [];
     // GET /api/conductors/projects: root owner sessionId → the projects it has
-    // ever had a worker spawned into, newest first. Feeds the idle chips, the
-    // Conductors tree's idle rows and the filter, all through _chipsOf.
+    // ever had a worker spawned into, newest first, each with the worktrees
+    // those workers ran in. Feeds the idle chips, the Conductors tree's idle
+    // project rows and recorded worktree rows (on live and idle chip projects
+    // alike) and the filter, all through _chipsOf.
     this.conductorSpawns = {};
     this.expandedConductors = new Set();    // key: conductor sessionId
     this.inactiveOpen = false;
@@ -1273,8 +1275,8 @@ export class Sidebar {
   }
 
   // Create-or-update one conductor block: its row, its project chips, and —
-  // while expanded — the tree of its chip projects and its live workers in them
-  // (no structural actions, only ↑ promote on a live temp worker). The row itself carries ↑
+  // while expanded — the tree of its chip projects, its live workers in them
+  // and the surviving worktrees its past workers ran in (no structural actions, only ↑ promote on a live temp worker). The row itself carries ↑
   // on a live temp conductor. A chip is live (a live owned worker there) or
   // idle (a recorded spawn there, nothing live); both are display-only.
   // The block alone carries the conductor's bar; nothing inside repeats it.
@@ -1310,7 +1312,7 @@ export class Sidebar {
         });
         return chips;
       }
-      return this._conductorTree(ex, workers, chipList.map(c => c.project));
+      return this._conductorTree(ex, workers, chipList);
     });
     return li;
   }
@@ -1398,15 +1400,19 @@ export class Sidebar {
     return row;
   }
 
-  // Expanded conductor: per chip project, in chip order. A live one is the
-  // project row, then the workers in its main checkout, then each worktree
-  // (sorted by name) holding one with its workers; an idle one is its project
-  // row alone. Only this conductor's live workers, with no structural actions
-  // (only ↑ promote on a live temp worker).
-  _conductorTree(existing, workers, projects) {
+  // Expanded conductor: per chip project, in chip order — the project row,
+  // then the workers in its main checkout, then its worktrees sorted by name:
+  // each one holding a live worker of this conductor, with those workers, and
+  // each recorded worktree (a past worker of this conductor ran there) that is
+  // still in the project's worktree list, as a dimmed head with no rows. An
+  // idle project with neither is its project row alone. Only this conductor's
+  // live workers, with no structural actions (only ↑ promote on a live temp
+  // worker).
+  _conductorTree(existing, workers, chips) {
     const ul = existing ?? el('ul', { class: 'conductor-tree' });
     const projByName = new Map(this.projects.map(p => [p.name, p]));
-    reconcileChildren(ul, projects.map(n => `proj:${n}`), (k, ex) => {
+    const chipByName = new Map(chips.map(c => [c.project, c]));
+    reconcileChildren(ul, chips.map(c => `proj:${c.project}`), (k, ex) => {
       const name = k.slice(5);
       const p = projByName.get(name) ?? { name, worktrees: [] };
       const mine = workers.filter(w => w.project === name);
@@ -1418,7 +1424,9 @@ export class Sidebar {
         if (!byWt.has(wtName)) byWt.set(wtName, []);
         byWt.get(wtName).push(w);
       }
-      const wtNames = [...byWt.keys()].sort((a, b) => a.localeCompare(b));
+      const listed = new Map((Array.isArray(p.worktrees) ? p.worktrees : []).map(w => [w.worktreeName, w]));
+      const recorded = chipByName.get(name).worktrees.filter(n => listed.has(n) && !byWt.has(n));
+      const wtNames = [...byWt.keys(), ...recorded].sort((a, b) => a.localeCompare(b));
       const li = ex ?? el('li', {});
       const keys = ['row'];
       if (direct.length > 0) keys.push('direct');
@@ -1430,10 +1438,11 @@ export class Sidebar {
         reconcileChildren(wtUl, wtNames.map(n => `wt:${n}`), (wk, wex) => {
           const wtName = wk.slice(3);
           const ws = byWt.get(wtName);
-          const wt = (Array.isArray(p.worktrees) ? p.worktrees : []).find(x => x.worktreeName === wtName)
-            ?? { ...ws[0].worktree, worktreeName: wtName };
-          const item = wex ?? el('li', { class: 'worktree-item' });
-          reconcileChildren(item, ['head', 'sessions'], (ik, iex) => {
+          const wt = listed.get(wtName) ?? { ...ws[0].worktree, worktreeName: wtName };
+          // Same <li> across live ↔ recorded: only the class and the sessions child change.
+          const item = wex ?? el('li', {});
+          item.className = ws ? 'worktree-item' : 'worktree-item idle';
+          reconcileChildren(item, ws ? ['head', 'sessions'] : ['head'], (ik, iex) => {
             if (ik === 'head') return this._worktreeHead(iex, { project: p, wt, readOnly: true });
             return this._workerList(iex ?? el('ul', { class: 'sessions-list' }), ws, name, wtName);
           });
