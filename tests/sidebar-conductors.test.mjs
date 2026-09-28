@@ -332,7 +332,7 @@ test('≡ and ± on a recorded-only worktree call onShowCommits / onReviewWorktr
   assert.deepEqual(seen, [['commits', 'p', 'wt'], ['review', 'p', 'wt']]);
 });
 
-test('a recorded worktree matches by name: its head shows the listed worktree\'s current branch', async () => {
+test('a recorded-only worktree matches the listed worktree by name: its head shows that worktree\'s current branch', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   const p = project('p', { worktrees: ['wt'] });
   p.worktrees[0].branch = 'cc/recreated';
@@ -343,6 +343,25 @@ test('a recorded worktree matches by name: its head shows the listed worktree\'s
   });
   const name = wtHead(await expand(conductorList, 'A'), 'wt').querySelector('.worktree-name');
   assert.ok(name.title.startsWith('cc/recreated\n'), `the current meta's branch, got ${JSON.stringify(name.title)}`);
+});
+
+test('a live worktree row\'s head reads the listed worktree\'s meta, not the worker instance\'s copy', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const p = project('p', { worktrees: ['wt'] });
+  Object.assign(p.worktrees[0], { branch: 'cc/listed', baseSha: 'listedsha0000ffff', mergeStatus: { ahead: 2, behind: 0 } });
+  await render(sidebar, {
+    projects: [p],
+    instances: [conductor('A'), worker('w', 'A', 'p', 'wt', {
+      worktree: { worktreeName: 'wt', branch: 'cc/instance', baseBranch: 'dev', baseSha: 'instsha00000000' },
+    })],
+  });
+  const item = wtItem(await expand(conductorList, 'A'), 'wt');
+  assert.equal(item.className, 'worktree-item', 'fixture: the row is live');
+  assert.ok(rowOf(item, 'w'), 'fixture: with its worker');
+  const head = item.querySelector('.worktree-row');
+  assert.equal(head.querySelector('.worktree-name').title, 'cc/listed\nfrom main @ listedsha000');
+  assert.equal(head.querySelector('.worktree-base').textContent, '← main');
+  assert.equal(head.querySelector('.wt-unmerged')?.textContent, '↑2', 'the listed merge pill');
 });
 
 test('project chips are display-only: neither kind is a button, and clicking either fires no callback', async () => {
@@ -749,6 +768,16 @@ function topLevelRules(css) {
   }
   return rules;
 }
+
+test('styles.css: a recorded-only worktree row in the conductor tree is dimmed (a top-level rule for .conductor-tree .worktree-item.idle > .worktree-row sets opacity .7)', async () => {
+  const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));
+  assert.ok(rules.some(r => r.selectors.includes('.conductor-chip.idle') && r.decls.get('opacity') === '.7'),
+    'sanity: the parser finds the idle chip dimming');
+  const dim = rules.filter(r => r.selectors.includes('.conductor-tree .worktree-item.idle > .worktree-row'));
+  assert.ok(dim.length > 0, 'a rule selects .conductor-tree .worktree-item.idle > .worktree-row');
+  assert.ok(dim.some(r => r.decls.get('opacity') === '.7'),
+    `that rule sets opacity: .7 (found: ${JSON.stringify(dim.map(r => r.decls.get('opacity') ?? null))})`);
+});
 
 test('styles.css: hovering a conductor row reveals its × (a top-level rule for .conductor-row:hover .session-delete sets opacity 1)', async () => {
   const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));

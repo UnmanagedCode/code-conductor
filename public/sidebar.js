@@ -204,8 +204,10 @@ export class Sidebar {
     // conductors that are not live, for the Conductors *Inactive* group.
     this.conductRows = [];
     // GET /api/conductors/projects: root owner sessionId → the projects it has
-    // ever had a worker spawned into, newest first. Feeds the idle chips, the
-    // Conductors tree's idle rows and the filter, all through _chipsOf.
+    // ever had a worker spawned into, newest first, each with the worktrees
+    // those workers ran in. Feeds the idle chips, the Conductors tree's idle
+    // project rows and recorded worktree rows (on live and idle chip projects
+    // alike) and the filter, all through _chipsOf.
     this.conductorSpawns = {};
     this.expandedConductors = new Set();    // key: conductor sessionId
     this.inactiveOpen = false;
