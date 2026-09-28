@@ -2489,6 +2489,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   max-width: 160px; cursor: pointer;
 }
 #app-switcher-select:focus { outline: 1px solid var(--border); }
+#app-switcher-select option { background: var(--panel-2); color: var(--text); }
 
 /* Plugin iframe view: same full-page pattern as review/commits/costs. */
 #main.plugin-open #conversation,
