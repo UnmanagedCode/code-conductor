@@ -46,7 +46,7 @@ async function choose(select, value) {
 
 const projectNames = (root) => [...root.querySelectorAll('.project-name')].map(n => n.textContent);
 
-test('options are All / Hand-spawned only / one per live owner, labelled by conductor title', async () => {
+test('options are All / Hand-spawned only / one per owner with a chip, labelled by conductor title', async () => {
   const { select, sidebar } = await setupSidebar();
   await render(sidebar);
   const opts = [...select.options].map(o => [o.value, o.textContent]);
