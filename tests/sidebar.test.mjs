@@ -27,7 +27,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
   document.body.innerHTML = '<ul id="root"></ul>';
   const root = document.getElementById('root');
 
-  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [] };
+  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [], close: [] };
   const sidebar = new Sidebar({
     rootList: root,
     onSelectInstance: (id) => calls.select.push(id),
@@ -37,6 +37,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
     onDeleteProject: (p) => calls.deleteProject.push(p),
     onLoadSessions: onLoadSessions ?? (async () => []),
     onEditWorkspace: (g) => calls.editWorkspace.push(g),
+    onCloseSession: (s) => calls.close.push(s),
   });
   return { window, document, root, sidebar, calls };
 }
@@ -684,6 +685,50 @@ test('Temp session row exposes a ↑ promote button wired to onPromoteSession', 
   assert.equal(promoteCalls.length, 1);
   assert.equal(promoteCalls[0].instanceId, 'inst-temp');
   assert.equal(promoteCalls[0].projectName, 'demo');
+});
+
+// Invariant: a Projects-pane row's × is titled by the action its state maps to (live persistent → Stop; live temp, exited or disk-only → Archive) and its click sends the close facts without selecting.
+test('a session row × is titled Stop / Archive by state and closes through onCloseSession without selecting', async (t) => {
+  const { root, sidebar, calls } = await setupSidebar({
+    onLoadSessions: async () => [{ sessionId: 'sid-disk', firstPrompt: 'on disk', lastActivity: Date.now() - 60_000, size: 10 }],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
+    worktrees: [], sessions: { count: 1, lastActivity: Date.now() - 60_000 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-p', project: 'demo', sessionId: 'sid-p', status: 'idle', mode: 'plan', worktree: null, temp: false },
+    { id: 'inst-t', project: 'demo', sessionId: 'sid-t', status: 'idle', mode: 'plan', worktree: null, temp: true },
+    { id: 'inst-x', project: 'demo', sessionId: 'sid-x', status: 'exited', mode: 'plan', worktree: null, temp: false },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => setTimeout(r, 0));
+  const xOf = (sid) => [...root.querySelectorAll('.session-row')].find(r => r.title.split('\n')[0] === sid)?.querySelector('.session-delete');
+  const want = {
+    'sid-p': 'Stop session', 'sid-t': 'Archive session (keeps history)',
+    'sid-x': 'Archive session (keeps history)', 'sid-disk': 'Archive session (keeps history)',
+  };
+  for (const [sid, title] of Object.entries(want)) {
+    await t.test(sid, () => {
+      const x = xOf(sid);
+      assert.ok(x, 'the row has a ×');
+      assert.equal(x.title, title);
+      assert.equal(x.getAttribute('aria-label'), title);
+    });
+  }
+  await t.test('click sends the facts and selects nothing', () => {
+    xOf('sid-p').click();
+    assert.equal(calls.close.length, 1);
+    const c = calls.close[0];
+    assert.deepEqual(
+      { projectName: c.projectName, worktreeName: c.worktreeName, sessionId: c.sessionId, instanceId: c.instanceId, status: c.status, temp: c.temp },
+      { projectName: 'demo', worktreeName: null, sessionId: 'sid-p', instanceId: 'inst-p', status: 'idle', temp: false });
+    assert.deepEqual(calls.select, []);
+    xOf('sid-disk').click();
+    assert.deepEqual(
+      { instanceId: calls.close[1].instanceId, status: calls.close[1].status, temp: calls.close[1].temp },
+      { instanceId: null, status: null, temp: false }, 'a disk row carries no instance facts');
+  });
 });
 
 test('An exited temp instance row does NOT show the promote button', async () => {

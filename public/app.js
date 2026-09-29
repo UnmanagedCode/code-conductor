@@ -273,7 +273,7 @@ function sendCardAnswer(instanceId, text, onFail) {
 
 // Handles returned by installSessionActions ({ promoteSession, loadSessions,
 // resumeSession, rewindActiveSession, forkActiveSession, deleteProject,
-// deleteSession, removeWorktree }). Declared here —
+// closeSession, deleteSession, removeWorktree }). Declared here —
 // before conversationOptions and the Sidebar, both of which forward to it via
 // lazy arrows — and assigned later, once its deps (sidebar et al.) are in scope.
 // Every call site fires only after init (user interaction / async WS open).
@@ -393,7 +393,7 @@ const sidebar = new Sidebar({
   onDeleteProject: (...a) => sessionActions.deleteProject(...a),
   onResumeSession: (...a) => sessionActions.resumeSession(...a),
   onLoadSessions: (...a) => sessionActions.loadSessions(...a),
-  onDeleteSession: (...a) => sessionActions.deleteSession(...a),
+  onCloseSession: (...a) => sessionActions.closeSession(...a),
   onEditWorkspace: (name) => workspaceHandles.openEdit(name),
   onPromoteSession: (...a) => sessionActions.promoteSession(...a),
 });

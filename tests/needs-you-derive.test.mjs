@@ -194,3 +194,20 @@ test('isStripEmpty holds for no instances, and for only conducted workers plus r
   ])));
   assert.equal(N.isStripEmpty(strip([handInst('h')])), false);
 });
+
+// Invariant: every entry carries the close facts (project, worktree, temp, synthetic) the strip's × sends, for a conductor and a hand-spawned session in a worktree.
+test('entries carry projectName, worktreeName, temp and synthetic for the strip ×', () => {
+  const wt = { worktreeName: 'wt', branch: 'cc/wt', baseBranch: 'main' };
+  const g = strip([
+    cond('C', { temp: false }),
+    cond('D', { temp: true }),
+    handInst('H', { worktree: wt, temp: false }),
+    handInst('T', { temp: true }),
+  ], [{ sessionId: 'C', lastActivity: 1 }]);
+  const entry = (sid) => [...g.waiting, ...g.running, ...g.finished].find(e => e.sessionId === sid);
+  const facts = (e) => ({ projectName: e.projectName, worktreeName: e.worktreeName, temp: e.temp, synthetic: e.synthetic });
+  assert.deepEqual(facts(entry('C')), { projectName: '.conduct', worktreeName: null, temp: false, synthetic: false }, 'a conductor with a listed transcript');
+  assert.deepEqual(facts(entry('D')), { projectName: '.conduct', worktreeName: null, temp: true, synthetic: true }, 'a conductor with no listed transcript');
+  assert.deepEqual(facts(entry('H')), { projectName: 'p', worktreeName: 'wt', temp: false, synthetic: false }, 'a persistent hand-spawned session in a worktree');
+  assert.deepEqual(facts(entry('T')), { projectName: 'p', worktreeName: null, temp: true, synthetic: true }, 'a temp hand-spawned session is synthetic');
+});

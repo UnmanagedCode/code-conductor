@@ -6,6 +6,7 @@ import {
   ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
 } from './conductors.js';
 import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
+import { closeActionOf, CLOSE_TITLES } from './closeAction.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
 // so the user can see at-a-glance which sessions are recent enough to
@@ -148,7 +149,7 @@ export class Sidebar {
   constructor({
     rootList, conductorList, filterRoot, stripRoot, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
-    onDeleteSession, onEditWorkspace, onPromoteSession,
+    onCloseSession, onEditWorkspace, onPromoteSession,
     onReviewWorktree, onEditProjectRemote,
   }) {
     this.list = rootList;
@@ -165,7 +166,7 @@ export class Sidebar {
     this.onDeleteProject = onDeleteProject;
     this.onResumeSession = onResumeSession;
     this.onLoadSessions = onLoadSessions;
-    this.onDeleteSession = onDeleteSession;
+    this.onCloseSession = onCloseSession;
     this.onEditWorkspace = onEditWorkspace;
     this.onPromoteSession = onPromoteSession;
     this.onReviewWorktree = onReviewWorktree;
@@ -368,7 +369,7 @@ export class Sidebar {
   // at the right position without disturbing the always-present children.
   //   showOwner — draw the conductor bar for a live conducted session (the
   //               Projects lens, where no worktree row carries it instead).
-  //   showDelete — the archive × (off in the Conductors tree, where archiving
+  //   showDelete — the close × (off in the Conductors tree, where closing
   //               would kill a conducted worker).
   //   showStage — the playbook · stage line under the label (Conductors tree).
   _sessionRow(existing, { session, projectName, worktreeName, showOwner = false, showDelete = true, showStage = false }) {
@@ -475,18 +476,15 @@ export class Sidebar {
           projectName: holder.projectName, instanceId: holder.session.instanceId, preview: li._liveLabel,
         }));
       }
-      // delete
-      return ex ?? el('button', {
-        class: 'session-delete', title: 'archive session (keeps history)',
-        onclick: (e) => {
-          e.stopPropagation();
-          const s = holder.session;
-          if (this.onDeleteSession) this.onDeleteSession({
-            projectName: holder.projectName, worktreeName: holder.worktreeName, sessionId: s.sessionId,
-            preview: li._liveLabel, synthetic: s.synthetic,
-          });
-        },
-      }, '×');
+      // delete — the close ×: stop a live persistent session, else archive.
+      return this._closeButton(ex, closeActionOf({ instanceId: session.instanceId, status, temp: session.instanceTemp }), () => {
+        const s = holder.session;
+        return {
+          projectName: holder.projectName, worktreeName: holder.worktreeName, sessionId: s.sessionId,
+          instanceId: s.instanceId ?? null, status: s.instanceDisplayStatus ?? s.instanceStatus ?? null,
+          temp: !!s.instanceTemp, preview: li._liveLabel, synthetic: s.synthetic,
+        };
+      });
     });
     return li;
   }
@@ -1104,9 +1102,9 @@ export class Sidebar {
     });
   }
 
-  // One strip entry: the dot and the label. Its state is not rendered as text
-  // (the dot and the heading carry it); it is in the tooltip and the accessible
-  // name.
+  // One strip entry: the dot, the label, and the ×. Its state is not rendered as
+  // text (the dot and the heading carry it); it is in the tooltip and the
+  // accessible name. The entry button cannot hold the ×, so the × is its sibling.
   _stripEntry(existing, entry, group) {
     let li = existing, holder, btn;
     if (!li) {
@@ -1139,6 +1137,16 @@ export class Sidebar {
       const t = ex ?? el('span', { class: 'strip-title' });
       t.textContent = entry.label;
       return t;
+    });
+    reconcileChildren(li, ['entry', 'close'], (k, ex) => {
+      if (k === 'entry') return btn;
+      return this._closeButton(ex, closeActionOf(entry), () => {
+        const e = holder.entry;
+        return {
+          projectName: e.projectName, worktreeName: e.worktreeName, sessionId: e.sessionId,
+          instanceId: e.instanceId, status: e.status, temp: e.temp, preview: e.label, synthetic: e.synthetic,
+        };
+      });
     });
     return li;
   }
@@ -1262,11 +1270,11 @@ export class Sidebar {
     return li;
   }
 
-  // The ↑ promote button of a live temp row. `getArgs` runs at click time, so
-  // a reused button reads its row's freshest holder.
+  // The ↑ Make persistent button of a live temp row. `getArgs` runs at click
+  // time, so a reused button reads its row's freshest holder.
   _promoteButton(getArgs) {
     return el('button', {
-      class: 'session-promote', title: 'promote to normal session',
+      class: 'session-promote', title: 'Make persistent', 'aria-label': 'Make persistent',
       onclick: (e) => {
         e.stopPropagation();
         if (this.onPromoteSession) this.onPromoteSession(getArgs());
@@ -1274,10 +1282,26 @@ export class Sidebar {
     }, '↑');
   }
 
+  // The × of a row or strip entry. Built once; `getArgs` runs at click time so
+  // a reused button reads its owner's freshest holder. Title and aria-label are
+  // patched every render from the action the current state maps to.
+  _closeButton(existing, action, getArgs) {
+    const b = existing ?? el('button', {
+      type: 'button', class: 'session-delete',
+      onclick: (e) => {
+        e.stopPropagation();
+        if (this.onCloseSession) this.onCloseSession(getArgs());
+      },
+    }, '×');
+    b.title = CLOSE_TITLES[action];
+    b.setAttribute('aria-label', CLOSE_TITLES[action]);
+    return b;
+  }
+
   // Create-or-update one conductor block: its row, its project chips, and —
   // while expanded — the tree of its chip projects, its live workers in them
-  // and the surviving worktrees its past workers ran in (no structural actions, only ↑ promote on a live temp worker). The row itself carries ↑
-  // on a live temp conductor. A chip is live (a live owned worker there) or
+  // and the surviving worktrees its past workers ran in (no structural actions, only ↑ Make persistent on a live temp worker). The row
+  // itself carries ↑ on a live temp conductor. A chip is live (a live owned worker there) or
   // idle (a recorded spawn there, nothing live); both are display-only.
   // The block alone carries the conductor's bar; nothing inside repeats it.
   _conductorItem(existing, conductor) {
@@ -1348,7 +1372,9 @@ export class Sidebar {
     const keys = ['caret', 'dot', 'title', 'ago'];
     if (unread > 0) keys.push('unread');
     if (c.live && c.instanceTemp) keys.push('promote');
-    keys.push('delete');
+    // A live conductor closes from the needs-you strip; only an inactive one has
+    // no strip entry, so only it carries a ×.
+    if (!c.live) keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'caret') return row._caret;
       if (k === 'dot') {
@@ -1383,19 +1409,16 @@ export class Sidebar {
           return { projectName: '.conduct', instanceId: c.instanceId, preview: conductorTitle(c).text };
         });
       }
-      // delete — the session row's archive ×. A conductor with no transcript
-      // listed yet goes through the synthetic (kill-only) path.
-      return ex ?? el('button', {
-        class: 'session-delete', title: 'archive session (keeps history)',
-        onclick: (e) => {
-          e.stopPropagation();
-          const c = holder.conductor;
-          if (this.onDeleteSession) this.onDeleteSession({
-            projectName: '.conduct', worktreeName: null, sessionId: c.sessionId,
-            preview: conductorTitle(c).text, synthetic: !c.onDisk,
-          });
-        },
-      }, '×');
+      // delete — an inactive conductor's × always archives. One with no
+      // transcript listed goes through the synthetic (kill-only) path.
+      return this._closeButton(ex, closeActionOf({ instanceId: c.instanceId, status: c.instanceStatus, temp: c.instanceTemp }), () => {
+        const c = holder.conductor;
+        return {
+          projectName: '.conduct', worktreeName: null, sessionId: c.sessionId,
+          instanceId: c.instanceId, status: c.instanceDisplayStatus ?? c.instanceStatus,
+          temp: c.instanceTemp, preview: conductorTitle(c).text, synthetic: !c.onDisk,
+        };
+      });
     });
     return row;
   }
@@ -1406,8 +1429,8 @@ export class Sidebar {
   // each recorded worktree (a past worker of this conductor ran there) that is
   // still in the project's worktree list, as a dimmed head with no rows. An
   // idle project with neither is its project row alone. Only this conductor's
-  // live workers, with no structural actions (only ↑ promote on a live temp
-  // worker).
+  // live workers, with no structural actions (only ↑ Make persistent on a live
+  // temp worker).
   _conductorTree(existing, workers, chips) {
     const ul = existing ?? el('ul', { class: 'conductor-tree' });
     const projByName = new Map(this.projects.map(p => [p.name, p]));

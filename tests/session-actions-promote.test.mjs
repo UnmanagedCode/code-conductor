@@ -41,11 +41,11 @@ async function setup({ statuses = [200], confirmAnswer = true } = {}) {
 
 const CONDUCTOR = { projectName: '.conduct', instanceId: 'inst-C', preview: 'Alpha' };
 
-test('promoting a conductor asks to keep it, POSTs promote, then refreshes instances only, like a worker', async () => {
+test('promoting a conductor asks to make it persistent, POSTs promote, then refreshes instances only, like a worker', async () => {
   const t = await setup();
   await t.promoteSession(CONDUCTOR);
   assert.deepEqual(t.confirms, [
-    'Keep this conductor?\n\nAlpha\n\nIt will move to Inactive instead of being archived when it exits.',
+    'Make this conductor persistent?\n\nAlpha\n\nIt will move to Inactive instead of being archived when it stops.',
   ]);
   assert.ok(!t.confirms[0].includes('.conduct'), 'the confirm never names the .conduct project');
   assert.deepEqual(t.fetches, [{ url: '/api/instances/inst-C/promote', method: 'POST' }]);
@@ -57,7 +57,7 @@ test('promoting a worker keeps the temp-session confirm and refreshes instances 
   const t = await setup();
   await t.promoteSession({ projectName: 'proj', instanceId: 'inst-w', preview: 'do the work' });
   assert.deepEqual(t.confirms, [
-    "Promote this temp session to a normal session in 'proj'?\n\ndo the work\n\nThe transcript will be preserved when the session ends.",
+    "Make this temp session persistent in 'proj'?\n\ndo the work\n\nThe transcript will be preserved when the session stops.",
   ]);
   assert.deepEqual(t.fetches, [{ url: '/api/instances/inst-w/promote', method: 'POST' }]);
   assert.deepEqual(t.refreshes, { projects: 0, instances: 1 });
@@ -76,6 +76,6 @@ test('a failed conductor promote alerts and refreshes nothing', async () => {
   await t.promoteSession(CONDUCTOR);
   assert.equal(t.fetches.length, 1);
   assert.equal(t.alerts.length, 1);
-  assert.match(t.alerts[0], /^Failed to promote: /);
+  assert.match(t.alerts[0], /^Failed to make persistent: /);
   assert.deepEqual(t.refreshes, { projects: 0, instances: 0 });
 });

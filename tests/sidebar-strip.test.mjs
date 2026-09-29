@@ -215,3 +215,102 @@ test('the ring shows only on strip entries and conductor rows: a Projects-lens s
     assert.doesNotMatch(dot.title, /waiting on you/, `${where}: ${dot.title}`);
   }
 });
+
+const closeOf = (strip, sid) => strip.querySelector(`[data-key="entry:${sid}"] > .session-delete`);
+
+// Invariant: every strip entry, conductor or hand-spawned, ends in a × button that directly follows its .strip-entry.
+test('every strip entry carries a × as the sibling right after its entry button', async () => {
+  const { strip, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    instances: [conductor('C1'), conductor('C2', { status: 'turn' }), conductor('C3', ask('plan', 'tool')), hand('h1', 'p'), hand('h2', 'p', null, ask('question', 'text'))],
+  });
+  for (const sid of ['C1', 'C2', 'C3', 'h1', 'h2']) {
+    const x = closeOf(strip, sid);
+    assert.ok(x, `${sid}: has a ×`);
+    assert.equal(x.tagName, 'BUTTON');
+    assert.equal(x.textContent, '×');
+    assert.ok(entryOf(strip, sid).nextElementSibling === x, `${sid}: the × follows the entry button`);
+    assert.ok(x.parentElement.lastElementChild === x, `${sid}: the × is the entry's last child`);
+  }
+});
+
+// Invariant: the × title and aria-label name the action its state maps to — Stop for live persistent, Archive for live temp — for both entry kinds.
+test('the strip × is titled Stop session for a live persistent entry and Archive session for a live temp one', async (t) => {
+  const { strip, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    instances: [
+      conductor('Cp', { temp: false }), conductor('Ct', { temp: true }),
+      hand('hp', 'p', null, { temp: false }), hand('ht', 'p', null, { temp: true }),
+    ],
+  });
+  const want = { Cp: 'Stop session', hp: 'Stop session', Ct: 'Archive session (keeps history)', ht: 'Archive session (keeps history)' };
+  for (const [sid, title] of Object.entries(want)) {
+    await t.test(sid, () => {
+      assert.equal(closeOf(strip, sid).title, title);
+      assert.equal(closeOf(strip, sid).getAttribute('aria-label'), title);
+    });
+  }
+});
+
+// Invariant: a re-render that flips a session's temp flag re-titles the SAME × node (the label is patched every render).
+test('the strip × is reused and re-titled when the session is made persistent', async () => {
+  const { strip, sidebar } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A', { temp: true })] });
+  const node = closeOf(strip, 'A');
+  assert.equal(node.title, 'Archive session (keeps history)');
+  await render(sidebar, { instances: [conductor('A', { temp: false })] });
+  assert.ok(closeOf(strip, 'A') === node, 'the × node is reused in place');
+  assert.equal(node.title, 'Stop session');
+  assert.equal(node.getAttribute('aria-label'), 'Stop session');
+});
+
+// Invariant: clicking a strip × sends the entry's full close payload (conductor and hand-spawned shapes) and neither selects nor resumes.
+test('a strip × closes through onCloseSession with the entry\'s facts and never selects or resumes', async (t) => {
+  await t.test('a live persistent conductor', async () => {
+    const { strip, sidebar, calls } = await setupSidebar();
+    await render(sidebar, { instances: [conductor('A', { title: 'Alpha', temp: false })] });
+    closeOf(strip, 'A').click();
+    assert.deepEqual(calls.close, [
+      { projectName: '.conduct', worktreeName: null, sessionId: 'A', instanceId: 'inst-A', status: 'idle', temp: false, preview: 'Alpha', synthetic: true },
+    ]);
+    assert.deepEqual(calls.select, []);
+    assert.deepEqual(calls.resume, []);
+  });
+  await t.test('a live temp conductor with a transcript on disk', async () => {
+    const { strip, sidebar, calls } = await setupSidebar();
+    await render(sidebar, { conductRows: [{ sessionId: 'B', title: 'Beta', lastActivity: 1 }], instances: [conductor('B', { status: 'turn' })] });
+    closeOf(strip, 'B').click();
+    assert.deepEqual(calls.close, [
+      { projectName: '.conduct', worktreeName: null, sessionId: 'B', instanceId: 'inst-B', status: 'turn', temp: true, preview: 'Beta', synthetic: false },
+    ]);
+  });
+  await t.test('a hand-spawned session in a worktree', async () => {
+    const { strip, sidebar, calls } = await setupSidebar();
+    await render(sidebar, { projects: [project('p', { worktrees: ['wt'] })], instances: [hand('h', 'p', 'wt', { title: 'Hand', temp: false })] });
+    closeOf(strip, 'h').click();
+    assert.deepEqual(calls.close, [
+      { projectName: 'p', worktreeName: 'wt', sessionId: 'h', instanceId: 'inst-h', status: 'idle', temp: false, preview: 'Hand', synthetic: false },
+    ]);
+    assert.deepEqual(calls.select, []);
+    assert.deepEqual(calls.resume, []);
+  });
+  await t.test('a hand-spawned temp session is synthetic: its transcript is never listed while it lives', async () => {
+    const { strip, sidebar, calls } = await setupSidebar();
+    await render(sidebar, { instances: [hand('h', 'p', null, { title: 'Hand', temp: true })] });
+    closeOf(strip, 'h').click();
+    assert.equal(calls.close.length, 1);
+    assert.equal(calls.close[0].temp, true);
+    assert.equal(calls.close[0].synthetic, true);
+  });
+});
+
+// Invariant: the × reads its entry's freshest instance at click time after a crash + resume.
+test('a strip × after a crash + resume closes the new instanceId', async () => {
+  const { strip, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('C1')] });
+  const node = closeOf(strip, 'C1');
+  await render(sidebar, { instances: [conductor('C1', { id: 'inst-C1-b' })] });
+  assert.ok(closeOf(strip, 'C1') === node, 'the × is reused in place');
+  node.click();
+  assert.deepEqual(calls.close.map(c => c.instanceId), ['inst-C1-b']);
+});
