@@ -14,10 +14,11 @@
 //     the record before the CLI writes its jsonl, and during a hot restart the
 //     exiting server may still be spawning;
 //   - the transcript scan throws (transcriptIdsOnDisk): nothing is removed;
-//   - the pick would remove EVERY record of the store: nothing is removed. A
-//     root that exists but is the wrong one (a changed HOME or
-//     CLAUDE_CONFIG_DIR) scans as empty, not as an error, and would otherwise
-//     wipe the store.
+//   - the scan found no transcript at all, or the pick would remove EVERY
+//     record of the store: nothing is removed. A root that exists but is the
+//     wrong one (a changed HOME or CLAUDE_CONFIG_DIR) scans as empty, not as an
+//     error; the empty-scan check catches it even when some record is kept for
+//     another reason, which would stand the every-record check down.
 // Nothing else is cascaded: the session-keyed append-only logs (costs, the
 // playbook ledger) hold history where a dead id is inert, as after the explicit
 // session delete.
@@ -66,6 +67,10 @@ export async function cleanupSessionsWithoutTranscripts(
 
     const pick = (doc: SessionsDoc): string[] => {
       if (present === null) return [];
+      if (present.size === 0 && doc.size > 0) {
+        log.warn?.('session-cleanup: no transcripts found anywhere — refusing to remove records (check HOME / CLAUDE_CONFIG_DIR)');
+        return [];
+      }
       const out: string[] = [];
       const t = now();
       for (const [publicId, rec] of doc) {

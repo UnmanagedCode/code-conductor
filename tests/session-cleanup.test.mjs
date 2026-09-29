@@ -170,6 +170,7 @@ test('fail-safe: an unresolvable lineage keeps the record', async () => {
   // Invariant: a segment id that is not a valid transcript filename (isSessionId) is never judged absent.
   const f = await fresh();
   await writeStore(f, {
+    ...(await liveCompanion()),
     hhhhhhhh: { current: uuid(51), segments: [seg('../escape'), { id: uuid(51), reason: 'renew', at: OLD }] },
   });
   const cap = captureLog();
@@ -237,6 +238,7 @@ test('sessions named by the resume manifest are kept, and the manifest is left f
   const f = await fresh();
   const [p1, p2, p3, p4] = [uuid(81), uuid(82), uuid(83), uuid(84)];
   await writeStore(f, {
+    ...(await liveCompanion()),
     '11111111': { current: p1, segments: [seg(p1)] },
     '22222222': { current: p2, segments: [seg(p2)] },
     '33333333': { current: p3, segments: [seg(p3)] },
@@ -329,7 +331,7 @@ test('fail-safe: an empty resolved transcript root removes nothing', async () =>
   const r = await run(cap);
   assert.deepEqual(r.removed, []);
   assert.deepEqual(await fs.readFile(f.primary), before);
-  assert.ok(cap.warns().some(l => l.includes('refusing to wipe the store')), JSON.stringify(cap.lines));
+  assert.ok(cap.warns().some(l => l.includes('no transcripts found anywhere')), JSON.stringify(cap.lines));
 });
 
 test('fail-safe: a dangling-symlink encoded dir is a scan failure', async () => {
@@ -394,4 +396,55 @@ test('mass-wipe guard: a pick naming every record removes nothing', async (t) =>
     const r = await run(captureLog());
     assert.deepEqual(r.removed, ['c1111111']);
   });
+});
+
+test('a farm dir that is a symlink to a real dir is scanned', async () => {
+  // Invariant: a symlinked <store>/claude-config/<dir> contributes its transcripts like a real one.
+  const f = await fresh();
+  const [m1, d1] = [uuid(171), uuid(172)];
+  await writeStore(f, {
+    ...(await liveCompanion()),
+    mmmmmmmm: { current: m1, segments: [seg(m1)] },
+    dddddddd: { current: d1, segments: [seg(d1)] },
+  });
+  const target = path.join(f.root, 'farm-target');
+  const dir = path.join(target, '.claude', 'projects', encodeCwd('/root/app'));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, path.basename(sessionFilePath(localPlace('/x'), m1))), '{}\n');
+  await fs.mkdir(claudeConfigFarmRoot(), { recursive: true });
+  await fs.symlink(target, path.join(claudeConfigFarmRoot(), 'linked-box'));
+  const r = await run(captureLog());
+  assert.deepEqual(r.removed, ['dddddddd']);
+  assert.ok((await readSessions(f)).mmmmmmmm);
+});
+
+test('a symlink to a file among the encoded dirs is skipped and the scan still judges', async () => {
+  // Invariant: an encoded-dir entry that resolves to a file (ENOTDIR) holds no transcripts and does not abort the scan.
+  const f = await fresh();
+  const d1 = uuid(181);
+  await writeStore(f, { ...(await liveCompanion()), dddddddd: { current: d1, segments: [seg(d1)] } });
+  const file = path.join(f.root, 'some-file');
+  await fs.writeFile(file, 'x');
+  await fs.symlink(file, path.join(f.claude, '-linked-file'));
+  const cap = captureLog();
+  const r = await run(cap);
+  assert.deepEqual(r.removed, ['dddddddd'], JSON.stringify(cap.lines));
+});
+
+test('fail-safe: a scan that finds no transcript at all removes nothing, even beside a kept record', async () => {
+  // Invariant: zero transcript ids on disk with a non-empty store removes nothing, whatever else the pick keeps.
+  const f = await fresh();
+  const [fr, old] = [uuid(191), uuid(192)];
+  await writeStore(f, {
+    'e1111111': { current: fr, segments: [{ id: fr, reason: 'initial', at: new Date(NOW).toISOString() }] },
+    'e2222222': { current: old, segments: [seg(old)] },
+  });
+  const before = await fs.readFile(f.primary);
+  const cap = captureLog();
+  const r = await run(cap);
+  assert.deepEqual(r.removed, []);
+  assert.deepEqual(await fs.readFile(f.primary), before);
+  assert.deepEqual(await fs.readFile(f.snapshot), before);
+  assert.ok(cap.warns().some(l => l.includes('session-cleanup: no transcripts found anywhere — refusing to remove records')),
+    JSON.stringify(cap.lines));
 });

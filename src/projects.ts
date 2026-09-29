@@ -2194,9 +2194,11 @@ export async function findOrphanedTranscript(sessionId: string): Promise<string 
 // deletes on absence. Any read error is a throw — ENOENT included — for the local
 // root and for every encoded-cwd entry that is a directory or a symlink (a
 // dangling symlink is an unmounted volume, not an empty one). Tolerated: ENOENT
-// on the farm root and on a farm dir with no `.claude/projects`. Skipped by
-// dirent, never by error: a non-directory in the farm root, and a
-// non-directory, non-symlink among the encoded dirs.
+// on the farm root and on a farm dir (real or symlinked) with no
+// `.claude/projects` — a dangling farm symlink lands there too — and ENOTDIR on
+// an encoded-cwd symlink that resolves to a file. Skipped by dirent: a farm-root
+// entry that is neither a directory nor a symlink, and the same among the
+// encoded dirs.
 export async function transcriptIdsOnDisk(): Promise<Set<string>> {
   const suffix = '.jsonl';
   const roots = [claudeProjectsRoot()];
@@ -2204,7 +2206,9 @@ export async function transcriptIdsOnDisk(): Promise<Set<string>> {
   let farmDirs: Dirent[] = [];
   try { farmDirs = await fs.readdir(farm, { withFileTypes: true }); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
-  for (const d of farmDirs) if (d.isDirectory()) roots.push(path.join(farm, d.name, '.claude', 'projects'));
+  for (const d of farmDirs) {
+    if (d.isDirectory() || d.isSymbolicLink()) roots.push(path.join(farm, d.name, '.claude', 'projects'));
+  }
   const ids = new Set<string>();
   for (const [i, root] of roots.entries()) {
     let dirs: Dirent[];
@@ -2212,7 +2216,10 @@ export async function transcriptIdsOnDisk(): Promise<Set<string>> {
     catch (e) { if (i > 0 && errCode(e) === 'ENOENT') continue; throw e; }
     for (const d of dirs) {
       if (!d.isDirectory() && !d.isSymbolicLink()) continue;
-      for (const name of await fs.readdir(path.join(root, d.name))) {
+      let names: string[];
+      try { names = await fs.readdir(path.join(root, d.name)); }
+      catch (e) { if (errCode(e) === 'ENOTDIR') continue; throw e; }
+      for (const name of names) {
         if (name.endsWith(suffix)) ids.add(name.slice(0, -suffix.length));
       }
     }
