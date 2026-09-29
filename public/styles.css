@@ -766,18 +766,25 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
    pinning the prompt that started the turn in view. It sits outside the scroll
    root, so the transcript's DOM and scrollHeight are untouched. z-index stays
    below the header menus and the mobile drawer. No `display` here: index.html
-   ships it `hidden`, and an author display would outrank that. */
+   ships it `hidden`, and an author display would outrank that.
+   The shadow is on the outer box and the fade mask on the inner body, so neither
+   clips the other; a box-shadow takes no layout space, so the height the
+   controller measures is unchanged. Its first layer is a faint light line under
+   the bottom edge, because a black shadow alone is hard to see on these
+   near-black surfaces. */
 .pinned-prompt {
   position: absolute; top: 0; z-index: 2; cursor: pointer; will-change: transform;
   left: var(--conv-pad-x); right: calc(var(--conv-pad-x) + var(--conv-scrollbar, 0px));
   padding: 8px 12px; background: var(--panel-2);
   border: 1px solid var(--accent); border-top: none; border-radius: 0 0 8px 8px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, .35);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .08), 0 6px 16px rgba(0, 0, 0, .6), 0 1px 3px rgba(0, 0, 0, .5);
 }
-.pinned-prompt-body { font-size: 13px; line-height: 1.45; max-height: calc(3 * 1lh); overflow: hidden; }
+/* The clamp: how many lines show before the fade. The controller measures the
+   overflow, so this is the only place the count lives. */
+.pinned-prompt-body { font-size: 13px; line-height: 1.45; max-height: calc(5 * 1lh); overflow: hidden; }
 .pinned-prompt-body.overflowing {
-  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
-  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5lh), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5lh), transparent);
 }
 .pinned-prompt .user-text.md h1, .pinned-prompt .user-text.md h2, .pinned-prompt .user-text.md h3,
 .pinned-prompt .user-text.md h4, .pinned-prompt .user-text.md h5, .pinned-prompt .user-text.md h6 {
