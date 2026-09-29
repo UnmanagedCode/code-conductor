@@ -8,11 +8,12 @@
 //   - saves are debounced; switch-away / pagehide / tab-hidden save immediately
 //   - a reload (new page over the same storage) restores the draft and its <transcribed> flag
 //   - attachComposer runs without onDraftChange; dictation reports the draft
+//   - the transcribed marker resets on send without a switch in between
 //   - sending clears the stored draft at once and cancels a pending save
 //   - prefill (fork / rewind) becomes the session's draft
 //   - restoring never writes back and never focuses
 //   - text the browser restores before the first switch is not saved under any session
-//   - prune drops expired and malformed draft keys and nothing else
+//   - prune drops expired, malformed and savedAt-less draft keys and nothing else
 //   - a missing / throwing storage degrades to in-memory per-session drafts
 
 import { test } from 'node:test';
@@ -323,6 +324,7 @@ test('prune drops expired and malformed draft keys and nothing else', async (t) 
     [keyOf('fresh')]: rec(NOW - 1000),
     [keyOf('bad')]: 'not json',
     [keyOf('notext')]: JSON.stringify({ savedAt: NOW }),
+    [keyOf('nosaved')]: JSON.stringify({ text: 't', transcribed: false }),
     'code-conductor:unread': '{"s":1}',
   });
   const run = () => {
@@ -335,6 +337,7 @@ test('prune drops expired and malformed draft keys and nothing else', async (t) 
   await t.test('a fresh draft is kept', () => assert.equal(run().map.has(keyOf('fresh')), true));
   await t.test('unparseable JSON is removed', () => assert.equal(run().map.has(keyOf('bad')), false));
   await t.test('a record without string text is removed', () => assert.equal(run().map.has(keyOf('notext')), false));
+  await t.test('a record with text but no savedAt is removed', () => assert.equal(run().map.has(keyOf('nosaved')), false));
   await t.test('a key outside the draft prefix is untouched', () =>
     assert.equal(run().map.get('code-conductor:unread'), '{"s":1}'));
   await t.test('installing the drafts module prunes once', async () => {
@@ -375,6 +378,18 @@ test('dictated text is scheduled as the current session\'s draft, with its trans
   assert.equal(p.timers.count, 1);
   p.timers.fireAll();
   assert.deepEqual(stored(storage, 'A'), { text: 'spoken words', transcribed: true, savedAt: NOW });
+});
+
+test('the transcribed marker resets on send within one session', async () => {
+  const p = await setupPage({ store: newStore(fakeStorage()), dictation: true, transcript: 'spoken' });
+  p.drafts.switchTo('A');
+  p.composer.setMicAvailable(true);
+  await p.tap();
+  await p.tap();
+  p.submit();
+  p.type('typed afterwards');
+  p.submit();
+  assert.deepEqual(p.submits.map((x) => x.text), ['<transcribed>\nspoken', 'typed afterwards']);
 });
 
 test('attachComposer works without onDraftChange (typing, prefill, dictation, submit)', async () => {
