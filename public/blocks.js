@@ -978,9 +978,10 @@ export class UserQuestionBlock {
     }
   }
 
-  // Called during session replay to restore the answered state. `answers`
-  // is the reconstructed answer array from parseUserQuestionAnswers(); pass
-  // null to mark answered without highlighting a specific option.
+  // Called when the server-stamped answer echo names this card, whichever
+  // surface sent the answer. `answers` is the reconstructed answer array from
+  // parseUserQuestionAnswers(); pass null to mark answered without
+  // highlighting a specific option.
   markAnswered(answers) {
     if (this.submitted) return;
     if (Array.isArray(answers)) {

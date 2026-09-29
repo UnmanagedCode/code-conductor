@@ -59,12 +59,11 @@ const stamped = (questions, answers, extra = {}) => ({
   questionAnswer: { toolUseId: 'tu_q', questions }, ...extra,
 });
 
-async function render(events, { conversationOptions = {}, replay = false } = {}) {
+async function render(events, { conversationOptions = {} } = {}) {
   setupDOM();
   const { Conversation } = await importModules();
   const root = document.createElement('div');
   const conv = new Conversation(root, conversationOptions);
-  if (replay) conv._replayMode = true;
   for (const ev of events) conv.apply(ev);
   return root;
 }
@@ -175,7 +174,7 @@ test('stamped text that fails the round-trip falls back to the raw text inside t
   assert.ok(wrap.querySelector('.role .user-view-toggle'), 'the raw/md controls reach the role row');
 });
 
-test('replay parity: the same events rendered live and in replay mode produce identical answer blocks', async () => {
+test('batch parity: the same events rendered live and through renderEventBatch produce identical answer blocks', async () => {
   const questions = [FRUIT, TOPPINGS];
   const events = [
     { kind: 'user_question', toolUseId: 'tu_q', questions },
@@ -183,10 +182,11 @@ test('replay parity: the same events rendered live and in replay mode produce id
     stamped(questions, [{ kind: 'option', label: 'Banana', note: 'ripe' }, { kind: 'multi', labels: ['Nuts', 'Cream'] }]),
   ];
   const live = await render(events);
-  const replayed = await render(events, { replay: true });
+  const { renderEventBatch } = await importModules();
+  const batch = renderEventBatch(events);
   const liveHtml = live.querySelector('.block.question-answer')?.outerHTML;
   assert.ok(liveHtml, 'premise: live render produced the block');
-  assert.equal(replayed.querySelector('.block.question-answer')?.outerHTML, liveHtml);
+  assert.equal(batch.holder.querySelector('.block.question-answer')?.outerHTML, liveHtml);
 });
 
 test('lazy page boundary: renderEventBatch of a lone stamped echo, with no card in the batch, renders the same bubble', async () => {
@@ -199,4 +199,140 @@ test('lazy page boundary: renderEventBatch of a lone stamped echo, with no card 
   const html = batch.holder.querySelector('.block.question-answer')?.outerHTML;
   assert.ok(html, 'the lone echo renders the answer bubble');
   assert.equal(html, full.querySelector('.block.question-answer').outerHTML);
+});
+
+// --- The answered state of the question CARD follows the server stamp ---------
+
+const CARD = { kind: 'user_question', toolUseId: 'tu_q', questions: [FRUIT] };
+const CARD_RESULT = { kind: 'tool_result', toolUseId: 'tu_q', content: 'awaiting', isError: true, parentToolUseId: null };
+const TURN_END = { kind: 'turn_end' };
+// The answer: Banana (not the first option) with a note, so the pick is read
+// from the stamp text rather than defaulted, and survives the note suffix.
+const bananaEcho = (toolUseId = 'tu_q') => {
+  const ev = stamped([FRUIT], [{ kind: 'option', label: 'Banana', note: 'ripe ones only' }]);
+  ev.questionAnswer = { toolUseId, questions: [FRUIT] };
+  return ev;
+};
+
+// Every facet of "answered, showing the pick, controls off" as its own assert.
+function assertCardLocked(card, label) {
+  assert.ok(card, `${label}: the card rendered`);
+  assert.ok(card.classList.contains('answered'), `${label}: .answered`);
+  const opts = [...card.querySelectorAll('button.uq-opt')];
+  assert.equal(opts.length, 2, `${label}: premise — two options`);
+  const banana = opts.find(b => b.dataset.label === 'Banana');
+  assert.ok(banana.classList.contains('picked'), `${label}: Banana is picked`);
+  assert.ok(!opts.find(b => b.dataset.label === 'Apple').classList.contains('picked'), `${label}: Apple is not picked`);
+  for (const b of opts) assert.equal(b.disabled, true, `${label}: option ${b.dataset.label} disabled`);
+  const custom = [...card.querySelectorAll('.uq-custom-input')];
+  assert.ok(custom.length > 0, `${label}: premise — a custom input exists`);
+  for (const i of custom) assert.equal(i.disabled, true, `${label}: custom input disabled`);
+  assert.equal(card.querySelector('.uq-submit').disabled, true, `${label}: Send disabled`);
+}
+
+function assertCardOpen(card, label) {
+  assert.ok(card, `${label}: the card rendered`);
+  assert.ok(!card.classList.contains('answered'), `${label}: not .answered`);
+  for (const b of card.querySelectorAll('button.uq-opt')) {
+    assert.equal(b.disabled, false, `${label}: option ${b.dataset.label} enabled`);
+    assert.ok(!b.classList.contains('picked'), `${label}: option ${b.dataset.label} not picked`);
+  }
+  for (const i of card.querySelectorAll('.uq-custom-input')) assert.equal(i.disabled, false, `${label}: custom input enabled`);
+}
+
+async function freshConversation(options = {}) {
+  setupDOM();
+  const { Conversation, renderEventBatch } = await importModules();
+  const root = document.createElement('div');
+  return { conv: new Conversation(root, options), root, renderEventBatch };
+}
+
+test('live: a stamped answer echo locks its card that this tab never submitted', async () => {
+  const { conv, root } = await freshConversation();
+  for (const ev of [CARD, CARD_RESULT, TURN_END, bananaEcho()]) conv.apply(ev);
+  assertCardLocked(root.querySelector('.block.user-question'), 'live');
+});
+
+test('live after a snapshot: a stamped echo arriving after the replayed card locks it', async () => {
+  const { conv, root } = await freshConversation();
+  conv.applyEvents([CARD, CARD_RESULT, TURN_END]); // the snapshot's replay
+  assertCardOpen(root.querySelector('.block.user-question'), 'premise: unanswered after the snapshot');
+  conv.apply(bananaEcho()); // the echo arrives as a live event
+  assertCardLocked(root.querySelector('.block.user-question'), 'after snapshot');
+});
+
+test('reload: card and stamped echo in one batch lock the card', async () => {
+  const { renderEventBatch } = await freshConversation();
+  const batch = renderEventBatch([CARD, CARD_RESULT, TURN_END, bananaEcho()]);
+  assertCardLocked(batch.holder.querySelector('.block.user-question'), 'one batch');
+});
+
+test('reload: a card on an older lazy page locks from an answer stamped in the tail', async () => {
+  const { conv, renderEventBatch } = await freshConversation();
+  conv.apply(bananaEcho()); // the tail page holds only the echo
+  const batch = renderEventBatch([CARD, CARD_RESULT, TURN_END], {}, { answeredQuestions: conv.answeredQuestions });
+  assertCardLocked(batch.holder.querySelector('.block.user-question'), 'older page');
+});
+
+test('reload: an answer stamped on page N locks the card on page N+1 through the shared map', async () => {
+  const { conv, renderEventBatch } = await freshConversation();
+  const answeredQuestions = conv.answeredQuestions;
+  const pageN = renderEventBatch([TURN_END, bananaEcho()], {}, { answeredQuestions });
+  assertNull(pageN.holder.querySelector('.block.user-question'), 'premise: the card is on the next page down');
+  const pageN1 = renderEventBatch([CARD, CARD_RESULT], {}, { answeredQuestions });
+  assertCardLocked(pageN1.holder.querySelector('.block.user-question'), 'page N+1');
+});
+
+const unstampedEcho = () => ({
+  kind: 'user_echo', userIndex: 4,
+  text: formatUserQuestionAnswers([FRUIT], [{ kind: 'option', label: 'Banana', note: 'ripe ones only' }]),
+});
+
+test('an unstamped answer-shaped echo does not lock the card live', async () => {
+  const { conv, root } = await freshConversation();
+  for (const ev of [CARD, CARD_RESULT, TURN_END, unstampedEcho()]) conv.apply(ev);
+  assertCardOpen(root.querySelector('.block.user-question'), 'live');
+});
+
+test('an unstamped answer-shaped echo does not lock the card in a batch', async () => {
+  const { renderEventBatch } = await freshConversation();
+  const batch = renderEventBatch([CARD, CARD_RESULT, TURN_END, unstampedEcho()]);
+  assertCardOpen(batch.holder.querySelector('.block.user-question'), 'batch');
+});
+
+test('a stamped answer to a two-question card shows each question\'s pick on its own pane', async () => {
+  const questions = [FRUIT, SIZE];
+  const card = { kind: 'user_question', toolUseId: 'tu_q', questions };
+  const { conv, root } = await freshConversation();
+  for (const ev of [card, CARD_RESULT, TURN_END,
+    stamped(questions, [{ kind: 'option', label: 'Banana' }, { kind: 'option', label: 'L' }])]) conv.apply(ev);
+  const el = root.querySelector('.block.user-question');
+  assert.ok(el.classList.contains('answered'), '.answered');
+  const picked = (idx) => [...el.querySelectorAll(`.uq-pane[data-idx="${idx}"] button.uq-opt.picked`)]
+    .map(b => b.dataset.label);
+  assert.equal(el.querySelector('.uq-submit').disabled, true, 'Send disabled');
+  assert.deepEqual(picked(0), ['Banana'], 'the active pane shows question 1\'s pick');
+  el.querySelectorAll('.uq-tab')[1].click();
+  assert.deepEqual(picked(1), ['L'], 'the second tab shows question 2\'s pick');
+  for (const b of el.querySelectorAll('button.uq-opt')) assert.equal(b.disabled, true, `option ${b.dataset.label} disabled`);
+  for (const i of el.querySelectorAll('.uq-custom-input')) assert.equal(i.disabled, true, 'custom input disabled');
+});
+
+test('a stamp for card B leaves card A open', async () => {
+  const cardB = { kind: 'user_question', toolUseId: 'tu_b', questions: [FRUIT] };
+  const { conv, root } = await freshConversation();
+  for (const ev of [CARD, CARD_RESULT, cardB, { ...CARD_RESULT, toolUseId: 'tu_b' }, bananaEcho('tu_b')]) conv.apply(ev);
+  const [a, b] = root.querySelectorAll('.block.user-question');
+  assertCardOpen(a, 'card A');
+  assertCardLocked(b, 'card B');
+});
+
+test('a stamp for a card that never renders in this view locks nothing and clears with the conversation', async () => {
+  const { conv, root } = await freshConversation();
+  conv.apply(bananaEcho('tu_gone'));
+  assert.equal(conv.answeredQuestions.has('tu_gone'), true, 'premise: the stamp is recorded');
+  conv.clear();
+  assert.equal(conv.answeredQuestions.size, 0, 'clear() forgets recorded answers');
+  for (const ev of [CARD, CARD_RESULT]) conv.apply(ev);
+  assertCardOpen(root.querySelector('.block.user-question'), 'after clear');
 });

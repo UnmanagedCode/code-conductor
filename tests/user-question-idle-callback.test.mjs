@@ -1,13 +1,9 @@
 // Regression tests for the bug where an idle-callback user_echo arriving
 // while an AskUserQuestion card was still open would lock the card.
 //
-// Root cause: _pendingAnswerUQId was set when the AskUserQuestion tool_result
-// arrived, and the first user_echo to follow — even one from an unrelated
-// source like an idle callback — would call markAnswered(), locking the card.
-//
-// Fix: markAnswered() is only called from _renderUserEcho when either
-//   (a) _replayMode is true (snapshot replay — the echo IS the answer), or
-//   (b) the card has already been submitted by the user (qBlock.submitted).
+// Invariant: only an echo the server stamped as answering the card
+// (`questionAnswer.toolUseId`) locks it. An unrelated echo — an idle-callback
+// prompt, a wake stub — never does, whatever precedes it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { buildWakeStub } from '../public/wakeCallback.js';
 import { AWAITING_INPUT_MESSAGE } from '../src/settings.ts';
+import { QuestionAnswerCorrelator } from '../src/questionAnswerStamp.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -70,6 +67,10 @@ const TOOL_RESULT_EVENT = {
 };
 // A formatted answer text (what the user would have submitted).
 const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
+// The server's pairing stamp for the answer echo.
+const answerEcho = (text = ANSWER_TEXT) => ({
+  kind: 'user_echo', text, questionAnswer: { toolUseId: Q_TOOL_USE_ID, questions: QUESTIONS },
+});
 // An unrelated prompt text — simulates an idle wake injected by IdleSubscriptionHub.
 const IDLE_CB_TEXT = 'Worker `abc` finished its turn. Call get_recent_messages to inspect the result.';
 
@@ -81,7 +82,6 @@ test('live mode: idle-callback user_echo does NOT lock an unanswered question ca
 
   // Render the question card.
   conv.apply(UQ_EVENT);
-  // The tool_result sets _pendingAnswerUQId.
   conv.apply(TOOL_RESULT_EVENT);
 
   const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
@@ -89,8 +89,6 @@ test('live mode: idle-callback user_echo does NOT lock an unanswered question ca
   assert.equal(qBlock.submitted, false, 'card is not submitted before the echo');
 
   // Simulate the idle-callback echo arriving before the user answers.
-  // _replayMode is false (live mode default).
-  assert.equal(conv._replayMode, false, '_replayMode starts false');
   conv.apply({ kind: 'user_echo', text: IDLE_CB_TEXT });
 
   assert.equal(qBlock.submitted, false, 'card must remain unsubmitted after idle-callback echo');
@@ -108,22 +106,19 @@ test('live mode: idle-callback user_echo does NOT lock an unanswered question ca
   }
 });
 
-test('replay mode: user_echo after tool_result DOES lock the card (snapshot replay)', async () => {
+test('a stamped answer echo after the tool_result locks the card with the right option', async () => {
   setupDOM();
   const Conversation = await importConversation();
   const root = document.createElement('div');
   const conv = new Conversation(root, {});
 
-  // Simulate what the snapshot handler does: set _replayMode = true around the loop.
-  conv._replayMode = true;
   conv.apply(UQ_EVENT);
   conv.apply(TOOL_RESULT_EVENT);
-  conv.apply({ kind: 'user_echo', text: ANSWER_TEXT });
-  conv._replayMode = false;
+  conv.apply(answerEcho());
 
   const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
   assert.ok(qBlock, 'question block exists');
-  assert.equal(qBlock.submitted, true, 'card must be locked after replay echo');
+  assert.equal(qBlock.submitted, true, 'card must be locked after the stamped echo');
   assert.equal(qBlock.submitBtn.disabled, true, 'submit button disabled');
   // Selected option should be highlighted.
   const applePick = [...qBlock.panes.querySelectorAll('button.uq-opt')]
@@ -131,49 +126,44 @@ test('replay mode: user_echo after tool_result DOES lock the card (snapshot repl
   assert.ok(applePick?.classList.contains('picked'), 'Apple option is marked as picked');
 });
 
-test('replay mode: an interleaved wake stub does NOT consume the answer slot; the later real answer echo still locks the card', async () => {
+test('an unstamped wake stub between the tool_result and the answer does not lock the card; the later stamped echo does', async () => {
   setupDOM();
   const Conversation = await importConversation();
   const root = document.createElement('div');
   const conv = new Conversation(root, {});
 
-  // Snapshot replay: a wake-callback stub (another worker finished before the
-  // user answered) lands between the tool_result and the real answer echo.
+  // Another worker finished before the user answered: its wake-callback stub
+  // lands between the tool_result and the real answer echo.
   const wakeStub = buildWakeStub({
     targetSessionId: 'abc12345',
     payloadText: '{"sessionId":"abc12345","messages":[]}\nsome recent output',
   });
 
-  conv._replayMode = true;
   conv.apply(UQ_EVENT);
   conv.apply(TOOL_RESULT_EVENT);
 
   const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
   assert.ok(qBlock, 'question block exists');
 
-  // Interleaved non-answer echo: must NOT lock the card and must leave the slot armed.
   conv.apply({ kind: 'user_echo', text: wakeStub });
   assert.equal(qBlock.submitted, false, 'card must stay unlocked after the interleaved wake stub');
-  assert.equal(conv._pendingAnswerUQId, Q_TOOL_USE_ID, 'answer slot stays armed for the real answer');
 
-  // The real answer echo arrives later — the still-armed slot now applies it.
-  conv.apply({ kind: 'user_echo', text: ANSWER_TEXT });
-  conv._replayMode = false;
+  conv.apply(answerEcho());
 
-  assert.equal(qBlock.submitted, true, 'card locks on the real answer echo');
-  assert.equal(conv._pendingAnswerUQId, null, 'slot consumed only on the matching answer');
+  assert.equal(qBlock.submitted, true, 'card locks on the stamped answer echo');
   const applePick = [...qBlock.panes.querySelectorAll('button.uq-opt')]
     .find(b => b.dataset.label === 'Apple');
   assert.ok(applePick?.classList.contains('picked'), 'Apple option is marked as picked');
 });
 
-test('replay mode: a MID-TURN answer replayed from disk still locks the card with the right option', async () => {
+test('a MID-TURN answer replayed from disk and stamped by the server correlator still locks the card with the right option', async () => {
   // Card answers are now sent unconditionally, so a mid-turn answer is the
   // normal case and Instance.prompt prepends MID_TURN_NOTE. The note rides as
   // its OWN content block and consolidateUserContent strips it, which is the
   // only reason isUserQuestionAnswerText's startsWith still matches. Fold the
   // note into the text instead and every mid-turn answer silently unpairs from
-  // its card — this test goes through the real replay path to prove it doesn't.
+  // its card — this test goes through the real replay path and the real
+  // correlator to prove it doesn't.
   const { replayPersistedLine } = await import('../src/transcript.ts');
   const { MID_TURN_NOTE } = await import('../src/instances.ts');
 
@@ -196,11 +186,11 @@ test('replay mode: a MID-TURN answer replayed from disk still locks the card wit
   const root = document.createElement('div');
   const conv = new Conversation(root, {});
 
-  conv._replayMode = true;
-  conv.apply(UQ_EVENT);
-  conv.apply(TOOL_RESULT_EVENT);
-  conv.apply(echo);
-  conv._replayMode = false;
+  const correlator = new QuestionAnswerCorrelator();
+  for (const ev of [UQ_EVENT, TOOL_RESULT_EVENT, echo]) {
+    correlator.apply(ev);
+    conv.apply(ev);
+  }
 
   const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
   assert.equal(qBlock.submitted, true, 'card locks on the replayed mid-turn answer');
