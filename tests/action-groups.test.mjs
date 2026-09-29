@@ -754,7 +754,8 @@ test('D4 pins: a process exit folds the accumulating group', async (t) => {
 test('D5 pins: a system note the turn survives does not collapse the group', async (t) => {
   const MID_RUN = [
     ['auto_resume', { kind: 'system', subtype: 'auto_resume', data: { count: 2 } }],
-    ['compacting', { kind: 'system', subtype: 'compacting', data: {} }],
+    ['status compacting', { kind: 'system', subtype: 'status', data: { status: 'compacting' } }],
+    ['compaction', { kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 }],
     ['stderr', { kind: 'system', subtype: 'stderr', data: { line: 'a warning from the CLI' } }],
     ['cache_miss', { kind: 'system', subtype: 'cache_miss', data: { cacheCreation: 10, cacheRead: 2 } }],
   ];

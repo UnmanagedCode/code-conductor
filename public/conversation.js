@@ -12,6 +12,7 @@ import { parseRenewSeed } from './renewSeed.js';
 import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
 import { buildUserText } from './userText.js';
 import { syncAssistantBubble } from './assistantBubble.js';
+import { CompactionBlock, isCompactCommandText, isLocalCommandStdoutText } from './compactionBlock.js';
 import { mountFoldedText, renderWakeBodyInto, renderRenewSeedInto, renderForwardBodyInto } from './foldedText.js';
 
 // The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
@@ -28,6 +29,10 @@ const HISTORY_GAP_CLASS = 'history-gap';
 // `launch_failed` that can follow it carries the stderr, and is a description of
 // the same death rather than a second one, so it is deliberately not listed.
 const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
+
+// Content that ends the window in which a compaction's own command output
+// (`<local-command-stdout>`) is still absorbed into its bubble.
+const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end']);
 
 export function isHistoryGapNode(node) {
   return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
@@ -142,6 +147,11 @@ export class Conversation {
     // (sub-agents interleave block parts with the outer stream) reconstruct
     // whole via the sub-conversation's normal reconcile path.
     this.orphanChildEvents = new Map();
+    // Compaction bubble state. `_pendingCompaction`: the running block a
+    // `status: compacting` opened, waiting for its boundary. `_compaction`: the
+    // latest block that can still take its summary / absorb its command output.
+    this._pendingCompaction = null;
+    this._compaction = null;
     this.stickyBottom = true;
     if (!this.isSub) {
       this.root.addEventListener('scroll', () => {
@@ -179,6 +189,8 @@ export class Conversation {
     this._sawSegmentCloser = false;
     this.orphanChildEvents.clear();
     this._pendingAnswerUQId = null;
+    this._pendingCompaction = null;
+    this._compaction = null;
     this.stickyBottom = true;
     this.segmentId = null;
     this.currentSegmentId = null;
@@ -382,7 +394,9 @@ export class Conversation {
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
     this._ensureNotEmpty();
+    if (COMPACTION_WINDOW_ENDERS.has(ev.kind)) this._compaction = null;
     switch (ev.kind) {
+      case 'compaction': this._renderCompaction(ev); break;
       case 'user_echo': {
         // On session replay the user_echo that immediately follows an
         // AskUserQuestion tool_result carries the formatted answer text.
@@ -441,6 +455,8 @@ export class Conversation {
         }
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
         if (RUN_ENDING_SYSTEM_SUBTYPES.has(ev.subtype)) this._closeAllActionGroups();
+        if (ev.subtype === 'exit' || ev.subtype === 'crashed') this._failPendingCompaction(null);
+        if (this._renderCompactionStatus(ev)) break;
         // Resume fired: collapse the ghost queued bubbles — they're folding into
         // the single delivered turn that follows.
         if (ev.subtype === 'auto_resume') {
@@ -451,7 +467,7 @@ export class Conversation {
         if (!shouldRenderSystem(ev)) break; // drop status/rate_limit/etc. noise
         this._renderSystem(ev); break;
       case 'hook':           /* dimmed hook lines dropped from the conversation */ break;
-      case 'turn_end':       this._renderTurnEnd(ev); break;
+      case 'turn_end':       this._failPendingCompaction(null); this._renderTurnEnd(ev); break;
       case 'assistant_message':
         // Outer turns are driven entirely by stream_event deltas; the
         // trailing assistant envelope adds nothing the UI didn't already
@@ -519,7 +535,73 @@ export class Conversation {
     block.markRedacted(ev.estimatedTokens ?? null);
   }
 
+  _appendCompactionBlock() {
+    // Inline, the way _renderSystem lands a note: no segment close, no group
+    // close — a mid-turn auto-compaction is a note the turn survives.
+    const block = new CompactionBlock();
+    this.root.appendChild(block.node);
+    return block;
+  }
+
+  // The CLI's `compact_boundary`: completes the running block a `compacting`
+  // status opened, or (reload, or a status outside the rendered window) makes one.
+  _renderCompaction(ev) {
+    const block = this._pendingCompaction ?? this._appendCompactionBlock();
+    this._pendingCompaction = null;
+    block.fill(ev);
+    this._compaction = block;
+  }
+
+  // `system/status` compaction frames, and the CLI's post-compaction re-init
+  // (`init` + cc's `model_changed`), which has no persisted twin and would make
+  // live and reload differ. True when the event is consumed here.
+  _renderCompactionStatus(ev) {
+    const d = ev.data ?? {};
+    if (ev.subtype === 'status') {
+      if (d.status === 'compacting') {
+        if (!this._pendingCompaction) this._compaction = this._pendingCompaction = this._appendCompactionBlock();
+        return true;
+      }
+      if (d.status == null && d.compact_result === 'failed') {
+        this._failPendingCompaction(d.compact_error);
+        return true;
+      }
+      return false;
+    }
+    return !!this._pendingCompaction && (ev.subtype === 'init' || ev.subtype === 'model_changed');
+  }
+
+  // A compaction that never reached its boundary (failed, or the turn/process
+  // ended first) — also frees the init suppression so a later spawn is shown.
+  _failPendingCompaction(error) {
+    const block = this._pendingCompaction;
+    if (!block) return;
+    block.markFailed(error);
+    this._pendingCompaction = null;
+    if (this._compaction === block) this._compaction = null;
+  }
+
   _renderUserEcho(ev) {
+    const compaction = this._compaction;
+    let compactionBelow = null;
+    if (ev.compactSummary) {
+      // The CLI's summary is the compaction bubble's body, not a user bubble.
+      this._compaction = compaction ?? this._appendCompactionBlock();
+      this._compaction.setSummary(ev.text ?? '');
+      return;
+    }
+    if (compaction && isLocalCommandStdoutText(ev.text ?? '')) {
+      this._compaction = null; // absorbed: the bubble header already says it
+      return;
+    }
+    if (compaction && isCompactCommandText(ev.text ?? '')) {
+      // Reload order is boundary, summary, `/compact`: the untouched `/compact`
+      // bubble renders as today and the compaction bubble is re-seated below it,
+      // matching the live order. Stays armed for the stdout line that follows.
+      if (this.root.lastChild === compaction.node) compactionBelow = compaction;
+    } else {
+      this._compaction = null;
+    }
     const blocks = el('div', { class: 'blocks' });
     let text = ev.text ?? '';
 
@@ -677,6 +759,7 @@ export class Conversation {
       wrap.appendChild(actions);
     }
     this.root.appendChild(wrap);
+    if (compactionBelow) this.root.appendChild(compactionBelow.node);
     this._closeAssistantSegment();
   }
 
