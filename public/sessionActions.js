@@ -1,8 +1,8 @@
 // Per-session / per-project ACTION helpers, extracted from app.js. Follows the
 // installX({...}) pattern.
 //
-// These are the user-triggered mutations wired into the sidebar (promote /
-// resume / load-sessions / delete-session / delete-project / remove-worktree)
+// These are the user-triggered mutations wired into the sidebar (make-persistent /
+// resume / load-sessions / close-session (stop or archive) / delete-project / remove-worktree)
 // and the header/conversation action buttons (rewind / fork). app.js stays the
 // orchestrator: it holds the returned handles in a `sessionActions` holder and
 // forwards every call site through it (the Sidebar and conversationOptions are
@@ -21,7 +21,7 @@
 //   - getInstances():              the live instance list (state.instances).
 //   - refreshProjects()/refreshInstances()/selectInstance(id): post-action
 //                                  refresh + selection (drive app.js state/sidebar).
-//   - sidebar:                     for sidebar.sessionsCache eviction in deleteSession.
+//   - sidebar:                     for sidebar.sessionsCache eviction in deleteSession / stopSession.
 //   - clearUnread(sessionId):      drop the unread badge for an archived session.
 //   - headerUpdate():              repaint the header after an optimistic local
 //                                  mirror (applySessionTitle). Lazy — the header
@@ -35,13 +35,14 @@
 import { apiFetch } from './http.js';
 import { send } from './ws.js';
 import { installDeleteProjectDialog } from './deleteProjectDialog.js';
+import { closeActionOf, stopNeedsConfirm } from './closeAction.js';
 
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
   refreshProjects, refreshInstances, selectInstance,
   sidebar, clearUnread, headerUpdate, deleteProjectDom,
 }) {
-  // Promote a live temp session into a regular one. The server flips the
+  // Make a live temp session persistent. The server flips the
   // temp flag, writes the resume-picker metadata, and broadcasts the
   // status change — the sidebar's `instances` re-fetch then migrates the
   // row from the Temp Sessions subnode into the regular Sessions list. A
@@ -50,11 +51,11 @@ export function installSessionActions({
     if (!instanceId) return;
     const isConductor = projectName === '.conduct';
     const ok = confirm(isConductor
-      ? `Keep this conductor?\n\n${preview || '(no preview yet)'}\n\n` +
-        `It will move to Inactive instead of being archived when it exits.`
-      : `Promote this temp session to a normal session in '${projectName}'?\n\n` +
+      ? `Make this conductor persistent?\n\n${preview || '(no preview yet)'}\n\n` +
+        `It will move to Inactive instead of being archived when it stops.`
+      : `Make this temp session persistent in '${projectName}'?\n\n` +
         `${preview || '(no preview yet)'}\n\n` +
-        `The transcript will be preserved when the session ends.`,
+        `The transcript will be preserved when the session stops.`,
     );
     if (!ok) return;
     try {
@@ -63,7 +64,7 @@ export function installSessionActions({
       });
       await refreshInstances();
     } catch (e) {
-      alert(`Failed to promote: ${e.message}`);
+      alert(`Failed to make persistent: ${e.message}`);
     }
   }
 
@@ -202,13 +203,48 @@ export function installSessionActions({
 
   let deleteProjectDialog = null;
 
-  // The sidebar × action archives a session (keeps its transcript) rather
-  // than deleting it — it moves to Settings → Archived, where it can be
-  // restored or permanently deleted. Sessions are never deleted from here.
-  async function deleteSession({ projectName, worktreeName, sessionId, preview, synthetic }) {
-    const label = preview && preview !== '(new session)' && preview !== `${sessionId.slice(0, 8)}…`
+  // The label a session goes by in a confirm: its preview, else its id prefix.
+  function sessionLabel(preview, sessionId) {
+    return preview && preview !== '(new session)' && preview !== `${sessionId.slice(0, 8)}…`
       ? `"${preview}"`
       : sessionId.slice(0, 8) + '…';
+  }
+
+  // The sidebar × is one step down (public/closeAction.js): closeSession routes
+  // a live persistent session to stopSession and everything else to
+  // deleteSession.
+  function closeSession(args) {
+    return closeActionOf(args) === 'stop' ? stopSession(args) : deleteSession(args);
+  }
+
+  // Stop a live persistent session: kill the instance, keep the transcript. The
+  // session stays in the sidebar — Inactive for a conductor, a resumable row
+  // for any other — so the unread badge stays too. Idle stops silently; a busy
+  // session asks first because the running work is killed.
+  async function stopSession({ projectName, worktreeName, instanceId, preview, sessionId, status }) {
+    if (stopNeedsConfirm(status) && !confirm(
+      `Stop session ${sessionLabel(preview, sessionId)}?\n` +
+      `It is still working — the running work is killed. The transcript is kept and it stays resumable.`,
+    )) return;
+    try {
+      await apiFetch(`/api/instances/${encodeURIComponent(instanceId)}`, { method: 'DELETE' });
+      if (getActiveId() === instanceId) setActiveId(null);
+      if (sidebar.sessionsCache) {
+        const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
+        sidebar.sessionsCache.delete(key);
+      }
+      await refreshProjects();
+      await refreshInstances();
+    } catch (e) {
+      alert(`stop session failed: ${e.message}`);
+    }
+  }
+
+  // Archive a session (keeps its transcript) rather than deleting it — it moves
+  // to Settings → Archived, where it can be restored or permanently deleted.
+  // Sessions are never deleted from here.
+  async function deleteSession({ projectName, worktreeName, sessionId, preview, synthetic }) {
+    const label = sessionLabel(preview, sessionId);
     if (!confirm(`Archive session ${label}?\nIt moves to Settings → Archived (transcript kept, still resumable).`)) return;
 
     // Synthetic sessions have no persisted .jsonl yet — the archive endpoint
@@ -381,7 +417,7 @@ export function installSessionActions({
   return {
     promoteSession, loadSessions, resumeSession,
     rewindActiveSession, forkActiveSession,
-    deleteProject, deleteSession, removeWorktree,
+    deleteProject, closeSession, stopSession, deleteSession, removeWorktree,
     applySessionTitle, syncWorktree, mergeWorktree, respawnActive,
   };
 }

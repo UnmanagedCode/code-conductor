@@ -10,6 +10,7 @@ import { assertNull } from './dom-assert.mjs';
 import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
 
 const conductorOf = (list, sid) => list.querySelector(`[data-key="conductor:${sid}"]`);
+const conductorRowOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-row');
 const titles = (root) => [...root.querySelectorAll(':scope > li.conductor-block .conductor-title')].map(t => t.textContent);
 
 async function render(sidebar, { projects = [], instances = [], conductRows = [], spawns = {} } = {}) {
@@ -380,7 +381,7 @@ test('project chips are display-only: neither kind is a button, and clicking eit
     c.click();
   }
   await tick();
-  assert.deepEqual(calls, { select: [], resume: [], create: [], delete: [], promote: [] });
+  assert.deepEqual(calls, { select: [], resume: [], create: [], close: [], promote: [] });
 });
 
 const TREE_FIXTURE = {
@@ -654,26 +655,31 @@ test('a live conductor-row dot gains the waiting-on-you ring over its fill; an i
   assert.equal(dot('X').className, 'dot exited', 'an exited instance is unringed');
 });
 
-test('every conductor row, live and inactive, ends in a × archive button; the worker tree has none', async () => {
+// Invariant: a live conductor row carries no × (it closes from the strip); an inactive row ends in the archive ×; the worker tree has none.
+test('a live conductor row has no ×; an inactive conductor row ends in an archive ×; the worker tree has none', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, {
     projects: [project('proj')],
     conductRows: [{ sessionId: 'D', lastActivity: 1 }],
-    instances: [conductor('A'), worker('w', 'A', 'proj')],
+    instances: [conductor('A'), worker('w', 'A', 'proj'), conductor('X', { status: 'exited' })],
   });
-  sidebar.setUnread(new Map([['A', 2]]));
+  sidebar.setUnread(new Map([['A', 2], ['D', 2]]));
   await tick();
-  for (const sid of ['A', 'D']) {
-    const row = conductorOf(conductorList, sid).querySelector('.conductor-row');
+  const liveRow = conductorRowOf(conductorList, 'A');
+  assertNull(liveRow.querySelector('.session-delete'), 'a live conductor row has no ×');
+  assert.ok(liveRow.querySelector(':scope > .session-unread'), 'the unread pill still renders on the live row');
+  for (const sid of ['D', 'X']) {
+    const row = conductorRowOf(conductorList, sid);
     const x = row.querySelector(':scope > .session-delete');
-    assert.ok(x, `${sid}: the row has a × button`);
+    assert.ok(x, `${sid}: the inactive row has a × button`);
     assert.equal(row.lastElementChild.dataset.key, 'delete', `${sid}: the × is the row's last child`);
     assert.ok(row.lastElementChild === x, `${sid}: the last child is the × button`);
     assert.equal(x.tagName, 'BUTTON');
     assert.equal(x.textContent, '×');
-    assert.equal(x.title, 'archive session (keeps history)');
+    assert.equal(x.title, 'Archive session (keeps history)');
+    assert.equal(x.getAttribute('aria-label'), 'Archive session (keeps history)');
   }
-  assert.ok(conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-unread'), 'the unread pill still renders, before the ×');
+  assert.ok(conductorRowOf(conductorList, 'D').querySelector(':scope > .session-unread'), 'the unread pill still renders, before the ×');
   conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
   await tick();
   const tree = conductorOf(conductorList, 'A').querySelector('.conductor-tree');
@@ -682,56 +688,59 @@ test('every conductor row, live and inactive, ends in a × archive button; the w
   assertNull(tree.querySelector('.session-delete'), 'no × inside the worker tree');
 });
 
-test('× archives through onDeleteSession with the conductor\'s id and never selects or resumes', async (t) => {
+// Invariant: an inactive conductor's × calls onCloseSession with the full close payload and never selects or resumes.
+test('× on an inactive conductor closes through onCloseSession with the conductor\'s facts and never selects or resumes', async (t) => {
   const click = async ({ conductRows = [], instances }, sid) => {
     const { conductorList, sidebar, calls } = await setupSidebar();
     await render(sidebar, { conductRows, instances });
-    conductorOf(conductorList, sid).querySelector('.conductor-row > .session-delete').click();
+    conductorRowOf(conductorList, sid).querySelector(':scope > .session-delete').click();
     assert.deepEqual(calls.select, [], 'the × selects nothing');
     assert.deepEqual(calls.resume, [], 'the × resumes nothing');
-    return calls.delete;
+    return calls.close;
   };
-  await t.test('a live conductor with no transcript listed goes the synthetic path', async () => {
-    assert.deepEqual(await click({ instances: [conductor('A', { title: 'Alpha' })] }, 'A'), [
-      { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Alpha', synthetic: true },
-    ]);
-  });
   await t.test('an inactive disk-only conductor archives its transcript', async () => {
     assert.deepEqual(await click({ conductRows: [{ sessionId: 'D', title: 'Disk', lastActivity: 1 }], instances: [] }, 'D'), [
-      { projectName: '.conduct', worktreeName: null, sessionId: 'D', preview: 'Disk', synthetic: false },
+      { projectName: '.conduct', worktreeName: null, sessionId: 'D', instanceId: null, status: null, temp: false, preview: 'Disk', synthetic: false },
     ]);
   });
-  await t.test('a live conductor with a disk row archives its transcript', async () => {
+  await t.test('an exited conductor with no transcript listed goes the synthetic path', async () => {
+    assert.deepEqual(await click({ instances: [conductor('A', { title: 'Alpha', status: 'exited' })] }, 'A'), [
+      { projectName: '.conduct', worktreeName: null, sessionId: 'A', instanceId: 'inst-A', status: 'exited', temp: true, preview: 'Alpha', synthetic: true },
+    ]);
+  });
+  await t.test('an exited conductor with a disk row archives its transcript', async () => {
     assert.deepEqual(await click({
       conductRows: [{ sessionId: 'B', lastActivity: 1 }],
-      instances: [conductor('B', { firstPrompt: 'plan the work' })],
+      instances: [conductor('B', { firstPrompt: 'plan the work', status: 'crashed', temp: false })],
     }, 'B'), [
-      { projectName: '.conduct', worktreeName: null, sessionId: 'B', preview: 'plan the work', synthetic: false },
+      { projectName: '.conduct', worktreeName: null, sessionId: 'B', instanceId: 'inst-B', status: 'crashed', temp: false, preview: 'plan the work', synthetic: false },
     ]);
   });
 });
 
+// Invariant: an inactive conductor's × reuses its button across renders and reads the freshest conductor at click time.
 test('the × reads the freshest conductor after a re-render', async () => {
   const { conductorList, sidebar, calls } = await setupSidebar();
-  await render(sidebar, { instances: [conductor('A')] });
-  const before = conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete');
-  sidebar.setConductSessions([{ sessionId: 'A', lastActivity: 1 }]);
-  sidebar.setInstances([conductor('A', { title: 'Renamed' })]);
+  await render(sidebar, { conductRows: [{ sessionId: 'A', lastActivity: 1 }], instances: [] });
+  const before = conductorRowOf(conductorList, 'A').querySelector(':scope > .session-delete');
+  sidebar.setConductSessions([{ sessionId: 'A', title: 'Renamed', lastActivity: 1 }]);
   await tick();
-  const after = conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete');
+  const after = conductorRowOf(conductorList, 'A').querySelector(':scope > .session-delete');
   assert.ok(after === before, 'the button is reused, not rebuilt');
   after.click();
-  assert.deepEqual(calls.delete, [
-    { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Renamed', synthetic: false },
-  ]);
+  assert.deepEqual(calls.close.map(c => [c.sessionId, c.preview]), [['A', 'Renamed']]);
 });
 
-test('the × on the only conductor archives it; applying the refresh leaves the empty state', async () => {
+// Invariant: when the last live conductor dies its row moves to Inactive and gains the ×, and closing it (after the refresh empties the list) leaves the empty state.
+test('a conductor that dies gains the × under Inactive; applying the archive refresh leaves the empty state', async () => {
   const { conductorList, sidebar, calls } = await setupSidebar();
   await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
-  conductorOf(conductorList, 'A').querySelector('.conductor-row > .session-delete').click();
-  assert.deepEqual(calls.delete.map(d => d.sessionId), ['A'], 'onDeleteSession fired for the only conductor');
-  // What deleteSession's refreshProjects/refreshInstances deliver once it is archived.
+  assertNull(conductorRowOf(conductorList, 'A').querySelector('.session-delete'), 'no × while live');
+  sidebar.setInstances([conductor('A', { title: 'Alpha', status: 'exited' })]);
+  await tick();
+  conductorRowOf(conductorList, 'A').querySelector(':scope > .session-delete').click();
+  assert.deepEqual(calls.close.map(d => d.sessionId), ['A'], 'onCloseSession fired for the only conductor');
+  // What the archive's refreshProjects/refreshInstances deliver once it is done.
   sidebar.setInstances([]);
   sidebar.setConductSessions([]);
   await tick();
@@ -790,6 +799,15 @@ test('styles.css: hovering a conductor row reveals its × (a top-level rule for 
     `that rule sets opacity: 1 (found: ${JSON.stringify(hover.map(r => r.decls.get('opacity') ?? null))})`);
 });
 
+// Invariant: hovering a strip entry reveals its × (the .strip-list > li:hover rule sets opacity 1).
+test('styles.css: hovering a strip entry reveals its × (a top-level rule for .strip-list > li:hover .session-delete sets opacity 1)', async () => {
+  const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));
+  const hover = rules.filter(r => r.selectors.includes('.strip-list > li:hover .session-delete'));
+  assert.ok(hover.length > 0, 'a rule selects .strip-list > li:hover .session-delete');
+  assert.ok(hover.some(r => r.decls.get('opacity') === '1'),
+    `that rule sets opacity: 1 (found: ${JSON.stringify(hover.map(r => r.decls.get('opacity') ?? null))})`);
+});
+
 const expandA = (conductorList) => {
   conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
   return conductorOf(conductorList, 'A').querySelector('.conductor-tree');
@@ -816,7 +834,8 @@ test('a live temp worker row ends in the ↑ promote button; a non-temp worker h
       const btn = ups[0];
       assert.equal(btn.tagName, 'BUTTON');
       assert.equal(btn.textContent, '↑');
-      assert.equal(btn.title, 'promote to normal session');
+      assert.equal(btn.title, 'Make persistent');
+      assert.equal(btn.getAttribute('aria-label'), 'Make persistent');
       assert.ok(row.lastElementChild === btn, 'the ↑ is the row\'s last child');
       assert.equal(btn.dataset.key, 'promote');
       assertNull(row.querySelector('.session-delete'), 'no × beside it');
@@ -912,19 +931,19 @@ test('a worker dying drops the ↑ in place', async () => {
   assertNull(after.querySelector('.session-promote'), 'the ↑ is gone once the worker exits');
 });
 
-const conductorRowOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-row');
-
-test('a live temp conductor row carries ↑ immediately left of ×', async (t) => {
+// Invariant: a live temp conductor row's ↑ is its last child (no × on a live row), after the unread pill when there is one.
+test('a live temp conductor row ends in the ↑ Make persistent button', async (t) => {
   const check = (row) => {
     const ups = row.querySelectorAll(':scope > .session-promote');
     assert.equal(ups.length, 1, 'exactly one ↑');
     const btn = ups[0];
     assert.equal(btn.tagName, 'BUTTON');
     assert.equal(btn.textContent, '↑');
-    assert.equal(btn.title, 'promote to normal session');
+    assert.equal(btn.title, 'Make persistent');
+    assert.equal(btn.getAttribute('aria-label'), 'Make persistent');
     assert.equal(btn.dataset.key, 'promote');
-    assert.ok(btn.nextElementSibling === row.querySelector(':scope > .session-delete'), 'the × follows the ↑');
-    assert.equal(row.lastElementChild.dataset.key, 'delete', 'the × is still the last child');
+    assert.ok(row.lastElementChild === btn, 'the ↑ is the row\'s last child');
+    assertNull(row.querySelector('.session-delete'), 'no × on a live row');
     return btn;
   };
   await t.test('without an unread pill', async () => {
@@ -932,7 +951,7 @@ test('a live temp conductor row carries ↑ immediately left of ×', async (t) =
     await render(sidebar, { instances: [conductor('A')] });
     check(conductorRowOf(conductorList, 'A'));
   });
-  await t.test('with an unread pill: unread → ↑ → ×', async () => {
+  await t.test('with an unread pill: unread → ↑', async () => {
     const { conductorList, sidebar } = await setupSidebar();
     await render(sidebar, { instances: [conductor('A')] });
     sidebar.setUnread(new Map([['A', 3]]));
@@ -942,20 +961,20 @@ test('a live temp conductor row carries ↑ immediately left of ×', async (t) =
   });
 });
 
-test('no ↑ on a non-temp, dead or disk-only conductor row', async (t) => {
-  const none = async ({ conductRows = [], instances = [] }, sid) => {
+test('no ↑ on a non-temp, dead or disk-only conductor row; only the not-live ones carry the ×', async (t) => {
+  const none = async ({ conductRows = [], instances = [] }, sid, hasClose) => {
     const { conductorList, sidebar } = await setupSidebar();
     await render(sidebar, { conductRows, instances });
     const row = conductorRowOf(conductorList, sid);
     assert.ok(row, 'the conductor row renders');
     assertNull(row.querySelector('.session-promote'), 'no ↑');
-    assert.ok(row.querySelector(':scope > .session-delete'), 'the × is still there');
+    assert.equal(!!row.querySelector(':scope > .session-delete'), hasClose, hasClose ? 'the × is there' : 'no × on a live row');
   };
-  await t.test('a live non-temp conductor', () => none({ instances: [conductor('A', { temp: false })] }, 'A'));
+  await t.test('a live non-temp conductor', () => none({ instances: [conductor('A', { temp: false })] }, 'A', false));
   for (const status of ['exited', 'crashed']) {
-    await t.test(`an ${status} temp conductor`, () => none({ instances: [conductor('A', { status })] }, 'A'));
+    await t.test(`an ${status} temp conductor`, () => none({ instances: [conductor('A', { status })] }, 'A', true));
   }
-  await t.test('a disk-only conductor', () => none({ conductRows: [{ sessionId: 'D', lastActivity: 1 }] }, 'D'));
+  await t.test('a disk-only conductor', () => none({ conductRows: [{ sessionId: 'D', lastActivity: 1 }] }, 'D', true));
 });
 
 test('↑ promotes through onPromoteSession with the conductor\'s instance id and never selects or resumes', async (t) => {
@@ -991,7 +1010,7 @@ test('conductor ↑ reads the freshest instance after a re-render', async () => 
 });
 
 test('promoting a conductor drops the ↑ in place; a later onDisk merge does not duplicate the row', async () => {
-  const { conductorList, sidebar, calls } = await setupSidebar();
+  const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, { instances: [conductor('A', { title: 'Alpha' })] });
   const row = conductorRowOf(conductorList, 'A');
   assert.ok(row.querySelector('.session-promote'), 'sanity: ↑ before the promote');
@@ -1004,10 +1023,7 @@ test('promoting a conductor drops the ↑ in place; a later onDisk merge does no
   await tick();
   assert.equal(conductorList.querySelectorAll('[data-key="conductor:A"]').length, 1, 'one block for the conductor');
   assert.ok(conductorRowOf(conductorList, 'A') === row, 'still the same row node');
-  row.querySelector(':scope > .session-delete').click();
-  assert.deepEqual(calls.delete, [
-    { projectName: '.conduct', worktreeName: null, sessionId: 'A', preview: 'Alpha', synthetic: false },
-  ], 'once listed, the × takes the archive route');
+  assertNull(row.querySelector('.session-delete'), 'a live row never gains a ×');
 });
 
 test('a temp conductor dying loses its ↑ as it moves to Inactive', async () => {
