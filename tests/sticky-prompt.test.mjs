@@ -484,3 +484,40 @@ test('no full-page view hides #conversation without its pane', async () => {
     assert.ok(css.includes(`#main.${v} #conversation-pane`), `#main.${v} must hide #conversation-pane`);
   }
 });
+
+// The pin's look is CSS the happy-dom layout cannot reach, so its contract is
+// read from styles.css: the declarations of one rule, by exact selector.
+async function pinRule(selector) {
+  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
+  const esc = selector.replace(/[.]/g, '\\.');
+  const m = css.match(new RegExp(`(?:^|\\n)${esc}\\s*\\{([^}]*)\\}`));
+  assert.ok(m, `${selector} rule not found`);
+  return m[1];
+}
+
+test('the clamp is five lines, and the fade is anchored to the bottom of the clamp, not a share of it', async () => {
+  const body = await pinRule('.pinned-prompt-body');
+  assert.match(body, /max-height:\s*calc\(5 \* 1lh\)/, 'five lines show before the fade');
+  const fade = await pinRule('.pinned-prompt-body.overflowing');
+  for (const prop of ['-webkit-mask-image', 'mask-image']) {
+    const m = fade.match(new RegExp(`(?:^|[\\s;])${prop}:\\s*linear-gradient\\(([^;]*)\\);`));
+    assert.ok(m, `${prop} declared`);
+    // A percentage stop scales with the clamp: at 55% it would dim lines 3-5.
+    assert.match(m[1], /#000 calc\(100% - [\d.]+lh\)/, `${prop} fades over the last lines only`);
+  }
+});
+
+test('the pin\'s shadow sits on the outer box, adds a light edge line, and takes no layout space', async () => {
+  const outer = await pinRule('.pinned-prompt');
+  const m = outer.match(/box-shadow:\s*([^;]+);/);
+  assert.ok(m, 'the pin declares a box-shadow');
+  const layers = m[1].split(/,(?![^(]*\))/).map(s => s.trim());
+  assert.equal(layers.some(l => /^inset\b/.test(l)), false, 'an inset shadow would paint inside the box');
+  // A black shadow alone is hard to see on near-black surfaces: the first layer
+  // is a faint white 1px line hugging the bottom edge (no blur, no spread).
+  assert.match(layers[0], /^0 1px 0 rgba\(255, 255, 255, \.\d+\)$/, 'first layer is the light separator');
+  assert.ok(layers.slice(1).some(l => /^0 [1-9]\d*px [1-9]\d*px rgba\(0, 0, 0, /.test(l)), 'a black shadow falls below the pin');
+  // The mask belongs to the inner body: on the outer box it would clip the shadow.
+  assert.equal(/mask/.test(outer), false, 'no mask on the outer box');
+  assert.equal(/overflow/.test(outer), false, 'no overflow clip on the outer box');
+});
