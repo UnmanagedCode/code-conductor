@@ -22,7 +22,9 @@
 // `loadSessions` below. RECORD INVARIANT, kept by every mutation: a persisted
 // record has at least one live (non-dropped) segment and `current` is live; a
 // mutation that would leave none deletes the record — and with it every session
-// fact. Only the explicit session delete may do that.
+// fact. Only the explicit session delete may do that. The one other deleter,
+// removeSessionRecords (run at boot by src/sessionCleanup.ts), removes whole
+// records whose lineage has no transcript left, never a segment.
 //
 // RESOLUTION.
 //   - Readers resolve a public key first, then a LIVE segment's owner. Unknown
@@ -95,8 +97,9 @@
 // SYNC READ: loadSessionsSync, for the restart path, which stays synchronous up
 // to process.exit(). It never consults the cache or the barrier.
 //
-// Growth is unbounded apart from explicit deletes: every session ever recorded
-// keeps its record.
+// Growth is bounded only by the two deleters: every session ever recorded keeps
+// its record until it is explicitly deleted or the boot cleanup finds no
+// transcript left anywhere in its lineage.
 
 import { promises as fs, readFileSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
@@ -454,16 +457,20 @@ function archivedCount(doc: SessionsDoc): number {
 }
 
 // Refresh `.bak` unless this write drops more than one record or more than one
-// archived segment relative to it. Absent or corrupt `.bak` → write it; an
-// unreadable one is left alone.
-async function refreshBackup(doc: SessionsDoc, json: string): Promise<void> {
+// archived segment relative to it, beyond `expectedDrop` — what a bulk removal
+// (removeSessionRecords) says it removed on purpose. Absent or corrupt `.bak` →
+// write it; an unreadable one is left alone.
+async function refreshBackup(
+  doc: SessionsDoc, json: string, expectedDrop: { records: number; archived: number } = { records: 0, archived: 0 },
+): Promise<void> {
   let bak: SessionsDoc | null = null;
   try { bak = parseSessionsDoc(JSON.parse(await fs.readFile(backupFile(), 'utf8'))); }
   catch (e) {
     const code = errCode(e);
     if (code !== undefined && code !== 'ENOENT') return;
   }
-  if (bak && (bak.size - doc.size > 1 || archivedCount(bak) - archivedCount(doc) > 1)) return;
+  if (bak && (bak.size - doc.size > 1 + expectedDrop.records
+    || archivedCount(bak) - archivedCount(doc) > 1 + expectedDrop.archived)) return;
   await writeFileAtomic(backupFile(), json);
 }
 
@@ -504,6 +511,52 @@ export function mutateSessions<R>(op: string, id: string, apply: Apply<R>, prech
       console.warn(`sessionStore: ${op} ${id} failed: ${errMsg(e)}`);
       throw e;
     }
+  });
+}
+
+// THE SECOND DELETER (beside the explicit session delete): remove whole records
+// in one write. `pick` sees the parsed doc under the lock and names the public
+// ids to remove. Before anything else, the primary's raw bytes are written to
+// `snapshotFile` — every call, overwriting the last one, whether or not
+// anything is removed — and a failed snapshot throws before the store changes.
+// An absent primary is skipped with no snapshot; a corrupt one is snapshotted
+// and skipped, left for the next ordinary mutation's loadStrict to quarantine.
+export function removeSessionRecords(
+  pick: (doc: SessionsDoc) => string[], { snapshotFile }: { snapshotFile: string },
+): Promise<{ removed: string[]; skipped?: string }> {
+  return serialize(async () => {
+    const file = sessionsFile();
+    return withLock(file, async () => {
+      let raw: Buffer;
+      try { raw = await fs.readFile(file); }
+      catch (e) {
+        if (errCode(e) === 'ENOENT') {
+          console.warn(`sessionStore: removeSessionRecords: ${file} is absent; skipped`);
+          return { removed: [], skipped: 'store absent' };
+        }
+        console.warn(`sessionStore: removeSessionRecords: failed to read ${file}: ${errMsg(e)}`);
+        throw e;
+      }
+      await writeFileAtomic(snapshotFile, raw);
+      let doc: SessionsDoc;
+      try { doc = parseSessionsDoc(JSON.parse(raw.toString('utf8'))); }
+      catch (e) {
+        console.warn(`sessionStore: removeSessionRecords: ${file} is corrupt (${errMsg(e)}); skipped`);
+        return { removed: [], skipped: 'store corrupt' };
+      }
+      const removed = [...new Set(pick(doc))].filter(id => doc.has(id));
+      if (removed.length === 0) return { removed };
+      let archived = 0;
+      for (const id of removed) {
+        for (const s of (doc.get(id) as SessionRecord).segments) if (s.archived) archived++;
+        doc.delete(id);
+      }
+      const json = serializeSessionsDoc(doc);
+      await writeFileAtomic(file, json);
+      await refreshBackup(doc, json, { records: removed.length, archived });
+      cache = { file, sig: sigOf(await fs.stat(file, { bigint: true })), doc };
+      return { removed };
+    });
   });
 }
 

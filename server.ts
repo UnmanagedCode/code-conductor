@@ -16,6 +16,7 @@ import { loadSessions } from './src/sessionStore.ts';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
 import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
+import { cleanupSessionsWithoutTranscripts } from './src/sessionCleanup.ts';
 import { ensureConductProject } from './src/conduct.ts';
 import { regenerateAllProjectConventions } from './src/projectClaudeMd.ts';
 import { restoreFromResumeManifest } from './src/resumeRestart.ts';
@@ -196,6 +197,13 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // daemon would otherwise survive the orchestrator that created them.
   try { await sweepFuseSessions(); }
   catch (e) { console.warn('fuse sweep failed:', e); }
+  // Drop session records with no transcript left anywhere in their lineage
+  // (pre-image: <store>/sessions.json.startup.bak). ORDER IS LOAD-BEARING: after
+  // migrations and the temp sweep (whose store write it queues behind), before
+  // createServer() so no instance is live, and before restoreFromResumeManifest
+  // unlinks pending-resume.json, which names the sessions it must keep.
+  try { await cleanupSessionsWithoutTranscripts({ log: console }); }
+  catch (e) { console.warn('session cleanup failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at

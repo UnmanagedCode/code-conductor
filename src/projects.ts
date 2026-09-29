@@ -2184,6 +2184,40 @@ export async function findOrphanedTranscript(sessionId: string): Promise<string 
   return null;
 }
 
+// The backing id of EVERY transcript on this machine: every `<id>.jsonl` name
+// under the local root and under every farm dir ON DISK — a deregistered
+// remote's transcripts included, which is why this globs the farm rather than
+// asking transcriptRoots(). Names only, no `isFile`: an odd entry counts as
+// present. Transcripts never live on a remote box, so no System handle is taken.
+//
+// THROWS rather than under-report, because the caller (src/sessionCleanup.ts)
+// deletes on absence: an absent local root (a boot with the wrong HOME or
+// CLAUDE_CONFIG_DIR) and any error but ENOENT on a farm dir or a vanished
+// encoded dir. An encoded-dir entry that is a plain file (ENOTDIR) holds no
+// transcripts and is skipped.
+export async function transcriptIdsOnDisk(): Promise<Set<string>> {
+  const suffix = '.jsonl';
+  const roots = [claudeProjectsRoot()];
+  const farm = claudeConfigFarmRoot();
+  let farmDirs: string[] = [];
+  try { farmDirs = await fs.readdir(farm); }
+  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  for (const d of farmDirs) roots.push(path.join(farm, d, '.claude', 'projects'));
+  const ids = new Set<string>();
+  for (const [i, root] of roots.entries()) {
+    let dirs: string[];
+    try { dirs = await fs.readdir(root); }
+    catch (e) { if (i > 0 && errCode(e) === 'ENOENT') continue; throw e; }
+    for (const d of dirs) {
+      let names: string[];
+      try { names = await fs.readdir(path.join(root, d)); }
+      catch (e) { const code = errCode(e); if (code === 'ENOENT' || code === 'ENOTDIR') continue; throw e; }
+      for (const name of names) if (name.endsWith(suffix)) ids.add(name.slice(0, -suffix.length));
+    }
+  }
+  return ids;
+}
+
 // EVERY transcript root cc knows about: the local one, plus one per registered
 // remote. There is no single root any more, so the reverse scanner above has to
 // be told where to look — left local-only it would answer "no such session" for
