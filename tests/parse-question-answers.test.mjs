@@ -146,3 +146,23 @@ test('graceful: multi-question with unrecognised prefix returns nones', () => {
   const got = parseUserQuestionAnswers(qs, 'gibberish');
   assert.deepEqual(got, [{ kind: 'none' }, { kind: 'none' }]);
 });
+
+// ── '(no answer)' and ' — ' inside custom text ────────────────────────────────
+
+test('a skipped question (\'(no answer)\') parses back to { kind: \'none\' }', () => {
+  const qs = [
+    { question: 'Q1', options: [{ label: 'A' }] },
+    { question: 'Q2', options: [{ label: 'X' }] },
+  ];
+  const answers = [{ kind: 'none' }, { kind: 'option', label: 'X' }];
+  assert.deepEqual(roundTrip(qs, answers), answers);
+  // Single-question short form takes the same path.
+  const single = [{ question: 'Q', options: [{ label: 'A' }] }];
+  assert.deepEqual(roundTrip(single, [{ kind: 'none' }]), [{ kind: 'none' }]);
+});
+
+test('a custom answer containing \' — \' round-trips whole', () => {
+  const qs = [{ question: 'Any preference?', options: [{ label: 'Yes' }, { label: 'No' }] }];
+  const answers = [{ kind: 'custom', text: 'Maybe — but only after the release' }];
+  assert.deepEqual(roundTrip(qs, answers), answers);
+});

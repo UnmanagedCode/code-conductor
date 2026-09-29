@@ -90,6 +90,7 @@ import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, res
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
+import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { LiveAskFacts, reduceAsk, type AskState } from './awaitingUser.ts';
 import { deriveAwaitingUser, chainEndingAt } from './awaitingUserTranscript.ts';
@@ -717,6 +718,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   parser: Parser;
   ring: EventLog;
   _userEchoCount: number;
+  _questionAnswers: QuestionAnswerCorrelator;
   _liveThinkingTokens: number | null;
   _lastContextUsage: unknown;
   _pending: Map<string, PendingRequest>;
@@ -896,6 +898,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // into the new file (_fileOrdinalFor). Reset alongside the ring in
     // _wipeForResume (replay recounts from 0).
     this._userEchoCount = 0;
+    // Pairs an answering outer user_echo with its user_question (see _emitUi).
+    // Reset alongside the count in _wipeForResume.
+    this._questionAnswers = new QuestionAnswerCorrelator();
     // Ephemeral live thinking-token estimate for the OPEN thinking block, or
     // null when none is streaming. The per-token system/thinking_tokens events
     // are never retained in the ring (see EventLog.push), so this O(1)
@@ -1622,8 +1627,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       wrapped.userIndex = this._userEchoCount;
       this._userEchoCount += 1;
     }
+    // Stamps `questionAnswer` on the outer echo that answers a pending
+    // AskUserQuestion card (UI-only; the CLI never sees it).
+    this._questionAnswers.apply(wrapped);
     // INVARIANT: the ring and the live feed share ONE object. Anything stamped
-    // onto `wrapped` above (userIndex, estimatedTokens) must be set BEFORE this
+    // onto `wrapped` above (userIndex, estimatedTokens, questionAnswer) must be set BEFORE this
     // point, and neither line may take a copy. The field a copy would cost is
     // `_seq`: push() assigns it to the object it receives (see EventLog.push),
     // so cloning for the ring leaves the live frame with `_seq: undefined` and
@@ -4066,6 +4074,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _wipeForResume(extra: Record<string, unknown> = {}): void {
     this.ring.clear();
     this._userEchoCount = 0;
+    this._questionAnswers = new QuestionAnswerCorrelator();
     this._liveThinkingTokens = null;
     // The replay about to run feeds _emitUi, so the live quiescence scan must
     // start from the same blank state the ring does.

@@ -8,6 +8,7 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
+import { buildQuestionAnswer } from './questionAnswerBubble.js';
 import { parseRenewSeed } from './renewSeed.js';
 import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
 import { buildUserText } from './userText.js';
@@ -679,6 +680,10 @@ export class Conversation {
       text = forward.instruction;
     }
 
+    // AskUserQuestion answer: recognised only by the server-side pairing stamp
+    // (`questionAnswer`), never by the text alone.
+    const answer = (skill || wake || renew || forward) ? null : (ev.questionAnswer ?? null);
+
     // Strip the <transcribed> marker for display — the agent still receives it
     // in the sent payload so it knows the message came from speech-to-text.
     const TRANSCRIBED_PREFIX = '<transcribed>\n';
@@ -686,7 +691,11 @@ export class Conversation {
     if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
     let userTextControls = null;
-    if (!skill && !wake && !renew && text.length) {
+    if (answer) {
+      const { body, controls } = buildQuestionAnswer(answer, text);
+      blocks.appendChild(body);
+      userTextControls = controls;
+    } else if (!skill && !wake && !renew && text.length) {
       const { body, controls } = buildUserText(text);
       blocks.appendChild(body);
       userTextControls = controls;
@@ -728,6 +737,7 @@ export class Conversation {
     const cls = wake ? 'msg user wake-callback'
       : renew ? 'msg user renew-seed'
       : forward ? 'msg user forward-frame'
+      : answer ? 'msg user question-answer'
       : 'msg user';
     const attrs = { class: cls };
     if (userIndex != null) attrs['data-user-index'] = String(userIndex);
