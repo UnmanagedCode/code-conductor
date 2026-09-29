@@ -77,6 +77,10 @@ export class Conversation {
     // lazy page renders in its own batch Conversation, so the live one shares
     // this map to lock a card whose answer sits on a newer page.
     answeredQuestions = null,
+    // toolUseId -> UserQuestionBlock. A lazy page's batch registers its cards
+    // in the live conversation's map, so a stamped answer that arrives live
+    // finds a card that was rendered on a page.
+    userQuestionBlocks = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
@@ -107,7 +111,7 @@ export class Conversation {
     // TaskUpdate tool block (whose input only carries taskId) can
     // surface the task's actual subject + description.
     this.describeToolCtx = describeToolCtx;
-    this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
+    this.userQuestionBlocks = userQuestionBlocks ?? new Map(); // toolUseId -> UserQuestionBlock
     this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
     this.answeredQuestions = answeredQuestions ?? new Map();
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance

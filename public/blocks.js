@@ -986,7 +986,13 @@ export class UserQuestionBlock {
   // parseUserQuestionAnswers(); pass null to mark answered without
   // highlighting a specific option.
   markAnswered(answers) {
-    if (this.submitted) return;
+    // A card this tab submitted is already locked; the stamp still settles
+    // its status line from 'sending…'.
+    if (!this.submitted) this._lock(answers);
+    this.statusNode.textContent = 'answered';
+  }
+
+  _lock(answers) {
     if (Array.isArray(answers)) {
       this.answers = answers;
       // The text field holds the note on a pick and the whole text of a
@@ -1000,7 +1006,6 @@ export class UserQuestionBlock {
     }
     this.submitted = true;
     this.submitBtn.disabled = true;
-    this.statusNode.textContent = 'sending…';
     this.node.classList.add('answered');
     this.panes.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = true; });
     this.panes.querySelectorAll('.uq-custom-input').forEach(i => { i.disabled = true; });

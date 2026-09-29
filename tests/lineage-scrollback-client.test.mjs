@@ -362,3 +362,71 @@ test('C14 page content renders verbatim: a server task_completion is kept, and p
   const heads = [...dom.conversationEl.querySelectorAll('.task-panel-head')].map(n => n.textContent);
   assert.deepEqual(heads, ['Tasks · 1/1 done'], 'the server-injected task_completion renders');
 });
+
+// AskUserQuestion card locking through the production wiring: the controller
+// hands each page batch the live conversation's answer map and card registry.
+const FRUIT = { header: 'Fruit', question: 'Pick a fruit', multiSelect: false,
+  options: [{ label: 'Apple' }, { label: 'Banana' }] };
+const uqCard = (id) => ({ kind: 'user_question', toolUseId: id, questions: [FRUIT], parentToolUseId: null });
+const uqResult = (id) => ({ kind: 'tool_result', toolUseId: id, content: 'awaiting', isError: true, parentToolUseId: null });
+const uqAnswer = (id) => ({
+  kind: 'user_echo', userIndex: 7, parentToolUseId: null,
+  text: 'Answer to "Pick a fruit": Banana — ripe ones only',
+  questionAnswer: { toolUseId: id, questions: [FRUIT] },
+});
+// One card per test, so the first `.block.user-question` is it.
+const cardOf = (root) => root.querySelector('.block.user-question');
+
+function assertLocked(card, label) {
+  assert.ok(card, `${label}: the card is in the conversation`);
+  assert.ok(card.classList.contains('answered'), `${label}: .answered`);
+  const banana = [...card.querySelectorAll('button.uq-opt')].find((b) => b.dataset.label === 'Banana');
+  assert.ok(banana.classList.contains('picked'), `${label}: Banana picked`);
+  for (const b of card.querySelectorAll('button.uq-opt')) assert.equal(b.disabled, true, `${label}: option disabled`);
+  assert.equal(card.querySelector('.uq-custom-input').value, 'ripe ones only', `${label}: note shown`);
+  assert.equal(card.querySelector('.uq-custom-input').disabled, true, `${label}: field disabled`);
+  assert.equal(card.querySelector('.uq-submit').disabled, true, `${label}: Send disabled`);
+  assert.equal(card.querySelector('.uq-status').textContent, 'answered', `${label}: status`);
+}
+
+test('C15 the controller\'s page batches lock a card whose stamped answer was applied live first', async () => {
+  const dom = await setupDOM();
+  const calls = stubFetch([
+    page([uqCard('tu_q'), uqResult('tu_q')], { hasMore: false, segment: null, nextBefore: 0 }),
+  ]);
+  const { controller, conversation } = install(dom);
+  conversation.apply(uqAnswer('tu_q')); // the tail holds the answer; its card is on an older page
+  controller.init({ tailStartSeq: 900 });
+  await settle();
+  assertLineageRoute(calls);
+  assertLocked(cardOf(dom.conversationEl), 'older page, answer in the tail');
+});
+
+test('C16 the controller shares one answer map across pages: an answer on one page locks the card on the next-older page', async () => {
+  const dom = await setupDOM();
+  const calls = stubFetch([
+    page([echo('between'), uqAnswer('tu_q')], { segment: null, nextBefore: 40 }),
+    page([uqCard('tu_q'), uqResult('tu_q')], { hasMore: false, segment: null, nextBefore: 0 }),
+  ]);
+  const { controller } = install(dom);
+  controller.init({ tailStartSeq: 900 });
+  await settle();
+  assertLineageRoute(calls);
+  assert.equal(calls.length, 2, 'premise: two pages were fetched');
+  assertLocked(cardOf(dom.conversationEl), 'page N+1, answer on page N');
+});
+
+test('C17 a card spliced in from an older page locks when its stamped answer then arrives live', async () => {
+  const dom = await setupDOM();
+  const calls = stubFetch([
+    page([uqCard('tu_q'), uqResult('tu_q')], { hasMore: false, segment: null, nextBefore: 0 }),
+  ]);
+  const { controller, conversation } = install(dom);
+  controller.init({ tailStartSeq: 900 });
+  await settle();
+  assertLineageRoute(calls);
+  const card = cardOf(dom.conversationEl);
+  assert.ok(card && !card.classList.contains('answered'), 'premise: the spliced card is open');
+  conversation.apply(uqAnswer('tu_q'));
+  assertLocked(cardOf(dom.conversationEl), 'spliced card, answer live');
+});

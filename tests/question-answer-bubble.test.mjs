@@ -229,6 +229,7 @@ function assertCardLocked(card, label) {
   for (const i of custom) assert.equal(i.disabled, true, `${label}: custom input disabled`);
   assert.equal(custom[0].value, 'ripe ones only', `${label}: the note is shown`);
   assert.equal(card.querySelector('.uq-submit').disabled, true, `${label}: Send disabled`);
+  assert.equal(card.querySelector('.uq-status').textContent, 'answered', `${label}: the status line says answered`);
 }
 
 function assertCardOpen(card, label) {
@@ -330,6 +331,7 @@ test('tab switching on a stamped-locked two-question card shows each pane\'s pic
   const pane = (idx) => el.querySelector(`.uq-pane[data-idx="${idx}"]`);
   const picked = (idx) => [...pane(idx).querySelectorAll('button.uq-opt.picked')].map(b => b.dataset.label);
   const status = el.querySelector('.uq-status').textContent;
+  assert.equal(status, 'answered', 'a stamp-locked card\'s status line says answered');
   assertStillLocked(el, 'before any tab click');
   assert.deepEqual(picked(0), ['Banana'], 'the active pane shows question 1\'s pick');
   assert.equal(pane(0).querySelector('.uq-custom-input').value, 'ripe', 'and its note');
@@ -364,6 +366,39 @@ test('a card submitted in this tab stays fully disabled through a tab click', as
   el.querySelectorAll('.uq-tab')[0].click();
   assertStillLocked(el, 'after a tab click');
   assert.equal(el.querySelector('.uq-status').textContent, status, 'the sending status line is untouched');
+});
+
+test('a card this tab submitted reads answered, not sending…, once its stamped echo arrives', async () => {
+  const sent = [];
+  const { conv, root } = await freshConversation({ onUserQuestionSubmit: (s) => sent.push(s) });
+  for (const ev of [CARD, CARD_RESULT]) conv.apply(ev);
+  const card = root.querySelector('.block.user-question');
+  card.querySelector('button.uq-opt[data-label="Banana"]').click();
+  card.querySelector('.uq-submit').click();
+  assert.equal(sent.length, 1, 'premise: the submit went out');
+  assert.equal(card.querySelector('.uq-status').textContent, 'sending…', 'premise: in flight until the echo');
+  conv.apply(bananaEcho());
+  assert.equal(card.querySelector('.uq-status').textContent, 'answered', 'the stamped echo settles the status line');
+  assertStillLocked(card, 'after the stamped echo');
+});
+
+test('a card already rendered on a lazy page locks when its stamped answer arrives live', async () => {
+  const { conv, renderEventBatch } = await freshConversation();
+  const batch = renderEventBatch([CARD, CARD_RESULT, TURN_END], {}, {
+    answeredQuestions: conv.answeredQuestions, userQuestionBlocks: conv.userQuestionBlocks,
+  });
+  assertCardOpen(batch.holder.querySelector('.block.user-question'), 'premise: unanswered on its page');
+  conv.apply(bananaEcho());
+  assertCardLocked(batch.holder.querySelector('.block.user-question'), 'lazy-page card, answer live');
+});
+
+test('a stamp naming an earlier card locks it and leaves the later, still-open card alone', async () => {
+  const cardB = { kind: 'user_question', toolUseId: 'tu_b', questions: [FRUIT] };
+  const { conv, root } = await freshConversation();
+  for (const ev of [CARD, CARD_RESULT, cardB, { ...CARD_RESULT, toolUseId: 'tu_b' }, bananaEcho('tu_q')]) conv.apply(ev);
+  const [a, b] = root.querySelectorAll('.block.user-question');
+  assertCardLocked(a, 'earlier card A, named by the stamp');
+  assertCardOpen(b, 'later card B, not named');
 });
 
 test('a stamp for card B leaves card A open', async () => {
