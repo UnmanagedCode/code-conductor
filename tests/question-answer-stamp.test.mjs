@@ -162,3 +162,20 @@ test('_wipeForResume drops a pending question', async () => {
     assert.equal(answer.questionAnswer, undefined);
   } finally { await fs.rm(cwd, { recursive: true, force: true }); }
 });
+
+test('a segment rotation (system/init with a new session id) drops a pending question', async () => {
+  const { inst, emitted, cwd } = await makeInstance();
+  try {
+    // No public id: the rotation branch then kicks no durable lineage write.
+    inst.sessionId = null;
+    inst._emitUi(uq(ONE));
+    inst._handleStdoutLine(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: 'sess-rotated', model: 'claude-haiku-4-5',
+    }));
+    assert.equal(inst.backingSessionId, 'sess-rotated', 'premise: the init was a rotation');
+    inst._emitUi(echo(SINGLE_ANSWER));
+    const answer = emitted.find(e => e.kind === 'user_echo');
+    assert.equal(answer.questionAnswer, undefined,
+      'an answer in the new segment must not pair with a card from the old file, as on reload');
+  } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+});

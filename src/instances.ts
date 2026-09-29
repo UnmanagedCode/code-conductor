@@ -2531,6 +2531,11 @@ export class Instance extends EventEmitter implements InstanceLike {
           // The rotation seam: this init is emitted below, so it takes the
           // seam's own startSeq.
           this.ring.markSeam(sid);
+          // A question pairs only with an answer in the same transcript file:
+          // loadPersistedTranscript builds one correlator per segment file, so
+          // live must drop a pending card here to stamp what a reload stamps.
+          // The spawn fill seam needs no reset: its ring is new or freshly wiped.
+          this._questionAnswers = new QuestionAnswerCorrelator();
           if (publicId) this._kickLineageWrite(this._rotationWrite(publicId, sid, oldBacking));
         }
         const mode = data?.permissionMode;
