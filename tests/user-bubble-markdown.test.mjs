@@ -262,7 +262,12 @@ test('controls survive segment retirement and stay enabled during a running turn
   assert.ok(root.querySelector('.user-view-controls'), 'view controls survive retirement');
 
   conv.setUserActionsEnabled(false);
-  for (const btn of root.querySelectorAll('.user-view-btn')) {
+  // Found by structure, not by the .user-view-btn class: a control classed
+  // `user-msg-action` would be disabled by setUserActionsEnabled and must not
+  // vanish from this loop.
+  const viewButtons = [...root.querySelectorAll('.user-view-controls > button')];
+  assert.equal(viewButtons.length, 2, 'toggle and copy are both found');
+  for (const btn of viewButtons) {
     assert.equal(btn.disabled, false, 'view buttons stay enabled during a running turn');
   }
 });
