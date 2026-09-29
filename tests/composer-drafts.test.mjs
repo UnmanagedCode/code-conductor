@@ -337,7 +337,13 @@ test('prune drops expired and malformed draft keys and nothing else', async (t) 
   await t.test('a fresh draft is kept', () => assert.equal(run().map.has(keyOf('fresh')), true));
   await t.test('unparseable JSON is removed', () => assert.equal(run().map.has(keyOf('bad')), false));
   await t.test('a record without string text is removed', () => assert.equal(run().map.has(keyOf('notext')), false));
-  await t.test('a record with text but no savedAt is removed', () => assert.equal(run().map.has(keyOf('nosaved')), false));
+  await t.test('a record with text but no savedAt is removed even when the clock is inside the age window', () => {
+    // now() = 0 makes `now() - null` 0, which the age check alone would keep, so
+    // only the missing-savedAt clause can remove this record.
+    const storage = fakeStorage({ [keyOf('nosaved')]: JSON.stringify({ text: 't', transcribed: false }) });
+    newStore(storage, () => 0).prune();
+    assert.equal(storage.map.has(keyOf('nosaved')), false);
+  });
   await t.test('a key outside the draft prefix is untouched', () =>
     assert.equal(run().map.get('code-conductor:unread'), '{"s":1}'));
   await t.test('installing the drafts module prunes once', async () => {
