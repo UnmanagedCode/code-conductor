@@ -11,6 +11,7 @@ import { parseWakeCallback } from './wakeCallback.js';
 import { parseRenewSeed } from './renewSeed.js';
 import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
 import { buildUserText } from './userText.js';
+import { syncAssistantBubble } from './assistantBubble.js';
 import { mountFoldedText, renderWakeBodyInto, renderRenewSeedInto, renderForwardBodyInto } from './foldedText.js';
 
 // The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
@@ -687,6 +688,7 @@ export class Conversation {
       this.blocksByKey.set(key, block);
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
       this._appendBlockToWrap(wrap, block.node, { grouped: type !== 'text' });
+      if (type === 'text') syncAssistantBubble(wrap);
     }
     block.appendDelta(deltaText);
   }
@@ -824,6 +826,10 @@ export class Conversation {
     }, { autoApproved });
     this.planBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
+    // The card stays a root-level sibling; its body joins the copy of the
+    // bubble it closes.
+    const w = this._activeAssistantWrap;
+    if (w && typeof ev.plan === 'string' && ev.plan.trim()) { w.planText = ev.plan; syncAssistantBubble(w); }
     this._closeAssistantSegment();
     this._maybeScroll();
   }

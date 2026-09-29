@@ -793,7 +793,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .user-msg-action:disabled { cursor: not-allowed; opacity: 0.4; }
 .user-msg-action:disabled:hover { color: var(--muted); background: transparent; }
 
-/* Hover-revealed raw/rendered toggle + copy, in the "user" role row rather
+/* Hover-revealed raw/rendered toggle + copy, in the bubble's role row rather
    than .user-msg-actions (that container is removed on segment retirement
    and its buttons are disabled during a running turn — this control must
    survive both). */
@@ -803,6 +803,9 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   opacity: 0; transition: opacity 120ms ease-out;
 }
 .msg.user:hover .user-view-controls, .user-view-controls:focus-within { opacity: 1; }
+/* Child combinators: hovering an outer bubble must not reveal the controls of
+   sub-agent bubbles nested inside it. */
+.msg.assistant:hover > .role > .user-view-controls { opacity: 1; }
 @media (hover: none) {
   .user-view-controls { opacity: 1; }
 }
@@ -817,7 +820,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 
 .block { font-size: 13px; }
 .block.text { white-space: pre-wrap; word-break: break-word; }
-.user-text[data-view="raw"] { font-family: ui-monospace, monospace; font-size: 12px; }
+.block.text[data-view="raw"] { font-family: ui-monospace, monospace; font-size: 12px; }
 .msg.user .user-text.md h1, .msg.user .user-text.md h2, .msg.user .user-text.md h3,
 .msg.user .user-text.md h4, .msg.user .user-text.md h5, .msg.user .user-text.md h6 {
   font-size: 1em; font-weight: 600; margin: 8px 0 2px;
@@ -918,7 +921,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 /* Fold box shared by wake, skill, renew-seed and forward-frame bodies: dark background,
    scroll-capped. No font-family/font-size here — rendered markdown uses the
    normal body font. A font-family here would apply to BOTH views (this
-   selector outranks .user-text[data-view="raw"] on specificity), forcing the
+   selector outranks .block.text[data-view="raw"] on specificity), forcing the
    rendered view monospace too, not just the raw view that already asks for it. */
 .block.wake > .block.text, .block.skill > .block.text, .block.renew-seed > .block.text,
 .block.forward-frame > .block.text {

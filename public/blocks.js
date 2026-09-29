@@ -4,23 +4,50 @@
 
 import { el } from './dom.js';
 
+// Node → TextBlock, so a bubble's text blocks can be recovered from its DOM
+// (assistantBubble.js) instead of from a per-wrap registry that the lazy-history
+// merge would have to move along with the nodes.
+const textBlocksByNode = new WeakMap();
+export function textBlockOf(node) { return textBlocksByNode.get(node); }
+
 export class TextBlock {
   constructor() {
     this.body = el('div', { class: 'block text' });
+    this.body.dataset.view = 'rendered';
     this.node = this.body;
     this.buffer = '';
     this.finalized = false;
+    this.view = 'rendered';
+    this.speakBtn = null;
+    textBlocksByNode.set(this.node, this);
   }
   appendDelta(text) {
     this.buffer += text;
     this.body.appendChild(document.createTextNode(text));
   }
+  // A streaming block keeps showing raw deltas whatever its view; finalize()
+  // renders in the view recorded here.
+  setView(view) {
+    if (view === this.view) return;
+    this.view = view;
+    this.body.dataset.view = view;
+    if (this.finalized) this._renderView();
+  }
+  _renderView() {
+    if (this.view === 'raw') {
+      this.body.classList.remove('md');
+      this.body.textContent = this.buffer;
+    } else {
+      this.body.classList.add('md');
+      renderMarkdownInto(this.body, this.buffer);
+    }
+    // Both branches clear the body; put the 🔊 button back.
+    if (this.speakBtn) this.body.appendChild(this.speakBtn);
+  }
   finalize() {
     if (this.finalized) return; // idempotent — a re-run would double the 🔊 button
     if (!this.buffer.trim()) return;
     this.finalized = true;
-    this.body.classList.add('md');
-    renderMarkdownInto(this.body, this.buffer);
     // Attach a 🔊 speak affordance when server-side Piper TTS is available.
     // Mirrors the composer's mic-button gating: hidden entirely otherwise.
     // The button is a play/stop toggle: tap to start, tap again to stop.
@@ -48,8 +75,9 @@ export class TextBlock {
           }
         },
       }, '🔊');
-      this.body.appendChild(btn);
+      this.speakBtn = btn;
     }
+    this._renderView();
   }
 }
 

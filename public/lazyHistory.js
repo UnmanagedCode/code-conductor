@@ -10,6 +10,7 @@
 
 import { Conversation, isHistoryGapNode } from './conversation.js';
 import { isActionGroupNode, mergeActionGroupInto } from './blocks.js';
+import { syncAssistantBubble } from './assistantBubble.js';
 import { apiFetch } from './http.js';
 
 // A correct server never hands back an empty backward page while `hasMore`
@@ -146,6 +147,10 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
       if (seamAdjacent && isActionGroupNode(upper) && isActionGroupNode(lowerFirst)) {
         mergeActionGroupInto(lowerFirst, upper);
       }
+      // The merged bubble keeps the lower wrap's controls, view and plan. Sync
+      // gives a controls-less lower half its controls and puts the moved
+      // blocks in the lower wrap's current view.
+      syncAssistantBubble(oldestLeadingWrap);
       batch.trailingOpenWrap.node.remove();
       merged = true;
     }
