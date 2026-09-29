@@ -179,3 +179,21 @@ test('a segment rotation (system/init with a new session id) drops a pending que
       'an answer in the new segment must not pair with a card from the old file, as on reload');
   } finally { await fs.rm(cwd, { recursive: true, force: true }); }
 });
+
+test('a system/init repeating the current session id is not a rotation and leaves a pending question armed', async () => {
+  const { inst, emitted, cwd } = await makeInstance();
+  try {
+    inst.sessionId = null;
+    inst._emitUi(uq(ONE));
+    // launch() passes --session-id/--resume, so the CLI's first init repeats the id cc holds.
+    inst._handleStdoutLine(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: inst.backingSessionId, model: 'claude-haiku-4-5',
+    }));
+    assert.equal(inst.backingSessionId, 'sess-qa', 'premise: the init did not rotate the segment');
+    assert.ok(emitted.some(e => e.kind === 'system' && e.subtype === 'init'), 'premise: the init was processed');
+    inst._emitUi(echo(SINGLE_ANSWER));
+    const answer = emitted.find(e => e.kind === 'user_echo');
+    assert.equal(answer.questionAnswer?.toolUseId, 'tu_q',
+      'the reset fires only on a real rotation: a same-id init must not drop the pending card');
+  } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+});
