@@ -11,6 +11,9 @@
 // Keep this file free of `document`/DOM references so the server import stays
 // valid.
 
+// What a skipped question renders as; parsing maps it back to `none`.
+const NO_ANSWER = '(no answer)';
+
 // Format the per-question answer into the text we send to the model.
 // Exported so app.js (and tests) can use the same canonical formatting.
 export function formatUserQuestionAnswers(questions, answers) {
@@ -25,7 +28,7 @@ export function formatUserQuestionAnswers(questions, answers) {
       return note ? `${joined} — ${note}` : joined;
     }
     if (a?.kind === 'custom') return a.text.trim();
-    return '(no answer)';
+    return NO_ANSWER;
   };
   const lines = [];
   for (let i = 0; i < questions.length; i++) {
@@ -93,6 +96,7 @@ export function parseUserQuestionAnswers(questions, text) {
 
 function _parseOneAnswer(q, renderText) {
   if (typeof renderText !== 'string' || !renderText) return { kind: 'none' };
+  if (renderText === NO_ANSWER) return { kind: 'none' };
   // Split on ' — ' to separate the value from an optional note.
   const dashIdx = renderText.indexOf(' — ');
   let valuePart = dashIdx >= 0 ? renderText.slice(0, dashIdx) : renderText;
@@ -110,6 +114,7 @@ function _parseOneAnswer(q, renderText) {
       return note ? { kind: 'option', label: opt.label, note } : { kind: 'option', label: opt.label };
     }
   }
-  // No option matched — treat as a free-form custom answer.
-  return { kind: 'custom', text: valuePart };
+  // No option matched — a free-form custom answer. The formatter never attaches
+  // a note to a custom answer, so any ' — ' belongs to the text: keep it whole.
+  return { kind: 'custom', text: renderText.trim() };
 }

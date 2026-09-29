@@ -90,6 +90,18 @@ test('answer_question sends the canonical single-option text and lands it as use
     ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
 });
 
+test('answer_question\'s user_echo carries the questionAnswer stamp pairing it with its card', async () => {
+  const { inst, sid } = await spawnAtQuestion();
+  unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
+  await waitFor(() => inst.ring.toArray().some(
+    ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+  const events = inst.ring.toArray();
+  const uq = events.find(ev => ev.kind === 'user_question');
+  const echo = events.find(ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple');
+  assert.equal(echo.questionAnswer?.toolUseId, uq.toolUseId);
+  assert.deepEqual(echo.questionAnswer.questions, uq.questions);
+});
+
 // ---------------------------------------------------------------------------
 // Mid-turn annotation. answer_question / approve_plan / reject_plan used to send
 // with `annotateIfMidTurn:false`, on the premise that the can_use_tool deny left

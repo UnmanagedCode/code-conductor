@@ -172,6 +172,10 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
     assert.equal(echo.text, ANSWER_TEXT, 'user_echo carries the bare answer, unannotated');
     assert.equal(isUserQuestionAnswerText(QUESTIONS, echo.text), true,
       'the mid-turn answer still pairs back to its question card');
+    // The live WS feed carries the server-side pairing stamp the answer bubble renders from.
+    const uqEv = c.messages.find(m => m.t === 'event' && m.ev.kind === 'user_question').ev;
+    assert.equal(echo.questionAnswer?.toolUseId, uqEv.toolUseId,
+      'the mid-turn answer echo is stamped with its card\'s toolUseId');
 
   } finally {
     // Close the socket HERE, not on the success path: a leaked client keeps handles
@@ -249,6 +253,11 @@ test('a card answer on a model that cannot take a mid-turn injection is deferred
       us[us.length - 1].message.content.filter(b => b.type === 'text').map(b => b.text),
       [POST_STOP_STEER_NOTE, ANSWER_TEXT],
       'delivered as a fresh turn carrying the post-stop note');
+    // The deferred answer's echo pairs with the card the same way.
+    const uqEv = c.messages.find(m => m.t === 'event' && m.ev.kind === 'user_question').ev;
+    const echo = c.messages.find(m => m.t === 'event' && m.ev.kind === 'user_echo' && m.ev.text === ANSWER_TEXT).ev;
+    assert.equal(echo.questionAnswer?.toolUseId, uqEv.toolUseId,
+      'the deferred answer echo is stamped with its card\'s toolUseId');
 
   } finally {
     // Close the socket HERE, not on the success path: a leaked client keeps handles
