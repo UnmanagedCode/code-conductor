@@ -117,6 +117,10 @@ test('a plan decision with feedback is a template; without feedback it is boiler
   await t.test('approve without feedback', () => assert.equal(promptOrigin(echo(buildApprovePrompt(''))), 'synthetic'));
   await t.test('reject without feedback', () => assert.equal(promptOrigin(echo(buildRejectPrompt(''))), 'synthetic'));
   await t.test('whitespace-only feedback is no feedback', () => assert.equal(promptOrigin(echo(buildApprovePrompt('  \n'))), 'synthetic'));
+  await t.test('whitespace-only reject feedback is no feedback: the no-feedback form, never pins', () => {
+    assert.equal(buildRejectPrompt('  \n'), buildRejectPrompt(''));
+    assert.equal(promptOrigin(echo(buildRejectPrompt('  \n'))), 'synthetic');
+  });
 });
 
 test('parsePlanDecision reverses both builders and refuses lookalikes', async (t) => {
@@ -128,6 +132,12 @@ test('parsePlanDecision reverses both builders and refuses lookalikes', async (t
     assert.deepEqual(parsePlanDecision(buildApprovePrompt(null)), { decision: 'approve', feedback: null }));
   await t.test('reject without feedback', () =>
     assert.deepEqual(parsePlanDecision(buildRejectPrompt(undefined)), { decision: 'reject', feedback: null }));
+  // Long enough that the slice between lead and tail is non-empty, so only the
+  // tail check tells a hand-typed prompt from a decision.
+  const TYPED_APPROVE = 'I approve the plan. Additional notes: please also fix the retry loop and the logging';
+  await t.test('a long hand-typed prompt opening with the approve lead is not a decision', () =>
+    assert.equal(parsePlanDecision(TYPED_APPROVE), null));
+  await t.test('and it stays typed to promptOrigin', () => assert.equal(promptOrigin(echo(TYPED_APPROVE)), 'typed'));
   await t.test('the bare lead a person might type', () => assert.equal(parsePlanDecision('I approve the plan.'), null));
   await t.test('an approve carrying notes but no closing line', () =>
     assert.equal(parsePlanDecision('I approve the plan. Additional notes: fine'), null));

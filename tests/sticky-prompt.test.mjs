@@ -153,6 +153,21 @@ test('an attachment-only bubble is stamped synthetic: it has no text to pin', as
   assert.equal(h.scrollEl.querySelector('.msg.user').getAttribute('data-prompt-origin'), 'synthetic');
 });
 
+test('a bubble with no user-text block is stamped synthetic even when promptOrigin reads the event as typed, and never pins', async () => {
+  const { promptOrigin } = await importFresh('promptOrigin.js');
+  const bare = { kind: 'user_echo', text: '<transcribed>\n', parentToolUseId: null };
+  assert.equal(promptOrigin(bare), 'typed', 'the event alone reads typed: only the bubble shape can tell');
+
+  const h = await harness();
+  const bubble = h.say(bare.text, 0);
+  h.say('next prompt', 900);
+  assertNull(bubble.querySelector('.user-text'), 'the bubble renders no user-text block');
+  assert.equal(bubble.getAttribute('data-prompt-origin'), 'synthetic');
+  await h.scrollTo(300); // past the bare bubble: a typed stamp would clone a missing node
+  assert.equal(h.pinEl.hidden, true);
+  assert.equal(h.pinEl.childElementCount, 0);
+});
+
 test('a lazy-history page stamps its prompts exactly as the live view does', async () => {
   const h = await harness();
   const { renderEventBatch, spliceBatchAbove } = await importFresh('lazyHistory.js');
@@ -396,6 +411,27 @@ test('a prompt appended after the pin was shown is picked up (the candidate list
   h.say('second', 100); // the conversation's own auto-scroll resets scrollTop
   await h.scrollTo(300);
   assert.equal(pinText(h.pinEl), 'second');
+});
+
+test('the pin\'s right edge clears the scroll root\'s scrollbar gutter (--conv-scrollbar)', async (t) => {
+  const cases = {
+    'a 15px gutter': { offsetWidth: 1000, clientWidth: 985, clientLeft: 0, want: '15px' },
+    'no gutter': { offsetWidth: 1000, clientWidth: 1000, clientLeft: 0, want: '0px' },
+    'a 1px border each side is not gutter': { offsetWidth: 1000, clientWidth: 983, clientLeft: 1, want: '15px' },
+    'a border wider than the difference never goes negative': { offsetWidth: 1000, clientWidth: 999, clientLeft: 1, want: '0px' },
+  };
+  for (const [label, c] of Object.entries(cases)) {
+    await t.test(label, async () => {
+      const h = await harness();
+      for (const k of ['offsetWidth', 'clientWidth', 'clientLeft']) {
+        Object.defineProperty(h.scrollEl, k, { configurable: true, get: () => c[k] });
+      }
+      h.say('first', 0); h.say('second', 900);
+      await h.scrollTo(300);
+      assert.equal(h.pinEl.hidden, false);
+      assert.equal(h.pinEl.style.getPropertyValue('--conv-scrollbar'), c.want);
+    });
+  }
 });
 
 test('the pin lives outside the scroll root', async () => {
