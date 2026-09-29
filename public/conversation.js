@@ -586,7 +586,12 @@ export class Conversation {
     let compactionBelow = null;
     if (ev.compactSummary) {
       // The CLI's summary is the compaction bubble's body, not a user bubble.
-      this._compaction = compaction ?? this._appendCompactionBlock();
+      // Seen without its boundary (a lazy page or ring head split between the
+      // two), the summary alone proves a completed compaction: no trigger, no counts.
+      if (!compaction) {
+        this._compaction = this._appendCompactionBlock();
+        this._compaction.fill({});
+      }
       this._compaction.setSummary(ev.text ?? '');
       return;
     }

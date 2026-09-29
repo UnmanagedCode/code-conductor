@@ -579,8 +579,7 @@ export class Parser {
     }
     if (!Array.isArray(content)) return [];
     const events = consolidateUserContent(content);
-    const echo = stampCliInjected(attachSkillLoad(events, obj, this._pendingSkillLoads), obj);
-    return isSummary ? stampCompactSummary(echo) : echo;
+    return stampCliInjected(attachSkillLoad(events, obj, this._pendingSkillLoads), obj);
   }
 
   _handleResult(obj: WireEnvelope): UiEvent[] {

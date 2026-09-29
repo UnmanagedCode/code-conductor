@@ -167,7 +167,6 @@ export function replayPersistedLine(
       const userEvents = consolidateUserContent(content);
       attachSkillLoad(userEvents, line, pendingSkillLoads);
       stampCliInjected(userEvents, line);
-      if (line.isCompactSummary === true) stampCompactSummary(userEvents);
       for (const ev of userEvents) events.push(ev);
     }
     return tagAndReturn();

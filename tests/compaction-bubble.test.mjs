@@ -222,3 +222,48 @@ test('absorption is scoped to a compaction', async (t) => {
     assert.equal(root.querySelectorAll('.msg.user').length, 2);
   });
 });
+
+test('a summary seen without its boundary reads as a completed compaction', async () => {
+  const { root, Conversation, replayPersistedLine } = await setupDOM();
+  const conv = new Conversation(root);
+  conv._replayMode = true;
+  const summaryLine = (await readJsonl('compaction-manual.transcript.jsonl')).find((l) => l.isCompactSummary === true);
+  for (const ev of replayPersistedLine(summaryLine)) apply(conv, ev);
+
+  assert.equal(root.querySelectorAll('.msg.compaction').length, 1);
+  assert.deepEqual(labelsOf(root), ['Context compacted'], 'completed label, no trigger or token segments, never the running one');
+  assert.ok(root.querySelector('details.block.compaction'), 'the summary is still folded into the bubble');
+});
+
+test('a repeated `status: compacting` reuses the running bubble', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const parser = new Parser();
+  const frames = await readJsonl('compaction-manual.stdout.jsonl');
+  feedFrames(conv, parser, [frames[0], frames[0]]);
+  assert.equal(root.querySelectorAll('.msg.compaction').length, 1, 'the second status opens no second bubble');
+
+  feedFrames(conv, parser, frames.slice(1, 4)); // compact_result, init, boundary
+  assert.equal(root.querySelectorAll('.msg.compaction').length, 1);
+  assert.deepEqual(labelsOf(root), [MANUAL_LABEL], 'the one bubble is completed by the boundary');
+});
+
+test('a process end closes a compaction that never reached its boundary', async (t) => {
+  const ends = [
+    ['exit', { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } }],
+    ['crashed', { kind: 'system', subtype: 'crashed', data: { message: 'boom' } }],
+  ];
+  for (const [name, end] of ends) {
+    await t.test(name, async () => {
+      const { root, Conversation } = await setupDOM();
+      const conv = new Conversation(root);
+      apply(conv, { kind: 'system', subtype: 'status', data: { status: 'compacting' } });
+      assert.deepEqual(labelsOf(root), ['Compacting context…']);
+
+      apply(conv, end);
+      assert.deepEqual(labelsOf(root), ['Compaction did not complete']);
+      apply(conv, { kind: 'system', subtype: 'init', data: { model: 'm', session_id: 'abcdef123456' } });
+      assert.deepEqual(subtypesOf(root), [name, 'init'], 'a later init is shown, not suppressed');
+    });
+  }
+});
