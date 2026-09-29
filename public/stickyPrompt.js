@@ -36,10 +36,11 @@ export function pickPinned(topAt, n, pinHeight) {
   return { index, shift: Math.min(0, next - pinHeight) };
 }
 
-export function installStickyPrompt({ scrollEl, pinEl, isConducted, schedule = requestAnimationFrame }) {
+export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, schedule = requestAnimationFrame }) {
   let eligible = null;   // null = dirty; rebuilt on the next refresh
   let eligibleFor = null; // the session role `eligible` was filtered for
-  let pinned = null;     // the bubble the pin currently shows
+  let pinned = null;     // the bubble the pin's clone shows, visible or pushed off
+  let pinHeight = 0;     // that clone's height, measured while it was visible
   let pending = false;
 
   const refreshSoon = () => {
@@ -48,7 +49,10 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, schedule = r
     schedule(() => { pending = false; refresh(); });
   };
 
+  // Nothing to pin: drop the clone. A pin merely pushed off keeps its clone
+  // (see refresh), so it is not dropped here.
   const hide = () => {
+    if (!pinned && pinEl.hidden) return;
     pinned = null;
     pinEl.hidden = true;
     pinEl.replaceChildren();
@@ -79,14 +83,18 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, schedule = r
     const top0 = scrollEl.getBoundingClientRect().top + scrollEl.clientTop;
     const topAt = i => list[i].getBoundingClientRect().top - top0;
 
-    let pick = pickPinned(topAt, list.length, pinned && !pinEl.hidden ? pinEl.offsetHeight : 0);
+    let pick = pickPinned(topAt, list.length, pinned ? pinHeight : 0);
     if (!pick) { hide(); return; }
     const bubble = list[pick.index];
     if (bubble !== pinned) {
       show(bubble);
       // The push-off depends on the new content's height.
-      pick = pickPinned(topAt, list.length, pinEl.offsetHeight);
+      pinHeight = pinEl.offsetHeight;
+      pick = pickPinned(topAt, list.length, pinHeight);
     }
+    // Fully pushed off (clipped by the pane): hidden, so it is not focusable
+    // either, but the clone stays so the next frame does not re-clone.
+    pinEl.hidden = pick.shift + pinHeight <= 0;
     pinEl.style.transform = pick.shift ? `translateY(${pick.shift}px)` : '';
     pinEl.style.setProperty('--conv-scrollbar',
       `${Math.max(0, scrollEl.offsetWidth - scrollEl.clientWidth - 2 * scrollEl.clientLeft)}px`);
@@ -105,6 +113,12 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, schedule = r
   window.addEventListener('resize', refreshSoon);
   // `toggle` does not bubble; a <details> above the viewport shifts everything.
   scrollEl.addEventListener('toggle', refreshSoon, true);
+
+  // A full-page view (Settings, review, commits, costs, plugin) hides the pane
+  // with a class on #main; while it does, every rect reads 0 and the pin hides.
+  // Closing it fires no scroll, resize or childList event, so its class change
+  // is what brings the pin back.
+  if (viewHostEl) new MutationObserver(refreshSoon).observe(viewHostEl, { attributes: true, attributeFilter: ['class'] });
 
   pinEl.addEventListener('click', jumpToPinned);
   pinEl.addEventListener('keydown', (e) => {

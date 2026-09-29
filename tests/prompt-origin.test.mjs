@@ -68,6 +68,10 @@ const SLASH_GENERIC = {
   'a bare slash command': '/review the diff',
   'a namespaced slash command with no args': '/plugin:cmd',
   'a command-name wrapper': '<command-name>/compact</command-name>',
+  // The rule is the first token, so a bare single-segment path reads as a command.
+  'a bare single-segment path (/tmp)': '/tmp',
+  'a single-segment path opening a sentence': '/etc is read-only here',
+  'a bare /compact': '/compact',
 };
 const FRAMES = {
   'forward frame, payload only': buildForwardFrame({ messages: ['payload'], instruction: '' }),
@@ -179,6 +183,10 @@ test('slash commands never pin, bare or command-name wrapped; /clear and /effort
     for (const k of ['/clear', '/clear (command-name shape)', '/effort', '/effort (command-name shape)', 'local command output']) {
       assert.equal(isInjectedUserTurn(echo(SLASH[k])), true, k);
     }
+  });
+  await t.test('a multi-segment path is not a slash command: it stays typed', () => {
+    assert.equal(promptOrigin(echo('/etc/hosts is wrong')), 'typed');
+    assert.equal(promptOrigin(echo('/tmp/x')), 'typed');
   });
   await t.test('a generic slash command is not injected (awaitingUser keeps reading it as real)', () =>
     assert.equal(isInjectedUserTurn(echo(SLASH_GENERIC['a bare slash command'])), false));

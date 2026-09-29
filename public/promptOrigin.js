@@ -15,7 +15,9 @@
 //
 // Known limits: a composer prompt and a send_prompt brief are indistinguishable,
 // so a brief into a non-worker session reads typed; a human prompt opening with
-// a template lead or `/word ` reads as that template / a slash command.
+// a template lead reads as that template, and one whose FIRST TOKEN is a single
+// `/word` (SLASH_COMMAND: a bare `/tmp`, or `/tmp is full`) reads as a slash
+// command. A multi-segment path such as `/etc/hosts` is typed.
 //
 // DOM-free: src/awaitingUser.ts imports this module directly.
 
@@ -31,7 +33,10 @@ import {
 
 const OVERAGE_BASES = [AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT];
 
-// A bare slash command, or the CLI's command-name wrapper around one.
+// A slash command is a first token of `/` + a letter + word characters (`\w`,
+// `:`, `-`), ended by whitespace or the end of the text. That is also true of a
+// bare single-segment path like `/tmp`; the CLI's command-name wrapper is
+// matched separately in promptOrigin.
 const SLASH_COMMAND = /^\/[a-z][\w:-]*(\s|$)/i;
 
 // True for the server- and CLI-authored turns listed in docs/architecture.md →

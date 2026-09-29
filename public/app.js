@@ -366,6 +366,7 @@ const lazyController = installLazyHistoryController({
 installStickyPrompt({
   scrollEl: dom.conversation,
   pinEl: dom.pinnedPrompt,
+  viewHostEl: document.getElementById('main'),
   isConducted: () => !!state.instances.find(i => i.id === state.activeId)?.conducted,
 });
 

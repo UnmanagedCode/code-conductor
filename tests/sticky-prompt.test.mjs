@@ -59,13 +59,16 @@ async function harness({ conducted = false } = {}) {
   const win = setupDOM();
   const { Conversation } = await importFresh('conversation.js');
   const { installStickyPrompt } = await importFresh('stickyPrompt.js');
+  const host = document.createElement('div'); // stands in for #main
   const pane = document.createElement('div');
   const scrollEl = document.createElement('div');
   const pinEl = document.createElement('div');
   pinEl.hidden = true;
   pane.append(pinEl, scrollEl);
-  document.body.append(pane);
-  const layout = { tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57 };
+  host.append(pane);
+  document.body.append(host);
+  // viewOpen: a full-page view has the pane display:none, so every rect reads 0.
+  const layout = { viewOpen: false, tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57 };
   Object.defineProperty(pinEl, 'offsetHeight', { get: () => PIN_HEIGHT });
   // The pin's body is created by the controller, so its clamp is faked on the prototype.
   const isPinBody = (el) => el.classList.contains('pinned-prompt-body');
@@ -73,7 +76,7 @@ async function harness({ conducted = false } = {}) {
   Object.defineProperty(win.HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return isPinBody(this) ? layout.bodyClientHeight : 0; } });
   scrollEl.getBoundingClientRect = () => ({ top: 0 });
   const state = { conducted };
-  const ctl = installStickyPrompt({ scrollEl, pinEl, isConducted: () => state.conducted, schedule: fn => fn() });
+  const ctl = installStickyPrompt({ scrollEl, pinEl, isConducted: () => state.conducted, viewHostEl: host, schedule: fn => fn() });
   const conv = new Conversation(scrollEl, {});
   let userIndex = 0;
   // Appends a user echo and gives its bubble a document position.
@@ -81,14 +84,14 @@ async function harness({ conducted = false } = {}) {
     conv.apply({ kind: 'user_echo', text, userIndex: userIndex++, parentToolUseId: null, ...extra });
     const bubble = scrollEl.lastElementChild;
     layout.tops.set(bubble, top);
-    bubble.getBoundingClientRect = () => ({ top: layout.tops.get(bubble) - scrollEl.scrollTop });
+    bubble.getBoundingClientRect = () => ({ top: layout.viewOpen ? 0 : layout.tops.get(bubble) - scrollEl.scrollTop });
     return bubble;
   };
   const settle = () => new Promise(r => setTimeout(r, 0)); // MutationObserver delivery
   // A browser delivers the childList records before the next scroll frame; the
   // await gives the test the same order.
   const scrollTo = async (y) => { await settle(); scrollEl.scrollTop = y; ctl.refresh(); };
-  return { win, Conversation, conv, scrollEl, pinEl, pane, ctl, layout, state, say, scrollTo, settle };
+  return { win, Conversation, conv, scrollEl, pinEl, pane, host, ctl, layout, state, say, scrollTo, settle };
 }
 
 const pinText = (pinEl) => pinEl.querySelector('.user-text')?.textContent.trim();
@@ -237,7 +240,7 @@ test('scrolling back above a prompt un-pins it and leaves the older one', async 
   assert.equal(h.pinEl.hidden, true);
 });
 
-test('clicking the pin scrolls the original bubble to the top and un-pins it (Enter too)', async (t) => {
+test('clicking the pin (or Enter/Space) scrolls the original bubble to the top; with no earlier prompt the pin hides', async (t) => {
   for (const [label, fire] of [
     ['click', (el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))],
     ['Enter', (el) => el.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))],
@@ -252,7 +255,7 @@ test('clicking the pin scrolls the original bubble to the top and un-pins it (En
       fire(h.pinEl);
       assert.equal(h.scrollEl.scrollTop, 100, 'the full bubble lands at the viewport top');
       h.ctl.refresh();
-      assert.equal(h.pinEl.hidden, true, 'a bubble at the top is no longer scrolled past');
+      assert.equal(h.pinEl.hidden, true, 'a bubble at the top is no longer scrolled past, and nothing is above it');
     });
   }
   await t.test('another key does nothing', async () => {
@@ -263,6 +266,75 @@ test('clicking the pin scrolls the original bubble to the top and un-pins it (En
     h.pinEl.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'a', bubbles: true }));
     assert.equal(h.scrollEl.scrollTop, 400);
   });
+});
+
+test('after a jump, the previous prompt stays pinned but a fully-pushed-off pin is hidden, not focusable', async (t) => {
+  const setup = async () => {
+    const h = await harness();
+    h.say('P1', 0); h.say('P2', 400); h.say('P3', 1200);
+    await h.scrollTo(600); // P2 is scrolled past and pinned
+    assert.equal(pinText(h.pinEl), 'P2');
+    h.pinEl.click();
+    h.ctl.refresh(); // a browser fires `scroll` for the jump
+    return h;
+  };
+  await t.test('the jump lands P2 at the top and the pin is fully pushed off, so it is hidden', async () => {
+    const h = await setup();
+    assert.equal(h.scrollEl.scrollTop, 400);
+    assert.equal(h.pinEl.hidden, true, 'hidden also removes it from the tab order');
+    assert.equal(pinText(h.pinEl), 'P1', 'the previous prompt is still the one held');
+  });
+  await t.test('scrolling on brings the same clone back without re-cloning', async () => {
+    const h = await setup();
+    const held = h.pinEl.querySelector('.pinned-prompt-body');
+    await h.scrollTo(380); // P2 is 20px below the top: P1 peeks 40px of its 60
+    assert.equal(h.pinEl.hidden, false);
+    assert.equal(h.pinEl.style.transform, `translateY(${20 - PIN_HEIGHT}px)`);
+    assert.ok(h.pinEl.querySelector('.pinned-prompt-body') === held, 'the clone is the one held while hidden');
+  });
+  await t.test('a pin pushed exactly to the top edge is hidden; one pixel lower shows', async () => {
+    const h = await harness();
+    h.say('P1', 0); h.say('P2', 400);
+    await h.scrollTo(400); // P2 top at 0
+    assert.equal(h.pinEl.hidden, true);
+    await h.scrollTo(399); // P2 top at 1
+    assert.equal(h.pinEl.hidden, false);
+  });
+  await t.test('nothing left to pin drops the clone', async () => {
+    const h = await setup();
+    await h.scrollTo(0);
+    assert.equal(h.pinEl.hidden, true);
+    assert.equal(h.pinEl.childElementCount, 0);
+  });
+});
+
+test('a hidden pin with nothing pinned is not rewritten on later frames', async () => {
+  const h = await harness();
+  h.say('P1', 100); // stays below the viewport top for every scroll below
+  await h.scrollTo(0);
+  let writes = 0;
+  new h.win.MutationObserver(() => { writes++; }).observe(h.pinEl, { attributes: true, childList: true });
+  for (let y = 0; y < 5; y++) await h.scrollTo(y);
+  await h.settle();
+  assert.equal(writes, 0, 'the pin element is untouched while there is nothing to pin');
+});
+
+test('closing a full-page view brings the pin back without a scroll (the view host\'s class change refreshes)', async () => {
+  const h = await harness();
+  h.say('first', 0); h.say('second', 900);
+  await h.scrollTo(300);
+  assert.equal(pinText(h.pinEl), 'first');
+
+  h.layout.viewOpen = true;            // the pane is display:none: rects read 0
+  h.host.classList.add('settings-open');
+  await h.settle();
+  assert.equal(h.pinEl.hidden, true, 'the pin hides with the transcript');
+
+  h.layout.viewOpen = false;           // closing the view: no scroll, resize or childList event
+  h.host.classList.remove('settings-open');
+  await h.settle();
+  assert.equal(h.pinEl.hidden, false);
+  assert.equal(pinText(h.pinEl), 'first');
 });
 
 test('the fade class is set only when the clone overflows the clamp', async (t) => {
