@@ -180,6 +180,51 @@ test('a plan card with no assistant bubble before it is in no copy', async () =>
   assert.equal(await copyOf(wraps[0]), 'X');
 });
 
+test('blank text blocks contribute nothing to copy', async () => {
+  setupDOM();
+  const Conversation = await importConversation();
+  const { root, conv } = fresh(Conversation);
+  conv.applyEvents([
+    ...text('m1', 0, 'A'),
+    ...text('m1', 1, ''),
+    ...text('m1', 2, ' \n\t '),
+    ...text('m1', 3, 'B'),
+  ]);
+  const [wrap] = bubbles(root);
+  assert.equal(ownTextBlocks(wrap).length, 4, 'the blank blocks are in the bubble');
+  assert.equal(await copyOf(wrap), 'A\n\nB');
+
+  // A sub-agent's reconciled empty text block is blank the same way.
+  const { root: root2, conv: conv2 } = fresh(Conversation);
+  conv2.applyEvents([
+    ev({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' }),
+    ev({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } }),
+    ev({
+      kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA',
+      message: { content: [{ type: 'text', text: 'S1' }, { type: 'text', text: '' }, { type: 'text', text: 'S2' }] },
+    }),
+  ]);
+  const sub = root2.querySelector('.sub-conversation-body .msg.assistant');
+  assert.equal(ownTextBlocks(sub).length, 3, 'the empty sub-agent block is in the bubble');
+  assert.equal(await copyOf(sub), 'S1\n\nS2');
+});
+
+test('a bubble of only tool blocks, closed by a plan card, gains controls and copies the plan', async () => {
+  setupDOM();
+  const Conversation = await importConversation();
+  const { root, conv } = fresh(Conversation);
+  conv.applyEvents([
+    ev({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'plan1', name: 'ExitPlanMode' }),
+    ev({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'plan1', name: 'ExitPlanMode', input: { plan: '# Only a plan' } }),
+    ev({ kind: 'plan_request', toolUseId: 'plan1', plan: '# Only a plan' }),
+  ]);
+  const wraps = bubbles(root);
+  assert.equal(wraps.length, 1);
+  assert.equal(ownTextBlocks(wraps[0]).length, 0, 'the bubble holds no text block');
+  assert.equal(wraps[0].querySelectorAll(':scope > .role > .user-view-controls').length, 1);
+  assert.equal(await copyOf(wraps[0]), '# Only a plan');
+});
+
 test('question cards and sub-agent output are excluded; a sub-agent bubble has its own controls', async () => {
   setupDOM();
   const Conversation = await importConversation();
@@ -326,7 +371,12 @@ test('assistant controls survive segment retirement and stay enabled during a ru
   conv.setCurrentSegment('B'); // retires segment A
   conv.setUserActionsEnabled(false);
   assert.ok(btn(wrap, 'toggle') && btn(wrap, 'copy'), 'controls survive retirement');
-  for (const b of wrap.querySelectorAll('.user-view-btn')) {
+  // Found by structure, not by the .user-view-btn class: a control classed
+  // `user-msg-action` would be disabled by setUserActionsEnabled and must not
+  // vanish from this loop.
+  const viewButtons = [...wrap.querySelectorAll(':scope > .role > .user-view-controls > button')];
+  assert.equal(viewButtons.length, 2, 'toggle and copy are both found');
+  for (const b of viewButtons) {
     assert.equal(b.disabled, false, 'view buttons stay enabled during a running turn');
   }
 
