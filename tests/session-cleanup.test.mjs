@@ -99,7 +99,7 @@ test('a transcript for any one lineage member keeps the record', async (t) => {
   await t.test('an older, non-head archived segment', async () => {
     const f = await fresh();
     const [x1, x2] = [uuid(11), uuid(12)];
-    await writeStore(f, { cccccccc: { current: x2, segments: [seg(x1, { archived: true }), { id: x2, reason: 'renew', at: OLD }] } });
+    await writeStore(f, { ...(await liveCompanion()), cccccccc: { current: x2, segments: [seg(x1, { archived: true }), { id: x2, reason: 'renew', at: OLD }] } });
     await seedLocal(x1);
     const r = await run(captureLog());
     assert.deepEqual(r.removed, []);
@@ -108,7 +108,7 @@ test('a transcript for any one lineage member keeps the record', async (t) => {
   await t.test('a tombstoned segment', async () => {
     const f = await fresh();
     const [x1, x2] = [uuid(13), uuid(14)];
-    await writeStore(f, { dddddddd: { current: x2, segments: [seg(x1, { dropped: true }), { id: x2, reason: 'renew', at: OLD }] } });
+    await writeStore(f, { ...(await liveCompanion()), dddddddd: { current: x2, segments: [seg(x1, { dropped: true }), { id: x2, reason: 'renew', at: OLD }] } });
     await seedLocal(x1);
     const r = await run(captureLog());
     assert.deepEqual(r.removed, []);
@@ -270,6 +270,11 @@ test('a record whose newest segment is within the grace window is kept', async (
     const f = await fresh();
     await writeStore(f, { ...(await liveCompanion()), ffffffff: rec(91) });
     assert.deepEqual((await run(captureLog(), T + CLEANUP_GRACE_MS - 1)).removed, []);
+  });
+  await t.test('exactly at the window', async () => {
+    const f = await fresh();
+    await writeStore(f, { ...(await liveCompanion()), ffffffff: rec(97) });
+    assert.deepEqual((await run(captureLog(), T + CLEANUP_GRACE_MS)).removed, ['ffffffff']);
   });
   await t.test('just past the window', async () => {
     const f = await fresh();
