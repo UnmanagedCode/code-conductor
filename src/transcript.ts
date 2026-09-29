@@ -15,6 +15,7 @@ import { MODES } from './sessionModes.ts';
 import {
   consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
   isTaskNotificationContent, isLocalCommandCaveatLine, attachSkillLoad, stampCliInjected,
+  stampCompactSummary, compactionEvent,
   type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
@@ -154,7 +155,8 @@ export function replayPersistedLine(
     // The CLI's local-command caveat — never a bubble, same as live.
     if (isLocalCommandCaveatLine(line)) return tagAndReturn();
     if (typeof content === 'string') {
-      events.push(...stampCliInjected([{ kind: 'user_echo', text: content }], line));
+      const echo = stampCliInjected([{ kind: 'user_echo', text: content }], line);
+      events.push(...(line.isCompactSummary === true ? stampCompactSummary(echo) : echo));
       return tagAndReturn();
     }
     if (Array.isArray(content)) {
@@ -167,6 +169,14 @@ export function replayPersistedLine(
       stampCliInjected(userEvents, line);
       for (const ev of userEvents) events.push(ev);
     }
+    return tagAndReturn();
+  }
+
+  // The CLI's compaction boundary: the same `compaction` event the live stdout
+  // frame produces (a `system` event here would break the one-replayed-system-
+  // subtype invariant the event archive relies on).
+  if (line.type === 'system' && line.subtype === 'compact_boundary') {
+    events.push(compactionEvent(line));
     return tagAndReturn();
   }
 

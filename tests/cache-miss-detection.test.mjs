@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { Instance } from '../src/instances.ts';
 
 const MODEL = 'claude-opus-4-8';
@@ -50,10 +51,13 @@ function resultLine({ cost = 0.0001 } = {}) {
   });
 }
 
-// A CLI system line (e.g. context compaction) — parser passes it through as
-// { kind:'system', subtype }.
-function systemLine(subtype) {
-  return JSON.stringify({ type: 'system', subtype });
+// The real compact_boundary frame of a CLI 2.1.284 compaction (committed trim of
+// a capture, see compaction-parser.test.mjs) — the parser turns it into a
+// `compaction` event.
+async function boundaryLine() {
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'compaction-manual.stdout.jsonl');
+  const lines = (await fs.readFile(fixture, 'utf8')).split('\n').filter(Boolean);
+  return lines.find((l) => JSON.parse(l).subtype === 'compact_boundary');
 }
 
 async function makeInstance() {
@@ -253,7 +257,7 @@ test('a compaction turn is NOT flagged and the baseline is re-established', asyn
   try {
     establishBaseline(inst, events, 200000); // P = 200000
     // CLI compacts the context between turns: prefix legitimately shrinks.
-    inst._handleStdoutLine(systemLine('compacting'));
+    inst._handleStdoutLine(await boundaryLine());
     // Post-compaction turn reads a smaller-but-warm prefix (80000 < P, yet
     // read>creation). Cross-turn would false-fire; the guard forces the fallback
     // (creation>read ⇒ 2000>80000 false) ⇒ NOT flagged.

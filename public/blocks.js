@@ -1197,7 +1197,7 @@ function imageSrcFromSource(source) {
 // previously dumped raw JSON into the chat) is dropped at the dispatcher.
 const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
-  'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
+  'permission_denied', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
   'model_changed', 'cache_miss', 'playbook_warn', 'renew_error',
 ]);
@@ -1227,7 +1227,6 @@ export class SystemBlock {
       // that flow a human has to see — it used to be swallowed silently.
       if (subtype === 'renew_error') return `⚠️ renewal ${data?.stage ?? ''}: ${data?.message ?? ''}`;
       if (subtype === 'permission_denied') return data?.message ?? data?.reason ?? '';
-      if (subtype === 'compacting') return 'auto-compacting context…';
       if (subtype === 'auto_stop_overage') {
         if (data?.resume) {
           const at = formatResetTime(data.resetsAt)?.replace('resets ', '');

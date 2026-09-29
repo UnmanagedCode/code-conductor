@@ -2603,9 +2603,10 @@ export class Instance extends EventEmitter implements InstanceLike {
         this._turnLastReqPrefix = reqRead + reqCreation;
       }
       // Context compaction/summarization rewrites the prefix — the CLI emits a
-      // system/compacting line. Re-baseline next turn instead of flagging the
-      // shrink as a cross-turn eviction.
-      if (ev.kind === 'system' && ev.subtype === 'compacting') {
+      // compact_boundary, which the parser normalizes to a `compaction` event.
+      // Re-baseline next turn instead of flagging the shrink as a cross-turn
+      // eviction.
+      if (ev.kind === 'compaction') {
         this._prefixBaselineInvalid = true;
       }
       // With `--permission-prompt-tool stdio`, the CLI routes tool-permission

@@ -15,7 +15,8 @@
 //   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
 //   tool_use                { msgId, blockIdx, toolUseId, name, input }
 //   tool_result             { toolUseId, content, isError, yielded?: true }
-//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill}, cliInjected?: true }
+//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill}, cliInjected?: true, compactSummary?: true }
+//   compaction              { trigger: 'auto'|'manual'|null, preTokens, postTokens, durationMs }  // the CLI's compact_boundary, both surfaces
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
@@ -88,6 +89,10 @@ export interface WireEnvelope {
   isSynthetic?: unknown;
   isMeta?: unknown;
   isVisibleInTranscriptOnly?: unknown;
+  isCompactSummary?: unknown;
+  // The compact_boundary metadata: snake_case on stdout, camelCase in the jsonl.
+  compact_metadata?: unknown;
+  compactMetadata?: unknown;
   sourceToolUseID?: unknown;
 }
 
@@ -150,6 +155,10 @@ export class Parser {
   // usage-bearing message_start, which makes the two sources mutually
   // exclusive within one message (see the message_delta arm).
   _ctxFallbackArmed = false;
+  // Armed by a compact_boundary, disarmed by the next user frame or a result.
+  // Stdout carries no `isCompactSummary`, so the first synthetic user frame
+  // directly after the boundary is the only line-level mark of the summary.
+  _compactSummaryArmed = false;
 
   reset() {
     this.currentMsgId = null;
@@ -158,6 +167,7 @@ export class Parser {
     this._lastApiMs = 0;
     this._pendingSkillLoads = [];
     this._ctxFallbackArmed = false;
+    this._compactSummaryArmed = false;
   }
 
   // Signal a genuine turn boundary (a real prompt or interrupt emitted
@@ -211,6 +221,10 @@ export class Parser {
   }
 
   _handleSystem(obj: WireEnvelope): UiEvent[] {
+    if (obj.subtype === 'compact_boundary') {
+      this._compactSummaryArmed = true;
+      return [compactionEvent(obj)];
+    }
     return [{ kind: 'system', subtype: obj.subtype ?? 'unknown', data: obj }];
   }
 
@@ -540,6 +554,9 @@ export class Parser {
   _handleUser(obj: WireEnvelope): UiEvent[] {
     const msg = obj.message ?? {};
     const content = msg.content;
+    // Any user frame ends the summary window; only a synthetic one inside it is stamped.
+    const isSummary = this._compactSummaryArmed && obj.isSynthetic === true;
+    this._compactSummaryArmed = false;
     // If the CLI echoes a marked wind-down steer back on stdout (historical jsonls
     // only — nothing writes them now), surface it
     // as a system annotation so the user can see a stop was requested.
@@ -557,7 +574,8 @@ export class Parser {
     // The CLI's local-command caveat — never a bubble (isLocalCommandCaveatLine).
     if (isLocalCommandCaveatLine(obj)) return [];
     if (typeof content === 'string') {
-      return stampCliInjected([{ kind: 'user_echo', text: content }], obj);
+      const echo = stampCliInjected([{ kind: 'user_echo', text: content }], obj);
+      return isSummary ? stampCompactSummary(echo) : echo;
     }
     if (!Array.isArray(content)) return [];
     const events = consolidateUserContent(content);
@@ -565,6 +583,7 @@ export class Parser {
   }
 
   _handleResult(obj: WireEnvelope): UiEvent[] {
+    this._compactSummaryArmed = false;
     // total_cost_usd and duration_api_ms are both cumulative session totals in
     // the SDK result, not per-turn values. Convert each to a per-turn delta so
     // callers can display / accumulate the actual turn cost and LLM time.
@@ -822,6 +841,33 @@ export function stampCliInjected(events: UiEvent[], source: WireEnvelope): UiEve
   if (!isCliInjectedLine(source)) return events;
   for (const ev of events) if (ev.kind === 'user_echo') ev.cliInjected = true;
   return events;
+}
+
+// Stamp `compactSummary: true` on the user_echo of the CLI's compaction
+// summary. The caller decides WHICH line is the summary — replay reads the
+// line's `isCompactSummary`, the live parser its boundary adjacency — so this
+// just marks the echoes. The echo stays a user_echo (counted, `userIndex`ed).
+export function stampCompactSummary(events: UiEvent[]): UiEvent[] {
+  for (const ev of events) if (ev.kind === 'user_echo') ev.compactSummary = true;
+  return events;
+}
+
+const narrowCount = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+// The `compaction` UI event for a `compact_boundary` line. One builder for both
+// surfaces, because the CLI spells the metadata differently on each (stdout
+// `compact_metadata.pre_tokens`, jsonl `compactMetadata.preTokens`); reading
+// both here keeps live and replay events identical.
+export function compactionEvent(obj: WireEnvelope): UiEvent {
+  const meta = (obj.compact_metadata ?? obj.compactMetadata ?? {}) as Record<string, unknown>;
+  const trigger = meta.trigger === 'auto' || meta.trigger === 'manual' ? meta.trigger : null;
+  return {
+    kind: 'compaction',
+    trigger,
+    preTokens: narrowCount(meta.pre_tokens ?? meta.preTokens),
+    postTokens: narrowCount(meta.post_tokens ?? meta.postTokens),
+    durationMs: narrowCount(meta.duration_ms ?? meta.durationMs),
+  };
 }
 
 // `source` is the raw line: a stream-json stdout envelope live, a persisted
