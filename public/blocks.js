@@ -943,6 +943,9 @@ export class UserQuestionBlock {
         input.classList.toggle('active', answer.kind === 'custom');
       }
     }
+    // A locked card's Send button and status line are final: a tab click
+    // re-renders the panes but must not re-open either.
+    if (this.submitted) return;
     // Submit gating: every question must have a non-`none` answer, and
     // any custom answer must have at least one non-whitespace character.
     const allAnswered = this.answers.length > 0 && this.answers.every(a => {
@@ -986,7 +989,14 @@ export class UserQuestionBlock {
     if (this.submitted) return;
     if (Array.isArray(answers)) {
       this.answers = answers;
-      this._render(); // applies 'picked' class to the selected option buttons
+      // The text field holds the note on a pick and the whole text of a
+      // custom answer; _render writes it into the active pane's input.
+      this.drafts = this.questions.map((_, i) => {
+        const a = answers[i];
+        if (a?.kind === 'custom') return a.text;
+        return (a?.kind === 'option' || a?.kind === 'multi') ? (a.note ?? '') : '';
+      });
+      this._render(); // applies 'picked' class and the field text to the active pane
     }
     this.submitted = true;
     this.submitBtn.disabled = true;
