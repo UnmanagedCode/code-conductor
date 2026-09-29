@@ -448,3 +448,17 @@ test('fail-safe: a scan that finds no transcript at all removes nothing, even be
   assert.ok(cap.warns().some(l => l.includes('session-cleanup: no transcripts found anywhere — refusing to remove records')),
     JSON.stringify(cap.lines));
 });
+
+test('a farm entry that is a symlink to a file is skipped and the pass still runs', async () => {
+  // Invariant: at the farm level ENOTDIR means "no transcripts here", never a scan failure.
+  const f = await fresh();
+  const d1 = uuid(201);
+  await writeStore(f, { ...(await liveCompanion()), dddddddd: { current: d1, segments: [seg(d1)] } });
+  const file = path.join(f.root, 'farm-file');
+  await fs.writeFile(file, 'x');
+  await fs.mkdir(claudeConfigFarmRoot(), { recursive: true });
+  await fs.symlink(file, path.join(claudeConfigFarmRoot(), 'linked-file'));
+  const cap = captureLog();
+  const r = await run(cap);
+  assert.deepEqual(r.removed, ['dddddddd'], JSON.stringify(cap.lines));
+});

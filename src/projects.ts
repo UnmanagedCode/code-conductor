@@ -2194,11 +2194,11 @@ export async function findOrphanedTranscript(sessionId: string): Promise<string 
 // deletes on absence. Any read error is a throw — ENOENT included — for the local
 // root and for every encoded-cwd entry that is a directory or a symlink (a
 // dangling symlink is an unmounted volume, not an empty one). Tolerated: ENOENT
-// on the farm root and on a farm dir (real or symlinked) with no
-// `.claude/projects` — a dangling farm symlink lands there too — and ENOTDIR on
-// an encoded-cwd symlink that resolves to a file. Skipped by dirent: a farm-root
-// entry that is neither a directory nor a symlink, and the same among the
-// encoded dirs.
+// on the farm root; ENOENT or ENOTDIR on a farm entry's `.claude/projects` (a
+// dangling farm symlink, one to a file, or a `.claude` that is a file — none
+// can hold transcripts); ENOTDIR on an encoded-cwd symlink that resolves to a
+// file. Skipped by dirent: a farm-root entry that is neither a directory nor a
+// symlink, and the same among the encoded dirs.
 export async function transcriptIdsOnDisk(): Promise<Set<string>> {
   const suffix = '.jsonl';
   const roots = [claudeProjectsRoot()];
@@ -2213,7 +2213,11 @@ export async function transcriptIdsOnDisk(): Promise<Set<string>> {
   for (const [i, root] of roots.entries()) {
     let dirs: Dirent[];
     try { dirs = await fs.readdir(root, { withFileTypes: true }); }
-    catch (e) { if (i > 0 && errCode(e) === 'ENOENT') continue; throw e; }
+    catch (e) {
+      const code = errCode(e);
+      if (i > 0 && (code === 'ENOENT' || code === 'ENOTDIR')) continue;
+      throw e;
+    }
     for (const d of dirs) {
       if (!d.isDirectory() && !d.isSymbolicLink()) continue;
       let names: string[];
