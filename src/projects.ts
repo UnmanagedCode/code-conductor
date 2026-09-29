@@ -2184,6 +2184,53 @@ export async function findOrphanedTranscript(sessionId: string): Promise<string 
   return null;
 }
 
+// The backing id of EVERY transcript on this machine: every `<id>.jsonl` name
+// under the local root and under every farm dir ON DISK — a deregistered
+// remote's transcripts included, which is why this globs the farm rather than
+// asking transcriptRoots(). Names only, no `isFile`: an odd entry counts as
+// present. Transcripts never live on a remote box, so no System handle is taken.
+//
+// THROWS rather than under-report, because the caller (src/sessionCleanup.ts)
+// deletes on absence. Any read error is a throw — ENOENT included — for the local
+// root and for every encoded-cwd entry that is a directory or a symlink (a
+// dangling symlink is an unmounted volume, not an empty one). Tolerated: ENOENT
+// on the farm root; ENOENT or ENOTDIR on a farm entry's `.claude/projects` (a
+// dangling farm symlink, one to a file, or a `.claude` that is a file — none
+// can hold transcripts); ENOTDIR on an encoded-cwd symlink that resolves to a
+// file. Skipped by dirent: a farm-root entry that is neither a directory nor a
+// symlink, and the same among the encoded dirs.
+export async function transcriptIdsOnDisk(): Promise<Set<string>> {
+  const suffix = '.jsonl';
+  const roots = [claudeProjectsRoot()];
+  const farm = claudeConfigFarmRoot();
+  let farmDirs: Dirent[] = [];
+  try { farmDirs = await fs.readdir(farm, { withFileTypes: true }); }
+  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  for (const d of farmDirs) {
+    if (d.isDirectory() || d.isSymbolicLink()) roots.push(path.join(farm, d.name, '.claude', 'projects'));
+  }
+  const ids = new Set<string>();
+  for (const [i, root] of roots.entries()) {
+    let dirs: Dirent[];
+    try { dirs = await fs.readdir(root, { withFileTypes: true }); }
+    catch (e) {
+      const code = errCode(e);
+      if (i > 0 && (code === 'ENOENT' || code === 'ENOTDIR')) continue;
+      throw e;
+    }
+    for (const d of dirs) {
+      if (!d.isDirectory() && !d.isSymbolicLink()) continue;
+      let names: string[];
+      try { names = await fs.readdir(path.join(root, d.name)); }
+      catch (e) { if (errCode(e) === 'ENOTDIR') continue; throw e; }
+      for (const name of names) {
+        if (name.endsWith(suffix)) ids.add(name.slice(0, -suffix.length));
+      }
+    }
+  }
+  return ids;
+}
+
 // EVERY transcript root cc knows about: the local one, plus one per registered
 // remote. There is no single root any more, so the reverse scanner above has to
 // be told where to look — left local-only it would answer "no such session" for

@@ -34,7 +34,9 @@
 // still sees where it was. Every other reader sees live segments only. The
 // record invariant (src/sessionStore.ts) holds across every mutation here: a
 // mutation that would leave no live segment deletes the record, and with it
-// every session fact — so only the explicit session delete is allowed to.
+// every session fact — so only the explicit session delete is allowed to (and,
+// for a whole record with no transcript left, the boot cleanup's
+// removeSessionRecords in src/sessionStore.ts).
 
 import {
   mutateSessions, loadSessions, liveSegments, ensureSegment, trackLineageWrite, VALID_REASONS,
