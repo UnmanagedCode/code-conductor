@@ -43,6 +43,7 @@ import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate, probeTtsStatus } from './tts.js';
 import { createUnreadStore } from './unread.js';
+import { createDraftStore, installComposerDrafts } from './drafts.js';
 import { installAccountUsage } from './accountUsage.js';
 import { installSidebarChrome } from './sidebarChrome.js';
 import { installSidebarLens } from './sidebarLens.js';
@@ -420,7 +421,13 @@ const composer = attachComposer({
     send('prompt', payload);
   },
   onResize: () => conversation._maybeScroll(),
+  // Lazy arrow: first fires on user input, after composerDrafts is initialised.
+  onDraftChange: (d) => composerDrafts.noteChange(d),
 });
+// Per-session composer drafts (public/drafts.js): selectInstance calls
+// composerDrafts.switchTo(sessionId) to save the outgoing text and load the
+// incoming session's.
+const composerDrafts = installComposerDrafts({ composer, store: createDraftStore() });
 
 // Per-session / per-project action helpers (promote / resume / load-sessions /
 // rewind / fork / delete-project / delete-session / remove-worktree, plus the
@@ -810,6 +817,10 @@ function selectInstance(id, opts = {}) {
   conversation.clear();
   lazyController.reset(); // invalidate any in-flight earlier-history fetch
   headerHandle.update();
+  const inst = id ? state.instances.find(i => i.id === id) : null;
+  // After headerHandle.update() (canType is set) and before subscribe, so a
+  // fork's snapshot prefill lands in the new session's draft.
+  composerDrafts.switchTo(inst?.sessionId ?? null);
   // Swap the task panel onto whichever instance just became active.
   taskPanel.attach(id ? getTracker(id) : null);
   subagentPanel.setInstances(state.instances, id);
@@ -818,7 +829,6 @@ function selectInstance(id, opts = {}) {
   // Uses sessionId (stable across crash/resume), not the transient instance id.
   // pushState when navigating into a sub-agent so the back button can return
   // to the conductor; replaceState for all other navigation to avoid clutter.
-  const inst = id ? state.instances.find(i => i.id === id) : null;
   if (opts.push) {
     pushSessionAnchor(inst?.sessionId || null);
   } else {
