@@ -69,7 +69,8 @@ async function harness({ conducted = false } = {}) {
   document.body.append(host);
   // viewOpen: a full-page view has the pane display:none, so every rect reads 0.
   const layout = { viewOpen: false, pinHeight: PIN_HEIGHT, tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57 };
-  Object.defineProperty(pinEl, 'offsetHeight', { get: () => layout.pinHeight });
+  // A display:none element measures 0, as in a browser.
+  Object.defineProperty(pinEl, 'offsetHeight', { get: () => (pinEl.hidden ? 0 : layout.pinHeight) });
   // The pin's body is created by the controller, so its clamp is faked on the prototype.
   const isPinBody = (el) => el.classList.contains('pinned-prompt-body');
   Object.defineProperty(win.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return isPinBody(this) ? layout.bodyScrollHeight : 0; } });
