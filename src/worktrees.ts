@@ -23,6 +23,7 @@ import {
 } from './systems/transcriptKey.ts';
 import { classifySpawnError } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
+import { REBASE_PROMPT_LEAD } from '../public/injectedTurns.js';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
@@ -1397,7 +1398,7 @@ export function buildRebasePrompt(meta: WorktreeMeta, blocker: 'dirty' | 'confli
         `2. Resolve any conflicts as they come up (\`git status\` lists them, \`git rebase --continue\` after each).`,
       ];
   return [
-    `You are running in an isolated git worktree.`,
+    REBASE_PROMPT_LEAD,
     `Worktree branch: ${meta.branch}`,
     `Originally branched from: ${meta.baseBranch} at ${meta.baseSha.slice(0, 12)}`,
     ``,

@@ -16,6 +16,7 @@ How `public/` is tested: the happy-dom suite, what happy-dom gets wrong, and wha
 |---|---|---|---|
 | UA stylesheet (`[hidden] { display: none }`) | present | **absent** | `getComputedStyle(el).display === 'none'` on a `[hidden]` element is vacuous either way |
 | `hashchange` after `history.pushState` / `replaceState` | never fires | **fires** (async, in order) | a view opened via `pushState` that nobody's `hashchange` listener hears still passes |
+| Layout reads (`getBoundingClientRect`, `scrollHeight`, `clientHeight`, `offsetHeight`) | real geometry | **all 0** | geometry logic takes injected rects (`tests/sticky-prompt.test.mjs` stubs a per-bubble top); whether a sticky/clamped element LOOKS right needs the headless pass |
 
 - **`[hidden]` is a CSS-origin invariant.** An author-origin declaration beats the UA rule at any specificity, so any author `display` on a selector that matches a `[hidden]`-bearing element un-hides it. Test it as a sweep over `public/styles.css` plus `public/index.html`, not as a computed-style check:
   - `tests/hidden-attribute-layout.test.mjs` is that sweep ("nothing in index.html lays out while carrying the hidden attribute"), with one positive control per selector shape ("the sweep reports a collision declared through …").

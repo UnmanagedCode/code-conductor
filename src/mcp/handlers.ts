@@ -39,7 +39,7 @@ import {
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
-import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.js';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.

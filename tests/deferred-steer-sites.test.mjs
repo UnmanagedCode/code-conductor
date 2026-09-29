@@ -26,7 +26,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 import { addCustomModel } from '../src/appSettings.ts';
 import { approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
-import { buildApprovePrompt, buildRejectPrompt } from '../src/planApproval.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../public/planApproval.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-steer-sites.json');

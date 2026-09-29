@@ -11,6 +11,7 @@ import { parseWakeCallback } from './wakeCallback.js';
 import { buildQuestionAnswer } from './questionAnswerBubble.js';
 import { parseRenewSeed } from './renewSeed.js';
 import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
+import { promptOrigin } from './promptOrigin.js';
 import { buildUserText } from './userText.js';
 import { syncAssistantBubble } from './assistantBubble.js';
 import { CompactionBlock, isCompactCommandText, isLocalCommandStdoutText } from './compactionBlock.js';
@@ -742,6 +743,10 @@ export class Conversation {
     const attrs = { class: cls };
     if (userIndex != null) attrs['data-user-index'] = String(userIndex);
     if (this.segmentId != null) attrs['data-segment-id'] = this.segmentId;
+    // Who wrote this turn, for the sticky prompt header. A bubble with no
+    // user-text block (attachment-only, a bare `<transcribed>` marker) has
+    // nothing to pin.
+    if (!this.isSub) attrs['data-prompt-origin'] = userTextControls ? promptOrigin(ev) : 'synthetic';
     const wrap = el('div', attrs, roleEl, blocks);
     const cur = this._currentSegment();
     // Hover-revealed rewind / fork affordances — only on the outer

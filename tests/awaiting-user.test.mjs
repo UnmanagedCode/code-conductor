@@ -22,7 +22,7 @@ import { buildRenewRequest } from '../src/sessionRenew.ts';
 import { RESUME_TEXT, buildConductorResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';
 import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.js';
-import { buildApprovePrompt, buildRejectPrompt } from '../src/planApproval.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../public/planApproval.js';
 import { buildRebasePrompt } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -246,8 +246,8 @@ test('LiveAskFacts: only the last text block of the last message is the final te
 // ── Acceptance 4: no playbook / stage / kanban logic ─────────────────────
 
 test('the new modules read no playbook, stage, ledger or kanban fact', async () => {
-  for (const f of ['awaitingUser.ts', 'awaitingUserTranscript.ts', 'injectedTurns.ts']) {
-    const src = await fs.readFile(path.join(__dirname, '..', 'src', f), 'utf8');
+  for (const f of ['src/awaitingUser.ts', 'src/awaitingUserTranscript.ts', 'public/injectedTurns.js', 'public/promptOrigin.js']) {
+    const src = await fs.readFile(path.join(__dirname, '..', f), 'utf8');
     assert.doesNotMatch(src, /playbook|stage|ledger|kanban/i, `${f} must not name a playbook/stage/ledger/kanban fact`);
   }
 });

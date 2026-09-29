@@ -758,8 +758,32 @@ button:hover:not(:disabled) { background: #262b3d; }
 button:disabled, select:disabled, textarea:disabled { opacity: .5; cursor: not-allowed; }
 input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-.conversation { flex: 1; overflow-y: auto; overflow-anchor: none; padding: 12px 14px; }
+.conversation-pane { --conv-pad-x: 14px; position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.conversation { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: 12px var(--conv-pad-x); }
 .conversation .empty { color: var(--muted); padding: 20px; text-align: center; }
+
+/* Sticky prompt header (public/stickyPrompt.js): one overlay above the transcript
+   pinning the prompt that started the turn in view. It sits outside the scroll
+   root, so the transcript's DOM and scrollHeight are untouched. z-index stays
+   below the header menus and the mobile drawer. No `display` here: index.html
+   ships it `hidden`, and an author display would outrank that. */
+.pinned-prompt {
+  position: absolute; top: 0; z-index: 2; cursor: pointer; will-change: transform;
+  left: var(--conv-pad-x); right: calc(var(--conv-pad-x) + var(--conv-scrollbar, 0px));
+  padding: 8px 12px; background: var(--panel-2);
+  border: 1px solid var(--accent); border-top: none; border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, .35);
+}
+.pinned-prompt-body { font-size: 13px; line-height: 1.45; max-height: calc(3 * 1lh); overflow: hidden; }
+.pinned-prompt-body.overflowing {
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.pinned-prompt .user-text.md h1, .pinned-prompt .user-text.md h2, .pinned-prompt .user-text.md h3,
+.pinned-prompt .user-text.md h4, .pinned-prompt .user-text.md h5, .pinned-prompt .user-text.md h6 {
+  font-size: 1em; font-weight: 600; margin: 8px 0 2px;
+  border-bottom: none; padding-bottom: 0; color: var(--text);
+}
 
 .msg { margin-bottom: 16px; padding: 8px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
 .msg.user { background: var(--panel-2); border-color: var(--accent); position: relative; }
@@ -1733,7 +1757,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
    children of #main are hidden (the burger ≡ sidebar toggle in the header
    stays so mobile can still reach the sidebar). The group-nav + content
    scaffold is built to take additional groups beyond Transcribe. */
-#main.settings-open #conversation,
+#main.settings-open #conversation-pane,
 #main.settings-open #subagent-panel,
 #main.settings-open #task-panel,
 #main.settings-open #turn-indicator,
@@ -2088,14 +2112,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* ── Review view ─────────────────────────────────────────────────────────── */
 /* Full-page diff browser, same pattern as settings. While open the instance-
    specific children of #main are hidden. The ± sidebar button opens it. */
-#main.review-open #conversation,
+#main.review-open #conversation-pane,
 #main.review-open #subagent-panel,
 #main.review-open #task-panel,
 #main.review-open #turn-indicator,
 #main.review-open #composer,
 #main.review-open #instance-controls,
 #main.review-open #instance-title,
-#main.commits-open #conversation,
+#main.commits-open #conversation-pane,
 #main.commits-open #subagent-panel,
 #main.commits-open #task-panel,
 #main.commits-open #turn-indicator,
@@ -2103,7 +2127,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.commits-open #instance-controls,
 #main.commits-open #instance-title { display: none !important; }
 
-#main.costs-open #conversation,
+#main.costs-open #conversation-pane,
 #main.costs-open #subagent-panel,
 #main.costs-open #task-panel,
 #main.costs-open #turn-indicator,
@@ -2519,7 +2543,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #app-switcher-select option { background: var(--panel-2); color: var(--text); }
 
 /* Plugin iframe view: same full-page pattern as review/commits/costs. */
-#main.plugin-open #conversation,
+#main.plugin-open #conversation-pane,
 #main.plugin-open #subagent-panel,
 #main.plugin-open #task-panel,
 #main.plugin-open #turn-indicator,

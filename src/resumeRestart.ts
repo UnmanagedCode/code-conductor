@@ -26,7 +26,7 @@ import {
   clearResumeManifest,
 } from './resumeManifest.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
-import { RESTART_NOTICE_TRUNK } from './injectedTurns.ts';
+import { RESTART_NOTICE_TRUNK } from '../public/injectedTurns.js';
 import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 

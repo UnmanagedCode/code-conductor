@@ -62,6 +62,13 @@ export function isUserQuestionAnswerText(questions, text) {
   return text.startsWith('My answers:\n');
 }
 
+// The questions-free form of isUserQuestionAnswerText: true iff `text` opens
+// with either prefix formatUserQuestionAnswers emits (single-question short
+// form / multi `My answers:\n- `), for callers with no card to match against.
+export function isQuestionAnswerShape(text) {
+  return typeof text === 'string' && (/^Answer to "[^\n]*": /.test(text) || text.startsWith('My answers:\n- '));
+}
+
 // Best-effort reverse of formatUserQuestionAnswers. Reconstructs the
 // per-question answer objects from the text that was sent to the model.
 // Exported so conversation.js can call it during session replay.
