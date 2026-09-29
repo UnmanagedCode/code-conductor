@@ -101,7 +101,7 @@ import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.
 import { truncateSessionAtUserMessage, verifyUserPrompt } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
-import { buildApprovePrompt } from './planApproval.ts';
+import { buildApprovePrompt } from '../public/planApproval.js';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';

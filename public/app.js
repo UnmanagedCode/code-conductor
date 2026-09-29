@@ -16,6 +16,8 @@ import {
 import { installExternalLinkOpener } from './external-links.js';
 import { makeDismissable } from './dismissable.js';
 import { installLazyHistoryController } from './lazyHistory.js';
+import { installStickyPrompt } from './stickyPrompt.js';
+import { buildApprovePrompt, buildRejectPrompt } from './planApproval.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { installAppSwitcher } from './appSwitcher.js';
@@ -60,6 +62,7 @@ const dom = {
   sidebarStripSlot: document.getElementById('sidebar-strip-slot'),
   sidebarLensButtons: document.querySelectorAll('.sidebar-lens button'),
   conversation: document.getElementById('conversation'),
+  pinnedPrompt: document.getElementById('pinned-prompt'),
   composerForm: document.getElementById('composer'),
   composerInput: document.getElementById('composer-input'),
   composerSend: document.getElementById('composer-send'),
@@ -334,15 +337,9 @@ const conversationOptions = {
       // approval prompt and let the user adjust mode manually.
       try { await send('mode', { id: activeId, mode: 'bypassPermissions' }, { ack: true }); }
       catch (e) { console.warn('plan-approve mode switch failed', e); }
-      const text = feedback
-        ? `I approve the plan. Additional notes: ${feedback}\n\nPlease proceed with the implementation.`
-        : 'I approve the plan. Please proceed with the implementation.';
-      sendCardAnswer(activeId, text, onFail);
+      sendCardAnswer(activeId, buildApprovePrompt(feedback), onFail);
     } else {
-      const text = feedback
-        ? `I'd like to revise the plan. Refinement notes:\n${feedback}`
-        : `I'd like to revise the plan. Please refine it.`;
-      sendCardAnswer(activeId, text, onFail);
+      sendCardAnswer(activeId, buildRejectPrompt(feedback), onFail);
     }
   },
   onRewind: (userMessageIndex, text) => sessionActions.rewindActiveSession(userMessageIndex, text),
@@ -363,6 +360,14 @@ const lazyController = installLazyHistoryController({
   conversationOptions,
   getActiveId: () => state.activeId,
   getInstances: () => state.instances,
+});
+
+// Pin the prompt that started the turn in view at the top of the transcript.
+installStickyPrompt({
+  scrollEl: dom.conversation,
+  pinEl: dom.pinnedPrompt,
+  viewHostEl: document.getElementById('main'),
+  isConducted: () => !!state.instances.find(i => i.id === state.activeId)?.conducted,
 });
 
 // Handles returned by installWorkspaceDialog ({ openNew, openEdit }). Declared

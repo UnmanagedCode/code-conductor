@@ -16,13 +16,7 @@
 // approve_plan, reject_plan) is byte-identical to the user's own and so reads as
 // real. Workers never carry the flag (Instance feeds nothing when conducted).
 
-import { WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
-import { parseRenewSeed } from '../public/renewSeed.js';
-import { FORWARD_FRAME_HEADER } from '../public/forwardFrame.js';
-import {
-  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK,
-  AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
-} from './injectedTurns.ts';
+import { isInjectedUserTurn } from '../public/promptOrigin.js';
 import type { UiEvent } from './parser.ts';
 
 export type AskKind = 'question' | 'plan';
@@ -52,30 +46,13 @@ export function isTextAsk(text: unknown): boolean {
 
 // ── User-turn classifier ──────────────────────────────────────────────────
 
-const OVERAGE_BASES = [AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT];
-
 // 'real' for anything a person (or, per the limit above, an MCP driver) sent;
 // 'injected' for the server- and CLI-authored turns listed in
-// docs/architecture.md → "Ownership and awaitingUser".
+// docs/architecture.md → "Ownership and awaitingUser". The text/flag rules live
+// in public/promptOrigin.js (isInjectedUserTurn), which the browser's sticky
+// prompt header shares.
 export function classifyUserTurn(ev: UiEvent): 'real' | 'injected' {
-  if (ev.cliInjected === true) return 'injected';
-  const text = typeof ev.text === 'string' ? ev.text : '';
-  if (text.startsWith(WAKE_CALLBACK_MARKER)) return 'injected';
-  if (parseRenewSeed(text) !== null) return 'injected';
-  if (text.startsWith(RENEW_REQUEST_LEAD)) return 'injected';
-  if (text.startsWith(FORWARD_FRAME_HEADER)) return 'injected';
-  if (text.startsWith(RESTART_NOTICE_TRUNK)) return 'injected';
-  // An overage resume is injected only as a bare preamble; one carrying the
-  // user's queued messages is how those messages reach the session.
-  if (OVERAGE_BASES.some(b => text.startsWith(b)) && !text.includes(`\n\n${QUEUED_SECTION_LEAD} `)) {
-    return 'injected';
-  }
-  // Renew's `/clear`: the queued_command shape replays as the bare text, the
-  // type:"user" shape as the CLI's command-name wrapper.
-  if (text === '/clear' || text.startsWith('<command-name>/clear</command-name>')) return 'injected';
-  if (text.startsWith('/effort ') || text.startsWith('<command-name>/effort</command-name>')) return 'injected';
-  if (text.startsWith('<local-command-stdout>')) return 'injected';
-  return 'real';
+  return isInjectedUserTurn(ev) ? 'injected' : 'real';
 }
 
 // ── Reducer ───────────────────────────────────────────────────────────────

@@ -33,7 +33,7 @@
 
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.js';
-import { RENEW_REQUEST_LEAD } from './injectedTurns.ts';
+import { RENEW_REQUEST_LEAD } from '../public/injectedTurns.js';
 
 // Defensive ceiling: if `/clear` never rotates the session (the real CLI always
 // does — this only guards a wedged/hung subprocess), abandon the pending

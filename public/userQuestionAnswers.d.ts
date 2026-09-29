@@ -24,4 +24,6 @@ export function formatUserQuestionAnswers(questions: Question[], answers: Array<
 
 export function isUserQuestionAnswerText(questions: Question[], text: unknown): boolean;
 
+export function isQuestionAnswerShape(text: unknown): boolean;
+
 export function parseUserQuestionAnswers(questions: Question[], text: unknown): UserQuestionAnswer[];

@@ -1,9 +1,12 @@
 // The fixed leads of every server-authored text that reaches a session as a
 // user turn. A leaf module: the builders (sessionRenew.ts, resumeRestart.ts,
-// overageResume.ts) compose their output FROM these constants, and
-// src/awaitingUser.ts recognises that output BY them, so a builder cannot
-// change its opening without its recogniser seeing the same bytes. Importing
-// nothing keeps both sides free of an import cycle through src/instances.ts.
+// overageResume.ts, worktrees.ts) compose their output FROM these constants,
+// and public/promptOrigin.js recognises that output BY them (src/awaitingUser.ts
+// through it), so a builder cannot change its opening without its recogniser
+// seeing the same bytes. Importing nothing keeps both sides free of an import
+// cycle through src/instances.ts. Lives under public/ because the browser can
+// only import from the statically served dir; DOM-free so the server imports
+// it directly.
 
 // The opening sentence of buildRenewRequest (renew_session turn A).
 export const RENEW_REQUEST_LEAD =
@@ -37,3 +40,6 @@ export const IDLE_PARKED_RESUME_TEXT =
 // The lead of the section an overage resume appends when it carries the
 // messages the user queued while paused — what makes that resume a real turn.
 export const QUEUED_SECTION_LEAD = 'While paused you queued';
+
+// The opening line of buildRebasePrompt (the sync-worktree rebase brief).
+export const REBASE_PROMPT_LEAD = 'You are running in an isolated git worktree.';

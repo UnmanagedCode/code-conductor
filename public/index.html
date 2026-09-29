@@ -101,7 +101,10 @@
           </div>
         </div>
       </header>
-      <div id="conversation" class="conversation"></div>
+      <div id="conversation-pane" class="conversation-pane">
+        <div id="pinned-prompt" class="pinned-prompt" role="button" tabindex="0" title="Jump to this prompt" hidden></div>
+        <div id="conversation" class="conversation"></div>
+      </div>
       <div id="task-panel" hidden></div>
       <div id="subagent-panel" hidden></div>
       <div id="turn-indicator" class="turn-indicator" hidden aria-live="polite">
