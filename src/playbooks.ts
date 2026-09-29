@@ -1467,12 +1467,14 @@ function checkForwardSource(
 // and a resume's subject already exists. `createWorktree` is the damaging one —
 // injecting it hands a resumed session a brand-new worktree, at a cwd that by
 // construction holds none of its history — and `model` is merely moot, since
-// readLastSessionModel recovers it.
+// readLastSessionModel recovers it. `backend` goes with `model`: it only picks
+// among the backends serving a named model id, so injected alone it gets the
+// resume refused BAD_MODEL, and the session record already holds the pair.
 //
 // ENUMERATING WHAT TO STRIP, not what to keep, is the fail-safe direction: a
 // future pinned key stays enforced by default rather than being silently
 // dropped. Everything not listed is POLICY and still applies — see decideResume.
-const SPAWN_SHAPE_PINS: ReadonlySet<string> = new Set(['createWorktree', 'baseWorktree', 'name', 'model']);
+const SPAWN_SHAPE_PINS: ReadonlySet<string> = new Set(['createWorktree', 'baseWorktree', 'name', 'model', 'backend']);
 
 // `pin` — ARGUMENT VALUES (not worker provenance; that is `needs`). Omitted
 // by the caller ⇒ filled in; supplied and mismatched ⇒ refused. A hard

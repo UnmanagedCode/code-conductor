@@ -25,6 +25,7 @@ import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBacke
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
 import { getSessionBackend, setSessionBackend, sessionsFile } from '../src/sessionStore.ts';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
+import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -1347,6 +1348,29 @@ describe('a model id on several backends (MCP spawn)', () => {
     assert.equal(noModel.code, 'BAD_MODEL');
     await settle();
     assert.equal(instances.list().length, before, 'no instance was created');
+  });
+
+  test('a curated preset id also added on another backend is MODEL_AMBIGUOUS', async () => {
+    await seedDuplicate();
+    const preset = OLLAMA_CLOUD_MODELS[0];
+    await addCustomModel({ label: 'Preset on p', model: preset.model, backend: 'p', contextWindow: 99_000 });
+    const before = instances.list().length;
+    const r = meta(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: preset.model }));
+    assert.equal(r.code, 'MODEL_AMBIGUOUS', JSON.stringify(r));
+    assert.deepEqual(r.backends, ['ollama', 'p']);
+    await settle();
+    assert.equal(instances.list().length, before, 'no instance was created');
+  });
+
+  test('a caller-passed backend on a resume with no model is still BAD_MODEL', async () => {
+    await seedDuplicate();
+    const { view, inst } = await spawnAndDump({ model: 'mine:v1', backend: 'p' });
+    await inst.kill({ graceMs: 5 });
+    await waitFor(() => !liveForSession(view.sessionId));
+    const r = thrown(await callTool('spawn_instance', { project: 'p', resume: view.sessionId, backend: 'p' }));
+    assert.equal(r.code, 'BAD_MODEL');
+    await settle();
+    assert.equal(liveForSession(view.sessionId), null, 'nothing was resumed');
   });
 
   test('an id on one backend, and a tier bound to a duplicated pair, spawn with no refusal', async () => {

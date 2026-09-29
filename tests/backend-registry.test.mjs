@@ -460,6 +460,9 @@ describe('backend registry data model', () => {
     const preset = OLLAMA_CLOUD_MODELS[0];
     await addCustomModel({ label: 'Override', model: preset.model, backend: 'ollama', contextWindow: 1_000 });
     assert.deepEqual(backendsForModel(preset.model), ['ollama']);
+    // The same preset id added on p is on two backends: the curated row still counts.
+    await addCustomModel({ label: 'Preset on p', model: preset.model, backend: 'p', contextWindow: 1_000 });
+    assert.deepEqual(backendsForModel(preset.model), ['ollama', 'p']);
     assert.deepEqual(backendsForModel('ghost:v9'), []);
     assert.deepEqual(backendsForModel(''), []);
   });
