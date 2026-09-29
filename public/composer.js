@@ -40,7 +40,7 @@ export function prependTranscribedTag(text, hasTranscript) {
   return `<transcribed>\n${text}`;
 }
 
-export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize }) {
+export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize, onDraftChange }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
   const pending = [];
@@ -165,6 +165,13 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   textarea.addEventListener('input', updateButton);
   // Clearing the composer by hand drops the transcribed-content marker.
   textarea.addEventListener('input', () => { if (!textarea.value.trim()) hasTranscript = false; });
+  // Reports every draft mutation (typing, dictation, prefill, send) so the
+  // per-session draft store can persist it. Not fired by setDraft, which is
+  // the restore path and must not write back, nor during construction.
+  function draftChanged() {
+    if (onDraftChange) onDraftChange({ text: textarea.value, transcribed: hasTranscript });
+  }
+  textarea.addEventListener('input', draftChanged);
   textarea.addEventListener('input', autoGrow);
 
   function renderChips() {
@@ -318,6 +325,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     try { textarea.setSelectionRange(caret, caret); } catch { /* ignore */ }
     try { textarea.focus(); } catch { /* ignore */ }
     refreshSendEnabled();
+    draftChanged();
   }
 
   async function startRecording() {
@@ -484,6 +492,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     hasTranscript = false;
     clearAttachments();
     refreshSendEnabled();
+    draftChanged();
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -510,6 +519,19 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       // is disabled, which is fine: the user can still see the value, and
       // it'll focus when the next status transition flips canType on.
       try { textarea.focus(); } catch { /* ignore */ }
+      try { textarea.setSelectionRange(textarea.value.length, textarea.value.length); }
+      catch { /* ignore */ }
+      refreshSendEnabled();
+      draftChanged();
+    },
+    getDraft() { return { text: textarea.value, transcribed: hasTranscript }; },
+    // Swap the textarea onto a stored per-session draft. Unlike prefill it
+    // neither focuses (a sidebar tap on mobile must not pop the keyboard),
+    // touches attachments, nor reports the change back to the draft store.
+    setDraft({ text, transcribed }) {
+      textarea.value = typeof text === 'string' ? text : '';
+      hasTranscript = !!transcribed && !!textarea.value;
+      autoGrow();
       try { textarea.setSelectionRange(textarea.value.length, textarea.value.length); }
       catch { /* ignore */ }
       refreshSendEnabled();
