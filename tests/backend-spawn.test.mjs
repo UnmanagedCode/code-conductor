@@ -845,7 +845,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
 
     // The bound custom model is refused first…
     await assert.rejects(() => removeBackend('inuse'), /custom models bound to it/);
-    await removeCustomModel('inuse:v1');
+    await removeCustomModel('inuse', 'inuse:v1');
     // …then the LIVE session is, naming it.
     await assert.rejects(
       () => removeBackend('inuse'),
@@ -1201,9 +1201,9 @@ describe('MCP resume restores the recorded backend', () => {
 
   // The other half of the recovery contract, pinned nowhere else in the suite:
   // an EXPLICITLY named model on a resume wins over the session's backend
-  // record — both axes, because naming a model whose registry row binds
-  // elsewhere names its backend through resolveSpawnModel (spawn_instance has
-  // no `backend` argument). The chosen model therefore belongs to a DIFFERENT
+  // record — both axes, because naming a model id served by exactly one other
+  // backend names that backend through resolveSpawnModel, with no `backend`
+  // argument passed. The chosen model therefore belongs to a DIFFERENT
   // backend than the recorded one, so losing the override is observable in which
   // launch template fires — not just in the summary field.
   test('an MCP resume with an explicitly named model beats the recorded pair', async () => {
@@ -1257,5 +1257,128 @@ describe('MCP resume restores the recorded backend', () => {
     // then confirm no instance exists for the session.
     await settle();
     assert.equal(instances.idsForSession(sid).length, 0);
+  });
+});
+
+describe('a model id on several backends (MCP spawn)', () => {
+  let rpcId = 1;
+  async function callTool(name, args) {
+    const res = await fetch(baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json();
+    assert.ok(body.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
+    return body.result;
+  }
+  const meta = (result) => JSON.parse(result.content[0].text);
+  // A thrown refusal's structured half (isError results carry it second).
+  const thrown = (result) => {
+    assert.equal(result.isError, true, JSON.stringify(result));
+    return JSON.parse(result.content[1].text);
+  };
+  const liveForSession = (sid) =>
+    instances.idsForSession(sid).map(id => instances.get(id)).find(i => i?.proc) ?? null;
+
+  // `mine:v1` on the built-in ollama row AND a user-defined row `p`, with
+  // different windows so which row a spawn resolved is visible in its summary.
+  async function seedDuplicate() {
+    await addBackend({ id: 'p', label: 'P', template: 'pproxy claude --model {model} --' });
+    await addBackend({ id: 'other', label: 'Other', template: 'other claude --model {model} --' });
+    await addCustomModel({ label: 'Mine (p)', model: 'mine:v1', backend: 'p', contextWindow: 222_000 });
+    await addCustomModel({ label: 'Mine (ollama)', model: 'mine:v1', backend: 'ollama', contextWindow: 111_000 });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  }
+
+  async function spawnAndDump(args) {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'multi-backend-'));
+    const argvDump = path.join(tmp, 'argv.txt');
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+    try {
+      const view = meta(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', ...args }));
+      await waitFor(() => liveForSession(view.sessionId)?.status === 'idle');
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      return { view, inst: liveForSession(view.sessionId), argv };
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  test('a bare id on two backends is refused MODEL_AMBIGUOUS, naming both, spawning nothing', async () => {
+    await seedDuplicate();
+    const before = instances.list().length;
+    const r = meta(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'mine:v1' }));
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'MODEL_AMBIGUOUS');
+    assert.equal(r.model, 'mine:v1');
+    assert.deepEqual(r.backends, ['ollama', 'p']);
+    assert.match(r.reason, /backend:"<id>"/);
+    assert.match(r.reason, /\bollama\b/);
+    assert.match(r.reason, /\bp\b/);
+    await settle();
+    assert.equal(instances.list().length, before, 'no instance was created');
+  });
+
+  test('backend picks the row: each pick launches that backend\'s template', async () => {
+    await seedDuplicate();
+    const onP = await spawnAndDump({ model: 'mine:v1', backend: 'p' });
+    assert.equal(onP.inst.backend, 'p');
+    assert.equal(onP.view.contextWindowTokens, 222_000);
+    assert.deepEqual(onP.argv.slice(0, 4), ['claude', '--model', 'mine:v1', '--']);
+    const onOllama = await spawnAndDump({ model: 'mine:v1', backend: 'ollama' });
+    assert.equal(onOllama.inst.backend, 'ollama');
+    assert.equal(onOllama.view.contextWindowTokens, 111_000);
+    assert.deepEqual(onOllama.argv.slice(0, 6), ['launch', 'claude', '--model', 'mine:v1', '--yes', '--']);
+  });
+
+  test('a backend that does not serve the id, or one beside a tier, is BAD_MODEL', async () => {
+    await seedDuplicate();
+    const before = instances.list().length;
+    const wrong = thrown(await callTool('spawn_instance', { project: 'p', model: 'mine:v1', backend: 'other' }));
+    assert.equal(wrong.code, 'BAD_MODEL');
+    assert.match(wrong.error, /not configured on backend 'other'/);
+    assert.match(wrong.error, /ollama, p/, 'the refusal lists the backends that do serve it');
+    const withTier = thrown(await callTool('spawn_instance', { project: 'p', model: 'powerful', backend: 'p' }));
+    assert.equal(withTier.code, 'BAD_MODEL');
+    const noModel = thrown(await callTool('spawn_instance', { project: 'p', backend: 'p' }));
+    assert.equal(noModel.code, 'BAD_MODEL');
+    await settle();
+    assert.equal(instances.list().length, before, 'no instance was created');
+  });
+
+  test('an id on one backend, and a tier bound to a duplicated pair, spawn with no refusal', async () => {
+    await seedDuplicate();
+    await addCustomModel({ label: 'Solo', model: 'solo:v1', backend: 'p', contextWindow: 99_000 });
+    const solo = await spawnAndDump({ model: 'solo:v1' });
+    assert.equal(solo.inst.backend, 'p');
+    assert.deepEqual(solo.argv.slice(0, 4), ['claude', '--model', 'solo:v1', '--']);
+    await setTierBackend('powerful', { backend: 'p', model: 'mine:v1' });
+    const tier = await spawnAndDump({ model: 'powerful' });
+    assert.equal(tier.inst.backend, 'p');
+    assert.equal(tier.inst.model, 'mine:v1');
+  });
+
+  test('a bare resume of a session on a duplicated pair lands on its recorded backend', async () => {
+    await seedDuplicate();
+    const { view, inst } = await spawnAndDump({ model: 'mine:v1', backend: 'p' });
+    const sid = view.sessionId;
+    await settledSessionBackend(sid);
+    // The fake engine writes no transcript; seed the resumable jsonl (named by
+    // the backing id) so the resume passes hasResumableConversation.
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(path.join(projectsRoot, 'p')));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: inst.backingSessionId }) + '\n');
+    await inst.kill({ graceMs: 5 });
+    await waitFor(() => !liveForSession(sid));
+
+    const resumed = meta(await callTool('spawn_instance', { project: 'p', resume: sid }));
+    assert.notEqual(resumed.ok, false, JSON.stringify(resumed));
+    assert.equal(resumed.backend, 'p');
+    assert.equal(resumed.model, 'mine:v1');
+    assert.equal(resumed.contextWindowTokens, 222_000);
   });
 });

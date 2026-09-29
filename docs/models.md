@@ -187,15 +187,23 @@ purpose: each closes a distinct route, and none subsumes another.
 `models.customModels: [{ label, model, backend, contextWindow, midTurnSteering }]`
 — the models selectable for a substitution backend.
 
-- `model` (the backend's own model id) **is the identity**: re-adding it updates the
-  row in place, and a given model id belongs to exactly one backend.
+- Identity is the `(backend, model)` pair (`model` is the backend's own model id):
+  re-adding a pair updates that row in place, and one model id may be registered on
+  several backends.
+- An MCP `spawn_instance` naming such an id by the id alone is refused
+  `MODEL_AMBIGUOUS` (carrying `model` + `backends:[<id>]`, registry order) until its
+  `backend` argument picks one. A curated preset counts as registered on `ollama`, so
+  a preset id added on another backend is ambiguous too. Tiers and roles bind pairs
+  and are never ambiguous.
+- The cost dashboard's per-model breakdown groups by model id alone (cost rows record
+  no backend), so one id on two backends shows as one row.
 - `backend` must name a substitution backend (never `claude`).
 - `contextWindow` is **required** and must be a positive number of raw tokens
   (stored `Math.round`ed). It
   drives the context-usage bar and both cc-managed env vars at spawn, so a wrong
   value silently truncates or over-fills the window. Resolved by
-  `contextWindowForModel()` (`src/appSettings.ts`) — an **exact** match on the
-  model id, which is the registry key. There is no client-side mirror: the server
+  `contextWindowForModel(backend, model)` (`src/appSettings.ts`) — an **exact** match
+  on the `(backend, model)` pair for a custom row, which is the registry key. There is no client-side mirror: the server
   ships the resolved number as `contextWindowTokens`.
 - `midTurnSteering` is **required** on a stored row (migration
   `0030-backfill-mid-turn-steering` backfills `true`) and **opt-out** on the wire:
@@ -399,7 +407,7 @@ whenever it succeeds.
 place "can this model take a user message injected into a running turn?" is
 resolved. Same precedence and matching rules as capacity above: the `claude`
 backend short-circuits to `true`, a custom-model row wins over a curated preset,
-the model-id match is **exact**, and anything unknown resolves `true` (the
+the `(backend, model)` match is **exact**, and anything unknown resolves `true` (the
 pre-flag behaviour). `Instance` stores it as `acceptsMidTurnSteering`, re-resolved
 alongside capacity by `_refreshModelCapabilities()` whenever the model changes.
 Never persisted in the session store or the resume manifest — a deleted row degrades to

@@ -23,7 +23,7 @@
 // accepts a user message written INTO a running turn, `false` means it does not
 // (it either hard-errors or silently swallows the injection). Read through
 // resolveMidTurnSteering() in src/appSettings.ts, which a custom-model row of the
-// same id overrides. See docs/models.md.
+// same id on `ollama` overrides. See docs/models.md.
 export interface OllamaCloudModel {
   model: string;
   label: string;

@@ -71,6 +71,9 @@ function buildDOM(document) {
   const tierList = document.createElement('ul');
   tierList.id = 'sm-tier-list';
   models.appendChild(tierList);
+  const customList = document.createElement('ul');
+  customList.id = 'sm-custom-list';
+  models.appendChild(customList);
 
   view.querySelector('#settings-backends').innerHTML = `
     <div id="sb-status"></div>
@@ -108,8 +111,9 @@ async function setup(fetchImpl) {
   return { window, mod, ...dom };
 }
 
-// Serves the models payload; records every backend-CRUD call; a per-test `handler`
-// can override the response for one of them (e.g. to return 409).
+// Serves the models payload; records every backend-CRUD and custom-model DELETE
+// call; a per-test `handler` can override the response for a backend call (e.g.
+// to return 409).
 function stubFetch(payload, handler) {
   const calls = [];
   const ok = (body, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(body) });
@@ -119,6 +123,10 @@ function stubFetch(payload, handler) {
     if (u === '/api/settings/models' && method === 'GET') return ok(payload);
     if (u === '/api/settings/models/prefs' && method === 'POST') {
       calls.push({ url: u, method, body: JSON.parse(opts.body) });
+      return ok(payload);
+    }
+    if (u.startsWith('/api/settings/models/custom/') && method === 'DELETE') {
+      calls.push({ url: u, method });
       return ok(payload);
     }
     if (u.startsWith('/api/settings/models/backends')) {
@@ -486,4 +494,22 @@ test('Models picker: the custom-model add form offers every SUBSTITUTION backend
     'the identity `claude` row is never a custom-model host');
   // Each row shows its backend + window.
   assert.match(window.document.getElementById('sm-custom-list').textContent, /Mine — mine:v1 · My Proxy · 300k ctx/);
+});
+
+test('Remove on a custom model sends that row\'s backend and model', async () => {
+  const { impl, calls } = stubFetch(modelsPayload({
+    customModels: [
+      { label: 'Mine', model: 'mine:v1', backend: 'ollama', contextWindow: 300000, midTurnSteering: true },
+      { label: 'Mine', model: 'mine:v1', backend: 'my-proxy', contextWindow: 300000, midTurnSteering: true },
+    ],
+  }));
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  const removes = [...window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')];
+  assert.equal(removes.length, 2, 'one row per (backend, model) pair');
+  removes[1].click();
+  await tick();
+  assert.deepEqual(calls, [{ url: '/api/settings/models/custom/my-proxy/mine%3Av1', method: 'DELETE' }]);
 });

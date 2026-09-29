@@ -13,7 +13,7 @@ import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   addCustomModel, getCustomModels, removeCustomModel, isKnownBackendModel,
-  getTierBackend, setTierBackend, contextWindowForModel, backendForModel,
+  getTierBackend, setTierBackend, contextWindowForModel, backendsForModel, resolveMidTurnSteering,
   getRoleBinding, setRoleBinding, resolveRoleBackend, setPluginRolesProvider,
   getBackends, getBackend, isKnownBackend, getSubstitutionBackends,
   addBackend, updateBackend, removeBackend,
@@ -334,9 +334,9 @@ describe('backend registry data model', () => {
     assert.equal(getCustomModels().length, 2);
 
     // Remove the models first, then the backend goes.
-    assert.equal(await removeCustomModel('one:v1'), true);
+    assert.equal(await removeCustomModel('p', 'one:v1'), true);
     await assert.rejects(() => removeBackend('p'), /two:v1/); // still one left
-    assert.equal(await removeCustomModel('two:v1'), true);
+    assert.equal(await removeCustomModel('p', 'two:v1'), true);
     assert.equal(await removeBackend('p'), true);
     assert.equal(isKnownBackend('p'), false);
     assert.equal(await removeBackend('p'), false); // already gone
@@ -349,13 +349,13 @@ describe('backend registry data model', () => {
     assert.deepEqual(getTierBackend('fast'), { backend: 'p', model: 'one:v1' });
 
     // Legitimate order: drop the model, then the backend. The tier reverts.
-    await removeCustomModel('one:v1');
+    await removeCustomModel('p', 'one:v1');
     assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
     assert.equal(await removeBackend('p'), true);
     assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
   });
 
-  test('custom models: add / list / remove keyed by model id, scoped to a backend', async () => {
+  test('custom models: add / list / remove keyed by the (backend, model) pair', async () => {
     assert.deepEqual(getCustomModels(), []);
     // A curated preset is bindable with NO "Add" step — the capability the
     // Settings picker is built on. This does NOT share the custom arm below it
@@ -386,12 +386,12 @@ describe('backend registry data model', () => {
       assert.equal(isKnownBackendModel('p', preset.model), false,
         `${preset.model} is not bindable on a user-defined backend`);
     }
-    // Re-adding the same model id updates the row (the id is the identity).
+    // Re-adding the same pair updates the row (the pair is the identity).
     await addCustomModel({ label: 'Renamed', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 64_000 });
     assert.equal(getCustomModels().length, 1);
     assert.equal(getCustomModels()[0].label, 'Renamed');
-    assert.equal(await removeCustomModel('gemma4:cloud'), true);
-    assert.equal(await removeCustomModel('gemma4:cloud'), false);
+    assert.equal(await removeCustomModel('ollama', 'gemma4:cloud'), true);
+    assert.equal(await removeCustomModel('ollama', 'gemma4:cloud'), false);
   });
 
   test('addCustomModel: label/model/backend required, backend must be a substitution row', async () => {
@@ -423,38 +423,84 @@ describe('backend registry data model', () => {
     // 200k. Asserted per row against the row's OWN window, so a change to the
     // model list cannot break it.
     for (const preset of OLLAMA_CLOUD_MODELS) {
-      assert.equal(contextWindowForModel(preset.model), preset.contextWindow,
+      assert.equal(contextWindowForModel('ollama', preset.model), preset.contextWindow,
         `${preset.model}: the catalog row's own window resolves with no custom row of its id`);
     }
   });
 
   test('contextWindowForModel: a custom row wins over a curated preset, for every row; unknown → null', async () => {
     await addCustomModel({ label: 'Local', model: 'local:cloud', backend: 'ollama', contextWindow: 128_000 });
-    assert.equal(contextWindowForModel('local:cloud'), 128_000);
+    assert.equal(contextWindowForModel('ollama', 'local:cloud'), 128_000);
     // A custom override of a preset id takes precedence over the catalog value —
     // asserted for EVERY row the catalog holds, so a change to the model list
     // cannot break this and an emptied catalog makes it vacuous, never red.
     for (const preset of OLLAMA_CLOUD_MODELS) {
       const override = preset.contextWindow + 1_000;
       await addCustomModel({ label: 'Override', model: preset.model, backend: 'ollama', contextWindow: override });
-      assert.equal(contextWindowForModel(preset.model), override,
+      assert.equal(contextWindowForModel('ollama', preset.model), override,
         `${preset.model}: the custom row's window wins over the catalog value`);
     }
     // Unknown → null (this is the "leave both env vars unset" spawn path).
-    assert.equal(contextWindowForModel('ghost:tag'), null);
-    assert.equal(contextWindowForModel(''), null);
+    assert.equal(contextWindowForModel('ollama', 'ghost:tag'), null);
+    assert.equal(contextWindowForModel('ollama', ''), null);
   });
 
-  test('backendForModel resolves a bare model id to the backend serving it', async () => {
-    // Every curated preset belongs to the built-in ollama row.
+  test('backendsForModel lists every serving backend in registry order', async () => {
+    // Every curated preset belongs to the built-in ollama row, and only to it.
     for (const preset of OLLAMA_CLOUD_MODELS) {
-      assert.equal(backendForModel(preset.model), 'ollama', `${preset.model} belongs to the ollama row`);
+      assert.deepEqual(backendsForModel(preset.model), ['ollama'], `${preset.model} belongs to the ollama row`);
     }
     await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
     await addCustomModel({ label: 'Mine', model: 'mine:v1', backend: 'p', contextWindow: 100_000 });
-    assert.equal(backendForModel('mine:v1'), 'p');
-    assert.equal(backendForModel('ghost:v9'), null);
-    assert.equal(backendForModel(''), null);
+    assert.deepEqual(backendsForModel('mine:v1'), ['p']);
+    // Added on ollama AFTER p, listed first: the order is the registry's, not insertion.
+    await addCustomModel({ label: 'Mine', model: 'mine:v1', backend: 'ollama', contextWindow: 100_000 });
+    assert.deepEqual(backendsForModel('mine:v1'), ['ollama', 'p']);
+    // A user row on ollama overriding a preset is still ONE candidate.
+    const preset = OLLAMA_CLOUD_MODELS[0];
+    await addCustomModel({ label: 'Override', model: preset.model, backend: 'ollama', contextWindow: 1_000 });
+    assert.deepEqual(backendsForModel(preset.model), ['ollama']);
+    assert.deepEqual(backendsForModel('ghost:v9'), []);
+    assert.deepEqual(backendsForModel(''), []);
+  });
+
+  test('the same model id on two backends is two rows', async () => {
+    await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
+    await addCustomModel({ label: 'On ollama', model: 'mine:v1', backend: 'ollama', contextWindow: 100_000 });
+    await addCustomModel({ label: 'On p', model: 'mine:v1', backend: 'p', contextWindow: 200_000 });
+    assert.equal(getCustomModels().length, 2);
+    // Re-adding on p replaces only p's row.
+    await addCustomModel({ label: 'On p, renamed', model: 'mine:v1', backend: 'p', contextWindow: 200_000 });
+    const rows = getCustomModels();
+    assert.equal(rows.length, 2);
+    assert.equal(rows.find(m => m.backend === 'p').label, 'On p, renamed');
+    assert.equal(rows.find(m => m.backend === 'ollama').label, 'On ollama');
+    // Both pairs reach disk.
+    const settingsFile = path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'settings.json');
+    const onDisk = JSON.parse(await fs.readFile(settingsFile, 'utf8')).models.customModels;
+    assert.deepEqual(onDisk.map(m => `${m.backend}/${m.model}`).sort(), ['ollama/mine:v1', 'p/mine:v1']);
+    // Removal is by pair: the other backend's row survives.
+    assert.equal(await removeCustomModel('p', 'mine:v1'), true);
+    assert.deepEqual(getCustomModels().map(m => m.backend), ['ollama']);
+    assert.equal(await removeCustomModel('p', 'mine:v1'), false);
+  });
+
+  test('capacity and steering resolve per (backend, model) pair', async () => {
+    await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
+    await addCustomModel({ label: 'O', model: 'mine:v1', backend: 'ollama', contextWindow: 100_000 });
+    await addCustomModel({ label: 'P', model: 'mine:v1', backend: 'p', contextWindow: 200_000, midTurnSteering: false });
+    assert.equal(contextWindowForModel('ollama', 'mine:v1'), 100_000);
+    assert.equal(contextWindowForModel('p', 'mine:v1'), 200_000);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'mine:v1' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'p', model: 'mine:v1' }), false);
+    // A row on p that shares a preset's id leaves the preset's own values on ollama.
+    const preset = OLLAMA_CLOUD_MODELS[0];
+    await addCustomModel({ label: 'Shadow', model: preset.model, backend: 'p', contextWindow: preset.contextWindow + 1_000,
+      midTurnSteering: preset.midTurnSteering === false });
+    assert.equal(contextWindowForModel('ollama', preset.model), preset.contextWindow);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: preset.model }), preset.midTurnSteering !== false);
+    assert.equal(contextWindowForModel('p', preset.model), preset.contextWindow + 1_000);
+    assert.equal(resolveMidTurnSteering({ backend: 'p', model: preset.model }), preset.midTurnSteering === false);
   });
 
   test('tier binding: {backend,model}, no silent revert, dead binding falls back', async () => {
@@ -467,7 +513,7 @@ describe('backend registry data model', () => {
     assert.deepEqual(getTierBackend('fast'), { backend: 'ollama', model: 'gemma4:cloud' });
 
     // Removing the model makes the binding dead → falls back to the tier default.
-    await removeCustomModel('gemma4:cloud');
+    await removeCustomModel('ollama', 'gemma4:cloud');
     assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
   });
 
@@ -492,7 +538,7 @@ describe('backend registry data model', () => {
     await addCustomModel({ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
     await setRoleBinding('reviewer', { backend: 'ollama', model: 'gemma4:cloud' });
     assert.deepEqual(getRoleBinding('reviewer'), { backend: 'ollama', model: 'gemma4:cloud' });
-    await removeCustomModel('gemma4:cloud');
+    await removeCustomModel('ollama', 'gemma4:cloud');
     assert.deepEqual(getRoleBinding('reviewer'), DEFAULT_ROLE_BINDING.reviewer);
   });
 
@@ -509,7 +555,7 @@ describe('backend registry data model', () => {
     await addCustomModel({ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
     await setTierBackend('powerful', { backend: 'ollama', model: 'gemma4:cloud' });
     assert.deepEqual(resolveRoleBackend('conductor'), { backend: 'ollama', model: 'gemma4:cloud' });
-    await removeCustomModel('gemma4:cloud');
+    await removeCustomModel('ollama', 'gemma4:cloud');
     assert.deepEqual(resolveRoleBackend('conductor'), DEFAULT_TIER_BACKEND.powerful);
   });
 
@@ -630,7 +676,7 @@ describe('models + backends settings routes', () => {
     assert.equal(managed.status, 400);
     const ghost = await api(baseUrl, 'DELETE', '/api/settings/models/backends/ghost');
     assert.equal(ghost.status, 404);
-    await api(baseUrl, 'DELETE', `/api/settings/models/custom/${encodeURIComponent('mine:v1')}`);
+    await api(baseUrl, 'DELETE', `/api/settings/models/custom/my-proxy/${encodeURIComponent('mine:v1')}`);
     const gone = await api(baseUrl, 'DELETE', '/api/settings/models/backends/my-proxy');
     assert.equal(gone.status, 200);
     assert.deepEqual(gone.body.backends.map(b => b.id), ['claude', 'ollama']);
@@ -729,12 +775,17 @@ describe('models + backends settings routes', () => {
     assert.deepEqual(ok.body.added, { label: 'Fine', model: 'fine:cloud', backend: 'ollama', contextWindow: 256_000, midTurnSteering: true });
   });
 
-  test('DELETE /settings/models/custom/:model removes by model id (404 when absent)', async () => {
+  test('DELETE /settings/models/custom/:backend/:model removes only that pair (404 when absent)', async () => {
+    await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
     await addCustomModel({ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
-    const del = await api(baseUrl, 'DELETE', `/api/settings/models/custom/${encodeURIComponent('gemma4:cloud')}`);
+    await addCustomModel({ label: 'On p', model: 'gemma4:cloud', backend: 'p', contextWindow: 64_000 });
+    const del = await api(baseUrl, 'DELETE', `/api/settings/models/custom/p/${encodeURIComponent('gemma4:cloud')}`);
     assert.equal(del.status, 200);
-    assert.equal(del.body.customModels.length, 0);
-    const del2 = await api(baseUrl, 'DELETE', `/api/settings/models/custom/${encodeURIComponent('ghost:tag')}`);
-    assert.equal(del2.status, 404);
+    assert.deepEqual(del.body.customModels.map(m => `${m.backend}/${m.model}`), ['ollama/gemma4:cloud']);
+    const again = await api(baseUrl, 'DELETE', `/api/settings/models/custom/p/${encodeURIComponent('gemma4:cloud')}`);
+    assert.equal(again.status, 404);
+    const ghost = await api(baseUrl, 'DELETE', `/api/settings/models/custom/ollama/${encodeURIComponent('ghost:tag')}`);
+    assert.equal(ghost.status, 404);
+    assert.equal(getCustomModels().length, 1, 'a missed pair deletes nothing');
   });
 });

@@ -148,7 +148,7 @@ test('resolveContextWindowTokens dispatches on backend and needs the EXACT subst
     assert.equal(resolveContextWindowTokens({ backend: 'codex', model: 'gpt-5.6-sol' }), null);
     assert.equal(resolveContextWindowTokens({ backend: 'codex', model: null }), null);
   } finally {
-    await removeCustomModel('gpt-5.6-sol[1m]');
+    await removeCustomModel('codex', 'gpt-5.6-sol[1m]');
   }
 });
 
@@ -192,7 +192,7 @@ test('a stale [200k] suffix is normalised away — Opus no longer downgrades to 
 async function withTaggedCodexModel(fn) {
   await addBackend({ id: 'codex', label: 'Codex', template: 'codexctl run claude --model {model} --', env: [] });
   await addCustomModel({ label: 'Sol', model: 'gpt-5.6-sol[1m]', backend: 'codex', contextWindow: 1_000_000 });
-  try { await fn(); } finally { await removeCustomModel('gpt-5.6-sol[1m]').catch(() => {}); }
+  try { await fn(); } finally { await removeCustomModel('codex', 'gpt-5.6-sol[1m]').catch(() => {}); }
 }
 
 test('a tagged non-Claude model reaches BOTH argv slots byte-exact', async () => {
@@ -301,7 +301,7 @@ test('a substitution-backend spawn uses a custom model\'s declared contextWindow
 // deleted. contextWindowForModel returns null and we must set neither var.
 test('a substitution-backend spawn whose model has no resolvable window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS unset', async () => {
   await addCustomModel({ label: 'Local NoWin', model: 'localnowin:cloud', backend: 'ollama', contextWindow: 128_000 });
-  await removeCustomModel('localnowin:cloud'); // window no longer resolvable
+  await removeCustomModel('ollama', 'localnowin:cloud'); // window no longer resolvable
   const hadAmbientCompact = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
   const savedAmbientCompact = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   const hadAmbientMax = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS' in process.env;
@@ -398,7 +398,7 @@ test('a respawn after the custom-model row is DELETED still injects the resolved
   assert.equal(summary.contextWindowTokens, 1_000_000);
 
   // The user removes the model from Settings → Models mid-session.
-  await removeCustomModel('gpt-5.6-sol[1m]');
+  await removeCustomModel('codex', 'gpt-5.6-sol[1m]');
   assert.equal(resolveContextWindowTokens({ backend: 'codex', model: 'gpt-5.6-sol[1m]' }), null,
     'the registry can no longer resolve it');
 

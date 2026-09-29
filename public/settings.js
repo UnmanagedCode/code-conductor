@@ -1425,7 +1425,7 @@ export function installSettings({
       rm.type = 'button';
       rm.className = 'btn sm-custom-remove';
       rm.textContent = 'Remove';
-      rm.addEventListener('click', () => onRemoveCustomModel(c.model));
+      rm.addEventListener('click', () => onRemoveCustomModel(c.backend, c.model));
       li.appendChild(rm);
       smCustomListEl.appendChild(li);
     }
@@ -1469,10 +1469,11 @@ export function installSettings({
     }
   }
 
-  // Remove by model id (the identity). It can contain ':' — encodeURIComponent.
-  async function onRemoveCustomModel(model) {
+  // Remove by the (backend, model) pair (the identity). The id can contain ':' —
+  // encodeURIComponent.
+  async function onRemoveCustomModel(backend, model) {
     try {
-      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(model)}`, { method: 'DELETE' });
+      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(backend)}/${encodeURIComponent(model)}`, { method: 'DELETE' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       renderModels(data);
