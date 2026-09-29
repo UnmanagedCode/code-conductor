@@ -83,6 +83,9 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, 
     const top0 = scrollEl.getBoundingClientRect().top + scrollEl.clientTop;
     const topAt = i => list[i].getBoundingClientRect().top - top0;
 
+    // The clone re-wraps on resize under an unchanged pinned bubble; a hidden
+    // (pushed-off) pin cannot be measured, so it keeps its last height.
+    if (!pinEl.hidden) pinHeight = pinEl.offsetHeight;
     let pick = pickPinned(topAt, list.length, pinned ? pinHeight : 0);
     if (!pick) { hide(); return; }
     const bubble = list[pick.index];

@@ -68,8 +68,8 @@ async function harness({ conducted = false } = {}) {
   host.append(pane);
   document.body.append(host);
   // viewOpen: a full-page view has the pane display:none, so every rect reads 0.
-  const layout = { viewOpen: false, tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57 };
-  Object.defineProperty(pinEl, 'offsetHeight', { get: () => PIN_HEIGHT });
+  const layout = { viewOpen: false, pinHeight: PIN_HEIGHT, tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57 };
+  Object.defineProperty(pinEl, 'offsetHeight', { get: () => layout.pinHeight });
   // The pin's body is created by the controller, so its clamp is faked on the prototype.
   const isPinBody = (el) => el.classList.contains('pinned-prompt-body');
   Object.defineProperty(win.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return isPinBody(this) ? layout.bodyScrollHeight : 0; } });
@@ -226,6 +226,21 @@ test('the pin shifts by the next prompt\'s overlap', async () => {
   await h.scrollTo(520); // second has scrolled above the top and takes over
   assert.equal(pinText(h.pinEl), 'second');
   assert.equal(h.pinEl.style.transform, '');
+});
+
+test('a height change under the same pinned bubble updates the push-off on the next refresh', async () => {
+  const h = await harness();
+  h.say('first', 0);
+  h.say('second', 500);
+  await h.scrollTo(430); // second is 70px below the top; the pin is 60px tall: clear of it
+  assert.equal(pinText(h.pinEl), 'first');
+  assert.equal(h.pinEl.style.transform, '');
+  const held = h.pinEl.querySelector('.pinned-prompt-body');
+
+  h.layout.pinHeight = 90; // the clone re-wrapped (a resize narrowed it)
+  h.ctl.refresh();
+  assert.equal(h.pinEl.style.transform, 'translateY(-20px)');
+  assert.ok(h.pinEl.querySelector('.pinned-prompt-body') === held, 'the same clone: no re-clone for a height change');
 });
 
 test('scrolling back above a prompt un-pins it and leaves the older one', async () => {
