@@ -168,6 +168,25 @@ test('a bubble with no user-text block is stamped synthetic even when promptOrig
   assert.equal(h.pinEl.childElementCount, 0);
 });
 
+test('a stamped question-answer bubble is synthetic, faithful or raw-fallback, and never pins even in a worker session', async (t) => {
+  const { formatUserQuestionAnswers } = await importFresh('userQuestionAnswers.js');
+  const questions = [{ question: 'Pick', header: 'P', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] }];
+  const faithful = formatUserQuestionAnswers(questions, [{ kind: 'option', label: 'A' }]);
+  // Multi-line custom text fails the round trip, so the bubble falls back to a
+  // raw user-text block nested INSIDE the answer block (not a direct child of .blocks).
+  const raw = 'Answer to "Pick": line one\nline two';
+  for (const [label, text] of Object.entries({ faithful, 'raw fallback': raw })) {
+    await t.test(label, async () => {
+      const h = await harness({ conducted: true });
+      const bubble = h.say(text, 0, { questionAnswer: { toolUseId: 'toolu_q', questions } });
+      h.say('next prompt', 900);
+      assert.equal(bubble.getAttribute('data-prompt-origin'), 'synthetic');
+      await h.scrollTo(300); // a template stamp here would clone a node that is not there
+      assert.equal(h.pinEl.hidden, true);
+    });
+  }
+});
+
 test('a lazy-history page stamps its prompts exactly as the live view does', async () => {
   const h = await harness();
   const { renderEventBatch, spliceBatchAbove } = await importFresh('lazyHistory.js');

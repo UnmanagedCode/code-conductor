@@ -9,6 +9,7 @@ export interface PromptOriginEvent {
   cliInjected?: unknown;
   skillLoad?: unknown;
   compactSummary?: unknown;
+  questionAnswer?: unknown;
   parentToolUseId?: unknown;
 }
 

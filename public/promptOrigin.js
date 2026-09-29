@@ -8,8 +8,8 @@
 //   typed     — reads as something a person (or a conductor's send_prompt, which
 //               is byte-identical) wrote;
 //   template  — a server-formatted wrapper around a decision or answer a person
-//               (or conductor) made: a plan decision carrying feedback, a
-//               question answer, a forward frame's instruction;
+//               (or conductor) made: a plan decision carrying feedback, an
+//               unstamped question answer, a forward frame's instruction;
 //   synthetic — the CLI or the server wrote it, or it has nothing to show.
 // isPinEligible turns that into "does the sticky prompt header pin it".
 //
@@ -63,7 +63,9 @@ export function isInjectedUserTurn(ev) {
 }
 
 export function promptOrigin(ev) {
-  if (ev.parentToolUseId || ev.skillLoad || ev.compactSummary || ev.cliInjected === true) return 'synthetic';
+  // A server-stamped AskUserQuestion answer renders as its own bubble with no
+  // user-text block, so there is no prompt text to pin.
+  if (ev.parentToolUseId || ev.skillLoad || ev.compactSummary || ev.questionAnswer || ev.cliInjected === true) return 'synthetic';
   const text = typeof ev.text === 'string' ? ev.text : '';
   if (!text.trim()) return 'synthetic';
   // Before the injected check: a frame carrying an instruction is a template

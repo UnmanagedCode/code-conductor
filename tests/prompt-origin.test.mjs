@@ -144,7 +144,18 @@ test('parsePlanDecision reverses both builders and refuses lookalikes', async (t
   await t.test('a non-string', () => assert.equal(parsePlanDecision(null), null));
 });
 
-test('a question answer, single and multi form, is a template', async (t) => {
+test('a server-stamped question answer never pins: it renders as its own bubble with no user-text', async (t) => {
+  const stamp = { toolUseId: 'toolu_q', questions: QUESTIONS };
+  await t.test('single-question form', () =>
+    assert.equal(promptOrigin(echo(formatUserQuestionAnswers(QUESTIONS, { 0: { kind: 'option', label: 'A' } }), { questionAnswer: stamp })), 'synthetic'));
+  await t.test('multi-question form', () =>
+    assert.equal(promptOrigin(echo(formatUserQuestionAnswers(TWO_QUESTIONS, { 0: { kind: 'option', label: 'A' }, 1: { kind: 'custom', text: 'y' } }),
+      { questionAnswer: { toolUseId: 'toolu_q', questions: TWO_QUESTIONS } })), 'synthetic'));
+  await t.test('the same text without the stamp is still a template', () =>
+    assert.equal(promptOrigin(echo(formatUserQuestionAnswers(QUESTIONS, { 0: { kind: 'option', label: 'A' } }))), 'template'));
+});
+
+test('an unstamped question answer, single and multi form, is a template', async (t) => {
   await t.test('single-question short form', () =>
     assert.equal(promptOrigin(echo(formatUserQuestionAnswers(QUESTIONS, { 0: { kind: 'option', label: 'A' } }))), 'template'));
   await t.test('multi-question form', () =>
