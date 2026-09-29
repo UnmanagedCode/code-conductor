@@ -65,6 +65,13 @@ function captureLog() {
     warns: () => lines.filter(([k]) => k === 'warn').map(([, l]) => l),
   };
 }
+// A record kept alive by a seeded transcript: beside it, a dead record is never
+// the whole store, so the mass-wipe guard is not what decides the test.
+const LIVE_ID = uuid(9999);
+async function liveCompanion() {
+  await seedLocal(LIVE_ID);
+  return { '99999999': { current: LIVE_ID, segments: [seg(LIVE_ID)] } };
+}
 const run = (cap, now = NOW) => cleanupSessionsWithoutTranscripts({ log: cap.log, now: () => now });
 
 test('a record none of whose segments has a transcript is removed; the others are untouched', async () => {
@@ -149,7 +156,7 @@ test('a snapshot that cannot be written stops the pass before the store changes'
   // Invariant: no record is removed unless its pre-image was captured first.
   const f = await fresh();
   const g1 = uuid(41);
-  await writeStore(f, { gggggggg: { current: g1, segments: [seg(g1)] } });
+  await writeStore(f, { ...(await liveCompanion()), gggggggg: { current: g1, segments: [seg(g1)] } });
   await fs.mkdir(path.join(f.snapshot, 'occupied'), { recursive: true });
   const before = await fs.readFile(f.primary);
   const cap = captureLog();
@@ -259,18 +266,18 @@ test('a record whose newest segment is within the grace window is kept', async (
   const rec = (n) => ({ current: uuid(n + 1), segments: [seg(uuid(n)), { id: uuid(n + 1), reason: 'renew', at: new Date(T).toISOString() }] });
   await t.test('just inside the window', async () => {
     const f = await fresh();
-    await writeStore(f, { ffffffff: rec(91) });
+    await writeStore(f, { ...(await liveCompanion()), ffffffff: rec(91) });
     assert.deepEqual((await run(captureLog(), T + CLEANUP_GRACE_MS - 1)).removed, []);
   });
   await t.test('just past the window', async () => {
     const f = await fresh();
-    await writeStore(f, { ffffffff: rec(93) });
+    await writeStore(f, { ...(await liveCompanion()), ffffffff: rec(93) });
     assert.deepEqual((await run(captureLog(), T + CLEANUP_GRACE_MS + 1)).removed, ['ffffffff']);
   });
   await t.test('an unparseable at counts as old', async () => {
     const f = await fresh();
     const x = uuid(95);
-    await writeStore(f, { ffffffff: { current: x, segments: [{ id: x, reason: 'initial', at: '' }] } });
+    await writeStore(f, { ...(await liveCompanion()), ffffffff: { current: x, segments: [{ id: x, reason: 'initial', at: '' }] } });
     assert.deepEqual((await run(captureLog(), T)).removed, ['ffffffff']);
   });
 });
@@ -307,4 +314,84 @@ test('the rolling sessions.json.bak keeps refreshing after a bulk removal', asyn
   assert.equal(await setTitle('a4444444', 'after cleanup'), 'after cleanup');
   assert.deepEqual(await fs.readFile(f.bak, 'utf8'), await fs.readFile(f.primary, 'utf8'), 'a later write refreshed .bak');
   assert.equal(JSON.parse(await fs.readFile(f.bak, 'utf8')).sessions.a4444444.title, 'after cleanup');
+});
+
+test('fail-safe: an empty resolved transcript root removes nothing', async () => {
+  // Invariant: a root that exists but holds no transcripts (a changed CLAUDE_CONFIG_DIR) never wipes the store.
+  const f = await fresh();
+  const [x1, x2] = [uuid(121), uuid(122)];
+  await writeStore(f, {
+    'b1111111': { current: x1, segments: [seg(x1)] },
+    'b2222222': { current: x2, segments: [seg(x2)] },
+  });
+  const before = await fs.readFile(f.primary);
+  const cap = captureLog();
+  const r = await run(cap);
+  assert.deepEqual(r.removed, []);
+  assert.deepEqual(await fs.readFile(f.primary), before);
+  assert.ok(cap.warns().some(l => l.includes('refusing to wipe the store')), JSON.stringify(cap.lines));
+});
+
+test('fail-safe: a dangling-symlink encoded dir is a scan failure', async () => {
+  // Invariant: an encoded-cwd entry that is a symlink or directory but cannot be read aborts the removal.
+  const f = await fresh();
+  const d1 = uuid(131);
+  await writeStore(f, { ...(await liveCompanion()), dddddddd: { current: d1, segments: [seg(d1)] } });
+  await fs.symlink(path.join(f.root, 'unmounted-volume'), path.join(f.claude, '-mnt-volume-proj'));
+  const before = await fs.readFile(f.primary);
+  const cap = captureLog();
+  const r = await run(cap);
+  assert.deepEqual(r.removed, []);
+  assert.deepEqual(await fs.readFile(f.primary), before);
+  assert.ok(cap.warns().some(l => l.includes('transcript scan failed')), JSON.stringify(cap.lines));
+});
+
+test('a plain file among the encoded dirs is skipped and the scan still judges', async () => {
+  // Invariant: a non-directory, non-symlink entry in a transcript root neither aborts the scan nor counts as a transcript.
+  const f = await fresh();
+  const d1 = uuid(141);
+  await writeStore(f, { ...(await liveCompanion()), dddddddd: { current: d1, segments: [seg(d1)] } });
+  await fs.writeFile(path.join(f.claude, '.DS_Store'), 'x');
+  const r = await run(captureLog());
+  assert.deepEqual(r.removed, ['dddddddd']);
+  assert.ok((await readSessions(f))['99999999']);
+});
+
+test('a stray file directly under the config farm does not disable the pass', async () => {
+  // Invariant: the farm root contributes directories only; a non-directory entry there is ignored.
+  const f = await fresh();
+  const d1 = uuid(151);
+  await writeStore(f, { ...(await liveCompanion()), dddddddd: { current: d1, segments: [seg(d1)] } });
+  await fs.mkdir(claudeConfigFarmRoot(), { recursive: true });
+  await fs.writeFile(path.join(claudeConfigFarmRoot(), 'stray.txt'), 'x');
+  const cap = captureLog();
+  const r = await run(cap);
+  assert.deepEqual(r.removed, ['dddddddd'], JSON.stringify(cap.lines));
+});
+
+test('mass-wipe guard: a pick naming every record removes nothing', async (t) => {
+  // Invariant: the pass never removes every record of a non-empty store; a partial pick still removes.
+  await t.test('only dead records → nothing removed, warned, snapshot written', async () => {
+    const f = await fresh();
+    const [x1, x2] = [uuid(161), uuid(162)];
+    await seedLocal(uuid(163)); // the root is non-empty: the guard, not an empty scan, is under test
+    await writeStore(f, {
+      'c1111111': { current: x1, segments: [seg(x1)] },
+      'c2222222': { current: x2, segments: [seg(x2)] },
+    });
+    const before = await fs.readFile(f.primary);
+    const cap = captureLog();
+    const r = await run(cap);
+    assert.deepEqual(r.removed, []);
+    assert.deepEqual(await fs.readFile(f.primary), before);
+    assert.deepEqual(await fs.readFile(f.snapshot), before);
+    assert.ok(cap.warns().some(l => l.includes('every record looks transcript-less')), JSON.stringify(cap.lines));
+  });
+  await t.test('one live, one dead → the dead one is removed', async () => {
+    const f = await fresh();
+    const x1 = uuid(164);
+    await writeStore(f, { ...(await liveCompanion()), 'c1111111': { current: x1, segments: [seg(x1)] } });
+    const r = await run(captureLog());
+    assert.deepEqual(r.removed, ['c1111111']);
+  });
 });

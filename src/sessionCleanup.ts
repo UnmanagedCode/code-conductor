@@ -13,7 +13,11 @@
 //   - its newest segment is younger than CLEANUP_GRACE_MS — mintPublicId writes
 //     the record before the CLI writes its jsonl, and during a hot restart the
 //     exiting server may still be spawning;
-//   - the transcript scan throws (transcriptIdsOnDisk): nothing is removed.
+//   - the transcript scan throws (transcriptIdsOnDisk): nothing is removed;
+//   - the pick would remove EVERY record of the store: nothing is removed. A
+//     root that exists but is the wrong one (a changed HOME or
+//     CLAUDE_CONFIG_DIR) scans as empty, not as an error, and would otherwise
+//     wipe the store.
 // Nothing else is cascaded: the session-keyed append-only logs (costs, the
 // playbook ledger) hold history where a dead id is inert, as after the explicit
 // session delete.
@@ -75,6 +79,10 @@ export async function cleanupSessionsWithoutTranscripts(
         const newest = Math.max(...rec.segments.map(s => Date.parse(s.at)).filter(Number.isFinite));
         if (t - newest < CLEANUP_GRACE_MS) continue;
         out.push(publicId);
+      }
+      if (out.length > 0 && out.length === doc.size) {
+        log.warn?.('session-cleanup: every record looks transcript-less — refusing to wipe the store (check HOME / CLAUDE_CONFIG_DIR)');
+        return [];
       }
       return out;
     };
