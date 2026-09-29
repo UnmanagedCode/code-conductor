@@ -4,7 +4,7 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, ImageBlock,
-  shouldRenderSystem, parseUserQuestionAnswers, isUserQuestionAnswerText,
+  shouldRenderSystem, parseUserQuestionAnswers,
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
@@ -73,6 +73,14 @@ export class Conversation {
     // () -> the server's current segment, for a batch rendered off the live
     // conversation; the live one holds its own (setCurrentSegment).
     currentSegmentId = null,
+    // toolUseId -> answer text, for every server-stamped answer echo seen. A
+    // lazy page renders in its own batch Conversation, so the live one shares
+    // this map to lock a card whose answer sits on a newer page.
+    answeredQuestions = null,
+    // toolUseId -> UserQuestionBlock. A lazy page's batch registers its cards
+    // in the live conversation's map, so a stamped answer that arrives live
+    // finds a card that was rendered on a page.
+    userQuestionBlocks = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
@@ -103,15 +111,9 @@ export class Conversation {
     // TaskUpdate tool block (whose input only carries taskId) can
     // surface the task's actual subject + description.
     this.describeToolCtx = describeToolCtx;
-    this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
+    this.userQuestionBlocks = userQuestionBlocks ?? new Map(); // toolUseId -> UserQuestionBlock
     this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
-    // Set during replay when a tool_result for AskUserQuestion is processed;
-    // cleared when the following user_echo arrives carrying the answer text.
-    this._pendingAnswerUQId = null;
-    // True while a snapshot batch is being replayed. Used to gate markAnswered()
-    // so that unrelated live echoes (e.g. idle callbacks) cannot lock an
-    // unanswered question card.
-    this._replayMode = false;
+    this.answeredQuestions = answeredQuestions ?? new Map();
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -184,13 +186,13 @@ export class Conversation {
     this.reconcileCounts.clear();
     this.subConvs.clear();
     this.userQuestionBlocks.clear();
+    this.answeredQuestions.clear();
     this.planBlocks.clear();
     this._activeAssistantWrap = null;
     this._activeThinkingKey = null;
     this.leadingAssistantWrap = null;
     this._sawSegmentCloser = false;
     this.orphanChildEvents.clear();
-    this._pendingAnswerUQId = null;
     this._pendingCompaction = null;
     this._compaction = null;
     this.stickyBottom = true;
@@ -400,30 +402,7 @@ export class Conversation {
     switch (ev.kind) {
       case 'compaction': this._renderCompaction(ev); break;
       case 'user_echo': {
-        // On session replay the user_echo that immediately follows an
-        // AskUserQuestion tool_result carries the formatted answer text.
-        // Reconstruct the selection and mark the card as answered so it
-        // renders consistently with a live submission.
-        // Guard: only call markAnswered() during replay (_replayMode=true) or
-        // when the card was already submitted by the user (live path, no-op).
-        // Without this guard an unrelated live echo — such as an idle-callback
-        // prompt injected by the idle wake — would incorrectly lock an
-        // unanswered card.
-        // Second guard: the echo must actually be in the answer format
-        // formatUserQuestionAnswers() emits. During replay an unrelated echo
-        // (e.g. a wake-callback stub) can be interleaved between the tool_result
-        // and the real answer echo; consuming it positionally would lock the
-        // card on garbage AND drop the real answer. Only a format match marks
-        // the card and consumes the slot; a non-match leaves the slot armed so
-        // the later matching echo still applies.
-        if (this._pendingAnswerUQId) {
-          const qBlock = this.userQuestionBlocks.get(this._pendingAnswerUQId);
-          if (qBlock && (this._replayMode || qBlock.submitted)
-              && isUserQuestionAnswerText(qBlock.questions, ev.text)) {
-            qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
-            this._pendingAnswerUQId = null;
-          }
-        }
+        this._lockAnsweredCard(ev);
         this._renderUserEcho(ev);
         break;
       }
@@ -581,6 +560,17 @@ export class Conversation {
     block.markFailed(error);
     this._pendingCompaction = null;
     if (this._compaction === block) this._compaction = null;
+  }
+
+  // The server stamps the echo that answers an AskUserQuestion card with the
+  // card's toolUseId (`questionAnswer`); that stamp, never the text, is what
+  // locks the card — whichever surface sent the answer, live or on replay.
+  _lockAnsweredCard(ev) {
+    const toolUseId = ev.questionAnswer?.toolUseId;
+    if (!toolUseId) return;
+    this.answeredQuestions.set(toolUseId, ev.text ?? '');
+    const qBlock = this.userQuestionBlocks.get(toolUseId);
+    if (qBlock) qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
   }
 
   _renderUserEcho(ev) {
@@ -867,13 +857,6 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       this._appendBlockToWrap(wrap, result.node, { grouped: true });
     }
-    // When the result is for an unanswered AskUserQuestion block, the
-    // following user_echo carries the formatted answer text. Record the
-    // toolUseId so _renderUserEcho can reconstruct the selection.
-    const qBlock = this.userQuestionBlocks.get(ev.toolUseId);
-    if (qBlock && !qBlock.submitted) {
-      this._pendingAnswerUQId = ev.toolUseId;
-    }
   }
 
   // Sub-agent assistant turns arrive on the same stream as the outer turn but
@@ -944,6 +927,10 @@ export class Conversation {
       if (this.onUserQuestionSubmit) this.onUserQuestionSubmit(submission);
     });
     this.userQuestionBlocks.set(ev.toolUseId, block);
+    // Its answer may already have been seen: a newer lazy page, or an echo
+    // that preceded the card's own page.
+    const answered = this.answeredQuestions.get(ev.toolUseId);
+    if (answered !== undefined) block.markAnswered(parseUserQuestionAnswers(block.questions, answered));
     this.root.appendChild(block.node);
     this._closeAssistantSegment();
     this._maybeScroll();

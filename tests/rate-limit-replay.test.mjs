@@ -36,7 +36,7 @@ test('replayed session history never clobbers the account-wide global rate-limit
     getTracker: () => ({ completedBatches: [], reset: noop, seedActive: noop, apply: noop }),
     getUsage: () => ({ reset: noop, apply: (ev) => usageApplyCalls.push(ev) }),
     globalRLTracker,
-    conversation: { clear: noop, reset: noop, apply: noop, _replayMode: false },
+    conversation: { clear: noop, reset: noop, apply: noop },
     headerHandle: { update: noop },
     lazyController: { init: noop, reset: noop },
     sessionActions: { resumeSession: async () => {} },

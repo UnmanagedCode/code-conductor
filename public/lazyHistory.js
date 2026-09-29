@@ -32,15 +32,15 @@ const MAX_EMPTY_PAGES = 3;
 // with; `onAssistantText` is force-nulled — replaying old history must
 // never trigger TTS auto-speak. `segment` carries the page's provenance
 // (`segmentId`) and a getter for the server's current segment
-// (`currentSegmentId`) — see Conversation.
+// (`currentSegmentId`) — see Conversation. `segment.answeredQuestions` and
+// `segment.userQuestionBlocks` are the live conversation's maps of stamped
+// answers and question cards: sharing them lets a card on this page lock from
+// an answer on a newer page or one that arrives live later, and this page's
+// answers reach the pages below it.
 export function renderEventBatch(events, options = {}, segment = {}) {
   const holder = document.createElement('div');
   const batch = new Conversation(holder, { ...options, ...segment, onAssistantText: null });
-  // Same answer-locking semantics as a snapshot replay (a user_echo right
-  // after an AskUserQuestion tool_result marks the card answered).
-  batch._replayMode = true;
   batch.applyEvents(events);
-  batch._replayMode = false;
   // Static content: finalize blocks that are genuinely dangling INSIDE the
   // batch (an interrupted turn's result-less tool, the trim's plain-cut
   // last resort). Quiescent-aligned pages never cut a block at the seam.
@@ -290,6 +290,8 @@ export function installLazyHistoryController({
         const batch = renderEventBatch(page.events, conversationOptions, {
           segmentId: page.pageSegment ?? null,
           currentSegmentId: () => conversation.currentSegmentId ?? page.currentSegmentId ?? null,
+          answeredQuestions: conversation.answeredQuestions,
+          userQuestionBlocks: conversation.userQuestionBlocks,
         });
         oldestLeadingWrap = spliceBatchAbove({
           root: conversationEl, batch, anchorNode: lazySentinel,

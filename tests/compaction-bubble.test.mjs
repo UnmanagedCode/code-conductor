@@ -73,7 +73,6 @@ async function renderLive() {
 async function renderReload() {
   const { root, Conversation, replayPersistedLine } = await setupDOM();
   const conv = new Conversation(root);
-  conv._replayMode = true;
   for (const line of await readJsonl('compaction-manual.transcript.jsonl')) {
     for (const ev of replayPersistedLine(line)) apply(conv, ev);
   }
@@ -226,7 +225,6 @@ test('absorption is scoped to a compaction', async (t) => {
 test('a summary seen without its boundary reads as a completed compaction', async () => {
   const { root, Conversation, replayPersistedLine } = await setupDOM();
   const conv = new Conversation(root);
-  conv._replayMode = true;
   const summaryLine = (await readJsonl('compaction-manual.transcript.jsonl')).find((l) => l.isCompactSummary === true);
   for (const ev of replayPersistedLine(summaryLine)) apply(conv, ev);
 

@@ -84,7 +84,6 @@ export function installWsRouter({
       conversation.setCurrentSegment(m.currentSegmentId ?? null);
       conversation.segmentId = m.tailSegmentId ?? null;
     }
-    if (isActive) conversation._replayMode = true;
     for (const ev of m.events ?? []) {
       const prevCount = tracker.completedBatches.length;
       tracker.apply(ev);
@@ -97,7 +96,6 @@ export function installWsRouter({
         }
       }
     }
-    if (isActive) conversation._replayMode = false;
     // Mirror the server's auto-approve-plan flag and playbook-enforcement level
     // into our local instance entry so the header controls reflect them the
     // moment a tab subscribes (or re-subscribes after a session switch).
@@ -138,7 +136,6 @@ export function installWsRouter({
     // periodic /api/usage fetch.
     const isActive = m.id === state.activeId;
     if (isActive) { conversation.reset(); lazyController.reset(); }
-    if (isActive) conversation._replayMode = true;
     for (const ev of m.events ?? []) {
       const prevCount = tracker.completedBatches.length;
       tracker.apply(ev);
@@ -151,7 +148,6 @@ export function installWsRouter({
         }
       }
     }
-    if (isActive) conversation._replayMode = false;
     if (!isActive) return;
     headerHandle.update();
     // Rewind carries the dropped prompt directly on the frame so the

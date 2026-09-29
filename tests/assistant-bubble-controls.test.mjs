@@ -441,9 +441,7 @@ test('snapshot replay and a lazy page render the same controls, copy and toggle 
   for (const e of parityEvents()) live.conv.apply(e);
 
   const replay = fresh(Conversation);
-  replay.conv._replayMode = true;
   replay.conv.applyEvents(parityEvents());
-  replay.conv._replayMode = false;
 
   const batch = renderEventBatch(parityEvents());
   const lazyRoot = batch.holder;

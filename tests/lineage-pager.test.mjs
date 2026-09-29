@@ -1015,9 +1015,7 @@ async function renderLineageInDom(id, snap, fn) {
     conversation.clear();
     conversation.setCurrentSegment(snap.currentSegmentId ?? null);
     conversation.segmentId = snap.tailSegmentId ?? null;
-    conversation._replayMode = true;
     for (const ev of snap.events) conversation.apply(ev);
-    conversation._replayMode = false;
     controller.init(snap);
     await waitFor(() => fetches > 0 && !el.querySelector('.history-sentinel'));
     await fn({ el, conversation });
