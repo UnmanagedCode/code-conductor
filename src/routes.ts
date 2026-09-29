@@ -1982,10 +1982,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     } catch (e) { next(e); }
   });
 
-  // Remove by model id (the identity); `:model` is URL-encoded (ids contain ':').
-  r.delete('/settings/models/custom/:model', async (req, res, next) => {
+  // Remove by the (backend, model) pair (the identity). Backend ids are slugs;
+  // `:model` is URL-encoded (ids contain ':' and '/').
+  r.delete('/settings/models/custom/:backend/:model', async (req, res, next) => {
     try {
-      const ok = await removeCustomModel(req.params.model);
+      const ok = await removeCustomModel(req.params.backend, req.params.model);
       if (!ok) return res.status(404).json({ error: 'custom model not found' });
       res.json(modelsSettingsState());
     } catch (e) { next(e); }

@@ -275,6 +275,13 @@ export function buildTools(): Tool[] {
               'A capability tier (fast / balanced / powerful / frontier — the primary vocabulary), a role, ' +
               'or a specific model id for one exact model. Omit it to use the default tier set in Settings → Models.',
           },
+          backend: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'Backend registry id to run a specific model id on. Only needed when the id is configured on more ' +
+              'than one backend — that spawn is refused MODEL_AMBIGUOUS, which lists them.',
+          },
           resume: {
             type: 'string',
             description:

@@ -30,6 +30,7 @@ import {
   DEFAULT_PLAYBOOK_ENFORCEMENT, DEFAULT_PLAYBOOK_ID, loadPlaybooks, isSpawnable,
 } from '../src/playbooks.ts';
 import { GATELAB } from './playbook-fixtures.mjs';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -1757,5 +1758,40 @@ test('GET /api/instances carries the playbook binding the MCP gate writes, and i
       return row?.stage === 'build' ? row : false;
     });
     assert.equal(buildRow.playbook, 'gatelab');
+  } finally { await t.close(); }
+});
+
+test('enforce: a bare resume of a worker in a stage pinning {model, backend} lands on the recorded pair', async () => {
+  // INVARIANT: a stage's pinned `backend` is spawn-shape — a bare resume of its
+  // own worker is not refused BAD_MODEL for a `backend` with no `model`, and
+  // comes back on the recorded backend of a model id configured on several.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    await addBackend({ id: 'p', label: 'P', template: 'pproxy claude --model {model} --' });
+    await addCustomModel({ label: 'Mine (ollama)', model: 'mine:v1', backend: 'ollama', contextWindow: 111_000 });
+    await addCustomModel({ label: 'Mine (p)', model: 'mine:v1', backend: 'p', contextWindow: 222_000 });
+    await t.writeUserPlaybook('pinlab', {
+      id: 'pinlab', name: 'Pinlab', description: 'A stage pinning a {model, backend} pair.',
+      entryStages: ['onp'],
+      stages: { onp: { description: 'Runs mine:v1 on p.',
+        tools: { spawn_instance: { pin: { model: 'mine:v1', backend: 'p', mode: 'bypassPermissions' } } } } },
+      transitions: [],
+    });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'pinlab', stage: 'onp' });
+    assert.ok(w.sessionId, `the pinned spawn must succeed: ${JSON.stringify(w)}`);
+    assert.equal(w.backend, 'p', 'premise: the pin resolved the duplicated id onto p');
+
+    const backingSessionId = instForSession(t.instances, w.sessionId).backingSessionId;
+    await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backingSessionId);
+    await t.call('kill_instance', { sessionId: w.sessionId });
+    await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+
+    const back = await t.call('spawn_instance', { resume: w.sessionId });
+    assert.notEqual(back.ok, false, `a bare resume must not be refused: ${JSON.stringify(back)}`);
+    assert.equal(back.sessionId, w.sessionId);
+    assert.equal(back.backend, 'p');
+    assert.equal(back.model, 'mine:v1');
+    assert.equal(back.contextWindowTokens, 222_000);
   } finally { await t.close(); }
 });

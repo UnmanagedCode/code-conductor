@@ -48,7 +48,7 @@ import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } fr
 import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
-import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
+import { getTierBackend, resolveRoleBackend, isResolvableRole, backendsForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
 import {
   textPayload, textResult, type TextPayload, MCP_RESULT_CHAR_BUDGET, MCP_BODY_BUDGET, utf8Prefix, payloadChars,
 } from './content.ts';
@@ -939,6 +939,7 @@ interface SpawnArgs {
   effort?: string;
   thinking?: string;
   model?: string;
+  backend?: string;
   resume?: string;
   worktree?: string | boolean;
   createWorktree?: boolean;
@@ -960,7 +961,7 @@ interface SpawnArgs {
 // ship pinning a model the product cannot resolve.
 export function resolveSpawnModel(
   input: string | null | undefined,
-  { resume }: { resume?: string | null } = {},
+  { resume, backend: pick }: { resume?: string | null; backend?: string | null } = {},
 ): {
   model: string | null | undefined; backend: string | undefined; tier?: string; role?: string;
 } {
@@ -973,8 +974,9 @@ export function resolveSpawnModel(
   //     names are '/'-namespaced — so order is safe);
   //   - a legacy family alias (opus/sonnet/haiku/fable) → that family's default
   //     Claude version, independent of any tier binding;
-  //   - a model id served by a configured backend, passed directly → that
-  //     backend (robustness);
+  //   - a model id served by exactly one configured backend, passed directly →
+  //     that backend; served by several → MODEL_AMBIGUOUS unless `backend`
+  //     (`pick`) names one of them;
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - omitted on a FRESH spawn → the Settings default tier's binding;
   //   - omitted on a RESUME → nothing at all: both stay undefined, deferring to
@@ -995,6 +997,14 @@ export function resolveSpawnModel(
   // and create() resolves the one capacity that pair implies.
   let tier: string | undefined;
   let role: string | undefined;
+  // `backend` only picks among the backends serving a specific model id: a tier
+  // or role names its own, and a bare backend with no model is REST's matrix.
+  if (pick && (!model || isKnownTier(model) || isResolvableRole(model) || isKnownFamily(model))) {
+    throw Object.assign(
+      new Error(`backend '${pick}' can only accompany a specific model id — a tier, role or family alias names its own backend`),
+      { statusCode: 400, code: 'BAD_MODEL' },
+    );
+  }
   if (model && isKnownTier(model)) {
     const binding = getTierBackend(model); // {backend, model} — isKnownTier narrows
     tier = model;
@@ -1008,11 +1018,22 @@ export function resolveSpawnModel(
   } else if (model && isKnownFamily(model)) {
     model = defaultVersion(model);
   } else if (model) {
-    // A configured backend's model id, passed directly → that backend. The old
-    // `backendForModel(model) as string` re-called the guard a second time; the
-    // once-called `bm` is checked before use, so the narrowing is proven.
-    const bm = backendForModel(model);
-    if (bm) backend = bm;
+    // A configured backend's model id, passed directly → the one backend serving
+    // it, or the caller's pick among several.
+    const cands = backendsForModel(model);
+    if (pick) {
+      if (cands.includes(pick) || (pick === CLAUDE_BACKEND_ID && familyOf(model))) backend = pick;
+      else {
+        throw Object.assign(
+          new Error(`model '${model}' is not configured on backend '${pick}'`
+            + (cands.length ? ` — it is on: ${cands.join(', ')}` : '')),
+          { statusCode: 400, code: 'BAD_MODEL' },
+        );
+      }
+    } else if (cands.length > 1) {
+      throw Object.assign(new Error(`model '${model}' is configured on several backends`),
+        { statusCode: 400, code: 'MODEL_AMBIGUOUS', model, backends: cands });
+    } else if (cands.length === 1) backend = cands[0];
     else if (!familyOf(model)) {
       // A non-empty model that is not a tier, family alias, a configured backend's
       // model, or a Claude id — refuse instead of resolving to a broken bare-claude
@@ -1041,55 +1062,65 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  const { model, backend, tier, role } = resolveSpawnModel(args.model, { resume: args.resume });
-  // createWorktree:true → create a fresh worktree (passed to create() as the
-  // boolean `true`); worktree:"<name>" → attach to an existing one.
-  // createWorktree wins if both are given. create() still accepts the
-  // boolean|string internal contract unchanged.
-  const worktree = args.createWorktree === true ? true : args.worktree;
-  const createArgs = {
-    project: args.project,
-    mode: args.mode,
-    effort: args.effort,
-    tier,
-    role,
-    thinking: args.thinking,
-    model,
-    backend,
-    resume: args.resume,
-    worktree,
-    // Only meaningful alongside createWorktree:true; create() refuses them
-    // otherwise rather than ignoring them.
-    baseWorktree: args.baseWorktree,
-    name: args.name,
-    // Conductor workers are always temp: archived on subprocess exit — the
-    // transcript is retained and stays resumable, it just leaves the default
-    // session list (only the sub-agent dir is dropped). Unlike the UI's temp
-    // checkbox (which the REST route maps to bypassPermissions), temp here
-    // does NOT affect the mode default — create() leaves it at plan, so
-    // workers plan before acting. On resume, leave it undefined rather than
-    // forcing true — create()'s store recovery (isTemp(resume)) decides the
-    // session's actual persisted state; forcing true would silently re-temp a
-    // session the human promoted, on every MCP resume.
-    temp: args.resume ? undefined : true,
-    debug: args.debug,
-    // Sessions spawned through the MCP tool are "conducted" sessions
-    // (the worker agents an orchestrator conducts). This is the ONLY
-    // place the marker is set — the browser UI / HTTP spawn path leaves
-    // it false.
-    conducted: true,
-    // Record which conductor spawned this worker so the frontend can
-    // show a live sub-agent panel scoped to that conductor's view.
-    // `callerId` is now the conductor's stable sessionId (from ?caller=) —
-    // resolve it back to the conductor's live instanceId so the internal
-    // Instance.callerInstanceId field stays an instanceId (consumers:
-    // public/subagents.js, conductedWorkersOf — both match on instanceId).
-    callerInstanceId: callerInst?.id ?? null,
-  };
   let inst;
   try {
+    const { model, backend, tier, role } = resolveSpawnModel(args.model, { resume: args.resume, backend: args.backend });
+    // createWorktree:true → create a fresh worktree (passed to create() as the
+    // boolean `true`); worktree:"<name>" → attach to an existing one.
+    // createWorktree wins if both are given. create() still accepts the
+    // boolean|string internal contract unchanged.
+    const worktree = args.createWorktree === true ? true : args.worktree;
+    const createArgs = {
+      project: args.project,
+      mode: args.mode,
+      effort: args.effort,
+      tier,
+      role,
+      thinking: args.thinking,
+      model,
+      backend,
+      resume: args.resume,
+      worktree,
+      // Only meaningful alongside createWorktree:true; create() refuses them
+      // otherwise rather than ignoring them.
+      baseWorktree: args.baseWorktree,
+      name: args.name,
+      // Conductor workers are always temp: archived on subprocess exit — the
+      // transcript is retained and stays resumable, it just leaves the default
+      // session list (only the sub-agent dir is dropped). Unlike the UI's temp
+      // checkbox (which the REST route maps to bypassPermissions), temp here
+      // does NOT affect the mode default — create() leaves it at plan, so
+      // workers plan before acting. On resume, leave it undefined rather than
+      // forcing true — create()'s store recovery (isTemp(resume)) decides the
+      // session's actual persisted state; forcing true would silently re-temp a
+      // session the human promoted, on every MCP resume.
+      temp: args.resume ? undefined : true,
+      debug: args.debug,
+      // Sessions spawned through the MCP tool are "conducted" sessions
+      // (the worker agents an orchestrator conducts). This is the ONLY
+      // place the marker is set — the browser UI / HTTP spawn path leaves
+      // it false.
+      conducted: true,
+      // Record which conductor spawned this worker so the frontend can
+      // show a live sub-agent panel scoped to that conductor's view.
+      // `callerId` is now the conductor's stable sessionId (from ?caller=) —
+      // resolve it back to the conductor's live instanceId so the internal
+      // Instance.callerInstanceId field stays an instanceId (consumers:
+      // public/subagents.js, conductedWorkersOf — both match on instanceId).
+      callerInstanceId: callerInst?.id ?? null,
+    };
     inst = await instances.create(createArgs);
   } catch (e) {
+    // A bare model id configured on several backends: refused before anything
+    // spawns, candidates both structured and in the prose (as SESSION_AMBIGUOUS).
+    if (errCode(e) === 'MODEL_AMBIGUOUS') {
+      const { model, backends } = e as { model: string; backends: string[] };
+      return {
+        ok: false, code: 'MODEL_AMBIGUOUS', model, backends,
+        reason: `model '${model}' is configured on ${backends.length} backends (${backends.join(', ')}) — `
+          + `pass backend:"<id>" naming one of them. No worker was spawned.`,
+      };
+    }
     // A resume id with no resumable conversation on disk (mistyped/bogus, or a
     // marker-only crash stub) is soft-refused in this surface's `{ok:false, code}`
     // shape rather than surfaced as a raw spawn error, so the conductor gets an

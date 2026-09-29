@@ -1183,3 +1183,37 @@ test('cross-run forwarding is LEGAL, deliberately', () => {
   ];
   allowed(fwd('w-sink-0002', { sessionId: 'w-open-0001' }, twoRuns));
 });
+
+test('a resume drops a pinned `backend` along with the pinned `model`, on both resume paths', () => {
+  // INVARIANT: `backend` is spawn-shape. A stage pinning {model, backend} (the
+  // remedy for a model id on several backends) must not hand a model-less resume
+  // a lone `backend`, which spawn_instance refuses BAD_MODEL.
+  const PINLAB = pb({
+    id: 'pinlab', name: 'Pinlab', description: 'A stage pinning a {model, backend} pair.',
+    entryStages: ['onp'],
+    stages: { onp: { tools: { spawn_instance: { pin: { model: 'mine:v1', backend: 'p', mode: 'bypassPermissions' } } } } },
+    transitions: [],
+  });
+  const run = (args, events) => decide({ toolName: 'spawn_instance', args, projection: proj(events),
+    playbooks: pbs(PINLAB), isLive: isLiveFromEvents(events) });
+  // Premise: a fresh spawn into the stage really is filled with both.
+  const fresh = allowed(run({ playbook: 'pinlab', stage: 'onp' }, []));
+  assert.equal(fresh.patchedArgs.model, 'mine:v1');
+  assert.equal(fresh.patchedArgs.backend, 'p');
+
+  const events = [
+    { kind: 'spawn', sessionId: 'w-onp-1', playbook: 'pinlab', stage: 'onp' },
+    { kind: 'retire', sessionId: 'w-onp-1', reason: 'subprocess exited' },
+  ];
+  const tracked = allowed(run({ resume: 'w-onp-1' }, events));
+  assert.equal(tracked.move.kind, 'resume');
+  assert.equal('model' in tracked.patchedArgs, false);
+  assert.equal('backend' in tracked.patchedArgs, false);
+  assert.equal(tracked.patchedArgs.mode, 'bypassPermissions', 'the policy half still applies');
+
+  const adopted = allowed(run({ resume: 'w-nobody-01', playbook: 'pinlab', stage: 'onp' }, []));
+  assert.equal(adopted.move.kind, 'spawn');
+  assert.equal('model' in adopted.patchedArgs, false);
+  assert.equal('backend' in adopted.patchedArgs, false);
+  assert.equal(adopted.patchedArgs.mode, 'bypassPermissions');
+});

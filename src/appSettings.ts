@@ -691,10 +691,11 @@ export async function removeSystem(id: string): Promise<boolean> {
 
 // ── Custom models ────────────────────────────────────────────────────────
 // Models group: custom models served by a substitution backend. Persisted as
-// `models.customModels: [{ label, model, backend, contextWindow }]`, where
-// `model` is the backend's own model id (an Ollama tag, say) and IS the
-// identity — a given model id belongs to exactly one backend. This is the
-// catalog the Settings model selector lists for a non-Claude backend.
+// `models.customModels: [{ label, model, backend, contextWindow, midTurnSteering }]`,
+// where `model` is the backend's own model id (an Ollama tag, say). The identity
+// is the (backend, model) pair — one model id may be registered on several
+// backends. This is the catalog the Settings model selector lists for a
+// non-Claude backend.
 interface CustomModelRecord {
   label?: unknown;
   model: string;
@@ -736,29 +737,28 @@ export function isKnownBackendModel(backend: unknown, model: unknown): boolean {
   return backend === 'ollama' && isKnownOllamaCloudModel(model);
 }
 
-// The backend that serves a non-Claude model id, or null when nothing does. A
-// user row wins over the curated catalog (an override of a preset). Used by MCP
-// spawn_instance so a caller can pass a bare model id and still land on the right
-// backend.
-export function backendForModel(model: unknown): string | null {
-  if (typeof model !== 'string' || !model) return null;
-  const custom = getCustomModels().find(m => m.model === model);
-  if (custom && isKnownBackend(custom.backend)) return custom.backend;
-  if (isKnownOllamaCloudModel(model) && isKnownBackend('ollama')) return 'ollama';
-  return null;
+// Every backend a non-Claude model id is bindable on, in registry order; empty
+// when nothing serves it. Built on isKnownBackendModel, so a user row on
+// `ollama` overriding a curated preset is one candidate, not two. Used by MCP
+// spawn_instance to resolve a bare model id — exactly one candidate lands there,
+// several need the caller's `backend` pick.
+export function backendsForModel(model: unknown): string[] {
+  if (typeof model !== 'string' || !model) return [];
+  return getBackends().map(b => b.id).filter(id => isKnownBackendModel(id, model));
 }
 
-// Native context window (raw tokens) for a non-Claude model id, or null when
-// unknown. Custom models win over the curated catalog (a user override of a
-// preset).
+// Native context window (raw tokens) for a non-Claude (backend, model) pair, or
+// null when unknown. The pair's custom row wins over the curated catalog (a user
+// override of a preset); the catalog fallback is keyed on the id alone, since
+// the catalog belongs to `ollama` only.
 //
 // The match is EXACT and load-bearing: a substitution model id is an opaque
 // registry key, so `gpt-5.6-sol[1m]` is a different model from `gpt-5.6-sol`.
 // Anything that strips a tag before reaching here turns a known window into a
 // silent null — see canonicalizeModel's backend gate in modelVersions.ts.
-export function contextWindowForModel(model: unknown): number | null {
+export function contextWindowForModel(backend: unknown, model: unknown): number | null {
   if (typeof model !== 'string' || !model) return null;
-  const custom = getCustomModels().find(m => m.model === model);
+  const custom = getCustomModels().find(m => m.backend === backend && m.model === model);
   if (custom && typeof custom.contextWindow === 'number' && Number.isFinite(custom.contextWindow)) return custom.contextWindow;
   const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === model);
   if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
@@ -777,7 +777,7 @@ export function resolveContextWindowTokens(input: { backend?: unknown; model?: u
   const { backend, model } = input;
   if (typeof model !== 'string' || !model) return null;
   if (backend === CLAUDE_BACKEND_ID) return claudeContextWindowTokens(model);
-  return contextWindowForModel(model);
+  return contextWindowForModel(backend, model);
 }
 
 // THE single place "can this model take a message injected into a running turn?"
@@ -785,13 +785,13 @@ export function resolveContextWindowTokens(input: { backend?: unknown; model?: u
 // that hard-errors or silently drops an injected steer declares
 // `midTurnSteering: false`; everything else — including an unknown id — is
 // steerable, which is the pre-flag behaviour. Same precedence as
-// contextWindowForModel (a user row overrides a curated preset) and the same
-// EXACT model-id matching (a substitution model id is an opaque registry key).
+// contextWindowForModel (the pair's user row overrides a curated preset) and the
+// same EXACT matching (a substitution model id is an opaque registry key).
 export function resolveMidTurnSteering(input: { backend?: unknown; model?: unknown } = {}): boolean {
   const { backend, model } = input;
   if (backend === CLAUDE_BACKEND_ID) return true;
   if (typeof model !== 'string' || !model) return true;
-  const custom = getCustomModels().find(m => m.model === model);
+  const custom = getCustomModels().find(m => m.backend === backend && m.model === model);
   if (custom) return custom.midTurnSteering;
   const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === model);
   if (preset) return preset.midTurnSteering !== false;
@@ -827,20 +827,20 @@ export async function addCustomModel(input: { label?: unknown; model?: unknown; 
     midTurnSteering: midTurnSteering !== false,
   };
   const cur = loadSync();
-  // The model id is the identity — re-adding it updates the row in place.
-  const nextList = getCustomModels().filter(m => m.model !== cleanModel).concat([entry]);
+  // The (backend, model) pair is the identity — re-adding it updates that row in place.
+  const nextList = getCustomModels().filter(m => !(m.backend === cleanBackend && m.model === cleanModel)).concat([entry]);
   const next = { ...cur, models: { ...(cur.models || {}), customModels: nextList } };
   await writeSettings(next);
   return entry;
 }
 
-// Remove a custom model by its model id. Any tier still bound to it falls back
-// gracefully: getTierBackend's validation reverts the now-unknown binding to
-// the tier's default Claude backend on the next read.
-export async function removeCustomModel(model: string): Promise<boolean> {
+// Remove a custom model by its (backend, model) pair. Any tier still bound to it
+// falls back gracefully: getTierBackend's validation reverts the now-unknown
+// binding to the tier's default Claude backend on the next read.
+export async function removeCustomModel(backend: string, model: string): Promise<boolean> {
   const cur = loadSync();
   const existing = getCustomModels();
-  const nextList = existing.filter(m => m.model !== model);
+  const nextList = existing.filter(m => !(m.backend === backend && m.model === model));
   if (nextList.length === existing.length) return false;
   const next = { ...cur, models: { ...(cur.models || {}), customModels: nextList } };
   await writeSettings(next);

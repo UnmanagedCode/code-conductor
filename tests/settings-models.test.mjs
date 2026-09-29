@@ -734,7 +734,7 @@ test('appSettings: a custom role whose Ollama backend is removed falls back to t
       await addCustomModel({ label: 'Local', model: 'local:tag', backend: 'ollama', contextWindow: 128_000 });
       await addCustomRole({ role: 'tester', binding: { backend: 'ollama', model: 'local:tag' } });
       assert.deepEqual(getRoleBinding('tester'), { backend: 'ollama', model: 'local:tag' });
-      await removeCustomModel('local:tag'); // binding now dead
+      await removeCustomModel('ollama', 'local:tag'); // binding now dead
       assert.deepEqual(getRoleBinding('tester'), { kind: 'tier', tier: getDefaultSpawnTier() });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
