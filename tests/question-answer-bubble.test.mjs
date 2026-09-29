@@ -410,6 +410,15 @@ test('a stamp for card B leaves card A open', async () => {
   assertCardLocked(b, 'card B');
 });
 
+test('a stamp naming a toolUseId absent from the registry leaves a registered card open', async () => {
+  const { conv, root } = await freshConversation();
+  const cardA = { ...CARD, toolUseId: 'tu_a' };
+  for (const ev of [cardA, { ...CARD_RESULT, toolUseId: 'tu_a' }, bananaEcho('tu_absent')]) conv.apply(ev);
+  assertCardOpen(root.querySelector('.block.user-question'), 'card A, not named');
+  assert.equal(conv.answeredQuestions.has('tu_absent'), true, 'the answer is recorded under the id the stamp names');
+  assert.equal(conv.answeredQuestions.has('tu_a'), false, 'and not under the registered card\'s id');
+});
+
 test('a stamp for a card that never renders in this view locks nothing and clears with the conversation', async () => {
   const { conv, root } = await freshConversation();
   conv.apply(bananaEcho('tu_gone'));
