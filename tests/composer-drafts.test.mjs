@@ -4,9 +4,10 @@
 //
 // Invariants pinned (one per test title below):
 //   - a draft is per sessionId and restores byte-exact, and the Send button follows it
-//   - switching to the session already showing is a no-op (resume / respawn)
+//   - switching to the session already showing performs no save (resume / respawn)
 //   - saves are debounced; switch-away / pagehide / tab-hidden save immediately
 //   - a reload (new page over the same storage) restores the draft and its <transcribed> flag
+//   - attachComposer runs without onDraftChange; dictation reports the draft
 //   - sending clears the stored draft at once and cancels a pending save
 //   - prefill (fork / rewind) becomes the session's draft
 //   - restoring never writes back and never focuses
@@ -54,7 +55,10 @@ function fakeTimers() {
 }
 
 // A fresh page: new DOM + composer + drafts wiring over the given store.
-async function setupPage({ store, timers = fakeTimers() }) {
+// `wire: false` builds the composer WITHOUT onDraftChange or the drafts module.
+// `dictation: true` stubs the mic, recorder and /api/transcribe (returns
+// `transcript`), and records alert() calls in `alerts`.
+async function setupPage({ store, timers = fakeTimers(), wire = true, dictation = false, transcript = 'dictated words' }) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
@@ -63,6 +67,23 @@ async function setupPage({ store, timers = fakeTimers() }) {
   globalThis.Node = window.Node;
   globalThis.Blob = window.Blob;
   const document = window.document;
+  const alerts = [];
+  const errors = [];
+  window.addEventListener('error', (e) => errors.push(e.message ?? String(e.error)));
+  if (dictation) {
+    globalThis.alert = (m) => alerts.push(m);
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } },
+    });
+    globalThis.MediaRecorder = class {
+      constructor() { this.listeners = {}; this.mimeType = 'audio/webm'; }
+      addEventListener(type, fn) { this.listeners[type] = fn; }
+      start() {}
+      stop() { this.listeners.stop?.(); }
+    };
+    globalThis.fetch = async () => ({ ok: true, async text() { return ''; }, async json() { return { text: transcript }; } });
+  }
 
   document.body.innerHTML = `
     <form id="composer">
@@ -94,21 +115,25 @@ async function setupPage({ store, timers = fakeTimers() }) {
     fileInput: document.getElementById('composer-file'),
     chipsContainer: document.getElementById('composer-attachments'),
     onSubmit: (p) => submits.push(p),
-    onDraftChange: (d) => drafts.noteChange(d),
+    ...(wire ? { onDraftChange: (d) => drafts.noteChange(d) } : {}),
   });
   composer.set({ canType: true, canSend: true });
 
   // A plain EventTarget doc so a test controls `hidden`.
   const doc = Object.assign(new EventTarget(), { hidden: false });
-  drafts = installComposerDrafts({ composer, store, timers, win: window, doc });
+  if (wire) drafts = installComposerDrafts({ composer, store, timers, win: window, doc });
 
   const type = (v) => { textarea.value = v; textarea.dispatchEvent(new window.Event('input', { bubbles: true })); };
   const submit = () => form.requestSubmit();
-  return { window, doc, textarea, sendBtn, composer, drafts, timers, submits, type, submit };
+  const tap = async () => {
+    sendBtn.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  return { window, doc, textarea, sendBtn, composer, drafts, timers, submits, type, submit, tap, alerts, errors };
 }
 
 const newStore = (storage, now = () => NOW) => createDraftStore({ storage, now });
-const stored = (storage, sid) => JSON.parse(storage.map.get(keyOf(sid)));
+const stored = (storage, sid) => (storage.map.has(keyOf(sid)) ? JSON.parse(storage.map.get(keyOf(sid))) : null);
 
 test('a draft is per session and restores byte-exact, and the Send button follows it', async () => {
   const storage = fakeStorage();
@@ -126,12 +151,25 @@ test('a draft is per session and restores byte-exact, and the Send button follow
   assert.equal(p.textarea.value, 'other');
 });
 
-test('switching to the session already showing leaves the text alone', async () => {
-  const p = await setupPage({ store: newStore(fakeStorage()) });
-  p.drafts.switchTo('A');
-  p.type('keep me');
-  p.drafts.switchTo('A');
-  assert.equal(p.textarea.value, 'keep me');
+test('switching to the session already showing performs no save', async (t) => {
+  await t.test('a pending debounced save is neither collapsed into a write nor cancelled', async () => {
+    const storage = fakeStorage();
+    const p = await setupPage({ store: newStore(storage) });
+    p.drafts.switchTo('A');
+    p.type('keep me');
+    p.drafts.switchTo('A');
+    assert.equal(p.textarea.value, 'keep me');
+    assert.equal(storage.map.has(keyOf('A')), false, 'storage unchanged until the timer fires');
+    assert.equal(p.timers.count, 1);
+    p.timers.fireAll();
+    assert.equal(stored(storage, 'A')?.text, 'keep me');
+  });
+  await t.test('switchTo(null) from the initial null state leaves text already in the box', async () => {
+    const p = await setupPage({ store: newStore(fakeStorage()) });
+    p.type('browser form-restore');
+    p.drafts.switchTo(null);
+    assert.equal(p.textarea.value, 'browser form-restore');
+  });
 });
 
 test('switching to no session saves the outgoing draft and empties the box', async () => {
@@ -141,7 +179,7 @@ test('switching to no session saves the outgoing draft and empties the box', asy
   p.type('bye');
   p.drafts.switchTo(null);
   assert.equal(p.textarea.value, '');
-  assert.equal(stored(storage, 'A').text, 'bye');
+  assert.equal(stored(storage, 'A')?.text, 'bye');
 });
 
 test('saves are debounced; switching away saves without waiting for the timer', async (t) => {
@@ -167,7 +205,7 @@ test('saves are debounced; switching away saves without waiting for the timer', 
     p.drafts.switchTo('A');
     p.type('abc');
     p.drafts.switchTo('B');
-    assert.equal(stored(storage, 'A').text, 'abc');
+    assert.equal(stored(storage, 'A')?.text, 'abc');
     assert.equal(p.timers.count, 0);
   });
 });
@@ -179,7 +217,7 @@ test('pagehide and a tab going hidden flush the pending text; a tab becoming vis
     p.drafts.switchTo('A');
     p.type('pending');
     p.window.dispatchEvent(new p.window.Event('pagehide'));
-    assert.equal(stored(storage, 'A').text, 'pending');
+    assert.equal(stored(storage, 'A')?.text, 'pending');
   });
   await t.test('visibilitychange with hidden = true', async () => {
     const storage = fakeStorage();
@@ -188,7 +226,7 @@ test('pagehide and a tab going hidden flush the pending text; a tab becoming vis
     p.type('pending');
     p.doc.hidden = true;
     p.doc.dispatchEvent(new Event('visibilitychange'));
-    assert.equal(stored(storage, 'A').text, 'pending');
+    assert.equal(stored(storage, 'A')?.text, 'pending');
   });
   await t.test('visibilitychange with hidden = false', async () => {
     const storage = fakeStorage();
@@ -233,7 +271,7 @@ test('sending clears the stored draft at once, and a pending save cannot bring i
   p.drafts.switchTo('A');
   p.type('ship it');
   p.drafts.flush();
-  assert.equal(stored(storage, 'A').text, 'ship it');
+  assert.equal(stored(storage, 'A')?.text, 'ship it');
   p.type('ship it!');
   assert.equal(p.timers.count, 1, 'an edit after the flush leaves a save pending');
   p.submit();
@@ -252,7 +290,7 @@ test('prefill (fork / rewind) becomes the session\'s draft', async () => {
   p.drafts.switchTo('B');
   p.composer.prefill('dropped prompt');
   p.timers.fireAll();
-  assert.equal(stored(storage, 'B').text, 'dropped prompt');
+  assert.equal(stored(storage, 'B')?.text, 'dropped prompt');
 });
 
 test('restoring a draft neither writes back nor takes focus', async () => {
@@ -265,7 +303,7 @@ test('restoring a draft neither writes back nor takes focus', async () => {
   assert.equal(p.textarea.value, 'stored');
   assert.equal(p.timers.count, 0);
   assert.equal(JSON.stringify([...storage.map]), before);
-  assert.notEqual(p.window.document.activeElement, p.textarea);
+  assert.ok(p.window.document.activeElement !== p.textarea);
 });
 
 test('text present before the first switch is not saved under any session', async () => {
@@ -323,4 +361,35 @@ test('with a throwing or missing storage, drafts stay per session in memory', as
   await t.test('setItem throws', () => roundTrip(newStore(fakeStorage({}, { throwOn: 'setItem' }))));
   await t.test('removeItem throws', () => roundTrip(newStore(fakeStorage({}, { throwOn: 'removeItem' }))));
   await t.test('no storage at all', () => roundTrip(createDraftStore({ storage: null, now: () => NOW })));
+});
+
+test('dictated text is scheduled as the current session\'s draft, with its transcribed flag', async () => {
+  const storage = fakeStorage();
+  const p = await setupPage({ store: newStore(storage), dictation: true, transcript: 'spoken words' });
+  p.drafts.switchTo('A');
+  p.composer.setMicAvailable(true);
+  await p.tap(); // start recording
+  await p.tap(); // stop + transcribe + insert
+  assert.equal(p.textarea.value, 'spoken words');
+  assert.equal(storage.map.has(keyOf('A')), false, 'not written before the debounce');
+  assert.equal(p.timers.count, 1);
+  p.timers.fireAll();
+  assert.deepEqual(stored(storage, 'A'), { text: 'spoken words', transcribed: true, savedAt: NOW });
+});
+
+test('attachComposer works without onDraftChange (typing, prefill, dictation, submit)', async () => {
+  const p = await setupPage({ store: newStore(fakeStorage()), wire: false, dictation: true, transcript: 'spoken' });
+  p.type('typed');
+  p.submit();
+  p.composer.prefill('');
+  p.composer.setMicAvailable(true);
+  await p.tap();
+  await p.tap();
+  assert.equal(p.textarea.value, 'spoken');
+  p.submit();
+  p.composer.prefill('prefilled');
+  assert.deepEqual(p.submits.map((x) => x.text), ['typed', '<transcribed>\nspoken']);
+  assert.equal(p.textarea.value, 'prefilled');
+  assert.deepEqual(p.alerts, [], 'a throw inside dictation surfaces as a "Transcription failed" alert');
+  assert.deepEqual(p.errors, [], 'listener exceptions surface as window error events');
 });
