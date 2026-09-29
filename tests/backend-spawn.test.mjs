@@ -1362,6 +1362,16 @@ describe('a model id on several backends (MCP spawn)', () => {
     assert.equal(instances.list().length, before, 'no instance was created');
   });
 
+  test('backend:"claude" with an explicit Claude model id passes through and spawns on claude', async () => {
+    await seedDuplicate();
+    const { view, inst, argv } = await spawnAndDump({ model: 'claude-haiku-4-5', backend: 'claude' });
+    assert.notEqual(view.ok, false, JSON.stringify(view));
+    assert.equal(inst.backend, 'claude');
+    assert.equal(inst.model, 'claude-haiku-4-5');
+    const i = argv.indexOf('--model');
+    assert.equal(argv[i + 1], 'claude-haiku-4-5', `argv: ${argv.join(' ')}`);
+  });
+
   test('a caller-passed backend on a resume with no model is still BAD_MODEL', async () => {
     await seedDuplicate();
     const { view, inst } = await spawnAndDump({ model: 'mine:v1', backend: 'p' });
