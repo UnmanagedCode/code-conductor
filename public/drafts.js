@@ -103,7 +103,7 @@ export function createDraftStore({ storage = safeStorage(), now = Date.now, maxA
   return { load, save, clear, prune };
 }
 
-// `composer` needs getDraft() / setDraft() / swapAttachments(); it reports edits
+// `composer` needs getDraft() / setDraft() / swapAttachments() / discardAttachments(); it reports edits
 // back through `noteChange` (attachComposer's onDraftChange) and asks for a
 // dictation's destination through `claimTranscriptTarget` (its option of the
 // same name). `currentSid` stays null until the first switchTo, so text the
@@ -151,7 +151,12 @@ export function installComposerDrafts({
     const incoming = (sid && attachments.get(sid)) || [];
     if (sid) attachments.delete(sid);
     const outgoing = composer.swapAttachments(incoming);
-    if (currentSid && outgoing.length) attachments.set(currentSid, outgoing);
+    // With no session showing there is nothing to keep the list under, and
+    // handing it to the next session could send it to the wrong one.
+    if (outgoing.length) {
+      if (currentSid) attachments.set(currentSid, outgoing);
+      else composer.discardAttachments(outgoing);
+    }
     currentSid = sid;
     composer.setDraft((sid && store.load(sid)) || EMPTY);
   }

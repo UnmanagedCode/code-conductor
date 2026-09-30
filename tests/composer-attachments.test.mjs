@@ -7,16 +7,19 @@
 //     back restores them with previews and remove buttons
 //   - a send ships only the showing session's attachments and clears only its list
 //   - removing a chip in one session leaves the other's list and preview alone
-//   - a switch never revokes a preview; send, remove and prefill do
+//   - a switch never revokes a preview; send and prefill do
+//   - a list dropped at a null-session switch has its previews revoked and does not reappear
 //   - a multi-file add still encoding at a switch finishes into its own session
 //   - a dictation is delivered to the session it was started in, never the one showing
+//   - a dictation started with no session showing lands in the box, not nowhere
+//   - a dictation into a non-empty box inserts exactly one separating space
 //   - switching to the session already showing keeps its attachments
 //   - restoring attachments neither writes the text draft nor takes focus
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  fakeStorage, fakeTimers, setupPage, newStore, stored, fakeFile, gate, settle, NOW,
+  fakeStorage, fakeTimers, setupPage, newStore, stored, keyOf, fakeFile, gate, settle, NOW,
 } from './composerDraftsHarness.mjs';
 
 const b64 = (bytes) => Buffer.from(bytes).toString('base64');
@@ -81,7 +84,7 @@ test('removing a chip in one session leaves the other\'s list and preview alone'
   assert.deepEqual(p.errors, []);
 });
 
-test('a switch never revokes a preview; send, remove and prefill do', async (t) => {
+test('a switch never revokes a preview; send and prefill do', async (t) => {
   await t.test('switching away and back leaves every preview live, whichever session the other holds', async (st) => {
     const p = await setupPage({ store: newStore(fakeStorage()), t: st });
     p.drafts.switchTo('A');
@@ -91,6 +94,7 @@ test('a switch never revokes a preview; send, remove and prefill do', async (t) 
     p.drafts.switchTo('A');
     assert.deepEqual(p.revoked, []);
     assert.deepEqual(p.chips().map((c) => c.src), ['blob:fake/1']);
+    assert.deepEqual(p.errors, []);
   });
   await t.test('send revokes the sent list', async (st) => {
     const p = await setupPage({ store: newStore(fakeStorage()), t: st });
@@ -98,6 +102,7 @@ test('a switch never revokes a preview; send, remove and prefill do', async (t) 
     await p.paste([png('a1.png')]);
     p.submit();
     assert.deepEqual(p.revoked, ['blob:fake/1']);
+    assert.deepEqual(p.errors, []);
   });
   await t.test('prefill revokes the showing list', async (st) => {
     const p = await setupPage({ store: newStore(fakeStorage()), t: st });
@@ -106,7 +111,25 @@ test('a switch never revokes a preview; send, remove and prefill do', async (t) 
     p.composer.prefill('rewound');
     assert.deepEqual(p.revoked, ['blob:fake/1']);
     assert.equal(p.chips().length, 0);
+    assert.deepEqual(p.errors, []);
   });
+});
+
+test('a list dropped at a null-session switch has its previews revoked and does not reappear', async (t) => {
+  const p = await setupPage({ store: newStore(fakeStorage()), t });
+  // No session has been shown yet (an instance is still spawning), so the
+  // composer is enabled with nothing to keep the list under.
+  await p.paste([png('early.png')]);
+  assert.equal(p.chips().length, 1);
+  p.drafts.switchTo('A');
+  assert.equal(p.chips().length, 0, 'the dropped list is not handed to the next session');
+  assert.deepEqual(p.revoked, ['blob:fake/1']);
+  p.drafts.switchTo('B');
+  p.drafts.switchTo('A');
+  p.drafts.switchTo(null);
+  assert.equal(p.chips().length, 0, 'and it does not come back');
+  assert.deepEqual(p.revoked, ['blob:fake/1'], 'revoked once');
+  assert.deepEqual(p.errors, []);
 });
 
 test('a multi-file add still encoding when the user switches finishes into its own session', async (t) => {
@@ -187,6 +210,35 @@ test('a dictation is delivered to the session it was started in, never to the on
   });
 });
 
+test('a dictation started with no session showing lands in the box, not nowhere', async (t) => {
+  const p = await setupPage({ store: newStore(fakeStorage()), dictation: 'deferred', t });
+  p.composer.setMicAvailable(true);
+  await p.tap();
+  await p.tap();
+  p.drafts.switchTo('A');
+  await p.releaseTranscript('spoken');
+  assert.equal(p.textarea.value, 'spoken');
+  p.submit();
+  assert.equal(p.submits[0].text, '<transcribed>\nspoken');
+  assert.deepEqual(p.errors, []);
+});
+
+test('a dictation into a non-empty box inserts exactly one separating space', async (t) => {
+  const dictateAfter = async (typed, st) => {
+    const p = await setupPage({ store: newStore(fakeStorage()), dictation: 'deferred', t: st });
+    p.drafts.switchTo('A');
+    p.composer.setMicAvailable(true);
+    await p.tap();
+    await p.tap();
+    p.type(typed);
+    await p.releaseTranscript('spoken');
+    assert.deepEqual(p.errors, []);
+    return p.textarea.value;
+  };
+  await t.test('after a word', async (st) => assert.equal(await dictateAfter('hello', st), 'hello spoken'));
+  await t.test('after existing whitespace', async (st) => assert.equal(await dictateAfter('hello ', st), 'hello spoken'));
+});
+
 test('switching to the session already showing keeps its attachments', async (t) => {
   const p = await setupPage({ store: newStore(fakeStorage()), t });
   p.drafts.switchTo('A');
@@ -199,17 +251,31 @@ test('switching to the session already showing keeps its attachments', async (t)
 
 test('restoring attachments neither writes the text draft nor takes focus', async (t) => {
   const storage = fakeStorage();
+  const ops = [];
+  const spied = {
+    ...storage,
+    setItem: (k, v) => { ops.push(['setItem', k]); storage.setItem(k, v); },
+    removeItem: (k) => { ops.push(['removeItem', k]); storage.removeItem(k); },
+  };
+  const clock = { t: NOW };
   const timers = fakeTimers();
-  const p = await setupPage({ store: newStore(storage), timers, t });
+  const p = await setupPage({ store: newStore(spied, () => clock.t), timers, t });
   p.drafts.switchTo('A');
+  p.type('kept text');
   await p.paste([png('a1.png')]);
   p.drafts.switchTo('B');
   assert.equal(p.chips().length, 0);
-  const before = JSON.stringify([...storage.map]);
+  const savedRaw = storage.map.get(keyOf('A'));
+  assert.equal(JSON.parse(savedRaw).text, 'kept text', 'leaving A stored its text');
+
+  clock.t += 60_000;
+  ops.length = 0;
   p.drafts.switchTo('A');
   assert.equal(p.chips().length, 1);
-  assert.equal(JSON.stringify([...storage.map]), before);
-  assert.equal(timers.count, 0);
+  assert.equal(p.textarea.value, 'kept text');
+  assert.deepEqual(ops.filter(([, k]) => k === keyOf('A')), [], 'no write or removal touches A\'s draft');
+  assert.equal(storage.map.get(keyOf('A')), savedRaw, 'savedAt is unchanged');
+  assert.equal(timers.count, 0, 'no save is scheduled');
   assert.ok(p.window.document.activeElement !== p.textarea);
   assert.deepEqual(p.errors, []);
 });

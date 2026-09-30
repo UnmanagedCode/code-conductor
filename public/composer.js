@@ -240,8 +240,12 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     refreshSendEnabled();
   }
 
+  function revokePreviews(list) {
+    for (const a of list) if (a.objectUrl) URL.revokeObjectURL(a.objectUrl);
+  }
+
   function clearAttachments() {
-    for (const a of pending) if (a.objectUrl) URL.revokeObjectURL(a.objectUrl);
+    revokePreviews(pending);
     pending.length = 0;
     renderChips();
   }
@@ -564,6 +568,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     // (both lists stay alive for their sessions), focuses, or reports a draft
     // change. The returned list is still live: an encode in flight keeps
     // filling its entries.
+    // Release a list the host is dropping for good (one swapAttachments
+    // returned that has no session to live under).
+    discardAttachments(list) { revokePreviews(list); },
     swapAttachments(next) {
       const prev = pending;
       pending = next;
