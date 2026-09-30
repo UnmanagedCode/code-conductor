@@ -215,6 +215,8 @@ test('6 pins: every run-ender folds a trailing machinery run', async (t) => {
     ['user_echo', { kind: 'user_echo', text: 'next prompt', userIndex: 1 }],
     ['turn_end', { kind: 'turn_end', subtype: 'success' }],
     ['history_gap', { kind: 'history_gap' }],
+    ['status compacting', { kind: 'system', subtype: 'status', data: { status: 'compacting' } }],
+    ['compaction', { kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 }],
   ];
   for (const [name, closer] of CLOSERS) {
     await t.test(`${name} folds the trailing group`, async () => {
@@ -719,6 +721,40 @@ test('D3 pins: a run-ender folds a sub-agent\'s group too', async (t) => {
 });
 
 // ---------------------------------------------------------------------------
+// A mid-turn compaction bubble ends the assistant segment, and the segment
+// close recurses into the sub-agent panels like every other closer: a
+// background sub-agent's open group folds, and its later work opens a second
+// group in the same panel.
+// ---------------------------------------------------------------------------
+test('a compaction folds a sub-agent\'s open group and its later work opens a new one', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: {} },
+    { kind: 'tool_use_start', msgId: 'ms', blockIdx: 0, toolUseId: 'ctu1', name: 'Read', parentToolUseId: 'tuA' },
+    { kind: 'tool_use', msgId: 'ms', blockIdx: 0, toolUseId: 'ctu1', name: 'Read', input: {}, parentToolUseId: 'tuA' },
+  ]);
+  const panel = '.sub-conversation-body .msg.assistant > .blocks > .action-group';
+  const first = root.querySelector(panel);
+  assert.ok(first, 'sanity: the sub-agent has a group of its own');
+  assert.equal(first.hasAttribute('open'), true, 'open while the sub-agent is running');
+
+  conv.apply({ kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 });
+  assert.equal(first.hasAttribute('open'), false, 'the compaction folds the sub-agent\'s group');
+
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'ms', blockIdx: 1, toolUseId: 'ctu2', name: 'Bash', parentToolUseId: 'tuA' },
+    { kind: 'tool_use', msgId: 'ms', blockIdx: 1, toolUseId: 'ctu2', name: 'Bash', input: {}, parentToolUseId: 'tuA' },
+  ]);
+  const groups = [...root.querySelectorAll(panel)];
+  assert.equal(groups.length, 2, 'later sub-agent work opens a second group in the same panel');
+  assert.equal(summaryTextOf(groups[0]), '1 action · Read');
+  assert.equal(summaryTextOf(groups[1]), '1 action · Bash');
+  assert.equal(groups[1].hasAttribute('open'), true);
+});
+
+// ---------------------------------------------------------------------------
 // D4 — pins: a dead process ends the run. `_handleExit` (src/instances.ts)
 // emits `system/exit` on EVERY process death — commanded kill, crash, backend
 // failure alike — so it is the one annotation that has to fold the group; the
@@ -754,8 +790,6 @@ test('D4 pins: a process exit folds the accumulating group', async (t) => {
 test('D5 pins: a system note the turn survives does not collapse the group', async (t) => {
   const MID_RUN = [
     ['auto_resume', { kind: 'system', subtype: 'auto_resume', data: { count: 2 } }],
-    ['status compacting', { kind: 'system', subtype: 'status', data: { status: 'compacting' } }],
-    ['compaction', { kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 }],
     ['stderr', { kind: 'system', subtype: 'stderr', data: { line: 'a warning from the CLI' } }],
     ['cache_miss', { kind: 'system', subtype: 'cache_miss', data: { cacheCreation: 10, cacheRead: 2 } }],
   ];

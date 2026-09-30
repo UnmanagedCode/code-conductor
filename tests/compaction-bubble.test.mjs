@@ -1,12 +1,18 @@
 // DOM tests for the compaction bubble, driving the real src/parser.ts,
 // src/transcript.ts replay and public/conversation.js under happy-dom.
 //
-// Fixtures: `compaction-manual.stdout.jsonl` / `compaction-manual.transcript.jsonl`
-// are committed trims of one real CLI 2.1.284 capture of a manual `/compact`
-// (structural fields verbatim; the init frame's long arrays shortened, paths
-// scrubbed). The auto case is DERIVED from them by changing only `trigger` and
-// dropping the `/compact` echo and stdout: the auto frame order is assumed from
-// the CLI's shared boundary builder, not captured.
+// Fixtures: `compaction-manual.*` are committed trims of one real CLI 2.1.284
+// capture of a manual `/compact` (structural fields verbatim; the init frame's
+// long arrays shortened, paths scrubbed). `compaction-auto.*` are committed trims
+// of one real CLI 2.1.284 auto-compaction, mid-turn (structural fields verbatim;
+// tool-result bodies shortened, environment-dump attachments dropped, paths
+// scrubbed; the instance id in the kept hook-callback URLs is a placeholder).
+// In the stdout fixture each tool_use block's `input_json_delta` fragments were
+// re-chunked from the scrubbed concatenation at the original fragment lengths
+// (a path split across fragments cannot be scrubbed piecewise), so those frames
+// differ from the capture in where the path text splits. The auto summary
+// arrives as array content live and as a string in the jsonl; a manual
+// `/compact` has no mid-turn work around it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -74,6 +80,32 @@ async function renderReload() {
   const { root, Conversation, replayPersistedLine } = await setupDOM();
   const conv = new Conversation(root);
   for (const line of await readJsonl('compaction-manual.transcript.jsonl')) {
+    for (const ev of replayPersistedLine(line)) apply(conv, ev);
+  }
+  return { root, conv };
+}
+
+const AUTO_LABEL = `Context compacted · auto · ${N(183658)} → ${N(24338)} tokens`;
+const AUTO_PROMPT = 'again, read all wiki pages';
+const SUMMARY_PREFIX = 'This session is being continued';
+const isAssistant = (n) => n.classList.contains('assistant');
+const groupOf = (bubble) => bubble.querySelector('.action-group');
+const groupSummary = (group) => group.querySelector('.ag-summary').textContent;
+
+// The slice starts mid-turn, after the prompt: there is no `init` in it, so no
+// model_changed is injected.
+async function renderAutoLive() {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  apply(conv, { kind: 'user_echo', text: AUTO_PROMPT, userIndex: 3 });
+  feedFrames(conv, new Parser(), await readJsonl('compaction-auto.stdout.jsonl'));
+  return { root, conv };
+}
+
+async function renderAutoReload() {
+  const { root, Conversation, replayPersistedLine } = await setupDOM();
+  const conv = new Conversation(root);
+  for (const line of await readJsonl('compaction-auto.transcript.jsonl')) {
     for (const ev of replayPersistedLine(line)) apply(conv, ev);
   }
   return { root, conv };
@@ -151,19 +183,59 @@ test('the summary is collapsed and expands lazily into the markdown body', async
   assert.ok(details.querySelector('.user-view-copy'), 'copy control');
 });
 
-test('auto trigger: one bubble, the header names auto, and no user bubbles', async () => {
-  const { root, Parser, Conversation } = await setupDOM();
-  const conv = new Conversation(root);
-  const frames = (await readJsonl('compaction-manual.stdout.jsonl'))
-    // Auto has no `/compact` echo and no command output: drop the stdout line.
-    .filter((f) => !(f.type === 'user' && String(f.message?.content).includes('<local-command-stdout>')))
-    .map((f) => (f.subtype === 'compact_boundary'
-      ? { ...f, compact_metadata: { ...f.compact_metadata, trigger: 'auto' } }
-      : f));
-  feedFrames(conv, new Parser(), frames);
+test('live auto: one compaction bubble, no summary user bubble', async () => {
+  const { root } = await renderAutoLive();
 
-  assert.deepEqual(labelsOf(root), [`Context compacted · auto · ${N(27152)} → ${N(2952)} tokens`]);
-  assert.equal(root.querySelectorAll('.msg.user').length, 0);
+  assert.deepEqual(labelsOf(root), [AUTO_LABEL]);
+  const users = [...root.querySelectorAll('.msg.user')];
+  assert.equal(users.length, 1, 'only the prompt is a user bubble');
+  assert.ok(users[0].textContent.includes(AUTO_PROMPT));
+  for (const u of users) assert.ok(!u.textContent.includes(SUMMARY_PREFIX), 'the summary is not a user bubble');
+  const details = root.querySelector('details.block.compaction');
+  assert.ok(details, 'the summary rides in the bubble');
+  assert.equal(details.open, false);
+  assert.deepEqual(subtypesOf(root), [], 'no init is shown in the slice');
+});
+
+test('live auto: the bubble splits the turn, so later work sits below it', async () => {
+  const { root } = await renderAutoLive();
+
+  const kids = [...root.children];
+  assert.deepEqual(kids.map((n) => n.className), ['msg user', 'msg assistant', 'msg compaction', 'msg assistant']);
+  const [, before, compaction, after] = kids;
+  const beforeGroup = groupOf(before);
+  assert.equal(beforeGroup.hasAttribute('open'), false, 'the compaction ended the pre-compaction run');
+  assert.equal(groupSummary(beforeGroup), '3 actions · thinking, Read, Bash');
+  assert.equal(groupSummary(groupOf(after)), '3 actions · thinking, Bash, Read',
+    'the post-compaction work is its own bubble');
+  assert.ok(compaction.previousElementSibling === before);
+  assert.ok(compaction.nextElementSibling === after);
+});
+
+test('reload auto: the identical bubble at the identical position', async () => {
+  const live = await renderAutoLive();
+  const { root } = await renderAutoReload();
+
+  assert.deepEqual(labelsOf(root), labelsOf(live.root), 'same header text as live');
+  assert.deepEqual([...root.children].map((n) => n.className), ['msg assistant', 'msg compaction', 'msg assistant'],
+    'the slice has no prompt echo; the compaction splits the turn as it does live');
+  for (const u of root.querySelectorAll('.msg.user')) assert.ok(!u.textContent.includes(SUMMARY_PREFIX));
+  const [before, , after] = root.children;
+  assert.equal(groupOf(before).hasAttribute('open'), false);
+  assert.equal(groupSummary(groupOf(before)), '3 actions · thinking, Read, Bash');
+  assert.equal(groupSummary(groupOf(after)), '2 actions · thinking, Bash',
+    'replay has no in-flight Read: only the persisted blocks');
+});
+
+test('manual /compact DOM is unchanged', async () => {
+  const live = await renderLive();
+  assert.deepEqual([...live.root.children].map((n) => n.className), ['msg user', 'msg compaction', '']);
+  assert.deepEqual(labelsOf(live.root), [MANUAL_LABEL]);
+
+  const reload = await renderReload();
+  assert.deepEqual([...reload.root.children].map((n) => n.className),
+    ['msg user', 'msg assistant', 'msg user', 'msg compaction']);
+  assert.deepEqual(labelsOf(reload.root), [MANUAL_LABEL]);
 });
 
 test('a failed compaction is shown, live-only', async () => {
@@ -179,6 +251,24 @@ test('a failed compaction is shown, live-only', async () => {
 
   feedFrames(conv, parser, [{ type: 'system', subtype: 'init', model: 'claude-haiku-4-5', session_id: 'abcdef123456' }]);
   assert.deepEqual(subtypesOf(root), ['model_changed', 'init'], 'a later re-init is not suppressed after the failure');
+});
+
+test('a failed compaction mid-turn splits the turn like a successful one', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  apply(conv, { kind: 'user_echo', text: 'go', userIndex: 0 });
+  apply(conv, { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Bash' });
+  apply(conv, { kind: 'system', subtype: 'status', data: { status: 'compacting' } });
+  apply(conv, { kind: 'system', subtype: 'status', data: { status: null, compact_result: 'failed', compact_error: 'boom' } });
+  apply(conv, { kind: 'tool_use_start', msgId: 'm2', blockIdx: 0, toolUseId: 'tu2', name: 'Read' });
+
+  assert.deepEqual(labelsOf(root), ['Compaction failed: boom']);
+  assert.deepEqual([...root.children].map((n) => n.className),
+    ['msg user', 'msg assistant', 'msg compaction', 'msg assistant']);
+  const [, before, , after] = root.children;
+  assert.equal(groupOf(before).hasAttribute('open'), false, 'the run before the compaction is folded');
+  assert.ok(!before.textContent.includes('Read'), 'work after the failure is not in the earlier bubble');
+  assert.ok(groupSummary(groupOf(after)).includes('Read'), 'it opens a new bubble below the failed one');
 });
 
 test('a compaction that never reached its boundary is closed by the turn ending', async () => {
