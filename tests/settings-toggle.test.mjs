@@ -260,3 +260,30 @@ test('settings: enabling a plugin refreshes the conductor/workspace/project conv
   assert.equal(externalCalled, 1, 'existing onPluginsChanged hook still fires');
   window.happyDOM.abort();
 });
+
+test('settings: a plugin action\'s {action, ids} change reaches onPluginsChanged unchanged', async () => {
+  const { impl } = stubCatalogChangeFetch();
+  const fetchImpl = (url, opts = {}) => {
+    if (url === '/api/plugins') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ rows: [{
+        id: 'demo', name: 'Demo', project: 'demoproj', state: 'ready', stale: true,
+        enabled: true, hasBackend: true, localOnly: [], conventions: [],
+      }], notices: [] }) });
+    }
+    if (url === '/api/plugins/demo/restart') return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    return impl(url, opts);
+  };
+  const { window, mod, view } = await setup(fetchImpl);
+  const changes = [];
+  mod.installSettings({ requestClose: () => {}, onPluginsChanged: (c) => { changes.push(c); } });
+
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  const restartBtn = [...view.querySelectorAll('#pl-list button')].find(b => b.textContent === 'Restart');
+  assert.ok(restartBtn, 'Restart rendered for the stale running plugin');
+  click(restartBtn, window);
+  await tick(20);
+  assert.deepEqual(changes, [{ action: 'restart', ids: ['demo'] }]);
+  window.happyDOM.abort();
+});

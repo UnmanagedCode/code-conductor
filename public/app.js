@@ -522,12 +522,19 @@ function closeSettings() {
 // space (dropdown select, deep link, boot) AND on a plugin-to-plugin switch
 // — collapse the mobile drawer there too, same idiom as selectInstance
 // revealing a session.
+//
+// Keep-alive plugins: the switcher labels each resident frame off
+// residentIds() and re-renders on onResidentChange, and onPluginsChanged runs
+// reconcile() with the action's {action, ids} so a Settings → Plugins
+// Stop/Disable/Restart/Update/version switch evicts the frames it affects.
 let appSwitcher = null;
 const pluginView = installPluginView({
   onClosed: () => appSwitcher?.sync(),
   onShown: () => closeSidebarOnMobile(),
+  onResidentChange: () => appSwitcher?.render(),
 });
 appSwitcher = installAppSwitcher({
+  residentIds: () => pluginView.residentIds(),
   onExitToConductor: () => {
     const inst = state.instances.find(i => i.id === state.activeId);
     writeSessionAnchor(inst?.sessionId || null);
@@ -543,7 +550,7 @@ let restartHandle = null;
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
-  onPluginsChanged: () => appSwitcher.refresh(),
+  onPluginsChanged: (change) => { appSwitcher.refresh(); pluginView.reconcile(change); },
   // Self-update hands off to the shared restart+resume engine after its pull
   // succeeds — resume carries live sessions across the respawn.
   requestRestartWithResume: () => restartHandle?.performRestart({ resume: true }),

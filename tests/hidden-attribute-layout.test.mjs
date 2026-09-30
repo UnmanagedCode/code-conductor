@@ -19,9 +19,14 @@
 // `hidden` hides. This file is the other half: the real public/index.html under
 // the real public/styles.css.
 //
-// SCOPE: the static index.html, with scripts stripped. A dialog label built in
-// JS is not swept — an accepted gap, since the three that exist
-// (workspaceDialog.js, settings.js, newProjectDialog.js) are never hidden.
+// SCOPE: the static index.html, with scripts stripped, plus the JS-built
+// elements that carry `hidden` and are listed in JS_BUILT_HIDDEN below. A
+// dialog label built in JS is not swept — an accepted gap, since the three that
+// exist (workspaceDialog.js, settings.js, newProjectDialog.js) are never hidden.
+// Nor is any other JS-built element that toggles `hidden` outside that list —
+// e.g. .lightbox-backdrop (lightbox.js), .costs-proj-detail (costs.js),
+// details.sub-conversation (blocks.js) — a known gap: an entry must be added to
+// JS_BUILT_HIDDEN to be covered.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -191,6 +196,33 @@ test('nothing in index.html lays out while carrying the hidden attribute', async
     + `or name it in RENDERS_WHILE_HIDDEN with a reason:\n  ${offenders.join('\n  ')}`,
   );
 
+});
+
+// The JS-built elements this sweep covers — those that toggle `hidden` inside
+// #plugin-view — re-created here in their real parent so the same sweep sees
+// them under the real styles.css.
+// pluginView.js's frames sit side by side in #plugin-view and only `hidden`
+// picks which one shows: the `#plugin-frame, .plugin-frame-resident` rule must
+// declare no `display`, or a hidden resident frame renders over (or beside) the
+// visible one.
+const JS_BUILT_HIDDEN = [
+  ['plugin-view', '<div id="plugin-overlay" hidden></div>'],
+  ['plugin-view', '<iframe id="plugin-frame" hidden></iframe>'],
+  ['plugin-view', '<iframe class="plugin-frame-resident" data-plugin-id="ka" hidden></iframe>'],
+];
+
+test('the JS-built elements listed in JS_BUILT_HIDDEN do not lay out', async () => {
+  const { window, document } = await renderIndex();
+  const built = JS_BUILT_HIDDEN.map(([parentId, html]) => {
+    const parent = document.getElementById(parentId);
+    assert.ok(parent, `index.html must still carry #${parentId}`);
+    parent.insertAdjacentHTML('beforeend', html);
+    return parent.lastElementChild;
+  });
+  const { hidden, offenders } = sweep(window, document);
+  for (const el of built) assert.ok(hidden.includes(el), `${el.outerHTML} must be within the sweep's reach`);
+  assert.deepEqual(offenders, [],
+    `an author \`display\` outranks the UA [hidden] rule on these:\n  ${offenders.join('\n  ')}`);
 });
 
 // POSITIVE CONTROLS. An empty offender list is the PASSING answer above, so that

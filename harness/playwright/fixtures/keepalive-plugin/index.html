@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Keep-alive probe</title>
+<script src="/pluginBridge.js" defer></script>
+</head>
+<body>
+<h1>Keep-alive probe</h1>
+<button id="start" type="button">Start microphone</button>
+<script>
+// Live counters read by harness/playwright/check-plugin-keepalive.mjs through
+// page.frames(): a per-load nonce, a 100 ms interval, WebSocket messages,
+// requestAnimationFrame callbacks, and (after the Start click, the user
+// gesture an AudioContext needs) a microphone → AnalyserNode poll.
+const probe = window.__probe = {
+  nonce: crypto.randomUUID(),
+  ticks: 0, ws: 0, raf: 0,
+  mic: null, // { readyState, ctxState, currentTime, rmsNonZero, polls }
+};
+setInterval(() => { probe.ticks++; }, 100);
+
+const wsUrl = new URL('ws', location.href);
+wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+new WebSocket(wsUrl).addEventListener('message', () => { probe.ws++; });
+
+(function frame() { probe.raf++; requestAnimationFrame(frame); })();
+
+document.getElementById('start').addEventListener('click', async () => {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const track = stream.getAudioTracks()[0];
+  const buf = new Float32Array(analyser.fftSize);
+  const mic = probe.mic = { readyState: track.readyState, ctxState: ctx.state, currentTime: 0, rmsNonZero: 0, polls: 0 };
+  setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) sum += v * v;
+    mic.polls++;
+    if (Math.sqrt(sum / buf.length) > 1e-4) mic.rmsNonZero++;
+    mic.readyState = track.readyState;
+    mic.ctxState = ctx.state;
+    mic.currentTime = ctx.currentTime;
+  }, 100);
+});
+</script>
+</body>
+</html>

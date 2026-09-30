@@ -6,13 +6,20 @@
 // history.back(), which has no usable entry on a deep link or after the
 // bridge's pushState→replaceState patch. With zero plugins the plain <h1>
 // stays — no visual change.
+//
+// A plugin whose keep-alive frame is resident (pluginView.js: its page keeps
+// running while hidden — possibly with the microphone open) is labelled
+// `RESIDENT_SUFFIX` in the dropdown, read off the injected `residentIds()`;
+// app.js calls render() whenever that set changes. The option still just
+// navigates.
 
 const CONDUCTOR = 'conductor';
+export const RESIDENT_SUFFIX = ' (running)';
 
-export function installAppSwitcher({ onExitToConductor } = {}) {
+export function installAppSwitcher({ onExitToConductor, residentIds = () => [] } = {}) {
   const select = document.getElementById('app-switcher-select');
   const title = document.querySelector('#app-switcher h1');
-  if (!select || !title) return { refresh() {}, sync() {} };
+  if (!select || !title) return { refresh() {}, sync() {}, render() {} };
 
   let plugins = [];
 
@@ -33,10 +40,11 @@ export function installAppSwitcher({ onExitToConductor } = {}) {
     home.value = CONDUCTOR;
     home.textContent = 'Conductor';
     select.appendChild(home);
+    const live = new Set(residentIds());
     for (const p of apps) {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.navLabel || p.name;
+      opt.textContent = (p.navLabel || p.name) + (live.has(p.id) ? RESIDENT_SUFFIX : '');
       select.appendChild(opt);
     }
     select.hidden = false;
@@ -73,5 +81,5 @@ export function installAppSwitcher({ onExitToConductor } = {}) {
   }
 
   refresh();
-  return { refresh, sync };
+  return { refresh, sync, render };
 }

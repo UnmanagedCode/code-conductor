@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPluginHost } from '../src/plugins/registry.ts';
-import { makePluginRoot } from './plugin-helpers.mjs';
+import { makePluginRoot, readFixtureManifest } from './plugin-helpers.mjs';
 
 // Characterization pin for the PluginRow view-model — the projection
 // describeRow() builds, serialized verbatim by GET /api/plugins and consumed
@@ -21,6 +21,7 @@ const ROW_FIELDS = [
   'crashTail',
   'enabled',
   'errors',
+  'frontendKeepAlive',
   'frontendPath',
   'gitHead',
   'hasBackend',
@@ -77,6 +78,7 @@ test('a running row carries the same field set, with the UI-read fields populate
     assert.equal(row.name, 'Fake Plugin');
     assert.equal(row.version, '1.0.0');
     assert.equal(row.frontendPath, '/');
+    assert.equal(row.frontendKeepAlive, false);
     assert.equal(row.navLabel, 'Fake');
     assert.equal(row.hasMcp, true);
     assert.equal(row.hasBackend, true);
@@ -87,6 +89,22 @@ test('a running row carries the same field set, with the UI-read fields populate
     assert.ok(row.port, 'port is populated while running');
     assert.equal(row.stale, false);
     assert.equal(row.crashTail, null, 'a healthy row reports no crash tail');
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('frontendKeepAlive mirrors the manifest\'s frontend.keepAlive', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const manifest = await readFixtureManifest();
+    manifest.frontend.keepAlive = true;
+    await env.addPluginProject('aplug', { manifest });
+    const row = await host.status('fake-plugin');
+    assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS);
+    assert.equal(row.frontendKeepAlive, true);
   } finally {
     await host.stopAll();
     await env.restore();

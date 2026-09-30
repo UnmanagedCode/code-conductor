@@ -1,0 +1,11 @@
+{
+  "id": "keepalive-plugin",
+  "name": "Keep-alive probe",
+  "version": "1.0.0",
+  "pluginApi": 1,
+  "backend": {
+    "start": "node server.mjs",
+    "healthPath": "/health"
+  },
+  "frontend": { "navLabel": "Keep-alive probe", "keepAlive": true }
+}

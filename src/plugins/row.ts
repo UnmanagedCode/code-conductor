@@ -31,6 +31,7 @@ export interface PluginRow {
   hasFrontend: boolean;
   navLabel: string | null;
   frontendPath: string | null;
+  frontendKeepAlive: boolean;
   hasMcp: boolean;
   conventions: Array<{ slug: string; name: string; description: string; hasScaffold: boolean }>;
   roles: Array<{ slug: string; name: string }>;
@@ -110,6 +111,7 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
     hasFrontend: !!entry.manifest?.frontend,
     navLabel: entry.manifest?.frontend?.navLabel ?? null,
     frontendPath: entry.manifest?.frontend?.path ?? null,
+    frontendKeepAlive: entry.manifest?.frontend?.keepAlive ?? false,
     hasMcp: !!entry.manifest?.mcp,
     // Contribution metadata (slugs namespaced <plugin-id>/<slug>).
     // `hasScaffold` flags a convention whose pick triggers a one-time setup

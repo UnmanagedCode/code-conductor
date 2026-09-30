@@ -68,6 +68,7 @@ export interface PluginBackend {
 export interface PluginFrontend {
   path: string;
   navLabel: string;
+  keepAlive: boolean;
 }
 
 export interface PluginMcpTool {
@@ -565,7 +566,7 @@ function validateFrontend(f: unknown, backend: PluginBackend | null, name: unkno
   const rec = f as Record<string, unknown>;
   if (!backend) errors.push("'frontend' requires 'backend'");
   for (const k of Object.keys(rec)) {
-    if (!['path', 'navLabel'].includes(k)) errors.push(`unknown key 'frontend.${k}'`);
+    if (!['path', 'navLabel', 'keepAlive'].includes(k)) errors.push(`unknown key 'frontend.${k}'`);
   }
   if (rec.path !== undefined && (typeof rec.path !== 'string' || !rec.path.startsWith('/'))) {
     errors.push("'frontend.path' must be a path starting with '/'");
@@ -573,9 +574,13 @@ function validateFrontend(f: unknown, backend: PluginBackend | null, name: unkno
   if (rec.navLabel !== undefined && (typeof rec.navLabel !== 'string' || rec.navLabel.trim() === '')) {
     errors.push("'frontend.navLabel' must be a non-empty string");
   }
+  if (rec.keepAlive !== undefined && typeof rec.keepAlive !== 'boolean') {
+    errors.push("'frontend.keepAlive' must be a boolean");
+  }
   return {
     path: typeof rec.path === 'string' ? rec.path : '/',
     navLabel: typeof rec.navLabel === 'string' && rec.navLabel.trim() !== '' ? rec.navLabel.trim() : (typeof name === 'string' ? name.trim() : ''),
+    keepAlive: rec.keepAlive === true,
   };
 }
 
