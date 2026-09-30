@@ -517,8 +517,9 @@ export class Conversation {
   }
 
   _appendCompactionBlock() {
-    // Inline, the way _renderSystem lands a note: no segment close, no group
-    // close — a mid-turn auto-compaction is a note the turn survives.
+    // A compaction bubble ends the assistant segment and its action group, so
+    // work after a mid-turn auto-compaction opens a new assistant bubble below it.
+    this._closeAssistantSegment();
     const block = new CompactionBlock();
     this.root.appendChild(block.node);
     return block;

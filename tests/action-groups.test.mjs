@@ -215,6 +215,8 @@ test('6 pins: every run-ender folds a trailing machinery run', async (t) => {
     ['user_echo', { kind: 'user_echo', text: 'next prompt', userIndex: 1 }],
     ['turn_end', { kind: 'turn_end', subtype: 'success' }],
     ['history_gap', { kind: 'history_gap' }],
+    ['status compacting', { kind: 'system', subtype: 'status', data: { status: 'compacting' } }],
+    ['compaction', { kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 }],
   ];
   for (const [name, closer] of CLOSERS) {
     await t.test(`${name} folds the trailing group`, async () => {
@@ -754,8 +756,6 @@ test('D4 pins: a process exit folds the accumulating group', async (t) => {
 test('D5 pins: a system note the turn survives does not collapse the group', async (t) => {
   const MID_RUN = [
     ['auto_resume', { kind: 'system', subtype: 'auto_resume', data: { count: 2 } }],
-    ['status compacting', { kind: 'system', subtype: 'status', data: { status: 'compacting' } }],
-    ['compaction', { kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 }],
     ['stderr', { kind: 'system', subtype: 'stderr', data: { line: 'a warning from the CLI' } }],
     ['cache_miss', { kind: 'system', subtype: 'cache_miss', data: { cacheCreation: 10, cacheRead: 2 } }],
   ];
