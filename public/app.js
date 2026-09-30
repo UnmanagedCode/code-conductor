@@ -423,10 +423,12 @@ const composer = attachComposer({
   onResize: () => conversation._maybeScroll(),
   // Lazy arrow: first fires on user input, after composerDrafts is initialised.
   onDraftChange: (d) => composerDrafts.noteChange(d),
+  claimTranscriptTarget: () => composerDrafts.claimTranscriptTarget(),
 });
 // Per-session composer drafts (public/drafts.js): selectInstance calls
 // composerDrafts.switchTo(sessionId) to save the outgoing text and load the
-// incoming session's.
+// incoming session's; it also swaps the pending attachments and routes a
+// dictation to the session it was started in.
 const composerDrafts = installComposerDrafts({ composer, store: createDraftStore() });
 
 // Per-session / per-project action helpers (promote / resume / load-sessions /
