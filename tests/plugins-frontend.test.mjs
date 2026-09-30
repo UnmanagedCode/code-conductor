@@ -233,8 +233,8 @@ test('pluginView: start failure shows the error + tail with a Retry button, not 
 const kaRow = (over = {}) => ({ state: 'ready', enabled: true, frontendKeepAlive: true, ...over });
 
 // Per-id rows, mutable between calls. A row may be the number 404 (unknown
-// id), 500 (server error) or 'network' (fetch rejects). /start marks the row
-// ready unless `startFails`.
+// id), 500 (server error), 'network' (fetch rejects) or 'unreadable' (a 200
+// whose body does not parse). /start marks the row ready unless `startFails`.
 function stubRowsApi(rows, { switcherRows = [], startFails = false, startResult } = {}) {
   const calls = [];
   const json = (status, body) => Promise.resolve({ ok: status < 400, status, json: async () => body });
@@ -244,6 +244,9 @@ function stubRowsApi(rows, { switcherRows = [], startFails = false, startResult 
     if (!m) return json(200, { rows: switcherRows, notices: [] });
     const row = rows[m[1]];
     if (row === 'network') return Promise.reject(new TypeError('Failed to fetch'));
+    if (row === 'unreadable') {
+      return Promise.resolve({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected end of JSON input'); } });
+    }
     if (typeof row === 'number') return json(row, { error: `HTTP ${row}` });
     if (m[2] === 'start') {
       if (startResult) return startResult;
@@ -361,6 +364,44 @@ test('pluginView: re-entry at a different non-root subpath posts navigate to the
   assert.equal(frame.getAttribute('src'), '/plugins/ka/', 'steered, not reloaded');
 });
 
+test('pluginView: re-entry at the frame\'s own tracked non-root route posts no navigate', async () => {
+  const { window, go, residentOf } = await setupKeepAlive({ ka: kaRow() });
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  const win = fakeContentWindow(frame);
+  postRoute(window, win, '/call/42');
+  await go('#');
+
+  await go('#plugin/ka/call/42');
+  assert.deepEqual(win.posted, [], 'the frame is already there');
+  assert.equal(window.location.hash, '#plugin/ka/call/42');
+});
+
+test('pluginView: a route message whose path lacks a leading slash is ignored', async (t) => {
+  await t.test('from a hidden frame', async () => {
+    const { window, go, residentOf } = await setupKeepAlive({ ka: kaRow() });
+    await go('#plugin/ka/');
+    const win = fakeContentWindow(residentOf('ka'));
+    postRoute(window, win, '/call/1');
+    await go('#session=abc');
+    postRoute(window, win, 'evil');
+    assert.equal(window.location.hash, '#session=abc', 'the hash is untouched while hidden');
+    await go('#plugin/ka/');
+    assert.equal(window.location.hash, '#plugin/ka/call/1', 'the tracked route is unchanged: re-entry lands on it, not on #plugin/kaevil');
+  });
+  await t.test('from the showing frame', async () => {
+    const { window, go, residentOf } = await setupKeepAlive({ ka: kaRow() });
+    await go('#plugin/ka/');
+    const win = fakeContentWindow(residentOf('ka'));
+    postRoute(window, win, '/call/1');
+    postRoute(window, win, 'evil');
+    assert.equal(window.location.hash, '#plugin/ka/call/1', 'not mirrored into the hash');
+    await go('#');
+    await go('#plugin/ka/');
+    assert.equal(window.location.hash, '#plugin/ka/call/1', 'not tracked either');
+  });
+});
+
 test('pluginView: A (keepAlive) → B (plain) → A keeps A\'s frame and blanks B\'s', async () => {
   const { window, view, go, residentOf } = await setupKeepAlive({ a: kaRow(), b: kaRow({ frontendKeepAlive: false }) });
   const visibleFrames = () => [...view.querySelectorAll('iframe')].filter(f => !f.hidden);
@@ -451,13 +492,14 @@ test('pluginView: reconcile evicts a resident frame whose row no longer qualifie
   }
 });
 
-test('pluginView: reconcile keeps the frame on crashed / failed / starting / a server or network error', async (t) => {
+test('pluginView: reconcile keeps the frame on crashed / failed / starting / a server, network or unreadable-body error', async (t) => {
   const cases = [
     ['crashed', kaRow({ state: 'crashed' })],
     ['failed', kaRow({ state: 'failed' })],
     ['starting', kaRow({ state: 'starting' })],
     ['500', 500],
     ['network error', 'network'],
+    ['a 200 whose body does not parse', 'unreadable'],
   ];
   for (const [label, row] of cases) {
     await t.test(label, async () => {
@@ -514,18 +556,19 @@ test('pluginView: reconcile keeps a frame through a crash, a lazy restart, and a
   }
 });
 
-test('pluginView: reconcile evicting the showing frame loads the plugin afresh', async () => {
+test('pluginView: reconcile evicting the showing frame does not /start or reload it', async () => {
   const rows = { ka: kaRow() };
   const { go, calls, residentOf, pv } = await setupKeepAlive(rows);
   await go('#plugin/ka/');
   const frame = residentOf('ka');
   rows.ka = kaRow({ state: 'stopped' });
+  const before = calls.length;
   await pv.reconcile();
   await tick();
   assert.equal(frame.isConnected, false);
-  assert.ok(calls.includes('POST /api/plugins/ka/start'), 'the plain path auto-starts the stopped plugin');
-  const fresh = residentOf('ka');
-  assert.ok(fresh && fresh !== frame && fresh.hidden === false);
+  assert.deepEqual(calls.slice(before), ['GET /api/plugins/ka/status'], 'its own status read only: no /start, no fresh load');
+  assertNull(residentOf('ka'), 'no replacement frame');
+  assert.deepEqual(pv.residentIds(), []);
 });
 
 test('pluginView: re-entry\'s background check evicts and reloads when the row is disabled', async () => {
@@ -1604,6 +1647,39 @@ test('appSwitcher + pluginView: the marker appears on first entry and clears whe
   rows.ka = kaRow({ enabled: false, state: 'disabled' });
   await pluginView.reconcile();
   assert.equal(label(), 'Keep', 'eviction clears the marker');
+});
+
+// ── app.js wiring: onPluginsChanged, lifted from the real source ──────────
+// app.js cannot be imported (it wires the whole page at load), so its
+// `onPluginsChanged:` handler — the one installSettings calls after every
+// Settings → Plugins action — is sliced out of the source and run against the
+// REAL pluginView + appSwitcher, as tests/app-refresh-projects-wiring.test.mjs
+// does for refreshProjects().
+async function loadAppOnPluginsChanged() {
+  const src = await fs.readFile(path.join(PUB, 'app.js'), 'utf8');
+  const hits = [...src.matchAll(/^\s*onPluginsChanged:\s*(.+?),\s*$/gm)];
+  assert.equal(hits.length, 1, 'app.js\'s single-line `onPluginsChanged:` handler was renamed, reshaped or duplicated; update this slice');
+  return new Function('appSwitcher', 'pluginView', `return (${hits[0][1]});`);
+}
+
+test('app.js onPluginsChanged: a Settings action\'s change reaches reconcile and evicts only the plugin it names', async (t) => {
+  for (const [label, ids, evicted] of [['naming ka', ['ka'], true], ['naming another plugin', ['other'], false]]) {
+    await t.test(label, async () => {
+      const { go, residentOf, pv, window } = await setupKeepAlive({ ka: kaRow() });
+      buildSwitcherDom(window.document);
+      const { installAppSwitcher } = await freshImport('appSwitcher.js');
+      const appSwitcher = installAppSwitcher({ residentIds: () => pv.residentIds() });
+      const onPluginsChanged = (await loadAppOnPluginsChanged())(appSwitcher, pv);
+      await go('#plugin/ka/');
+      const frame = residentOf('ka');
+      await go('#settings');
+
+      onPluginsChanged({ action: 'restart', ids });
+      await tick();
+      assert.equal(frame.isConnected, !evicted);
+      assert.deepEqual(pv.residentIds(), evicted ? [] : ['ka']);
+    });
+  }
 });
 
 // ── app.js wiring: switcher selection after a round-trip ──────────────────

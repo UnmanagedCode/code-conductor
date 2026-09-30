@@ -31,6 +31,10 @@
 // `running`, its currentTime advanced ≥ 0.9·H, non-zero RMS samples advanced.
 // requestAnimationFrame callbacks are reported, not gated.
 //
+// `--hold 330` measures that the frame stays live for 330 s under a
+// `display: none` ancestor with the flags above on; it says nothing about
+// Chrome's default throttling policy.
+//
 //   node harness/playwright/check-plugin-keepalive.mjs [--hold <seconds>]
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

@@ -21,13 +21,16 @@
 //   - a keep-alive plugin gets its own resident frame on first show. Leaving
 //     only hides it (the section's `hidden`), so its page — a call, a stream —
 //     keeps running; re-entry reveals it with no /start and no src change.
-//     Re-entry at `/` (what the app switcher writes) keeps the frame's own
-//     route and rewrites the hash to it; any other subpath is posted as a
-//     `navigate`. A resident frame is evicted (removed, ending its page) only
-//     when its row stops passing `keepsResident` — checked in the background on
-//     re-entry and by `reconcile()`, which app.js runs after every Settings →
-//     Plugins action — or when that action is one of `EVICTING_ACTIONS` on it. `onResidentChange` fires whenever the resident set
-//     changes (app.js re-renders the switcher's marker off `residentIds()`).
+//     Re-entry at `/` (what the app switcher writes) or at the frame's own
+//     route keeps that route and rewrites the hash to it; any other subpath is
+//     posted as a `navigate`. A resident frame is evicted (removed, ending its
+//     page) only when its row stops passing `keepsResident` — checked in the
+//     background on re-entry and by `reconcile()`, which app.js runs after
+//     every Settings → Plugins action — or when that action is one of
+//     `EVICTING_ACTIONS` on it. `reconcile()` only evicts; the next entry
+//     loads the plugin the plain way. `onResidentChange` fires whenever the
+//     resident set changes (app.js re-renders the switcher's marker off
+//     `residentIds()`).
 //
 // Navigation via replaceState/pushState never fires hashchange, so the
 // hashchange teardown can't cover it: another main view opening, or a sidebar
@@ -50,7 +53,7 @@ const HASH_RE = /^#plugin\/([a-z][a-z0-9-]*)(\/.*)?$/;
 // unfamiliar state evicts.
 const RESIDENT_STATES = ['starting', 'ready', 'crashed', 'failed'];
 // The Settings → Plugins actions that put new code under a plugin: the user
-// asked for it, so its page is reloaded rather than kept on the old code.
+// asked for it, so its page is evicted rather than kept on the old code.
 const EVICTING_ACTIONS = ['restart', 'update', 'version'];
 
 function keepsResident(row) {
@@ -116,13 +119,16 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
 
   async function api(method, path) {
     const r = await fetch(path, { method, cache: 'no-store' });
-    const data = await r.json().catch(() => ({}));
+    const data = await r.json().catch(() => null);
     if (!r.ok) {
-      const e = new Error(data.error || `HTTP ${r.status}`);
-      e.tail = data.tail;
+      const e = new Error(data?.error || `HTTP ${r.status}`);
+      e.tail = data?.tail;
       e.status = r.status;
       throw e;
     }
+    // A success whose body does not parse is a failed read, not an empty row
+    // (which would read as "no longer resident").
+    if (data === null) throw new Error(`unreadable response (HTTP ${r.status})`);
     return data;
   }
 
@@ -255,7 +261,9 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
     if (!record) return;
     const d = ev.data;
     if (!d || d.cc !== 1) return;
-    if (d.type === 'route' && typeof d.path === 'string') {
+    // A path without its leading slash would splice into the id part of
+    // `#plugin/<id><path>` and name a different plugin.
+    if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
       record.subpath = d.path;
       // replaceState: mirrors the child's route into the URL without adding
       // history entries and without firing hashchange (no reload loop).
@@ -267,15 +275,13 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
   // Re-check every resident frame against its row, after a Settings →
   // Plugins action (`change` = {action, ids} from pluginManager.js, or
   // undefined). One that no longer qualifies, or that the action put new code
-  // under, is evicted — and reloaded the plain way when it is showing.
+  // under, is evicted. Evict only — never reload: the next entry loads the
+  // plugin the plain way, so an eviction can never turn into an auto-start.
   async function reconcile(change) {
     const renewed = EVICTING_ACTIONS.includes(change?.action) ? change.ids : [];
     await Promise.all([...resident.values()].map(async (record) => {
       if (!renewed.includes(record.id) && await stillResident(record.id)) return;
-      const showing = current === record;
       evict(record);
-      const target = showing ? parseHash(location.hash) : null;
-      if (target) load(target);
     }));
   }
 
