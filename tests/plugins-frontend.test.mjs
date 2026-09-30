@@ -259,8 +259,8 @@ function stubRowsApi(rows, { switcherRows = [], startFails = false, startResult 
   return calls;
 }
 
-async function setupKeepAlive(rows, opts) {
-  const window = makeWindow('http://localhost/#');
+async function setupKeepAlive(rows, opts, url = 'http://localhost/#') {
+  const window = makeWindow(url);
   installBrowserHashSemantics(window);
   const { view } = buildViewDom(window.document);
   const calls = stubRowsApi(rows, opts);
@@ -316,6 +316,20 @@ test('pluginView: a keepAlive plugin\'s frame survives leaving the space — hid
   assert.equal(closed(), 2);
   assert.ok(residentOf('ka') === frame && frame.isConnected, 'supersede keeps the node too');
   assert.equal(frame.getAttribute('src'), '/plugins/ka/');
+});
+
+test('pluginView: a keepAlive plugin entered cold at a non-root subpath mounts its frame there', async (t) => {
+  await t.test('boot directly on the hash', async () => {
+    const { residentOf, window } = await setupKeepAlive({ ka: kaRow() }, undefined, 'http://localhost/#plugin/ka/call/7');
+    await window.happyDOM.waitUntilComplete();
+    await tick();
+    assert.equal(residentOf('ka').getAttribute('src'), '/plugins/ka/call/7');
+  });
+  await t.test('enter by hash', async () => {
+    const { go, residentOf } = await setupKeepAlive({ ka: kaRow() });
+    await go('#plugin/ka/call/7');
+    assert.equal(residentOf('ka').getAttribute('src'), '/plugins/ka/call/7');
+  });
 });
 
 test('pluginView: re-entering a resident plugin issues no /start and sets no src', async () => {
@@ -1614,7 +1628,20 @@ test('appSwitcher: a resident plugin\'s option carries the running marker, re-re
   assert.deepEqual(labels(), ['Conductor', 'Live', 'Plain']);
 });
 
-test('appSwitcher + pluginView: the marker appears on first entry and clears when reconcile evicts', async () => {
+// ── app.js wiring, lifted from the real source ─────────────────────────────
+// app.js cannot be imported (it wires the whole page at load), so the
+// single-line handlers it passes to installPluginView / installSettings are
+// sliced out of the source and run against the REAL pluginView + appSwitcher,
+// as tests/app-refresh-projects-wiring.test.mjs does for refreshProjects().
+// `params` names the app.js bindings the expression closes over.
+async function loadAppHandler(name, params) {
+  const src = await fs.readFile(path.join(PUB, 'app.js'), 'utf8');
+  const hits = [...src.matchAll(new RegExp(`^\\s*${name}:\\s*(.+?),\\s*$`, 'gm'))];
+  assert.equal(hits.length, 1, `app.js's single-line \`${name}:\` handler was renamed, reshaped or duplicated; update this slice`);
+  return new Function(...params, `return (${hits[0][1]});`);
+}
+
+test('app.js onResidentChange: the switcher marker appears on first entry and clears when reconcile evicts', async () => {
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   const { select } = buildSwitcherDom(window.document);
@@ -1624,12 +1651,12 @@ test('appSwitcher + pluginView: the marker appears on first entry and clears whe
   const { installPluginView } = await freshImport('pluginView.js');
   const { installAppSwitcher, RESIDENT_SUFFIX } = await freshImport('appSwitcher.js');
 
-  // app.js's wiring, authored here (app.js itself cannot be loaded).
+  // app.js installs pluginView before appSwitcher exists, so the sliced
+  // handler closes over a forwarder to the switcher installed below.
   let appSwitcher = null;
-  const pluginView = installPluginView({
-    onClosed: () => appSwitcher?.sync(),
-    onResidentChange: () => appSwitcher?.render(),
-  });
+  const lateSwitcher = new Proxy({}, { get: (_t, k) => appSwitcher[k].bind(appSwitcher) });
+  const onResidentChange = (await loadAppHandler('onResidentChange', ['appSwitcher']))(lateSwitcher);
+  const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync(), onResidentChange });
   appSwitcher = installAppSwitcher({ residentIds: () => pluginView.residentIds() });
   await appSwitcher.refresh();
   const label = () => select.querySelector('option[value="ka"]').textContent;
@@ -1649,19 +1676,6 @@ test('appSwitcher + pluginView: the marker appears on first entry and clears whe
   assert.equal(label(), 'Keep', 'eviction clears the marker');
 });
 
-// ── app.js wiring: onPluginsChanged, lifted from the real source ──────────
-// app.js cannot be imported (it wires the whole page at load), so its
-// `onPluginsChanged:` handler — the one installSettings calls after every
-// Settings → Plugins action — is sliced out of the source and run against the
-// REAL pluginView + appSwitcher, as tests/app-refresh-projects-wiring.test.mjs
-// does for refreshProjects().
-async function loadAppOnPluginsChanged() {
-  const src = await fs.readFile(path.join(PUB, 'app.js'), 'utf8');
-  const hits = [...src.matchAll(/^\s*onPluginsChanged:\s*(.+?),\s*$/gm)];
-  assert.equal(hits.length, 1, 'app.js\'s single-line `onPluginsChanged:` handler was renamed, reshaped or duplicated; update this slice');
-  return new Function('appSwitcher', 'pluginView', `return (${hits[0][1]});`);
-}
-
 test('app.js onPluginsChanged: a Settings action\'s change reaches reconcile and evicts only the plugin it names', async (t) => {
   for (const [label, ids, evicted] of [['naming ka', ['ka'], true], ['naming another plugin', ['other'], false]]) {
     await t.test(label, async () => {
@@ -1669,7 +1683,7 @@ test('app.js onPluginsChanged: a Settings action\'s change reaches reconcile and
       buildSwitcherDom(window.document);
       const { installAppSwitcher } = await freshImport('appSwitcher.js');
       const appSwitcher = installAppSwitcher({ residentIds: () => pv.residentIds() });
-      const onPluginsChanged = (await loadAppOnPluginsChanged())(appSwitcher, pv);
+      const onPluginsChanged = (await loadAppHandler('onPluginsChanged', ['appSwitcher', 'pluginView']))(appSwitcher, pv);
       await go('#plugin/ka/');
       const frame = residentOf('ka');
       await go('#settings');

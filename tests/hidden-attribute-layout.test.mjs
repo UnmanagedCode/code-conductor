@@ -201,6 +201,7 @@ test('nothing in index.html lays out while carrying the hidden attribute', async
 // declare no `display`, or a hidden resident frame renders over (or beside) the
 // visible one.
 const JS_BUILT_HIDDEN = [
+  ['plugin-view', '<div id="plugin-overlay" hidden></div>'],
   ['plugin-view', '<iframe id="plugin-frame" hidden></iframe>'],
   ['plugin-view', '<iframe class="plugin-frame-resident" data-plugin-id="ka" hidden></iframe>'],
 ];

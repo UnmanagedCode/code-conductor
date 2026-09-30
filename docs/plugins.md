@@ -80,9 +80,9 @@
 
 - **Without it** the plugin shares the one `#plugin-frame`: leaving the view, or switching to another plugin, blanks it (`about:blank`) and ends the page.
 - **With it** the plugin gets its **own resident frame** (`iframe.plugin-frame-resident[data-plugin-id=<id>]`), created on first show — an unvisited keep-alive plugin costs nothing. Every exit (hash leaving `#plugin/`, a Settings / session / other-view supersede, the switcher's Conductor entry) only hides it with the section; a switch to another plugin hides it too. It is never moved in the DOM, which would reload it.
-- **Re-entry** reveals the same page: no `POST /start`, no `src` change. At subpath `/` — what the switcher writes — the frame keeps its own route and the hash is `replaceState`d to `#plugin/<id><its route>`; any other subpath is sent as a bridge `navigate`. A hidden frame's `route` messages update its tracked route but never the URL.
+- **Re-entry** reveals the same page: no `POST /start`, no `src` change. At subpath `/` — what the switcher writes — or at the frame's own tracked route, the frame keeps its route, no `navigate` is posted, and the hash is `replaceState`d to `#plugin/<id><its route>`; only a subpath that is neither is sent as a bridge `navigate`. A hidden frame's `route` messages update its tracked route but never the URL.
 - **Eviction** (the frame is removed, ending its page — media tracks, sockets, timers) happens in two cases:
-  - the row stops passing `keepsResident` in `public/pluginView.js`: disabled, keep-alive dropped, a state outside its allowlist (`stopped`, `invalid`, …), or the status route answering 404. Checked in the background on every re-entry (the reveal never waits on it) and by `reconcile()` after every Settings → Plugins action (app.js's `onPluginsChanged`). A network error or a 5xx keeps the frame.
+  - the row stops passing `keepsResident` in `public/pluginView.js`: disabled, keep-alive dropped, a state outside its allowlist (`stopped`, `invalid`, …), or the status route answering 404. Checked in the background on every re-entry (the reveal never waits on it) and by `reconcile()` after every Settings → Plugins action (app.js's `onPluginsChanged`). Only a 404 evicts on a failed read: a network error, a 5xx, or a 200 whose body does not parse keeps the frame.
   - a Settings → Plugins action in this tab put new code under the plugin — one of `EVICTING_ACTIONS` in `public/pluginView.js`: **Restart**, **Update** (every plugin in the updated project) and a **version switch**. `public/pluginManager.js` reports the action as `onCatalogChange({action, ids})`, which `settings.js` → app.js pass to `reconcile(change)` unchanged.
 
   `reconcile()` only evicts, never reloads: the next entry loads the plugin the plain way (auto-start, error overlay + Retry). The re-entry check runs as the user enters, so it loads the plugin that way at once.
@@ -143,7 +143,7 @@ Plugin frontends include `<script src="/pluginBridge.js" defer></script>` (serve
 | Direction | Type | Payload | Meaning |
 |---|---|---|---|
 | child → parent | `ready` | — | bridge alive (initial `route` follows) |
-| child → parent | `route` | `{path}` | child-relative path (incl. search+hash); parent mirrors it into `#plugin/<id><path>` via `replaceState` |
+| child → parent | `route` | `{path}` | child-relative path (incl. search+hash), which **must begin with `/`** — the parent ignores a `route` whose path does not; parent mirrors it into `#plugin/<id><path>` via `replaceState` |
 | parent → child | `navigate` | `{path}` | external navigation; bridge `replaceState`s `<prefix><path>` and dispatches a synthetic `popstate` |
 
 Inside the iframe the bridge patches `history.pushState` → `replaceState`, so a plugin visit adds exactly one joint-history entry (hardware Back exits to the conductor). Multi-page plugins bypass this and pollute history.
@@ -278,5 +278,5 @@ Two edges, both deliberate:
 5. A `healthPath` endpoint (any HTTP response counts as alive).
 6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas. Return `{result}` for structured data; return `{text, meta?}` when the tool's output is prose/diff/file content that should reach the caller un-escaped (`text` wins if both are sent; `meta` alone, without `text`, is dropped).
 7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
-8. A `frontend.keepAlive` page stays up while its backend crashes and is lazily restarted under it — reconnect rather than assume the backend it loaded against. (An explicit Restart, Update or version switch reloads the page.)
+8. A `frontend.keepAlive` page stays up while its backend crashes and is lazily restarted under it — reconnect rather than assume the backend it loaded against. (An explicit Restart, Update or version switch from Settings → Plugins evicts the page; the next entry loads it afresh.)
 9. If a convention's fragment depends on something its `scaffold` facet sets up, **word the fragment to degrade gracefully** when the scaffold step wasn't run — the picked convention may land in a project where the setup directive was never carried out (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one").
