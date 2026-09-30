@@ -138,6 +138,20 @@ test('claudeContextWindowTokens reports one capacity per version, null when unkn
   assert.equal(claudeContextWindowTokens(null), null);
 });
 
+test('the API\'s dated snapshot id canonicalizes to its catalog version, and resolves its capacity', () => {
+  const dated = 'claude-haiku-4-5-20251001';
+  assert.equal(canonicalizeModel(dated, CLAUDE_BACKEND_ID), 'claude-haiku-4-5');
+  assert.equal(claudeContextWindowTokens(dated), 200_000);
+  assert.equal(resolveContextWindowTokens({ backend: CLAUDE_BACKEND_ID, model: dated }), 200_000);
+  // The version's launch tag still applies after the snapshot suffix is mapped.
+  assert.equal(canonicalizeModel('claude-sonnet-4-5-20250929', CLAUDE_BACKEND_ID), 'claude-sonnet-4-5[1m]');
+  // Unknown stays unknown: no catalog version to map to, no fabricated capacity.
+  assert.equal(canonicalizeModel('claude-future-9-20270101', CLAUDE_BACKEND_ID), 'claude-future-9-20270101');
+  assert.equal(claudeContextWindowTokens('claude-future-9-20270101'), null);
+  // The gate is the BACKEND: a substitution backend keeps the id byte-exact.
+  assert.equal(canonicalizeModel(dated, 'my-proxy'), dated);
+});
+
 test('resolveContextWindowTokens dispatches on backend and needs the EXACT substitution id', async () => {
   await addBackend({ id: 'codex', label: 'Codex', template: 'codexctl run claude --model {model} --', env: [] });
   await addCustomModel({ label: 'Sol', model: 'gpt-5.6-sol[1m]', backend: 'codex', contextWindow: 1_000_000 });
@@ -463,47 +477,88 @@ test('a live model switch moves capacity to the new model', async () => {
   assert.equal(inst.contextWindowTokens, 200_000, 'capacity must follow the switch downward');
 });
 
-test('a live switch to an out-of-catalog id nulls capacity rather than retaining the old model\'s', async () => {
+// Invariant: a live switch from a known window to an UNKNOWN one holds the
+// previous window (a populated, possibly mislabelled denominator rather than
+// `ctx —`), and a later switch to a KNOWN model takes that model's window.
+test('a live switch to an out-of-catalog id keeps the previous known window', async () => {
   const { id } = await spawnAndDump('claude-haiku-4-5', { project: 'sw-b' });
   const inst = instances.get(id);
   assert.equal(inst.contextWindowTokens, 200_000);
 
   // A `claude-*` id the catalog doesn't know (a model shipped after this build).
   inst._trackModel('claude-future-9');
-  assert.equal(inst.model, 'claude-future-9');
-  // Retaining 200_000 here would publish the PREVIOUS model's window as this
-  // model's measured denominator — `ctx 95% · 190k/200k` on a possibly-1M model.
-  // Unknown must render as unknown.
-  assert.equal(inst.contextWindowTokens, null,
-    'an unresolvable window is null, never the outgoing model\'s number');
+  assert.equal(inst.model, 'claude-future-9', 'the switch itself is still recorded');
+  assert.equal(resolveContextWindowTokens({ backend: CLAUDE_BACKEND_ID, model: inst.model }), null,
+    'premise: the new model\'s own window is unknown');
+  assert.equal(inst.contextWindowTokens, 200_000,
+    'an unknown window carries the previous known one over rather than nulling');
+  assert.equal(inst.summary().contextWindowTokens, 200_000, 'the chip\'s denominator is the carried value');
+
+  // A second unknown id changes nothing further.
+  inst._trackModel('claude-future-10');
+  assert.equal(inst.contextWindowTokens, 200_000);
+
+  // A known model always takes its own window, whatever was carried.
+  inst._trackModel('claude-sonnet-5');
+  assert.equal(inst.contextWindowTokens, 1_000_000, 'known → takes the new model\'s window, not the carried one');
 });
 
-test('setModel ACCEPTS an out-of-catalog Claude id and reports its capacity as unknown', async () => {
-  const { id } = await spawnAndDump('claude-haiku-4-5', { project: 'sw-c' });
+test('setModel to an out-of-catalog Claude id keeps the previous known window', async () => {
+  // Spawned on the scenario's own init model and warmed with one turn: an
+  // un-prompted instance's prelude `system/init` would otherwise land INSIDE
+  // setModel's control round-trip and switch the model under the assertions.
+  const { id } = await spawnAndDump('claude-sonnet-4-6', { project: 'sw-c' });
   const inst = instances.get(id);
-  assert.equal(inst.contextWindowTokens, 200_000);
+  await inst.prompt('go');
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.contextWindowTokens, 1_000_000);
 
   // A model Anthropic ships before this build's catalog learns it. Accepted on a
   // name-prefix test, deliberately: refusing would force a kill-and-respawn to
   // use it, and would contradict `spawn_instance`, which already accepts such an
-  // id. Safety comes from capacity, not from the validator —
+  // id. The session keeps the window it already had —
   await inst.setModel('claude-opus-9');
   assert.equal(inst.model, 'claude-opus-9', 'the switch goes through');
-  // — the outgoing model's 200_000 must NOT be retained. Unknown renders `ctx —`;
-  // keeping the old number would publish it as this model's measured cap.
-  assert.equal(inst.contextWindowTokens, null,
-    'an uncatalogued id has unknown capacity, never the previous model\'s');
+  assert.equal(inst.contextWindowTokens, 1_000_000,
+    'the UI switch path carries the previous known window over, same as the CLI-reported one');
 
-  // A catalogued id still resolves its own window, so the null above is a real
-  // "we don't know" rather than the resolver having broken.
+  // A catalogued id still resolves its own window, not the carried one.
+  await inst.setModel('claude-haiku-4-5');
+  assert.equal(inst.model, 'claude-haiku-4-5');
+  assert.equal(inst.contextWindowTokens, 200_000);
   await inst.setModel('claude-sonnet-4-6');
   assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'the launch tag is applied server-side');
-  assert.equal(inst.contextWindowTokens, 1_000_000);
 
   // A non-Claude-shaped id is still refused — the prefix test is a shape check,
   // not an absence of validation.
   await assert.rejects(() => inst.setModel('gpt-5.6-sol'), /invalid model/);
   assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'the refused switch changes nothing');
+  assert.equal(inst.contextWindowTokens, 1_000_000);
+});
+
+// Invariant: the carry-over needs a PRIOR window. A session created on an
+// unknown model, and one cold-resumed onto it, both read null; only a live
+// switch carries.
+test('a create or resume on an unknown model still reads null capacity', async () => {
+  const { id, summary } = await spawnAndDump('claude-future-9', { project: 'unk-r' });
+  assert.equal(summary.contextWindowTokens, null, 'create: no prior value, so unknown stays unknown');
+
+  const inst = instances.get(id);
+  const sessionId = inst.backingSessionId;
+  const sessionDir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(path.join(process.env.PROJECTS_ROOT, 'unk-r')));
+  await fs.mkdir(sessionDir, { recursive: true });
+  await fs.writeFile(path.join(sessionDir, `${sessionId}.jsonl`),
+    JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n'
+    + JSON.stringify({ type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', model: 'claude-future-9', content: [{ type: 'text', text: 'hello' }] } }) + '\n');
+  await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+  await waitFor(() => !instances.get(id) || !instances.get(id).proc);
+
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'unk-r', mode: 'bypassPermissions', resume: sessionId,
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.model, 'claude-future-9', 'premise: the resume recovers the unknown model');
+  assert.equal(r.body.contextWindowTokens, null, 'resume: still unknown, nothing to carry');
 });
 
 
@@ -532,4 +587,29 @@ test('adopting the account-default model pushes a summary so the chip is not `ct
   assert.equal(statuses.length, 1, 'the summary must be pushed on adoption');
   assert.equal(statuses[0].contextWindowTokens, 200_000,
     'the pushed summary carries the newly-known capacity');
+});
+
+// Invariant: a capacity refresh that is not a live switch, from a finite window
+// onto a model whose window resolves to null, reads null. The carry is opt-in
+// per live-switch caller — (a) the default `_refreshModelCapabilities()` and
+// (b) `_trackModel`'s silent-adoption branch resolve exactly. Production never
+// holds a finite window with a null model, so the state is seeded directly.
+test('a refresh that is not a live switch resolves exactly: a finite window onto an unknown model reads null', () => {
+  const build = (model) => new Instance({
+    id: 'nc', project: 'p', cwd: '/tmp/p', mode: 'plan', effort: 'high',
+    thinking: 'adaptive', model, contextWindowTokens: 200_000, backend: CLAUDE_BACKEND_ID,
+  });
+
+  // (a) the default path of the refresh.
+  const direct = build('claude-future-9');
+  assert.equal(direct.contextWindowTokens, 200_000, 'premise: a finite window is held');
+  direct._refreshModelCapabilities();
+  assert.equal(direct.contextWindowTokens, null, 'the default refresh does not carry the held window');
+
+  // (b) silent adoption: the model was unknown, the report names an unknown one.
+  const adopted = build(null);
+  assert.equal(adopted.contextWindowTokens, 200_000, 'premise: a finite window is held');
+  adopted._trackModel('claude-future-9');
+  assert.equal(adopted.model, 'claude-future-9', 'premise: the report was adopted');
+  assert.equal(adopted.contextWindowTokens, null, 'adoption does not carry the held window');
 });

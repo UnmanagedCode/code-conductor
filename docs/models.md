@@ -385,7 +385,20 @@ single place capacity is resolved: it dispatches on `backend` to either
 backend's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 `summary()`, the MCP projection, the header ctx chip, forks, and the resume
 manifest. **Unknown capacity is `null` and renders as `ctx —`** — never a
-fabricated default.
+fabricated default — except that a live model switch to an unknown model keeps
+the window the session already held (first bullet below).
+
+- **A live switch carries a known window over an unknown one.** On a live
+  switch of a running session (`_trackModel`'s real-switch branch and
+  `setModel`, both via `_refreshModelCapabilities({carryKnownWindow: true})`),
+  a new model whose window resolves to `null` leaves `contextWindowTokens` at
+  the value the session already held; a new model whose window is known takes
+  that window. The carried number can mislabel capacity (a Haiku session
+  switched to an unrecognised 1M-class id keeps `200k`) — accepted so the chip
+  stays populated. The rule needs a prior value: a create, a cold resume and
+  `_trackModel`'s silent-adopt branch resolve exactly, so a session that starts
+  on an unknown model reads `null`. The `model_changed` notice and the
+  context-reading drop are unaffected — only the denominator carries.
 
 - **The substitution denominator is static.** Nothing in `src/` reads an Ollama
   `num_ctx`; the window is the custom-model row's `contextWindow`, else
@@ -422,12 +435,17 @@ instead of stopping it.
 
 ### Canonicalization is gated on `backend`
 
-`canonicalizeModel(modelId, backend)` applies the launch tag. `backend` is a
+`canonicalizeModel(modelId, backend)` maps a reported id to its catalog id and applies the launch tag. `backend` is a
 **required positional**, and that gate is the only reason this is a no-op for a
 substitution model — *not* `familyOf()` returning null:
 
-- `backend === 'claude'` → strip any terminal tag, re-apply the catalog
-  `launchTag`. This is also what re-tags the bare id recovered from a jsonl on a
+- `backend === 'claude'` → strip any terminal tag, map a dated snapshot suffix
+  (`-YYYYMMDD`, how the API reports a catalog version in `message_start` and the
+  jsonl, e.g. `claude-haiku-4-5-20251001`) to that version's catalog id, then
+  re-apply the catalog `launchTag`. An unknown dated id stays verbatim with
+  unknown capacity. The mapping is what keeps the CLI's per-turn `system/init`
+  (catalog id) and the API's `message_start` (snapshot id) from registering as a
+  model switch. This is also what re-tags the bare id recovered from a jsonl on a
   cold resume, so each model comes back at its own native window.
 - any other backend → the id is returned **byte-exact**. A substitution model id
   is an opaque registry key that may legitimately end in `[1m]` or look
