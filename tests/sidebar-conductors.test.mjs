@@ -859,6 +859,12 @@ test('styles.css: the strip × is drawn inside its entry\'s full-row box (out of
     assert.equal(of('.strip-entry:hover:not(:disabled)').length, 0,
       'no rule still fills on the entry button\'s own :hover');
   });
+
+  // Invariant: the global button:hover fill must not paint a rectangle on the × inside the entry's rounded, outlined box.
+  await t.test('the × keeps a transparent background on hover', () => {
+    assert.ok(any(`${closeSel}:hover:not(:disabled)`, 'background', 'transparent'),
+      `a rule for ${closeSel}:hover:not(:disabled) sets background: transparent`);
+  });
 });
 
 const expandA = (conductorList) => {
