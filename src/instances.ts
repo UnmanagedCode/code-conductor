@@ -1187,7 +1187,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       model: this.model,
       // Server-resolved context capacity (raw tokens) or null when unknown. The
       // client renders this denominator verbatim and never derives one itself —
-      // it can't, since the API reports a bare model id in message_start and a
+      // it can't, since the API reports a dated snapshot id in message_start and a
       // substitution model's id is opaque.
       contextWindowTokens: this.contextWindowTokens,
       backend: this.backend,

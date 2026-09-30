@@ -42,7 +42,7 @@ const readJsonl = async (name) =>
 let seq = 0;
 const apply = (conv, ev) => conv.apply({ ...ev, _seq: ++seq });
 
-// A genuine-switch shape the renderer must tolerate: `_trackModel` emits `model_changed` just before the re-init.
+// A notice shape the renderer must tolerate, not one cc emits for this model pair: `_trackModel` canonicalizes a dated id to its catalog id, so it never announces this `from`/`to`.
 const MODEL_CHANGED = { kind: 'system', subtype: 'model_changed', data: { from: 'claude-haiku-4-5-20251001', to: 'claude-haiku-4-5' } };
 
 function feedFrames(conv, parser, frames) {

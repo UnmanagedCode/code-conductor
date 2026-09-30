@@ -422,7 +422,7 @@ instead of stopping it.
 
 ### Canonicalization is gated on `backend`
 
-`canonicalizeModel(modelId, backend)` applies the launch tag. `backend` is a
+`canonicalizeModel(modelId, backend)` maps a reported id to its catalog id and applies the launch tag. `backend` is a
 **required positional**, and that gate is the only reason this is a no-op for a
 substitution model — *not* `familyOf()` returning null:
 
