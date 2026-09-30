@@ -387,6 +387,18 @@ backend's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 manifest. **Unknown capacity is `null` and renders as `ctx —`** — never a
 fabricated default.
 
+- **A live switch carries a known window over an unknown one.** On a live
+  switch of a running session (`_trackModel`'s real-switch branch and
+  `setModel`, both via `_refreshModelCapabilities({carryKnownWindow: true})`),
+  a new model whose window resolves to `null` leaves `contextWindowTokens` at
+  the value the session already held; a new model whose window is known takes
+  that window. The carried number can mislabel capacity (a Haiku session
+  switched to an unrecognised 1M-class id keeps `200k`) — accepted so the chip
+  stays populated. The rule needs a prior value: a create, a cold resume and
+  `_trackModel`'s silent-adopt branch resolve exactly, so a session that starts
+  on an unknown model reads `null`. The `model_changed` notice and the
+  context-reading drop are unaffected — only the denominator carries.
+
 - **The substitution denominator is static.** Nothing in `src/` reads an Ollama
   `num_ctx`; the window is the custom-model row's `contextWindow`, else
   `OLLAMA_CLOUD_MODELS` (`src/ollamaCloudModels.ts`), else `null`.

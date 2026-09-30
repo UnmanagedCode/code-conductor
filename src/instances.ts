@@ -1694,9 +1694,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.model) {
       const from = this.model;
       this.model = canonical;
-      // Capacity is a function of the model, so it must move with it — a stale
-      // denominator survives as a wrong ctx% for the rest of the session.
-      this._refreshModelCapabilities();
+      // Capacity is a function of the model, so it must move with it — to a
+      // known model's window, or held at the previous one when the new model's
+      // is unknown (see _refreshModelCapabilities).
+      this._refreshModelCapabilities({ carryKnownWindow: true });
       // The cache is model-specific, so a switch legitimately shrinks/invalidates
       // the prefix; re-baseline next turn instead of flagging a cross-turn miss.
       this._prefixBaselineInvalid = true;
@@ -1745,15 +1746,17 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to } });
   }
 
-  // Re-resolve capacity from the current {backend, model}, INCLUDING null.
+  // Re-resolve capacity from the current {backend, model}.
   //
-  // Every caller runs because `this.model` just changed, so an unresolvable
-  // window means "we don't know this new model's capacity" — never "the old
-  // number is still roughly right". Retaining it publishes the previous model's
-  // window as this model's measured denominator: a Haiku session switched to an
-  // out-of-catalog 1M-class id would read `ctx 95% · 190k/200k`, and the reverse
-  // `ctx 30% · 300k/1M` on a session already past its real cap. Unknown must
-  // render as unknown (`ctx —`), which is the whole point of the field.
+  // `carryKnownWindow` is passed by the two LIVE-switch sites only. When the new
+  // model's window resolves to unknown and the session already holds a known one,
+  // the known one is kept: a wrong-but-populated denominator is the accepted
+  // trade against a chip stuck on `ctx —` after switching to a model the catalog
+  // hasn't learned. It can mislabel capacity — a Haiku session switched to an
+  // out-of-catalog 1M-class id reads `ctx 95% · 190k/200k`. A switch to a KNOWN
+  // model still takes that model's window. Without the flag (silent adoption, or
+  // a caller setting the model directly) the result is exactly what resolves,
+  // INCLUDING null, so a session that starts on an unknown model reads unknown.
   //
   // The mid-session row-deletion case is NOT handled here and does not need to
   // be: nothing recomputes while the model is unchanged, and a deletion observed
@@ -1761,9 +1764,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Also re-resolves the mid-turn-steering capability: both are pure functions of
   // {backend, model}, and a live model change must move them together or a steer
   // is routed by the OLD model's rules for the rest of the session.
-  _refreshModelCapabilities(): void {
+  _refreshModelCapabilities({ carryKnownWindow = false }: { carryKnownWindow?: boolean } = {}): void {
     const cw = resolveContextWindowTokens({ backend: this.backend, model: this.model });
-    this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
+    const resolved = Number.isFinite(cw) ? cw : null;
+    this.contextWindowTokens = resolved ?? (carryKnownWindow ? this.contextWindowTokens : null);
     this.acceptsMidTurnSteering = resolveMidTurnSteering({ backend: this.backend, model: this.model });
   }
 
@@ -3277,8 +3281,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // catalog learns it can still be switched to live, instead of forcing a
     // kill-and-respawn — and so this matches `spawn_instance`, which already
     // accepts such an id. Capacity is what makes that safe: an id the catalog
-    // can't price resolves to null and the chip honestly reads `ctx —` (see
-    // _refreshModelCapabilities). Accepting it never fabricates a denominator.
+    // can't price resolves to unknown, and the session keeps the window it
+    // already held (see _refreshModelCapabilities).
     if (!model || !familyOf(model)) throw new Error('invalid model');
     // Canonicalize the incoming pick rather than trusting the client to have
     // baked the launch tag: the tag is catalog policy and the client now sends
@@ -3297,7 +3301,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     const from = this.model;
     this.model = canonical;
     // Capacity moves with the model.
-    this._refreshModelCapabilities();
+    this._refreshModelCapabilities({ carryKnownWindow: true });
     // The picker highlights the tier the session is already on, so re-selecting
     // it must emit no notice and blank no chip. Compare CANONICAL forms: the
     // client sends a bare version id and the catalog may add a launch tag, so a

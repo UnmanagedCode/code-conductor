@@ -576,6 +576,29 @@ test('D3: a Haiku session\'s chip still reads its context at turn end', async ()
   } finally { await fs.rm(cwd, { recursive: true, force: true }); }
 });
 
+// D4 — invariant: after a known → unknown switch the chip keeps a populated
+// denominator. The switch itself still drops the reading and announces (one
+// `model_changed`); the next usage-bearing frame re-latches against the carried
+// 200k window instead of rendering `ctx —`.
+test('D4: a known → unknown switch keeps the chip\'s denominator populated', async () => {
+  const h = await headerFixture();
+  const { inst, events, cwd } = await makeInstance({ model: M1, contextWindowTokens: 200_000 });
+  try {
+    inst._handleStdoutLine(msgStartLine({ id: 'm1', model: M1, usage: HAIKU_U1 }));
+    inst._handleStdoutLine(initLine('claude-future-9'));
+    assert.equal(modelChanges(events).length, 1, 'the genuine switch is still announced');
+    assert.equal(inst.lastContextUsage, null, 'and still drops the latched reading');
+    inst._handleStdoutLine(msgStartLine({ id: 'm2', model: 'claude-future-9', usage: HAIKU_U2 }));
+    inst._handleStdoutLine(resultLine());
+
+    for (const ev of events) h.getUsage('inst-1').apply(ev);
+    h.setInstance({ model: inst.model, contextWindowTokens: inst.summary().contextWindowTokens });
+    const chip = h.chip();
+    assert.match(chip.textContent, /^ctx 14% · 27k\/200k/,
+      `expected the carried denominator, got ${JSON.stringify(chip.textContent)}`);
+  } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+});
+
 // ── the real wsRouter: live/reload parity ───────────────────────────────────
 
 // R1 drives the real installWsRouter with a REAL UsageTracker. Every other
