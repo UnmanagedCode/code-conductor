@@ -14,8 +14,8 @@
 //
 // The client cannot do this itself and must not try: the API reports a dated
 // snapshot id in `message_start` (not the catalog id, and without the `[1m]`
-// build tag the session actually launched with) and a substitution backend's model id is an opaque
-// registry key. The hardcoded family table that used to live here defaulted
+// build tag the session actually launched with) and a substitution backend's
+// model id is an opaque registry key. The hardcoded family table that used to live here defaulted
 // anything it didn't recognise to 200k — a fabricated cap that a real session
 // was observed blowing past 256k input tokens without ever hitting.
 //

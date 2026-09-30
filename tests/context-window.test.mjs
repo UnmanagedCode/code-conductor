@@ -588,3 +588,28 @@ test('adopting the account-default model pushes a summary so the chip is not `ct
   assert.equal(statuses[0].contextWindowTokens, 200_000,
     'the pushed summary carries the newly-known capacity');
 });
+
+// Invariant: a capacity refresh that is not a live switch, from a finite window
+// onto a model whose window resolves to null, reads null. The carry is opt-in
+// per live-switch caller — (a) the default `_refreshModelCapabilities()` and
+// (b) `_trackModel`'s silent-adoption branch resolve exactly. Production never
+// holds a finite window with a null model, so the state is seeded directly.
+test('a refresh that is not a live switch resolves exactly: a finite window onto an unknown model reads null', () => {
+  const build = (model) => new Instance({
+    id: 'nc', project: 'p', cwd: '/tmp/p', mode: 'plan', effort: 'high',
+    thinking: 'adaptive', model, contextWindowTokens: 200_000, backend: CLAUDE_BACKEND_ID,
+  });
+
+  // (a) the default path of the refresh.
+  const direct = build('claude-future-9');
+  assert.equal(direct.contextWindowTokens, 200_000, 'premise: a finite window is held');
+  direct._refreshModelCapabilities();
+  assert.equal(direct.contextWindowTokens, null, 'the default refresh does not carry the held window');
+
+  // (b) silent adoption: the model was unknown, the report names an unknown one.
+  const adopted = build(null);
+  assert.equal(adopted.contextWindowTokens, 200_000, 'premise: a finite window is held');
+  adopted._trackModel('claude-future-9');
+  assert.equal(adopted.model, 'claude-future-9', 'premise: the report was adopted');
+  assert.equal(adopted.contextWindowTokens, null, 'adoption does not carry the held window');
+});

@@ -123,7 +123,7 @@ export function buildTools(): Tool[] {
         '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
         '`displayStatus` reads `running` while an idle worker still has background subagents — ' +
         'read it, not `status`, to decide whether work is actually finished. ' +
-        '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown. ' +
+        '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown; after a live switch to an unrecognised model it stays the previous model\'s. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
         '`rotationReason` says whether the session\'s context was last reset by its own ' +
         '`renew_session` or by a prune, and `lastRotatedAt` when — a quiet worker that just ' +

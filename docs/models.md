@@ -385,7 +385,8 @@ single place capacity is resolved: it dispatches on `backend` to either
 backend's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 `summary()`, the MCP projection, the header ctx chip, forks, and the resume
 manifest. **Unknown capacity is `null` and renders as `ctx —`** — never a
-fabricated default.
+fabricated default — except that a live model switch to an unknown model keeps
+the window the session already held (first bullet below).
 
 - **A live switch carries a known window over an unknown one.** On a live
   switch of a running session (`_trackModel`'s real-switch branch and
