@@ -66,6 +66,23 @@ test('renderEventBatch renders standard blocks and strips the empty placeholder'
   assert.ok(batch.toolBlocks.has('tuOld'), 'batch tool blocks exposed for adoption');
 });
 
+test('a page that begins at a compaction has no leading wrap to merge into the page above', async () => {
+  const { renderEventBatch } = await setupDOM();
+  const work = [
+    { kind: 'tool_use_start', msgId: 'mC', blockIdx: 0, toolUseId: 'tuC', name: 'Bash', _seq: 41, parentToolUseId: null },
+    { kind: 'tool_use', msgId: 'mC', blockIdx: 0, toolUseId: 'tuC', name: 'Bash', input: { command: 'ls' }, _seq: 42, parentToolUseId: null },
+    { kind: 'tool_result', toolUseId: 'tuC', content: 'ok', isError: false, _seq: 43, parentToolUseId: null },
+  ];
+  const control = renderEventBatch(work);
+  assert.ok(control.leadingWrap, 'control: a page that begins mid-turn exposes its leading wrap for merging');
+
+  const compaction = { kind: 'compaction', trigger: 'auto', preTokens: 9, postTokens: 1, durationMs: 1, _seq: 40, parentToolUseId: null };
+  const batch = renderEventBatch([compaction, ...work]);
+  assert.ok(batch.holder.querySelector('.msg.compaction'), 'sanity: the compaction bubble rendered');
+  assert.ok(batch.holder.querySelector('.msg.assistant'), 'sanity: the work after it rendered');
+  assertNull(batch.leadingWrap, 'the compaction proves the pages are not one turn, so nothing merges upward');
+});
+
 test('archive bubbles use the server-stamped userIndex for rewind/fork', async () => {
   const { renderEventBatch } = await setupDOM();
   const clicks = [];

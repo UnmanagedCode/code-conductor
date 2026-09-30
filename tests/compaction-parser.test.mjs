@@ -8,9 +8,14 @@
 // long arrays shortened, machine-specific paths/names scrubbed. `compaction-auto.*`
 // are committed trims of one real CLI 2.1.284 auto-compaction (structural fields
 // verbatim; tool-result bodies shortened, environment-dump attachments dropped,
-// paths scrubbed). The two differ in shape: the auto summary arrives as an ARRAY
-// of text blocks on stdout but as a plain string in the jsonl; the manual one is
-// a string on both.
+// paths scrubbed; the instance id in the kept hook-callback URLs is a
+// placeholder). In the stdout fixture each tool_use block's `input_json_delta`
+// fragments were re-chunked from the scrubbed concatenation at the original
+// fragment lengths (a path split across fragments cannot be scrubbed
+// piecewise), so those frames differ from the capture in where the path text
+// splits. The two differ in shape: the auto summary arrives as an ARRAY of text
+// blocks on stdout but as a plain string in the jsonl; the manual one is a
+// string on both.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

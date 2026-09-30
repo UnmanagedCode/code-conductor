@@ -6,8 +6,13 @@
 // long arrays shortened, paths scrubbed). `compaction-auto.*` are committed trims
 // of one real CLI 2.1.284 auto-compaction, mid-turn (structural fields verbatim;
 // tool-result bodies shortened, environment-dump attachments dropped, paths
-// scrubbed). The auto summary arrives as array content live and as a string in
-// the jsonl; a manual `/compact` has no mid-turn work around it.
+// scrubbed; the instance id in the kept hook-callback URLs is a placeholder).
+// In the stdout fixture each tool_use block's `input_json_delta` fragments were
+// re-chunked from the scrubbed concatenation at the original fragment lengths
+// (a path split across fragments cannot be scrubbed piecewise), so those frames
+// differ from the capture in where the path text splits. The auto summary
+// arrives as array content live and as a string in the jsonl; a manual
+// `/compact` has no mid-turn work around it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -246,6 +251,24 @@ test('a failed compaction is shown, live-only', async () => {
 
   feedFrames(conv, parser, [{ type: 'system', subtype: 'init', model: 'claude-haiku-4-5', session_id: 'abcdef123456' }]);
   assert.deepEqual(subtypesOf(root), ['model_changed', 'init'], 'a later re-init is not suppressed after the failure');
+});
+
+test('a failed compaction mid-turn splits the turn like a successful one', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  apply(conv, { kind: 'user_echo', text: 'go', userIndex: 0 });
+  apply(conv, { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Bash' });
+  apply(conv, { kind: 'system', subtype: 'status', data: { status: 'compacting' } });
+  apply(conv, { kind: 'system', subtype: 'status', data: { status: null, compact_result: 'failed', compact_error: 'boom' } });
+  apply(conv, { kind: 'tool_use_start', msgId: 'm2', blockIdx: 0, toolUseId: 'tu2', name: 'Read' });
+
+  assert.deepEqual(labelsOf(root), ['Compaction failed: boom']);
+  assert.deepEqual([...root.children].map((n) => n.className),
+    ['msg user', 'msg assistant', 'msg compaction', 'msg assistant']);
+  const [, before, , after] = root.children;
+  assert.equal(groupOf(before).hasAttribute('open'), false, 'the run before the compaction is folded');
+  assert.ok(!before.textContent.includes('Read'), 'work after the failure is not in the earlier bubble');
+  assert.ok(groupSummary(groupOf(after)).includes('Read'), 'it opens a new bubble below the failed one');
 });
 
 test('a compaction that never reached its boundary is closed by the turn ending', async () => {

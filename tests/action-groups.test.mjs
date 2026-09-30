@@ -721,6 +721,40 @@ test('D3 pins: a run-ender folds a sub-agent\'s group too', async (t) => {
 });
 
 // ---------------------------------------------------------------------------
+// A mid-turn compaction bubble ends the assistant segment, and the segment
+// close recurses into the sub-agent panels like every other closer: a
+// background sub-agent's open group folds, and its later work opens a second
+// group in the same panel.
+// ---------------------------------------------------------------------------
+test('a compaction folds a sub-agent\'s open group and its later work opens a new one', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: {} },
+    { kind: 'tool_use_start', msgId: 'ms', blockIdx: 0, toolUseId: 'ctu1', name: 'Read', parentToolUseId: 'tuA' },
+    { kind: 'tool_use', msgId: 'ms', blockIdx: 0, toolUseId: 'ctu1', name: 'Read', input: {}, parentToolUseId: 'tuA' },
+  ]);
+  const panel = '.sub-conversation-body .msg.assistant > .blocks > .action-group';
+  const first = root.querySelector(panel);
+  assert.ok(first, 'sanity: the sub-agent has a group of its own');
+  assert.equal(first.hasAttribute('open'), true, 'open while the sub-agent is running');
+
+  conv.apply({ kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 });
+  assert.equal(first.hasAttribute('open'), false, 'the compaction folds the sub-agent\'s group');
+
+  feed(conv, [
+    { kind: 'tool_use_start', msgId: 'ms', blockIdx: 1, toolUseId: 'ctu2', name: 'Bash', parentToolUseId: 'tuA' },
+    { kind: 'tool_use', msgId: 'ms', blockIdx: 1, toolUseId: 'ctu2', name: 'Bash', input: {}, parentToolUseId: 'tuA' },
+  ]);
+  const groups = [...root.querySelectorAll(panel)];
+  assert.equal(groups.length, 2, 'later sub-agent work opens a second group in the same panel');
+  assert.equal(summaryTextOf(groups[0]), '1 action · Read');
+  assert.equal(summaryTextOf(groups[1]), '1 action · Bash');
+  assert.equal(groups[1].hasAttribute('open'), true);
+});
+
+// ---------------------------------------------------------------------------
 // D4 — pins: a dead process ends the run. `_handleExit` (src/instances.ts)
 // emits `system/exit` on EVERY process death — commanded kill, crash, backend
 // failure alike — so it is the one annotation that has to fold the group; the
