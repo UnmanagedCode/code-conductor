@@ -568,9 +568,6 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     // (both lists stay alive for their sessions), focuses, or reports a draft
     // change. The returned list is still live: an encode in flight keeps
     // filling its entries.
-    // Release a list the host is dropping for good (one swapAttachments
-    // returned that has no session to live under).
-    discardAttachments(list) { revokePreviews(list); },
     swapAttachments(next) {
       const prev = pending;
       pending = next;
@@ -578,6 +575,8 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       refreshSendEnabled();
       return prev;
     },
+    // Revokes a dropped list's previews.
+    discardAttachments(list) { revokePreviews(list); },
     // Swap the textarea onto a stored per-session draft. Unlike prefill it
     // neither focuses (a sidebar tap on mobile must not pop the keyboard),
     // touches attachments (see swapAttachments), nor reports the change back to the draft store.
