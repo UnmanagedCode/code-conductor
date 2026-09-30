@@ -426,7 +426,9 @@ try {
       const body = document.getElementById('sidebar-body');
       return { open: document.getElementById('sidebar').classList.contains('open'), sw: body.scrollWidth, cw: body.clientWidth };
     });
-    // Invariant: on the phone (every × visible) each × still sits inside its entry's full-row box, clear of the title and on top.
+    // Invariant: at phone width each × still sits inside its entry's full-row box, clear of the title and on top. The × is
+    // opacity 0 here (this viewport is not touch, so `(hover: none)` does not match); opacity changes neither
+    // getBoundingClientRect nor elementFromPoint, so the geometry is measured whatever the ×'s opacity.
     const phoneGeo = await closeGeometry(page);
     check('12b phone: every strip × sits inside its entry\'s full-row box, clear of the title, on top',
       closeInsideBox(phoneGeo), JSON.stringify(phoneGeo));
