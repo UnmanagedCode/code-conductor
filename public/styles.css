@@ -496,6 +496,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .strip-list > li > .session-delete {
   position: absolute; top: 0; bottom: 0; right: 2px; width: 22px; padding: 0;
 }
+/* The global button:hover fill would paint a lighter rectangle over the entry's rounded, outlined box; only the glyph turns red. */
+.strip-list > li > .session-delete:hover:not(:disabled) { background: transparent; }
 
 /* Conductors lens. */
 .conductor-list { list-style: none; padding: 0; margin: 0; }
