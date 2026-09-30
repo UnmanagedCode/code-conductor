@@ -112,6 +112,27 @@ const spawnConductor = async () => {
   return inst(i => i.id === r.id);
 };
 
+// Per strip entry, where its box, its × and its title really sit (layout is
+// unreadable under happy-dom). `li`, `b`, `x`, `t` are the rects of the row,
+// the entry button, the × and the title.
+const closeGeometry = (page) => page.evaluate(() => {
+  const near = (a, b) => Math.abs(a - b) < 0.5;
+  return [...document.querySelectorAll('#sidebar-strip-slot .strip-list > li')].map(li => {
+    const entry = li.querySelector('.strip-entry');
+    const close = li.querySelector('.session-delete');
+    const b = entry.getBoundingClientRect(), x = close.getBoundingClientRect();
+    const t = entry.querySelector('.strip-title').getBoundingClientRect(), r = li.getBoundingClientRect();
+    return {
+      sid: li.dataset.key.slice(6), active: entry.classList.contains('active'),
+      fullRow: near(b.left, r.left) && near(b.right, r.right),
+      inside: x.left >= b.left && x.right <= b.right && x.top >= b.top && x.bottom <= b.bottom,
+      clearOfTitle: t.right <= x.left,
+      onTop: document.elementFromPoint(x.left + x.width / 2, x.top + x.height / 2) === close,
+    };
+  });
+});
+const closeInsideBox = (geo) => geo.length > 0 && geo.every(e => e.fullRow && e.inside && e.clearOfTitle && e.onTop);
+
 const STATE_WORDS = /question|plan approval|asked in text|idle|running|on a worker|working|turn ended/;
 
 let B; // the plan-ask conductor, opened again in the phone pass
@@ -306,6 +327,10 @@ try {
       const s = await sample(x => entryIn(x, 'waiting', A.sessionId)?.active);
       check('7a clicking the strip entry opens the session (title + sub-agent panel) and marks the entry active',
         !!v && !!entryIn(s, 'waiting', A.sessionId)?.active, JSON.stringify({ v, entry: entryIn(s, 'waiting', A.sessionId) }));
+      // Invariant: every × sits inside its entry's full-row box, clear of the title and on top; the active entry is among them.
+      const geo = await closeGeometry(page);
+      check('7c every strip × sits inside its entry\'s full-row box, clear of the title, on top (the active one included)',
+        closeInsideBox(geo) && geo.some(e => e.active), JSON.stringify(geo));
       await page.waitForSelector('#composer-input:not([disabled])');
       await page.fill('#composer-input', 'go ahead');
       await page.click('#composer-send');
@@ -401,6 +426,12 @@ try {
       const body = document.getElementById('sidebar-body');
       return { open: document.getElementById('sidebar').classList.contains('open'), sw: body.scrollWidth, cw: body.clientWidth };
     });
+    // Invariant: at phone width each × still sits inside its entry's full-row box, clear of the title and on top. The × is
+    // opacity 0 here (this viewport is not touch, so `(hover: none)` does not match); opacity changes neither
+    // getBoundingClientRect nor elementFromPoint, so the geometry is measured whatever the ×'s opacity.
+    const phoneGeo = await closeGeometry(page);
+    check('12b phone: every strip × sits inside its entry\'s full-row box, clear of the title, on top',
+      closeInsideBox(phoneGeo), JSON.stringify(phoneGeo));
     await page.screenshot({ path: path.join(OUT, 'strip-phone.png') });
     await page.click(`#sidebar-strip-slot [data-key="entry:${B.sessionId}"] .strip-entry`);
     // B is untitled, so the header text alone is the same `.conduct` chip for

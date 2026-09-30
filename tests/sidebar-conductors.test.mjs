@@ -808,6 +808,59 @@ test('styles.css: hovering a strip entry reveals its × (a top-level rule for .s
     `that rule sets opacity: 1 (found: ${JSON.stringify(hover.map(r => r.decls.get('opacity') ?? null))})`);
 });
 
+// Invariant: the strip × (the entry's sibling) is drawn inside the entry's box, and that box spans the full row.
+test('styles.css: the strip × is drawn inside its entry\'s full-row box (out of flow in a positioned li, over right padding the entry reserves)', async (t) => {
+  const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));
+  const of = (sel) => rules.filter(r => r.selectors.includes(sel));
+  const any = (sel, prop, want) => of(sel).some(r => r.decls.get(prop) === want);
+  const px = (sel, prop) => {
+    const v = of(sel).map(r => r.decls.get(prop)).find(d => /^-?[\d.]+px$/.test(d ?? ''));
+    return v === undefined ? NaN : parseFloat(v);
+  };
+  const closeSel = '.strip-list > li > .session-delete';
+
+  // Invariant: the li is the × 's containing block.
+  await t.test('li is the containing block', () => {
+    assert.ok(any('.strip-list > li', 'position', 'relative'), 'a rule for .strip-list > li sets position: relative');
+  });
+
+  // Invariant: the × leaves the flex row and is pinned to the right edge at full row height.
+  await t.test('the × is out of flow at the right edge', () => {
+    assert.ok(any(closeSel, 'position', 'absolute'), `${closeSel} sets position: absolute`);
+    assert.ok(any(closeSel, 'top', '0'), `${closeSel} sets top: 0`);
+    assert.ok(any(closeSel, 'bottom', '0'), `${closeSel} sets bottom: 0`);
+    assert.ok(Number.isFinite(px(closeSel, 'right')), `${closeSel} sets a px right`);
+    assert.ok(Number.isFinite(px(closeSel, 'width')), `${closeSel} sets a px width`);
+  });
+
+  // Invariant: the entry is the li's only in-flow item and grows, so its box is the whole row.
+  await t.test('the entry fills the row', () => {
+    assert.ok(any('.strip-entry', 'flex', '1 1 auto'), '.strip-entry sets flex: 1 1 auto');
+    for (const r of of('.strip-list > li')) {
+      for (const p of ['gap', 'padding', 'padding-right'])
+        assert.ok(!r.decls.has(p), `.strip-list > li sets no ${p} (it would shrink the entry's box)`);
+    }
+  });
+
+  // Invariant: the entry's right padding is at least the × 's right offset plus its width, so the title stops before the ×.
+  await t.test('the entry reserves the × \'s width', () => {
+    const pad = of('.strip-entry').map(r => r.decls.get('padding')).find(Boolean);
+    assert.ok(pad, '.strip-entry sets a padding shorthand');
+    const v = pad.split(/\s+/);
+    const right = parseFloat(v.length === 1 ? v[0] : v[1]);
+    const need = px(closeSel, 'right') + px(closeSel, 'width');
+    assert.ok(right >= need, `right padding ${right}px >= × right + width ${need}px`);
+  });
+
+  // Invariant: the hover fill follows the li, so it holds while the pointer is on the ×.
+  await t.test('hover fill survives the pointer on the ×', () => {
+    assert.ok(any('.strip-list > li:hover > .strip-entry:not(:disabled)', 'background', 'var(--panel-2)'),
+      'a rule for .strip-list > li:hover > .strip-entry:not(:disabled) sets background: var(--panel-2)');
+    assert.equal(of('.strip-entry:hover:not(:disabled)').length, 0,
+      'no rule still fills on the entry button\'s own :hover');
+  });
+});
+
 const expandA = (conductorList) => {
   conductorOf(conductorList, 'A').querySelector('.conductor-caret').click();
   return conductorOf(conductorList, 'A').querySelector('.conductor-tree');
