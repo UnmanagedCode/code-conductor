@@ -2,6 +2,9 @@
 // to a sendPrompt callback. Enter submits, Shift+Enter inserts a newline.
 // Files attached via the + button, paste, or drag-and-drop are surfaced as
 // chips above the textarea and handed off to onSubmit alongside the text.
+// The pending list is swappable (swapAttachments) so a host can keep one per
+// session, and a dictation can be routed away from the box it finishes in
+// (claimTranscriptTarget).
 
 // Soft cap so the WS payload stays sane. base64 inflates by ~33%, and the
 // `ws` lib's default maxPayload is 100MB, so 10MB raw / ~13MB encoded is a
@@ -40,10 +43,24 @@ export function prependTranscribedTag(text, hasTranscript) {
   return `<transcribed>\n${text}`;
 }
 
-export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize, onDraftChange }) {
+// The spacing rule for appending dictated text after existing text: a space
+// between adjacent words so back-to-back dictations don't run together.
+export function joinDictation(before, text) {
+  const needsLeadingSpace = before.length > 0 && !/\s$/.test(before) && !/^\s/.test(text);
+  return before + (needsLeadingSpace ? ' ' : '') + text;
+}
+
+// `claimTranscriptTarget()` runs when a recording starts and returns either
+// null or `(text) => boolean` for that recording's transcript. Returning true
+// means the transcript was delivered elsewhere (the session it started in), so
+// the composer neither inserts it nor marks its own draft as dictated.
+export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize, onDraftChange, claimTranscriptTarget }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
-  const pending = [];
+  // `let` because swapAttachments replaces the whole list; every other path
+  // mutates whichever list is showing. `nextId` is per composer, so ids stay
+  // unique across swapped-in lists.
+  let pending = [];
   let nextId = 1;
 
   let canType = false;
@@ -81,6 +98,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   let mediaRecorder = null;
   let mediaStream = null;
   let recordedChunks = [];
+  // Where the current recording's transcript goes, claimed when it starts (see
+  // claimTranscriptTarget); null means the box that is showing when it lands.
+  let transcriptTarget = null;
   // True once dictation has contributed to the current draft, so the message
   // gets a leading <transcribed> tag at send time. Reset on send, on prefill,
   // and whenever the composer is emptied (so a cleared-then-retyped draft
@@ -226,32 +246,41 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     renderChips();
   }
 
-  async function addFile(file) {
-    if (!file) return;
-    const id = nextId++;
-    const mediaType = file.type || 'application/octet-stream';
-    const isImage = isImageMediaType(mediaType);
-    const entry = { id, name: file.name || 'file', size: file.size, mediaType, isImage };
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      entry.error = `too large (max ${fmtSize(MAX_ATTACHMENT_BYTES)})`;
+  // Every entry is pushed into the showing list before the first await, so a
+  // session switch mid-encode cannot move file 2+ into another session's list.
+  // Encoding then fills the entries in place, wherever their list has gone.
+  async function addFiles(files) {
+    const encoding = [];
+    for (const file of files) {
+      if (!file) continue;
+      const entry = {
+        id: nextId++,
+        name: file.name || 'file',
+        size: file.size,
+        mediaType: file.type || 'application/octet-stream',
+      };
+      entry.isImage = isImageMediaType(entry.mediaType);
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        entry.error = `too large (max ${fmtSize(MAX_ATTACHMENT_BYTES)})`;
+      } else {
+        if (entry.isImage) {
+          try { entry.objectUrl = URL.createObjectURL(file); } catch { /* no preview */ }
+        }
+        encoding.push([entry, file]);
+      }
       pending.push(entry);
+    }
+    renderChips();
+    refreshSendEnabled();
+    for (const [entry, file] of encoding) {
+      try {
+        entry.dataBase64 = await fileToBase64(file);
+      } catch (e) {
+        entry.error = `read failed: ${e.message ?? e}`;
+      }
       renderChips();
       refreshSendEnabled();
-      return;
     }
-    if (isImage) {
-      try { entry.objectUrl = URL.createObjectURL(file); } catch { /* no preview */ }
-    }
-    pending.push(entry);
-    renderChips();
-    refreshSendEnabled();
-    try {
-      entry.dataBase64 = await fileToBase64(file);
-    } catch (e) {
-      entry.error = `read failed: ${e.message ?? e}`;
-    }
-    renderChips();
-    refreshSendEnabled();
   }
 
   if (attachBtn && fileInput) {
@@ -259,7 +288,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     fileInput.addEventListener('change', async () => {
       const files = Array.from(fileInput.files || []);
       fileInput.value = '';
-      for (const f of files) await addFile(f);
+      await addFiles(files);
     });
   }
 
@@ -269,7 +298,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     const files = Array.from(e.clipboardData?.files || []);
     if (!files.length) return;
     e.preventDefault();
-    for (const f of files) await addFile(f);
+    await addFiles(files);
   });
 
   // Drag-and-drop onto the whole composer form.
@@ -286,7 +315,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     const files = Array.from(e.dataTransfer?.files || []);
     if (!files.length) return;
     e.preventDefault();
-    for (const f of files) await addFile(f);
+    await addFiles(files);
   });
 
   // ── Dictation (hold the Send button while the composer is empty) ──────
@@ -316,9 +345,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     const end = textarea.selectionEnd ?? textarea.value.length;
     const before = textarea.value.slice(0, start);
     const after = textarea.value.slice(end);
-    // Add a space between adjacent words so back-to-back dictations don't run together.
-    const needsLeadingSpace = before.length > 0 && !/\s$/.test(before) && !/^\s/.test(text);
-    const insert = (needsLeadingSpace ? ' ' : '') + text;
+    const insert = joinDictation(before, text).slice(before.length);
     textarea.value = before + insert + after;
     autoGrow();
     const caret = start + insert.length;
@@ -330,9 +357,11 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
 
   async function startRecording() {
     if (recordingState !== 'idle') return;
+    transcriptTarget = claimTranscriptTarget?.() ?? null;
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      transcriptTarget = null;
       alert(`Microphone access denied: ${e.message || e}`);
       return;
     }
@@ -341,6 +370,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       mediaRecorder = new MediaRecorder(mediaStream);
     } catch (e) {
       stopMediaTracks();
+      transcriptTarget = null;
       alert(`MediaRecorder unavailable: ${e.message || e}`);
       return;
     }
@@ -352,7 +382,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       stopMediaTracks();
       recordedChunks = [];
       if (recordingCancelled) { recordingCancelled = false; return; }
-      void postForTranscript(blob);
+      const target = transcriptTarget;
+      transcriptTarget = null;
+      void postForTranscript(blob, target);
     });
     mediaRecorder.start();
     setMicState('recording');
@@ -379,13 +411,14 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     longPressTimer = null;
     if (recordingState !== 'recording' || !mediaRecorder) return;
     recordingCancelled = true;
+    transcriptTarget = null;
     releaseWakeLock();
     recordingState = 'idle';
     updateButton();
     try { mediaRecorder.stop(); } catch { /* ignore */ }
   }
 
-  async function postForTranscript(blob) {
+  async function postForTranscript(blob, target) {
     try {
       const res = await fetch('/api/transcribe', {
         method: 'POST',
@@ -397,6 +430,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
         throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
       }
       const { text } = await res.json();
+      if (target?.(text)) return;
       if (text && text.trim()) hasTranscript = true;
       insertAtCursor(text);
     } catch (e) {
@@ -525,9 +559,21 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       draftChanged();
     },
     getDraft() { return { text: textarea.value, transcribed: hasTranscript }; },
+    // Swap the showing attachment list for `next` and return the list it
+    // replaces. The restore path, like setDraft: it never revokes preview URLs
+    // (both lists stay alive for their sessions), focuses, or reports a draft
+    // change. The returned list is still live: an encode in flight keeps
+    // filling its entries.
+    swapAttachments(next) {
+      const prev = pending;
+      pending = next;
+      renderChips();
+      refreshSendEnabled();
+      return prev;
+    },
     // Swap the textarea onto a stored per-session draft. Unlike prefill it
     // neither focuses (a sidebar tap on mobile must not pop the keyboard),
-    // touches attachments, nor reports the change back to the draft store.
+    // touches attachments (see swapAttachments), nor reports the change back to the draft store.
     setDraft({ text, transcribed }) {
       textarea.value = typeof text === 'string' ? text : '';
       hasTranscript = !!transcribed && !!textarea.value;
