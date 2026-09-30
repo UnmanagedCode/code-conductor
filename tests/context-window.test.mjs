@@ -138,6 +138,20 @@ test('claudeContextWindowTokens reports one capacity per version, null when unkn
   assert.equal(claudeContextWindowTokens(null), null);
 });
 
+test('the API\'s dated snapshot id canonicalizes to its catalog version, and resolves its capacity', () => {
+  const dated = 'claude-haiku-4-5-20251001';
+  assert.equal(canonicalizeModel(dated, CLAUDE_BACKEND_ID), 'claude-haiku-4-5');
+  assert.equal(claudeContextWindowTokens(dated), 200_000);
+  assert.equal(resolveContextWindowTokens({ backend: CLAUDE_BACKEND_ID, model: dated }), 200_000);
+  // The version's launch tag still applies after the snapshot suffix is mapped.
+  assert.equal(canonicalizeModel('claude-sonnet-4-5-20250929', CLAUDE_BACKEND_ID), 'claude-sonnet-4-5[1m]');
+  // Unknown stays unknown: no catalog version to map to, no fabricated capacity.
+  assert.equal(canonicalizeModel('claude-future-9-20270101', CLAUDE_BACKEND_ID), 'claude-future-9-20270101');
+  assert.equal(claudeContextWindowTokens('claude-future-9-20270101'), null);
+  // The gate is the BACKEND: a substitution backend keeps the id byte-exact.
+  assert.equal(canonicalizeModel(dated, 'my-proxy'), dated);
+});
+
 test('resolveContextWindowTokens dispatches on backend and needs the EXACT substitution id', async () => {
   await addBackend({ id: 'codex', label: 'Codex', template: 'codexctl run claude --model {model} --', env: [] });
   await addCustomModel({ label: 'Sol', model: 'gpt-5.6-sol[1m]', backend: 'codex', contextWindow: 1_000_000 });

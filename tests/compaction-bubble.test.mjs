@@ -42,7 +42,7 @@ const readJsonl = async (name) =>
 let seq = 0;
 const apply = (conv, ev) => conv.apply({ ...ev, _seq: ++seq });
 
-// The ring order: cc's own `_trackModel` emits `model_changed` just before the re-init.
+// A genuine-switch shape the renderer must tolerate: `_trackModel` emits `model_changed` just before the re-init.
 const MODEL_CHANGED = { kind: 'system', subtype: 'model_changed', data: { from: 'claude-haiku-4-5-20251001', to: 'claude-haiku-4-5' } };
 
 function feedFrames(conv, parser, frames) {

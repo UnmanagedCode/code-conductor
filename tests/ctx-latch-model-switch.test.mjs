@@ -78,12 +78,19 @@ function msgStartLine({ id = 'msg', model, usage }) {
 const initLine = (model) =>
   JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1', model });
 
-async function makeInstance({ model = M1, backend } = {}) {
+const resultLine = () => JSON.stringify({
+  type: 'result', subtype: 'success', stop_reason: 'end_turn',
+  duration_ms: 10, total_cost_usd: 0.0001, is_error: false,
+  usage: { input_tokens: 0, output_tokens: 0 },
+});
+
+async function makeInstance({ model = M1, backend, contextWindowTokens } = {}) {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-switch-'));
   const inst = new Instance({
     id: 'inst-1', project: 'demo', cwd, mode: 'bypassPermissions',
     effort: 'medium', thinking: 'medium', model,
     ...(backend ? { backend } : {}),
+    ...(contextWindowTokens ? { contextWindowTokens } : {}),
   });
   inst.sessionId = 'sess-1';
   inst.backingSessionId = 'sess-1';
@@ -296,6 +303,33 @@ test('S9: a CLI switch that already reached the requested model suppresses the s
     'the switch is announced once, by whichever site observed it');
   assert.deepEqual(inst.lastContextUsage, NEW_USAGE,
     'a suppressed announce must not blank a reading measured under the model the session is now on');
+});
+
+// S10 — the CLI's `system/init` names a Haiku session by its catalog id while the
+// API's `message_start` names it by the dated snapshot id, every turn. Two
+// spellings of one model are not a switch: none may move the model, null the
+// denominator, or drop the latch.
+const HAIKU_SNAPSHOT = 'claude-haiku-4-5-20251001';
+const HAIKU_U1 = { input_tokens: 10, cache_creation_input_tokens: 27_000, cache_read_input_tokens: 0 };
+const HAIKU_U2 = { input_tokens: 10, cache_creation_input_tokens: 229, cache_read_input_tokens: 27_040 };
+
+function driveHaikuTurns(inst) {
+  for (const usage of [HAIKU_U1, HAIKU_U2]) {
+    inst._handleStdoutLine(initLine(M1));
+    inst._handleStdoutLine(msgStartLine({ id: 'm', model: HAIKU_SNAPSHOT, usage }));
+    inst._handleStdoutLine(resultLine());
+  }
+}
+
+test('S10: a Haiku session\'s per-turn alias/snapshot spelling pair is not a model switch', async () => {
+  const { inst, events, cwd } = await makeInstance({ model: M1, contextWindowTokens: 200_000 });
+  try {
+    driveHaikuTurns(inst);
+    assert.equal(modelChanges(events).length, 0, 'no spelling-only report may be announced as a switch');
+    assert.equal(inst.model, M1);
+    assert.equal(inst.contextWindowTokens, 200_000, 'the denominator must not null on the snapshot spelling');
+    assert.deepEqual(inst.lastContextUsage, HAIKU_U2, 'the reading survives turn_end');
+  } finally { await fs.rm(cwd, { recursive: true, force: true }); }
 });
 
 // ── server↔client seam over a real WS ───────────────────────────────────────
@@ -524,6 +558,22 @@ test('D2: a switch whose frame carried a measurement renders that measurement', 
   const after = h.chip();
   assert.match(after.textContent, /^ctx 42% · 420k\/1\.0M/,
     `expected the new model's own reading, got ${JSON.stringify(after.textContent)}`);
+});
+
+// D3 — the seam the user sees: what a real Instance emits for a Haiku turn,
+// fed to the real tracker + chip, with the summary standing in for the
+// `instances` refetch the status broadcast triggers.
+test('D3: a Haiku session\'s chip still reads its context at turn end', async () => {
+  const h = await headerFixture();
+  const { inst, events, cwd } = await makeInstance({ model: M1, contextWindowTokens: 200_000 });
+  try {
+    driveHaikuTurns(inst);
+    for (const ev of events) h.getUsage('inst-1').apply(ev);
+    h.setInstance({ model: inst.model, contextWindowTokens: inst.summary().contextWindowTokens });
+    const chip = h.chip();
+    assert.match(chip.textContent, /^ctx 14% · 27k\/200k/,
+      `expected a populated chip at turn end, got ${JSON.stringify(chip.textContent)}`);
+  } finally { await fs.rm(cwd, { recursive: true, force: true }); }
 });
 
 // ── the real wsRouter: live/reload parity ───────────────────────────────────

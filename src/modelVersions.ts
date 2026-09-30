@@ -247,19 +247,29 @@ export function familyOf(modelId: unknown): FamilyName | null {
 // Terminal `[1m]`/`[200k]` build tag. Only meaningful on a `claude` model id.
 const LAUNCH_TAG_RE = /\[(200k|1m)\]$/;
 
-// Catalog lookup for a bare Claude version id.
+// Terminal `-YYYYMMDD` snapshot date. The API reports a catalog version under
+// its dated snapshot id (`claude-haiku-4-5-20251001`) while the CLI's init
+// reports the catalog id. Only meaningful on a `claude` model id.
+const SNAPSHOT_DATE_RE = /-\d{8}$/;
+
+// Catalog lookup for a bare Claude version id. An exact hit wins; otherwise a
+// dated snapshot id resolves to the version it snapshots. An unknown dated id
+// stays unknown.
 function claudeVersion(bareId: string): ModelVersion | null {
-  for (const f of MODEL_FAMILIES) {
-    const v = f.versions.find(x => x.id === bareId);
-    if (v) return v;
-  }
-  return null;
+  const find = (id: string): ModelVersion | undefined => {
+    for (const f of MODEL_FAMILIES) {
+      const v = f.versions.find(x => x.id === id);
+      if (v) return v;
+    }
+    return undefined;
+  };
+  return find(bareId) ?? (SNAPSHOT_DATE_RE.test(bareId) ? find(bareId.replace(SNAPSHOT_DATE_RE, '')) : undefined) ?? null;
 }
 
 // Native context window (raw tokens) for a `claude`-backend model id, or null
 // when the catalog doesn't know it (an unlisted/future `claude-*` id). Null
 // means "unknown" and must render as unknown — never as a fabricated default.
-// Tolerates a launch tag on the way in.
+// Tolerates a launch tag and a dated snapshot suffix on the way in.
 export function claudeContextWindowTokens(modelId: unknown): number | null {
   if (typeof modelId !== 'string' || !modelId) return null;
   const v = claudeVersion(modelId.replace(LAUNCH_TAG_RE, ''));
@@ -268,7 +278,9 @@ export function claudeContextWindowTokens(modelId: unknown): number | null {
 }
 
 // Apply the launch-tag half of context-window policy: return the exact model id
-// to put on the CLI's `--model`.
+// to put on the CLI's `--model`. A dated snapshot id the API reports for a
+// catalog version maps to that version's catalog id first, so the per-turn
+// init/message_start spellings of one model never read as a switch.
 //
 // `backend` is a REQUIRED positional, and the gate below is the ONLY thing that
 // makes this a no-op for a substitution backend. Do not reintroduce a
@@ -284,5 +296,6 @@ export function canonicalizeModel(modelId: string | undefined, backend: string |
   if (typeof modelId !== 'string' || !modelId) return modelId;
   if (backend !== CLAUDE_BACKEND_ID) return modelId;
   const bare = modelId.replace(LAUNCH_TAG_RE, '');
-  return `${bare}${claudeVersion(bare)?.launchTag ?? ''}`;
+  const v = claudeVersion(bare);
+  return v ? `${v.id}${v.launchTag ?? ''}` : bare;
 }

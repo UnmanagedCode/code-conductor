@@ -426,8 +426,13 @@ instead of stopping it.
 **required positional**, and that gate is the only reason this is a no-op for a
 substitution model — *not* `familyOf()` returning null:
 
-- `backend === 'claude'` → strip any terminal tag, re-apply the catalog
-  `launchTag`. This is also what re-tags the bare id recovered from a jsonl on a
+- `backend === 'claude'` → strip any terminal tag, map a dated snapshot suffix
+  (`-YYYYMMDD`, how the API reports a catalog version in `message_start` and the
+  jsonl, e.g. `claude-haiku-4-5-20251001`) to that version's catalog id, then
+  re-apply the catalog `launchTag`. An unknown dated id stays verbatim with
+  unknown capacity. The mapping is what keeps the CLI's per-turn `system/init`
+  (catalog id) and the API's `message_start` (snapshot id) from registering as a
+  model switch. This is also what re-tags the bare id recovered from a jsonl on a
   cold resume, so each model comes back at its own native window.
 - any other backend → the id is returned **byte-exact**. A substitution model id
   is an opaque registry key that may legitimately end in `[1m]` or look
