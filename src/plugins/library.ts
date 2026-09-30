@@ -145,6 +145,12 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-live',
+    name: 'Code Live',
+    description: 'A voice console for code-conductor: talk to Gemini Live, which drives conductor sessions.',
+    repo: 'https://github.com/UnmanagedCode/code-live',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
