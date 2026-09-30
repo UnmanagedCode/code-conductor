@@ -8,6 +8,11 @@
 // Update, and an Update all that runs every available update sequentially —
 // install only clones the repo, it never enables/starts it. installed once by
 // settings.js, which calls load() on every settings open.
+//
+// onCatalogChange(change) fires after every successful action. `change` is
+// `{action, ids}` for the actions that put new code under a plugin — 'restart',
+// 'version', 'update' (ids = every plugin in the updated project) — and
+// undefined otherwise; pluginView.js evicts those plugins' keep-alive frames.
 
 export function installPluginManager({ onCatalogChange } = {}) {
   const statusEl = document.getElementById('pl-status');
@@ -27,6 +32,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
   // Set for the length of an Update all run, so a mid-run load() (settings
   // re-open) can't re-arm the button.
   let updatingAll = false;
+  let pluginRows = []; // the last-loaded installed rows
 
   function setStatusEl(el, text, isError = false) {
     if (!el) return;
@@ -128,14 +134,14 @@ export function installPluginManager({ onCatalogChange } = {}) {
     }
   }
 
-  async function act(label, fn) {
+  async function act(label, fn, change) {
     if (busy) return;
     busy = true;
     setStatus(`${label}…`);
     try {
       await fn();
       await load();
-      onCatalogChange?.();
+      onCatalogChange?.(change);
     } catch (e) {
       setStatus(`${label} failed: ${e.message || e}`, true);
       busy = false;
@@ -265,7 +271,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
             if (row.state === 'ready' || row.state === 'starting') {
               actionsRow.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
               if (row.state === 'ready' && row.stale) {
-                actionsRow.appendChild(btn('Restart', () => act(`Restarting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/restart`))));
+                actionsRow.appendChild(btn('Restart', () => act(`Restarting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/restart`), { action: 'restart', ids: [row.id] })));
               }
             } else {
               actionsRow.appendChild(btn('Start', () => act(`Starting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/start`))));
@@ -318,7 +324,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
     sel.addEventListener('change', () => {
       const val = sel.value;
       const body = val === 'main' ? { type: 'main' } : { type: 'worktree', name: val.slice('worktree:'.length) };
-      act(`Switching ${row.id} to ${val}`, () => api('POST', `/api/plugins/${row.id}/version`, body));
+      act(`Switching ${row.id} to ${val}`, () => api('POST', `/api/plugins/${row.id}/version`, body), { action: 'version', ids: [row.id] });
     });
     return sel;
   }
@@ -487,6 +493,12 @@ export function installPluginManager({ onCatalogChange } = {}) {
     return null;
   }
 
+  // Read after the post-update load(), so the rows are the rescanned ones.
+  function updateChange(results) {
+    const projects = new Set(results.map(r => r.project));
+    return { action: 'update', ids: pluginRows.filter(r => projects.has(r.project)).map(r => r.id) };
+  }
+
   async function updateEntry(row, li, buttonEl) {
     if (busy) return;
     busy = true;
@@ -496,7 +508,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
       const outcome = await streamUpdate(row, li, buttonEl);
       if (outcome.ok) {
         await load();
-        onCatalogChange?.();
+        onCatalogChange?.(updateChange([outcome.result]));
         // Surfaced AFTER load() so it isn't clobbered by render()'s own status text.
         const warning = updateWarning(row.name, outcome.result);
         if (warning) {
@@ -536,7 +548,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
       updatingAll = false;
       await load();
       const okCount = outcomes.filter(o => o.ok).length;
-      if (okCount > 0) onCatalogChange?.();
+      if (okCount > 0) onCatalogChange?.(updateChange(outcomes.filter(o => o.ok).map(o => o.result)));
       const problems = [];
       for (const o of outcomes) {
         if (!o.ok) {
@@ -567,6 +579,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
       const [pluginsData, worktrees, libraryData] = await Promise.all([
         api('GET', '/api/plugins'), fetchWorktrees(), api('GET', '/api/plugins/library'),
       ]);
+      pluginRows = pluginsData.rows;
       render(pluginsData.rows, worktrees);
       renderLibrary(libraryData.entries);
       // Both status lines are written AFTER their render, which sets a count —

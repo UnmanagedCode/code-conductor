@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { installBrowserHashSemantics } from './browser-hash-semantics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,30 +44,6 @@ function makeWindow(url) {
   window.fetch = () => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
   globalThis.fetch = window.fetch;
   return window;
-}
-
-// happy-dom queues one hashchange per hash-changing URL update, delivered in
-// order. A history call's event is identified by its (oldURL, newURL) pair and
-// stopped in a capture listener registered before any app listener; events
-// from `location.hash =` still reach the app.
-function installBrowserHashSemantics(window) {
-  const pending = [];
-  for (const op of ['pushState', 'replaceState']) {
-    const orig = window.history[op].bind(window.history);
-    window.history[op] = (...args) => {
-      const oldURL = window.location.href;
-      const oldHash = window.location.hash;
-      orig(...args);
-      if (window.location.hash !== oldHash) pending.push({ oldURL, newURL: window.location.href });
-    };
-  }
-  window.addEventListener('hashchange', e => {
-    const head = pending[0];
-    if (head && head.oldURL === e.oldURL && head.newURL === e.newURL) {
-      pending.shift();
-      e.stopImmediatePropagation();
-    }
-  }, true);
 }
 
 function el(document, tag, id, parent, hidden = false) {

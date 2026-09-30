@@ -142,11 +142,11 @@ export function installSettings({
   // plugin can change what the conventions panels above show, so refresh them
   // whenever the plugin catalog changes.
   const pluginManager = installPluginManager({
-    onCatalogChange: () => {
+    onCatalogChange: (change) => {
       conductorPanel.load();
       workspacePanel.load();
       projectPanel.load();
-      onPluginsChanged?.();
+      onPluginsChanged?.(change);
     },
   });
 

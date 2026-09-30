@@ -191,10 +191,25 @@ test('backend validation: start required, readyWhen must compile, healthPath sha
   assert.equal(validateManifest(base({ backend: { start: 'npm start', healthPath: '/h', readyWhen: 'listening' } })).errors, undefined);
 });
 
-test('frontend defaults: path=/ and navLabel=name', () => {
+test('frontend defaults: path=/, navLabel=name and keepAlive=false', () => {
   const r = validateManifest(base({ backend: { start: 'x' }, frontend: {} }));
   assert.equal(r.errors, undefined);
-  assert.deepEqual(r.manifest.frontend, { path: '/', navLabel: 'My Plugin' });
+  assert.deepEqual(r.manifest.frontend, { path: '/', navLabel: 'My Plugin', keepAlive: false });
+});
+
+test('frontend.keepAlive: true is accepted and normalized', () => {
+  const r = validateManifest(base({ backend: { start: 'x' }, frontend: { keepAlive: true } }));
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.frontend.keepAlive, true);
+});
+
+test('a non-boolean frontend.keepAlive marks the manifest invalid', async (t) => {
+  for (const [label, value] of [['the string "true"', 'true'], ['1', 1], ['null', null]]) {
+    await t.test(label, () => {
+      const r = validateManifest(base({ backend: { start: 'x' }, frontend: { keepAlive: value } }));
+      assert.deepEqual(r.errors, ["'frontend.keepAlive' must be a boolean"]);
+    });
+  }
 });
 
 test('mcp normalization: timeoutMs cap at 120000; scope accepted but dropped', () => {

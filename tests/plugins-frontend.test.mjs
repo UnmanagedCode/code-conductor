@@ -9,6 +9,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { installBrowserHashSemantics } from './browser-hash-semantics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -136,6 +137,7 @@ test('pluginView: opens on #plugin hash, swaps plugins, avoids reload on subpath
   assert.match(iframe.getAttribute('src'), /^\/plugins\/fake-plugin\/$/);
   assert.ok(calls.includes('GET /api/plugins/fake-plugin/status'));
   assert.ok(!calls.some(c => c.includes('/start')), 'ready plugin needs no start');
+  assertNull(view.querySelector('.plugin-frame-resident'), 'a plain plugin gets no resident frame');
 
   // Subpath change within the same plugin: steer via bridge, no src reload.
   window.location.hash = '#plugin/fake-plugin/sub';
@@ -222,6 +224,342 @@ test('pluginView: start failure shows the error + tail with a Retry button, not 
   assert.match(window.document.getElementById('plugin-frame').getAttribute('src'), /^\/plugins\/fake-plugin\/$/);
 });
 
+// ── pluginView: keep-alive resident frames (frontend.keepAlive) ─────────
+// happy-dom never loads a frame document, so survival is asserted as node
+// identity + untouched src + no /start; whether the hidden page keeps running
+// is measured only by harness/playwright/check-plugin-keepalive.mjs. A frame's
+// contentWindow is null here, so tests that need one pin a fake on the node.
+
+const kaRow = (over = {}) => ({ state: 'ready', enabled: true, frontendKeepAlive: true, ...over });
+
+// Per-id rows, mutable between calls. A row may be the number 404 (unknown
+// id), 500 (server error) or 'network' (fetch rejects). /start marks the row
+// ready unless `startFails`.
+function stubRowsApi(rows, { switcherRows = [], startFails = false, startResult } = {}) {
+  const calls = [];
+  const json = (status, body) => Promise.resolve({ ok: status < 400, status, json: async () => body });
+  globalThis.fetch = (url, opts = {}) => {
+    calls.push(`${opts.method || 'GET'} ${url}`);
+    const m = /^\/api\/plugins\/([^/]+)\/(status|start)$/.exec(String(url));
+    if (!m) return json(200, { rows: switcherRows, notices: [] });
+    const row = rows[m[1]];
+    if (row === 'network') return Promise.reject(new TypeError('Failed to fetch'));
+    if (typeof row === 'number') return json(row, { error: `HTTP ${row}` });
+    if (m[2] === 'start') {
+      if (startResult) return startResult;
+      if (startFails) return json(409, { error: 'plugin is disabled' });
+      row.state = 'ready';
+      return json(200, { state: 'ready' });
+    }
+    return json(200, { name: m[1], ...row });
+  };
+  return calls;
+}
+
+async function setupKeepAlive(rows, opts) {
+  const window = makeWindow('http://localhost/#');
+  installBrowserHashSemantics(window);
+  const { view } = buildViewDom(window.document);
+  const calls = stubRowsApi(rows, opts);
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  let closed = 0;
+  let residentChanges = 0;
+  const pv = installPluginView({ onClosed: () => { closed++; }, onResidentChange: () => { residentChanges++; } });
+  const go = async (hash) => {
+    window.location.hash = hash;
+    await window.happyDOM.waitUntilComplete();
+    await tick();
+  };
+  const residentOf = id => window.document.querySelector(`iframe.plugin-frame-resident[data-plugin-id="${id}"]`);
+  return { window, view, calls, pv, go, residentOf, closed: () => closed, residentChanges: () => residentChanges };
+}
+
+function fakeContentWindow(frame) {
+  const win = { posted: [], postMessage(msg) { this.posted.push(msg); } };
+  Object.defineProperty(frame, 'contentWindow', { value: win, configurable: true });
+  return win;
+}
+
+function postRoute(window, source, path) {
+  window.dispatchEvent(new window.MessageEvent('message', {
+    data: { cc: 1, type: 'route', path }, origin: 'http://localhost', source,
+  }));
+}
+
+test('pluginView: a keepAlive plugin\'s frame survives leaving the space — hidden, src intact, not blanked', async () => {
+  const { window, view, go, residentOf, closed } = await setupKeepAlive({ ka: kaRow() });
+  const { reconcileMainViews } = await import(pathToFileURL(path.join(PUB, 'mainViews.js')).href);
+
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  assert.ok(frame, 'a resident frame is created on first show');
+  assert.equal(frame.getAttribute('src'), '/plugins/ka/');
+  assert.equal(window.document.getElementById('plugin-frame').hidden, true, 'the shared frame is hidden behind it');
+
+  // Leave: the hash moves off the space.
+  await go('#');
+  assert.equal(view.hidden, true);
+  assert.equal(closed(), 1, 'onClosed still fires');
+  assert.ok(residentOf('ka') === frame && frame.parentElement === view, 'the same node stays mounted under #plugin-view');
+  assert.equal(frame.getAttribute('src'), '/plugins/ka/', 'src untouched — not blanked');
+
+  // Supersede: another main view claims #main.
+  await go('#plugin/ka/');
+  window.history.replaceState(null, '', '/#session=abc');
+  reconcileMainViews();
+  await tick();
+  assert.equal(view.hidden, true);
+  assert.equal(closed(), 2);
+  assert.ok(residentOf('ka') === frame && frame.isConnected, 'supersede keeps the node too');
+  assert.equal(frame.getAttribute('src'), '/plugins/ka/');
+});
+
+test('pluginView: re-entering a resident plugin issues no /start and sets no src', async () => {
+  const rows = { ka: kaRow() };
+  const { window, go, calls, residentOf } = await setupKeepAlive(rows);
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  await go('#');
+
+  // A crashed row keeps the frame; a plain load would POST /start for it.
+  rows.ka.state = 'crashed';
+  const before = calls.length;
+  await go('#plugin/ka/');
+  const reentry = calls.slice(before);
+  assert.deepEqual(reentry, ['GET /api/plugins/ka/status'], 'one background status read, no /start');
+  assert.ok(residentOf('ka') === frame && frame.isConnected);
+  assert.equal(frame.hidden, false);
+  assert.equal(frame.getAttribute('src'), '/plugins/ka/');
+  assert.equal(window.document.getElementById('plugin-overlay').hidden, true, 'no "Starting …" overlay');
+});
+
+test('pluginView: re-entry at \'/\' keeps the frame\'s route and rewrites the hash', async () => {
+  const { window, go, residentOf } = await setupKeepAlive({ ka: kaRow() });
+  await go('#plugin/ka/');
+  const win = fakeContentWindow(residentOf('ka'));
+  postRoute(window, win, '/call/42');
+  assert.equal(window.location.hash, '#plugin/ka/call/42', 'sanity: the showing frame\'s route mirrors into the hash');
+  await go('#');
+
+  await go('#plugin/ka/');
+  assert.equal(window.location.hash, '#plugin/ka/call/42');
+  assert.deepEqual(win.posted, [], 'no navigate posted');
+});
+
+test('pluginView: re-entry at a different non-root subpath posts navigate to the resident frame', async () => {
+  const { window, go, residentOf } = await setupKeepAlive({ ka: kaRow() });
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  const win = fakeContentWindow(frame);
+  postRoute(window, win, '/call/42');
+  await go('#');
+
+  await go('#plugin/ka/settings');
+  assert.deepEqual(win.posted, [{ cc: 1, type: 'navigate', path: '/settings' }]);
+  assert.equal(window.location.hash, '#plugin/ka/settings');
+  assert.equal(frame.getAttribute('src'), '/plugins/ka/', 'steered, not reloaded');
+});
+
+test('pluginView: A (keepAlive) → B (plain) → A keeps A\'s frame and blanks B\'s', async () => {
+  const { window, view, go, residentOf } = await setupKeepAlive({ a: kaRow(), b: kaRow({ frontendKeepAlive: false }) });
+  const visibleFrames = () => [...view.querySelectorAll('iframe')].filter(f => !f.hidden);
+  await go('#plugin/a/');
+  const a = residentOf('a');
+
+  await go('#plugin/b/');
+  const shared = window.document.getElementById('plugin-frame');
+  assert.equal(shared.getAttribute('src'), '/plugins/b/');
+  assertNull(residentOf('b'), 'a plain plugin gets no resident frame');
+  assert.equal(a.hidden, true);
+  assert.ok(visibleFrames().length === 1 && visibleFrames()[0] === shared);
+
+  await go('#plugin/a/');
+  assert.ok(residentOf('a') === a, 'one resident node for A throughout');
+  assert.equal(a.getAttribute('src'), '/plugins/a/');
+  assert.equal(shared.getAttribute('src'), 'about:blank', 'B is blanked, as a switch always did');
+  assert.ok(visibleFrames().length === 1 && visibleFrames()[0] === a);
+});
+
+test('pluginView: two keepAlive plugins get one resident frame each', async () => {
+  const { view, go, residentOf, pv } = await setupKeepAlive({ one: kaRow(), two: kaRow() });
+  await go('#plugin/one/');
+  const one = residentOf('one');
+  await go('#plugin/two/');
+  const two = residentOf('two');
+  await go('#plugin/one/');
+  assert.equal(view.querySelectorAll('iframe.plugin-frame-resident').length, 2, 'a revisit adds no frame');
+  assert.ok(residentOf('one') === one && residentOf('two') === two);
+  assert.equal(one.hidden, false);
+  assert.equal(two.hidden, true);
+  assert.equal(two.getAttribute('src'), '/plugins/two/', 'the hidden one is not blanked');
+  assert.deepEqual(pv.residentIds().sort(), ['one', 'two']);
+});
+
+test('pluginView: a hidden resident frame\'s route message updates its record but never the hash', async () => {
+  const { window, go, residentOf } = await setupKeepAlive({ ka: kaRow(), b: kaRow({ frontendKeepAlive: false }) });
+  await go('#plugin/ka/');
+  const win = fakeContentWindow(residentOf('ka'));
+
+  // View closed.
+  await go('#session=abc');
+  postRoute(window, win, '/call/1');
+  assert.equal(window.location.hash, '#session=abc');
+
+  // Another plugin showing.
+  await go('#plugin/b/');
+  postRoute(window, win, '/call/2');
+  assert.equal(window.location.hash, '#plugin/b/');
+
+  // The record did move: re-entry at '/' lands on the tracked route.
+  await go('#plugin/ka/');
+  assert.equal(window.location.hash, '#plugin/ka/call/2');
+});
+
+test('pluginView: reconcile evicts a resident frame whose row no longer qualifies', async (t) => {
+  const cases = [
+    ['stopped', kaRow({ state: 'stopped' })],
+    ['disabled', kaRow({ enabled: false, state: 'disabled' })],
+    ['invalid', kaRow({ state: 'invalid' })],
+    ['keepAlive dropped', kaRow({ frontendKeepAlive: false })],
+    ['404', 404],
+  ];
+  for (const [label, row] of cases) {
+    await t.test(label, async () => {
+      const rows = { ka: kaRow() };
+      const { go, calls, residentOf, pv, residentChanges } = await setupKeepAlive(rows);
+      await go('#plugin/ka/');
+      const frame = residentOf('ka');
+      await go('#');
+      const changes = residentChanges();
+
+      rows.ka = row;
+      await pv.reconcile();
+      assert.equal(frame.isConnected, false, 'the frame is detached');
+      assert.deepEqual(pv.residentIds(), []);
+      assert.equal(residentChanges(), changes + 1, 'onResidentChange fires on eviction');
+
+      // Re-entry is a fresh load again: status read, then a new frame.
+      rows.ka = kaRow();
+      const before = calls.length;
+      await go('#plugin/ka/');
+      assert.ok(calls.slice(before).includes('GET /api/plugins/ka/status'));
+      const fresh = residentOf('ka');
+      assert.ok(fresh && fresh !== frame, 'a new resident frame');
+      assert.equal(fresh.getAttribute('src'), '/plugins/ka/');
+    });
+  }
+});
+
+test('pluginView: reconcile keeps the frame on crashed / failed / starting / a server or network error', async (t) => {
+  const cases = [
+    ['crashed', kaRow({ state: 'crashed' })],
+    ['failed', kaRow({ state: 'failed' })],
+    ['starting', kaRow({ state: 'starting' })],
+    ['500', 500],
+    ['network error', 'network'],
+  ];
+  for (const [label, row] of cases) {
+    await t.test(label, async () => {
+      const rows = { ka: kaRow() };
+      const { go, residentOf, pv } = await setupKeepAlive(rows);
+      await go('#plugin/ka/');
+      const frame = residentOf('ka');
+      await go('#');
+      rows.ka = row;
+      await pv.reconcile();
+      assert.ok(residentOf('ka') === frame && frame.isConnected);
+      assert.equal(frame.getAttribute('src'), '/plugins/ka/');
+      assert.deepEqual(pv.residentIds(), ['ka']);
+    });
+  }
+});
+
+test('pluginView: reconcile evicts a frame its Settings action put new code under', async (t) => {
+  for (const action of ['restart', 'update', 'version']) {
+    await t.test(action, async () => {
+      const rows = { ka: kaRow() };
+      const { go, residentOf, pv } = await setupKeepAlive(rows);
+      await go('#plugin/ka/');
+      const frame = residentOf('ka');
+      await go('#settings');
+      // The row still qualifies (a restarted backend reads ready): only the
+      // action drives the eviction.
+      await pv.reconcile({ action, ids: ['ka'] });
+      assert.equal(frame.isConnected, false);
+      assert.deepEqual(pv.residentIds(), []);
+    });
+  }
+});
+
+test('pluginView: reconcile keeps a frame through a crash, a lazy restart, and an action it was not named in', async (t) => {
+  const cases = [
+    ['crash', kaRow({ state: 'crashed' }), undefined],
+    ['lazy restart', kaRow({ state: 'starting' }), undefined],
+    ['restart of another plugin', kaRow(), { action: 'restart', ids: ['other'] }],
+    ['a non-evicting action naming it', kaRow(), { action: 'start', ids: ['ka'] }],
+  ];
+  for (const [label, row, change] of cases) {
+    await t.test(label, async () => {
+      const rows = { ka: kaRow() };
+      const { go, residentOf, pv } = await setupKeepAlive(rows);
+      await go('#plugin/ka/');
+      const frame = residentOf('ka');
+      await go('#settings');
+      rows.ka = row;
+      await pv.reconcile(change);
+      assert.ok(residentOf('ka') === frame && frame.isConnected);
+      assert.equal(frame.getAttribute('src'), '/plugins/ka/');
+    });
+  }
+});
+
+test('pluginView: reconcile evicting the showing frame loads the plugin afresh', async () => {
+  const rows = { ka: kaRow() };
+  const { go, calls, residentOf, pv } = await setupKeepAlive(rows);
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  rows.ka = kaRow({ state: 'stopped' });
+  await pv.reconcile();
+  await tick();
+  assert.equal(frame.isConnected, false);
+  assert.ok(calls.includes('POST /api/plugins/ka/start'), 'the plain path auto-starts the stopped plugin');
+  const fresh = residentOf('ka');
+  assert.ok(fresh && fresh !== frame && fresh.hidden === false);
+});
+
+test('pluginView: re-entry\'s background check evicts and reloads when the row is disabled', async () => {
+  const rows = { ka: kaRow() };
+  const { window, go, calls, residentOf, pv } = await setupKeepAlive(rows, { startFails: true });
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  await go('#');
+  rows.ka = kaRow({ enabled: false, state: 'disabled' });
+  const before = calls.length;
+  await go('#plugin/ka/');
+  await tick();
+  assert.equal(frame.isConnected, false);
+  assert.deepEqual(pv.residentIds(), []);
+  assert.ok(calls.slice(before).includes('POST /api/plugins/ka/start'), 'reloaded through the plain path');
+  const overlay = window.document.getElementById('plugin-overlay');
+  assert.equal(overlay.hidden, false);
+  assert.match(overlay.textContent, /plugin is disabled/);
+});
+
+test('pluginView: teardown mid-start of a keepAlive plugin creates no resident frame', async () => {
+  let resolveStart;
+  const startResult = new Promise((res) => {
+    resolveStart = () => res({ ok: true, status: 200, json: async () => ({ state: 'ready' }) });
+  });
+  const { window, go, pv } = await setupKeepAlive({ ka: kaRow({ state: 'stopped' }) }, { startResult });
+  await go('#plugin/ka/');
+  await go('#');
+  resolveStart();
+  await tick();
+  assertNull(window.document.querySelector('iframe.plugin-frame-resident'), 'no resident frame');
+  assert.deepEqual(pv.residentIds(), []);
+});
+
 // ── pluginManager (Settings → Plugins: installed list + Plugin Library) ──
 
 function buildPluginManagerDom(document) {
@@ -273,14 +611,15 @@ function ndjsonResponse(events) {
 function stubPluginManagerFetch({
   initiallyInstalled = false, updateAvailable = true,
   installResult, installPostClone = null, updateResult, updatePostPull = null, updateRestarted = null,
+  rows = [], projects = [],
 } = {}) {
   const calls = [];
   let installed = initiallyInstalled;
   globalThis.fetch = (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push(`${method} ${url}`);
-    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => ({ rows: [], notices: [] }) });
-    if (url === '/api/projects') return Promise.resolve({ ok: true, json: async () => [] });
+    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => ({ rows, notices: [] }) });
+    if (url === '/api/projects') return Promise.resolve({ ok: true, json: async () => projects });
     if (url === '/api/plugins/library') {
       return Promise.resolve({ ok: true, json: async () => ({ entries: [{
         id: 'code-share', name: 'Code Share', description: 'Share code snippets.',
@@ -311,7 +650,7 @@ function stubPluginManagerFetch({
       }
       return Promise.resolve(ndjsonResponse([
         { type: 'chunk', phase: 'pull', text: 'Updating code-share...\n' },
-        { type: 'result', ok: true, result: { id: 'code-share', name: 'code-share', postPull: updatePostPull, restarted: updateRestarted } },
+        { type: 'result', ok: true, result: { id: 'code-share', name: 'code-share', project: 'code-share', postPull: updatePostPull, restarted: updateRestarted } },
       ]));
     }
     return Promise.resolve({ ok: true, json: async () => ({}) });
@@ -331,13 +670,13 @@ function deferred() {
 // 'fail' or {postPull?, restarted?}. A successful update clears that entry's
 // updateAvailable, as the next list() would. The library GET answers 500
 // while `libraryFails()` is true.
-function stubLibraryFetch({ entries, updates = {}, libraryFails = () => false }) {
+function stubLibraryFetch({ entries, updates = {}, libraryFails = () => false, rows = [] }) {
   const calls = [];
   const state = entries.map(e => ({ ...e }));
   globalThis.fetch = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push(`${method} ${url}`);
-    if (url === '/api/plugins') return { ok: true, json: async () => ({ rows: [], notices: [] }) };
+    if (url === '/api/plugins') return { ok: true, json: async () => ({ rows, notices: [] }) };
     if (url === '/api/projects') return { ok: true, json: async () => [] };
     if (url === '/api/plugins/library') {
       if (libraryFails()) return { ok: false, status: 500, json: async () => ({ error: 'library unavailable' }) };
@@ -359,7 +698,7 @@ function stubLibraryFetch({ entries, updates = {}, libraryFails = () => false })
       state.find(e => e.id === id).updateAvailable = false;
       return ndjsonResponse([
         { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
-        { type: 'result', ok: true, result: { id, name: id, postPull: spec.postPull ?? null, restarted: spec.restarted ?? null } },
+        { type: 'result', ok: true, result: { id, name: id, project: id, postPull: spec.postPull ?? null, restarted: spec.restarted ?? null } },
       ]);
     }
     return { ok: true, json: async () => ({}) };
@@ -558,6 +897,83 @@ test('pluginManager: Update shows progress, then refreshes', async () => {
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), false);
   const row = dom.libList.querySelector('.pll-row');
   assert.ok(row.querySelector('.pll-installed-as'), 'still installed after update');
+});
+
+// The change pluginView.js evicts keep-alive frames on (onCatalogChange's argument).
+const pmRow = (over = {}) => ({
+  id: 'ka', name: 'KA', project: 'kaproj', state: 'ready', stale: true, enabled: true,
+  hasBackend: true, localOnly: [], conventions: [], roles: [], playbooks: [], errors: [], ...over,
+});
+
+test('pluginManager: Restart and a version switch report {action, ids}; Stop reports none', async (t) => {
+  const setupMgr = async () => {
+    const window = makeWindow();
+    const dom = buildPluginManagerDom(window.document);
+    stubPluginManagerFetch({ rows: [pmRow()], projects: [{ name: 'kaproj', worktrees: [{ worktreeName: 'wt' }] }] });
+    const { installPluginManager } = await freshImport('pluginManager.js');
+    const changes = [];
+    const mgr = installPluginManager({ onCatalogChange: (c) => { changes.push(c); } });
+    await mgr.load();
+    const button = label => [...dom.list.querySelectorAll('button')].find(b => b.textContent === label);
+    return { window, dom, changes, button };
+  };
+  await t.test('Restart', async () => {
+    const { changes, button } = await setupMgr();
+    button('Restart').click();
+    await tick();
+    assert.deepEqual(changes, [{ action: 'restart', ids: ['ka'] }]);
+  });
+  await t.test('version switch', async () => {
+    const { window, dom, changes } = await setupMgr();
+    const sel = dom.list.querySelector('select.pl-version');
+    sel.value = 'worktree:wt';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await tick();
+    assert.deepEqual(changes, [{ action: 'version', ids: ['ka'] }]);
+  });
+  await t.test('Stop', async () => {
+    const { changes, button } = await setupMgr();
+    button('Stop').click();
+    await tick();
+    assert.deepEqual(changes, [undefined]);
+  });
+});
+
+test('pluginManager: Update reports {action:\'update\'} naming every plugin in the updated project', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ initiallyInstalled: true, rows: [
+    pmRow({ id: 'share-a', project: 'code-share' }),
+    pmRow({ id: 'share-b', project: 'code-share' }),
+    pmRow({ id: 'elsewhere', project: 'other' }),
+  ] });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const changes = [];
+  const mgr = installPluginManager({ onCatalogChange: (c) => { changes.push(c); } });
+  await mgr.load();
+  [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update').click();
+  await tick();
+  assert.deepEqual(changes, [{ action: 'update', ids: ['share-a', 'share-b'] }]);
+});
+
+test('pluginManager: Update all reports {action:\'update\'} naming the plugins of the projects that updated', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubLibraryFetch({
+    entries: [
+      { id: 'one', name: 'One', installed: true, updateAvailable: true },
+      { id: 'two', name: 'Two', installed: true, updateAvailable: true },
+    ],
+    updates: { two: 'fail' },
+    rows: [pmRow({ id: 'p-one', project: 'one' }), pmRow({ id: 'p-two', project: 'two' })],
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const changes = [];
+  const mgr = installPluginManager({ onCatalogChange: (c) => { changes.push(c); } });
+  await mgr.load();
+  dom.updateAll.click();
+  await tick(20);
+  assert.deepEqual(changes, [{ action: 'update', ids: ['p-one'] }], 'the failed update names nothing');
 });
 
 test('pluginManager: Update failure (git pull failed) surfaces the error and tail', async () => {
@@ -1128,6 +1544,66 @@ test('appSwitcher: renders Conductor + plugins, navigates into the hash space, s
   await switcher.refresh();
   assert.equal(select.hidden, true);
   assert.equal(h1.hidden, false);
+});
+
+test('appSwitcher: a resident plugin\'s option carries the running marker, re-read on render()', async () => {
+  const window = makeWindow('http://localhost/#');
+  const { select } = buildSwitcherDom(window.document);
+  stubPluginsFetch([
+    { id: 'live', name: 'Live', navLabel: 'Live', enabled: true, hasFrontend: true },
+    { id: 'plain', name: 'Plain', navLabel: 'Plain', enabled: true, hasFrontend: true },
+  ]);
+  const { installAppSwitcher, RESIDENT_SUFFIX } = await freshImport('appSwitcher.js');
+  let ids = ['live'];
+  const switcher = installAppSwitcher({ residentIds: () => ids });
+  await new Promise(r => setTimeout(r, 0));
+  const labels = () => [...select.options].map(o => o.textContent);
+  assert.deepEqual(labels(), ['Conductor', `Live${RESIDENT_SUFFIX}`, 'Plain']);
+  assert.match(RESIDENT_SUFFIX, /\w/, 'the marker is text, not colour alone');
+
+  // Still just an entry: selecting it navigates as before.
+  select.value = 'live';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(window.location.hash, '#plugin/live/');
+
+  ids = [];
+  switcher.render();
+  assert.deepEqual(labels(), ['Conductor', 'Live', 'Plain']);
+});
+
+test('appSwitcher + pluginView: the marker appears on first entry and clears when reconcile evicts', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  const { select } = buildSwitcherDom(window.document);
+  const rows = { ka: kaRow() };
+  stubRowsApi(rows, { switcherRows: [{ id: 'ka', name: 'Keep', navLabel: 'Keep', enabled: true, hasFrontend: true }] });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  const { installAppSwitcher, RESIDENT_SUFFIX } = await freshImport('appSwitcher.js');
+
+  // app.js's wiring, authored here (app.js itself cannot be loaded).
+  let appSwitcher = null;
+  const pluginView = installPluginView({
+    onClosed: () => appSwitcher?.sync(),
+    onResidentChange: () => appSwitcher?.render(),
+  });
+  appSwitcher = installAppSwitcher({ residentIds: () => pluginView.residentIds() });
+  await appSwitcher.refresh();
+  const label = () => select.querySelector('option[value="ka"]').textContent;
+  assert.equal(label(), 'Keep');
+
+  window.location.hash = '#plugin/ka/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  assert.equal(label(), `Keep${RESIDENT_SUFFIX}`, 'marked once the frame is resident');
+
+  window.location.hash = '#';
+  await window.happyDOM.waitUntilComplete();
+  assert.equal(label(), `Keep${RESIDENT_SUFFIX}`, 'still marked while hidden');
+
+  rows.ka = kaRow({ enabled: false, state: 'disabled' });
+  await pluginView.reconcile();
+  assert.equal(label(), 'Keep', 'eviction clears the marker');
 });
 
 // ── app.js wiring: switcher selection after a round-trip ──────────────────
