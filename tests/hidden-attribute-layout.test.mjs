@@ -23,6 +23,10 @@
 // elements that carry `hidden` and are listed in JS_BUILT_HIDDEN below. A
 // dialog label built in JS is not swept — an accepted gap, since the three that
 // exist (workspaceDialog.js, settings.js, newProjectDialog.js) are never hidden.
+// Nor is any other JS-built element that toggles `hidden` outside that list —
+// e.g. .lightbox-backdrop (lightbox.js), .costs-proj-detail (costs.js),
+// details.sub-conversation (blocks.js) — a known gap: an entry must be added to
+// JS_BUILT_HIDDEN to be covered.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -194,8 +198,9 @@ test('nothing in index.html lays out while carrying the hidden attribute', async
 
 });
 
-// Elements public/ builds in JS that toggle `hidden`, re-created here in their
-// real parent so the same sweep sees them under the real styles.css.
+// The JS-built elements this sweep covers — those that toggle `hidden` inside
+// #plugin-view — re-created here in their real parent so the same sweep sees
+// them under the real styles.css.
 // pluginView.js's frames sit side by side in #plugin-view and only `hidden`
 // picks which one shows: the `#plugin-frame, .plugin-frame-resident` rule must
 // declare no `display`, or a hidden resident frame renders over (or beside) the
@@ -206,7 +211,7 @@ const JS_BUILT_HIDDEN = [
   ['plugin-view', '<iframe class="plugin-frame-resident" data-plugin-id="ka" hidden></iframe>'],
 ];
 
-test('JS-built elements carrying the hidden attribute do not lay out', async () => {
+test('the JS-built elements listed in JS_BUILT_HIDDEN do not lay out', async () => {
   const { window, document } = await renderIndex();
   const built = JS_BUILT_HIDDEN.map(([parentId, html]) => {
     const parent = document.getElementById(parentId);
