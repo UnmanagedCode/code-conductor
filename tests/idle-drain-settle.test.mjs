@@ -707,10 +707,12 @@ test('e2e trap: idle completion WITH a re-invocation turn → no early wake, sin
 // spawning caller calls prompt(), which has no spawning guard), `exited` /
 // `crashed`, or `idle` (that prompt's turn ended before the read did) — and in
 // `idle` a replayed task_notification would arm an idle-drain settle or fire an
-// armed renewal's `/clear`. Every kind replay emits was checked against both
-// hubs' onEvent: neither acts on any of them (they act on turn_end,
-// steer_settled, rotation_complete, task_updated, task_notification), so ALL
-// replayed events are filtered from both hub registrations.
+// armed renewal's `/clear`. The filter is load-bearing: the hubs act on
+// turn_end, steer_settled, rotation_complete, task_updated and
+// task_notification, and replay emits task_notification. It emits none of the
+// others, so filtering ALL replayed events from both hub registrations changes
+// nothing else, and stops a reload from arming a settle or firing an armed
+// renewal.
 //
 // PINS: a replayed task_notification reaches the manager's event stream (so
 // clients render it) but neither hub, even while the instance is idle; the same

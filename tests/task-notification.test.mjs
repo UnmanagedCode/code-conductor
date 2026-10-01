@@ -252,11 +252,18 @@ test('12: a killed or stopped enqueue replays nothing', async (t) => {
   await t.test('stopped', () => assert.deepEqual(replayPersistedLine({ ...killed, content: killed.content.replace('<status>killed</status>', '<status>stopped</status>') }), []));
 });
 
-test('13: foreground and stopped tasks get no event on replay', async () => {
-  const ids = new Set((await replayed(MAIN)).map((e) => e.toolUseId));
-  assert.equal(ids.has(C7), false, 'C7 foreground Agent');
-  assert.equal(ids.has(C3), false, 'C3 TaskStop');
-  assert.deepEqual(await replayed(KILLED), [], 'C9 SIGTERM');
+// A recorded CLI fact, not a pin of the replay filter: there is nothing for
+// replay to drop for these two, because the CLI never persists an enqueue.
+test('13: the CLI persists no enqueue for a foreground Agent or a TaskStop\'d task', async () => {
+  const enqueues = (await readJsonl(`${MAIN}.transcript.jsonl`)).filter((l) => l.type === 'queue-operation' && typeof l.content === 'string');
+  assert.ok(enqueues.length > 0, 'fixture check: the main transcript holds enqueues');
+  for (const [label, tu] of [['C7 foreground Agent', C7], ['C3 TaskStop', C3]]) {
+    assert.equal(enqueues.some((l) => l.content.includes(tu)), false, label);
+  }
+});
+
+test('13b: a SIGTERM\'d task\'s session replays no task_notification', async () => {
+  assert.deepEqual(await replayed(KILLED), []);
 });
 
 test('14: the live stream yields exactly one notified event per background task', async (t) => {

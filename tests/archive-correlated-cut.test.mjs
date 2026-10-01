@@ -327,13 +327,13 @@ for (const [label, head] of ABANDONING_HEADS) {
   });
 }
 
-// The `system` carve-out's other direction. `soft_interrupted` is the ONE
-// subtype replay emits, so a head with it may have an archive counterpart and
-// must abandon. Its own fixture: inserting the interrupt line into the shared
-// one would shift every index in T20/T21.
+// The `system` carve-out's other direction. `soft_interrupted` is a subtype
+// replay emits (T23 owns the full set), so a head with it may have an archive
+// counterpart and must abandon. Its own fixture: inserting the interrupt line
+// into the shared one would shift every index in T20/T21.
 //
-// PINS: `system` is skipped only when its subtype is not `soft_interrupted`.
-test('T22: a system[soft_interrupted] head abandons — replay emits that one subtype', async () => {
+// PINS: a `system`/`soft_interrupted` head is not skipped.
+test('T22: a system[soft_interrupted] head abandons — replay emits that subtype', async () => {
   const r = await freshProjectsRoot();
   try {
     const cwd = '/fake/t22';
