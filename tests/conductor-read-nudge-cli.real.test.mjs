@@ -57,11 +57,17 @@ t('an additionalContext-only PreToolUse reply persists a hook_additional_context
     const frame = await runClaude(dir, settingsJSON(hooks.url, { pre: [ANCHORED] }), PROMPT);
     const pre = hooks.of('PreToolUse', 'Bash');
     assert.ok(pre.length >= 1, 'the anchored-regex matcher fired for Bash');
-    const atts = (await attachments(dir, frame.session_id)).filter(a => a.content?.includes(MARKER));
-    assert.ok(atts.length >= 1, 'the reply was persisted as a hook_additional_context attachment');
+    // Selected by the envelope's id, not by content, so a changed content shape
+    // fails the shape assertion below rather than vanishing from the filter.
+    const atts = (await attachments(dir, frame.session_id)).filter(a => a.toolUseID === pre[0].tool_use_id);
+    assert.ok(atts.length >= 1, 'the reply was persisted as a hook_additional_context attachment keyed by the envelope\'s tool_use_id');
     assert.equal(atts[0].hookEvent, 'PreToolUse');
     assert.equal(atts[0].hookName, 'PreToolUse:Bash');
-    assert.equal(atts[0].toolUseID, pre[0].tool_use_id, 'the attachment is keyed by the envelope\'s tool_use_id');
+    // The shape readNudgeEventFromAttachment depends on: an ARRAY of strings,
+    // one of which is the hook's additionalContext verbatim. A bare string here
+    // would leave the read nudge unreplayable.
+    assert.ok(Array.isArray(atts[0].content), `content is ${typeof atts[0].content}, not an array — replay would drop the nudge`);
+    assert.ok(atts[0].content.some(c => c === MARKER), 'one content element is the additionalContext string, verbatim');
   } finally { await hooks.close(); await clean(); }
 
   const { dir: dir2, clean: clean2 } = await fixture();
