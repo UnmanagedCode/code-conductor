@@ -20,6 +20,7 @@ import {
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
+import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
 
 // A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
 // disk that the live stream never carries (uuid, isSidechain, attachment,
@@ -31,7 +32,8 @@ export interface PersistedLine extends WireEnvelope {
   uuid?: unknown;
   sessionId?: unknown;
   isSidechain?: boolean;
-  attachment?: { type?: unknown; prompt?: unknown } | null;
+  // `prompt` on a queued_command; the rest on a hook_additional_context.
+  attachment?: { type?: unknown; prompt?: unknown; hookEvent?: unknown; hookName?: unknown; toolUseID?: unknown; content?: unknown } | null;
   toolUseResult?: { agentId?: string } | null;
 }
 
@@ -174,8 +176,9 @@ export function replayPersistedLine(
   }
 
   // The CLI's compaction boundary: the same `compaction` event the live stdout
-  // frame produces (a `system` event here would break the one-replayed-system-
-  // subtype invariant the event archive relies on).
+  // frame produces (a `system` event here would break the replayed-system-
+  // subtypes invariant the event archive relies on — see neverPersisted in
+  // src/eventArchive.ts).
   if (line.type === 'system' && line.subtype === 'compact_boundary') {
     events.push(compactionEvent(line));
     return tagAndReturn();
@@ -204,6 +207,15 @@ export function replayPersistedLine(
     // that.
     attachSkillLoad(queuedEvents, line, pendingSkillLoads);
     for (const ev of queuedEvents) events.push(ev);
+    return tagAndReturn();
+  }
+
+  // A PreToolUse `additionalContext`, persisted between the tool_use line and
+  // its tool_result line. Only cc's own read nudge is rebuilt — the same event
+  // the broker emitted live; every other hook's context stays off the transcript.
+  if (line.type === 'attachment' && line.attachment?.type === 'hook_additional_context') {
+    const ev = readNudgeEventFromAttachment(line.attachment);
+    if (ev) events.push(ev);
     return tagAndReturn();
   }
 

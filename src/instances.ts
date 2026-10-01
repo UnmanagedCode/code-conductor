@@ -88,6 +88,7 @@ import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbo
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
+import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
@@ -723,6 +724,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _lastContextUsage: unknown;
   _pending: Map<string, PendingRequest>;
   _hooks: HookBroker;
+  _readNudge: ConductorReadNudge | null;
   _stderr: string;
   _lastLeafUuid: string | null;
   _planFiles: PlanFileTracker;
@@ -926,13 +928,19 @@ export class Instance extends EventEmitter implements InstanceLike {
     // alone — that session continues).
     this._lastContextUsage = null;
     this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
+    // A conductor's read-nudge run counter (src/conductorReadNudge.ts). In
+    // memory only: a resume-after-restart or a fork builds a new Instance and
+    // starts the run at 0. Reset by _setStatus on every exit from `turn`.
+    this._readNudge = isConductorInstance(this) ? new ConductorReadNudge() : null;
     // Per-instance PreToolUse/PostToolUse hook callback answerer: allows
-    // local calls, applies the SessionRedirect policy to redirected ones.
-    // See src/hookBroker.ts.
+    // local calls, applies the SessionRedirect policy to redirected ones, and
+    // answers a conductor's read-nudge tools. See src/hookBroker.ts.
     this._hooks = new HookBroker({
       // A GETTER, not the value: the redirect is attached after construction
       // (it needs this instance's emit) and dropped when the session ends.
       getRedirect: () => this._redirect,
+      readNudge: this._readNudge,
+      onReadNudge: (n) => this._emitUi(readNudgeEvent(n)),
     });
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
@@ -1510,6 +1518,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (next !== 'turn') {
       this.interrupting = false;
       this._clearInterruptArm();
+      // The read-nudge run is per turn. A mid-turn steer joins the running turn
+      // (status stays `turn`), so it does not reset the run — the conductor
+      // still has not delegated.
+      this._readNudge?.reset();
     }
     // _turnForceAborted is deliberately NOT cleared here. A turn START looked like
     // the safe point, but it is not: _onTurnEnd defers an abort's wake while a
@@ -2242,10 +2254,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       // Hooks (src/settings.ts). When a hookCallbackUrl is supplied, an
       // `http` PreToolUse hook is registered for the mutating tools; the
       // HookBroker allows local calls and applies the redirect policy to
-      // redirected ones.
+      // redirected ones. A conductor also gets the read-nudge entry.
       '--settings', buildSettingsJSON({
         hookCallbackUrl: this.hookCallbackUrl ?? undefined,
         redirect: this._redirect !== null,
+        conductor: isConductorInstance(this),
       }),
     ];
     // Route tool-permission prompts over the stream-json control channel as
