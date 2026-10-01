@@ -11,7 +11,7 @@ import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
+import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../public/userQuestionAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -153,25 +153,6 @@ test('an unstamped "My answers:" prompt renders as a plain user bubble even with
   assertNull(root.querySelector('.block.question-answer'), 'no answer block');
   assert.ok(wrap.querySelector('.user-text'), 'plain user-text block');
   assert.match(wrap.textContent, /My answers:/);
-});
-
-test('stamped text that fails the round-trip falls back to the raw text inside the answer bubble', async () => {
-  const questions = [FRUIT, SIZE];
-  // A multi-line custom answer: its second line is not a `- <question>: ` line,
-  // so re-formatting the parsed answers cannot reproduce the text.
-  const text = 'My answers:\n- Pick a fruit: Apple\n- Pick a size: extra\nlarge';
-  const root = await render([{
-    kind: 'user_echo', userIndex: 0, text,
-    questionAnswer: { toolUseId: 'tu_q', questions },
-  }]);
-  const wrap = root.querySelector('.msg.user.question-answer');
-  assert.ok(wrap, 'still an answer bubble');
-  assert.match(wrap.querySelector('.qa-head').textContent, /Answered · 2 questions$/);
-  assertNull(wrap.querySelector('.qa-list'), 'no structured rows for an unfaithful parse');
-  const raw = wrap.querySelector('.block.question-answer > .user-text');
-  assert.ok(raw, 'the raw text block is kept visible');
-  assert.equal(raw.textContent.replace(/\s+/g, ' ').includes('extra'), true);
-  assert.ok(wrap.querySelector('.role .user-view-toggle'), 'the raw/md controls reach the role row');
 });
 
 test('batch parity: the same events rendered live and through renderEventBatch produce identical answer blocks', async () => {
@@ -427,4 +408,168 @@ test('a stamp for a card that never renders in this view locks nothing and clear
   assert.equal(conv.answeredQuestions.size, 0, 'clear() forgets recorded answers');
   for (const ev of [CARD, CARD_RESULT]) conv.apply(ev);
   assertCardOpen(root.querySelector('.block.user-question'), 'after clear');
+});
+
+// --- Hard-case answers: exact rows on replay, exact picks on the locked card ---
+
+const opts = (...labels) => labels.map(label => ({ label }));
+const DASH = { question: 'Is "x" ok?', options: opts('Fast — risky', 'Slow — safe') };
+const PREFIXED = { question: 'Sure?', options: opts('Yes', 'Yes — sure') };
+const COMMA = { question: 'Pick types', multiSelect: true, options: opts('Lists, tuples', 'Dicts') };
+const SAME = { question: 'Same?', options: opts('Yes', 'No') };
+const QUOTE = { question: 'Greet', options: opts('say "hi"', 'wave') };
+
+const HARD_CASES = {
+  'case 1: a label holding " — ", with a note': [[DASH], [{ kind: 'option', label: 'Slow — safe', note: 'thanks' }]],
+  'case 2: a label that begins with another label': [[PREFIXED], [{ kind: 'option', label: 'Yes — sure' }]],
+  'case 3: an Other answer that begins with "<label> — "': [[PREFIXED], [{ kind: 'custom', text: 'Yes — maybe' }]],
+  'case 4: a multiSelect label holding ", "': [[COMMA], [{ kind: 'multi', labels: ['Lists, tuples', 'Dicts'] }]],
+  'case 5: two questions with identical text': [[SAME, SAME],
+    [{ kind: 'option', label: 'No', note: 'second' }, { kind: 'option', label: 'Yes' }]],
+  'case 6: a multi-line note and multi-line custom text in a two-question card': [[FRUIT, SAME],
+    [{ kind: 'option', label: 'Apple', note: 'line one\nline two' }, { kind: 'custom', text: 'extra\nlarge' }]],
+  'a label holding a quote': [[QUOTE], [{ kind: 'option', label: 'say "hi"' }]],
+};
+
+function assertRows(root, questions, answers) {
+  const rows = items(root);
+  assert.equal(rows.length, questions.length, 'one row per question');
+  answers.forEach((a, i) => {
+    const row = rows[i];
+    assert.equal(row.dataset.kind, a.kind, `row ${i}: kind`);
+    const labels = a.kind === 'option' ? [a.label] : a.kind === 'multi' ? a.labels : [];
+    assert.deepEqual([...row.querySelectorAll('.qa-choice')].map(n => n.textContent), labels, `row ${i}: chips`);
+    if (a.kind === 'custom') assert.equal(row.querySelector('.qa-custom').textContent, a.text, `row ${i}: custom text`);
+    else assertNull(row.querySelector('.qa-custom'), `row ${i}: no custom text`);
+    if (a.note) assert.equal(row.querySelector('.qa-note').textContent, `— ${a.note}`, `row ${i}: note`);
+    else assertNull(row.querySelector('.qa-note'), `row ${i}: no note`);
+  });
+  assertNull(root.querySelector('.user-text'), 'no raw text fallback');
+}
+
+function assertCardPicks(card, questions, answers) {
+  assert.ok(card.classList.contains('answered'), 'the card is locked');
+  answers.forEach((a, i) => {
+    if (questions.length > 1) card.querySelectorAll('.uq-tab')[i].click();
+    const pane = card.querySelector(`.uq-pane[data-idx="${i}"]`);
+    const want = a.kind === 'option' ? [a.label] : a.kind === 'multi' ? a.labels : [];
+    const picked = [...pane.querySelectorAll('button.uq-opt.picked')].map(b => b.dataset.label);
+    assert.deepEqual(picked, questions[i].options.map(o => o.label).filter(l => want.includes(l)), `pane ${i}: picks`);
+    const input = pane.querySelector('.uq-custom-input');
+    assert.equal(input.disabled, true, `pane ${i}: field disabled`);
+    const draft = a.kind === 'custom' ? a.text : (a.note ?? '');
+    // A text <input> strips line breaks from its value (HTML value sanitization).
+    assert.equal(input.value, draft.replace(/[\r\n]/g, ''), `pane ${i}: field text`);
+  });
+}
+
+test('replay: hard-case answers render their exact rows and lock the card', async (t) => {
+  for (const [name, [questions, answers]] of Object.entries(HARD_CASES)) {
+    await t.test(name, async () => {
+      const { renderEventBatch } = await freshConversation();
+      const batch = renderEventBatch([
+        { kind: 'user_question', toolUseId: 'tu_q', questions }, CARD_RESULT, TURN_END,
+        stamped(questions, answers),
+      ]);
+      assertRows(batch.holder, questions, answers);
+      assertCardPicks(batch.holder.querySelector('.block.user-question'), questions, answers);
+    });
+  }
+});
+
+const OLD_FORMAT = {
+  'old single-question form': [[FRUIT], 'Answer to "Pick a fruit": Banana — ripe ones only'],
+  'old multi-question form': [[FRUIT, SIZE], 'My answers:\n- Pick a fruit: Apple\n- Pick a size: L'],
+};
+
+test('an old-format answer renders raw inside the answer bubble and locks the card with no pick', async (t) => {
+  for (const [name, [questions, text]] of Object.entries(OLD_FORMAT)) {
+    await t.test(name, async () => {
+      const { conv, root } = await freshConversation();
+      for (const ev of [
+        { kind: 'user_question', toolUseId: 'tu_q', questions }, CARD_RESULT, TURN_END,
+        { kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions } },
+      ]) conv.apply(ev);
+      const wrap = root.querySelector('.msg.user.question-answer');
+      assert.ok(wrap, 'still an answer bubble');
+      assert.match(wrap.querySelector('.qa-head').textContent, /Answered/);
+      assertNull(wrap.querySelector('.qa-list'), 'no structured rows for an unparseable answer');
+      const raw = wrap.querySelector('.block.question-answer > .user-text');
+      assert.ok(raw, 'the raw text block is kept visible');
+      assert.ok(raw.textContent.includes('Apple') || raw.textContent.includes('Banana'), 'the raw text is shown');
+      assert.ok(wrap.querySelector('.role .user-view-toggle'), 'the raw/md controls reach the role row');
+      const card = root.querySelector('.block.user-question');
+      assertStillLocked(card, name);
+      assert.equal(card.querySelectorAll('button.uq-opt.picked').length, 0, 'no option is picked');
+      for (const i of card.querySelectorAll('.uq-custom-input')) assert.equal(i.value, '', 'no field text');
+    });
+  }
+});
+
+// Text the strict parse accepts but the formatter would never emit: the bubble
+// and the card must agree on it, as they do on an old-format answer.
+const NON_CANONICAL = {
+  'untrimmed custom text': 'Answer to "Pick a fruit": (own answer) " Mango "',
+  'a JSON-escape spelling of a label': 'Answer to "Pick a fruit": "\\u0041pple"',
+  'an untrimmed note': 'Answer to "Pick a fruit": "Banana" (note: " ripe ")',
+};
+
+function assertRawBubble(root) {
+  const wrap = root.querySelector('.msg.user.question-answer');
+  assert.ok(wrap, 'an answer bubble');
+  assertNull(wrap.querySelector('.qa-list'), 'no structured rows for a non-canonical answer');
+  assert.ok(wrap.querySelector('.block.question-answer > .user-text'), 'the raw text block is shown');
+}
+
+function assertLockedNoPick(card, label) {
+  assertStillLocked(card, label);
+  assert.equal(card.querySelectorAll('button.uq-opt.picked').length, 0, `${label}: no option is picked`);
+  for (const i of card.querySelectorAll('.uq-custom-input')) assert.equal(i.value, '', `${label}: no field text`);
+}
+
+test('a non-canonical answer the strict parse accepts renders raw and locks the card with no pick', async (t) => {
+  for (const [name, text] of Object.entries(NON_CANONICAL)) {
+    const echo = { kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions: [FRUIT] } };
+    await t.test(`${name}: premise — the strict parse accepts it`, () => {
+      assert.notDeepEqual(parseUserQuestionAnswers([FRUIT], text), [{ kind: 'none' }]);
+    });
+    await t.test(`${name}: live, the echo after the card`, async () => {
+      const { conv, root } = await freshConversation();
+      for (const ev of [CARD, CARD_RESULT, TURN_END, echo]) conv.apply(ev);
+      assertRawBubble(root);
+      assertLockedNoPick(root.querySelector('.block.user-question'), 'live');
+    });
+    await t.test(`${name}: the card born after its answer was seen`, async () => {
+      const { conv, root, renderEventBatch } = await freshConversation();
+      conv.apply(echo);
+      assertRawBubble(root);
+      const batch = renderEventBatch([CARD, CARD_RESULT], {}, { answeredQuestions: conv.answeredQuestions });
+      assertLockedNoPick(batch.holder.querySelector('.block.user-question'), 'older page');
+    });
+  }
+});
+
+// `question: false` is a card that renders (el() skips a false child) whose
+// question text is not a string.
+test('a card whose question text is not a string: the older-page path locks it without throwing', async (t) => {
+  const questions = [{ question: false, options: opts('Apple', 'Banana') }];
+  const card = { kind: 'user_question', toolUseId: 'tu_q', questions };
+  const stampedEcho = (text) => ({ kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions } });
+  await t.test('a foreign answer text locks it with no pick', async () => {
+    const { conv, root, renderEventBatch } = await freshConversation();
+    conv.apply(stampedEcho('Answer to "": Banana'));
+    assertRawBubble(root);
+    const batch = renderEventBatch([card, CARD_RESULT], {}, { answeredQuestions: conv.answeredQuestions });
+    assertLockedNoPick(batch.holder.querySelector('.block.user-question'), 'foreign text');
+  });
+  await t.test('the formatter\'s own text locks it with its pick, as its bubble rows show', async () => {
+    const { conv, root, renderEventBatch } = await freshConversation();
+    const answers = [{ kind: 'option', label: 'Banana', note: 'ripe' }];
+    conv.apply(stampedEcho(formatUserQuestionAnswers(questions, answers)));
+    assertRows(root, questions, answers);
+    const batch = renderEventBatch([card, CARD_RESULT], {}, { answeredQuestions: conv.answeredQuestions });
+    const cardEl = batch.holder.querySelector('.block.user-question');
+    assertStillLocked(cardEl, 'canonical text');
+    assertCardPicks(cardEl, questions, answers);
+  });
 });

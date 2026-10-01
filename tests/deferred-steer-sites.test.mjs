@@ -34,7 +34,7 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-steer-sites
 // settings store (see beforeEach) — deliberately NOT a curated preset, so a
 // change to the curated model list cannot break this test.
 const FLAGGED_MODEL = 'cc-test-steer-optout:cloud';
-const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
+const ANSWER_TEXT = 'Answer to "Pick a fruit": "Apple"';
 
 let ctx, baseUrl, instances, home, transcriptPath;
 let seq = 0;

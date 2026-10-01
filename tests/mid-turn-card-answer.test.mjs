@@ -41,7 +41,7 @@ const QUESTIONS = [{
 }];
 // Exactly what public/app.js's onUserQuestionSubmit sends for an Apple pick
 // (formatUserQuestionAnswers single-question short form).
-const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
+const ANSWER_TEXT = 'Answer to "Pick a fruit": "Apple"';
 // The wake callback IdleSubscriptionHub.deliver injects when a subscribed
 // worker finishes — the thing that keeps the conductor's turn alive.
 const WAKE_STUB = 'Worker `abc12345` finished its turn. Call get_recent_messages to inspect the result.';

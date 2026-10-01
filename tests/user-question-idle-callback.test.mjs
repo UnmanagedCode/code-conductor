@@ -66,7 +66,7 @@ const TOOL_RESULT_EVENT = {
   yielded: true,
 };
 // A formatted answer text (what the user would have submitted).
-const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
+const ANSWER_TEXT = 'Answer to "Pick a fruit": "Apple"';
 // The server's pairing stamp for the answer echo.
 const answerEcho = (text = ANSWER_TEXT) => ({
   kind: 'user_echo', text, questionAnswer: { toolUseId: Q_TOOL_USE_ID, questions: QUESTIONS },
@@ -254,7 +254,7 @@ test('live mode: user submits card, then echo arrives — card stays locked (nor
   assert.ok(submittedPayload, 'onSubmit was called');
 
   // Now the echo arrives (server echoes the user prompt).
-  conv.apply({ kind: 'user_echo', text: 'Answer to "Pick a fruit": Banana' });
+  conv.apply({ kind: 'user_echo', text: 'Answer to "Pick a fruit": "Banana"' });
 
   // Card remains locked (markAnswered no-ops because submitted=true).
   assert.equal(qBlock.submitted, true, 'card stays locked after echo');

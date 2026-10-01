@@ -4,11 +4,12 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, ImageBlock,
-  shouldRenderSystem, parseUserQuestionAnswers,
+  shouldRenderSystem,
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 import { buildQuestionAnswer } from './questionAnswerBubble.js';
+import { parseCanonicalUserQuestionAnswers } from './userQuestionAnswers.js';
 import { parseRenewSeed } from './renewSeed.js';
 import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
 import { promptOrigin } from './promptOrigin.js';
@@ -38,6 +39,12 @@ const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_
 
 export function isHistoryGapNode(node) {
   return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
+}
+
+// The picks a stamped answer locks its card with: none unless the text is
+// canonical, so the card never shows a pick the answer bubble renders raw.
+function answersToLock(questions, text) {
+  return parseCanonicalUserQuestionAnswers(questions, text) ?? questions.map(() => ({ kind: 'none' }));
 }
 
 function renderFileChip(a) {
@@ -571,7 +578,7 @@ export class Conversation {
     if (!toolUseId) return;
     this.answeredQuestions.set(toolUseId, ev.text ?? '');
     const qBlock = this.userQuestionBlocks.get(toolUseId);
-    if (qBlock) qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
+    if (qBlock) qBlock.markAnswered(answersToLock(qBlock.questions, ev.text));
   }
 
   _renderUserEcho(ev) {
@@ -931,7 +938,7 @@ export class Conversation {
     // Its answer may already have been seen: a newer lazy page, or an echo
     // that preceded the card's own page.
     const answered = this.answeredQuestions.get(ev.toolUseId);
-    if (answered !== undefined) block.markAnswered(parseUserQuestionAnswers(block.questions, answered));
+    if (answered !== undefined) block.markAnswered(answersToLock(block.questions, answered));
     this.root.appendChild(block.node);
     this._closeAssistantSegment();
     this._maybeScroll();

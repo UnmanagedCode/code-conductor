@@ -371,7 +371,7 @@ const uqCard = (id) => ({ kind: 'user_question', toolUseId: id, questions: [FRUI
 const uqResult = (id) => ({ kind: 'tool_result', toolUseId: id, content: 'awaiting', isError: true, parentToolUseId: null });
 const uqAnswer = (id) => ({
   kind: 'user_echo', userIndex: 7, parentToolUseId: null,
-  text: 'Answer to "Pick a fruit": Banana — ripe ones only',
+  text: 'Answer to "Pick a fruit": "Banana" (note: "ripe ones only")',
   questionAnswer: { toolUseId: id, questions: [FRUIT] },
 });
 // One card per test, so the first `.block.user-question` is it.
