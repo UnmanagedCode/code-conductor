@@ -556,6 +556,36 @@ test('TurnEndBlock: cost segment renders at 4dp, and is absent when unknown', ()
     'no cost figure at all when both cost and costDelta are null');
 });
 
+// The context-used segment sits just before the unchanged in=/out= usage
+// segment. The server stamps both the reading and the window it was measured
+// against onto turn_end, so the line keeps its own denominator.
+const TURN_END_BASE = {
+  subtype: 'success', durationMs: 1200, cost: null, costDelta: 0.0123,
+  usage: { input_tokens: 10, output_tokens: 252 }, isError: false, stopReason: 'end_turn',
+};
+
+test('TurnEndBlock: ctx segment with a known window, before the untouched usage segment', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: 200_000 });
+  assert.equal(b.node.textContent,
+    '✓ turn ended · (end_turn) · 1200ms · $0.0123 · ctx 35k / 200k (18%) · in=10 out=252');
+});
+
+test('TurnEndBlock: ctx segment without a window reads the figure alone', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: null });
+  assert.equal(b.node.textContent,
+    '✓ turn ended · (end_turn) · 1200ms · $0.0123 · ctx 35k · in=10 out=252');
+});
+
+test('TurnEndBlock: no reading, no ctx segment — the line is exactly the pre-ctx line', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: null, contextWindowTokens: 200_000 });
+  assert.equal(b.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · in=10 out=252');
+  const absent = new TurnEndBlock(TURN_END_BASE);
+  assert.equal(absent.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · in=10 out=252');
+});
+
 // ── Card 2026-0245: tool_args collapse state is the node, and it is sticky ──
 // _renderBody used to wipe `this.body` and rebuild the .tool-args <details>
 // on every setName / input delta / finalizeInput, so any user toggle died

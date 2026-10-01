@@ -139,6 +139,41 @@ test('lastAssistantUsage: non-Claude backends carry the whole prompt in input_to
     { msgId: 'm_glm', usage: { input_tokens: 34892, output_tokens: 0 } });
 });
 
+// ── compaction ──────────────────────────────────────────────────────────────
+// A compact_boundary replaces the context, so an assistant usage from BEFORE it
+// measures a context that no longer exists. Real captures: the manual `/compact`
+// transcript's last assistant line precedes its boundary; the auto one has a
+// post-boundary call.
+
+async function seedFixture(name) {
+  const text = await fs.readFile(path.join(__dirname, 'fixtures', name), 'utf8');
+  return seed(text.split('\n').filter(l => l.trim()).map(l => JSON.parse(l)));
+}
+const promptOf = (u) => (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+
+test('lastAssistantUsage: a compact_boundary with no later call leaves no reading', async () => {
+  const result = await seedFixture('compaction-manual.transcript.jsonl');
+  assert.equal(result.lastAssistantUsage, null,
+    'the pre-compaction prompt must not seed a resumed session\'s reading');
+});
+
+test('lastAssistantUsage: the first call after a compact_boundary is the reading', async () => {
+  const result = await seedFixture('compaction-auto.transcript.jsonl');
+  assert.ok(result.lastAssistantUsage, 'the post-boundary call measures the compacted context');
+  assert.equal(promptOf(result.lastAssistantUsage.usage), 60_471);
+});
+
+test('lastAssistantUsage: a sidechain compact_boundary does not reset the session reading', async () => {
+  const result = await seed([
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'go' } },
+    assistantLine('a0', 'm_outer', 'claude-opus-5', usage(60000)),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'cb0', isSidechain: true,
+      compactMetadata: { trigger: 'auto', preTokens: 90000 } },
+  ]);
+  assert.deepEqual(result.lastAssistantUsage, { msgId: 'm_outer', usage: usage(60000) },
+    'a sub-agent compacting its own window leaves this session\'s context alone');
+});
+
 // ── the renderer invariant ──────────────────────────────────────────────────
 
 globalThis.AudioContext = class MockAudioContext {

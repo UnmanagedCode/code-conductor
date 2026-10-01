@@ -108,7 +108,7 @@ export function buildTools(): Tool[] {
         'ahead/behind, and `live N · inactive N · archived N`. ' +
         'Each LIVE worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
-        'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
+        'backend, model, contextTokens, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
         'overageActive, overageResetsAt, ownerSessionId, awaitingUser, awaitingUserSource, ' +
@@ -123,7 +123,7 @@ export function buildTools(): Tool[] {
         '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
         '`displayStatus` reads `running` while an idle worker still has background subagents — ' +
         'read it, not `status`, to decide whether work is actually finished. ' +
-        '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown; after a live switch to an unrecognised model it stays the previous model\'s. ' +
+        '`contextTokens` is the context in use — the latest API call\'s prompt — and `contextWindowTokens` the model\'s capacity, in tokens; either is null when unknown (`contextTokens` until a call measures it, including after a prune, compaction, renewal or model switch); after a live switch to an unrecognised model `contextWindowTokens` stays the previous model\'s. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
         '`rotationReason` says whether the session\'s context was last reset by its own ' +
         '`renew_session` or by a prune, and `lastRotatedAt` when — a quiet worker that just ' +
@@ -136,7 +136,7 @@ export function buildTools(): Tool[] {
         'ExitPlanMode) or `text` (a turn that ended asking). It is sticky, never set on a conducted ' +
         'worker, and not derived for an archived row here. A send over MCP (send_prompt, ' +
         'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
-        'The rendering omits pid / createdAt / contextWindowTokens, and shows ' +
+        'The rendering omits pid / createdAt, and shows ' +
         'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
         'when they deviate from ' +
         'their default — so anything on a `flags` line is news. ' +

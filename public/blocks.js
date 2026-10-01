@@ -135,7 +135,7 @@ export class ThinkingBlock {
 }
 
 import { lineDiff, diffStats } from './diff.js';
-import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost } from './usage.js';
+import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost, formatTokens, formatPct } from './usage.js';
 import { renderMarkdownInto } from './markdown.js';
 import { formatToolName, toolNamePlain } from './toolName.js';
 import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop, maybeAutoSpeak } from './tts.js';
@@ -1343,8 +1343,18 @@ export class TaskCompletionBlock {
   }
 }
 
+// The context in use at the turn's end — the latest API call's prompt — against
+// the window the server measured it with. Both are stamped on turn_end by the
+// server (live only); either may be null.
+function contextSegment(contextTokens, contextWindowTokens) {
+  if (contextTokens == null || !Number.isFinite(contextTokens)) return '';
+  const ctx = `ctx ${formatTokens(contextTokens)}`;
+  if (contextWindowTokens == null || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return ctx;
+  return `${ctx} / ${formatTokens(contextWindowTokens)} (${formatPct(contextTokens / contextWindowTokens)})`;
+}
+
 export class TurnEndBlock {
-  constructor({ subtype, durationMs, cost, costDelta, usage, isError, stopReason }) {
+  constructor({ subtype, durationMs, cost, costDelta, usage, isError, stopReason, contextTokens, contextWindowTokens }) {
     // costDelta is the actual cost of this turn; cost is the cumulative session total.
     // Prefer costDelta for display so each line shows what that turn cost, not the running total.
     const displayCost = costDelta ?? cost;
@@ -1353,6 +1363,7 @@ export class TurnEndBlock {
       stopReason ? `(${stopReason})` : '',
       durationMs != null ? `${durationMs}ms` : '',
       displayCost != null ? fmtCost(displayCost) : '',
+      contextSegment(contextTokens, contextWindowTokens),
       usage ? `in=${usage.input_tokens ?? '?'} out=${usage.output_tokens ?? '?'}` : '',
     ].filter(Boolean);
     this.node = el('div', { class: 'block turn-end' }, parts.join(' · '));

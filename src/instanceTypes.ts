@@ -44,6 +44,9 @@ export interface InstanceSummary {
   ownerSessionId?: string | null;
   awaitingUser?: 'question' | 'plan' | null;
   awaitingUserSource?: 'tool' | 'text' | null;
+  // The latest top-level API call's prompt (contextReading), or null until a
+  // call measures it.
+  contextTokens?: number | null;
   [key: string]: unknown;
 }
 

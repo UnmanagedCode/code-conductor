@@ -326,7 +326,8 @@ const INSTANCE = {
   thinking: 'adaptive',
   backend: 'claude',
   model: 'claude-opus-5',
-  contextWindowTokens: 200000,
+  contextTokens: 84213,
+  contextWindowTokens: 1000000,
   pid: 4881,
   temp: false,
   conducted: false,
@@ -370,6 +371,7 @@ describe('renderSessions — live rows', () => {
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '        context 84213 / 1000000 (8%)',
       '        playbook solo / implement',
       '        title Recon read tools plain-text rendering',
       '        last 2026-08-06 07:23Z',
@@ -383,6 +385,11 @@ describe('renderSessions — live rows', () => {
       overageActive: true, overageResetsAt: 1786020000000, autoResumeAt: 1786021000000,
     }]);
     assert.match(out, /^ {8}flags temp {2}conducted {2}debug {2}OVERAGE {2}overage-resets 2026-08-06 12:40Z {2}auto-resume 2026-08-06 12:56Z$/m);
+  });
+
+  test('the context line keeps its shape when either figure is unknown', () => {
+    assert.match(liveOnly([{ ...INSTANCE, contextTokens: null }]), /^ {8}context — \/ 1000000$/m);
+    assert.match(liveOnly([{ ...INSTANCE, contextWindowTokens: null }]), /^ {8}context 84213 \/ —$/m);
   });
 
   test('firstPrompt stands in only when there is no title', () => {
@@ -450,6 +457,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '        context 84213 / 1000000 (8%)',
       '        playbook solo / implement',
       '        title Recon read tools plain-text rendering',
       '        last 2026-08-06 07:23Z',
@@ -460,7 +468,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
 
   test('an inactive row claims no runtime state, and no size', () => {
     const out = renderSessions([grp({ inactive: [stoppedRow({ title: 'T' })] })]);
-    for (const claim of ['status ', 'mode ', 'display ', 'awaiting-wake ', 'effort ']) {
+    for (const claim of ['status ', 'mode ', 'display ', 'awaiting-wake ', 'effort ', 'context ']) {
       assert.ok(!out.includes(claim), `an inactive row must not render "${claim}" — there is no process to read it from:\n${out}`);
     }
     assert.ok(!/\d+(\.\d+)? (B|KB|MB)/.test(out), `size was dropped from the inactive row:\n${out}`);
@@ -590,6 +598,7 @@ describe('renderSession (describe_session)', () => {
       '    project code-conductor   worktree code-conductor_worktree_dcd22e',
       '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '    context 84213 / 1000000 (8%)',
       '    playbook solo / implement',
       '    title Recon read tools plain-text rendering',
       '    last 2026-08-06 07:23Z',
@@ -877,7 +886,7 @@ describe('list_sessions renders every allowlisted field', () => {
 
   // Deliberately dropped — see the header comment of src/mcp/readRenderers.ts.
   // Each MUST NOT appear; that is the other half of the binding.
-  const DROPPED = ['pid', 'createdAt', 'contextWindowTokens', 'firstPrompt'];
+  const DROPPED = ['pid', 'createdAt', 'firstPrompt'];
   // Rendered as a fixed label rather than its value, so a sentinel can't be
   // looked for. Checked by its own assertion below instead.
   const LABEL_ONLY = ['awaitingWake'];

@@ -100,7 +100,7 @@ import { cliEnvBase } from './cliEnv.ts';
 import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage, verifyUserPrompt } from './sessionEdit.ts';
-import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
+import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../public/planApproval.js';
 import { reconstructTasks } from './taskReconstruct.ts';
@@ -921,11 +921,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the window and a re-subscribing client would rebuild an empty tracker
     // (`ctx —`). A backend that answers in one long unbroken text block hits that
     // routinely. Unlike _liveThinkingTokens this deliberately SURVIVES turn_end —
-    // it's last-value-wins for the life of the process. Its only reset is
-    // _wipeForResume (rewind/respawn), which rewrites the CLI's prefix in place;
-    // a fork or a resume-after-restart needs none, since each builds a NEW
-    // Instance that starts here at null (and a fork must leave the parent's value
-    // alone — that session continues).
+    // it's last-value-wins for the life of the process. Cleared only through
+    // _dropContextReading, whose call sites are listed there; a fork or a
+    // resume-after-restart needs none, since each builds a NEW Instance that
+    // starts here at null (and a fork must leave the parent's value alone —
+    // that session continues).
     this._lastContextUsage = null;
     this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
     // A conductor's read-nudge run counter (src/conductorReadNudge.ts). In
@@ -1198,6 +1198,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // it can't, since the API reports a dated snapshot id in message_start and a
       // substitution model's id is opaque.
       contextWindowTokens: this.contextWindowTokens,
+      // The numerator: the latest top-level call's prompt, read off the same
+      // latch as the header chip. Between turns it reads one reply short.
+      contextTokens: contextReading(this._lastContextUsage),
       backend: this.backend,
       sessionId: this.sessionId,
       status: this.status,
@@ -1610,10 +1613,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     // message produced no message_start reading, so the two can never fight
     // within one message. Whole-object last-wins, same as above — there is no
     // per-field merge site anywhere on this path.
-    // Cleared in two places: _wipeForResume (rewind/respawn) and
-    // _announceModelSwitch (a mid-session model switch moves the denominator).
+    // Cleared via _dropContextReading (its call sites are listed there) — one
+    // of them is right here: a compaction replaces the context, on live and
+    // replay alike.
     if ((ev.kind === 'message_start' || ev.kind === 'context_usage') && ev.usage) {
       this._lastContextUsage = ev.usage;
+    } else if (ev.kind === 'compaction') {
+      this._dropContextReading();
     }
     // Same funnel again: advance the live quiescence scan so an armed deferred
     // interrupt can fire at the first boundary (see _maybeFireArmedInterrupt,
@@ -1754,8 +1760,20 @@ export class Instance extends EventEmitter implements InstanceLike {
   // frame re-latches the new model's own reading in the same line and the chip
   // never flashes `ctx —`.
   _announceModelSwitch(from: string, to: string): void {
-    this._lastContextUsage = null;
+    this._dropContextReading();
     this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to } });
+  }
+
+  // The ONE way the context reading is cleared: a known-wrong number is worse
+  // than none, so each event that invalidates what the latch measured drops it
+  // and the readout stays unknown until the next usage-bearing message_start /
+  // context_usage. Call sites: a compaction (_emitUi), a `/clear` rotation
+  // (_handleStdoutLine), a model switch (_announceModelSwitch) and a
+  // rewind/respawn/prune (_wipeForResume — a prune additionally skips the jsonl
+  // seed, _skipUsageSeed). The header chip keeps its client-side reading across
+  // a compaction or rotation until the next message_start.
+  _dropContextReading(): void {
+    this._lastContextUsage = null;
   }
 
   // Re-resolve capacity from the current {backend, model}.
@@ -2553,6 +2571,8 @@ export class Instance extends EventEmitter implements InstanceLike {
           // live must drop a pending card here to stamp what a reload stamps.
           // The spawn fill seam needs no reset: its ring is new or freshly wiped.
           this._questionAnswers = new QuestionAnswerCorrelator();
+          // The new session starts from an empty context the latch never measured.
+          this._dropContextReading();
           if (publicId) this._kickLineageWrite(this._rotationWrite(publicId, sid, oldBacking));
         }
         const mode = data?.permissionMode;
@@ -2692,6 +2712,11 @@ export class Instance extends EventEmitter implements InstanceLike {
         ev.firstReqCacheRead = this._turnFirstReqCacheRead ?? 0;
         ev.firstReqCacheCreation = this._turnFirstReqCacheCreation ?? 0;
         ev.firstReqEvicted = this._turnEvicted ?? 0;
+        // The context in use at this turn's end and the window it was measured
+        // against, so the line keeps its own denominator. Ring and live only:
+        // costTracking copies its fields one by one and takes neither.
+        ev.contextTokens = contextReading(this._lastContextUsage);
+        ev.contextWindowTokens = this.contextWindowTokens;
         // Latch this turn's fully-accumulated prefix as P for next turn's
         // cross-turn comparison. A turn with no requests leaves P unchanged.
         if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
@@ -4106,7 +4131,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A rewind/respawn rewrites the CLI's prefix, so the pre-wipe context reading
     // must not leak into the replayed session (it would over-report a rewound
     // session's fill until its first live message_start).
-    this._lastContextUsage = null;
+    this._dropContextReading();
     this.parser.reset();
     this._lastLeafUuid = null;
     this._planFiles.reset();
