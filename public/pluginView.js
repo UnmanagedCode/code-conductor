@@ -17,7 +17,8 @@
 //
 // Two frame tiers, chosen by the status row's `frontendKeepAlive`:
 //   - a plain plugin loads into the one shared `#plugin-frame`; teardown or a
-//     switch to another plugin blanks it, so a closed plugin costs no memory.
+//     switch to a keep-alive plugin removes it (the next plain plugin gets a
+//     fresh one), so a closed plugin costs no memory.
 //   - a keep-alive plugin gets its own resident frame on first show. Leaving
 //     only hides it (the section's `hidden`), so its page — a call, a stream —
 //     keeps running; re-entry reveals it with no /start and no src change.
@@ -140,10 +141,13 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
     try { return keepsResident(await statusOf(id)); } catch (e) { return e.status !== 404; }
   }
 
-  function blankShared() {
-    if (!iframe) return;
-    iframe.src = 'about:blank';
-    iframe.hidden = true;
+  // Ends the shared frame's page by discarding the frame. Navigating it to
+  // about:blank instead leaves a light-scheme document in a dark-scheme frame,
+  // which Chromium paints on an opaque white canvas until the next plugin
+  // paints; a fresh frame's initial document is transparent over var(--bg).
+  function dropShared() {
+    iframe?.remove();
+    iframe = null;
   }
 
   function evict(record) {
@@ -164,7 +168,7 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
     view.appendChild(record.frame);
     resident.set(target.id, record);
     current = record;
-    blankShared();
+    dropShared();
     record.frame.src = `/plugins/${target.id}${target.subpath}`; // overlay clears on frame load
     onResidentChange?.();
   }
@@ -172,7 +176,7 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
   function showResident(record, target) {
     const token = ++loadToken;
     hideOverlay();
-    blankShared();
+    dropShared();
     for (const r of resident.values()) r.frame.hidden = r !== record;
     current = record;
     if (target.subpath === '/' || target.subpath === record.subpath) {
@@ -196,7 +200,6 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
     if (record) { showResident(record, target); return; }
     ensureEls();
     for (const r of resident.values()) r.frame.hidden = true;
-    iframe.hidden = false;
     current = target;
     hideOverlay();
     const token = ++loadToken;
@@ -231,7 +234,7 @@ export function installPluginView({ onClosed, onShown, onResidentChange } = {}) 
       current = null;
       loadToken++;
       hideOverlay();
-      if (iframe) iframe.src = 'about:blank';
+      dropShared();
       onClosed?.();
     },
   });

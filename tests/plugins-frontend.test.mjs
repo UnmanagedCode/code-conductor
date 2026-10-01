@@ -119,7 +119,7 @@ function stubPluginViewApi({ state = 'ready', startResult } = {}) {
   return calls;
 }
 
-test('pluginView: opens on #plugin hash, swaps plugins, avoids reload on subpath, teardown blanks', async () => {
+test('pluginView: opens on #plugin hash, swaps plugins, avoids reload on subpath, teardown removes the frame', async () => {
   const window = makeWindow('http://localhost/#');
   const { view } = buildViewDom(window.document);
   const calls = stubPluginViewApi({ state: 'ready' });
@@ -151,13 +151,48 @@ test('pluginView: opens on #plugin hash, swaps plugins, avoids reload on subpath
   await tick();
   assert.match(iframe.getAttribute('src'), /^\/plugins\/other\/$/);
 
-  // Leaving the space: teardown blanks the iframe, hides the view, and
+  // Leaving the space: teardown removes the iframe, hides the view, and
   // notifies onClosed (the switcher re-sync hook).
   window.location.hash = '#';
   await window.happyDOM.waitUntilComplete();
   assert.equal(view.hidden, true);
-  assert.equal(iframe.getAttribute('src'), 'about:blank');
+  assert.equal(iframe.isConnected, false);
+  assertNull(window.document.getElementById('plugin-frame'));
   assert.ok(closed >= 1, 'onClosed fired on teardown');
+});
+
+test('pluginView: leaving a plain plugin removes the shared frame; re-entry loads a fresh one', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView();
+  const go = async (hash) => {
+    window.location.hash = hash;
+    await window.happyDOM.waitUntilComplete();
+    await tick();
+  };
+  const noBlankFrame = (step) => {
+    const blank = [...window.document.querySelectorAll('iframe')].filter(f => f.getAttribute('src') === 'about:blank');
+    assert.equal(blank.length, 0, `no frame navigated to about:blank (${step})`);
+  };
+
+  await go('#plugin/fake-plugin/');
+  const old = window.document.getElementById('plugin-frame');
+  assert.ok(old, 'sanity: the shared frame exists while open');
+  noBlankFrame('open');
+
+  await go('#');
+  assert.equal(old.isConnected, false, 'the old frame is discarded');
+  assertNull(window.document.getElementById('plugin-frame'), 'no shared frame while closed');
+  noBlankFrame('closed');
+
+  await go('#plugin/fake-plugin/');
+  const fresh = window.document.getElementById('plugin-frame');
+  assert.ok(fresh && fresh !== old, 're-entry creates a new frame');
+  assert.equal(fresh.getAttribute('src'), '/plugins/fake-plugin/');
+  noBlankFrame('reopened');
 });
 
 test('pluginView: boot directly on a plugin hash opens the view', async () => {
@@ -298,7 +333,7 @@ test('pluginView: a keepAlive plugin\'s frame survives leaving the space — hid
   const frame = residentOf('ka');
   assert.ok(frame, 'a resident frame is created on first show');
   assert.equal(frame.getAttribute('src'), '/plugins/ka/');
-  assert.equal(window.document.getElementById('plugin-frame').hidden, true, 'the shared frame is hidden behind it');
+  assertNull(window.document.getElementById('plugin-frame'), 'no shared frame behind a resident one');
 
   // Leave: the hash moves off the space.
   await go('#');
@@ -416,7 +451,7 @@ test('pluginView: a route message whose path lacks a leading slash is ignored', 
   });
 });
 
-test('pluginView: A (keepAlive) → B (plain) → A keeps A\'s frame and blanks B\'s', async () => {
+test('pluginView: A (keepAlive) → B (plain) → A keeps A\'s frame and removes B\'s', async () => {
   const { window, view, go, residentOf } = await setupKeepAlive({ a: kaRow(), b: kaRow({ frontendKeepAlive: false }) });
   const visibleFrames = () => [...view.querySelectorAll('iframe')].filter(f => !f.hidden);
   await go('#plugin/a/');
@@ -432,8 +467,15 @@ test('pluginView: A (keepAlive) → B (plain) → A keeps A\'s frame and blanks 
   await go('#plugin/a/');
   assert.ok(residentOf('a') === a, 'one resident node for A throughout');
   assert.equal(a.getAttribute('src'), '/plugins/a/');
-  assert.equal(shared.getAttribute('src'), 'about:blank', 'B is blanked, as a switch always did');
+  assert.equal(shared.isConnected, false, 'B\'s frame is removed');
+  assertNull(window.document.getElementById('plugin-frame'));
   assert.ok(visibleFrames().length === 1 && visibleFrames()[0] === a);
+
+  await go('#plugin/b/');
+  const fresh = window.document.getElementById('plugin-frame');
+  assert.ok(fresh && fresh !== shared, 'returning to B creates a fresh shared frame');
+  assert.equal(fresh.getAttribute('src'), '/plugins/b/');
+  assert.equal(a.hidden, true);
 });
 
 test('pluginView: two keepAlive plugins get one resident frame each', async () => {
@@ -615,6 +657,36 @@ test('pluginView: teardown mid-start of a keepAlive plugin creates no resident f
   await tick();
   assertNull(window.document.querySelector('iframe.plugin-frame-resident'), 'no resident frame');
   assert.deepEqual(pv.residentIds(), []);
+});
+
+test('pluginView: frames paint the shell background in the shell color scheme', async (t) => {
+  const { window, go, residentOf } = await setupKeepAlive({ p: kaRow({ frontendKeepAlive: false }), ka: kaRow() });
+  const style = window.document.createElement('style');
+  style.textContent = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
+  window.document.head.appendChild(style);
+  const cs = el => window.getComputedStyle(el);
+  const bodyBg = cs(window.document.body).backgroundColor;
+  const rootScheme = cs(window.document.documentElement).colorScheme;
+  assert.ok(bodyBg, 'sanity: the shell body has a computed background');
+  assert.equal(rootScheme, 'dark', 'sanity: the shell declares a dark color scheme');
+
+  await go('#plugin/p/');
+  const shared = window.document.getElementById('plugin-frame');
+  await t.test('the shared frame paints the shell background', () => {
+    assert.equal(cs(shared).backgroundColor, bodyBg);
+  });
+  const sharedScheme = cs(shared).colorScheme;
+
+  await go('#plugin/ka/');
+  const frame = residentOf('ka');
+  await t.test('a resident frame paints the shell background', () => {
+    assert.equal(cs(frame).backgroundColor, bodyBg);
+  });
+  // happy-dom does not inherit color-scheme: an undeclared one reads ''.
+  await t.test('no frame gets a color scheme other than the shell\'s', () => {
+    assert.ok(['', rootScheme].includes(sharedScheme), `shared frame scheme: ${sharedScheme}`);
+    assert.ok(['', rootScheme].includes(cs(frame).colorScheme), `resident frame scheme: ${cs(frame).colorScheme}`);
+  });
 });
 
 // ── pluginManager (Settings → Plugins: installed list + Plugin Library) ──
