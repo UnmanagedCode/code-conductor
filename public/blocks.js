@@ -1246,11 +1246,31 @@ export function shouldRenderSystem(ev) {
   }
   if (sub === 'status') return false; // per-turn `requesting`/`complete` chatter
   if (sub === 'task_progress' || sub === 'task_started' || sub === 'task_updated') return false;
+  // Only a background task that completed or failed (src/taskNotification.ts).
+  if (sub === 'task_notification') return ev.data?.notified === true;
   return SHOWN_SYSTEM_SUBTYPES.has(sub);
+}
+
+// One folded line per background-task notification: name · status · exit code
+// on the line, the summary and output path inside the fold. Amber on failure.
+function taskNotificationNode(data) {
+  const exit = data?.exitCode != null ? ` · exit ${data.exitCode}` : '';
+  const body = el('div', { class: 'task-notification-body' },
+    el('div', {}, data?.summary ?? ''),
+    data?.output_file ? el('div', {}, `output: ${data.output_file}`) : null,
+  );
+  return el('details', { class: data?.status === 'failed' ? 'block system warn' : 'block system' },
+    el('summary', {},
+      el('span', { class: 'subtype' }, 'task_notification'),
+      ` ${data?.name ?? data?.task_id ?? '?'} · ${data?.status ?? '?'}${exit}`,
+    ),
+    body,
+  );
 }
 
 export class SystemBlock {
   constructor({ subtype, data }) {
+    if (subtype === 'task_notification') { this.node = taskNotificationNode(data); return; }
     const detail = (() => {
       if (subtype === 'init') return `model=${data?.model ?? '?'} sid=${data?.session_id?.slice(0,8) ?? '?'}`;
       if (subtype === 'stderr') return data?.line ?? '';

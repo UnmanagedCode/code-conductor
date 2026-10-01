@@ -19,6 +19,7 @@ import { sessionFilePath, localPlace} from '../src/projects.ts';
 import { buildArchive } from '../src/eventArchive.ts';
 import { replayPersistedLine } from '../src/transcript.ts';
 import { readNudgeText } from '../src/conductorReadNudge.ts';
+import { taskNotificationEvent } from '../src/taskNotification.ts';
 
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
@@ -241,6 +242,7 @@ test('T19: the trimmedBefore clamp stays strict — cut === trimmedBefore is hea
 const keyOf = ev => {
   if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
+  if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.notified === true && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${ev.data.status}`;
   return typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number'
     ? `${ev.kind} ${ev.msgId} ${ev.blockIdx}` : null;
 };
@@ -268,6 +270,8 @@ const SKIPPABLE_HEADS = [
   ['(none — tail only)', null],
   ['tool_use_input_delta', { kind: 'tool_use_input_delta', msgId: 'mLive', blockIdx: 3, toolUseId: 'tuLive', partialJson: '{"a"', _seq: 59 }],
   ['system[hook_pending]', { kind: 'system', subtype: 'hook_pending', _seq: 59 }],
+  // A foreground or stopped task's notification: replay never emits it.
+  ['system[task_notification, not notified]', { kind: 'system', subtype: 'task_notification', toolUseId: 'tuFg', data: { task_id: 'tFg', status: 'completed', notified: false }, _seq: 59 }],
   ['raw', { kind: 'raw', line: 'not json', _seq: 59 }],
   ['hook', { kind: 'hook', event: 'PreToolUse', _seq: 59 }],
   ['control_response', { kind: 'control_response', requestId: 'r1', ok: true, _seq: 59 }],
@@ -433,14 +437,14 @@ test('T25: a ring of only never-persisted events abandons to the echo fallback',
 
 // Tripwire for the carve-out's soundness condition. `neverPersisted` in
 // src/eventArchive.ts skips `system` at every subtype EXCEPT
-// `soft_interrupted` and `read_nudge`, on the premise that replay emits exactly
-// those two. If another one is ever added, skipping it would silently duplicate
+// `soft_interrupted`, `read_nudge` and a notified `task_notification`, on the
+// premise that replay emits exactly those three. If another one is ever added, skipping it would silently duplicate
 // it across the archive/ring seam — nothing else in the codebase would notice.
 // This test is what makes that loud.
 //
 // PINS: the set of `system` subtypes the replay path can construct is exactly
-// {read_nudge, soft_interrupted}.
-test('T23: tripwire — replay constructs `system` for exactly two subtypes', async () => {
+// {read_nudge, soft_interrupted, task_notification}.
+test('T23: tripwire — replay constructs `system` for exactly three subtypes', async () => {
   const srcDir = new URL('../src/', import.meta.url);
   const readWhole = async (url) => {
     const src = await fs.readFile(new URL(url, srcDir), 'utf8');
@@ -466,17 +470,20 @@ test('T23: tripwire — replay constructs `system` for exactly two subtypes', as
   // constructor it owns; whole-file there would sweep up the LIVE parser's many
   // `system` sites, which say nothing about what replay emits. Likewise
   // src/conductorReadNudge.ts is scoped to readNudgeEvent, the constructor
-  // replay reaches through readNudgeEventFromAttachment.
+  // replay reaches through readNudgeEventFromAttachment, and
+  // src/taskNotification.ts to taskNotificationEvent, the constructor replay
+  // reaches through taskNotificationFromEnqueue.
   //
   // Residual limit, stated honestly: this catches a literal `kind: 'system'`
   // inside these scopes. A construction in a non-literal form (a subtype held
-  // in a variable, a kind spread in from an object) or in a fourth file reached
+  // in a variable, a kind spread in from an object) or in a fifth file reached
   // from the replay path still escapes the regexes. The positive controls below
   // narrow that gap but do not close it.
   const bodies = [
     await readWhole('transcript.ts'),
     await readBody('parser.ts', 'export function consolidateUserContent('),
     await readBody('conductorReadNudge.ts', 'export function readNudgeEvent('),
+    await readBody('taskNotification.ts', 'export function taskNotificationEvent('),
   ];
 
   let sites = 0;
@@ -495,8 +502,8 @@ test('T23: tripwire — replay constructs `system` for exactly two subtypes', as
   // count: today's two sites legitimately share one subtype.
   assert.equal(found.length, sites, `scan found ${sites} \`system\` construction(s) in the replay path but only ${found.length} with an adjacent subtype — replay now builds a system event whose subtype this scan cannot read, so the set below no longer covers every site`);
 
-  assert.deepEqual(subtypes, ['read_nudge', 'soft_interrupted'],
-    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`read_nudge\` and \`soft_interrupted\` on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
+  assert.deepEqual(subtypes, ['read_nudge', 'soft_interrupted', 'task_notification'],
+    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`read_nudge\`, \`soft_interrupted\` and a notified \`task_notification\` on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
 
   // Positive control: the scanned literal is the one actually emitted.
   const emitted = replayPersistedLine({
@@ -511,6 +518,12 @@ test('T23: tripwire — replay constructs `system` for exactly two subtypes', as
   assert.equal(nudged.length, 1);
   assert.equal(nudged[0].kind, 'system');
   assert.equal(nudged[0].subtype, 'read_nudge');
+
+  const notified = replayPersistedLine(enqueueLine('tuC'));
+  assert.equal(notified.length, 1);
+  assert.equal(notified[0].kind, 'system');
+  assert.equal(notified[0].subtype, 'task_notification');
+  assert.equal(notified[0].data.notified, true, 'replay only ever emits a notified task_notification');
 });
 
 // ── read_nudge across the seam ───────────────────────────────────────────────
@@ -578,6 +591,71 @@ test('T27: a read_nudge head missing from the archive abandons — it is not ski
     assert.equal(arch.cut, 1, 'a read_nudge head may be in the archive — abandon to the echo anchor, do not skip to the tail');
     assert.equal(arch.gap, true);
     assertNoDuplication(arch, ring, 'T27');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
+// ── task_notification across the seam ────────────────────────────────────────
+// The CLI writes a background task's notification as a `queue-operation`
+// `enqueue` at completion time; replay turns it back into the same
+// `system`/`task_notification` event the parser emitted live, keyed by the
+// task's tool_use_id and status. The content below is a real CLI 2.1.286
+// enqueue (tests/fixtures/task-notification.transcript.jsonl, case C1) with its
+// ids replaced.
+function enqueueLine(toolUseId) {
+  return {
+    type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-01T18:56:26.021Z', sessionId: SID,
+    content: `<task-notification>\n<task-id>byncs4grx</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<output-file>/tmp/claude-UID/-workspace-project/${SID}/tasks/byncs4grx.output</output-file>\n<status>completed</status>\n<summary>Background command "bg ok" completed (exit code 0)</summary>\n</task-notification>`,
+  };
+}
+const notifiedHead = (toolUseId) => ({
+  ...taskNotificationEvent({
+    taskId: 'byncs4grx', toolUseId, status: 'completed', outputFile: '', name: 'bg ok', exitCode: 0,
+    summary: 'Background command "bg ok" completed (exit code 0)', notified: true,
+  }),
+  _seq: 59,
+});
+
+// PINS: a notified `task_notification` head whose enqueue is in the archive
+// correlates by `tn <toolUseId> <status>` — an exact cut, no gap, no duplication.
+test('T28: a notified task_notification head present in the archive correlates by toolUseId and status', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t28';
+    const [prompt, assistant] = textBlockLines();
+    await writeJsonl(cwd, SID, [
+      prompt,
+      assistant,
+      enqueueLine('tuBg'),
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
+      // The delivery line: replay drops it, so the archive holds one notification.
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: enqueueLine('tuBg').content } },
+    ]);
+    const ring = [notifiedHead('tuBg'), { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'after', _seq: 60 }];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
+    assert.equal(arch.events[25].subtype, 'task_notification', 'fixture check: replay emits the notification at flat index 25');
+    assert.equal(arch.events.filter(ev => ev.subtype === 'task_notification').length, 1, 'fixture check: the delivery line adds none');
+    assert.equal(arch.cut, 25, 'cut lands exactly on the archived notification');
+    assert.equal(arch.gap, false, 'a correlated cut is an exact stitch — no gap');
+    assertNoDuplication(arch, ring, 'T28');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
+// PINS: a notified `task_notification` head that misses the archive abandons to
+// the echo fallback — `neverPersisted` does not skip it.
+test('T29: a notified task_notification head missing from the archive abandons — it is not skipped', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t29';
+    await writeJsonl(cwd, SID, textBlockLines());
+    const ring = [notifiedHead('tuMissing'), RING_TAIL];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    assert.equal(arch.cut, 1, 'a notified head may be in the archive — abandon to the echo anchor, do not skip to the tail');
+    assert.equal(arch.gap, true);
+    assertNoDuplication(arch, ring, 'T29');
   } finally {
     await rmrf(r.home);
   }

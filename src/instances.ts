@@ -1678,7 +1678,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // emit() still reaches both — it is the same object — so only one placed
     // after emit() would miss the WS frame.
     this.ring.push(wrapped); // stamps wrapped._seq
-    this.emit('event', wrapped);
+    // `replayed` rides along so the manager can keep replayed history out of the
+    // wake hubs (see the hub registrations in InstanceManager's constructor).
+    this.emit('event', wrapped, replayed);
     if (!replayed && !this.conducted) {
       for (const fact of this._liveAsk.feed(wrapped)) this._setAwaitingUser(reduceAsk(this._awaitingUser, fact));
     }
@@ -1868,9 +1870,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // `history_gap` at the archive seam (message_start is quiescent —
       // parser.ts). Non-retention also keeps it invisible to ring.nextSeq, which
       // idleSubscriptions.ts arms on as its "activity since arm" marker — that
-      // one is defense-in-depth, not a live hazard: this fires once inside
-      // loadHistory, before any turn, so it can't land inside an arm→fire
-      // window. The guard keeps it from becoming a hazard if the emit ever moves.
+      // one matters because loadHistory's emit loop can land after a turn has
+      // started (prompt() has no spawning guard), inside an arm→fire window.
       //
       // `model` is deliberately omitted: UsageTracker.apply only adopts
       // ev.model when present, so leaving it out keeps the tracker falling back
@@ -4267,8 +4268,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // `_handleOverageTrip` machinery (deduped via `_overageActive`). Its timer is
     // started by the server after listen() and stopped in both shutdown paths.
     this._usageMonitor = new UsageOverageMonitor(this);
-    this.on('event', (e: { id: string; ev: UiEvent | null }) => this._idleHub.onEvent(e));
-    this.on('event', (e: { id: string; ev: UiEvent | null }) => this._sessionRenew.onEvent(e));
+    // Replayed history never reaches the wake hubs: it describes the past, and
+    // loadHistory's emit loop can land while the instance is already idle (a
+    // prompt sent while it was spawning, its turn finished before the transcript
+    // read did), where a replayed task_notification would arm a settle or fire
+    // an armed renewal.
+    this.on('event', (e: { id: string; ev: UiEvent | null; replayed?: boolean }) => { if (!e.replayed) this._idleHub.onEvent(e); });
+    this.on('event', (e: { id: string; ev: UiEvent | null; replayed?: boolean }) => { if (!e.replayed) this._sessionRenew.onEvent(e); });
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-wake graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
@@ -5398,7 +5404,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     }
 
-    inst.on('event', (ev: UiEvent) => this.emit('event', { id, ev }));
+    inst.on('event', (ev: UiEvent, replayed?: boolean) => this.emit('event', { id, ev, replayed: replayed === true }));
     // The Instance signals (rather than self-handles) an overage trip — central
     // routing lives on the manager where the idle-wake graph is reachable.
     inst.on('overage', (info: { resetsAt: number | null }) => this._handleOverageTrip(inst, info));

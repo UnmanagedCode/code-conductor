@@ -21,6 +21,7 @@ import {
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
+import { taskNotificationFromEnqueue } from './taskNotification.ts';
 
 // A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
 // disk that the live stream never carries (uuid, isSidechain, attachment,
@@ -35,6 +36,9 @@ export interface PersistedLine extends WireEnvelope {
   // `prompt` on a queued_command; the rest on a hook_additional_context.
   attachment?: { type?: unknown; prompt?: unknown; hookEvent?: unknown; hookName?: unknown; toolUseID?: unknown; content?: unknown } | null;
   toolUseResult?: { agentId?: string } | null;
+  // A `queue-operation` line's.
+  operation?: unknown;
+  content?: unknown;
 }
 
 // The subset of a persisted assistant line's `message.usage` that the replay
@@ -75,7 +79,7 @@ export function isPureUserPromptLine(obj: unknown): boolean {
     // The CLI's post-abort marker line — a soft_interrupted annotation, not a
     // prompt. Every ⏸/⏹ stop leaves one, so counting it would shift indices.
     if (isInterruptMarkerContent(content)) return false;
-    // Background-subagent completion ping — dropped silently, never a
+    // Background-task completion ping — dropped silently, never a
     // user_echo. See parser.ts:_handleUser.
     if (isTaskNotificationContent(content)) return false;
     // The CLI's local-command caveat — its `<command-name>` line is the prompt.
@@ -150,10 +154,10 @@ export function replayPersistedLine(
       events.push({ kind: 'system', subtype: 'soft_interrupted' });
       return tagAndReturn();
     }
-    // Background-subagent completion ping — drop silently, same as live
-    // (parser.ts:_handleUser): it's a duplicate of the already-hidden
-    // streaming system/task_notification event, and never produced a
-    // user_echo live.
+    // Background-task completion ping, written when it was DELIVERED — drop
+    // silently, same as live (parser.ts:_handleUser): the notification's event
+    // is rebuilt from its `queue-operation` enqueue below, and this never
+    // produced a user_echo live.
     if (isTaskNotificationContent(content)) return tagAndReturn();
     // The CLI's local-command caveat — never a bubble, same as live.
     if (isLocalCommandCaveatLine(line)) return tagAndReturn();
@@ -190,7 +194,8 @@ export function replayPersistedLine(
     // same `user_echo` the live path emitted from `inst.prompt()` so the
     // bubble count survives a reload / resume. CLI-internal queued
     // commands (e.g. `<task-notification>...</task-notification>`) carry a
-    // string `prompt` — they never produced a user_echo live, so skip.
+    // string `prompt` — they never produced a user_echo live, so skip (a
+    // notification's event comes from its enqueue, below).
     const prompt = line.attachment.prompt;
     if (!Array.isArray(prompt)) return tagAndReturn();
     if (isSoftInterruptContent(prompt)) {
@@ -215,6 +220,17 @@ export function replayPersistedLine(
   // the broker emitted live; every other hook's context stays off the transcript.
   if (line.type === 'attachment' && line.attachment?.type === 'hook_additional_context') {
     const ev = readNudgeEventFromAttachment(line.attachment);
+    if (ev) events.push(ev);
+    return tagAndReturn();
+  }
+
+  // The CLI queues a background task's notification for the model the moment
+  // the task ends, in the slot its live stdout frame took; the delivery lines
+  // (the user line and queued_command above) land later, wherever the model
+  // next takes input. So the enqueue is the replay source. Every other
+  // queue-operation (dequeue, remove, a queued prompt) replays nothing.
+  if (line.type === 'queue-operation') {
+    const ev = taskNotificationFromEnqueue(line);
     if (ev) events.push(ev);
     return tagAndReturn();
   }
