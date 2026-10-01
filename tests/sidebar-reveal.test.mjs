@@ -210,18 +210,23 @@ test('Projects lens', async (t) => {
     assert.equal(quiet.open, false, 'the other project\'s subnode stays collapsed');
   });
 
-  await t.test('the workspace expansion is written to localStorage by the reveal itself, like a click', async () => {
+  await t.test('the reveal persists the workspace itself, even when its <details> is already open and no toggle fires', async () => {
     const { root, sidebar, window } = await setupSidebar();
+    // In the store but never saved: the node is built open without a toggle,
+    // so the workspace's toggle listener is not in a position to write.
+    sidebar.expandedWorkspaces.add('W');
     await render(sidebar, {
       projects: WS_PROJECTS(), workspaces: ['W', 'X'],
       instances: [worker('w1', 'A', 'p', 'wt')],
     });
-    sidebar.setActive('inst-w1');
-    // Read before any task runs: no toggle listener has fired yet.
-    const stored = JSON.parse(window.localStorage.getItem('code-conductor:workspaces-expanded'));
-    assert.deepEqual(stored, ['W'], 'only the revealed workspace is persisted');
-    await tick();
+    const key = 'code-conductor:workspaces-expanded';
+    assert.equal(workspaceDet(root, 'W').open, true, 'fixture: W is already open');
+    assert.equal(window.localStorage.getItem(key), null, 'fixture: nothing persisted yet, no toggle has written');
+    await select(sidebar, 'inst-w1');
     assert.equal(workspaceDet(root, 'W').open, true);
+    assert.deepEqual(JSON.parse(window.localStorage.getItem(key)), ['W'],
+      'persisted by the reveal: opening an open <details> fires no toggle');
+    assert.equal(workspaceDet(root, 'X').open, false, 'the other workspace stays collapsed');
   });
 
   await t.test('a Worktrees group revealed under an owner filter stays open once the filter clears', async () => {
