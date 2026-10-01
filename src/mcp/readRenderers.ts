@@ -29,8 +29,6 @@
 //                  between the calls.
 //   list_sessions  pid (no tool takes one — sessionId is the handle);
 //                  createdAt (status + lastResponseAt answer "is it moving?");
-//                  contextWindowTokens (a denominator with no numerator on this
-//                  surface — the actionable overage signals are DEVIANT);
 //                  on an INACTIVE row, every runtime field — there is no
 //                  process to read a status/effort/model off, so the row is a
 //                  short session line rather than a worker block full of —,
@@ -191,6 +189,17 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'awaitingUserSource', default: null, label: 'awaiting-user-via' },
 ];
 
+// Context in use against capacity, both raw tokens. Always rendered, like
+// status and model: a fill figure has no "no news" value a DeviantSpec could
+// hide it behind, and `—` after a prune or compaction is itself news.
+function contextLine(r: Row): string {
+  const used = r.contextTokens;
+  const cap = r.contextWindowTokens;
+  const pct = typeof used === 'number' && typeof cap === 'number' && cap > 0
+    ? ` (${Math.round((used / cap) * 100)}%)` : '';
+  return `context ${dash(used)} / ${dash(cap)}${pct}`;
+}
+
 function instanceRows(rows: Row[]): Array<string | string[]> {
   const parts: Array<string | string[]> = [];
   rows.forEach((r, i) => {
@@ -199,6 +208,7 @@ function instanceRows(rows: Row[]): Array<string | string[]> {
       `project ${dash(r.project)}   worktree ${worktreeName(r.worktree)}`,
       `cwd ${dash(r.cwd)}`,
       `mode ${dash(r.mode)}   effort ${dash(r.effort)}   thinking ${dash(r.thinking)}   model ${dash(r.backend)}/${dash(r.model)}`,
+      contextLine(r),
       `playbook ${dash(r.playbook)} / ${dash(r.stage)}`,
       `title ${r.title == null ? `${DASH}   first ${trunc(r.firstPrompt, 100)}` : trunc(r.title, 100)}`,
       `last ${ts(r.lastResponseAt)}`,

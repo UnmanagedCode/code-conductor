@@ -8,13 +8,14 @@
 // Emitted UI event kinds:
 //   message_start           { msgId, usage }                // live context-size signal
 //   context_usage           { msgId, usage }                // fallback context-size signal (see _ctxFallbackArmed)
+//   call_usage              { msgId, outputTokens, thinkingTokens }  // a call's final output (message_delta); Instance stamps promptTokens/growthTokens
 //   text_delta              { msgId, blockIdx, text }
 //   text_end                { msgId, blockIdx }
 //   thinking_delta          { msgId, blockIdx, text }
 //   thinking_end            { msgId, blockIdx }
 //   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
 //   tool_use                { msgId, blockIdx, toolUseId, name, input }
-//   tool_result             { toolUseId, content, isError, yielded?: true }
+//   tool_result             { toolUseId, content, isError, yielded?: true, agentTokens?, agentToolUses? }  // agent* live only (_handleUser)
 //   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill}, cliInjected?: true, compactSummary?: true }
 //   compaction              { trigger: 'auto'|'manual'|null, preTokens, postTokens, durationMs }  // the CLI's compact_boundary, both surfaces
 //   system                  { subtype, data }
@@ -69,7 +70,7 @@ interface WireStreamEvent {
   message?: WireMessage | null;
   content_block?: WireContentBlock | null;
   delta?: { type?: unknown; text?: unknown; thinking?: unknown; partial_json?: unknown } | null;
-  usage?: unknown; // message_delta only — the ctx fallback source
+  usage?: unknown; // message_delta only — the ctx fallback source and the call's final output
 }
 
 export interface WireEnvelope {
@@ -94,6 +95,8 @@ export interface WireEnvelope {
   compact_metadata?: unknown;
   compactMetadata?: unknown;
   sourceToolUseID?: unknown;
+  // A user envelope's tool result sidecar; read for the Agent totals only.
+  tool_use_result?: unknown;
 }
 
 // Per-block merge state keyed by blockIdx.
@@ -440,21 +443,37 @@ export class Parser {
         return [];
       }
       case 'message_delta': {
-        // Normally discarded. The one exception: this message's message_start
-        // reported an all-zero prompt (armed above), and this backend puts the
-        // real prompt size here instead — event-level `usage`, not
-        // `delta.usage` (see tests/fixtures/scenario-live-skill-load.json for
-        // the captured envelope). Emitted as its OWN kind rather than a second
-        // `message_start`, which would feed the delta's cache numbers into
-        // cross-turn cache-miss bookkeeping (Instance._handleMessageStart).
-        if (!this._ctxFallbackArmed) return [];
+        // Event-level `usage` (not `delta.usage` — see
+        // tests/fixtures/scenario-live-skill-load.json for the captured
+        // envelope) is this call's FINAL usage: the only exact source of its
+        // output, since the assistant envelope repeats message_start's
+        // placeholder. Two events can come off it, in this order:
+        //   - context_usage: only while armed — this message's message_start
+        //     reported an all-zero prompt and this backend puts the real prompt
+        //     size here instead. Its OWN kind rather than a second
+        //     `message_start`, which would feed the delta's cache numbers into
+        //     cross-turn cache-miss bookkeeping (Instance._handleMessageStart).
+        //   - call_usage: whenever `output_tokens` is a number. No blockIdx, so
+        //     it stays quiescence-neutral; Instance stamps the prompt + growth.
         const usage = ev.usage ?? null;
+        const out: UiEvent[] = [];
         // Same floor as message_start, for the same reason: a zero renders
         // `ctx 0% · 0/200k`, which is worse than `ctx —`.
-        if (!usage || promptTokenSum(usage) === 0) return [];
         // Deliberately stays armed — "last non-zero delta wins" is the latch's
         // job, and the next message_start always re-decides the flag.
-        return [{ kind: 'context_usage', msgId: this.currentMsgId, usage }];
+        if (this._ctxFallbackArmed && usage && promptTokenSum(usage) > 0) {
+          out.push({ kind: 'context_usage', msgId: this.currentMsgId, usage });
+        }
+        const u = (usage ?? {}) as { output_tokens?: unknown; output_tokens_details?: { thinking_tokens?: unknown } | null };
+        if (typeof u.output_tokens === 'number' && Number.isFinite(u.output_tokens)) {
+          const thinking = u.output_tokens_details?.thinking_tokens;
+          out.push({
+            kind: 'call_usage', msgId: this.currentMsgId,
+            outputTokens: u.output_tokens,
+            thinkingTokens: typeof thinking === 'number' && Number.isFinite(thinking) ? thinking : null,
+          });
+        }
+        return out;
       }
       case 'message_stop':
         return [];
@@ -579,6 +598,7 @@ export class Parser {
     }
     if (!Array.isArray(content)) return [];
     const events = consolidateUserContent(content);
+    stampAgentTotals(events, obj);
     const out = stampCliInjected(attachSkillLoad(events, obj, this._pendingSkillLoads), obj);
     return isSummary ? stampCompactSummary(out) : out;
   }
@@ -608,6 +628,25 @@ export class Parser {
       isError: !!obj.is_error,
     }];
   }
+}
+
+// A foreground Agent's `tool_use_result` carries the subagent's totals:
+// `totalTokens` is its context when it finished (its last call's prompt +
+// output) — a separate window, not tokens it consumed or part of this session's
+// figures. Stamped only when the envelope produced exactly ONE tool_result, so
+// the totals cannot land on the wrong row. A backgrounded Agent
+// (`status:"async_launched"`) carries no totals and gets nothing. Live only by
+// construction: replay builds user events through consolidateUserContent
+// (src/transcript.ts), never through _handleUser.
+function stampAgentTotals(events: UiEvent[], obj: WireEnvelope): void {
+  const tur = obj.tool_use_result;
+  if (!tur || typeof tur !== 'object') return;
+  const { totalTokens: total, totalToolUseCount: uses } = tur as { totalTokens?: unknown; totalToolUseCount?: unknown };
+  if (typeof total !== 'number' || !Number.isFinite(total)) return;
+  const results = events.filter(e => e.kind === 'tool_result');
+  if (results.length !== 1) return;
+  results[0].agentTokens = total;
+  results[0].agentToolUses = typeof uses === 'number' && Number.isFinite(uses) ? uses : null;
 }
 
 // Detect "Attached file: `<path>`" marker lines in a text block (the

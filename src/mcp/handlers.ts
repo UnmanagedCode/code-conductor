@@ -163,6 +163,7 @@ export const CONDUCTOR_VIEW_KEYS = [
   'thinking',
   'backend',
   'model',
+  'contextTokens',
   'contextWindowTokens',
   'pid',
   'worktree',

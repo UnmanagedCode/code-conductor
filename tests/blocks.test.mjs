@@ -22,7 +22,7 @@ globalThis.fetch = async () => ({
 
 // Import blocks.js (which also imports tts.js as a side-effect) and tts.js
 // directly so tests can drive speaking state.
-const { describeToolInput, ToolResultBlock, TextBlock, ToolUseBlock, TurnEndBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
+const { describeToolInput, ToolResultBlock, TextBlock, ToolUseBlock, TurnEndBlock, CallUsageLine } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
 const { setTtsAvailable, getCurrentSpeakToken, stop: ttsStop } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'tts.js')).href);
 
 function setupDOM() {
@@ -554,6 +554,99 @@ test('TurnEndBlock: cost segment renders at 4dp, and is absent when unknown', ()
   });
   assert.ok(!noCost.node.textContent.includes('$'),
     'no cost figure at all when both cost and costDelta are null');
+});
+
+// The context-used segment sits just before the unchanged in=/out= usage
+// segment. The server stamps both the reading and the window it was measured
+// against onto turn_end, so the line keeps its own denominator.
+const TURN_END_BASE = {
+  subtype: 'success', durationMs: 1200, cost: null, costDelta: 0.0123,
+  usage: { input_tokens: 10, output_tokens: 252 }, isError: false, stopReason: 'end_turn',
+};
+
+test('TurnEndBlock: ctx segment with a known window, before the untouched usage segment', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: 200_000 });
+  assert.equal(b.node.textContent,
+    '✓ turn ended · (end_turn) · 1200ms · $0.0123 · ctx 35k / 200k (18%) · in=10 out=252');
+});
+
+test('TurnEndBlock: ctx segment without a window reads the figure alone', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: null });
+  assert.equal(b.node.textContent,
+    '✓ turn ended · (end_turn) · 1200ms · $0.0123 · ctx 35k · in=10 out=252');
+});
+
+test('TurnEndBlock: no reading, no ctx segment — the line is exactly the pre-ctx line', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: null, contextWindowTokens: 200_000 });
+  assert.equal(b.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · in=10 out=252');
+  const absent = new TurnEndBlock(TURN_END_BASE);
+  assert.equal(absent.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · in=10 out=252');
+});
+
+// ── per-call usage line and the Agent row's subagent total ──
+
+const CALL = { kind: 'call_usage', msgId: 'm1', outputTokens: 460, thinkingTokens: 73, promptTokens: 84_000, growthTokens: 3_200 };
+
+test('CallUsageLine: growth, context and output with its thinking portion', async (t) => {
+  setupDOM();
+  for (const [name, over, text] of [
+    ['full', {}, '+3.2k → ctx 84k · out 460 (73 thinking)'],
+    ['no baseline', { growthTokens: null }, 'ctx 84k · out 460 (73 thinking)'],
+    ['thinking 0', { thinkingTokens: 0 }, '+3.2k → ctx 84k · out 460'],
+    ['thinking null', { thinkingTokens: null }, '+3.2k → ctx 84k · out 460'],
+    ['prompt null', { promptTokens: null, growthTokens: null, thinkingTokens: 0 }, 'out 460'],
+    ['negative growth keeps its sign', { growthTokens: -1_500 }, '-1.5k → ctx 84k · out 460 (73 thinking)'],
+  ]) {
+    await t.test(name, () => {
+      const line = new CallUsageLine({ ...CALL, ...over });
+      assert.equal(line.node.textContent, text);
+    });
+  }
+});
+
+test('CallUsageLine: a dim div.call-usage that is not a .block, with an explaining tooltip', () => {
+  setupDOM();
+  const { node } = new CallUsageLine(CALL);
+  assert.equal(node.tagName, 'DIV');
+  assert.ok(node.classList.contains('call-usage'));
+  assert.ok(!node.classList.contains('block'), 'a .block would be counted as an action');
+  assert.match(node.getAttribute('title'), /^Prompt size of this API call \(exact\)\. Growth = /);
+});
+
+test('ToolUseBlock: an Agent result with subagent totals renders a .subagent-usage badge that survives a re-render', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Agent', toolUseId: 'tu_agent' });
+  block.finalizeInput({ description: 'Fetch docs', subagent_type: 'web-fetch', prompt: 'x' });
+  block.attachResult(new ToolResultBlock({ toolUseId: 'tu_agent', content: 'ok', isError: false, agentTokens: 123_873, agentToolUses: 11 }));
+  const badge = () => block.summary.querySelector('.subagent-usage');
+  assert.equal(badge()?.textContent, ' · subagent 124k ctx · 11 tool uses');
+  assert.match(badge().getAttribute('title'), /^The subagent's own context when it finished/);
+  block._renderSummary();
+  assert.equal(badge()?.textContent, ' · subagent 124k ctx · 11 tool uses', 'rebuilt from state, not lost');
+});
+
+test('ToolUseBlock: one tool use reads in the singular', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Agent', toolUseId: 'tu_agent' });
+  block.attachResult(new ToolResultBlock({ toolUseId: 'tu_agent', content: 'ok', isError: false, agentTokens: 900, agentToolUses: 1 }));
+  assert.equal(block.summary.querySelector('.subagent-usage')?.textContent, ' · subagent 900 ctx · 1 tool use');
+});
+
+test('ToolUseBlock: the badge omits the tool-use count when unknown', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Agent', toolUseId: 'tu_agent' });
+  block.attachResult(new ToolResultBlock({ toolUseId: 'tu_agent', content: 'ok', isError: false, agentTokens: 900, agentToolUses: null }));
+  assert.equal(block.summary.querySelector('.subagent-usage')?.textContent, ' · subagent 900 ctx');
+});
+
+test('ToolUseBlock: a result without subagent totals renders no badge', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Agent', toolUseId: 'tu_bg' });
+  block.attachResult(new ToolResultBlock({ toolUseId: 'tu_bg', content: 'launched', isError: false }));
+  assertNull(block.summary.querySelector('.subagent-usage'));
 });
 
 // ── Card 2026-0245: tool_args collapse state is the node, and it is sticky ──

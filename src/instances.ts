@@ -100,7 +100,8 @@ import { cliEnvBase } from './cliEnv.ts';
 import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage, verifyUserPrompt } from './sessionEdit.ts';
-import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
+import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
+import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../public/planApproval.js';
 import { reconstructTasks } from './taskReconstruct.ts';
@@ -722,6 +723,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _questionAnswers: QuestionAnswerCorrelator;
   _liveThinkingTokens: number | null;
   _lastContextUsage: unknown;
+  _callUsage: CallUsageTracker;
   _pending: Map<string, PendingRequest>;
   _hooks: HookBroker;
   _readNudge: ConductorReadNudge | null;
@@ -921,12 +923,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the window and a re-subscribing client would rebuild an empty tracker
     // (`ctx —`). A backend that answers in one long unbroken text block hits that
     // routinely. Unlike _liveThinkingTokens this deliberately SURVIVES turn_end —
-    // it's last-value-wins for the life of the process. Its only reset is
-    // _wipeForResume (rewind/respawn), which rewrites the CLI's prefix in place;
-    // a fork or a resume-after-restart needs none, since each builds a NEW
-    // Instance that starts here at null (and a fork must leave the parent's value
-    // alone — that session continues).
+    // it's last-value-wins for the life of the process. Cleared only through
+    // _dropContextReading, whose call sites are listed there; a fork or a
+    // resume-after-restart needs none, since each builds a NEW Instance that
+    // starts here at null (and a fork must leave the parent's value alone —
+    // that session continues).
     this._lastContextUsage = null;
+    // Per-call prompt + growth for call_usage, baselined on the latch above and
+    // reset with it (_dropContextReading).
+    this._callUsage = new CallUsageTracker();
     this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
     // A conductor's read-nudge run counter (src/conductorReadNudge.ts). In
     // memory only: a resume-after-restart or a fork builds a new Instance and
@@ -1198,6 +1203,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // it can't, since the API reports a dated snapshot id in message_start and a
       // substitution model's id is opaque.
       contextWindowTokens: this.contextWindowTokens,
+      // The numerator: the latest top-level call's prompt, read off the same
+      // latch as the header chip. Between turns it reads one reply short.
+      contextTokens: contextReading(this._lastContextUsage),
       backend: this.backend,
       sessionId: this.sessionId,
       status: this.status,
@@ -1610,10 +1618,25 @@ export class Instance extends EventEmitter implements InstanceLike {
     // message produced no message_start reading, so the two can never fight
     // within one message. Whole-object last-wins, same as above — there is no
     // per-field merge site anywhere on this path.
-    // Cleared in two places: _wipeForResume (rewind/respawn) and
-    // _announceModelSwitch (a mid-session model switch moves the denominator).
+    // Cleared via _dropContextReading (its call sites are listed there) — one
+    // of them is right here: a top-level compaction replaces the context, on
+    // live and replay alike.
+    // The per-call tracker is driven from here because its baseline is the
+    // latch as it stood BEFORE this call's message_start updates it. A
+    // zero-usage message_start (usage null) still opens the call. The replayed
+    // seed is not a call.
+    if (ev.kind === 'message_start' && !ev.replayed) {
+      this._callUsage.onMessageStart(ev.msgId, contextReading(this._lastContextUsage), ev.usage);
+    } else if (ev.kind === 'context_usage') {
+      this._callUsage.onContextUsage(ev.msgId, ev.usage);
+    }
     if ((ev.kind === 'message_start' || ev.kind === 'context_usage') && ev.usage) {
       this._lastContextUsage = ev.usage;
+    } else if (ev.kind === 'compaction' && !ev.parentToolUseId) {
+      // A parent-tagged compaction is a subagent compacting its own window,
+      // which leaves this session's context alone — the live twin of
+      // loadPersistedTranscript's `!line.isSidechain` guard.
+      this._dropContextReading();
     }
     // Same funnel again: advance the live quiescence scan so an armed deferred
     // interrupt can fire at the first boundary (see _maybeFireArmedInterrupt,
@@ -1631,6 +1654,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (wrapped.kind === 'thinking_redacted' && this._liveThinkingTokens != null) {
       wrapped.estimatedTokens = this._liveThinkingTokens;
     }
+    // The call's prompt and its growth over the previous reading (live only —
+    // replay emits no call_usage).
+    if (wrapped.kind === 'call_usage') this._callUsage.stamp(wrapped);
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so within a segment this counter
     // matches the Nth-pure-user-prompt-line semantics sessionEdit.ts truncates
@@ -1643,7 +1669,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // AskUserQuestion card (UI-only; the CLI never sees it).
     this._questionAnswers.apply(wrapped);
     // INVARIANT: the ring and the live feed share ONE object. Anything stamped
-    // onto `wrapped` above (userIndex, estimatedTokens, questionAnswer) must be set BEFORE this
+    // onto `wrapped` above (userIndex, estimatedTokens, promptTokens/growthTokens, questionAnswer) must be set BEFORE this
     // point, and neither line may take a copy. The field a copy would cost is
     // `_seq`: push() assigns it to the object it receives (see EventLog.push),
     // so cloning for the ring leaves the live frame with `_seq: undefined` and
@@ -1754,8 +1780,21 @@ export class Instance extends EventEmitter implements InstanceLike {
   // frame re-latches the new model's own reading in the same line and the chip
   // never flashes `ctx —`.
   _announceModelSwitch(from: string, to: string): void {
-    this._lastContextUsage = null;
+    this._dropContextReading();
     this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to } });
+  }
+
+  // The ONE way the context reading is cleared: a known-wrong number is worse
+  // than none, so each event that invalidates what the latch measured drops it
+  // and the readout stays unknown until the next usage-bearing message_start /
+  // context_usage. Call sites: a top-level compaction (_emitUi), a `/clear` rotation
+  // (_handleStdoutLine), a model switch (_announceModelSwitch) and a
+  // rewind/respawn/prune (_wipeForResume — a prune additionally skips the jsonl
+  // seed, _skipUsageSeed). The header chip keeps its client-side reading across
+  // a compaction or rotation until the next message_start.
+  _dropContextReading(): void {
+    this._lastContextUsage = null;
+    this._callUsage.reset();
   }
 
   // Re-resolve capacity from the current {backend, model}.
@@ -2553,6 +2592,8 @@ export class Instance extends EventEmitter implements InstanceLike {
           // live must drop a pending card here to stamp what a reload stamps.
           // The spawn fill seam needs no reset: its ring is new or freshly wiped.
           this._questionAnswers = new QuestionAnswerCorrelator();
+          // The new session starts from an empty context the latch never measured.
+          this._dropContextReading();
           if (publicId) this._kickLineageWrite(this._rotationWrite(publicId, sid, oldBacking));
         }
         const mode = data?.permissionMode;
@@ -2692,6 +2733,11 @@ export class Instance extends EventEmitter implements InstanceLike {
         ev.firstReqCacheRead = this._turnFirstReqCacheRead ?? 0;
         ev.firstReqCacheCreation = this._turnFirstReqCacheCreation ?? 0;
         ev.firstReqEvicted = this._turnEvicted ?? 0;
+        // The context in use at this turn's end and the window it was measured
+        // against, so the line keeps its own denominator. Ring and live only:
+        // costTracking copies its fields one by one and takes neither.
+        ev.contextTokens = contextReading(this._lastContextUsage);
+        ev.contextWindowTokens = this.contextWindowTokens;
         // Latch this turn's fully-accumulated prefix as P for next turn's
         // cross-turn comparison. A turn with no requests leaves P unchanged.
         if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
@@ -4106,7 +4152,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A rewind/respawn rewrites the CLI's prefix, so the pre-wipe context reading
     // must not leak into the replayed session (it would over-report a rewound
     // session's fill until its first live message_start).
-    this._lastContextUsage = null;
+    this._dropContextReading();
     this.parser.reset();
     this._lastLeafUuid = null;
     this._planFiles.reset();

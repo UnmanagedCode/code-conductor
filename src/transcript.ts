@@ -429,6 +429,13 @@ export async function loadPersistedTranscript(options: {
         usage: u,
       };
     }
+    // A compaction replaces the context, so a reading taken before it measures
+    // a context that no longer exists — only a later call re-measures. Same
+    // sidechain guard as above: a sub-agent compacting its own window leaves
+    // this session's alone. Mirrors the live clear (Instance._dropContextReading).
+    if (line.type === 'system' && line.subtype === 'compact_boundary' && !line.isSidechain) {
+      lastAssistantUsage = null;
+    }
 
     // When the line is the parent's tool_result for an Agent invocation, the
     // CLI persists the sub-agent's own assistant/user transcript in a sibling

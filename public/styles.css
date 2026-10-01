@@ -1416,6 +1416,16 @@ body.lightbox-open { overflow: hidden; }
   margin: 4px 0 18px 0;
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
 }
+/* Per-call usage line (live call_usage) and the Agent row's subagent total. */
+.call-usage {
+  margin: 2px 0 4px 0;
+  font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.block.tool .subagent-usage {
+  font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
+  white-space: nowrap;
+}
 
 #subagent-panel {
   border-top: 1px solid var(--border);

@@ -972,7 +972,7 @@ test('parser T1: a zero-sum message_start still fires with usage:null and its de
   assert.equal(starts[0].kind, 'message_start');
   assert.equal(starts[0].usage, null, 'the zero BLOCK is dropped, not the event');
 
-  const out = p.handleObject(msgDeltaEv(REAL_DELTA_USAGE));
+  const out = p.handleObject(msgDeltaEv(REAL_DELTA_USAGE)).filter(e => e.kind === 'context_usage');
   assert.equal(out.length, 1);
   assert.equal(out[0].kind, 'context_usage');
   assert.equal(out[0].msgId, 'm1');
@@ -985,7 +985,8 @@ test('parser T2: a usage-bearing message_start suppresses the fallback entirely'
   const p = new Parser();
   const starts = p.handleObject(msgStartEv({ usage: { input_tokens: 46179, output_tokens: 0 } }));
   assert.equal(starts[0].usage.input_tokens, 46179, 'the real reading is the message_start one');
-  const out = p.handleObject(msgDeltaEv({ input_tokens: 37395, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 110 }));
+  const out = p.handleObject(msgDeltaEv({ input_tokens: 37395, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 110 }))
+    .filter(e => e.kind === 'context_usage');
   assert.deepEqual(out, [], 'a native backend\'s message_delta must never win over its message_start');
 });
 
@@ -993,7 +994,7 @@ test('parser T2: a usage-bearing message_start suppresses the fallback entirely'
 test('parser T3: an armed all-zero message_delta usage emits nothing', () => {
   const p = new Parser();
   p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
-  assert.deepEqual(p.handleObject(msgDeltaEv({ input_tokens: 0, output_tokens: 110 })), []);
+  assert.deepEqual(p.handleObject(msgDeltaEv({ input_tokens: 0, output_tokens: 110 })).filter(e => e.kind === 'context_usage'), []);
 });
 
 // T4 — stays armed within a message (last non-zero wins is the latch's job),
@@ -1029,8 +1030,86 @@ test('parser T6: reset() disarms the ctx fallback', () => {
   const p = new Parser();
   p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
   p.reset();
-  assert.deepEqual(p.handleObject(msgDeltaEv(REAL_DELTA_USAGE)), [],
+  assert.deepEqual(p.handleObject(msgDeltaEv(REAL_DELTA_USAGE)).filter(e => e.kind === 'context_usage'), [],
     'a rewound session must not inherit an armed flag');
+});
+
+// ── call_usage: each call's final output from message_delta's event-level usage ──
+// The capture's message_delta (code-live call 1, Claude Code 2.1.284): the only
+// exact source of a call's output — the assistant envelope repeats the
+// message_start placeholder.
+const REAL_CALL_START = { input_tokens: 2, cache_creation_input_tokens: 14627, cache_read_input_tokens: 12863, output_tokens: 8 };
+const REAL_CALL_DELTA = {
+  type: 'stream_event', parent_tool_use_id: null,
+  event: {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use', stop_sequence: null, stop_details: null, container: null },
+    usage: {
+      input_tokens: 2, cache_creation_input_tokens: 14627, cache_read_input_tokens: 12863, output_tokens: 460,
+      output_tokens_details: { thinking_tokens: 73 },
+      iterations: [{ input_tokens: 2, output_tokens: 460, cache_read_input_tokens: 12863, cache_creation_input_tokens: 14627,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 14627 }, type: 'message' }],
+    },
+    context_management: { applied_edits: [] },
+  },
+};
+
+test('parser: a real message_delta emits one call_usage with its output and thinking, and no context_usage', () => {
+  const p = new Parser();
+  p.handleObject(msgStartEv({ usage: REAL_CALL_START, id: 'msg_call1' }));
+  const out = p.handleObject(REAL_CALL_DELTA);
+  assert.deepEqual(out, [{ kind: 'call_usage', msgId: 'msg_call1', outputTokens: 460, thinkingTokens: 73, parentToolUseId: null }]);
+  assert.ok(!('blockIdx' in out[0]), 'no blockIdx — the event must stay quiescence-neutral');
+});
+
+test('parser: an armed zero-usage message emits context_usage, then call_usage', () => {
+  const p = new Parser();
+  p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
+  const out = p.handleObject(msgDeltaEv(REAL_DELTA_USAGE));
+  assert.deepEqual(out.map(e => e.kind), ['context_usage', 'call_usage']);
+  assert.equal(out[1].outputTokens, 110);
+  assert.equal(out[1].thinkingTokens, null, 'no output_tokens_details → thinking unknown');
+});
+
+test('parser: a message_delta without a numeric output_tokens emits no call_usage', async (t) => {
+  for (const [name, usage] of [['no usage', undefined], ['no output_tokens', { input_tokens: 5 }], ['non-numeric', { output_tokens: '460' }]]) {
+    await t.test(name, () => {
+      const p = new Parser();
+      p.handleObject(msgStartEv({ usage: REAL_CALL_START }));
+      assert.deepEqual(p.handleObject(msgDeltaEv(usage)).filter(e => e.kind === 'call_usage'), []);
+    });
+  }
+});
+
+// The Agent tool_use_result's totals: the subagent's own context when it
+// finished (its last call's prompt + output). The foreground envelope is the
+// trimmed capture's; the backgrounded one returns no totals.
+const CONTEXT_SCENARIO = JSON.parse(await fs.readFile(path.join(__dirname, 'fixtures', 'scenario-context-calls.json'), 'utf8'));
+const REAL_AGENT_RESULT = CONTEXT_SCENARIO.turns[0].emit.find(l => l.type === 'user' && l.tool_use_result?.totalTokens != null);
+
+test('parser: a foreground Agent result is stamped with the subagent totals', () => {
+  const [ev, ...rest] = new Parser().handleObject(REAL_AGENT_RESULT);
+  assert.deepEqual(rest, []);
+  assert.equal(ev.kind, 'tool_result');
+  assert.equal(ev.agentTokens, 123_873);
+  assert.equal(ev.agentToolUses, 11);
+});
+
+test('parser: a backgrounded Agent result (async_launched) carries no totals, so no stamp', async () => {
+  const bg = JSON.parse(await fs.readFile(path.join(__dirname, 'fixtures', 'scenario-background-task.json'), 'utf8'));
+  const env = bg.turns.flatMap(tn => tn.emit).find(l => l.type === 'user' && l.tool_use_result?.status === 'async_launched');
+  assert.ok(env, 'premise: the fixture carries the async_launched envelope');
+  const [ev] = new Parser().handleObject(env);
+  assert.equal(ev.kind, 'tool_result');
+  assert.ok(!('agentTokens' in ev) && !('agentToolUses' in ev));
+});
+
+test('parser: a totals-bearing envelope with more than one tool_result is not stamped', () => {
+  const env = structuredClone(REAL_AGENT_RESULT);
+  env.message.content.push({ tool_use_id: 'toolu_other', type: 'tool_result', content: 'x' });
+  const out = new Parser().handleObject(env);
+  assert.equal(out.filter(e => e.kind === 'tool_result').length, 2);
+  assert.ok(out.every(e => !('agentTokens' in e)), 'the totals cannot be pinned to one result');
 });
 
 // ── yielded: the orchestrator's own can_use_tool deny of an interactive tool ──

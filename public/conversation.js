@@ -2,7 +2,7 @@
 // and renders them into the DOM. Idempotent by event _seq so that snapshot
 // replays don't duplicate prior content.
 
-import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
+import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock, CallUsageLine,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, ImageBlock,
   shouldRenderSystem,
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
@@ -404,6 +404,9 @@ export class Conversation {
   _renderEvent(ev) {
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
+    // Before _ensureNotEmpty: a line for a call this view never rendered must
+    // not strip the empty-state placeholder.
+    if (ev.kind === 'call_usage') { this._renderCallUsage(ev); return; }
     this._ensureNotEmpty();
     if (COMPACTION_WINDOW_ENDERS.has(ev.kind)) this._compaction = null;
     switch (ev.kind) {
@@ -1000,6 +1003,20 @@ export class Conversation {
     // single SYSTEM box at the top of the conversation, drifting out of
     // sync with where they actually occurred in the stream.
     this.root.appendChild(new SystemBlock(ev).node);
+  }
+
+  // A live call's usage line, after the call's last block. It only ever joins a
+  // wrap that already exists — never creates one — and goes into the wrap's open
+  // action group when there is one, else its body. Deliberately not through
+  // _appendBlockToWrap, which would close or split the group: a call's tool run
+  // continues into the next call's tools.
+  _renderCallUsage(ev) {
+    const wrap = this.messageWraps.get(ev.msgId);
+    if (!wrap) return;
+    const node = new CallUsageLine(ev).node;
+    if (wrap.actionGroup && wrap.actionGroup.parentNode === wrap.body) appendToActionGroup(wrap.actionGroup, node);
+    else wrap.body.appendChild(node);
+    this._maybeScroll();
   }
 
   _renderTurnEnd(ev) {
