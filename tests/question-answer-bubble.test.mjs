@@ -548,3 +548,28 @@ test('a non-canonical answer the strict parse accepts renders raw and locks the 
     });
   }
 });
+
+// `question: false` is a card that renders (el() skips a false child) whose
+// question text is not a string.
+test('a card whose question text is not a string: the older-page path locks it without throwing', async (t) => {
+  const questions = [{ question: false, options: opts('Apple', 'Banana') }];
+  const card = { kind: 'user_question', toolUseId: 'tu_q', questions };
+  const stampedEcho = (text) => ({ kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions } });
+  await t.test('a foreign answer text locks it with no pick', async () => {
+    const { conv, root, renderEventBatch } = await freshConversation();
+    conv.apply(stampedEcho('Answer to "": Banana'));
+    assertRawBubble(root);
+    const batch = renderEventBatch([card, CARD_RESULT], {}, { answeredQuestions: conv.answeredQuestions });
+    assertLockedNoPick(batch.holder.querySelector('.block.user-question'), 'foreign text');
+  });
+  await t.test('the formatter\'s own text locks it with its pick, as its bubble rows show', async () => {
+    const { conv, root, renderEventBatch } = await freshConversation();
+    const answers = [{ kind: 'option', label: 'Banana', note: 'ripe' }];
+    conv.apply(stampedEcho(formatUserQuestionAnswers(questions, answers)));
+    assertRows(root, questions, answers);
+    const batch = renderEventBatch([card, CARD_RESULT], {}, { answeredQuestions: conv.answeredQuestions });
+    const cardEl = batch.holder.querySelector('.block.user-question');
+    assertStillLocked(cardEl, 'canonical text');
+    assertCardPicks(cardEl, questions, answers);
+  });
+});

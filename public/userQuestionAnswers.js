@@ -32,7 +32,10 @@ const NOTE_CLOSE = ')';
 const MULTI_HEAD = 'My answers:\n';
 
 const q = (s) => JSON.stringify(s);
-const questionText = (question, fallback) => (question?.question ?? fallback).replace(/\s+/g, ' ').trim();
+// A non-string `question` (a corrupt jsonl, a malformed tool input) is treated
+// as missing.
+const questionText = (question, fallback) =>
+  (typeof question?.question === 'string' ? question.question : fallback).replace(/\s+/g, ' ').trim();
 // The single-question prefix, shared by the formatter, the parser and the
 // correlator so they cannot drift on question text holding `"` or `\`.
 const questionPrefix = (question) => `Answer to ${q(questionText(question, 'Question'))}: `;
@@ -76,8 +79,9 @@ export function isQuestionAnswerShape(text) {
   return typeof text === 'string' && (/^Answer to "[^\n]*": /.test(text) || text.startsWith(`${MULTI_HEAD}1. `));
 }
 
-// The exact reverse of formatUserQuestionAnswers. Exported so
-// conversation.js can call it during session replay. Never throws — returns
+// The exact reverse of formatUserQuestionAnswers. Production callers go
+// through parseCanonicalUserQuestionAnswers; this is exported so tests can pin
+// the strict parse on its own. Never throws — returns
 // an array of { kind: 'none' } when the text is not in the grammar above
 // (an older format, trailing text, an unoffered label) so callers can
 // degrade gracefully.
@@ -113,10 +117,15 @@ export function parseUserQuestionAnswers(questions, text) {
 // them; null otherwise (an older format, a coalesced steer, hand-typed text the
 // strict parse accepts but the formatter would never produce). The one gate
 // the answer bubble and the card lock share, so they cannot disagree.
+// Never throws.
 export function parseCanonicalUserQuestionAnswers(questions, text) {
   if (!Array.isArray(questions) || questions.length === 0) return null;
-  const answers = parseUserQuestionAnswers(questions, text);
-  return formatUserQuestionAnswers(questions, answers) === text ? answers : null;
+  try {
+    const answers = parseUserQuestionAnswers(questions, text);
+    return formatUserQuestionAnswers(questions, answers) === text ? answers : null;
+  } catch {
+    return null;
+  }
 }
 
 // Read the JSON string literal opening at s[i]. Returns { value, end } with

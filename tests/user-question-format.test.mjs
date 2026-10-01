@@ -124,3 +124,17 @@ test('question text on each numbered line has its whitespace collapsed (multi-qu
     formatUserQuestionAnswers([q1, q2], [{ kind: 'option', label: 'A' }, { kind: 'option', label: 'X' }]),
     'My answers:\n1. "First line": "A"\n2. "Second q": "X"');
 });
+
+test('a non-string question text falls back to the default, as a missing one does', async (t) => {
+  for (const [name, question] of Object.entries({ number: 5, false: false, object: {}, array: ['a'] })) {
+    await t.test(name, () => {
+      assert.equal(
+        formatUserQuestionAnswers([{ question, options: [{ label: 'A' }] }], [{ kind: 'option', label: 'A' }]),
+        'Answer to "Question": "A"');
+      assert.equal(
+        formatUserQuestionAnswers([{ question, options: [{ label: 'A' }] }, { question, options: [{ label: 'B' }] }],
+          [{ kind: 'option', label: 'A' }, { kind: 'option', label: 'B' }]),
+        'My answers:\n1. "Question 1": "A"\n2. "Question 2": "B"');
+    });
+  }
+});

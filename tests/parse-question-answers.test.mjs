@@ -123,6 +123,24 @@ test('parseCanonicalUserQuestionAnswers returns the answers for canonical text a
   await t.test('no questions', () => assert.equal(parseCanonicalUserQuestionAnswers([], 'anything'), null));
 });
 
+test('a non-string question text never makes the parse or the gate throw', async (t) => {
+  for (const [name, question] of Object.entries({ number: 5, false: false, object: {}, array: ['a'] })) {
+    const qs = [{ question, options: opts('A') }];
+    const two = [{ question, options: opts('A') }, { question, options: opts('B') }];
+    await t.test(`${name}: foreign text → parse all-none, gate null`, () => {
+      assert.deepEqual(parseUserQuestionAnswers(qs, 'x'), [{ kind: 'none' }]);
+      assert.equal(parseCanonicalUserQuestionAnswers(qs, 'x'), null);
+      assert.equal(parseCanonicalUserQuestionAnswers(two, 'x'), null);
+    });
+    await t.test(`${name}: the formatter's own text → the gate returns its answers`, () => {
+      const answers = [{ kind: 'option', label: 'A', note: 'n' }];
+      assert.deepEqual(parseCanonicalUserQuestionAnswers(qs, formatUserQuestionAnswers(qs, answers)), answers);
+      const both = [{ kind: 'option', label: 'A' }, { kind: 'custom', text: 'b' }];
+      assert.deepEqual(parseCanonicalUserQuestionAnswers(two, formatUserQuestionAnswers(two, both)), both);
+    });
+  }
+});
+
 // ── Graceful degradation ─────────────────────────────────────────────────────
 
 test('graceful: null text returns array of { kind: none }', () => {

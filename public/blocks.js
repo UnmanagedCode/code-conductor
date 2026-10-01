@@ -1026,11 +1026,11 @@ export class UserQuestionBlock {
   }
 }
 
-// The AskUserQuestion answer formatter/parser moved to ./userQuestionAnswers.js
-// so the answer_question MCP tool (src/mcp/handlers.ts) can import the SAME
-// DOM-free formatter server-side — one canonical function, no fork. Re-exported
-// here so existing importers (app.js) are unchanged.
-export { formatUserQuestionAnswers, isUserQuestionAnswerText } from './userQuestionAnswers.js';
+// The AskUserQuestion answer formatter lives in ./userQuestionAnswers.js so the
+// answer_question MCP tool (src/mcp/handlers.ts) can import the SAME DOM-free
+// formatter server-side — one canonical function, no fork. Re-exported here
+// for app.js.
+export { formatUserQuestionAnswers } from './userQuestionAnswers.js';
 
 // Renders the plan the model produced in plan mode + Approve/Reject
 // controls. Approve switches the instance out of plan mode and tells the
