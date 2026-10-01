@@ -660,3 +660,44 @@ test('T29: a notified task_notification head missing from the archive abandons â
     await rmrf(r.home);
   }
 });
+
+// A background Agent can notify more than once for one tool use. Each
+// notification is its own archive entry, so the key must carry the status:
+// keyed on the tool_use_id alone, both heads would resolve to the first.
+//
+// PINS: two notified heads sharing a toolUseId but not a status each correlate
+// to their own archived notification â€” an exact cut, no gap, no duplication.
+test('T30: notifications sharing a toolUseId correlate by status', async (t) => {
+  const failedLine = () => {
+    const line = enqueueLine('tuAg');
+    return { ...line, content: line.content.replace('<status>completed</status>', '<status>failed</status>') };
+  };
+  for (const [status, at, tail] of [['completed', 25, 'm1'], ['failed', 28, 'm2']]) {
+    await t.test(status, async () => {
+      const r = await freshProjectsRoot();
+      try {
+        const cwd = `/fake/t30-${status}`;
+        const [prompt, assistant] = textBlockLines();
+        await writeJsonl(cwd, SID, [
+          prompt,
+          assistant,
+          enqueueLine('tuAg'),
+          { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'between' }] } },
+          failedLine(),
+          { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
+        ]);
+        const head = notifiedHead('tuAg');
+        head.data = { ...head.data, status };
+        const ring = [head, { kind: 'text_delta', msgId: tail, blockIdx: 0, text: 'x', _seq: 60 }];
+        const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
+        assert.equal(arch.events[25].data?.status, 'completed', 'fixture check: the first notification sits at 25');
+        assert.equal(arch.events[28].data?.status, 'failed', 'fixture check: the second sits at 28');
+        assert.equal(arch.cut, at, `the ${status} head cuts at its own notification`);
+        assert.equal(arch.gap, false);
+        assertNoDuplication(arch, ring, `T30[${status}]`);
+      } finally {
+        await rmrf(r.home);
+      }
+    });
+  }
+});

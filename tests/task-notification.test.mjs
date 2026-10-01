@@ -308,3 +308,48 @@ test('17: a background Agent that notifies again still renders', async () => {
   assert.equal(second.data.notified, true, 'the task_started record outlives an Agent\'s first notification');
   assert.equal(second.data.name, 'bg agent');
 });
+
+test('18: a live background Agent never takes an exit code from its result text, even when that text is a command sentence', async () => {
+  const parser = new Parser();
+  let ev;
+  for (const f of await readJsonl(`${MAIN}.stdout.jsonl`)) {
+    // The real C6 frame with only its summary (the Agent's result text) changed.
+    const g = f.type === 'system' && f.subtype === 'task_notification' && f.tool_use_id === BG.C6.tu
+      ? { ...f, summary: 'Background command "x" completed (exit code 0)' } : f;
+    const out = parser.handleObject(g).filter(isTn);
+    if (g !== f) ev = out[0];
+  }
+  assert.equal(ev.data.notified, true, 'fixture check: still the notified background Agent');
+  assert.equal(ev.data.exitCode, null);
+});
+
+test('19: a queued prompt carrying a complete notification block after leading prose replays nothing', async () => {
+  const enq = await enqueueFor(MAIN, BG.C1.tu);
+  assert.deepEqual(replayPersistedLine({ ...enq, content: `please explain this:\n${enq.content}` }), []);
+});
+
+test('20: an enqueue with no <tool-use-id> replays nothing', async () => {
+  const enq = await enqueueFor(MAIN, BG.C1.tu);
+  const content = enq.content.replace(`<tool-use-id>${BG.C1.tu}</tool-use-id>\n`, '');
+  assert.notEqual(content, enq.content, 'fixture check: the tag was removed');
+  assert.deepEqual(replayPersistedLine({ ...enq, content }), []);
+});
+
+test('21: an enqueue naming two tasks replays nothing', async () => {
+  const enq = await enqueueFor(MAIN, BG.C1.tu);
+  const content = enq.content.replace('<task-id>byncs4grx</task-id>', '<task-id>byncs4grx</task-id>\n<task-id>bnx1vv474</task-id>');
+  assert.notEqual(content, enq.content, 'fixture check: the second task-id was added');
+  assert.deepEqual(replayPersistedLine({ ...enq, content }), []);
+});
+
+test('22: a task name containing a closing quote and a verb is captured whole', async (t) => {
+  for (const [s, name, code] of [
+    ['Background command "echo "x" completed" completed (exit code 0)', 'echo "x" completed', 0],
+    ['Background command "echo "x" failed" failed with exit code 2', 'echo "x" failed', 2],
+  ]) {
+    await t.test(s, () => {
+      assert.equal(parseTaskSentence(s)?.name, name);
+      assert.equal(sentenceExitCode(s), code);
+    });
+  }
+});
