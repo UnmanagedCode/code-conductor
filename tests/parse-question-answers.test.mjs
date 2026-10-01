@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatUserQuestionAnswers, parseUserQuestionAnswers, isUserQuestionAnswerText,
+  parseCanonicalUserQuestionAnswers,
 } from '../public/userQuestionAnswers.js';
 
 // ── Round-trip: for every canonical answer, parse inverts format exactly ─────
@@ -99,6 +100,27 @@ test('rejection: malformed or foreign text parses to all-none without throwing',
       assert.deepEqual(parseUserQuestionAnswers(questions, text), questions.map(() => ({ kind: 'none' })));
     });
   }
+});
+
+// ── Canonical gate: parsed answers only for the formatter's exact output ─────
+
+test('parseCanonicalUserQuestionAnswers returns the answers for canonical text and null otherwise', async (t) => {
+  await t.test('canonical text', () => {
+    const answers = [{ kind: 'option', label: 'Banana', note: 'ripe' }];
+    assert.deepEqual(parseCanonicalUserQuestionAnswers([FRUIT], formatUserQuestionAnswers([FRUIT], answers)), answers);
+  });
+  await t.test('canonical text whose answer is a skip', () => {
+    assert.deepEqual(parseCanonicalUserQuestionAnswers([FRUIT], 'Answer to "Pick a fruit": (no answer)'), [{ kind: 'none' }]);
+  });
+  for (const [name, text] of Object.entries({
+    'untrimmed custom text': 'Answer to "Pick a fruit": (own answer) " Mango "',
+    'a JSON-escape spelling of a label': 'Answer to "Pick a fruit": "\\u0041pple"',
+    'an empty note clause': 'Answer to "Pick a fruit": "Apple" (note: "")',
+    'old-format text': 'Answer to "Pick a fruit": Apple',
+  })) {
+    await t.test(name, () => assert.equal(parseCanonicalUserQuestionAnswers([FRUIT], text), null));
+  }
+  await t.test('no questions', () => assert.equal(parseCanonicalUserQuestionAnswers([], 'anything'), null));
 });
 
 // ── Graceful degradation ─────────────────────────────────────────────────────

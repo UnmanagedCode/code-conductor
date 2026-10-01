@@ -109,6 +109,16 @@ export function parseUserQuestionAnswers(questions, text) {
   }
 }
 
+// The parsed answers only when `text` is exactly what the formatter emits for
+// them; null otherwise (an older format, a coalesced steer, hand-typed text the
+// strict parse accepts but the formatter would never produce). The one gate
+// the answer bubble and the card lock share, so they cannot disagree.
+export function parseCanonicalUserQuestionAnswers(questions, text) {
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const answers = parseUserQuestionAnswers(questions, text);
+  return formatUserQuestionAnswers(questions, answers) === text ? answers : null;
+}
+
 // Read the JSON string literal opening at s[i]. Returns { value, end } with
 // `end` just past the closing quote, or null when s[i] is not `"`, the
 // literal is unterminated, or it holds a raw control character.

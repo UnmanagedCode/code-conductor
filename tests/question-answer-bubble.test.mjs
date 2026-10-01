@@ -11,7 +11,7 @@ import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
+import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../public/userQuestionAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -502,6 +502,49 @@ test('an old-format answer renders raw inside the answer bubble and locks the ca
       assertStillLocked(card, name);
       assert.equal(card.querySelectorAll('button.uq-opt.picked').length, 0, 'no option is picked');
       for (const i of card.querySelectorAll('.uq-custom-input')) assert.equal(i.value, '', 'no field text');
+    });
+  }
+});
+
+// Text the strict parse accepts but the formatter would never emit: the bubble
+// and the card must agree on it, as they do on an old-format answer.
+const NON_CANONICAL = {
+  'untrimmed custom text': 'Answer to "Pick a fruit": (own answer) " Mango "',
+  'a JSON-escape spelling of a label': 'Answer to "Pick a fruit": "\\u0041pple"',
+  'an untrimmed note': 'Answer to "Pick a fruit": "Banana" (note: " ripe ")',
+};
+
+function assertRawBubble(root) {
+  const wrap = root.querySelector('.msg.user.question-answer');
+  assert.ok(wrap, 'an answer bubble');
+  assertNull(wrap.querySelector('.qa-list'), 'no structured rows for a non-canonical answer');
+  assert.ok(wrap.querySelector('.block.question-answer > .user-text'), 'the raw text block is shown');
+}
+
+function assertLockedNoPick(card, label) {
+  assertStillLocked(card, label);
+  assert.equal(card.querySelectorAll('button.uq-opt.picked').length, 0, `${label}: no option is picked`);
+  for (const i of card.querySelectorAll('.uq-custom-input')) assert.equal(i.value, '', `${label}: no field text`);
+}
+
+test('a non-canonical answer the strict parse accepts renders raw and locks the card with no pick', async (t) => {
+  for (const [name, text] of Object.entries(NON_CANONICAL)) {
+    const echo = { kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions: [FRUIT] } };
+    await t.test(`${name}: premise — the strict parse accepts it`, () => {
+      assert.notDeepEqual(parseUserQuestionAnswers([FRUIT], text), [{ kind: 'none' }]);
+    });
+    await t.test(`${name}: live, the echo after the card`, async () => {
+      const { conv, root } = await freshConversation();
+      for (const ev of [CARD, CARD_RESULT, TURN_END, echo]) conv.apply(ev);
+      assertRawBubble(root);
+      assertLockedNoPick(root.querySelector('.block.user-question'), 'live');
+    });
+    await t.test(`${name}: the card born after its answer was seen`, async () => {
+      const { conv, root, renderEventBatch } = await freshConversation();
+      conv.apply(echo);
+      assertRawBubble(root);
+      const batch = renderEventBatch([CARD, CARD_RESULT], {}, { answeredQuestions: conv.answeredQuestions });
+      assertLockedNoPick(batch.holder.querySelector('.block.user-question'), 'older page');
     });
   }
 });

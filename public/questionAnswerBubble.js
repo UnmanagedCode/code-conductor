@@ -4,7 +4,7 @@
 // from sniffing the text. Returns { body, controls } like buildUserText.
 
 import { el } from './dom.js';
-import { formatUserQuestionAnswers, parseUserQuestionAnswers } from './userQuestionAnswers.js';
+import { parseCanonicalUserQuestionAnswers } from './userQuestionAnswers.js';
 import { buildUserText } from './userText.js';
 
 function buildAnswerItem(q, a) {
@@ -28,16 +28,14 @@ function buildAnswerItem(q, a) {
 
 export function buildQuestionAnswer(questionAnswer, text) {
   const questions = Array.isArray(questionAnswer?.questions) ? questionAnswer.questions : [];
-  const answers = parseUserQuestionAnswers(questions, text);
-  // Round-trip is the "canonical" test: old-format text, coalesced steers and
-  // non-canonical hand-typed text all fail it and fall back to the raw text.
-  const faithful = questions.length > 0 && formatUserQuestionAnswers(questions, answers) === text;
+  // Anything but the formatter's exact output falls back to the raw text.
+  const answers = parseCanonicalUserQuestionAnswers(questions, text);
 
   const head = el('div', { class: 'qa-head' },
     el('span', { class: 'qa-badge', title: 'AskUserQuestion answer' }, '❓'),
     questions.length > 1 ? `Answered · ${questions.length} questions` : 'Answered');
   const body = el('div', { class: 'block question-answer' }, head);
-  if (!faithful) {
+  if (!answers) {
     const raw = buildUserText(text);
     body.appendChild(raw.body);
     return { body, controls: raw.controls };

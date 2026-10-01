@@ -982,9 +982,9 @@ export class UserQuestionBlock {
   }
 
   // Called when the server-stamped answer echo names this card, whichever
-  // surface sent the answer. `answers` is the reconstructed answer array from
-  // parseUserQuestionAnswers(); pass null to mark answered without
-  // highlighting a specific option.
+  // surface sent the answer. `answers` is the reconstructed answer array
+  // (all-none for a non-canonical answer); pass null to mark answered without
+  // touching the picks.
   markAnswered(answers) {
     // A card this tab submitted is already locked; the stamp still settles
     // its status line from 'sending…'.
@@ -1029,8 +1029,8 @@ export class UserQuestionBlock {
 // The AskUserQuestion answer formatter/parser moved to ./userQuestionAnswers.js
 // so the answer_question MCP tool (src/mcp/handlers.ts) can import the SAME
 // DOM-free formatter server-side — one canonical function, no fork. Re-exported
-// here so existing importers (app.js, conversation.js) are unchanged.
-export { formatUserQuestionAnswers, parseUserQuestionAnswers, isUserQuestionAnswerText } from './userQuestionAnswers.js';
+// here so existing importers (app.js) are unchanged.
+export { formatUserQuestionAnswers, isUserQuestionAnswerText } from './userQuestionAnswers.js';
 
 // Renders the plan the model produced in plan mode + Approve/Reject
 // controls. Approve switches the instance out of plan mode and tells the

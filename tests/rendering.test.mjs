@@ -546,7 +546,7 @@ test('DOM: multi-select — un-picking all options with a draft reverts to custo
   assert.deepEqual(submissions[0].answers[0], { kind: 'custom', text: 'Mango' });
 });
 
-test('formatUserQuestionAnswers: notes are appended with an em dash; whitespace-only notes are suppressed', async () => {
+test('formatUserQuestionAnswers: notes are appended as a quoted (note: …) clause; whitespace-only notes are suppressed', async () => {
   const { formatUserQuestionAnswers } = await import(
     new URL('../public/blocks.js', import.meta.url).href
   );

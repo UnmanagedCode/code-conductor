@@ -27,3 +27,5 @@ export function isUserQuestionAnswerText(questions: Question[], text: unknown): 
 export function isQuestionAnswerShape(text: unknown): boolean;
 
 export function parseUserQuestionAnswers(questions: Question[], text: unknown): UserQuestionAnswer[];
+
+export function parseCanonicalUserQuestionAnswers(questions: Question[], text: unknown): UserQuestionAnswer[] | null;
