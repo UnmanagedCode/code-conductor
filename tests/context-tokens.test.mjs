@@ -236,3 +236,174 @@ test('clears: a model switch drops the reading from the summary too', async (t) 
   inst._announceModelSwitch('claude-haiku-4-5', 'claude-sonnet-5');
   assert.equal(inst.summary().contextTokens, null);
 });
+
+// ── increment 2: per-call usage (call_usage) and the Agent row's totals ────
+
+test('live: one call_usage per top-level message_delta, in order, with the capture\'s figures', async (t) => {
+  const { events } = await runScenario(t);
+  const calls = events.filter(e => e.kind === 'call_usage');
+  assert.equal(calls.length, CALLS.length);
+  const starts = events.filter(e => e.kind === 'message_start' && !e.parentToolUseId).map(e => e.msgId);
+  assert.deepEqual(starts, CALLS.map(c => c.msgId), 'premise: the feed\'s calls are the capture\'s');
+  for (const [i, c] of calls.entries()) {
+    const want = CALLS[i];
+    assert.equal(c.msgId, want.msgId, `call ${i}: msgId matches its message_start`);
+    assert.equal(c.outputTokens, want.delta.output_tokens, `call ${i}: output`);
+    assert.equal(c.thinkingTokens, want.delta.output_tokens_details.thinking_tokens, `call ${i}: thinking`);
+    assert.equal(c.promptTokens, promptOf(want.start), `call ${i}: prompt`);
+    assert.equal(c.growthTokens, i === 0 ? null : promptOf(want.start) - promptOf(CALLS[i - 1].start),
+      `call ${i}: growth over the previous call (null for a fresh session's first)`);
+    assert.ok(!c.parentToolUseId, `call ${i}: never a subagent call`);
+    assert.ok(!('blockIdx' in c), `call ${i}: no blockIdx — quiescence-neutral`);
+    assert.equal(typeof c._seq, 'number', `call ${i}: retained in the ring`);
+  }
+  // Each line follows its own call's message_start and precedes the next one.
+  const order = events.filter(e => (e.kind === 'message_start' && !e.parentToolUseId) || e.kind === 'call_usage').map(e => e.kind);
+  assert.deepEqual(order, CALLS.flatMap(() => ['message_start', 'call_usage']));
+});
+
+test('live: only the foreground Agent\'s tool_result carries the subagent totals', async (t) => {
+  const { events } = await runScenario(t);
+  const results = events.filter(e => e.kind === 'tool_result');
+  const agentId = AGENT_RESULT.message.content[0].tool_use_id;
+  const agent = results.find(e => e.toolUseId === agentId && !e.parentToolUseId);
+  assert.equal(agent.agentTokens, 123_873);
+  assert.equal(agent.agentToolUses, 11);
+  const stamped = results.filter(e => 'agentTokens' in e || 'agentToolUses' in e);
+  assert.deepEqual(stamped.map(e => e.toolUseId), [agentId], 'no other tool_result is stamped');
+});
+
+test('unchanged: the cache-miss stamps on turn_end do not depend on call_usage', async (t) => {
+  const noDelta = structuredClone(FIXTURE);
+  for (const l of noDelta.turns[0].emit) if (l.type === 'stream_event' && l.event.type === 'message_delta') delete l.event.usage;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-nodelta-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'scenario.json');
+  await fs.writeFile(file, JSON.stringify(noDelta));
+
+  const onCleanup = cleanups(t);
+  const withCalls = await runScenario(t, SCENARIO, onCleanup);
+  const without = await runScenario(t, file, onCleanup);
+  assert.ok(withCalls.events.some(e => e.kind === 'call_usage'), 'premise: the real run emits call_usage');
+  assert.ok(!without.events.some(e => e.kind === 'call_usage'), 'premise: the stripped run emits none');
+  const stamps = (evs) => {
+    const te = evs.find(e => e.kind === 'turn_end');
+    return { cacheMiss: te.cacheMiss, firstReqCacheRead: te.firstReqCacheRead, firstReqCacheCreation: te.firstReqCacheCreation, firstReqEvicted: te.firstReqEvicted };
+  };
+  assert.deepEqual(stamps(withCalls.events), stamps(without.events));
+  assert.deepEqual(withCalls.inst.lastContextUsage, without.inst.lastContextUsage, 'the latch never reads call_usage');
+});
+
+test('unchanged: a UsageTracker fed call_usage ends where one fed none does', async (t) => {
+  const { UsageTracker } = await import('../public/usage.js');
+  const { events } = await runScenario(t);
+  assert.ok(events.some(e => e.kind === 'call_usage'), 'premise');
+  const all = new UsageTracker();
+  const filtered = new UsageTracker();
+  for (const ev of events) all.apply(ev);
+  for (const ev of events) if (ev.kind !== 'call_usage') filtered.apply(ev);
+  assert.deepEqual(all.lastUsage, filtered.lastUsage);
+  assert.deepEqual(all.cum, filtered.cum);
+});
+
+const msgDeltaLine = (output = 50, thinking = 0) => JSON.stringify({
+  type: 'stream_event', parent_tool_use_id: null,
+  event: { type: 'message_delta', delta: { stop_reason: 'tool_use' },
+    usage: { output_tokens: output, output_tokens_details: { thinking_tokens: thinking } } },
+});
+const NEXT = { input_tokens: 2, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 1_000, output_tokens: 5 };
+const lastCall = (events) => events.filter(e => e.kind === 'call_usage').at(-1);
+
+test('growth: measured against the previous call, including one that never reached message_delta', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  inst._handleStdoutLine(msgStartLine('m1', READING));
+  inst._handleStdoutLine(msgDeltaLine(400, 30));
+  assert.deepEqual([lastCall(events).promptTokens, lastCall(events).growthTokens], [27_047, null]);
+  inst._handleStdoutLine(msgStartLine('m2', { ...READING, cache_read_input_tokens: 28_000 })); // interrupted: no delta
+  inst._handleStdoutLine(msgStartLine('m3', NEXT));
+  inst._handleStdoutLine(msgDeltaLine());
+  const c = lastCall(events);
+  assert.equal(c.msgId, 'm3');
+  assert.equal(c.growthTokens, promptOf(NEXT) - 28_047, 'the interrupted call still advanced the baseline');
+});
+
+test('growth: null on the first call after a compaction, a /clear rotation and a model switch', async (t) => {
+  const boundary = COMPACT_LINES.find(l => JSON.parse(l).subtype === 'compact_boundary');
+  for (const [name, clear] of [
+    ['compaction', (inst) => inst._handleStdoutLine(boundary)],
+    ['rotation', (inst) => inst._handleStdoutLine(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-after-clear' }))],
+    ['model switch', (inst) => inst._announceModelSwitch('claude-haiku-4-5', 'claude-sonnet-5')],
+  ]) {
+    await t.test(name, async (st) => {
+      const { inst, events } = await makeInstance(st);
+      inst._handleStdoutLine(msgStartLine('m1', READING));
+      inst._handleStdoutLine(msgDeltaLine());
+      clear(inst);
+      assert.equal(inst.summary().contextTokens, null);
+      inst._handleStdoutLine(msgStartLine('m2', NEXT));
+      inst._handleStdoutLine(msgDeltaLine());
+      const c = lastCall(events);
+      assert.equal(c.msgId, 'm2');
+      assert.equal(c.promptTokens, promptOf(NEXT));
+      assert.equal(c.growthTokens, null, 'nothing measured the context this call grew from');
+    });
+  }
+});
+
+test('growth: a same-session init clears no baseline', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  inst._handleStdoutLine(msgStartLine('m1', READING));
+  inst._handleStdoutLine(msgDeltaLine());
+  inst._handleStdoutLine(JSON.stringify({ type: 'system', subtype: 'init', session_id: SID }));
+  inst._handleStdoutLine(msgStartLine('m2', NEXT));
+  inst._handleStdoutLine(msgDeltaLine());
+  assert.equal(lastCall(events).growthTokens, promptOf(NEXT) - 27_047);
+});
+
+test('replay: a resumed session emits no call_usage and stamps no Agent totals, though its jsonl has them', async (t) => {
+  const { sessionFilePath, localPlace } = await import('../src/projects.ts');
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-replay-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const place = localPlace(cwd);
+  const agentUseId = AGENT_RESULT.message.content[0].tool_use_id;
+  // The persisted shape of the same turn: per-line usage, and the Agent's
+  // totals on the user line's `toolUseResult`.
+  const lines = [
+    { type: 'user', uuid: 'r0', message: { role: 'user', content: 'go' } },
+    { type: 'assistant', uuid: 'r1', message: { id: CALLS[1].msgId, role: 'assistant', model: MODEL,
+      content: [{ type: 'tool_use', id: agentUseId, name: 'Agent', input: {} }], usage: CALLS[1].start } },
+    { type: 'user', uuid: 'r2', message: AGENT_RESULT.message, toolUseResult: AGENT_RESULT.tool_use_result },
+    { type: 'assistant', uuid: 'r3', message: { id: CALLS[3].msgId, role: 'assistant', model: MODEL,
+      content: [{ type: 'text', text: 'done' }], usage: CALLS[3].start } },
+  ];
+  const file = sessionFilePath(place, SID);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+
+  const inst = new Instance({
+    id: 'inst-replay', project: 'demo', cwd, transcriptPlace: place, mode: 'bypassPermissions',
+    effort: 'medium', thinking: 'medium', model: MODEL,
+  });
+  inst.backingSessionId = SID;
+  const events = [];
+  inst.on('event', (ev) => events.push(ev));
+  await inst.loadHistory(SID);
+
+  const agent = events.find(e => e.kind === 'tool_result' && e.toolUseId === agentUseId);
+  assert.ok(agent, 'premise: the Agent result replayed');
+  assert.equal(events.filter(e => e.kind === 'call_usage').length, 0);
+  assert.ok(!('agentTokens' in agent) && !('agentToolUses' in agent));
+  assert.equal(inst.summary().contextTokens, promptOf(CALLS[3].start), 'premise: the resume seed still lands');
+});
+
+test('growth: a reading dropped mid-call leaves that call\'s line with no stale prompt', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  inst._handleStdoutLine(msgStartLine('m1', READING));
+  inst._handleStdoutLine(msgDeltaLine());
+  inst._handleStdoutLine(msgStartLine('m2', NEXT));
+  inst._announceModelSwitch('claude-haiku-4-5', 'claude-sonnet-5'); // between m2's start and its delta
+  inst._handleStdoutLine(msgDeltaLine(70));
+  const c = lastCall(events);
+  assert.equal(c.msgId, 'm2');
+  assert.deepEqual([c.promptTokens, c.growthTokens, c.outputTokens], [null, null, 70]);
+});

@@ -128,6 +128,34 @@ test('T17: a tool_result head correlates by toolUseId', async () => {
   }
 });
 
+// A live call_usage (one per API call, ring-retained, never replayed) carries a
+// msgId but no blockIdx, so it has no correlation key. As the ring head it must
+// be skipped like the other replay-absent kinds, not abandon the cut.
+test('T28: a call_usage head is skipped and the cut correlates on the tool_result after it', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t28';
+    await writeJsonl(cwd, SID, [
+      ...textBlockLines(),
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu1', name: 'Read', input: {} },
+      ] } },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu1', content: 'done', is_error: false },
+      ] } },
+    ]);
+    const ring = [
+      { kind: 'call_usage', msgId: 'm1', outputTokens: 460, thinkingTokens: 73, promptTokens: 27_492, growthTokens: null, parentToolUseId: null, _seq: 69 },
+      { kind: 'tool_result', toolUseId: 'tu1', content: 'done', isError: false, _seq: 70 },
+    ];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 69, userEchoCount: 1 });
+    assert.equal(arch.cut, 27, 'cut lands on the tool_result, past the uncorrelatable call_usage');
+    assert.equal(arch.gap, false);
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
 test('T18: a miss abandons correlation outright — it does not keep scanning the ring', async () => {
   const r = await freshProjectsRoot();
   try {

@@ -473,24 +473,36 @@ test('real capture: the armed interrupt fires at the last tool_result, before th
 // the progression path leaking into streams that close their blocks properly.
 test('real capture: the repaired scan still fires at parser-event 48', async () => {
   const parser = new Parser();
-  const evs = [];
+  const all = [];
   for (const line of (await fs.readFile(TRACE, 'utf8')).split('\n').filter(Boolean)) {
-    for (const ev of parser.handleLine(line)) evs.push(ev);
+    for (const ev of parser.handleLine(line)) all.push(ev);
   }
+  // The indices below were measured before the parser emitted `call_usage`
+  // (one per message_delta with usage), so they are taken without it. The scan
+  // over the full stream must fire on the very same event: call_usage carries
+  // no blockIdx and is quiescence-neutral.
+  const evs = all.filter(e => e.kind !== 'call_usage');
   assert.equal(evs.length, 56, 'parser-event count of the capture');
+  assert.ok(all.length > evs.length, 'premise: the capture yields call_usage events');
 
   const ARM_AT = 28; // the first tool_use envelope, in parser-event space
-  const scan = new QuiescenceScan();
-  let armSeq = null, firedAt = null;
-  const fireable = () => scan.pendingTools.size === 0
-    && (scan.openBlocks.size === 0 || scan.boundarySeq > armSeq);
-  for (let i = 0; i < evs.length && firedAt === null; i++) {
-    if (i === ARM_AT) { armSeq = scan.boundarySeq; if (fireable()) { firedAt = i; break; } }
-    // Production clears the arm in _setStatus BEFORE turn_end reaches the scan,
-    // so a turn boundary can never be the thing that fires it.
-    if (evs[i].kind === 'turn_end') break;
-    scan.apply(evs[i]);
-    if (armSeq !== null && fireable()) firedAt = i;
-  }
-  assert.equal(firedAt, 48, 'unchanged by the repair');
+  const fireOn = (stream) => {
+    const scan = new QuiescenceScan();
+    let armSeq = null;
+    const fireable = () => scan.pendingTools.size === 0
+      && (scan.openBlocks.size === 0 || scan.boundarySeq > armSeq);
+    const armEv = evs[ARM_AT];
+    for (let i = 0; i < stream.length; i++) {
+      if (stream[i] === armEv) { armSeq = scan.boundarySeq; if (fireable()) return stream[i]; }
+      // Production clears the arm in _setStatus BEFORE turn_end reaches the scan,
+      // so a turn boundary can never be the thing that fires it.
+      if (stream[i].kind === 'turn_end') return null;
+      scan.apply(stream[i]);
+      if (armSeq !== null && fireable()) return stream[i];
+    }
+    return null;
+  };
+  const fired = fireOn(evs);
+  assert.equal(evs.indexOf(fired), 48, 'unchanged by the repair');
+  assert.equal(fireOn(all), fired, 'call_usage moves no fire');
 });

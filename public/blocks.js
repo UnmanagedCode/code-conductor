@@ -333,6 +333,8 @@ export class ToolUseBlock {
     this._startedAt = null;
     this._timer = null;
     this._doneElapsed = null;
+    // A foreground Agent's subagent totals, copied off its result (attachResult).
+    this.agentUsage = null;
 
     // The .tool-args <details> is created once and kept — its `open` attribute
     // IS the user's collapse state, so _renderBody swaps only the payload.
@@ -416,6 +418,7 @@ export class ToolUseBlock {
     }
     this.node.appendChild(resultBlock.node);
     this.status = resultBlock.yielded ? 'handed to user' : resultBlock.isError ? 'errored' : 'done';
+    this.agentUsage = resultBlock.agentUsage;
     this._renderSummary();
   }
 
@@ -433,6 +436,7 @@ export class ToolUseBlock {
       statusText = ` · ${this.status}`;
     }
     this.summary.append(el('span', { class: 'tool-status' }, statusText));
+    if (this.agentUsage) this.summary.append(subagentUsageNode(this.agentUsage));
   }
 
   _renderBody() {
@@ -1120,9 +1124,24 @@ export class PlanRequestBlock {
 }
 
 
+const SUBAGENT_USAGE_TITLE = 'The subagent\'s own context when it finished (its last call\'s prompt + output). '
+  + 'A separate context window — not part of this session\'s figures.';
+
+// The Agent row's badge. Live only: the server stamps the totals on a
+// foreground Agent's tool_result (Parser._handleUser); a backgrounded Agent and
+// every replayed result carry none.
+function subagentUsageNode({ tokens, toolUses }) {
+  const uses = toolUses == null ? '' : ` · ${toolUses} tool use${toolUses === 1 ? '' : 's'}`;
+  return el('span', { class: 'subagent-usage', title: SUBAGENT_USAGE_TITLE },
+    ` · subagent ${formatTokens(tokens)} ctx${uses}`);
+}
+
 export class ToolResultBlock {
-  constructor({ content, isError, toolUseId, yielded }) {
+  constructor({ content, isError, toolUseId, yielded, agentTokens, agentToolUses }) {
     this.toolUseId = toolUseId; this.isError = isError;
+    this.agentUsage = Number.isFinite(agentTokens)
+      ? { tokens: agentTokens, toolUses: Number.isFinite(agentToolUses) ? agentToolUses : null }
+      : null;
     // The orchestrator's deliberate deny of an interactive tool: handed to the
     // user, so it renders neutral and the action group doesn't count it.
     this.yielded = !!yielded;
@@ -1340,6 +1359,28 @@ export class TaskCompletionBlock {
       );
     }
     this.node = el('div', { class: 'block task-completion' }, head, ul);
+  }
+}
+
+const CALL_USAGE_TITLE = 'Prompt size of this API call (exact). Growth = this call\'s prompt minus the previous call\'s: '
+  + 'that call\'s output plus everything appended since (tool results, user message, injected context, hook output) '
+  + '— not per-tool attribution.';
+
+// One API call's figures, from a live `call_usage` event: growth over the
+// previous call, this call's prompt, and its output with the thinking portion.
+// A `div.call-usage`, deliberately NOT a `.block`, so an action group's tally
+// ignores it.
+export class CallUsageLine {
+  constructor({ promptTokens, growthTokens, outputTokens, thinkingTokens }) {
+    const parts = [];
+    if (promptTokens != null) {
+      const growth = growthTokens == null ? ''
+        : `${growthTokens < 0 ? '-' : '+'}${formatTokens(Math.abs(growthTokens))} → `;
+      parts.push(`${growth}ctx ${formatTokens(promptTokens)}`);
+    }
+    const thinking = thinkingTokens ? ` (${formatTokens(thinkingTokens)} thinking)` : '';
+    parts.push(`out ${formatTokens(outputTokens)}${thinking}`);
+    this.node = el('div', { class: 'call-usage', title: CALL_USAGE_TITLE }, parts.join(' · '));
   }
 }
 

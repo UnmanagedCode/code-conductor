@@ -101,6 +101,7 @@ import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage, verifyUserPrompt } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
+import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../public/planApproval.js';
 import { reconstructTasks } from './taskReconstruct.ts';
@@ -722,6 +723,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _questionAnswers: QuestionAnswerCorrelator;
   _liveThinkingTokens: number | null;
   _lastContextUsage: unknown;
+  _callUsage: CallUsageTracker;
   _pending: Map<string, PendingRequest>;
   _hooks: HookBroker;
   _readNudge: ConductorReadNudge | null;
@@ -927,6 +929,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // starts here at null (and a fork must leave the parent's value alone —
     // that session continues).
     this._lastContextUsage = null;
+    // Per-call prompt + growth for call_usage, baselined on the latch above and
+    // reset with it (_dropContextReading).
+    this._callUsage = new CallUsageTracker();
     this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
     // A conductor's read-nudge run counter (src/conductorReadNudge.ts). In
     // memory only: a resume-after-restart or a fork builds a new Instance and
@@ -1616,6 +1621,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Cleared via _dropContextReading (its call sites are listed there) — one
     // of them is right here: a compaction replaces the context, on live and
     // replay alike.
+    // The per-call tracker is driven from here because its baseline is the
+    // latch as it stood BEFORE this call's message_start updates it. A
+    // zero-usage message_start (usage null) still opens the call. The replayed
+    // seed is not a call.
+    if (ev.kind === 'message_start' && !ev.replayed) {
+      this._callUsage.onMessageStart(contextReading(this._lastContextUsage), ev.usage);
+    } else if (ev.kind === 'context_usage') {
+      this._callUsage.onContextUsage(ev.usage);
+    }
     if ((ev.kind === 'message_start' || ev.kind === 'context_usage') && ev.usage) {
       this._lastContextUsage = ev.usage;
     } else if (ev.kind === 'compaction') {
@@ -1637,6 +1651,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (wrapped.kind === 'thinking_redacted' && this._liveThinkingTokens != null) {
       wrapped.estimatedTokens = this._liveThinkingTokens;
     }
+    // The call's prompt and its growth over the previous reading (live only —
+    // replay emits no call_usage).
+    if (wrapped.kind === 'call_usage') this._callUsage.stamp(wrapped);
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so within a segment this counter
     // matches the Nth-pure-user-prompt-line semantics sessionEdit.ts truncates
@@ -1649,7 +1666,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // AskUserQuestion card (UI-only; the CLI never sees it).
     this._questionAnswers.apply(wrapped);
     // INVARIANT: the ring and the live feed share ONE object. Anything stamped
-    // onto `wrapped` above (userIndex, estimatedTokens, questionAnswer) must be set BEFORE this
+    // onto `wrapped` above (userIndex, estimatedTokens, promptTokens/growthTokens, questionAnswer) must be set BEFORE this
     // point, and neither line may take a copy. The field a copy would cost is
     // `_seq`: push() assigns it to the object it receives (see EventLog.push),
     // so cloning for the ring leaves the live frame with `_seq: undefined` and
@@ -1774,6 +1791,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // a compaction or rotation until the next message_start.
   _dropContextReading(): void {
     this._lastContextUsage = null;
+    this._callUsage.reset();
   }
 
   // Re-resolve capacity from the current {backend, model}.

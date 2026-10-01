@@ -156,10 +156,12 @@ function buildFlatIndex(flat: SeqEvent[]): Map<string, number> {
 // hunting for a correlatable ring event can never serve archive content the
 // ring will serve again. Do NOT add a kind replay DOES emit (tool_use_start,
 // thinking_start/_redacted/_end, user_question, plan_request): skipping past
-// one steps over its archive twin and duplicates it.
+// one steps over its archive twin and duplicates it. `call_usage` has a second
+// reason to be here: it carries a `msgId` but no `blockIdx`, so correlationKey
+// names it null and, unlisted, it would abandon the cut.
 const RING_ONLY_KINDS = new Set([
   'message_start', 'turn_end', 'assistant_message', 'tool_use_input_delta',
-  'raw', 'hook', 'control_response', 'overage_message_queued',
+  'raw', 'hook', 'control_response', 'overage_message_queued', 'call_usage',
 ]);
 
 // True when replay provably cannot have emitted a counterpart for `ev` — the
