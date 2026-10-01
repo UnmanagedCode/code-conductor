@@ -1619,20 +1619,23 @@ export class Instance extends EventEmitter implements InstanceLike {
     // within one message. Whole-object last-wins, same as above — there is no
     // per-field merge site anywhere on this path.
     // Cleared via _dropContextReading (its call sites are listed there) — one
-    // of them is right here: a compaction replaces the context, on live and
-    // replay alike.
+    // of them is right here: a top-level compaction replaces the context, on
+    // live and replay alike.
     // The per-call tracker is driven from here because its baseline is the
     // latch as it stood BEFORE this call's message_start updates it. A
     // zero-usage message_start (usage null) still opens the call. The replayed
     // seed is not a call.
     if (ev.kind === 'message_start' && !ev.replayed) {
-      this._callUsage.onMessageStart(contextReading(this._lastContextUsage), ev.usage);
+      this._callUsage.onMessageStart(ev.msgId, contextReading(this._lastContextUsage), ev.usage);
     } else if (ev.kind === 'context_usage') {
-      this._callUsage.onContextUsage(ev.usage);
+      this._callUsage.onContextUsage(ev.msgId, ev.usage);
     }
     if ((ev.kind === 'message_start' || ev.kind === 'context_usage') && ev.usage) {
       this._lastContextUsage = ev.usage;
-    } else if (ev.kind === 'compaction') {
+    } else if (ev.kind === 'compaction' && !ev.parentToolUseId) {
+      // A parent-tagged compaction is a subagent compacting its own window,
+      // which leaves this session's context alone — the live twin of
+      // loadPersistedTranscript's `!line.isSidechain` guard.
       this._dropContextReading();
     }
     // Same funnel again: advance the live quiescence scan so an armed deferred
@@ -1784,7 +1787,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // The ONE way the context reading is cleared: a known-wrong number is worse
   // than none, so each event that invalidates what the latch measured drops it
   // and the readout stays unknown until the next usage-bearing message_start /
-  // context_usage. Call sites: a compaction (_emitUi), a `/clear` rotation
+  // context_usage. Call sites: a top-level compaction (_emitUi), a `/clear` rotation
   // (_handleStdoutLine), a model switch (_announceModelSwitch) and a
   // rewind/respawn/prune (_wipeForResume — a prune additionally skips the jsonl
   // seed, _skipUsageSeed). The header chip keeps its client-side reading across

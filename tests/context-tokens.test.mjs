@@ -407,3 +407,65 @@ test('growth: a reading dropped mid-call leaves that call\'s line with no stale 
   assert.equal(c.msgId, 'm2');
   assert.deepEqual([c.promptTokens, c.growthTokens, c.outputTokens], [null, null, 70]);
 });
+
+// ── review round 1 ─────────────────────────────────────────────────────────
+
+test('growth: a call whose message_start carried no usage inherits no prompt from the call before it', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  inst._handleStdoutLine(msgStartLine('m1', READING));
+  inst._handleStdoutLine(msgDeltaLine());
+  assert.equal(lastCall(events).promptTokens, 27_047, 'premise: the first call is measured');
+  // The parser suppresses a usage-less message_start, but the call's
+  // message_delta still yields a call_usage.
+  inst._handleStdoutLine(msgStartLine('m2', undefined));
+  inst._handleStdoutLine(msgDeltaLine(200));
+  const c = lastCall(events);
+  assert.equal(c.msgId, 'm2', 'premise: the line belongs to the second call');
+  assert.deepEqual([c.promptTokens, c.growthTokens, c.outputTokens], [null, null, 200]);
+});
+
+test('compaction: only a top-level compact_boundary clears the reading', async (t) => {
+  const boundary = JSON.parse(COMPACT_LINES.find(l => JSON.parse(l).subtype === 'compact_boundary'));
+  await t.test('a subagent compacting its own window leaves the reading and the baseline', async (st) => {
+    const { inst, events } = await makeInstance(st);
+    inst._handleStdoutLine(msgStartLine('m1', READING));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(JSON.stringify({ ...boundary, parent_tool_use_id: 'toolu_sub' }));
+    assert.ok(events.some(e => e.kind === 'compaction' && e.parentToolUseId === 'toolu_sub'), 'premise: a parent-tagged compaction');
+    assert.equal(inst.summary().contextTokens, 27_047);
+    inst._handleStdoutLine(msgStartLine('m2', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    assert.equal(lastCall(events).growthTokens, promptOf(NEXT) - 27_047);
+  });
+  await t.test('a top-level compaction still clears both', async (st) => {
+    const { inst, events } = await makeInstance(st);
+    inst._handleStdoutLine(msgStartLine('m1', READING));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(JSON.stringify({ ...boundary, parent_tool_use_id: null }));
+    assert.equal(inst.summary().contextTokens, null);
+    inst._handleStdoutLine(msgStartLine('m2', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    assert.equal(lastCall(events).growthTokens, null);
+  });
+});
+
+test('zero-usage backend: call_usage takes its prompt from the context_usage fallback', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  const ZERO = { input_tokens: 0, output_tokens: 0 };
+  // The fallback shape: event-level usage on message_delta carries the real prompt.
+  const fallbackDelta = (prompt, output) => JSON.stringify({
+    type: 'stream_event', parent_tool_use_id: null,
+    event: { type: 'message_delta', delta: { stop_reason: 'end_turn' },
+      usage: { input_tokens: 2, cache_read_input_tokens: prompt - 2, cache_creation_input_tokens: 0, output_tokens: output } },
+  });
+  inst._handleStdoutLine(msgStartLine('z1', ZERO));
+  inst._handleStdoutLine(fallbackDelta(60_000, 110));
+  inst._handleStdoutLine(msgStartLine('z2', ZERO));
+  inst._handleStdoutLine(fallbackDelta(63_500, 90));
+  const kinds = events.filter(e => e.kind === 'context_usage' || e.kind === 'call_usage').map(e => `${e.kind}:${e.msgId}`);
+  assert.deepEqual(kinds, ['context_usage:z1', 'call_usage:z1', 'context_usage:z2', 'call_usage:z2'],
+    'premise: each delta arms the fallback, then yields the line');
+  const [c1, c2] = events.filter(e => e.kind === 'call_usage');
+  assert.deepEqual([c1.promptTokens, c1.growthTokens], [60_000, null]);
+  assert.deepEqual([c2.promptTokens, c2.growthTokens], [63_500, 3_500]);
+});

@@ -628,6 +628,13 @@ test('ToolUseBlock: an Agent result with subagent totals renders a .subagent-usa
   assert.equal(badge()?.textContent, ' · subagent 124k ctx · 11 tool uses', 'rebuilt from state, not lost');
 });
 
+test('ToolUseBlock: one tool use reads in the singular', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Agent', toolUseId: 'tu_agent' });
+  block.attachResult(new ToolResultBlock({ toolUseId: 'tu_agent', content: 'ok', isError: false, agentTokens: 900, agentToolUses: 1 }));
+  assert.equal(block.summary.querySelector('.subagent-usage')?.textContent, ' · subagent 900 ctx · 1 tool use');
+});
+
 test('ToolUseBlock: the badge omits the tool-use count when unknown', () => {
   setupDOM();
   const block = new ToolUseBlock({ name: 'Agent', toolUseId: 'tu_agent' });

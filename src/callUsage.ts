@@ -15,32 +15,46 @@ import { contextReading } from './sessionPrune.ts';
 import type { UiEvent } from './parser.ts';
 
 export class CallUsageTracker {
-  // The open call's figures. Replaced by the next message_start, so an
-  // interrupted call that never reached message_delta stamps nothing and leaves
-  // nothing behind.
+  // The open call — the last one whose message_start reached the tracker — and
+  // its figures. Replaced by the next message_start, so an interrupted call
+  // that never reached message_delta stamps nothing and leaves nothing behind.
+  // Keyed by msgId: a call whose message_start the parser suppressed (one with
+  // no usage at all) never opens, so its line must not inherit these.
+  _msgId: string | null = null;
   _baseline: number | null = null;
   _prompt: number | null = null;
 
   // `prevReading` is the latch's reading before this call; `usage` is the
   // message_start's (null on a backend whose message_start is all-zero).
-  onMessageStart(prevReading: number | null, usage: unknown): void {
+  onMessageStart(msgId: unknown, prevReading: number | null, usage: unknown): void {
+    this._msgId = typeof msgId === 'string' ? msgId : null;
     this._baseline = prevReading;
     this._prompt = contextReading(usage);
   }
 
-  // The fallback reading for the same call on a zero-usage backend.
-  onContextUsage(usage: unknown): void {
+  // The fallback reading for the open call on a zero-usage backend. A reading
+  // for any other call opens nothing: its baseline was never captured.
+  onContextUsage(msgId: unknown, usage: unknown): void {
+    if (!this._isOpen(msgId)) return;
     const prompt = contextReading(usage);
     if (prompt != null) this._prompt = prompt;
   }
 
   stamp(ev: UiEvent): void {
-    ev.promptTokens = this._prompt;
-    ev.growthTokens = this._prompt != null && this._baseline != null ? this._prompt - this._baseline : null;
+    const open = this._isOpen(ev.msgId);
+    const prompt = open ? this._prompt : null;
+    const baseline = open ? this._baseline : null;
+    ev.promptTokens = prompt;
+    ev.growthTokens = prompt != null && baseline != null ? prompt - baseline : null;
   }
 
   reset(): void {
+    this._msgId = null;
     this._baseline = null;
     this._prompt = null;
+  }
+
+  _isOpen(msgId: unknown): boolean {
+    return this._msgId !== null && msgId === this._msgId;
   }
 }
