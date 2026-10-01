@@ -183,7 +183,7 @@ The `snapshot` frame has one producer (`src/wsHub.ts`) and one consumer (`public
 
 | Field | Value |
 |---|---|
-| `contextTokens` | `contextReading(Instance._lastContextUsage)` (`src/sessionPrune.ts`) — the **latest top-level API call's prompt** (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`). Excludes that call's output, so between turns it reads one reply short. Subagent calls never feed it. `null` when nothing has measured the context since the last clear (`_dropContextReading`: compaction, `/clear` rotation, model switch, rewind/respawn; a prune skips the resume seed). |
+| `contextTokens` | `contextReading(Instance._lastContextUsage)` (`src/sessionPrune.ts`) — the **latest top-level API call's prompt** (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`). Excludes that call's output, so between turns it reads one reply short. Subagent calls never feed it. `null` when nothing has measured the context since the last clear (`_dropContextReading`: top-level compaction, `/clear` rotation, model switch, rewind/respawn; a prune skips the resume seed). |
 | `contextWindowTokens` | `Instance.contextWindowTokens` at the turn's end — the window the reading was measured against, or `null` when unknown. |
 
 See the `EventLog` retention note in [architecture.md](architecture.md).
