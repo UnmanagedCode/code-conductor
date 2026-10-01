@@ -1222,7 +1222,7 @@ test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as
           }],
         } },
       ] } },
-      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'Answer to "What colour?": Red' } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'Answer to "What colour?": "Red"' } },
       { type: 'assistant', uuid: 'a2', message: { id: 'm_a2', role: 'assistant', content: [
         { type: 'tool_use', id: 'tu_plan_replay', name: 'ExitPlanMode', input: {
           plan: '# Plan\n- Step 1\n- Step 2',

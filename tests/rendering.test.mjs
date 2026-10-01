@@ -362,24 +362,24 @@ test('DOM: multiple questions render a tab strip; submit requires all answered; 
   assert.deepEqual(s.answers[1], { kind: 'custom', text: 'Penguin' });
 });
 
-test('formatUserQuestionAnswers: single-question short form, multi-question bulleted form, multi-select join', async () => {
+test('formatUserQuestionAnswers: single-question short form, multi-question numbered form, multi-select join', async () => {
   const { formatUserQuestionAnswers } = await import(
     new URL('../public/blocks.js', import.meta.url).href
   );
   assert.equal(
     formatUserQuestionAnswers([{ question: 'Pick a fruit' }], [{ kind: 'option', label: 'Apple' }]),
-    'Answer to "Pick a fruit": Apple',
+    'Answer to "Pick a fruit": "Apple"',
   );
   const multi = formatUserQuestionAnswers(
     [{ question: 'Pick a fruit' }, { question: 'Pick animal' }],
     [{ kind: 'option', label: 'Apple' }, { kind: 'custom', text: 'Penguin' }],
   );
   assert.match(multi, /My answers:/);
-  assert.match(multi, /- Pick a fruit: Apple/);
-  assert.match(multi, /- Pick animal: Penguin/);
+  assert.match(multi, /1\. "Pick a fruit": "Apple"/);
+  assert.match(multi, /2\. "Pick animal": \(own answer\) "Penguin"/);
   assert.match(
     formatUserQuestionAnswers([{ question: 'Pick features' }], [{ kind: 'multi', labels: ['Auth', 'Search'] }]),
-    /Auth, Search/,
+    /"Auth", "Search"/,
   );
 });
 
@@ -557,7 +557,7 @@ test('formatUserQuestionAnswers: notes are appended with an em dash; whitespace-
       [{ question: 'Pick a fruit' }],
       [{ kind: 'option', label: 'Apple', note: "it's in season" }],
     ),
-    'Answer to "Pick a fruit": Apple — it\'s in season',
+    'Answer to "Pick a fruit": "Apple" (note: "it\'s in season")',
   );
 
   // Multi with note.
@@ -566,22 +566,21 @@ test('formatUserQuestionAnswers: notes are appended with an em dash; whitespace-
       [{ question: 'Pick features' }],
       [{ kind: 'multi', labels: ['Auth', 'Search'], note: 'needed for v2' }],
     ),
-    /Auth, Search — needed for v2/,
+    /"Auth", "Search" \(note: "needed for v2"\)/,
   );
 
-  // Regression: option without note must still produce today's exact short form.
+  // Option without note: no note clause.
   assert.equal(
     formatUserQuestionAnswers([{ question: 'Pick a fruit' }], [{ kind: 'option', label: 'Apple' }]),
-    'Answer to "Pick a fruit": Apple',
+    'Answer to "Pick a fruit": "Apple"',
   );
 
-  // Whitespace-only note: no em dash in the output.
+  // Whitespace-only note: no note clause in the output.
   const ws = formatUserQuestionAnswers(
     [{ question: 'Pick a fruit' }],
     [{ kind: 'option', label: 'Apple', note: '   ' }],
   );
-  assert.equal(ws, 'Answer to "Pick a fruit": Apple');
-  assert.ok(!ws.includes('—'), 'whitespace-only note must not produce an em dash');
+  assert.equal(ws, 'Answer to "Pick a fruit": "Apple"');
 });
 
 test('DOM: noisy system events (status, rate_limit_event:allowed) are dropped from the conversation', async () => {

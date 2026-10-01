@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { QuestionAnswerCorrelator } from '../src/questionAnswerStamp.ts';
 import { Instance } from '../src/instances.ts';
+import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
 
 const ONE = [{ question: 'Pick a fruit', header: 'Fruit', multiSelect: false,
   options: [{ label: 'Apple' }, { label: 'Banana' }] }];
@@ -21,8 +22,8 @@ const TWO = [
   { question: 'First?', options: [{ label: 'A' }, { label: 'B' }] },
   { question: 'Second?', options: [{ label: 'X' }, { label: 'Y' }] },
 ];
-const SINGLE_ANSWER = 'Answer to "Pick a fruit": Apple';
-const MULTI_ANSWER = 'My answers:\n- First?: B\n- Second?: X';
+const SINGLE_ANSWER = formatUserQuestionAnswers(ONE, [{ kind: 'option', label: 'Apple' }]);
+const MULTI_ANSWER = formatUserQuestionAnswers(TWO, [{ kind: 'option', label: 'B' }, { kind: 'option', label: 'X' }]);
 
 const uq = (questions, toolUseId = 'tu_q', extra = {}) => ({ kind: 'user_question', toolUseId, questions, ...extra });
 const echo = (text, extra = {}) => ({ kind: 'user_echo', text, ...extra });
@@ -38,6 +39,28 @@ test('stamps the outer echo answering the pending question (single and multi for
   const multi = echo(MULTI_ANSWER);
   c.apply(multi);
   assert.deepEqual(multi.questionAnswer, { toolUseId: 'tu_two', questions: TWO });
+});
+
+test('a question whose text holds a quote and a backslash is stamped by its answer', () => {
+  const questions = [{ question: 'Is "x" ok? C:\\dir', options: [{ label: 'Yes' }, { label: 'No' }] }];
+  const c = new QuestionAnswerCorrelator();
+  c.apply(uq(questions));
+  const answer = echo(formatUserQuestionAnswers(questions, [{ kind: 'option', label: 'Yes', note: 'sure' }]));
+  c.apply(answer);
+  assert.deepEqual(answer.questionAnswer, { toolUseId: 'tu_q', questions });
+});
+
+test('an old-format answer still pairs with its card (single and multi forms)', () => {
+  const c = new QuestionAnswerCorrelator();
+  c.apply(uq(ONE));
+  const single = echo('Answer to "Pick a fruit": Apple — crisp');
+  c.apply(single);
+  assert.equal(single.questionAnswer?.toolUseId, 'tu_q');
+
+  c.apply(uq(TWO, 'tu_two'));
+  const multi = echo('My answers:\n- First?: B\n- Second?: X');
+  c.apply(multi);
+  assert.equal(multi.questionAnswer?.toolUseId, 'tu_two');
 });
 
 test('a "My answers:" look-alike with no pending question is not stamped', () => {

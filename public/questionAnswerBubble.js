@@ -29,8 +29,8 @@ function buildAnswerItem(q, a) {
 export function buildQuestionAnswer(questionAnswer, text) {
   const questions = Array.isArray(questionAnswer?.questions) ? questionAnswer.questions : [];
   const answers = parseUserQuestionAnswers(questions, text);
-  // Round-trip is the "parseable" test: multi-line custom text, labels holding
-  // ', ' and coalesced steers all fail it and fall back to the raw text.
+  // Round-trip is the "canonical" test: old-format text, coalesced steers and
+  // non-canonical hand-typed text all fail it and fall back to the raw text.
   const faithful = questions.length > 0 && formatUserQuestionAnswers(questions, answers) === text;
 
   const head = el('div', { class: 'qa-head' },

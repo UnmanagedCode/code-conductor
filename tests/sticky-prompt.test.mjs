@@ -172,7 +172,7 @@ test('a stamped question-answer bubble is synthetic, faithful or raw-fallback, a
   const { formatUserQuestionAnswers } = await importFresh('userQuestionAnswers.js');
   const questions = [{ question: 'Pick', header: 'P', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] }];
   const faithful = formatUserQuestionAnswers(questions, [{ kind: 'option', label: 'A' }]);
-  // Multi-line custom text fails the round trip, so the bubble falls back to a
+  // Old-format/unparseable text fails the round trip, so the bubble falls back to a
   // raw user-text block nested INSIDE the answer block (not a direct child of .blocks).
   const raw = 'Answer to "Pick": line one\nline two';
   for (const [label, text] of Object.entries({ faithful, 'raw fallback': raw })) {

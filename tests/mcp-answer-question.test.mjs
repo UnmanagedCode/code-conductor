@@ -8,9 +8,12 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn } from './helpers.mjs';
+import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../public/userQuestionAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
+// The canonical text of an Apple pick on the scenario's "Pick a fruit" card.
+const APPLE = 'Answer to "Pick a fruit": "Apple"';
 
 let ctx, baseUrl, instances, home, projectsRoot;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_QUESTION }); ({ baseUrl, instances } = ctx); });
@@ -76,28 +79,28 @@ test('get_recent_messages drops question content from metadata, but answer_quest
   // answer_question re-derives pending questions from the ring independently
   // of get_recent_messages' output, so it's unaffected by the metadata change.
   const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
-  assert.equal(res.sentText, 'Answer to "Pick a fruit": Apple');
+  assert.equal(res.sentText, APPLE);
   await waitFor(() => inst.ring.toArray().some(
-    ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+    ev => ev.kind === 'user_echo' && ev.text === APPLE));
 });
 
 test('answer_question sends the canonical single-option text and lands it as user_echo', async () => {
   const { inst, sid } = await spawnAtQuestion();
   const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
   assert.equal(res.sessionId, sid);
-  assert.equal(res.sentText, 'Answer to "Pick a fruit": Apple');
+  assert.equal(res.sentText, APPLE);
   await waitFor(() => inst.ring.toArray().some(
-    ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+    ev => ev.kind === 'user_echo' && ev.text === APPLE));
 });
 
 test('answer_question\'s user_echo carries the questionAnswer stamp pairing it with its card', async () => {
   const { inst, sid } = await spawnAtQuestion();
   unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
   await waitFor(() => inst.ring.toArray().some(
-    ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+    ev => ev.kind === 'user_echo' && ev.text === APPLE));
   const events = inst.ring.toArray();
   const uq = events.find(ev => ev.kind === 'user_question');
-  const echo = events.find(ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple');
+  const echo = events.find(ev => ev.kind === 'user_echo' && ev.text === APPLE);
   assert.equal(echo.questionAnswer?.toolUseId, uq.toolUseId);
   assert.deepEqual(echo.questionAnswer.questions, uq.questions);
 });
@@ -120,7 +123,7 @@ test('answer_question to an IDLE worker writes exactly one content block (byte-i
 
     unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
     await waitFor(() => inst.ring.toArray().some(
-      ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+      ev => ev.kind === 'user_echo' && ev.text === APPLE));
 
     const lines = await userStdinLines(transcriptPath);
     const answerLine = lines.find(o =>
@@ -128,7 +131,7 @@ test('answer_question to an IDLE worker writes exactly one content block (byte-i
     assert.ok(answerLine, 'the answer reached the CLI stdin');
     assert.deepEqual(
       answerLine.message.content,
-      [{ type: 'text', text: 'Answer to "Pick a fruit": Apple' }],
+      [{ type: 'text', text: APPLE }],
       'an idle send is a single verbatim block — no annotation',
     );
   } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
@@ -159,7 +162,7 @@ test('answer_question to a MID-TURN worker prepends MID_TURN_NOTE as its own blo
 
     unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
     await waitFor(() => inst.ring.toArray().some(
-      ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+      ev => ev.kind === 'user_echo' && ev.text === APPLE));
 
     const lines = await userStdinLines(transcriptPath);
     const answerLine = lines.find(o =>
@@ -169,7 +172,7 @@ test('answer_question to a MID-TURN worker prepends MID_TURN_NOTE as its own blo
       answerLine.message.content,
       [
         { type: 'text', text: MID_TURN_NOTE },
-        { type: 'text', text: 'Answer to "Pick a fruit": Apple' },
+        { type: 'text', text: APPLE },
       ],
       'annotation first, answer text verbatim second',
     );
@@ -181,7 +184,7 @@ test('answer_question appends an option note', async () => {
   const res = unwrap(await callTool('answer_question', {
     sessionId: sid, answers: [{ option: 'Banana', note: 'ripe' }],
   }));
-  assert.equal(res.sentText, 'Answer to "Pick a fruit": Banana — ripe');
+  assert.equal(res.sentText, 'Answer to "Pick a fruit": "Banana" (note: "ripe")');
 });
 
 test('answer_question accepts a custom typed answer (trimmed)', async () => {
@@ -189,7 +192,7 @@ test('answer_question accepts a custom typed answer (trimmed)', async () => {
   const res = unwrap(await callTool('answer_question', {
     sessionId: sid, answers: [{ text: '  Mango  ' }],
   }));
-  assert.equal(res.sentText, 'Answer to "Pick a fruit": Mango');
+  assert.equal(res.sentText, 'Answer to "Pick a fruit": (own answer) "Mango"');
 });
 
 test('answer_question soft-refuses INVALID_OPTION for an unoffered label', async () => {
@@ -208,12 +211,13 @@ test('answer_question soft-refuses INVALID_OPTION for an unoffered label', async
 // `reason`), and a label with the suffix stripped is still refused — the match
 // stays byte-exact, no lenient comparison.
 const SCENARIO_RECOMMENDED = path.join(__dirname, 'fixtures', 'scenario-question-recommended.json');
-async function spawnAtRecommendedQuestion() {
+async function spawnAtScenarioQuestion(scenarioPath) {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RECOMMENDED;
+  process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
   try { return await spawnAtQuestion(); }
   finally { process.env.FAKE_CLAUDE_SCENARIO = prev; }
 }
+const spawnAtRecommendedQuestion = () => spawnAtScenarioQuestion(SCENARIO_RECOMMENDED);
 
 test('INVALID_OPTION on a single-choice question names every offered label byte-exact; a stripped suffix stays refused', async () => {
   const { sid } = await spawnAtRecommendedQuestion();
@@ -294,4 +298,44 @@ test('answer_question soft-refuses NO_PENDING_QUESTION when the worker never ask
   }));
   assert.equal(res.ok, false);
   assert.equal(res.code, 'NO_PENDING_QUESTION');
+});
+
+// `note` rides only on a pick: with a custom `text` (which wins), alone, or on
+// an empty `options` it would be dropped silently, so it is refused instead.
+// afterEach shuts every worker down after each subtest, so each spawns its own.
+test('answer_question soft-refuses NOTE_WITHOUT_OPTION and sends nothing', async (t) => {
+  for (const [name, entry] of Object.entries({
+    '{ text, note }': { text: 'Mango', note: 'ripe' },
+    '{ note } alone': { note: 'ripe' },
+    '{ options: [], note }': { options: [], note: 'ripe' },
+  })) {
+    await t.test(name, async () => {
+      const { inst, sid } = await spawnAtQuestion();
+      const sentEchoes = () => inst.ring.toArray().filter(ev => ev.kind === 'user_echo').map(ev => ev.text);
+      const before = sentEchoes();
+      const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [entry] }));
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'NOTE_WITHOUT_OPTION');
+      assert.equal(res.questionIndex, 0);
+      assert.deepEqual(sentEchoes(), before, 'nothing was sent');
+    });
+  }
+});
+
+test('answer_question treats { options: [] } as no pick: EMPTY_ANSWER when it is the only entry', async () => {
+  const { sid } = await spawnAtQuestion();
+  const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ options: [] }] }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'EMPTY_ANSWER');
+});
+
+test('answer_question on a label holding " — " plus a note sends the UI formatter\'s text, which parses back exactly', async () => {
+  const { inst, sid } = await spawnAtScenarioQuestion(path.join(__dirname, 'fixtures', 'scenario-question-dash.json'));
+  const { questions } = inst.ring.toArray().find(ev => ev.kind === 'user_question');
+  const submitted = [{ kind: 'option', label: 'Slow — safe', note: 'thanks' }];
+  const res = unwrap(await callTool('answer_question', {
+    sessionId: sid, answers: [{ option: 'Slow — safe', note: 'thanks' }],
+  }));
+  assert.equal(res.sentText, formatUserQuestionAnswers(questions, submitted));
+  assert.deepEqual(parseUserQuestionAnswers(questions, res.sentText), submitted);
 });

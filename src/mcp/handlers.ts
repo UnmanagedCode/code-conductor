@@ -1616,7 +1616,8 @@ interface AnswerEntry {
 //   { option: <label> [, note] }   — single choice
 //   { options: [<label>,…] [, note] } — multi-select (requires question.multiSelect)
 //   { text: <string> }             — custom typed answer
-//   {}                             — no answer for that question
+//   {}                             — no answer for that question (so is { options: [] })
+// A `note` beside `text` or beside no pick is refused (NOTE_WITHOUT_OPTION).
 // The pending questions are re-derived from the ring via reconstructMessages —
 // the SAME source get_recent_messages uses — so we format against exactly what
 // the conductor saw. Soft-refuses (never throws) on mismatch.
@@ -1660,19 +1661,28 @@ export async function answerQuestion(
     const validLabels = new Set(offered);
     const offeredList = offered.map(l => JSON.stringify(l)).join(', ');
     const note = typeof a.note === 'string' && a.note.trim() ? a.note : undefined;
-    if (typeof a.text === 'string' && a.text.trim()) {
-      states.push({ kind: 'custom', text: a.text });
-    } else if (Array.isArray(a.options)) {
+    const typed = typeof a.text === 'string' && a.text.trim() ? a.text : undefined;
+    // An empty `options` is no pick, the same as `{}`.
+    const picks = Array.isArray(a.options) && a.options.length > 0 ? a.options : undefined;
+    // A note rides only on a pick; `text` wins over a pick, so a note beside it
+    // (or beside no pick at all) would be dropped without a word.
+    if (note && (typed || !(picks || typeof a.option === 'string'))) {
+      return { ok: false, code: 'NOTE_WITHOUT_OPTION', sessionId: inst.sessionId, questionIndex: i,
+        reason: `Question ${i}: \`note\` applies only to { option } / { options }; fold it into \`text\`.` };
+    }
+    if (typed) {
+      states.push({ kind: 'custom', text: typed });
+    } else if (picks) {
       if (!q?.multiSelect) {
         return { ok: false, code: 'NOT_MULTISELECT', sessionId: inst.sessionId, questionIndex: i,
           reason: `Question ${i} is single-choice; use { option } not { options }.` };
       }
-      const invalid = a.options.filter(l => !validLabels.has(l));
+      const invalid = picks.filter(l => !validLabels.has(l));
       if (invalid.length) {
         return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid, offered,
           reason: `Labels not offered for question ${i}: ${invalid.map(l => JSON.stringify(l)).join(', ')}. Offered labels (matched byte-exact): ${offeredList}.` };
       }
-      states.push(note ? { kind: 'multi', labels: a.options, note } : { kind: 'multi', labels: a.options });
+      states.push(note ? { kind: 'multi', labels: picks, note } : { kind: 'multi', labels: picks });
     } else if (typeof a.option === 'string') {
       if (!validLabels.has(a.option)) {
         return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid: [a.option], offered,
