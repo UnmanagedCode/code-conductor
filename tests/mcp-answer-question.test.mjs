@@ -306,6 +306,8 @@ test('answer_question soft-refuses NO_PENDING_QUESTION when the worker never ask
 test('answer_question soft-refuses NOTE_WITHOUT_OPTION and sends nothing', async (t) => {
   for (const [name, entry] of Object.entries({
     '{ text, note }': { text: 'Mango', note: 'ripe' },
+    '{ text, option, note }': { text: 'Mango', option: 'Apple', note: 'ripe' },
+    '{ text, options, note }': { text: 'Mango', options: ['Apple'], note: 'ripe' },
     '{ note } alone': { note: 'ripe' },
     '{ options: [], note }': { options: [], note: 'ripe' },
   })) {
@@ -338,4 +340,14 @@ test('answer_question on a label holding " — " plus a note sends the UI format
   }));
   assert.equal(res.sentText, formatUserQuestionAnswers(questions, submitted));
   assert.deepEqual(parseUserQuestionAnswers(questions, res.sentText), submitted);
+});
+
+test('answer_question treats whitespace-only text as no answer: EMPTY_ANSWER, nothing sent', async () => {
+  const { inst, sid } = await spawnAtQuestion();
+  const sentEchoes = () => inst.ring.toArray().filter(ev => ev.kind === 'user_echo').map(ev => ev.text);
+  const before = sentEchoes();
+  const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ text: '   ' }] }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'EMPTY_ANSWER');
+  assert.deepEqual(sentEchoes(), before, 'nothing was sent');
 });

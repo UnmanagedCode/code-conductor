@@ -109,3 +109,18 @@ test('multi-question with duplicate question text and a multi-line note', () => 
     ]),
     'My answers:\n1. "Same?": "Yes"\n2. "Same?": "No" (note: "line one\\nline two")');
 });
+
+test('question text in the prefix has its whitespace collapsed and trimmed (single-question)', () => {
+  const q = { question: ' Pick\n  a   fruit\t', options: [{ label: 'Apple' }] };
+  assert.equal(
+    formatUserQuestionAnswers([q], [{ kind: 'option', label: 'Apple' }]),
+    'Answer to "Pick a fruit": "Apple"');
+});
+
+test('question text on each numbered line has its whitespace collapsed (multi-question)', () => {
+  const q1 = { question: 'First\nline', options: [{ label: 'A' }] };
+  const q2 = { question: 'Second   q', options: [{ label: 'X' }] };
+  assert.equal(
+    formatUserQuestionAnswers([q1, q2], [{ kind: 'option', label: 'A' }, { kind: 'option', label: 'X' }]),
+    'My answers:\n1. "First line": "A"\n2. "Second q": "X"');
+});

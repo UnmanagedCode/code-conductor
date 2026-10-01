@@ -167,6 +167,20 @@ test('an unstamped question answer, single and multi form, is a template', async
   await t.test('isQuestionAnswerShape refuses a non-string', () => assert.equal(isQuestionAnswerShape(undefined), false));
 });
 
+test('isQuestionAnswerShape recognises only the numbered multi-question form', async (t) => {
+  await t.test('formatter output for several questions', () =>
+    assert.equal(isQuestionAnswerShape(formatUserQuestionAnswers(TWO_QUESTIONS, [
+      { kind: 'option', label: 'A' }, { kind: 'option', label: 'X' }])), true));
+  await t.test('formatter output for one question', () =>
+    assert.equal(isQuestionAnswerShape(formatUserQuestionAnswers(QUESTIONS, [{ kind: 'option', label: 'A' }])), true));
+  await t.test('the old bulleted multi form', () =>
+    assert.equal(isQuestionAnswerShape('My answers:\n- Q1: A\n- Q2: B'), false));
+  await t.test('a plain prompt that begins "My answers:"', () =>
+    assert.equal(isQuestionAnswerShape('My answers: yes to both, ship it'), false));
+  await t.test('"My answers:" and a line break with no numbered line', () =>
+    assert.equal(isQuestionAnswerShape('My answers:\nyes to both'), false));
+});
+
 test('a forward frame\'s instruction is a template; a payload-only frame never pins', async (t) => {
   await t.test('frame with an instruction', () => assert.equal(promptOrigin(echo(FORWARD_WITH_INSTRUCTION)), 'template'));
   await eachRow(t, FRAMES, 'synthetic');
