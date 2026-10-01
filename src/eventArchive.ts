@@ -128,10 +128,13 @@ function normalizeWindow(before: number | null, after: number | null, lastSeq: n
 // Content key for correlating a ring event against the replayed archive —
 // computed identically on both sides so a hit means the two really are the
 // same wire content. A `tool_result` correlates by its `toolUseId` (its
-// `msgId`/`blockIdx` are meaningless); anything else needs both `msgId` and
-// a numeric `blockIdx`. Returns null when neither applies.
+// `msgId`/`blockIdx` are meaningless), and so does a `system`/`read_nudge` —
+// the CLI fires one PreToolUse per tool call and the broker injects at most one
+// nudge per hook, so the id names exactly one; anything else needs both `msgId`
+// and a numeric `blockIdx`. Returns null when none applies.
 function correlationKey(ev: UiEvent): string | null {
   if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
+  if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
   return null;
 }
@@ -163,12 +166,13 @@ const RING_ONLY_KINDS = new Set([
 // ONLY condition under which the head scan may step over an event.
 function neverPersisted(ev: UiEvent): boolean {
   if (RING_ONLY_KINDS.has(ev.kind)) return true;
-  // `system` is replayed for exactly ONE subtype (replayPersistedLine's
-  // soft-interrupt branch); every other subtype is a live-transport annotation
-  // with no persisted line behind it. Pinned by the tripwire test in
-  // tests/archive-correlated-cut.test.mjs — if replay ever emits a second
-  // `system` subtype, that test fails and this carve-out must be narrowed.
-  return ev.kind === 'system' && ev.subtype !== 'soft_interrupted';
+  // `system` is replayed for exactly these two subtypes (replayPersistedLine's
+  // soft-interrupt branch and its hook_additional_context branch); every other
+  // subtype is a live-transport annotation with no persisted line behind it.
+  // Pinned by the tripwire test in tests/archive-correlated-cut.test.mjs — if
+  // replay ever emits another `system` subtype, that test fails and this
+  // carve-out must be narrowed.
+  return ev.kind === 'system' && ev.subtype !== 'soft_interrupted' && ev.subtype !== 'read_nudge';
 }
 
 // Correlate the ring head's own content into the replayed archive: walk

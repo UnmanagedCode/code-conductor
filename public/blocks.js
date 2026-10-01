@@ -1215,7 +1215,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'cache_miss', 'playbook_warn', 'renew_error',
+  'model_changed', 'cache_miss', 'playbook_warn', 'renew_error', 'read_nudge',
 ]);
 
 const OVERAGE_DISABLED_LABEL = { out_of_credits: 'out of credits' };
@@ -1263,6 +1263,8 @@ export class SystemBlock {
         const target = data?.sessionId ? ` on ${data.sessionId.slice(0, 8)}` : '';
         return `⚠ ${data?.tool ?? '?'}${target} would have been refused — ${data?.code ?? '?'}: ${data?.reason ?? ''}`;
       }
+      // The conductor read nudge: shown verbatim, exactly what the model saw.
+      if (subtype === 'read_nudge') return data?.text ?? '';
       if (subtype === 'cache_miss') {
         // Cross-turn path carries prevPrefix — show evicted vs served so a
         // partial eviction reads sensibly. Fallback (turn 1 / re-baseline) has
@@ -1294,7 +1296,8 @@ export class SystemBlock {
       }
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
-    this.node = el('div', { class: subtype === 'playbook_warn' ? 'block system warn' : 'block system' },
+    const warn = subtype === 'playbook_warn' || subtype === 'read_nudge';
+    this.node = el('div', { class: warn ? 'block system warn' : 'block system' },
       el('span', { class: 'subtype' }, subtype),
       detail ? ` ${detail}` : '',
     );

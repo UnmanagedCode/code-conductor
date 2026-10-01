@@ -18,6 +18,7 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { sessionFilePath, localPlace} from '../src/projects.ts';
 import { buildArchive } from '../src/eventArchive.ts';
 import { replayPersistedLine } from '../src/transcript.ts';
+import { readNudgeText } from '../src/conductorReadNudge.ts';
 
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
@@ -209,10 +210,12 @@ test('T19: the trimmedBefore clamp stays strict — cut === trimmedBefore is hea
 
 // Independent oracle for correlationKey, re-implemented here on purpose:
 // importing the implementation's own would let a mutation to it pass unnoticed.
-const keyOf = ev => ev.kind === 'tool_result' && typeof ev.toolUseId === 'string'
-  ? `tr ${ev.toolUseId}`
-  : (typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number'
-      ? `${ev.kind} ${ev.msgId} ${ev.blockIdx}` : null);
+const keyOf = ev => {
+  if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
+  if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
+  return typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number'
+    ? `${ev.kind} ${ev.msgId} ${ev.blockIdx}` : null;
+};
 
 // Criterion 5: the served archive slice and the ring must never both carry the
 // same wire content. Applied to every row of tables A and B and to T24.
@@ -402,14 +405,14 @@ test('T25: a ring of only never-persisted events abandons to the echo fallback',
 
 // Tripwire for the carve-out's soundness condition. `neverPersisted` in
 // src/eventArchive.ts skips `system` at every subtype EXCEPT
-// `soft_interrupted`, on the premise that replay emits exactly that one. If a
-// second one is ever added, skipping it would silently duplicate it across the
-// archive/ring seam — nothing else in the codebase would notice. This test is
-// what makes that loud.
+// `soft_interrupted` and `read_nudge`, on the premise that replay emits exactly
+// those two. If another one is ever added, skipping it would silently duplicate
+// it across the archive/ring seam — nothing else in the codebase would notice.
+// This test is what makes that loud.
 //
 // PINS: the set of `system` subtypes the replay path can construct is exactly
-// {soft_interrupted}.
-test('T23: tripwire — replay constructs `system` for exactly one subtype', async () => {
+// {read_nudge, soft_interrupted}.
+test('T23: tripwire — replay constructs `system` for exactly two subtypes', async () => {
   const srcDir = new URL('../src/', import.meta.url);
   const readWhole = async (url) => {
     const src = await fs.readFile(new URL(url, srcDir), 'utf8');
@@ -433,16 +436,19 @@ test('T23: tripwire — replay constructs `system` for exactly one subtype', asy
   // replay genuinely emitted the new subtype — is caught here. src/parser.ts
   // stays scoped to consolidateUserContent, the one replay-reachable event
   // constructor it owns; whole-file there would sweep up the LIVE parser's many
-  // `system` sites, which say nothing about what replay emits.
+  // `system` sites, which say nothing about what replay emits. Likewise
+  // src/conductorReadNudge.ts is scoped to readNudgeEvent, the constructor
+  // replay reaches through readNudgeEventFromAttachment.
   //
   // Residual limit, stated honestly: this catches a literal `kind: 'system'`
-  // inside these two scopes. A construction in a non-literal form (a subtype
-  // held in a variable, a kind spread in from an object) or in a third file
-  // reached from the replay path still escapes both regexes. The positive
-  // control below narrows that gap but does not close it.
+  // inside these scopes. A construction in a non-literal form (a subtype held
+  // in a variable, a kind spread in from an object) or in a fourth file reached
+  // from the replay path still escapes the regexes. The positive controls below
+  // narrow that gap but do not close it.
   const bodies = [
     await readWhole('transcript.ts'),
     await readBody('parser.ts', 'export function consolidateUserContent('),
+    await readBody('conductorReadNudge.ts', 'export function readNudgeEvent('),
   ];
 
   let sites = 0;
@@ -461,8 +467,8 @@ test('T23: tripwire — replay constructs `system` for exactly one subtype', asy
   // count: today's two sites legitimately share one subtype.
   assert.equal(found.length, sites, `scan found ${sites} \`system\` construction(s) in the replay path but only ${found.length} with an adjacent subtype — replay now builds a system event whose subtype this scan cannot read, so the set below no longer covers every site`);
 
-  assert.deepEqual(subtypes, ['soft_interrupted'],
-    `replay now emits a second \`system\` subtype (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`soft_interrupted\` on the premise that this set is a singleton; that premise is now false and skipping the new subtype will duplicate it across the archive/ring seam. Narrow the carve-out.`);
+  assert.deepEqual(subtypes, ['read_nudge', 'soft_interrupted'],
+    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`read_nudge\` and \`soft_interrupted\` on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
 
   // Positive control: the scanned literal is the one actually emitted.
   const emitted = replayPersistedLine({
@@ -472,4 +478,79 @@ test('T23: tripwire — replay constructs `system` for exactly one subtype', asy
   assert.equal(emitted.length, 1);
   assert.equal(emitted[0].kind, 'system');
   assert.equal(emitted[0].subtype, 'soft_interrupted');
+
+  const nudged = replayPersistedLine(nudgeAttachmentLine('tuC'));
+  assert.equal(nudged.length, 1);
+  assert.equal(nudged[0].kind, 'system');
+  assert.equal(nudged[0].subtype, 'read_nudge');
+});
+
+// ── read_nudge across the seam ───────────────────────────────────────────────
+// The CLI persists a PreToolUse `additionalContext` as a `hook_additional_context`
+// attachment between the tool_use line and its tool_result line; replay turns
+// cc's read nudge back into the same `system`/`read_nudge` event the broker
+// emitted live, keyed by the CLI's tool_use_id.
+function nudgeAttachmentLine(toolUseID) {
+  return {
+    type: 'attachment', uuid: `att-${toolUseID}`, isSidechain: false,
+    attachment: {
+      type: 'hook_additional_context', content: [readNudgeText(8)],
+      hookName: 'PreToolUse:mcp__code-conductor__project_read', toolUseID, hookEvent: 'PreToolUse',
+    },
+  };
+}
+
+// PINS: a `read_nudge` ring head whose twin is in the archive correlates by its
+// toolUseId — an exact cut, no gap, no duplication.
+test('T26: a read_nudge head present in the archive correlates by toolUseId', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t26';
+    const [prompt, assistant] = textBlockLines();
+    await writeJsonl(cwd, SID, [
+      prompt,
+      assistant,
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tuN', name: 'mcp__code-conductor__project_read', input: {} },
+      ] } },
+      nudgeAttachmentLine('tuN'),
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tuN', content: 'file bytes' },
+      ] } },
+    ]);
+    const ring = [
+      { kind: 'system', subtype: 'read_nudge', toolUseId: 'tuN', data: { count: 8 }, _seq: 59 },
+      { kind: 'tool_result', toolUseId: 'tuN', _seq: 60 },
+    ];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
+    // 1 echo + 24 text events, then tool_use_start + tool_use at 25/26.
+    assert.equal(arch.events[27].kind, 'system', 'fixture check: replay emits the nudge at flat index 27');
+    assert.equal(arch.events[27].subtype, 'read_nudge');
+    assert.equal(arch.events[28].kind, 'tool_result', 'fixture check: its tool_result follows at 28');
+    assert.equal(arch.cut, 27, 'cut lands exactly on the archived read_nudge');
+    assert.equal(arch.gap, false, 'a correlated cut is an exact stitch — no gap');
+    assertNoDuplication(arch, ring, 'T26');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
+// PINS: a `read_nudge` head that misses the archive abandons to the echo
+// fallback — `neverPersisted` does not skip it.
+test('T27: a read_nudge head missing from the archive abandons — it is not skipped', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t27';
+    await writeJsonl(cwd, SID, textBlockLines());
+    const ring = [
+      { kind: 'system', subtype: 'read_nudge', toolUseId: 'tuMissing', data: { count: 8 }, _seq: 59 },
+      RING_TAIL,
+    ];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
+    assert.equal(arch.cut, 1, 'a read_nudge head may be in the archive — abandon to the echo anchor, do not skip to the tail');
+    assert.equal(arch.gap, true);
+    assertNoDuplication(arch, ring, 'T27');
+  } finally {
+    await rmrf(r.home);
+  }
 });

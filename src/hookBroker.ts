@@ -1,7 +1,8 @@
 // Per-instance answerer for the tool-hook http callbacks, plus the JSON
 // response helpers, so none of that needs to clutter the Instance class. The
-// broker only reaches back into the Instance via the getRedirect() callback
-// it's constructed with, keeping the dependency arrow one-way.
+// broker only reaches back into the Instance via the getRedirect() and
+// onReadNudge() callbacks it's constructed with, keeping the dependency arrow
+// one-way.
 //
 // It answers two hook events. `PreToolUse`: a local session's calls are all
 // allowed; a redirected session's calls follow the SessionRedirect policy —
@@ -13,13 +14,20 @@
 // the tool has already returned success, and `additionalContext` is the only
 // channel that can put that in front of the worker in band — a tool result can
 // be annotated but never replaced.
+//
+// On a conductor it also answers the read-nudge tools (src/conductorReadNudge.ts)
+// — with NO permission decision, because an explicit `allow` skips the CLI's own
+// permission flow, plan mode included. The body is `{}`, or `additionalContext`
+// alone when the call earns a nudge. Those tools never reach the redirect.
 
 import type { Response } from 'express';
 import type { RedirectDecision } from './systems/toolRedirect.ts';
+import type { ConductorReadNudge, ReadNudge } from './conductorReadNudge.ts';
 
 interface PreToolUseOutput {
   hookEventName: 'PreToolUse';
-  permissionDecision: string;
+  permissionDecision?: string;
+  additionalContext?: string;
   permissionDecisionReason?: string;
   // The rewritten tool input. Returned ALONGSIDE the allow, in one response:
   // the CLI runs the tool with this input in place of the worker's own.
@@ -55,6 +63,8 @@ export interface HookEnvelope {
   tool_name?: unknown;
   tool_input?: unknown;
   tool_response?: unknown;
+  // Present only on a call made inside a subagent.
+  agent_id?: unknown;
 }
 
 // What the broker needs from a redirected session, and nothing more. Satisfied
@@ -71,14 +81,22 @@ export interface HookBrokerOptions {
   // because it is attached after the Instance is constructed and dropped when
   // the session ends.
   getRedirect: () => HookRedirector | null;
+  // A conductor's run counter; absent on every other instance.
+  readNudge?: ConductorReadNudge | null;
+  // Called AFTER the hook is answered, so a throw here cannot turn into a deny.
+  onReadNudge?: (n: ReadNudge) => void;
 }
 
 export class HookBroker {
   private readonly _getRedirect: () => HookRedirector | null;
+  private readonly _readNudge: ConductorReadNudge | null;
+  private readonly _onReadNudge: ((n: ReadNudge) => void) | null;
 
-  constructor({ getRedirect }: HookBrokerOptions) {
+  constructor({ getRedirect, readNudge = null, onReadNudge }: HookBrokerOptions) {
     if (typeof getRedirect !== 'function') throw new Error('HookBroker requires getRedirect()');
     this._getRedirect = getRedirect;
+    this._readNudge = readNudge;
+    this._onReadNudge = onReadNudge ?? null;
   }
 
   // Called by the REST hook-callback handler, for BOTH hook events — the CLI
@@ -107,6 +125,20 @@ export class HookBroker {
       const note = redirect ? await redirect.postToolUse(toolName, toolInput, envelope.tool_response) : null;
       if (!res.headersSent) {
         res.status(200).json(note ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } } : {});
+      }
+      return;
+    }
+
+    if (this._readNudge?.watches(toolName)) {
+      // A subagent's calls are not the conductor's own reading: they neither
+      // count nor reset the run.
+      const nudge = envelope?.agent_id != null ? null : this._readNudge.observe(toolName);
+      if (!res.headersSent) {
+        res.status(200).json(nudge ? { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: nudge.text } } : {});
+      }
+      if (nudge) {
+        const toolUseId = typeof envelope?.tool_use_id === 'string' ? envelope.tool_use_id : '';
+        this._onReadNudge?.({ ...nudge, toolName, toolUseId });
       }
       return;
     }

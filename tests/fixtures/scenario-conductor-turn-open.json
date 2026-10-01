@@ -1,0 +1,13 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE", "tools": ["Bash"], "uuid": "init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_open", "role": "assistant", "usage": { "input_tokens": 10, "output_tokens": 0 } } } }
+      ]
+    }
+  ]
+}

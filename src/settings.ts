@@ -1,10 +1,13 @@
 // Builds the inline `--settings` JSON the orchestrator passes to every
-// claude subprocess. A PreToolUse hook is registered (when `hookCallbackUrl` is provided):
+// claude subprocess. PreToolUse hooks are registered (when `hookCallbackUrl` is provided):
 //
-//   - (Optional, when hookCallbackUrl is provided) An `http` hook on the
-//     mutating tools that POSTs back to the orchestrator's hook-callback
-//     endpoint. The endpoint's HookBroker allows every local call and
-//     applies the redirect policy to a redirected session's calls.
+//   - An `http` hook on the mutating tools that POSTs back to the
+//     orchestrator's hook-callback endpoint. The endpoint's HookBroker allows
+//     every local call and applies the redirect policy to a redirected
+//     session's calls.
+//   - On a CONDUCTOR only, a second `http` entry on the read-nudge tools
+//     (READ_NUDGE_MATCHER, src/conductorReadNudge.ts), answered with no
+//     permission decision — at most an `additionalContext` reminder.
 //
 // The interactive tools (AskUserQuestion / ExitPlanMode / EnterPlanMode)
 // are NO LONGER gated by a static PreToolUse deny hook. Under CLI 2.1.x
@@ -17,6 +20,8 @@
 // running. See Instance._handleStdoutLine.
 //
 // All inputs are pure JS values — no Instance state involved.
+
+import { READ_NUDGE_MATCHER } from './conductorReadNudge.ts';
 
 // Message returned to the model when the orchestrator denies an interactive
 // tool's `can_use_tool` request — tells it the request was delivered despite
@@ -99,8 +104,9 @@ export const HOOK_HTTP_TIMEOUT_S = 660;
 // `redirect` marks a worker session whose project lives on another system
 // (src/systems/toolRedirect.ts). It widens the hook surface rather than
 // replacing it, so a local session's settings are byte-identical to what they
-// were.
-export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookCallbackUrl?: string; redirect?: boolean } = {}): string {
+// were. `conductor` appends the read-nudge entry AFTER the base one, for the
+// same reason: a worker's settings do not change.
+export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor = false }: { hookCallbackUrl?: string; redirect?: boolean; conductor?: boolean } = {}): string {
   const httpHook = (url: string) => [{ type: 'http', url, timeout: HOOK_HTTP_TIMEOUT_S }];
   const preToolUse: unknown[] = [];
   const out: Record<string, unknown> = { hooks: { PreToolUse: preToolUse } };
@@ -109,6 +115,7 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
       matcher: redirect ? REDIRECT_PRE_TOOL_MATCHER : MUTATING_TOOL_MATCHER,
       hooks: httpHook(hookCallbackUrl),
     });
+    if (conductor) preToolUse.push({ matcher: READ_NUDGE_MATCHER, hooks: httpHook(hookCallbackUrl) });
     if (redirect) {
       (out.hooks as Record<string, unknown>).PostToolUse = [
         { matcher: REDIRECT_POST_TOOL_MATCHER, hooks: httpHook(hookCallbackUrl) },
