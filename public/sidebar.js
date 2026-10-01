@@ -226,6 +226,10 @@ export class Sidebar {
     this._owners = new Map();
     this._conductors = { live: [], inactive: [] };
     this._registered = new Set();
+    // Reveal-on-select: setActive records the selected id, the next render
+    // turns it into `_reveal` (the groups the builders must open) and clears it.
+    this._revealId = null;
+    this._reveal = null;
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -277,7 +281,7 @@ export class Sidebar {
     this.instances = instances;
     this.render();
   }
-  setActive(id) { this.activeInstanceId = id; this.render(); }
+  setActive(id) { this.activeInstanceId = id; this._revealId = id; this.render(); }
 
   // Refreshes every live "Xs/Xm/Xh ago" label in place from its cached
   // data-activity, without rebuilding the DOM (unlike render(), this doesn't
@@ -623,6 +627,8 @@ export class Sidebar {
       });
     }
 
+    // Revealed before the update so an uncached list lazy-loads right away.
+    if (this._reveal?.sessionsKey === det._key) det.open = true;
     det._update({ liveInstances, summary, showOwner });
     return det;
   }
@@ -748,6 +754,7 @@ export class Sidebar {
       det.open = this.expandedWorktrees.has(p.name);
       det._forcedFor = null;
     }
+    if (this._reveal?.worktreesOf === p.name) det.open = true;
     det._summaryEl.textContent = `Worktrees (${worktrees.length})`;
     const listed = filterOwner
       ? worktrees.filter(wt => this._owners.get(`${p.name}:${wt.worktreeName}`)?.has(filterOwner))
@@ -994,9 +1001,11 @@ export class Sidebar {
       const ul = el('ul', { class: 'project-workspace-list' });
       det.appendChild(ul);
       li.appendChild(det);
+      li._det = det;
       li._ul = ul;
       li._countSpan = countSpan;
     }
+    if (this._reveal?.workspace === name) li._det.open = true;
     li._countSpan.textContent = `(${count})`;
     if (members.length === 0) {
       reconcileChildren(li._ul, ['empty'], (k, ex) => ex ?? el('li', { class: 'workspace-empty' },
@@ -1044,6 +1053,7 @@ export class Sidebar {
     this._owners = ownersByPlace(this.instances);
     this._conductors = deriveConductors({ conductRows: this.conductRows, instances: this.instances });
     this._registered = new Set(this.projects.map(p => p.name));
+    this._reveal = this._takeReveal();
     const offered = this._filterOwners(liveOwners);
     // A selected owner that is no longer offered (no live session and no
     // registered idle chip) falls back to All: an empty tree would be a filter
@@ -1071,6 +1081,65 @@ export class Sidebar {
     this._renderProjects({ directByProject, byWorktree });
     if (this.conductorList) this._renderConductors();
     if (this.stripRoot) this._renderStrip();
+    this._reveal = null;
+  }
+
+  // Consumes the id setActive recorded and opens everything on the selected
+  // session's path in both lenses, writing the same stores a click on each
+  // group writes (the groups' toggle listeners are not relied on: they fire
+  // asynchronously, and the Worktrees one ignores toggles under an owner
+  // filter). Returns the groups the builders must open on nodes they reuse, or
+  // null when there is nothing to reveal.
+  _takeReveal() {
+    const id = this._revealId;
+    this._revealId = null;
+    const inst = id ? this.instances.find(i => i.id === id) : null;
+    if (!inst) return null;
+    const target = { workspace: null, worktreesOf: null, sessionsKey: null, inactive: false };
+
+    // Conductors lens. A conductor is its own bubble's head, so it opens
+    // nothing; a worker opens its root owner's bubble (nested workers carry
+    // the root owner, so that is every ancestor bubble the lens has).
+    const isConductor = inst.project === '.conduct';
+    const conductorSid = isConductor ? inst.sessionId : inst.ownerSessionId;
+    const { live, inactive } = this._conductors;
+    const placed = inactive.some(c => c.sessionId === conductorSid);
+    if (placed || live.some(c => c.sessionId === conductorSid)) {
+      if (!isConductor) this.expandedConductors.add(conductorSid);
+      if (placed) { this.inactiveOpen = true; target.inactive = true; }
+    }
+
+    // Projects lens. A conductor has no row there.
+    const p = isConductor ? null : this.projects.find(q => q.name === inst.project);
+    if (p) {
+      const ws = typeof p.workspace === 'string' ? p.workspace.trim() : '';
+      if (ws) {
+        this.expandedWorkspaces.add(ws);
+        saveExpandedWorkspaces(this.expandedWorkspaces);
+        target.workspace = ws;
+      }
+      const wt = inst.worktree?.worktreeName;
+      if (wt) {
+        this.expandedWorktrees.add(p.name);
+        target.worktreesOf = p.name;
+      }
+      target.sessionsKey = wt ? `${p.name}:${wt}` : p.name;
+      this.collapsedSessions.delete(target.sessionsKey);
+      if (!this._filterShows(inst)) {
+        // A conducted session no owner is reported for (a dead one) has no
+        // owner entry to switch to, so only All shows it.
+        this.filter = inst.ownerSessionId || (inst.conducted ? '' : 'hand');
+      }
+    }
+    return target;
+  }
+
+  // Whether the current conductor filter lists `inst`'s row; mirrors the
+  // narrowing in the sessions list.
+  _filterShows(inst) {
+    const owner = this._filterOwner();
+    if (owner) return inst.ownerSessionId === owner;
+    return this.filter === 'hand' ? !inst.conducted : true;
   }
 
   // The needs-you strip: Waiting on you, Running, Finished — each only when
@@ -1260,9 +1329,11 @@ export class Sidebar {
       det.appendChild(summaryEl);
       det.appendChild(ul);
       li.appendChild(det);
+      li._det = det;
       li._summaryEl = summaryEl;
       li._ul = ul;
     }
+    if (this._reveal?.inactive) li._det.open = true;
     li._summaryEl.textContent = `Inactive (${inactive.length})`;
     const bySid = new Map(inactive.map(c => [c.sessionId, c]));
     reconcileChildren(li._ul, inactive.map(c => `${CONDUCTOR_KEY}${c.sessionId}`),
