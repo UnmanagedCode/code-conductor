@@ -34,6 +34,7 @@
 import { randomUUID } from 'node:crypto';
 import { planPathFromInput } from './planFile.ts';
 import { AWAITING_INPUT_MESSAGE, EARLIER_AWAITING_INPUT_MESSAGES } from './settings.ts';
+import { TaskStarts, taskNotificationFromFrame, type TaskFrame } from './taskNotification.ts';
 
 // UI event shape. `kind` is the discriminator; the per-kind payload fields
 // ride on the index signature (consumers read what they know).
@@ -162,6 +163,8 @@ export class Parser {
   // Stdout carries no `isCompactSummary`, so the first synthetic user frame
   // directly after the boundary is the only line-level mark of the summary.
   _compactSummaryArmed = false;
+  // task_started facts by task_id, read when that task's notification arrives.
+  _taskStarts = new TaskStarts();
 
   reset() {
     this.currentMsgId = null;
@@ -171,6 +174,7 @@ export class Parser {
     this._pendingSkillLoads = [];
     this._ctxFallbackArmed = false;
     this._compactSummaryArmed = false;
+    this._taskStarts = new TaskStarts();
   }
 
   // Signal a genuine turn boundary (a real prompt or interrupt emitted
@@ -227,6 +231,10 @@ export class Parser {
     if (obj.subtype === 'compact_boundary') {
       this._compactSummaryArmed = true;
       return [compactionEvent(obj)];
+    }
+    if (obj.subtype === 'task_started') this._taskStarts.note(obj);
+    if (obj.subtype === 'task_notification') {
+      return [taskNotificationFromFrame(obj, this._taskStarts.take((obj as TaskFrame).task_id))];
     }
     return [{ kind: 'system', subtype: obj.subtype ?? 'unknown', data: obj }];
   }
@@ -584,10 +592,10 @@ export class Parser {
     // deferred (⏸) interrupt now produces one on every stop, and a user bubble
     // would both render wrong and shift the rewind/fork prompt index.
     if (isInterruptMarkerContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
-    // Background-subagent completion ping the CLI re-injects into a
-    // worker's own conversation as though it were a user turn. Drop
-    // silently — the streaming `system/task_notification` event already
-    // carries this (hidden from the feed by default), so this would be a
+    // Background-task completion ping the CLI re-injects into a worker's own
+    // conversation as though it were a user turn. Drop silently — the
+    // streaming `system/task_notification` frame already became this
+    // notification's event (src/taskNotification.ts), so this would be a
     // duplicate, and it never produced a user_echo live.
     if (isTaskNotificationContent(content)) return [];
     // The CLI's local-command caveat — never a bubble (isLocalCommandCaveatLine).

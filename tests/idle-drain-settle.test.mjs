@@ -31,8 +31,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
-const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } =
+const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, seedSessionJsonl } =
   await import('./helpers.mjs');
+const { taskNotificationEvent } = await import('../src/taskNotification.ts');
 const { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } = await import('../public/wakeCallback.js');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -693,4 +694,61 @@ test('e2e trap: idle completion WITH a re-invocation turn → no early wake, sin
   assert.equal(srvInstances._idleHub.hasArmedWake(instForSession(srvInstances, targetId).id), false);
   assert.equal(target.ringSnapshot().filter(ev => ev.kind === 'turn_end').length, 2,
     'the wake corresponds to the re-invocation turn completing');
+});
+
+// Replayed history never reaches the wake hubs. The only path that routes
+// replayed events into Instance._emitUi(…, { replayed: true }) is
+// Instance.loadHistory, whose only caller is Instance.launch — reached from
+// _doCreateResolved (create, resume, fork), respawn, rewindToUserMessage and
+// pruneSession (its relaunch and its rollback). Rotation (`/clear`) and renewal
+// replay nothing, and a browser reload is served from the ring and the archive
+// without re-emitting. loadHistory's emit loop runs after an async transcript
+// read, so it can land while the instance is `turn` (a wake delivered to a
+// spawning caller calls prompt(), which has no spawning guard), `exited` /
+// `crashed`, or `idle` (that prompt's turn ended before the read did) — and in
+// `idle` a replayed task_notification would arm an idle-drain settle or fire an
+// armed renewal's `/clear`. The filter is load-bearing: the hubs act on
+// turn_end, steer_settled, rotation_complete, task_updated and
+// task_notification, and replay emits task_notification. It emits none of the
+// others, so filtering ALL replayed events from both hub registrations changes
+// nothing else, and stops a reload from arming a settle or firing an armed
+// renewal.
+//
+// PINS: a replayed task_notification reaches the manager's event stream (so
+// clients render it) but neither hub, even while the instance is idle; the same
+// event emitted live reaches both.
+test('e2e: a replayed task_notification never reaches either wake hub, even while the instance is idle', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const sid = await spawnReadyWithScenario('p');
+  const inst = instForSession(srvInstances, sid);
+  assert.equal(inst.status, 'idle', 'precondition: the replay runs while idle');
+  const replaySid = '7b1f9a52-3c4d-4e8f-9a01-b2c3d4e5f607';
+  await seedSessionJsonl(inst.transcriptPlace, replaySid, [{
+    type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-01T18:56:26.021Z', sessionId: replaySid,
+    content: '<task-notification>\n<task-id>byncs4grx</task-id>\n<tool-use-id>toolu_018MKm8vtqnn6GpMTLzD3Ncu</tool-use-id>\n<output-file>/tmp/claude-UID/-workspace-project/s/tasks/byncs4grx.output</output-file>\n<status>completed</status>\n<summary>Background command "bg ok" completed (exit code 0)</summary>\n</task-notification>',
+  }]);
+  const seen = { manager: [], idle: [], renew: [] };
+  const spy = (hub, into) => { const orig = hub.onEvent; hub.onEvent = (e) => { into.push(e); return orig.call(hub, e); }; };
+  spy(srvInstances._idleHub, seen.idle);
+  spy(srvInstances._sessionRenew, seen.renew);
+  const onManager = (e) => seen.manager.push(e);
+  srvInstances.on('event', onManager);
+  const isTn = (e) => e.ev?.kind === 'system' && e.ev.subtype === 'task_notification';
+  try {
+    await inst.loadHistory(replaySid);
+    assert.equal(seen.manager.filter(isTn).length, 1, 'the replayed event reached the manager event stream');
+    assert.deepEqual(seen.idle.filter(isTn), [], 'the idle hub never saw it');
+    assert.deepEqual(seen.renew.filter(isTn), [], 'the renewal controller never saw it');
+
+    // Control: the same kind of event, emitted live, reaches both.
+    inst._emitUi(taskNotificationEvent({
+      taskId: 'tLive', toolUseId: 'tuLive', status: 'completed', outputFile: '', name: 'live', exitCode: 0, summary: 's', notified: true,
+    }));
+    assert.equal(seen.idle.filter(isTn).length, 1, 'a live notification reaches the idle hub');
+    assert.equal(seen.renew.filter(isTn).length, 1, 'a live notification reaches the renewal controller');
+  } finally {
+    delete srvInstances._idleHub.onEvent;
+    delete srvInstances._sessionRenew.onEvent;
+    srvInstances.off('event', onManager);
+  }
 });

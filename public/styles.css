@@ -1362,6 +1362,8 @@ body.lightbox-open { overflow: hidden; }
 }
 .block.system .subtype { color: var(--amber); margin-right: 4px; }
 .block.system.warn { color: var(--amber); border-left-color: var(--amber); }
+details.block.system > summary { cursor: pointer; }
+.task-notification-body { white-space: pre-wrap; margin-top: 4px; }
 
 /* Ghost bubble: a message queued while overage-paused, not yet delivered. */
 .block.queued {
