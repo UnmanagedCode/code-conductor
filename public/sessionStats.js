@@ -3,13 +3,25 @@ import { formatDuration, fmtCost } from './usage.js';
 // installSessionStats — wires the #stats-dialog modal.
 // Returns { open } which the caller binds to the "Statistics" overflow item.
 //
+// The dialog also hosts the "Show mid-turn statistics" box (#stats-call-usage):
+// the active session's per-call usage lines. The state lives in header.js
+// (isCallUsageShown / setCallUsageShown, keyed by sessionId); open() syncs the
+// box from it and the box's change writes back to the session the dialog was
+// opened for.
+//
 // GET /api/costs/session/:sessionId returns cost/timing for the active session
 // alone (`own`) and rolled up to include every worker it spawned (`rolled`),
 // plus `workerSessions` (the descendant-session count folded into the rollup).
-export function installSessionStats({ dom, getActiveSid }) {
+export function installSessionStats({ dom, getActiveSid, isCallUsageShown, setCallUsageShown }) {
   const dialog = dom.statsDialog;
   const contentEl = document.getElementById('stats-content');
   const errorEl = document.getElementById('stats-error');
+  const callUsageBox = document.getElementById('stats-call-usage');
+  let openSid = null;
+
+  callUsageBox.addEventListener('change', () => {
+    if (openSid) setCallUsageShown(openSid, callUsageBox.checked);
+  });
 
   function showError(msg) {
     errorEl.textContent = msg;
@@ -73,6 +85,8 @@ export function installSessionStats({ dom, getActiveSid }) {
     const sid = getActiveSid();
     if (!sid) return;
 
+    openSid = sid;
+    callUsageBox.checked = isCallUsageShown(sid);
     contentEl.innerHTML = '<span class="stats-loading">Loading…</span>';
     showError('');
     dialog.showModal();
