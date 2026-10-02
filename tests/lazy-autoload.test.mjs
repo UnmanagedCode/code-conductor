@@ -459,3 +459,13 @@ test('with no session selected and no init(), history is not ready', async () =>
   assert.equal(controller.state().ready, false);
   assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
 });
+
+test('the active id going null without a reset() (stop / archive / delete) makes history not ready', async () => {
+  const ctx = await setupDOM();
+  const { controller, active } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  assert.equal(controller.state().ready, true);
+  active.id = null; // sessionActions: no reset() follows
+  assert.equal(controller.state().ready, false);
+  assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+});

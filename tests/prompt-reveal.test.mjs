@@ -242,6 +242,12 @@ test('a small sideways lead under the threshold does not abandon a swipe that th
   assert.deepEqual(h.calls, ['reveal']);
 });
 
+test('an exactly-45° lead at the threshold does not abandon a swipe: horizontal must strictly dominate', async () => {
+  const h = await harness();
+  h.swipe(h.$('instance-header'), [[SWIPE_MIN_PX, SWIPE_MIN_PX], [SWIPE_MIN_PX, 2 * SWIPE_MIN_PX]]);
+  assert.deepEqual(h.calls, ['reveal']);
+});
+
 test('a two-finger touch does nothing', async (t) => {
   await t.test('two fingers from the start', async () => {
     const h = await harness();

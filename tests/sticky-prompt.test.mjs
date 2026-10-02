@@ -829,6 +829,24 @@ test('a revealed pin with no session selected and no snapshot reads loading, not
   assertStatus(h.pinEl, STATUS_LOADING, 'not ready');
 });
 
+test('a revealed pin after the active session is stopped or archived (id nulled, no reset) reads loading, not failed', async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(url); return { ok: true, status: 200, json: async () => ({ events: [], nextBefore: 0, hasMore: false }) }; };
+  const h = await harness({ revealed: false, history: 'real' });
+  Object.defineProperty(h.scrollEl, 'scrollHeight', { configurable: true, get: () => 10000 }); // scrollable: no auto-fill
+  h.lazy.init({ tailStartSeq: 1000 }); // inst1 has earlier history
+  await h.settle();
+  h.state.activeId = null; // sessionActions' stop / archive / delete path
+  assert.equal(h.lazy.state().ready, false);
+  h.ctl.reveal();
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_LOADING, 'no session: nothing to page, nothing failed');
+  h.ctl.reveal(); // a retry changes nothing
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_LOADING, 'after a second reveal');
+  assert.equal(calls.length, 0);
+});
+
 // ── Static wiring ────────────────────────────────────────────────────────
 
 test('no full-page view hides #conversation without its pane', async () => {

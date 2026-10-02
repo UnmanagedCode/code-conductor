@@ -184,11 +184,13 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
 // otherwise land in the wrong conversation) — bumped on every snapshot /
 // reset_snapshot / instance switch.
 //
-// Readiness: init() has run for the active session with no switch since. A
-// reset() whose active id is not the one init() last ran for (selectInstance
-// sets the id first) is a switch and clears it, so A→B→A stays not-ready until
-// A's next snapshot; a same-session reset (reset_snapshot after a rewind) keeps
-// it, because no init() follows one — lazy paging simply stays off. A caller
+// Readiness: init() has run for the session active now, with no switch since.
+// Not ready whenever the active id differs from the one init() last ran for —
+// sessionActions nulls it on stop / archive / delete without a reset(). A
+// reset() whose active id differs (selectInstance sets the id first) is a
+// switch and forgets that init(), so A→B→A stays not-ready until A's next
+// snapshot; a same-session reset (reset_snapshot after a rewind) keeps it,
+// because no init() follows one — lazy paging simply stays off. A caller
 // that must page until a condition holds (the sticky prompt's reveal) uses
 // loadUntil(); it joins a fetch already in flight rather than racing it.
 //
@@ -210,7 +212,7 @@ export function installLazyHistoryController({
   const lazy = {
     epoch: 0, hasMore: false, nextBefore: 0, segment: null, visited: new Set([null]),
     loading: false, emptyStreak: 0, silent: false,
-    initFor: null, // the active id init() last ran for; null = not ready
+    initFor: null, // the active id init() last ran for; null once a switch forgets it
     inflight: null, // the running fetch's promise while `loading`
   };
   let lazySentinel = null;
@@ -219,7 +221,7 @@ export function installLazyHistoryController({
   // Starts as the live tail's, then advances page by page.
   let oldestLeadingWrap = null;
 
-  const isReady = () => lazy.initFor !== null;
+  const isReady = () => lazy.initFor !== null && lazy.initFor === getActiveId();
 
   function reset() {
     lazy.epoch += 1;
