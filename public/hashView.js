@@ -36,7 +36,7 @@
 // button. Forcing it here would change behavior. It registers with
 // mainViews.js itself.
 
-import { registerMainView, reconcileMainViews } from './mainViews.js';
+import { registerMainView, reconcileMainViews, mainViewClosed } from './mainViews.js';
 
 export function installHashView({
   name,
@@ -75,6 +75,8 @@ export function installHashView({
     hide();
     if (leaving) onLeave?.();
     onTeardown?.();
+    // After onLeave, which is where a close() restores the session anchor.
+    mainViewClosed();
   }
 
   // Rest args, not one: a view whose subject is a PAIR (commits: project +

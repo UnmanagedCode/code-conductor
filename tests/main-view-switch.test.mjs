@@ -109,7 +109,7 @@ async function setup() {
   const leave = name => () => { calls[name]++; writeAnchor(); };
 
   // app.js's install order.
-  installPluginView({ onClosed: () => { calls.pluginClosed++; } });
+  const plugin = installPluginView({ onClosed: () => { calls.pluginClosed++; } });
   const settings = installSettings({ requestClose: leave('settings') });
   const review = installReview();
   const commits = installCommits({ onClose: leave('commits') });
@@ -125,7 +125,7 @@ async function setup() {
   const settle = () => window.happyDOM.waitUntilComplete();
   const shown = () => VIEWS.filter(v => !window.document.getElementById(`${v}-view`).hidden);
   const openClasses = () => VIEWS.filter(v => main.classList.contains(`${v}-open`));
-  return { window, calls, open, settle, shown, openClasses, views: { settings, review, commits, costs } };
+  return { window, calls, open, settle, shown, openClasses, views: { settings, review, commits, costs, plugin } };
 }
 
 // INVARIANT: the harness has browser hashchange semantics — history calls
@@ -324,5 +324,67 @@ test('isMainViewHash is true for each registered view hash and false for a sessi
   for (const v of VIEWS) assert.equal(isMainViewHash(HASH[v]), true, `${v}: ${HASH[v]}`);
   assert.equal(isMainViewHash('#session=x'), false);
   assert.equal(isMainViewHash(''), false);
+  h.window.happyDOM.abort();
+});
+
+// A viewedMarker over the harness window: the active session is `start`, with
+// one unseen turn end; every POST body is recorded.
+async function installMarker(h) {
+  const { installViewedMarker } = await freshImport('viewedMarker.js');
+  const posts = [];
+  const doc = new EventTarget();
+  doc.visibilityState = 'visible';
+  const marker = installViewedMarker({
+    getActiveInstance: () => ({ id: 'i', sessionId: 'start', turnEndSeq: 1, viewedSeq: 0 }),
+    fetchJson: async (url, opts) => { posts.push(JSON.parse(opts.body)); return {}; },
+    doc, win: h.window, storage: { removeItem() {} },
+  });
+  return { marker, posts };
+}
+
+// INVARIANT: every full-page-view exit back to the session re-runs the viewed
+// check once the anchor is restored, however it is restored — through
+// replaceState, which fires no hashchange (Settings' close() behind ⚙ and
+// Escape, a hashView close() whose leave callback writes the anchor, the
+// plugin view's Conductor exit), or through a hash change.
+test('every main-view exit to the session re-runs the viewed check', async t => {
+  const replaceExits = {
+    settings: h => h.views.settings.close(),
+    commits: h => h.views.commits.close(),
+    review: h => h.views.review.close(),
+    costs: h => h.views.costs.close(),
+    // app.js's onExitToConductor: write the anchor, then close the view.
+    plugin: h => { h.window.history.replaceState(null, '', '#session=start'); h.views.plugin.close(); },
+  };
+  const hashExit = h => { h.window.location.hash = '#session=start'; };
+  const cases = [
+    ...Object.entries(replaceExits).map(([name, exit]) => [`${name}: replaceState restore`, name, exit]),
+    ...VIEWS.map(name => [`${name}: hash restore`, name, hashExit]),
+  ];
+  for (const [label, name, exit] of cases) {
+    await t.test(label, async () => {
+      const h = await setup();
+      const { marker, posts } = await installMarker(h);
+      h.open[name](); await h.settle();
+      marker.check();
+      assert.deepEqual(posts, [], 'precondition: the open view covers the pane');
+      exit(h); await h.settle();
+      assert.equal(h.window.location.hash, '#session=start', 'precondition: the anchor is restored');
+      assert.deepEqual(h.shown(), [], 'precondition: the view is gone');
+      assert.deepEqual(posts, [{ seq: 1 }], 'the exit re-ran the check');
+      h.window.happyDOM.abort();
+    });
+  }
+});
+
+// INVARIANT: a view superseded by another view is not an exit to the session —
+// the check it triggers sees the new view's hash and posts nothing.
+test('opening one main view over another never marks the session viewed', async () => {
+  const h = await setup();
+  const { posts } = await installMarker(h);
+  h.open.settings(); await h.settle();
+  h.open.commits(); await h.settle();
+  assert.deepEqual(h.shown(), ['commits'], 'precondition: commits superseded settings');
+  assert.deepEqual(posts, []);
   h.window.happyDOM.abort();
 });

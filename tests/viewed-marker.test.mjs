@@ -33,11 +33,6 @@ async function setup({ hash = '#session=s1', visible = true, instances, activeId
   return { window, doc, state, posts, marker };
 }
 
-// Resolves once a hashchange has reached every listener registered before it.
-function nextHashchange(window) {
-  return new Promise(r => window.addEventListener('hashchange', r, { once: true }));
-}
-
 // Invariant: an open, visible pane with an unseen turn end posts that seq once.
 test('a visible active session with an unseen turn end posts its turnEndSeq', async () => {
   const { posts, marker } = await setup();
@@ -56,15 +51,16 @@ test('a hidden document posts nothing until it becomes visible', async () => {
 });
 
 // Invariant: a full-page main view covering the pane is not viewing it;
-// leaving it for the session (hashchange) is.
-test('a full-page view hash posts nothing until the hash returns to the session', async () => {
+// a view closing back to the session (mainViewClosed, after a replaceState
+// anchor restore that fires no hashchange) re-runs the check and posts.
+test('a full-page view hash posts nothing until a view closes back to the session', async () => {
   const { window, posts, marker } = await setup({ hash: '#settings' });
+  const { mainViewClosed } = await import(pub('mainViews.js'));
   marker.check();
   assert.equal(posts.length, 0, '#settings: no POST');
-  const seen = nextHashchange(window);
-  window.location.hash = '#session=s1';
-  await seen;
-  assert.deepEqual(posts.map(p => p.body), [{ seq: 2 }], 'hashchange back to the session posts');
+  window.history.replaceState(null, '', '#session=s1');
+  mainViewClosed();
+  assert.deepEqual(posts.map(p => p.body), [{ seq: 2 }], 'the view closing posts');
 });
 
 // Invariant: a turn that ends while the pane is open and visible is posted on

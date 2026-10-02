@@ -7,10 +7,11 @@
 //
 // check() is idempotent; every trigger just calls it. app.js calls it from
 // selectInstance (a pane opened) and refreshInstances (a turn ended, or another
-// device marked it); this module adds visibilitychange and hashchange (leaving a
-// full-page view through history.back()).
+// device marked it); this module adds visibilitychange and every full-page view
+// exit (onMainViewClosed — raised after the exit restores the session anchor,
+// whether through replaceState, history.back() or a hash change).
 
-import { isMainViewHash } from './mainViews.js';
+import { isMainViewHash, onMainViewClosed } from './mainViews.js';
 import { apiFetch } from './http.js';
 
 // A localStorage key no module reads; install removes it.
@@ -43,6 +44,6 @@ export function installViewedMarker({
   }
 
   doc.addEventListener('visibilitychange', check);
-  win.addEventListener('hashchange', check);
+  onMainViewClosed(check);
   return { check };
 }
