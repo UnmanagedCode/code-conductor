@@ -204,6 +204,9 @@ export function installSettings({
   }
   groupSelect?.addEventListener('change', () => showGroup(groupSelect.value));
   renderGroup();
+  // A restore on Back lands after `load`, before `pageshow` — past install
+  // and the initial sync() — so repaint once it has.
+  window.addEventListener('pageshow', renderGroup);
 
   function show() {
     if (isOpen) return;

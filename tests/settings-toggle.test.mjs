@@ -180,6 +180,20 @@ test('settings: install renders the markup-default group, not a select value wri
   window.happyDOM.abort();
 });
 
+test('settings: pageshow repaints the nav over a select value written without change after install', async () => {
+  // Chromium's restore on Back lands after `load`, before `pageshow`: past
+  // install, and past the initial sync() onto #settings.
+  const { window, mod, groupSelect } = await setup();
+  mod.installSettings({ requestClose: () => {} });
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+
+  groupSelect.value = 'models';
+  window.dispatchEvent(new window.Event('pageshow'));
+  assertNavMatchesPage(window, groupSelect, 'voice');
+  window.happyDOM.abort();
+});
+
 test('settings: the markup default is the option carrying the selected attribute', async () => {
   const { window, mod, groupSelect } = await setup();
   groupSelect.querySelector('option[value="models"]').setAttribute('selected', '');

@@ -88,9 +88,9 @@ node harness/playwright/check-models-responsive.mjs
 FORCE_SCROLLBAR_GUTTER=1 node harness/playwright/check-models-responsive.mjs
 node harness/playwright/check-awaiting-wake-dot.mjs
 node harness/playwright/check-sidebar-strip.mjs
+node harness/playwright/check-settings-group-restore.mjs
 node harness/playwright/check-plugin-keepalive.mjs
 node harness/playwright/check-plugin-keepalive.mjs --hold 330
-node harness/playwright/check-settings-group-restore.mjs
 ```
 
 ## Why no Playwright test runner?

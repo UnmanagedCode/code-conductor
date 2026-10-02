@@ -43,29 +43,40 @@ async function openSettings(page, url, group) {
   await page.selectOption('#settings-group-select', group);
 }
 
-// Restoration lands at `pageshow`; read after the next task.
+// A restore lands after `load`, before `pageshow`; read after the next task.
 async function settle(page) {
   await page.waitForLoadState('load');
   await page.evaluate(() => new Promise(r => setTimeout(r, 100)));
 }
 
+// Leave for another document and come Back. The nonce is the positive control:
+// a page served from the back/forward cache keeps it, and such a page is never
+// re-created, so every row would read green whatever the fix does.
+async function awayAndBack(page, url, label) {
+  await page.evaluate(() => { window.__ccNonce = 1; });
+  await page.goto(url + '/api/health');
+  await page.goBack();
+  await settle(page);
+  const nonce = await page.evaluate(() => window.__ccNonce);
+  const ok = nonce === undefined;
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: document re-created on Back (nonce=${nonce})`);
+  if (!ok) failures.push(`${label}: served from bfcache`);
+}
+
 const orch = await bootOrch({ sandbox: true });
 try {
   await withPage(async (page) => {
-    // Back onto #settings: Settings is open when the restore lands.
+    // Back onto #settings: Settings is already open when a restore would land.
     await openSettings(page, orch.url, 'voice');
-    await page.goto(orch.url + '/api/health');
-    await page.goBack();
-    await settle(page);
+    await awayAndBack(page, orch.url, 'Back onto #settings');
     check('Back onto #settings after picking voice', await readNav(page));
 
-    // Back onto a non-settings hash, then enter Settings: the restored value
-    // sat in the select while Settings was closed.
+    // Back onto a non-settings hash, then enter Settings: the entry must find
+    // the select and the shown group agreeing, whether or not the browser put
+    // a value back into the select while Settings was closed.
     await openSettings(page, orch.url, 'about');
     await page.evaluate(() => { location.hash = '#x'; });
-    await page.goto(orch.url + '/api/health');
-    await page.goBack();
-    await settle(page);
+    await awayAndBack(page, orch.url, 'Back onto #x');
     await page.evaluate(() => { location.hash = '#settings'; });
     await page.waitForSelector('#settings-view:not([hidden])');
     check('Back onto #x after picking about, then enter', await readNav(page));
