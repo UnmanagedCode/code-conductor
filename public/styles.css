@@ -443,8 +443,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .session-row.owned { border-left: 3px solid var(--owner-color); padding-left: 3px; }
 .worktree-row.owned, .conductor-block, .strip-entry.owned { box-shadow: inset 3px 0 0 var(--owner-color); }
 /* Selected: fill + a neutral outline + a bold label — no colour, since the left
-   bar means ownership. Hover stays fill-only, and the outline sits over an
-   owner bar without replacing it. */
+   bar means ownership. Hover stays fill-only. On a row that draws its own bar
+   (a session row, a strip entry) the outline overlaps the bar's outer pixel
+   without replacing it; a conductor row is inset past its block's bar, so
+   neither its fill nor its outline touches it. */
 .session-row.active, .conductor-row.active, .strip-entry.active {
   background: var(--panel-2);
   color: var(--text);
@@ -504,9 +506,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .conductor-block { list-style: none; margin-bottom: 4px; border-radius: 4px; }
 .conductor-block.open { background: rgba(255, 255, 255, .02); padding-bottom: 4px; }
 .conductor-block.inactive { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--owner-color) 45%, transparent); }
+/* The block's bar is an inset shadow, which paints under this row's fill and
+   outline. The margin starts the row's box past the bar; the padding gives the
+   width back so the content stays at 8px. */
 .conductor-row {
   display: flex; align-items: center; gap: 7px;
-  padding: 5px 6px 2px 8px; border-radius: 4px; cursor: pointer;
+  margin-left: 3px; padding: 5px 6px 2px 5px; border-radius: 4px; cursor: pointer;
 }
 .conductor-row:hover { background: var(--panel-2); }
 .conductor-caret {

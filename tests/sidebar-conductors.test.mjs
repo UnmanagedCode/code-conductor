@@ -1095,3 +1095,56 @@ test('a temp conductor dying loses its ↑ as it moves to Inactive', async () =>
   assert.ok(block.closest('.conductor-inactive-list'), 'the conductor now sits under Inactive');
   assertNull(block.querySelector('.session-promote'), 'the ↑ is gone once the conductor exits');
 });
+
+// Invariant: the owner bar is the block's inset box-shadow, which paints under the header row; a header
+// highlight (hover fill, selected fill + outline) that starts at the block's left edge covers the bar,
+// so the row's box starts past it, and its padding gives the width back so the content does not move.
+test('styles.css: a conductor row\'s highlight box starts past its block\'s bar, in every state, without moving its content', async () => {
+  const rules = topLevelRules(await fs.readFile(path.join(PUB, 'styles.css'), 'utf8'));
+  const barWidth = (sel) => {
+    const v = rules.filter(r => r.selectors.includes(sel)).map(r => r.decls.get('box-shadow')).find(Boolean);
+    const m = /^inset (-?[\d.]+)px 0 0 /.exec(v ?? '');
+    return m ? parseFloat(m[1]) : NaN;
+  };
+  const live = barWidth('.conductor-block'), faded = barWidth('.conductor-block.inactive');
+
+  // Invariant: the live and the inactive block draw the same bar width, so one margin clears both.
+  assert.ok(live > 0, 'the .conductor-block rule declares an inset box-shadow bar');
+  assert.equal(faded, live, 'the inactive block\'s bar is as wide as the live block\'s');
+
+  const { window, conductorList, sidebar } = await setupSidebar({ withCss: true });
+  await render(sidebar, {
+    conductRows: [{ sessionId: 'B', title: 'Inactive B', lastActivity: 100 }],
+    instances: [conductor('A', { title: 'Live A' })],
+  });
+  sidebar.setActive('inst-A');
+  await tick();
+  const rows = {
+    selected: conductorRowOf(conductorList, 'A'),
+    inactive: conductorRowOf(conductorList, 'B'),
+  };
+  assert.ok(rows.selected.classList.contains('active'), 'sanity: the live conductor\'s row is the selected one');
+  assert.ok(conductorOf(conductorList, 'B').classList.contains('inactive'), 'sanity: B renders as an inactive block');
+  for (const [state, row] of Object.entries(rows)) {
+    const cs = window.getComputedStyle(row);
+    // Invariant: the row's box (hence its fill and outline) starts past the bar.
+    assert.equal(cs.marginLeft, `${live}px`, `${state} row: margin-left clears the bar`);
+    // Invariant: margin + padding is the 8px content inset the .conductor-chips column aligns with.
+    assert.equal(parseFloat(cs.marginLeft) + parseFloat(cs.paddingLeft), 8, `${state} row: content inset stays 8px`);
+  }
+
+  // Invariant: no state rule resets the inset (happy-dom computes no :hover, so scan the rules).
+  const stateRules = rules.filter(r => r.selectors.some(s => /\.conductor-row(:hover|\.active)/.test(s)
+    && !/\.conductor-row(:hover|\.active)\s+\S/.test(s)));
+  assert.ok(stateRules.length >= 2, 'sanity: the scan finds the hover and the selected rules');
+  // Invariant: no state rule declares any margin* or padding* property, logical spellings included
+  // (margin-inline-start is the left margin in a left-to-right document).
+  const insetProp = /^(margin|padding)(-|$)/;
+  for (const p of ['margin', 'margin-left', 'margin-inline', 'margin-inline-start', 'padding-inline-start', 'padding']) {
+    assert.ok(insetProp.test(p), `sanity: the scan matches ${p}`);
+  }
+  for (const r of stateRules) {
+    const hits = [...r.decls.keys()].filter(p => insetProp.test(p));
+    assert.deepEqual(hits, [], `${r.selectors.join(', ')} must not declare margin or padding`);
+  }
+});
