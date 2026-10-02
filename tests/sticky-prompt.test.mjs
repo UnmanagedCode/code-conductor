@@ -809,6 +809,26 @@ test('a session switch conceals the pin and cancels its run; a same-session clea
   });
 });
 
+test('a revealed pin after switching A→B→A reads loading until A\'s snapshot, not none', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ events: [], nextBefore: 0, hasMore: false }) });
+  const h = await harness({ revealed: false, history: 'real' });
+  h.state.activeId = 'A';
+  h.lazy.init({ tailStartSeq: 1000 }); // A has earlier history
+  await h.settle();
+  const switchTo = async (id) => { h.state.activeId = id; h.conv.clear(); h.lazy.reset(); await h.settle(); };
+  await switchTo('B');
+  await switchTo('A');
+  h.ctl.reveal();
+  assertStatus(h.pinEl, STATUS_LOADING, 'A\'s snapshot has not arrived');
+});
+
+test('a revealed pin with no session selected and no snapshot reads loading, not none', async () => {
+  const h = await harness({ revealed: false, history: 'real' });
+  h.state.activeId = null;
+  h.ctl.reveal();
+  assertStatus(h.pinEl, STATUS_LOADING, 'not ready');
+});
+
 // ── Static wiring ────────────────────────────────────────────────────────
 
 test('no full-page view hides #conversation without its pane', async () => {

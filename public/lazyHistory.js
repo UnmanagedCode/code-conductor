@@ -184,12 +184,13 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
 // otherwise land in the wrong conversation) — bumped on every snapshot /
 // reset_snapshot / instance switch.
 //
-// Readiness is derived: init() has run for the session that is active now. A
-// switch makes it false until that session's snapshot runs init(); a
-// same-session reset (reset_snapshot after a rewind) keeps it, because no
-// init() follows one — lazy paging simply stays off. A caller that must page until a condition holds (the sticky prompt's
-// reveal) uses loadUntil(); it joins a fetch already in flight rather than
-// racing it.
+// Readiness: init() has run for the active session with no switch since. A
+// reset() whose active id is not the one init() last ran for (selectInstance
+// sets the id first) is a switch and clears it, so A→B→A stays not-ready until
+// A's next snapshot; a same-session reset (reset_snapshot after a rewind) keeps
+// it, because no init() follows one — lazy paging simply stays off. A caller
+// that must page until a condition holds (the sticky prompt's reveal) uses
+// loadUntil(); it joins a fetch already in flight rather than racing it.
 //
 // Injected deps:
 //   conversationEl      — dom.conversation: scroll container + sentinel mount + prepend root
@@ -209,7 +210,7 @@ export function installLazyHistoryController({
   const lazy = {
     epoch: 0, hasMore: false, nextBefore: 0, segment: null, visited: new Set([null]),
     loading: false, emptyStreak: 0, silent: false,
-    initFor: null, // the active id init() last ran for (see isReady)
+    initFor: null, // the active id init() last ran for; null = not ready
     inflight: null, // the running fetch's promise while `loading`
   };
   let lazySentinel = null;
@@ -218,10 +219,11 @@ export function installLazyHistoryController({
   // Starts as the live tail's, then advances page by page.
   let oldestLeadingWrap = null;
 
-  const isReady = () => lazy.initFor !== null && lazy.initFor === getActiveId();
+  const isReady = () => lazy.initFor !== null;
 
   function reset() {
     lazy.epoch += 1;
+    if (lazy.initFor !== getActiveId()) lazy.initFor = null; // a switch
     lazy.hasMore = false;
     lazy.nextBefore = 0;
     lazy.segment = null;

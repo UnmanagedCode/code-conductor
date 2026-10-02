@@ -236,6 +236,12 @@ test('a diagonal or horizontal move does nothing', async (t) => {
   });
 });
 
+test('a small sideways lead under the threshold does not abandon a swipe that then goes vertical', async () => {
+  const h = await harness();
+  h.swipe(h.$('instance-header'), [[10, 3], [10, SWIPE_MIN_PX]]);
+  assert.deepEqual(h.calls, ['reveal']);
+});
+
 test('a two-finger touch does nothing', async (t) => {
   await t.test('two fingers from the start', async () => {
     const h = await harness();

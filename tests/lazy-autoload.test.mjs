@@ -433,3 +433,29 @@ test('a reset landing between pages cancels loadUntil instead of reading as exha
   assert.equal(await run, 'cancelled');
   assert.equal(hasText(ctx.conversationEl, 'old1'), false, 'the second page never lands');
 });
+
+test('switching A→B→A before either snapshot leaves A not-ready until its own next init()', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  globalThis.fetch = makeFetch(makePages(5), calls, { value: 1000 }, 0);
+  const { controller, active } = install(ctx, { value: 1000 });
+  active.id = 'A';
+  controller.init({ tailStartSeq: 1000 });            // A has earlier history
+  active.id = 'B'; controller.reset();                // to B — its snapshot never runs init()
+  active.id = 'A'; controller.reset();                // back to A — its snapshot not here yet
+  assert.deepEqual(controller.state(), { ready: false, hasMore: false, loading: false },
+    'the init() for A before the switch does not count');
+  assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+  controller.init({ tailStartSeq: 1000 });            // A's new snapshot
+  assert.equal(controller.state().ready, true);
+  assert.equal(calls.length, 0);
+});
+
+test('with no session selected and no init(), history is not ready', async () => {
+  const ctx = await setupDOM();
+  const { controller } = install(ctx, { value: 1000 }, 800, { id: null });
+  assert.equal(controller.state().ready, false);
+  controller.reset(); // selectInstance(null)
+  assert.equal(controller.state().ready, false);
+  assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+});
