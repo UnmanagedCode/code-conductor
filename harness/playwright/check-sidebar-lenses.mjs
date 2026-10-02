@@ -219,6 +219,27 @@ try {
       check('4 each .conductor-block box-shadow carries conductorColor(sid)', sa.includes(colA) && sb.includes(colB), `A=${sa} (want ${colA}) B=${sb} (want ${colB})`);
     }
     await page.screenshot({ path: path.join(OUT, 'lenses-conductors.png') });
+    // 4b — the header row's highlight box starts past the block's bar, hovered and selected
+    {
+      const rowSel = `${conductorSel(aSid)} > .conductor-row`;
+      const gap = () => page.evaluate(([bs, rs]) => {
+        const block = document.querySelector(bs), row = document.querySelector(rs);
+        return {
+          gap: row.getBoundingClientRect().left - block.getBoundingClientRect().left,
+          bar: parseFloat(/\)\s+(-?[\d.]+)px/.exec(getComputedStyle(block).boxShadow)?.[1]),
+          active: row.classList.contains('active'),
+        };
+      }, [conductorSel(aSid), rowSel]);
+      await page.hover(rowSel);
+      const hov = await gap();
+      check('4b hovered conductor row starts past the block bar', hov.bar > 0 && hov.gap === hov.bar, JSON.stringify(hov));
+      await page.screenshot({ path: path.join(OUT, 'lenses-conductor-hover.png') });
+      await page.click(rowSel);
+      await page.waitForSelector(`${rowSel}.active`);
+      const sel = await gap();
+      check('4c selected conductor row starts past the block bar', sel.active && sel.bar > 0 && sel.gap === sel.bar, JSON.stringify(sel));
+      await page.screenshot({ path: path.join(OUT, 'lenses-conductor-selected.png') });
+    }
     // 5 — expanded read-only tree, stage line
     {
       await page.click(`${conductorSel(aSid)} .conductor-caret`);
