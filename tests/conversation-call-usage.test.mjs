@@ -3,6 +3,12 @@
 // open action group when there is one, else the wrap body. It is never a
 // `.block`, so it never changes a group's tally, never opens or splits a
 // group, and never creates a wrap of its own.
+//
+// The line is also debug-only: styles.css hides `.call-usage` unless the
+// conversation root carries `show-call-usage`, and header.js update() sets that
+// class (Conversation.setCallUsageVisible) from the active session's
+// `inst.debug`. The visibility tests load the real stylesheet and assert the
+// computed display, not the class.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -268,7 +274,7 @@ test('the line follows the active session: debug A shows, non-debug B hides, bac
   assert.equal(displayOf(window, root.querySelector('.call-usage')), 'none', 'no active instance');
 });
 
-test('in a non-debug session the turn-end segment and the Agent-row total stay displayed', async () => {
+test('the turn-end segment and the Agent-row total stay displayed with show-call-usage off and on', async () => {
   const { window, conv, header, root } = await setupHeader({ instances: [inst('B', false)], activeId: 'B' });
   header.update();
   feed(conv, [
@@ -284,8 +290,15 @@ test('in a non-debug session the turn-end segment and the Agent-row total stay d
   assert.equal(displayOf(window, root.querySelector('.call-usage')), 'none', 'premise: the call line is hidden');
   const turnEnd = root.querySelector('.block.turn-end');
   assert.match(turnEnd.textContent, /ctx 35k \/ 200k .* in=10 out=252$/);
-  assert.notEqual(displayOf(window, turnEnd), 'none');
   const badge = root.querySelector('.subagent-usage');
   assert.equal(badge?.textContent, ' · subagent 124k ctx · 11 tool uses');
-  assert.notEqual(displayOf(window, badge), 'none');
+  const assertBothShown = (when) => {
+    assert.notEqual(displayOf(window, turnEnd), 'none', `turn-end segment, ${when}`);
+    assert.notEqual(displayOf(window, badge), 'none', `Agent-row total, ${when}`);
+  };
+  assertBothShown('debug off');
+
+  conv.setCallUsageVisible(true);
+  assert.notEqual(displayOf(window, root.querySelector('.call-usage')), 'none', 'premise: the call line shows once the class is on');
+  assertBothShown('debug on');
 });
