@@ -91,6 +91,7 @@ export async function setupHeader({ width = 1024 } = {}) {
   return {
     dom, header, window, document, sent, actions,
     show(inst) { instances = [inst]; activeId = inst.id; header.update(); },
+    deselect() { instances = []; activeId = null; header.update(); },
     // Resize the viewport; happy-dom's matchMedia then fires `change` listeners.
     async resize(w) {
       window.happyDOM.setViewport({ width: w });
