@@ -725,6 +725,8 @@ export function installHeader({
       dom.overflowMenu.hidden = true;
       dom.syncMenuBtn.hidden = true;
       dom.mergeMenuBtn.hidden = true;
+      dom.syncBtn.hidden = true;
+      dom.mergeBtn.hidden = true;
       composer.disable();
       dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
       dom.turnIndicator.hidden = true;

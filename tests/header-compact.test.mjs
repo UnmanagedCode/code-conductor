@@ -217,3 +217,23 @@ test('the title DOM is identical at 720 and 1024', async () => {
   wide.show(inst());
   assert.equal(narrow.dom.instanceTitle.innerHTML, wide.dom.instanceTitle.innerHTML);
 });
+
+// Invariant: with no instance selected, Sync and Merge are hidden in both
+// placements (bar and ⋮) at every width — a worktree session selected just
+// before leaves neither behind.
+test('deselecting a worktree session hides Sync and Merge in the bar and in ⋮', async (tt) => {
+  for (const width of [720, 721, 1024]) {
+    await tt.test(`${width}px`, async () => {
+      const t = await setupHeader({ width });
+      t.show(session('idle', { worktree: WORKTREE }));
+      const { syncBtn, mergeBtn, syncMenuBtn, mergeMenuBtn } = t.dom;
+      const shown = width <= 720 ? syncMenuBtn : syncBtn;
+      assert.equal(shown.hidden, false, 'precondition: Sync is visible for the worktree session');
+      t.deselect();
+      assert.equal(t.dom.instanceTitle.textContent, 'no instance selected', 'precondition: no-instance branch ran');
+      for (const [name, el] of Object.entries({ syncBtn, mergeBtn, syncMenuBtn, mergeMenuBtn })) {
+        assert.equal(el.hidden, true, `${name} hidden with no instance`);
+      }
+    });
+  }
+});
