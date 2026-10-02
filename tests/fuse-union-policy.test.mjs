@@ -414,7 +414,7 @@ describe('the compiled policy driver', { skip }, () => {
     // that answered a LIST would keep cc's `#list` from ever shaping a
     // directory's children.
     ['b54-list-is-its-own-cache-class',
-                      'a STAT answer and a LIST answer are separate cache entries — neither satisfies the other, for READY or ABSENT, and each keeps the TTL saving — and every invalidation (FETCH at the path or a child, abandon) clears both, across tgids',
+                      'a STAT answer and a LIST answer are separate cache entries — neither satisfies the other, for READY or ABSENT, and each keeps the TTL saving — and each invalidation policy.h drives (FETCH at the path or a child, abandon) clears both, across tgids',
                       'drop the op from cache_get’s match or from cache_put’s ⇒ the STAT before every opendir answers its LIST; narrow cache_invalidate to one op class ⇒ the other class survives a create; make LIST bypass the cache ⇒ every listing costs a frame; restore the LIST→STAT hit ⇒ a listed directory’s own attributes are never shaped'],
     ['b48-probe-falls-not-absent',
                       'policy_host_absent answers ABSENT for ENOENT / ENOTDIR / ENAMETOOLONG and for a negative fd, NOT ABSENT for a present file, directory or DANGLING symlink, and NOT ABSENT for an ELOOP — the failure direction that keeps an unknown error loud instead of silently hiding a host directory',
