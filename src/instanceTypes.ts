@@ -21,6 +21,7 @@ import type { TranscriptPlacement } from './projects.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { PlaybookEnforcement } from './playbooks.ts';
 import type { SessionRedirect } from './systems/toolRedirect.ts';
+import type { TurnMarks } from './sessionStore.ts';
 import type { Response } from 'express';
 
 // One backing segment's claim on the ring's seq space: ring content with
@@ -47,6 +48,9 @@ export interface InstanceSummary {
   // The latest top-level API call's prompt (contextReading), or null until a
   // call measures it.
   contextTokens?: number | null;
+  // The session record's turn marks (src/sessionStore.ts getTurnMarks).
+  turnEndSeq?: number;
+  viewedSeq?: number;
   [key: string]: unknown;
 }
 
@@ -214,6 +218,9 @@ export interface InstanceLike {
   // Accepts null (clears the title) — the routes title endpoint stores
   // `setSessionTitle(...)`'s result, which is null when the title is cleared.
   setTitle(title: string | null): void;
+  // Merge stored turn marks (src/sessionViewed.ts after POST .../viewed);
+  // emits `turn_marks`, never `status`.
+  setTurnMarks(m: TurnMarks): void;
   // Route surface (src/routes.ts): the three destructive session rewrites,
   // debug mutation and the hook-callback envelope. `_mutating` is the guard
   // fork/rewind/prune claim synchronously; it stays on the contract for the
@@ -260,6 +267,9 @@ export interface InstanceManagerLike {
   // stale stage. wsHub turns it into the same `instances` hint a status flip
   // does.
   emit(event: 'playbook_changed', arg: { sessionId: string }): void;
+  // An instance's turn marks changed (Instance.setTurnMarks); wsHub turns it
+  // into the `instances` hint alone.
+  emit(event: 'turn_marks', arg: { id: string }): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;
   _maybeReleaseOverageLock(): void;
@@ -278,7 +288,7 @@ export interface InstanceManagerLike {
   shouldSuppressTurnNotification(instanceId: string): boolean;
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null }) => void): void;
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
-  on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed', cb: () => void): void;
+  on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
   conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }>;

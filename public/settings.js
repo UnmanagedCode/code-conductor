@@ -17,7 +17,7 @@ import { installDefaultPlaybook } from './defaultPlaybook.js';
 import { installDefaultEnforcement } from './defaultEnforcement.js';
 import { CLAUDE_BACKEND, backendIdOf } from './models.js';
 import { archivedSessionUrl, restoreArchivedSession } from './archivedSessions.js';
-import { registerMainView, reconcileMainViews } from './mainViews.js';
+import { registerMainView, reconcileMainViews, mainViewClosed } from './mainViews.js';
 
 const POLL_MS = 1500;
 
@@ -230,22 +230,27 @@ export function installSettings({
     loadAbout();
   }
 
+  // True when it actually hid an open Settings.
   function hide() {
-    if (!isOpen) return;
+    if (!isOpen) return false;
     isOpen = false;
     main.classList.remove('settings-open');
     view.hidden = true;
+    return true;
   }
 
   // hash → visibility
   function sync() {
     if (location.hash === '#settings') show();
-    else hide();
+    else if (hide()) mainViewClosed();
   }
 
+  // The signal after requestClose, which restores the session anchor
+  // (replaceState) — and only when Settings was open.
   function close() {
-    hide();
+    const wasOpen = hide();
     requestClose?.();
+    if (wasOpen) mainViewClosed();
   }
 
 

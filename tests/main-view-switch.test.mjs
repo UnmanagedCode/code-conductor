@@ -109,7 +109,7 @@ async function setup() {
   const leave = name => () => { calls[name]++; writeAnchor(); };
 
   // app.js's install order.
-  installPluginView({ onClosed: () => { calls.pluginClosed++; } });
+  const plugin = installPluginView({ onClosed: () => { calls.pluginClosed++; } });
   const settings = installSettings({ requestClose: leave('settings') });
   const review = installReview();
   const commits = installCommits({ onClose: leave('commits') });
@@ -125,7 +125,7 @@ async function setup() {
   const settle = () => window.happyDOM.waitUntilComplete();
   const shown = () => VIEWS.filter(v => !window.document.getElementById(`${v}-view`).hidden);
   const openClasses = () => VIEWS.filter(v => main.classList.contains(`${v}-open`));
-  return { window, calls, open, settle, shown, openClasses, views: { settings, review, commits, costs } };
+  return { window, calls, open, settle, shown, openClasses, views: { settings, review, commits, costs, plugin } };
 }
 
 // INVARIANT: the harness has browser hashchange semantics — history calls
@@ -312,5 +312,161 @@ test('switching views never re-tears-down a closed view', async t => {
     reconcileMainViews();
     assert.equal(superseded, 0);
     window.happyDOM.abort();
+  });
+});
+
+// INVARIANT: isMainViewHash answers for every registered view's hash and for
+// nothing else — the session anchor is not a main view (public/viewedMarker.js
+// reads it to decide whether the pane is covered).
+test('isMainViewHash is true for each registered view hash and false for a session anchor', async () => {
+  const h = await setup();
+  const { isMainViewHash } = await sharedImport('mainViews.js');
+  for (const v of VIEWS) assert.equal(isMainViewHash(HASH[v]), true, `${v}: ${HASH[v]}`);
+  assert.equal(isMainViewHash('#session=x'), false);
+  assert.equal(isMainViewHash(''), false);
+  h.window.happyDOM.abort();
+});
+
+// A viewedMarker over the harness window: the active session is `start`, with
+// one unseen turn end; every POST body is recorded.
+async function installMarker(h) {
+  const { installViewedMarker } = await freshImport('viewedMarker.js');
+  const posts = [];
+  const doc = new EventTarget();
+  doc.visibilityState = 'visible';
+  const marker = installViewedMarker({
+    getActiveInstance: () => ({ id: 'i', sessionId: 'start', turnEndSeq: 1, viewedSeq: 0 }),
+    fetchJson: async (url, opts) => { posts.push(JSON.parse(opts.body)); return {}; },
+    doc, win: h.window, storage: { removeItem() {} },
+  });
+  return { marker, posts };
+}
+
+// INVARIANT: every full-page-view exit back to the session re-runs the viewed
+// check once the anchor is restored, however it is restored — through
+// replaceState, which fires no hashchange (Settings' close() behind ⚙ and
+// Escape, a hashView close() whose leave callback writes the anchor, the
+// plugin view's Conductor exit), or through a hash change.
+test('every main-view exit to the session re-runs the viewed check', async t => {
+  const replaceExits = {
+    settings: h => h.views.settings.close(),
+    commits: h => h.views.commits.close(),
+    review: h => h.views.review.close(),
+    costs: h => h.views.costs.close(),
+    // app.js's onExitToConductor: write the anchor, then close the view.
+    plugin: h => { h.window.history.replaceState(null, '', '#session=start'); h.views.plugin.close(); },
+  };
+  const hashExit = h => { h.window.location.hash = '#session=start'; };
+  const cases = [
+    ...Object.entries(replaceExits).map(([name, exit]) => [`${name}: replaceState restore`, name, exit]),
+    ...VIEWS.map(name => [`${name}: hash restore`, name, hashExit]),
+  ];
+  for (const [label, name, exit] of cases) {
+    await t.test(label, async () => {
+      const h = await setup();
+      const { marker, posts } = await installMarker(h);
+      h.open[name](); await h.settle();
+      marker.check();
+      assert.deepEqual(posts, [], 'precondition: the open view covers the pane');
+      exit(h); await h.settle();
+      assert.equal(h.window.location.hash, '#session=start', 'precondition: the anchor is restored');
+      assert.deepEqual(h.shown(), [], 'precondition: the view is gone');
+      assert.deepEqual(posts, [{ seq: 1 }], 'the exit re-ran the check');
+      h.window.happyDOM.abort();
+    });
+  }
+});
+
+// INVARIANT: an exit that hands the pane to another view in the same tick is
+// not a view of the session. Settings' Cost dashboard button runs
+// `settings.close(); costs.open();` (app.js onOpenCostDashboard): the close
+// restores the anchor and raises the closed signal BEFORE costs pushes #costs,
+// so the check must be evaluated after that tick, never at the signal.
+test('Settings → Costs (close then open in one tick) never marks the session viewed', async () => {
+  const h = await setup();
+  const { posts } = await installMarker(h);
+  h.open.settings(); await h.settle();
+  h.views.settings.close();
+  h.views.costs.open();
+  await h.settle();
+  assert.deepEqual(h.shown(), ['costs'], 'precondition: costs covers the pane');
+  assert.equal(h.window.location.hash, '#costs');
+  assert.deepEqual(posts, []);
+  h.views.costs.close(); await h.settle();
+  assert.deepEqual(posts, [{ seq: 1 }], 'leaving costs for the session then posts');
+  h.window.happyDOM.abort();
+});
+
+// INVARIANT: the closed signal of a view that was not covering the pane does
+// not mark the session viewed while another view is still open, even though
+// the hash already names the session. The app switcher's Conductor exit with
+// Settings open writes the anchor, then closes the plugin view (app.js
+// onExitToConductor); Settings stays shown, so nothing posts until it closes.
+test('the Conductor exit with Settings open never marks the session viewed', async () => {
+  const h = await setup();
+  const { posts } = await installMarker(h);
+  h.open.settings(); await h.settle();
+  h.window.history.replaceState(null, '', '#session=start');
+  h.views.plugin.close();
+  await h.settle();
+  assert.deepEqual(h.shown(), ['settings'], 'precondition: Settings still covers the pane');
+  assert.deepEqual(posts, []);
+  h.views.settings.close(); await h.settle();
+  assert.deepEqual(posts, [{ seq: 1 }], 'closing Settings then posts');
+  h.window.happyDOM.abort();
+});
+
+// INVARIANT: once the conversation claims #main (selectInstance: anchor write,
+// then reconcileMainViews()), a check posts — supersede leaves no view open.
+test('a check after the conversation supersedes the open view posts', async () => {
+  const h = await setup();
+  const { marker, posts } = await installMarker(h);
+  const { reconcileMainViews } = await sharedImport('mainViews.js');
+  h.open.settings(); await h.settle();
+  h.window.history.replaceState(null, '', '#session=start');
+  marker.check();
+  assert.deepEqual(posts, [], 'before reconcile, the open Settings blocks the check');
+  reconcileMainViews();
+  marker.check();
+  assert.deepEqual(posts, [{ seq: 1 }]);
+  h.window.happyDOM.abort();
+});
+
+// INVARIANT: Settings raises the closed signal only when it was open — neither
+// a hash change nor close() on a closed Settings raises it; each raises once
+// when Settings was open.
+test('Settings raises the closed signal only when it was open', async t => {
+  const counted = async () => {
+    const h = await setup();
+    const { onMainViewClosed } = await sharedImport('mainViews.js');
+    const raises = { n: 0 };
+    onMainViewClosed(() => { raises.n++; });
+    return { h, raises };
+  };
+  await t.test('hash change with Settings closed: no raise', async () => {
+    const { h, raises } = await counted();
+    h.window.location.hash = '#session=other'; await h.settle();
+    assert.equal(raises.n, 0);
+    h.window.happyDOM.abort();
+  });
+  await t.test('close() with Settings closed: no raise', async () => {
+    const { h, raises } = await counted();
+    h.views.settings.close(); await h.settle();
+    assert.equal(raises.n, 0);
+    h.window.happyDOM.abort();
+  });
+  await t.test('hash change off an open Settings: one raise', async () => {
+    const { h, raises } = await counted();
+    h.open.settings(); await h.settle();
+    h.window.location.hash = '#session=other'; await h.settle();
+    assert.equal(raises.n, 1);
+    h.window.happyDOM.abort();
+  });
+  await t.test('close() of an open Settings: one raise', async () => {
+    const { h, raises } = await counted();
+    h.open.settings(); await h.settle();
+    h.views.settings.close(); await h.settle();
+    assert.equal(raises.n, 1);
+    h.window.happyDOM.abort();
   });
 });

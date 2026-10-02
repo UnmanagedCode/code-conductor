@@ -44,7 +44,7 @@ import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate, probeTtsStatus } from './tts.js';
-import { createUnreadStore } from './unread.js';
+import { installViewedMarker } from './viewedMarker.js';
 import { createDraftStore, installComposerDrafts } from './drafts.js';
 import { installAccountUsage } from './accountUsage.js';
 import { installSidebarChrome } from './sidebarChrome.js';
@@ -243,12 +243,13 @@ const accountUsage = installAccountUsage({
 // toggle work even when the tab isn't focused on the affected session
 // or is backgrounded entirely.
 
-// Per-sessionId unread counts + their localStorage persistence live in
-// public/unread.js. Constructed before the Sidebar because the Sidebar seed
-// below reads `unread.counts`; onChange is a lazy arrow for the same reason
-// the other holders are (it only fires after init, so the `const sidebar` TDZ
-// is never reached).
-const unread = createUnreadStore({ onChange: (m) => sidebar.setUnread(m) });
+// Tells the server when the human saw the active session's latest turn end —
+// the fact behind the unread pill and the strip's Finished dot
+// (public/viewedMarker.js). Checked on every selectInstance and every
+// instances refresh.
+const viewedMarker = installViewedMarker({
+  getActiveInstance: () => state.instances.find(i => i.id === state.activeId) ?? null,
+});
 
 // Deliver a card answer (AskUserQuestion / plan Approve-Reject) as a normal
 // user turn — the same ungated send the composer uses. Mid-turn is the NORMAL
@@ -409,11 +410,6 @@ const sidebar = new Sidebar({
   onEditWorkspace: (name) => workspaceHandles.openEdit(name),
   onPromoteSession: (...a) => sessionActions.promoteSession(...a),
 });
-// Seed the sidebar with any unread counts restored from localStorage so
-// the pills appear on the first render after a page reload — without
-// this, sidebar starts with an empty Map and the badges only reappear
-// after the next unread.bump fires.
-sidebar.setUnread(unread.counts);
 // Rehydrate per-session notification mutes so the header's Mute/Unmute
 // item reflects the right state on the first render after a page reload.
 restoreMutedSessions();
@@ -464,7 +460,6 @@ sessionActions = installSessionActions({
   refreshInstances,
   selectInstance,
   sidebar,
-  clearUnread: unread.clear,
   headerUpdate: () => headerHandle.update(),
   deleteProjectDom: {
     dialog: document.getElementById('delete-project-dialog'),
@@ -835,6 +830,8 @@ async function refreshInstances() {
       sidebar.setInstances(state.instances);
       subagentPanel.setInstances(state.instances, state.activeId);
       headerHandle.update();
+      // A turn that ended while the pane is open counts as seen at once.
+      viewedMarker.check();
     },
   );
 }
@@ -863,12 +860,12 @@ function selectInstance(id, opts = {}) {
   } else {
     writeSessionAnchor(inst?.sessionId || null);
   }
-  // Now that the user is viewing this session, any backlog of unread
-  // turn-end pings for it is by definition read.
-  unread.clear(inst?.sessionId);
   // The URL now names the session: close whichever full-page view was showing
   // so the conversation is visible.
   reconcileMainViews();
+  // The pane is open on this session: its latest turn end is seen, if the tab
+  // is visible. After the reconcile, or a superseded view would still read open.
+  viewedMarker.check();
   closeSidebarOnMobile();
   promptFocus.afterSelect(opts);
 }
@@ -900,7 +897,6 @@ installWsRouter({
   composer,
   sidebar,
   subagentPanel,
-  bumpUnread: unread.bump,
   refreshProjects,
   refreshInstances,
   selectInstance,

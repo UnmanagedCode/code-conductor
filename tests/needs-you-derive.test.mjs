@@ -165,6 +165,16 @@ test('entry reasons: ask · run when waiting, working / on a worker when running
   assert.equal(N.needsYouTitle(e({ status: 'turn', awaitingUser: 'question', awaitingUserSource: 'text' })), 'waiting on you (asked in text) · running');
 });
 
+// Invariant: the unread flag adds `· unread` to the Finished reason only; the
+// other groups' reasons ignore it.
+test('entry reasons: the unread flag reads `turn ended · unread` in Finished and nowhere else', () => {
+  const e = (o) => ({ status: 'idle', awaitingWake: false, awaitingUser: null, awaitingUserSource: null, ...o });
+  assert.equal(N.entryReason(e({}), 'finished', true), 'turn ended · unread');
+  assert.equal(N.entryReason(e({}), 'finished', false), 'turn ended');
+  assert.equal(N.entryReason(e({ awaitingUser: 'plan', awaitingUserSource: 'tool' }), 'waiting', true), 'plan approval · idle');
+  assert.equal(N.entryReason(e({ status: 'turn' }), 'running', true), 'working');
+});
+
 test('no playbook assumption: rows differing only in playbook and stage group and label identically', () => {
   const variants = [
     { playbook: null, stage: null },

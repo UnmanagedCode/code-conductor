@@ -378,42 +378,43 @@ test('Cache invalidation on turn→idle is scoped to the instance\'s worktree ke
   assert.equal(wtRows[0].textContent, 'fresh-prompt');
 });
 
-test('setUnread renders a numeric pill on the matching session row; clearing the entry removes it', async () => {
+// Invariant: a session row's unread pill reads the server's turn marks — the
+// count is turnEndSeq − viewedSeq with .has-unread, raising viewedSeq removes
+// both, and a live instance's marks win over its (cached) disk row's.
+test('a session row pills its turn-mark difference; viewing clears it; live marks beat the disk row', async (t) => {
   const now = Date.now();
-  const { root, sidebar } = await setupSidebar({
-    onLoadSessions: async () => [
-      { sessionId: 'sid-a', firstPrompt: 'aaa', lastActivity: now - 60_000, size: 10 },
-      { sessionId: 'sid-b', firstPrompt: 'bbb', lastActivity: now - 30_000, size: 10 },
-    ],
-  });
+  const rows = [
+    { sessionId: 'sid-a', firstPrompt: 'aaa', lastActivity: now - 60_000, size: 10, turnEndSeq: 3, viewedSeq: 1 },
+    { sessionId: 'sid-b', firstPrompt: 'bbb', lastActivity: now - 30_000, size: 10, turnEndSeq: 1, viewedSeq: 1 },
+    { sessionId: 'sid-c', firstPrompt: 'ccc', lastActivity: now - 90_000, size: 10, turnEndSeq: 5, viewedSeq: 3 },
+  ];
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => rows });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 2, lastActivity: now - 30_000 },
+    sessions: { count: 3, lastActivity: now - 30_000 },
   }]);
-  sidebar.setInstances([
-    { id: 'inst-a', project: 'demo', sessionId: 'sid-a', status: 'idle', mode: 'plan', worktree: null },
-    { id: 'inst-b', project: 'demo', sessionId: 'sid-b', status: 'idle', mode: 'plan', worktree: null },
-  ]);
-  await new Promise(r => setTimeout(r, 0));
+  const live = (b) => [
+    { id: 'inst-a', project: 'demo', sessionId: 'sid-a', status: 'idle', mode: 'plan', worktree: null, turnEndSeq: 1, viewedSeq: 1 },
+    { id: 'inst-b', project: 'demo', sessionId: 'sid-b', status: 'idle', mode: 'plan', worktree: null, ...b },
+  ];
+  const rowOf = (sid) => [...root.querySelectorAll('.session-row')].find(r => r.title.startsWith(sid));
+  const pillOf = (sid) => rowOf(sid)?.querySelector('.session-unread') ?? null;
 
-  // Initially no pills.
-  assert.equal(root.querySelectorAll('.session-unread').length, 0);
-
-  sidebar.setUnread(new Map([['sid-b', 3]]));
-  await new Promise(r => setTimeout(r, 0));
-  const pills = root.querySelectorAll('.session-unread');
-  assert.equal(pills.length, 1, 'one pill renders for the unread session');
-  assert.equal(pills[0].textContent, '3');
-  // The row carrying the pill has the has-unread class.
-  const unreadRow = pills[0].closest('.session-row');
-  assert.ok(unreadRow.classList.contains('has-unread'));
-  // The 'sid-a' row gets no pill.
-  const sidARow = [...root.querySelectorAll('.session-row')].find(r => r.title.startsWith('sid-a'));
-  assert.ok(!sidARow.querySelector('.session-unread'));
-
-  sidebar.setUnread(new Map());
-  await new Promise(r => setTimeout(r, 0));
-  assert.equal(root.querySelectorAll('.session-unread').length, 0, 'pill gone after clearing');
+  await t.test('the pill shows turnEndSeq − viewedSeq with .has-unread', async () => {
+    sidebar.setInstances(live({ turnEndSeq: 4, viewedSeq: 1 }));
+    await new Promise(r => setTimeout(r, 0));
+    assert.equal(pillOf('sid-b')?.textContent, '3', 'the live instance\'s marks, not its read disk row\'s');
+    assert.ok(rowOf('sid-b').classList.contains('has-unread'));
+    assert.equal(pillOf('sid-a'), null, 'a read live instance beats its unread disk row');
+    assert.ok(!rowOf('sid-a').classList.contains('has-unread'));
+    assert.equal(pillOf('sid-c')?.textContent, '2', 'a disk-only row pills from its own marks');
+  });
+  await t.test('raising viewedSeq removes the pill and the class', async () => {
+    sidebar.setInstances(live({ turnEndSeq: 4, viewedSeq: 4 }));
+    await new Promise(r => setTimeout(r, 0));
+    assert.equal(pillOf('sid-b'), null);
+    assert.ok(!rowOf('sid-b').classList.contains('has-unread'));
+  });
 });
 
 test('Sessions subnode is default-expanded; manual collapse persists across re-renders', async () => {

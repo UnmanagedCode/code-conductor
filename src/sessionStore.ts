@@ -6,16 +6,17 @@
 //       "segments": [ { "id", "reason", "at", "dropped"?, "temp"?, "archived"? } ],
 //       "title"?, "mode"?, "backend"?: {backend, model, contextWindowTokens},
 //       "summaries"?: { <tier>: {summary, generatedAt, messageCount} },
-//       "conducted"?, "parent"?, "project"?, "worktree"? } } }
+//       "conducted"?, "turnEndSeq"?, "viewedSeq"?, "parent"?, "project"?,
+//       "worktree"? } } }
 //
 // Two kinds of fact, and the split is the point of the shape:
-//   - SESSION facts (title, mode, backend, summaries, conducted, parent, project,
-//     worktree) sit on the record. A rotation moves only `current`, so nothing
+//   - SESSION facts (title, mode, backend, summaries, conducted, the turn marks,
+//     parent, project, worktree) sit on the record. A rotation moves only `current`, so nothing
 //     has to carry them from one transcript to the next.
 //   - TRANSCRIPT facts (temp, archived) sit on the segment they describe: each
 //     segment is one jsonl, and each jsonl is one listing row.
-// Every optional field is present only when set — `true`, or a non-empty value —
-// and the parser keeps a flag only when it is `=== true`.
+// Every optional field is present only when set — `true`, a non-empty value, or
+// a positive count — and the parser keeps a flag only when it is `=== true`.
 //
 // The segment chain's identity rules (mint, rotation, tombstones, the BASE CASE)
 // belong to src/sessionLineage.ts, which runs over `mutateSessions` and
@@ -136,6 +137,10 @@ export interface SessionRecord {
   backend?: SessionBackendRecord;
   summaries?: SummaryTiers;
   conducted?: true;
+  // The turn marks: how many turn ends the session has had, and the turnEndSeq
+  // the human last saw. Absent means 0; unread ⇔ turnEndSeq > viewedSeq.
+  turnEndSeq?: number;
+  viewedSeq?: number;
   // The caller's public id when a conductor spawned this session.
   parent?: string;
   project?: string;
@@ -182,6 +187,11 @@ function nonEmpty(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
+// A count field: a positive integer, or nothing (0 reads as absent).
+function count(v: unknown): number | undefined {
+  return Number.isInteger(v) && (v as number) > 0 ? v as number : undefined;
+}
+
 // JSON.parse output → the doc. The untyped on-disk boundary, so every field is
 // validated: a malformed segment is dropped, a malformed fact is dropped, and a
 // record left with no live segment is dropped.
@@ -217,6 +227,8 @@ export function parseSessionsDoc(obj: unknown): SessionsDoc {
     const summaries = normalizeSummaryTiers(v.summaries);
     if (summaries) rec.summaries = summaries;
     if (v.conducted === true) rec.conducted = true;
+    const turnEndSeq = count(v.turnEndSeq); if (turnEndSeq) rec.turnEndSeq = turnEndSeq;
+    const viewedSeq = count(v.viewedSeq); if (viewedSeq) rec.viewedSeq = viewedSeq;
     const parent = nonEmpty(v.parent); if (parent) rec.parent = parent;
     const project = nonEmpty(v.project); if (project) rec.project = project;
     const worktree = nonEmpty(v.worktree); if (worktree) rec.worktree = worktree;
@@ -243,6 +255,8 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
       ...(r.backend ? { backend: r.backend } : {}),
       ...(r.summaries && Object.keys(r.summaries).length ? { summaries: r.summaries } : {}),
       ...(r.conducted ? { conducted: true } : {}),
+      ...(r.turnEndSeq ? { turnEndSeq: r.turnEndSeq } : {}),
+      ...(r.viewedSeq ? { viewedSeq: r.viewedSeq } : {}),
       ...(r.parent ? { parent: r.parent } : {}),
       ...(r.project ? { project: r.project } : {}),
       ...(r.worktree ? { worktree: r.worktree } : {}),
@@ -655,6 +669,44 @@ export function markConducted(
   return sessionWrite('markConducted', id, false,
     rec => rec.conducted === true && keys.every(k => rec[k] === patch[k]),
     rec => { rec.conducted = true; Object.assign(rec, patch); return true; }, () => true);
+}
+
+export interface TurnMarks { turnEndSeq: number; viewedSeq: number }
+
+function marksOf(rec: SessionRecord | null | undefined): TurnMarks {
+  return { turnEndSeq: rec?.turnEndSeq ?? 0, viewedSeq: rec?.viewedSeq ?? 0 };
+}
+
+export async function getTurnMarks(id: string): Promise<TurnMarks> {
+  if (typeof id !== 'string' || !id) return marksOf(null);
+  return marksOf(recordFor(await loadSessions(), id));
+}
+
+// One turn end: turnEndSeq + 1. Always a write (one per turn end, beside
+// _writeSessionMetadata's), so there is no precheck.
+export function recordTurnEnd(id: string): Promise<TurnMarks> {
+  if (typeof id !== 'string' || !id) return Promise.resolve(marksOf(null));
+  return mutateSessions('recordTurnEnd', id, (doc) => {
+    const hit = ensureRecord(doc, id);
+    if (hit === null || 'refused' in hit) {
+      warnRefused('recordTurnEnd', id, hit ? hit.refused : 'unresolvable');
+      return { changed: false, value: marksOf(null) };
+    }
+    hit.record.turnEndSeq = (hit.record.turnEndSeq ?? 0) + 1;
+    return { changed: true, value: marksOf(hit.record) };
+  });
+}
+
+// The human saw turn end `seq`. Clamped to turnEndSeq (a future turn cannot be
+// pre-marked) and never lowered, so a stale or replayed call is harmless.
+export function markViewed(id: string, seq: number): Promise<TurnMarks> {
+  if (typeof id !== 'string' || !id) return Promise.resolve(marksOf(null));
+  const target = (rec: SessionRecord): number =>
+    Math.max(rec.viewedSeq ?? 0, Math.min(seq, rec.turnEndSeq ?? 0));
+  return sessionWrite('markViewed', id, marksOf(null),
+    rec => target(rec) === (rec.viewedSeq ?? 0),
+    rec => { rec.viewedSeq = target(rec); return marksOf(rec); },
+    rec => marksOf(rec));
 }
 
 // Every tier of a session's summaries — `{}` when none.

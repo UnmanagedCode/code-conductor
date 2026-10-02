@@ -620,7 +620,6 @@ test('R1: the live drop and the reload drop agree', () => {
     composer: { prefill: noop },
     sidebar: { setInstances: noop },
     subagentPanel: { setInstances: noop },
-    bumpUnread: noop,
     refreshProjects: async () => {},
     refreshInstances: async () => {},
     selectInstance: noop,

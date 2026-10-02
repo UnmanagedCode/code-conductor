@@ -16,9 +16,8 @@
 //
 // app.js stays the orchestrator: it constructs `state`, the trackers
 // (getTracker/getUsage/globalRLTracker), conversation, headerHandle,
-// lazyController, sessionActions, composer, sidebar, subagentPanel, the
-// unread helper (unread.js's bump), the REST refreshers, selectInstance, and
-// setSidebarStatus — all injected here.
+// lazyController, sessionActions, composer, sidebar, subagentPanel, the REST
+// refreshers, selectInstance, and setSidebarStatus — all injected here.
 // `accountUsage` is NOT touched by any handler — it polls over REST from
 // public/accountUsage.js.
 
@@ -38,7 +37,6 @@ export function installWsRouter({
   composer,
   sidebar,
   subagentPanel,
-  bumpUnread,
   refreshProjects,
   refreshInstances,
   selectInstance,
@@ -214,11 +212,6 @@ export function installWsRouter({
       sessionId: inst?.sessionId ?? null,
       turnEvent: { isError: m.isError, stopReason: m.stopReason, cost: m.cost },
     });
-    // Mark the session unread in the sidebar — unless the user is already
-    // looking at it, in which case the activity is by definition seen.
-    if (m.id !== state.activeId) {
-      bumpUnread(inst?.sessionId);
-    }
   });
 
   bus.addEventListener('status', (e) => {

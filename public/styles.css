@@ -491,6 +491,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .strip-list > li:hover > .strip-entry:not(:disabled) { background: var(--panel-2); }
 .strip-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+/* An unread Finished entry's trailing dot: smaller than the status dot, and
+   Finished never carries the accent awaiting-wake dot it could be mistaken for. */
+.strip-unread { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 /* The × is the entry's sibling (a button cannot hold a button) but is drawn
    inside its box: out of flow, so the entry fills the row, and over the right
    padding the entry reserves (at least right + width), so the title never runs
@@ -559,6 +562,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   line-height: 1.4;
 }
 .session-row.has-unread .session-preview { color: var(--text); font-weight: 600; }
+.strip-entry.unread .strip-title { font-weight: 600; }
 /* The selected label's bold, after the live / unread weights it must outrank.
    It also overrides .conductor-title.untitled's 400: a selected untitled conductor
    reads bold italic, since selected is bold by spec. */

@@ -33,12 +33,13 @@ export function runLabel(status, awaitingWake) {
 }
 
 // Why an entry is in its group, for its tooltip and accessible name only.
-export function entryReason(entry, group) {
+// `unread` (a Finished entry with an unseen turn end) is read in Finished only.
+export function entryReason(entry, group, unread = false) {
   if (group === 'waiting') {
     return `${askLabel(entry.awaitingUser, entry.awaitingUserSource)} · ${runLabel(entry.status, entry.awaitingWake)}`;
   }
   if (group === 'running') return entry.awaitingWake ? 'on a worker' : 'working';
-  return 'turn ended';
+  return unread ? 'turn ended · unread' : 'turn ended';
 }
 
 // The tooltip of a ringed dot.

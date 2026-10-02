@@ -133,6 +133,12 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     broadcastAll(JSON.stringify({ t: 'instances' }));
   });
 
+  // A session's turn marks (unread state) changed — the instances list carries
+  // them, and no session list or git fact moved, so no `projects` companion.
+  instances.on('turn_marks', () => {
+    broadcastAll(JSON.stringify({ t: 'instances' }));
+  });
+
   // Rewind: server-side, the instance's ring buffer was just wiped and the
   // subprocess respawned against a truncated jsonl. Subscribers need to
   // drop their current conversation DOM before the replayed events from

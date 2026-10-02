@@ -275,7 +275,6 @@ test('T14: a live context_usage frame refreshes the header chip', () => {
     composer: { prefill: noop },
     sidebar: { setInstances: noop },
     subagentPanel: { setInstances: noop },
-    bumpUnread: noop,
     refreshProjects: async () => {},
     refreshInstances: async () => {},
     selectInstance: noop,

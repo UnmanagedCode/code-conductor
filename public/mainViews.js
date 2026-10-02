@@ -9,19 +9,36 @@
 // set). Its non-navigating notifications still run, and they read the new
 // hash — hence reconcile-after-navigate.
 //
+// CLOSED SIGNAL. Every view calls mainViewClosed() at the end of each exit of
+// an OPEN view, AFTER whoever restores the URL has done so — most exits restore
+// the session anchor through replaceState, which fires no hashchange, so this is
+// the one signal an exit is guaranteed to give. It means "a view finished its
+// exit", NOT "the pane is showing": another view may still be open, or be opened
+// in the same tick (Settings → Costs). Listeners decide for themselves
+// (public/viewedMarker.js defers, then reads the hash and isAnyMainViewOpen).
+//
 // The registry is per window (keyed by the ambient `window`), so each test's
 // fresh happy-dom Window starts empty.
 
 const registries = new WeakMap();
 
-function registry() {
-  let views = registries.get(window);
-  if (!views) registries.set(window, views = []);
-  return views;
+function state() {
+  let s = registries.get(window);
+  if (!s) registries.set(window, s = { views: [], closed: [] });
+  return s;
 }
+const registry = () => state().views;
 
 export function registerMainView({ matches, isOpen, supersede }) {
   registry().push({ matches, isOpen, supersede });
+}
+
+export function onMainViewClosed(listener) {
+  state().closed.push(listener);
+}
+
+export function mainViewClosed() {
+  for (const listener of state().closed) listener();
 }
 
 export function reconcileMainViews() {
@@ -29,4 +46,15 @@ export function reconcileMainViews() {
   for (const view of registry()) {
     if (view.isOpen() && !view.matches(hash)) view.supersede();
   }
+}
+
+// Whether any registered full-page view is open now, whatever the hash says.
+export function isAnyMainViewOpen() {
+  return registry().some(v => v.isOpen());
+}
+
+// Whether a registered full-page view owns `hash` — i.e. covers the
+// conversation pane.
+export function isMainViewHash(hash) {
+  return registry().some(v => v.matches(hash));
 }

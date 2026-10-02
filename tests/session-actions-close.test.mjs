@@ -20,7 +20,6 @@ async function setup({ activeId = null, statuses = [200], confirmAnswer = true, 
   const alerts = [];
   const confirms = [];
   const activeSets = [];
-  const unread = [];
   const refreshes = { projects: 0, instances: 0 };
   const queue = [...statuses];
   const cache = new Map([['proj', 1], ['proj:wt', 1]]);
@@ -39,10 +38,9 @@ async function setup({ activeId = null, statuses = [200], confirmAnswer = true, 
     refreshInstances: async () => { refreshes.instances++; },
     selectInstance: () => {},
     sidebar: { sessionsCache: cache },
-    clearUnread: (sid) => unread.push(sid),
     headerUpdate: () => {},
   });
-  return { ...handles, fetches, alerts, confirms, activeSets, unread, refreshes, cache };
+  return { ...handles, fetches, alerts, confirms, activeSets, refreshes, cache };
 }
 
 const args = (o = {}) => ({
@@ -174,14 +172,13 @@ test('a stop deselects the open instance, and only that one', async (t) => {
   });
 });
 
-// Invariant: after a stop the projects and instances lists refresh, the scope's sessions cache entry is dropped, and the unread badge stays (the session stays in the sidebar).
-test('a stop refreshes both lists, drops the scope cache, and keeps the unread badge', async (t) => {
+// Invariant: after a stop the projects and instances lists refresh and the scope's sessions cache entry is dropped.
+test('a stop refreshes both lists and drops the scope cache', async (t) => {
   await t.test('project scope', async () => {
     const s = await setup();
     await s.closeSession(args());
     assert.deepEqual(s.refreshes, { projects: 1, instances: 1 });
     assert.deepEqual([...s.cache.keys()], ['proj:wt'], 'only the project key is dropped');
-    assert.deepEqual(s.unread, [], 'clearUnread is never called');
   });
   await t.test('worktree scope', async () => {
     const s = await setup();

@@ -1780,6 +1780,9 @@ export interface SessionRow {
   conducted: boolean;
   temp: boolean;
   archived: boolean;
+  // The record's turn marks (sessionStore.ts getTurnMarks), 0 when absent.
+  turnEndSeq: number;
+  viewedSeq: number;
   // Epoch ms of the timestamp on the session's last timestamped record — see
   // sessionActivity.ts for why this is not the transcript's mtime.
   lastActivity: number;
@@ -1866,6 +1869,8 @@ export async function listSessionsForCwdWithCounts(
       firstPrompt,
       title: record?.title ?? null,
       conducted: isConducted,
+      turnEndSeq: record?.turnEndSeq ?? 0,
+      viewedSeq: record?.viewedSeq ?? 0,
       temp: segment?.temp === true,
       archived: isArchived,
       lastActivity: await lastActivityOf(full, stat),

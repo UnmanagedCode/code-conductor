@@ -43,7 +43,6 @@ test('replayed session history never clobbers the account-wide global rate-limit
     composer: { prefill: noop },
     sidebar: { setInstances: noop },
     subagentPanel: { setInstances: noop },
-    bumpUnread: noop,
     refreshProjects: async () => {},
     refreshInstances: async () => {},
     selectInstance: noop,

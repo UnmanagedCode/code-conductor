@@ -48,7 +48,7 @@ test('resumeSession({silent}) on a 409 selects the instance already owning the s
   const { resumeSession } = installSessionActions({
     getActiveId: () => null, setActiveId: () => {}, getInstances: () => instances,
     refreshProjects: async () => {}, refreshInstances: async () => { refreshed++; },
-    selectInstance: (id) => { selected = id; }, sidebar: {}, clearUnread: () => {},
+    selectInstance: (id) => { selected = id; }, sidebar: {},
   });
   await resumeSession({ projectName: 'p', worktreeName: null, sessionId: sid, silent: true });
   assert.equal(alerted, false, 'no alert on a silent conflict');
@@ -64,7 +64,7 @@ test('resumeSession (non-silent) still alerts on failure', async () => {
   const { resumeSession } = installSessionActions({
     getActiveId: () => null, setActiveId: () => {}, getInstances: () => [],
     refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: () => {}, sidebar: {}, clearUnread: () => {},
+    selectInstance: () => {}, sidebar: {},
   });
   await resumeSession({ projectName: 'p', sessionId: 'x' });
   assert.match(String(alerted), /resume failed/);
@@ -96,7 +96,6 @@ function baseDeps({ instances = [], resumeSpy }) {
     lazyController: { init: noop },
     sessionActions: { resumeSession: resumeSpy },
     composer: {}, sidebar: {}, subagentPanel: {},
-    bumpUnread: noop,
     refreshProjects: async () => {}, refreshInstances: async () => {},
     // Mirrors the real selectInstance (app.js): sets state.activeId. Tests
     // that override this with their own tracking spy must do the same, or

@@ -19,7 +19,6 @@ async function setup({ activeId, statuses = [200], confirmAnswer = true } = {}) 
   const alerts = [];
   const confirms = [];
   const activeSets = [];
-  const unread = [];
   const refreshes = { projects: 0, instances: 0 };
   const queue = [...statuses];
   globalThis.alert = (m) => alerts.push(String(m));
@@ -37,10 +36,9 @@ async function setup({ activeId, statuses = [200], confirmAnswer = true } = {}) 
     refreshInstances: async () => { refreshes.instances++; },
     selectInstance: () => {},
     sidebar: { sessionsCache: new Map() },
-    clearUnread: (sid) => unread.push(sid),
     headerUpdate: () => {},
   });
-  return { ...handles, fetches, alerts, confirms, activeSets, unread, refreshes };
+  return { ...handles, fetches, alerts, confirms, activeSets, refreshes };
 }
 
 const args = (o = {}) => ({ projectName: '.conduct', worktreeName: null, sessionId: 'C', preview: 'Alpha', synthetic: false, ...o });
@@ -53,7 +51,6 @@ test('archiving the open conductor on disk: archive POST, force retry on 409, se
     { url: '/api/projects/.conduct/sessions/C/archive?force=1', method: 'POST' },
   ]);
   assert.deepEqual(t.activeSets, [null], 'the open conductor is deselected once');
-  assert.deepEqual(t.unread, ['C']);
   assert.deepEqual(t.refreshes, { projects: 1, instances: 1 });
   assert.deepEqual(t.alerts, []);
 });
@@ -71,7 +68,6 @@ test('a synthetic open conductor is killed by instance id, never archived by ses
   await t.deleteSession(args({ synthetic: true }));
   assert.deepEqual(t.fetches, [{ url: '/api/instances/inst-C', method: 'DELETE' }]);
   assert.deepEqual(t.activeSets, [null]);
-  assert.deepEqual(t.unread, ['C']);
   assert.deepEqual(t.refreshes, { projects: 1, instances: 1 });
 });
 
