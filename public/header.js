@@ -33,7 +33,7 @@
 //   - getAccountUsageStale(): true when the current accountUsage value was served
 //                        stale by the server (backoff/failure window) rather than
 //                        freshly fetched — drives the popover's "(stale)" suffix.
-//   - composer/conversation: enablement toggles.
+//   - composer/conversation: enablement toggles and per-call usage visibility (debug sessions).
 //   - sessionActions:    the REST action handles (rename / sync / merge / respawn).
 //   - openSummary()/openStats()/openPrune(): lazy dialog openers — those handles
 //                        are built after this install, so they arrive as arrows.
@@ -686,6 +686,7 @@ export function installHeader({
     const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
     if (!canMenu || inst?.id !== overflowOwnerId) closeOverflow();
     currentInst = inst ?? null;
+    conversation.setCallUsageVisible(!!inst?.debug);
     if (!inst) {
       dom.instanceTitle.textContent = 'no instance selected';
       setModeToggle(null, true);

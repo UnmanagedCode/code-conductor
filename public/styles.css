@@ -1418,12 +1418,16 @@ details.block.system > summary { cursor: pointer; }
   margin: 4px 0 18px 0;
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
 }
-/* Per-call usage line (live call_usage) and the Agent row's subagent total. */
+/* Per-call usage line (live call_usage; debug sessions only — the conversation
+   root gains .show-call-usage via Conversation.setCallUsageVisible) and the
+   Agent row's subagent total. */
 .call-usage {
+  display: none;
   margin: 2px 0 4px 0;
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.show-call-usage .call-usage { display: block; }
 .block.tool .subagent-usage {
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
   white-space: nowrap;

@@ -222,6 +222,14 @@ export class Conversation {
     }
   }
 
+  // Shows/hides the per-call usage lines (debug sessions only). Called from
+  // header.js update() with the active session's `debug` flag. The lines are
+  // always rendered and hidden by CSS rather than skipped at render time, so
+  // turning debug on mid-session reveals the ones already in the DOM.
+  setCallUsageVisible(on) {
+    this.root.classList.toggle('show-call-usage', !!on);
+  }
+
   // The server's current segment is now `id`: every user bubble from any other
   // segment loses its rewind/fork affordance.
   setCurrentSegment(id) {
