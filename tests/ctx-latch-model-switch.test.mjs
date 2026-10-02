@@ -498,7 +498,7 @@ async function headerFixture() {
     getAccountUsage: () => null,
     getAccountUsageStale: () => false,
     composer: { disable() {}, set() {} },
-    conversation: { setUserActionsEnabled() {} },
+    conversation: { setUserActionsEnabled() {}, setCallUsageVisible() {} },
   });
   const chip = () => {
     header.update();

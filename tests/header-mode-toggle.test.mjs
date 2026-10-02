@@ -72,7 +72,7 @@ async function setup() {
   let activeId = null;
   const usageByInstance = new Map();
   const composer = { disable() { this.disabled = true; }, set(s) { this.disabled = false; Object.assign(this, s); } };
-  const conversation = { setUserActionsEnabled() {} };
+  const conversation = { setUserActionsEnabled() {}, setCallUsageVisible() {} };
 
   const header = installHeader({
     dom,

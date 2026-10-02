@@ -209,7 +209,7 @@ async function setupHeader() {
     getAccountUsage: () => null,
     getAccountUsageStale: () => false,
     composer: { disable() {}, set() {} },
-    conversation: { setUserActionsEnabled() {} },
+    conversation: { setUserActionsEnabled() {}, setCallUsageVisible() {} },
   });
   return { dom, header, getUsage, setInstances: (v) => { instances = v; } };
 }
