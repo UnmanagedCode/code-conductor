@@ -186,17 +186,31 @@ export function installSettings({
   }
 
   // ── Group nav ───────────────────────────────────────────────────────
+  // currentGroup is the state; the select and the groups' `hidden` are both
+  // painted from it. The select's live value is not trusted: form-state
+  // restoration writes it with no `change`, so it starts from the markup
+  // default: the option carrying the `selected` attribute (which restoration
+  // leaves alone), else the first. Read as the attribute, not
+  // `defaultSelected`, which happy-dom does not implement.
+  let currentGroup = groupSelect
+    && ([...groupSelect.options].find(o => o.hasAttribute('selected')) ?? groupSelect.options[0])?.value;
+  function renderGroup() {
+    for (const g of groups) g.hidden = g.id !== `settings-${currentGroup}`;
+    if (groupSelect) groupSelect.value = currentGroup;
+  }
   function showGroup(group) {
-    for (const g of groups) g.hidden = g.id !== `settings-${group}`;
-    if (groupSelect) groupSelect.value = group;
+    currentGroup = group;
+    renderGroup();
   }
   groupSelect?.addEventListener('change', () => showGroup(groupSelect.value));
+  renderGroup();
 
   function show() {
     if (isOpen) return;
     isOpen = true;
     main.classList.add('settings-open');
     view.hidden = false;
+    renderGroup();
     reconcileMainViews();
     load();
     clearOverageDirty(); // discard any un-applied edit from a prior open before refetching

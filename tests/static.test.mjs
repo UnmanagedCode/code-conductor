@@ -120,6 +120,8 @@ test('plugin UI anchors: app switcher in sidebar header, plugin view in #main, s
     'settings has a Plugins group panel');
   assert.ok([...doc.querySelectorAll('#settings-group-select option')].some(o => o.value === 'plugins'),
     'settings group select offers Plugins');
+  assert.equal(doc.getElementById('settings-group-select')?.getAttribute('autocomplete'), 'off',
+    'settings group select opts out of form-state restoration');
 });
 
 test('DOM-free public modules import cleanly in Node', async () => {
