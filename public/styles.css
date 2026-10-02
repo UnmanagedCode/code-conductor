@@ -1686,8 +1686,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #sidebar-toggle { display: block; }
   #sidebar-toggle[aria-expanded="true"] { display: none; }
   /* One-row session header: ≡, a two-line title block that takes the leftover
-   * width (title truncates first), then the controls. Sync/Merge are in ⋮ here
-   * (header.js hides the bar buttons). overflow: clip, never hidden — hidden
+   * width (title truncates first), then the controls. Sync is in ⋮ here
+   * (header.js hides the bar button). overflow: clip, never hidden — hidden
    * makes a scroll container, which can end the touch-action intersection
    * #instance-header's swipe zone relies on. */
   #instance-header { flex-wrap: nowrap; padding: 6px 8px; gap: 6px; }
@@ -2318,13 +2318,18 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   background: var(--panel-1); min-height: 44px;
   position: sticky; top: 0; z-index: 1;
 }
-#commits-back {
+#commits-actions { display: flex; gap: 6px; flex-shrink: 0; }
+#commits-actions[hidden] { display: none; }
+#commits-back,
+#commits-actions button {
   background: none; border: 1px solid var(--border);
   color: var(--muted); cursor: pointer; padding: 4px 10px;
   border-radius: 4px; font-size: 13px;
   flex-shrink: 0; min-width: 44px; min-height: 36px; white-space: nowrap;
 }
-#commits-back:hover { color: var(--text); background: var(--panel-2); }
+#commits-back:hover,
+#commits-actions button:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
+#commits-actions button:disabled { opacity: 0.5; cursor: default; }
 #commits-info {
   flex: 1 1 auto; min-width: 0;
   display: flex; flex-direction: column; overflow: hidden;

@@ -1,6 +1,6 @@
 // Real-layout check of the one-row phone header, which happy-dom cannot do (it
 // computes no layout): one row at 320/360/390/720px, ellipsis engaged on a long
-// title, nothing past the viewport, Sync/Merge out of the bar; and the desktop
+// title, nothing past the viewport, Sync out of the bar; and the desktop
 // chip order and separator at 721/1280px. Skipped by default — opt-in via
 // `RUN_PLAYWRIGHT=1` (needs the code-playwright plugin + a system Chromium; see
 // harness/playwright/README.md). NOT part of `npm test`.
@@ -35,7 +35,7 @@ const HARNESS = `<script type="module">
   const dom = {};
   for (const id of ['composer-input', 'mode-toggle', 'kill-btn', 'mute-btn', 'resume-btn', 'instance-title',
     'turn-indicator', 'ti-left', 'ti-dot', 'ti-label', 'ti-ellipsis', 'ti-interrupt-now', 'ti-usage-slot',
-    'sync-btn', 'merge-btn', 'sync-menu-btn', 'merge-menu-btn', 'debug-btn', 'summarize-session-btn',
+    'sync-btn', 'sync-menu-btn', 'debug-btn', 'summarize-session-btn',
     'rename-session-btn', 'change-model-btn', 'change-effort-btn', 'session-stats-btn', 'prune-session-btn',
     'auto-approve-plan-btn', 'playbook-enforcement-btn', 'overflow-menu', 'overflow-toggle', 'overflow-panel']) {
     dom[id.replace(/-(\\w)/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
@@ -98,12 +98,12 @@ const measure = (page) => page.evaluate(() => {
     controls: controls.map(el => ({ id: el.id || el.textContent.trim(), mid: rect(el).top + rect(el).height / 2, right: rect(el).right })),
     leadClient: lead.clientWidth, leadScroll: lead.scrollWidth,
     syncInBar: shown(document.getElementById('sync-btn')),
-    mergeInBar: shown(document.getElementById('merge-btn')),
+    mergeInDom: !!document.getElementById('merge-btn') || !!document.getElementById('merge-menu-btn'),
     viewport: window.innerWidth,
   };
 });
 
-t('narrow: one row, nothing past the viewport, the long title ellipsized, Sync/Merge out of the bar', async () => {
+t('narrow: one row, nothing past the viewport, the long title ellipsized, Sync out of the bar', async () => {
   const { withPage } = await importCodePlaywright();
   await withPage(async (page) => {
     await routePublic(page);
@@ -119,7 +119,7 @@ t('narrow: one row, nothing past the viewport, the long title ellipsized, Sync/M
       // At 720px the 44-character title fits whole, so only the phone widths must truncate.
       if (width <= 390) assert.ok(m.leadScroll > m.leadClient, `${width}px: the long title is truncated (ellipsis engaged)`);
       assert.equal(m.syncInBar, false, `${width}px: Sync is not in the bar`);
-      assert.equal(m.mergeInBar, false, `${width}px: Merge is not in the bar`);
+      assert.equal(m.mergeInDom, false, `${width}px: Merge is not in the header at all`);
       // Regression guard on the width budget: Plan mode mid-turn leaves the title
       // readable at 360. Deliberately not asserted at 320, where it is ~6 characters.
       if (width === 360) assert.ok(m.leadClient >= 80, `360px: title lead is ${m.leadClient}px, wanted >= 80`);
@@ -127,7 +127,7 @@ t('narrow: one row, nothing past the viewport, the long title ellipsized, Sync/M
   });
 });
 
-t('desktop: chips run title < project < worktree < status; the project chip is "· "-prefixed when titled; Sync/Merge are in the bar', async () => {
+t('desktop: chips run title < project < worktree < status; the project chip is "· "-prefixed when titled; Sync is in the bar', async () => {
   const { withPage } = await importCodePlaywright();
   await withPage(async (page) => {
     await routePublic(page);
@@ -141,7 +141,6 @@ t('desktop: chips run title < project < worktree < status; the project chip is "
           order: ['.ih-title', '.ih-project', '.ih-worktree', '.ih-status'].map(s => box(q(s))),
           sep: getComputedStyle(q('.ih-project'), '::before').content,
           sync: shown(document.getElementById('sync-btn')),
-          merge: shown(document.getElementById('merge-btn')),
         };
       });
       // Each chip follows its predecessor: on the same row to its right, or on a later row.
@@ -151,7 +150,7 @@ t('desktop: chips run title < project < worktree < status; the project chip is "
         assert.ok(b.left >= a.right - 1 || b.top >= a.bottom - 1, `${width}px: chip ${i} follows chip ${i - 1}`);
       }
       assert.equal(r.sep, '"· "', `${width}px: separator on the secondary project chip`);
-      assert.ok(r.sync && r.merge, `${width}px: Sync and Merge are visible in the bar`);
+      assert.ok(r.sync, `${width}px: Sync is visible in the bar`);
     }
   });
 });

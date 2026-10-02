@@ -730,31 +730,45 @@ test('POST /rebase-prompt refuses rather than calling an unmeasurable tree clean
     'nothing may be sent when the tree could not be measured');
 });
 
-test('POST /merge creates a merge commit on the parent when worktree is ahead (--no-ff)', async () => {
+const wtMerge = (wtName, body) => api(baseUrl, 'POST', `/api/projects/demo/worktrees/${wtName}/merge`, body);
+const wtSync = (wtName) => api(baseUrl, 'POST', `/api/projects/demo/worktrees/${wtName}/sync`);
+
+test('POST /projects/:name/worktrees/:wt/sync fast-forwards a worktree that has no session', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createWorktree('demo');
+  assert.equal(instances.list().length, 0, 'no instance may exist for this worktree');
+
+  const parentSha = await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+
+  const r = await wtSync(wt.worktreeName);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true, `sync failed: ${r.body.reason}`);
+  assert.equal(r.body.action, 'fast-forwarded');
+  assert.equal(r.body.newSha, parentSha);
+  const wtSha = (await git(wt.worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
+  assert.equal(wtSha, parentSha);
+});
+
+test('the worktree sync and merge routes 404 an unknown worktree, naming the real ones', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo');
+  for (const [name, call] of [['sync', wtSync], ['merge', wtMerge]]) {
+    const r = await call('no-such-worktree');
+    assert.equal(r.status, 404, `${name} must 404`);
+    assert.match(r.body.error, /no-such-worktree/);
+    assert.ok(r.body.error.includes(wt.worktreeName), `${name} 404 must list the real worktrees`);
+  }
+});
+
+test('POST /projects/:name/worktrees/:wt/merge creates a merge commit on the parent when worktree is ahead (--no-ff)', async () => {
   const repoPath = await makeRealRepo('demo');
   // Capture the parent's tip before any worktree work so we can later
   // assert the merge commit has the right first parent.
   const parentBeforeSha = (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
-
-  const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
-  });
-  const wtName = created.body.worktree.worktreeName;
-  const id = created.body.id;
-  const wt = await getWorktree('demo', wtName);
-  await waitFor(() => instances.get(id)?.status === 'idle');
-
-  // Stop the live proc, add a commit on the worktree branch, then
-  // re-attach an instance so the route can find one.
-  await instances.get(id).kill({ graceMs: 200 });
+  const wt = await createWorktree('demo');
   const wtSha = await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
-  const second = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: wtName,
-  });
-  const id2 = second.body.id;
-  await waitFor(() => instances.get(id2)?.status === 'idle');
 
-  const r = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`);
+  const r = await wtMerge(wt.worktreeName);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
   // --no-ff means the parent's new tip is a brand-new merge commit, not
@@ -778,26 +792,12 @@ test('POST /merge creates a merge commit on the parent when worktree is ahead (-
   assert.match(msg, /^Merge branch 'code-conductor\//);
 });
 
-test('POST /merge fast-forwards the worktree branch so it is left at behind:0', async () => {
+test('POST /projects/:name/worktrees/:wt/merge fast-forwards the worktree branch so it is left at behind:0', async () => {
   await makeRealRepo('demo');
-
-  const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
-  });
-  const wtName = created.body.worktree.worktreeName;
-  const id = created.body.id;
-  const wt = await getWorktree('demo', wtName);
-  await waitFor(() => instances.get(id)?.status === 'idle');
-
-  await instances.get(id).kill({ graceMs: 200 });
+  const wt = await createWorktree('demo');
   await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
-  const second = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: wtName,
-  });
-  const id2 = second.body.id;
-  await waitFor(() => instances.get(id2)?.status === 'idle');
 
-  const r = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`);
+  const r = await wtMerge(wt.worktreeName);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
   assert.equal(r.body.worktreeFastForwarded, true);
@@ -807,91 +807,82 @@ test('POST /merge fast-forwards the worktree branch so it is left at behind:0', 
   const wtSha = (await git(wt.worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
   assert.equal(wtSha, r.body.newSha);
 
-  const refreshed = await getWorktree('demo', wtName);
+  const refreshed = await getWorktree('demo', wt.worktreeName);
   const status = await getWorktreeMergeStatus(localSystem(), refreshed);
   assert.deepEqual(status, { ahead: 0, behind: 0 });
 });
 
-test('POST /merge refuses with a Sync-first hint when the worktree is behind the parent', async () => {
+test('POST /projects/:name/worktrees/:wt/merge refuses with a Sync-first hint when the worktree is behind the parent', async () => {
   const repoPath = await makeRealRepo('demo');
-  const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
-  });
-  const id = created.body.id;
-  await waitFor(() => instances.get(id)?.status === 'idle');
+  const wt = await createWorktree('demo');
 
   // Parent advances → worktree is now behind.
   await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
 
-  const r = await api(baseUrl, 'POST', `/api/instances/${id}/merge`);
+  const r = await wtMerge(wt.worktreeName);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, false);
   assert.match(r.body.reason, /click Sync first/);
 });
 
-test('POST /merge surfaces mergeWorktreeIntoParent\'s own refusal when parent has switched branches', async () => {
+test('POST /projects/:name/worktrees/:wt/merge surfaces mergeWorktreeIntoParent\'s own refusal when parent has switched branches', async () => {
   const repoPath = await makeRealRepo('demo');
-  const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
-  });
-  const id = created.body.id;
-  await waitFor(() => instances.get(id)?.status === 'idle');
+  const wt = await createWorktree('demo');
 
   // Switch the parent to a different branch — the worktree is still
   // up to date with main, so the Sync-first gate doesn't trip, but
   // fastForwardParent will refuse on the "parent is on '<other>'" path.
   await git(repoPath, 'switch', '-q', '-c', 'experimental');
 
-  const r = await api(baseUrl, 'POST', `/api/instances/${id}/merge`);
+  const r = await wtMerge(wt.worktreeName);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, false);
   assert.match(r.body.reason, /parent repo is on 'experimental'/);
 });
 
-test('POST /merge refuses NOTHING_TO_MERGE when the worktree has no commits ahead of base', async () => {
+test('POST /projects/:name/worktrees/:wt/merge refuses NOTHING_TO_MERGE when the worktree has no commits ahead of base', async () => {
   await makeRealRepo('demo');
-  const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
-  });
-  const id = created.body.id;
-  await waitFor(() => instances.get(id)?.status === 'idle');
+  const wt = await createWorktree('demo');
 
   // Nothing committed in the worktree, parent unchanged — ahead:0/behind:0.
-  const r = await api(baseUrl, 'POST', `/api/instances/${id}/merge`);
+  const r = await wtMerge(wt.worktreeName);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, false);
   assert.equal(r.body.code, 'NOTHING_TO_MERGE');
 });
 
-test('POST /merge refuses WORKTREE_DIRTY when the worktree has uncommitted changes, allowDirty overrides', async () => {
+test('POST /projects/:name/worktrees/:wt/merge refuses WORKTREE_DIRTY when the worktree has uncommitted changes, allowDirty overrides', async () => {
   await makeRealRepo('demo');
-  const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
-  });
-  const wtName = created.body.worktree.worktreeName;
-  const id = created.body.id;
-  const wt = await getWorktree('demo', wtName);
-  await waitFor(() => instances.get(id)?.status === 'idle');
-
-  await instances.get(id).kill({ graceMs: 200 });
+  const wt = await createWorktree('demo');
   // Commit something so the branch is ahead, then leave an *additional*
   // uncommitted file dirtying the tree.
   await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
   await fs.writeFile(path.join(wt.worktreePath, 'scratch.txt'), 'not committed\n');
-  const second = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: wtName,
-  });
-  const id2 = second.body.id;
-  await waitFor(() => instances.get(id2)?.status === 'idle');
 
-  const refused = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`);
+  const refused = await wtMerge(wt.worktreeName);
   assert.equal(refused.status, 200);
   assert.equal(refused.body.ok, false);
   assert.equal(refused.body.code, 'WORKTREE_DIRTY');
 
-  const allowed = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`, { allowDirty: true });
+  const allowed = await wtMerge(wt.worktreeName, { allowDirty: true });
   assert.equal(allowed.status, 200);
   assert.equal(allowed.body.ok, true, `merge failed: ${allowed.body.reason}`);
+});
+
+test('a merge through the worktree route shows in the next GET /api/projects mergeStatus', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo');
+  await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+  const statusOf = async () => {
+    const r = await api(baseUrl, 'GET', '/api/projects');
+    return r.body.find(p => p.name === 'demo').worktrees.find(w => w.worktreeName === wt.worktreeName).mergeStatus;
+  };
+  // Prime the projects cache with the ahead:1 reading.
+  assert.deepEqual(await statusOf(), { ahead: 1, behind: 0 });
+
+  const r = await wtMerge(wt.worktreeName);
+  assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
+  assert.deepEqual(await statusOf(), { ahead: 0, behind: 0 });
 });
 
 test('GET /api/projects exposes mergeStatus tracking ahead/behind for each worktree', async () => {
@@ -939,7 +930,7 @@ test('GET /api/projects exposes mergeStatus tracking ahead/behind for each workt
   assert.equal(me.mergeStatus.behind, 1);
 });
 
-test('sync, rebase-prompt and merge reject non-worktree instances', async () => {
+test('sync and rebase-prompt reject non-worktree instances', async () => {
   await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
     project: 'demo', mode: 'bypassPermissions',
@@ -954,10 +945,6 @@ test('sync, rebase-prompt and merge reject non-worktree instances', async () => 
   const rp = await api(baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
   assert.equal(rp.status, 400);
   assert.match(rp.body.error, /not attached to a worktree/);
-
-  const m = await api(baseUrl, 'POST', `/api/instances/${id}/merge`);
-  assert.equal(m.status, 400);
-  assert.match(m.body.error, /not attached to a worktree/);
 });
 
 test('GET /api/projects exposes mergeStatus for the project branch vs its configured upstream', async () => {

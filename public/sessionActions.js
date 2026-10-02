@@ -2,8 +2,9 @@
 // installX({...}) pattern.
 //
 // These are the user-triggered mutations wired into the sidebar (make-persistent /
-// resume / load-sessions / close-session (stop or archive) / delete-project / remove-worktree)
-// and the header/conversation action buttons (rewind / fork). app.js stays the
+// resume / load-sessions / close-session (stop or archive) / delete-project / remove-worktree),
+// the header/conversation action buttons (rewind / fork / sync) and the commits
+// view's worktree controls (sync / merge). app.js stays the
 // orchestrator: it holds the returned handles in a `sessionActions` holder and
 // forwards every call site through it (the Sidebar and conversationOptions are
 // constructed BEFORE this install runs, so they use the holder + lazy-arrow
@@ -342,33 +343,52 @@ export function installSessionActions({
     return result.title ?? null;
   }
 
+  // The session a rebase prompt for `{project, worktree}` goes to: the active
+  // one if it is on that worktree, else any live one, else the first. `inst.project`
+  // is the parent project, so a worktree session matches on its parent's name.
+  function worktreeSession({ project, worktree }) {
+    const mine = getInstances().filter(i => i.project === project && i.worktree?.worktreeName === worktree);
+    return mine.find(i => i.id === getActiveId())
+      ?? mine.find(i => i.status !== 'crashed' && i.status !== 'exited')
+      ?? mine[0];
+  }
+
   // Sync only measures + lands what git can do alone. Dispatching the rebase is a
   // separate, confirmed call, because it starts a turn in someone's session.
-  async function syncWorktree() {
+  //
+  // No `target` (the session header): the active instance, via its own route.
+  // With `target` = {project, worktree} (the commits view): that worktree, via
+  // the worktree route — no session is needed to measure, and a blocked result
+  // is offered to a session on THAT worktree. Returns the server result, or
+  // null when nothing was asked or the call threw.
+  async function syncWorktree(target) {
     const id = getActiveId();
-    if (!id) return;
+    if (!target && !id) return null;
+    const url = target
+      ? `/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/sync`
+      : `/api/instances/${id}/sync`;
     try {
-      const result = await apiFetch(`/api/instances/${id}/sync`, { method: 'POST' });
-      if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
+      const result = await apiFetch(url, { method: 'POST' });
+      if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return result; }
       if (result.action === 'already-in-sync') {
         alert('Worktree is already up to date with its parent branch.');
       } else if (result.action === 'fast-forwarded') {
         alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
       } else if (result.action === 'rebased') {
-        alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — click Merge when ready.`);
+        alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — Merge it from the worktree's commit history (≡) when ready.`);
       }
       await refreshProjects();
       if (result.action === 'commit-required' || result.action === 'rebase-conflict') {
-        await offerRebasePrompt(id, result);
+        await offerRebasePrompt(target ? worktreeSession(target) : getInstances().find(i => i.id === id), result);
       }
-    } catch (e) { alert(`sync failed: ${e.message}`); }
+      return result;
+    } catch (e) { alert(`sync failed: ${e.message}`); return null; }
   }
 
   // git can't land this one. Name the session that would be asked to do it and get
   // consent before starting a turn in it; with no live session there is nobody to
   // ask, and the worktree still needs rebasing — say so instead of failing silently.
-  async function offerRebasePrompt(id, result) {
-    const inst = getInstances().find(i => i.id === id);
+  async function offerRebasePrompt(inst, result) {
     const what = result.action === 'commit-required'
       ? `has uncommitted changes and is ${result.behind} commit(s) behind ${result.baseBranch}`
       : `conflicts with ${result.baseBranch} — the automatic rebase was aborted, so nothing changed`;
@@ -379,27 +399,30 @@ export function installSessionActions({
     }
     const who = inst.title || `session ${(inst.sessionId || inst.id).slice(0, 8)}`;
     if (!confirm(`This worktree ${what}.\n\nSend the rebase prompt to ${who}? That starts a turn in ` +
-                 `this session — watch the conversation for REBASE_DONE, then click Merge.`)) return;
+                 `this session — watch the conversation for REBASE_DONE, then Merge from the worktree's commit history (≡).`)) return;
     try {
-      const sent = await apiFetch(`/api/instances/${id}/rebase-prompt`, { method: 'POST' });
+      const sent = await apiFetch(`/api/instances/${inst.id}/rebase-prompt`, { method: 'POST' });
       if (!sent.ok) { alert(`Cannot ask the agent to rebase:\n${sent.reason}`); return; }
-      alert('Rebase prompt sent — watch the conversation for REBASE_DONE, then click Merge.');
+      alert('Rebase prompt sent — watch the conversation for REBASE_DONE, then Merge from the worktree\'s commit history (≡).');
     } catch (e) { alert(`rebase prompt failed: ${e.message}`); }
   }
 
-  async function mergeWorktree() {
-    const id = getActiveId();
-    if (!id) return;
-    if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
+  // Merge `target` = {project, worktree} into its parent (the commits view is the
+  // only caller). Returns the server result, or null when declined or thrown.
+  async function mergeWorktree(target) {
+    if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return null;
     try {
-      const result = await apiFetch(`/api/instances/${id}/merge`, { method: 'POST' });
+      const result = await apiFetch(
+        `/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/merge`,
+        { method: 'POST' });
       if (result.ok) {
         alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
         await refreshProjects();
       } else {
         alert(`Cannot merge:\n${result.reason}`);
       }
-    } catch (e) { alert(`merge failed: ${e.message}`); }
+      return result;
+    } catch (e) { alert(`merge failed: ${e.message}`); return null; }
   }
 
   // Respawn a crashed/exited instance in place and re-subscribe to it. Reads

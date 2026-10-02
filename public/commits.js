@@ -6,6 +6,13 @@
 // onOpenCommit(project, commit), which opens the shared diff renderer
 // (review.js) on top, showing just that commit's change; the row carries its own
 // `diffUrl`, so the worktree scoping travels with it.
+//
+// A worktree's history also carries Sync / Merge (`#commits-actions`), acting on
+// the VIEWED worktree. The actions are injected — installCommits({onClose,
+// syncWorktree, mergeWorktree}), each called with {project, worktree} and
+// resolving to the server result — so the confirm/alert/rebase-prompt logic stays
+// in sessionActions.js. A successful result re-fetches the list. The controls are
+// hidden for a project's own tree.
 
 import { installHashView } from './hashView.js';
 
@@ -419,8 +426,27 @@ async function loadCommits() {
 // SAME object identity must be returned from installCommits.
 const api = { open: null, close: null, onOpenCommit: null };
 
-export function installCommits({ onClose } = {}) {
+export function installCommits({ onClose, syncWorktree, mergeWorktree } = {}) {
   _onClose = onClose;
+
+  // Run a worktree action against the (project, worktree) on screen NOW; both
+  // buttons stay disabled while it is in flight. The list is re-fetched only on
+  // an ok result AND only if the view still shows the same target — a result
+  // landing after the view moved on must not reload someone else's history.
+  const actionBtns = [getEl('commits-sync-btn'), getEl('commits-merge-btn')];
+  async function runAction(action) {
+    if (!_worktree) return;
+    const target = { project: _project, worktree: _worktree };
+    actionBtns.forEach(b => { b.disabled = true; });
+    try {
+      const result = await action(target);
+      if (result?.ok && _project === target.project && _worktree === target.worktree) await loadCommits();
+    } finally {
+      actionBtns.forEach(b => { b.disabled = false; });
+    }
+  }
+  getEl('commits-sync-btn').addEventListener('click', () => runAction(syncWorktree));
+  getEl('commits-merge-btn').addEventListener('click', () => runAction(mergeWorktree));
 
   // Capture-phase Escape (escapeCapture:true) runs before review.js's
   // bubble-phase handler, so when the diff is layered on top (review-view
@@ -435,9 +461,13 @@ export function installCommits({ onClose } = {}) {
     keepOpenHashes: ['#review'],
     canEscape: () => getEl('review-view')?.hidden,
     navigate: () => history.pushState(null, '', '#commits'),
-    onShow: (project, worktree) => { _project = project; _worktree = worktree ?? null; loadCommits(); },
+    onShow: (project, worktree) => {
+      _project = project; _worktree = worktree ?? null;
+      getEl('commits-actions').hidden = !_worktree;
+      loadCommits();
+    },
     onLeave: () => { _onClose?.(); },
-    onTeardown: () => { _project = null; _worktree = null; },
+    onTeardown: () => { _project = null; _worktree = null; getEl('commits-actions').hidden = true; },
   });
   api.open = open;
   api.close = close;

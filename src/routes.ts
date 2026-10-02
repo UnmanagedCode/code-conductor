@@ -555,7 +555,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // Body: {name, path, system?, remoteId?, onStaleRecord?}.
   // Mounted before the `/projects/:name` param routes so `external` can't be
   // read as a project name. Soft refusals return 200 with {ok:false, code,
-  // reason} — same contract as POST /instances/:id/merge — so a caller can
+  // reason} — same contract as POST /projects/:name/worktrees/:wt/merge — so a caller can
   // render the reason inline instead of parsing a 4xx body. No
   // broadcastProjects(), matching POST /projects.
   r.post('/projects/external', async (req, res, next) => {
@@ -987,6 +987,49 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       const result = filePath
         ? await getCommitFileDiff(req.params.name, req.params.sha, filePath, { contextLines, worktree })
         : await getCommitDiff(req.params.name, req.params.sha, { contextLines, worktree });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Land-back for the commits view, addressed by worktree like the routes
+  // above (`:name` is the PARENT project) — no instance needs to exist.
+  // Measure the worktree against its parent's baseBranch and land what git
+  // can do alone (FF or auto-rebase). Never prompts an agent: a blocked sync
+  // comes back as ok:true + action (commit-required | rebase-conflict) with the
+  // rendered rebasePrompt, same as POST /instances/:id/sync.
+  r.post('/projects/:name/worktrees/:wt/sync', async (req, res, next) => {
+    try {
+      const wt = await requireWorktree(req.params.name, req.params.wt);
+      const result = await syncWorktree(req.params.name, wt.worktreeName);
+      invalidate(req.params.name);
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Merge the worktree's branch into the parent repo with a real merge
+  // commit (--no-ff). Refuses with a friendly reason if the worktree
+  // hasn't been synced yet (parent has commits the worktree branch
+  // doesn't carry — the merge would still work, but conflicts would
+  // pop on the parent side instead of being resolved inside the worktree
+  // where the agent can help). Returns {ok:true, newSha} or
+  // {ok:false, reason} — callers render the reason inline rather than
+  // treating non-mergeable states as a server error.
+  r.post('/projects/:name/worktrees/:wt/merge', async (req, res, next) => {
+    try {
+      const wt = await requireWorktree(req.params.name, req.params.wt);
+      // The behind-guard lives inside mergeWorktreeIntoParent (shared with the
+      // MCP handler); map its typed refusal to this surface's exact wording
+      // + status (HTTP 200, no cache invalidation — nothing changed).
+      const allowDirty = jsonBody(req).allowDirty === true;
+      const result = await mergeWorktreeIntoParent(req.params.name, wt.worktreeName, { allowDirty });
+      if (result.ok === false && result.code === 'WORKTREE_BEHIND') {
+        res.json({
+          ok: false,
+          reason: `worktree is behind '${result.baseBranch}' by ${result.behind} commit(s) — click Sync first to fast-forward / rebase`,
+        });
+        return;
+      }
+      invalidate(req.params.name);
       res.json(result);
     } catch (e) { next(e); }
   });
@@ -1557,39 +1600,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
         const blocker = dirty.lines.length > 0 ? 'dirty' : 'conflict';
         await inst.prompt(buildRebasePrompt(inst.worktree, blocker), [], { annotateIfMidTurn: false });
         res.json({ ok: true, action: 'rebase-prompt-sent', blocker });
-      } catch (e) { next(e); }
-    });
-
-    // Merge the worktree's branch into the parent repo with a real merge
-    // commit (--no-ff). Refuses with a friendly reason if the worktree
-    // hasn't been synced yet (parent has commits the worktree branch
-    // doesn't carry — the merge would still work, but conflicts would
-    // pop on the parent side instead of being resolved inside the worktree
-    // where the agent can help). Returns {ok:true, newSha} or
-    // {ok:false, reason} — callers render the reason inline rather than
-    // treating non-mergeable states as a server error.
-    r.post('/instances/:id/merge', async (req, res, next) => {
-      try {
-        const inst = instances.get(req.params.id);
-        if (!inst) throw httpError(404, 'instance not found');
-        if (!inst.worktree) throw httpError(400, 'instance is not attached to a worktree');
-        // The behind-guard now lives inside mergeWorktreeIntoParent (shared with
-        // the MCP handler); map its typed refusal to this surface's exact wording
-        // + status (HTTP 200, no cache invalidation — nothing changed).
-        const allowDirty = jsonBody(req).allowDirty === true;
-        const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName, { allowDirty });
-        // The ok:false guard narrows the MergeSuccess|MergeFailure union; a
-        // success has no `code`, so `result.code === 'WORKTREE_BEHIND'` was
-        // already false on that branch — behavior is unchanged.
-        if (result.ok === false && result.code === 'WORKTREE_BEHIND') {
-          res.json({
-            ok: false,
-            reason: `worktree is behind '${result.baseBranch}' by ${result.behind} commit(s) — click Sync first to fast-forward / rebase`,
-          });
-          return;
-        }
-        invalidate(inst.project);
-        res.json(result);
       } catch (e) { next(e); }
     });
 
