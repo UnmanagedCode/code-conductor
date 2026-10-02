@@ -61,7 +61,7 @@ async function runAction(name, args) {
   const actions = installSessionActions({
     getActiveId: () => 'inst-1', setActiveId: () => {}, getInstances: () => [],
     refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: () => {}, sidebar: {}, clearUnread: () => {}, headerUpdate: () => {},
+    selectInstance: () => {}, sidebar: {}, headerUpdate: () => {},
     deleteProjectDom: {},
   });
   await actions[name](...args);

@@ -30,3 +30,9 @@ export function reconcileMainViews() {
     if (view.isOpen() && !view.matches(hash)) view.supersede();
   }
 }
+
+// Whether a registered full-page view owns `hash` — i.e. covers the
+// conversation pane.
+export function isMainViewHash(hash) {
+  return registry().some(v => v.matches(hash));
+}

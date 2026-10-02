@@ -54,7 +54,7 @@ async function confirmDelete(project, { instances = [], tickDirectory = false, t
   const actions = installSessionActions({
     getActiveId: () => null, setActiveId: () => {}, getInstances: () => instances,
     refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: () => {}, sidebar: {}, clearUnread: () => {}, headerUpdate: () => {},
+    selectInstance: () => {}, sidebar: {}, headerUpdate: () => {},
     deleteProjectDom: {
       dialog: el('delete-project-dialog'), title: el('dpd-title'), summary: el('dpd-summary'),
       effects: el('dpd-effects'), dirRow: el('dpd-dir-row'), deleteDir: el('dpd-delete-dir'),

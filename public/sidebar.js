@@ -6,6 +6,7 @@ import {
   ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
 } from './conductors.js';
 import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
+import { unreadBySession } from './unreadMarks.js';
 import { closeActionOf, CLOSE_TITLES } from './closeAction.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
@@ -196,10 +197,8 @@ export class Sidebar {
     // jsonl was just written and the matching subnode's cache is now
     // stale (firstPrompt may have just appeared, lastActivity advanced, etc.).
     this._prevStatusById = new Map();
-    // Per-sessionId count of turn_notifications that landed while the
-    // user wasn't viewing this session. Driven from unread.js; cleared on
-    // selectInstance. Keyed by sessionId so it survives crash + resume
-    // (a new instance id for the same session).
+    // sessionId → unread turn-end count, from the server's turn marks on the
+    // live instances and the cached disk rows (_refreshUnread).
     this.unreadBySessionId = new Map();
     // The `.conduct` disk rows (GET /api/projects/.conduct/sessions): the
     // conductors that are not live, for the Conductors *Inactive* group.
@@ -238,7 +237,6 @@ export class Sidebar {
     this.workspaces = [...new Set(arr)];
     this.render();
   }
-  setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
   setConductSessions(rows) {
     this.conductRows = Array.isArray(rows) ? rows : [];
     this.render();
@@ -581,6 +579,7 @@ export class Sidebar {
         try {
           const onDisk = this.onLoadSessions ? await this.onLoadSessions(project.name, worktreeName) : [];
           this.sessionsCache.set(key, onDisk);
+          this._refreshUnread();
           if (det.isConnected) det._renderList(onDisk);
         } catch (e) {
           if (det.isConnected) setStatus(`failed: ${e.message}`);
@@ -1048,7 +1047,17 @@ export class Sidebar {
     return order;
   }
 
+  // Re-derive unreadBySessionId over every row the sidebar holds. Run by
+  // render() and by a lazy session load, which renders its rows without one.
+  _refreshUnread() {
+    this.unreadBySessionId = unreadBySession({
+      instances: this.instances,
+      rows: [...this.conductRows, ...[...this.sessionsCache.values()].flat()],
+    });
+  }
+
   render() {
+    this._refreshUnread();
     const liveOwners = new Set(this.instances.map(i => i.ownerSessionId).filter(Boolean));
     this._owners = ownersByPlace(this.instances);
     this._conductors = deriveConductors({ conductRows: this.conductRows, instances: this.instances });
@@ -1161,7 +1170,8 @@ export class Sidebar {
           group.appendChild(group._head);
           group.appendChild(group._ul);
         }
-        group._head.textContent = `${STRIP_HEADS[name]} (${entries.length})`;
+        const fresh = name === 'finished' ? entries.filter(e => this._stripUnread(e, name)).length : 0;
+        group._head.textContent = `${STRIP_HEADS[name]} (${entries.length}${fresh ? ` · ${fresh} new` : ''})`;
         const bySid = new Map(entries.map(e => [e.sessionId, e]));
         reconcileChildren(group._ul, entries.map(e => `entry:${e.sessionId}`),
           (ek, eex) => this._stripEntry(eex, bySid.get(ek.slice(6)), name));
@@ -1171,7 +1181,12 @@ export class Sidebar {
     });
   }
 
-  // One strip entry: the dot, the label, and the ×. Its state is not rendered as
+  // Unread shows in Finished only.
+  _stripUnread(entry, group) {
+    return group === 'finished' && (this.unreadBySessionId.get(entry.sessionId) ?? 0) > 0;
+  }
+
+  // One strip entry: the dot, the label, the unread dot, and the ×. Its state is not rendered as
   // text (the dot and the heading carry it); it is in the tooltip and the
   // accessible name. The entry button cannot hold the ×, so the × is its sibling.
   _stripEntry(existing, entry, group) {
@@ -1191,18 +1206,20 @@ export class Sidebar {
       btn = li._btn;
     }
     holder.entry = entry;
-    const reason = entryReason(entry, group);
-    btn.className = 'strip-entry' + (entry.instanceId === this.activeInstanceId ? ' active' : '');
+    const unread = this._stripUnread(entry, group);
+    const reason = entryReason(entry, group, unread);
+    btn.className = 'strip-entry' + (entry.instanceId === this.activeInstanceId ? ' active' : '') + (unread ? ' unread' : '');
     this._applyOwner(btn, entry.conductor ? entry.sessionId : null);
     btn.title = `${entry.label}\n${reason}`;
     btn.setAttribute('aria-label', `${entry.label} — ${reason}`);
-    reconcileChildren(btn, ['dot', 'title'], (k, ex) => {
+    reconcileChildren(btn, ['dot', 'title', ...(unread ? ['unread'] : [])], (k, ex) => {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
           status: entry.status, awaitingWake: entry.awaitingWake,
           awaitingUser: entry.awaitingUser, awaitingUserSource: entry.awaitingUserSource,
         });
       }
+      if (k === 'unread') return ex ?? el('span', { class: 'strip-unread', 'aria-hidden': 'true' });
       const t = ex ?? el('span', { class: 'strip-title' });
       t.textContent = entry.label;
       return t;

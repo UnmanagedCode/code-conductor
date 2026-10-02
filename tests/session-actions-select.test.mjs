@@ -21,7 +21,7 @@ async function setup({ fetchImpl, instances = [] }) {
   const actions = installSessionActions({
     getActiveId: () => 'inst-active', setActiveId: () => {}, getInstances: () => instances,
     refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: (id, opts) => selected.push({ id, opts }), sidebar: {}, clearUnread: () => {},
+    selectInstance: (id, opts) => selected.push({ id, opts }), sidebar: {},
   });
   return { actions, selected };
 }

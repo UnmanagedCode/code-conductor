@@ -23,7 +23,6 @@
 //   - refreshProjects()/refreshInstances()/selectInstance(id): post-action
 //                                  refresh + selection (drive app.js state/sidebar).
 //   - sidebar:                     for sidebar.sessionsCache eviction in deleteSession / stopSession.
-//   - clearUnread(sessionId):      drop the unread badge for an archived session.
 //   - headerUpdate():              repaint the header after an optimistic local
 //                                  mirror (applySessionTitle). Lazy — the header
 //                                  handle is assigned after this install runs.
@@ -41,7 +40,7 @@ import { closeActionOf, stopNeedsConfirm } from './closeAction.js';
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
   refreshProjects, refreshInstances, selectInstance,
-  sidebar, clearUnread, headerUpdate, deleteProjectDom,
+  sidebar, headerUpdate, deleteProjectDom,
 }) {
   // Make a live temp session persistent. The server flips the
   // temp flag, writes the resume-picker metadata, and broadcasts the
@@ -220,7 +219,7 @@ export function installSessionActions({
 
   // Stop a live persistent session: kill the instance, keep the transcript. The
   // session stays in the sidebar — Inactive for a conductor, a resumable row
-  // for any other — so the unread badge stays too. Idle stops silently; a busy
+  // for any other. Idle stops silently; a busy
   // session asks first because the running work is killed.
   async function stopSession({ projectName, worktreeName, instanceId, preview, sessionId, status }) {
     if (stopNeedsConfirm(status) && !confirm(
@@ -259,7 +258,6 @@ export function installSessionActions({
           const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
           sidebar.sessionsCache.delete(key);
         }
-        clearUnread(sessionId);
         await refreshProjects();
         await refreshInstances();
       } catch (e) {
@@ -292,8 +290,6 @@ export function installSessionActions({
         const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
         sidebar.sessionsCache.delete(key);
       }
-      // Don't keep an unread entry for a session that's left the sidebar.
-      clearUnread(sessionId);
       await refreshProjects();
       await refreshInstances();
     } catch (e) {

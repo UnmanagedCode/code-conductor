@@ -33,7 +33,6 @@ async function setup({ statuses = [200], confirmAnswer = true } = {}) {
     refreshInstances: async () => { refreshes.instances++; },
     selectInstance: () => {},
     sidebar: { sessionsCache: new Map() },
-    clearUnread: () => {},
     headerUpdate: () => {},
   });
   return { ...handles, fetches, alerts, confirms, refreshes };

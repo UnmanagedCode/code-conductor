@@ -321,3 +321,65 @@ test('a strip × after a crash + resume closes the new instanceId', async () => 
   node.click();
   assert.deepEqual(calls.close.map(c => c.instanceId), ['inst-C1-b']);
 });
+
+// Invariant: the Finished group marks its unread entries (turnEndSeq >
+// viewedSeq): .strip-entry.unread with exactly one trailing .strip-unread dot,
+// the head counts them as `· K new`, and the reason says `· unread`; a read
+// entry carries none of it, and viewing an entry clears all of it.
+test('unread Finished entries: the dot, the class, the head count and the reason', async (t) => {
+  const { strip, sidebar } = await setupSidebar();
+  const fixture = (u) => [
+    conductor('U', { title: 'Um', turnEndSeq: 2, viewedSeq: 1, ...u }),
+    hand('h', 'p', null, { title: 'hm', turnEndSeq: 1, viewedSeq: 0 }),
+    conductor('S', { title: 'Sm', turnEndSeq: 2, viewedSeq: 2 }),
+  ];
+  await render(sidebar, { instances: fixture() });
+  const dots = (sid) => entryOf(strip, sid).querySelectorAll(':scope > .strip-unread');
+
+  await t.test('an unread entry has .unread and one trailing dot', () => {
+    for (const sid of ['U', 'h']) {
+      const e = entryOf(strip, sid);
+      assert.ok(e.classList.contains('unread'), `${sid}: .unread`);
+      assert.equal(dots(sid).length, 1, `${sid}: one dot`);
+      assert.ok(e.lastElementChild === dots(sid)[0], `${sid}: the dot follows the title`);
+      assert.equal(dots(sid)[0].getAttribute('aria-hidden'), 'true');
+    }
+  });
+  await t.test('a read entry has neither', () => {
+    assert.ok(!entryOf(strip, 'S').classList.contains('unread'));
+    assert.equal(dots('S').length, 0);
+  });
+  await t.test('the head counts the unread entries', () => {
+    assert.deepEqual(heads(strip), ['Finished (3 · 2 new)']);
+  });
+  await t.test('the reason says unread', () => {
+    assert.equal(entryOf(strip, 'U').getAttribute('aria-label'), 'Um — turn ended · unread');
+    assert.equal(entryOf(strip, 'U').title, 'Um\nturn ended · unread');
+    assert.equal(entryOf(strip, 'S').getAttribute('aria-label'), 'Sm — turn ended');
+  });
+  await t.test('viewing an entry clears its dot and class, and the head drops the suffix once none is unread', async () => {
+    await render(sidebar, { instances: fixture({ viewedSeq: 2 }) });
+    assert.ok(!entryOf(strip, 'U').classList.contains('unread'));
+    assert.equal(dots('U').length, 0);
+    assert.deepEqual(heads(strip), ['Finished (3 · 1 new)']);
+    await render(sidebar, { instances: fixture({ viewedSeq: 2 }).filter(i => i.sessionId !== 'h') });
+    assert.deepEqual(heads(strip), ['Finished (2)']);
+  });
+});
+
+// Invariant: only Finished shows unread — a Waiting or Running entry with
+// unread counters gets no dot and no class, and those heads keep their plain
+// count.
+test('unread counters on Waiting and Running entries render nothing', async () => {
+  const { strip, sidebar } = await setupSidebar();
+  await render(sidebar, { instances: [
+    conductor('W', { title: 'Wm', turnEndSeq: 3, viewedSeq: 0, ...ask('question', 'tool') }),
+    conductor('R', { title: 'Rm', status: 'turn', turnEndSeq: 3, viewedSeq: 0 }),
+  ] });
+  assert.deepEqual(heads(strip), ['Waiting on you (1)', 'Running (1)']);
+  for (const sid of ['W', 'R']) {
+    assert.ok(!entryOf(strip, sid).classList.contains('unread'), `${sid}: no .unread`);
+    assert.equal(entryOf(strip, sid).querySelectorAll('.strip-unread').length, 0, `${sid}: no dot`);
+    assert.ok(!entryOf(strip, sid).getAttribute('aria-label').includes('unread'), `${sid}: no unread reason`);
+  }
+});

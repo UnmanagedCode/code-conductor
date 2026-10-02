@@ -314,3 +314,15 @@ test('switching views never re-tears-down a closed view', async t => {
     window.happyDOM.abort();
   });
 });
+
+// INVARIANT: isMainViewHash answers for every registered view's hash and for
+// nothing else — the session anchor is not a main view (public/viewedMarker.js
+// reads it to decide whether the pane is covered).
+test('isMainViewHash is true for each registered view hash and false for a session anchor', async () => {
+  const h = await setup();
+  const { isMainViewHash } = await sharedImport('mainViews.js');
+  for (const v of VIEWS) assert.equal(isMainViewHash(HASH[v]), true, `${v}: ${HASH[v]}`);
+  assert.equal(isMainViewHash('#session=x'), false);
+  assert.equal(isMainViewHash(''), false);
+  h.window.happyDOM.abort();
+});

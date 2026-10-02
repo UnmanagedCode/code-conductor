@@ -667,11 +667,9 @@ test('a live conductor row has no ×; an inactive conductor row ends in an archi
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, {
     projects: [project('proj')],
-    conductRows: [{ sessionId: 'D', lastActivity: 1 }],
-    instances: [conductor('A'), worker('w', 'A', 'proj'), conductor('X', { status: 'exited' })],
+    conductRows: [{ sessionId: 'D', lastActivity: 1, turnEndSeq: 2 }],
+    instances: [conductor('A', { turnEndSeq: 2 }), worker('w', 'A', 'proj'), conductor('X', { status: 'exited' })],
   });
-  sidebar.setUnread(new Map([['A', 2], ['D', 2]]));
-  await tick();
   const liveRow = conductorRowOf(conductorList, 'A');
   assertNull(liveRow.querySelector('.session-delete'), 'a live conductor row has no ×');
   assert.ok(liveRow.querySelector(':scope > .session-unread'), 'the unread pill still renders on the live row');
@@ -1019,9 +1017,7 @@ test('a live temp conductor row ends in the ↑ Make persistent button', async (
   });
   await t.test('with an unread pill: unread → ↑', async () => {
     const { conductorList, sidebar } = await setupSidebar();
-    await render(sidebar, { instances: [conductor('A')] });
-    sidebar.setUnread(new Map([['A', 3]]));
-    await tick();
+    await render(sidebar, { instances: [conductor('A', { turnEndSeq: 3 })] });
     const btn = check(conductorRowOf(conductorList, 'A'));
     assert.equal(btn.previousElementSibling.dataset.key, 'unread', 'the unread pill precedes the ↑');
   });
@@ -1154,4 +1150,20 @@ test('styles.css: a conductor row\'s highlight box starts past its block\'s bar,
     const hits = [...r.decls.keys()].filter(p => insetProp.test(p));
     assert.deepEqual(hits, [], `${r.selectors.join(', ')} must not declare margin or padding`);
   }
+});
+
+// Invariant: a conductor row's unread pill is the server's turn marks
+// (turnEndSeq − viewedSeq), read off the live instance or, for an inactive
+// conductor, its .conduct disk row; a read conductor gets no pill.
+test('a conductor row pills its turn-mark difference from a live instance or a .conduct row', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    conductRows: [{ sessionId: 'D', lastActivity: 1, turnEndSeq: 4, viewedSeq: 1 }, { sessionId: 'R', lastActivity: 2, turnEndSeq: 2, viewedSeq: 2 }],
+    instances: [conductor('A', { turnEndSeq: 2, viewedSeq: 0 }), conductor('B', { turnEndSeq: 1, viewedSeq: 1 })],
+  });
+  const pill = (sid) => conductorRowOf(conductorList, sid).querySelector(':scope > .session-unread');
+  assert.equal(pill('A')?.textContent, '2', 'live conductor');
+  assert.equal(pill('D')?.textContent, '3', 'inactive conductor, from its disk row');
+  assertNull(pill('B'), 'a read live conductor has no pill');
+  assertNull(pill('R'), 'a read disk conductor has no pill');
 });

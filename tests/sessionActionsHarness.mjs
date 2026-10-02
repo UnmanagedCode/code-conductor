@@ -38,7 +38,7 @@ export async function setupSessionActions({
   const handles = installSessionActions({
     getActiveId: () => activeId, setActiveId: () => {}, getInstances: () => instances,
     refreshProjects: async () => { refreshes.projects++; if (refreshProjectsError) throw refreshProjectsError; }, refreshInstances: async () => {},
-    selectInstance: () => {}, sidebar: {}, clearUnread: () => {}, headerUpdate: () => {},
+    selectInstance: () => {}, sidebar: {}, headerUpdate: () => {},
   });
   return { ...handles, calls, alerts, confirms, refreshes };
 }
