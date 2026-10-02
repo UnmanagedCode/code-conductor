@@ -1,6 +1,7 @@
-// Active-instance header: the chip row (title / project / worktree / status /
-// temp / debug / auto-resume), the primary controls (mode switch, kill/resume,
-// sync/merge, overflow + auto-approve buttons), the composer/turn-indicator
+// Active-instance header: the chip rows (line 1: custom title or project, status,
+// auto-resume; line 2: project and worktree), the primary controls (mode switch,
+// resume, sync/merge, overflow + auto-approve buttons; below MOBILE_LAYOUT_QUERY
+// sync/merge sit in the ⋮ menu instead), the composer/turn-indicator
 // enablement, and the combined context+rate-limit chip with its usage popover.
 //
 // Extracted from app.js (slice 8). app.js stays the orchestrator: it owns
@@ -50,6 +51,7 @@ import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
 import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getEffortLevels, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted, muteSession } from './notifications.js';
+import { MOBILE_LAYOUT_QUERY } from './layout.js';
 
 // The reserved project every conductor session lives in — mirrors
 // CONDUCT_PROJECT_NAME (src/conduct.ts), which is the source of truth. Named
@@ -129,6 +131,11 @@ export function installHeader({
     overflowOwnerId = getActiveId();
   }
   dom.overflowToggle.addEventListener('click', toggleOverflow);
+
+  // Crossing the phone breakpoint moves Sync / Merge between the bar and ⋮, so
+  // it re-renders without waiting for a status frame.
+  const narrowMq = window.matchMedia(MOBILE_LAYOUT_QUERY);
+  narrowMq.addEventListener('change', () => update());
 
   function closeCombinedPopover() {
     if (!openCombinedPopover) return;
@@ -565,6 +572,10 @@ export function installHeader({
 
   dom.syncBtn.addEventListener('click', () => sessionActions.syncWorktree());
   dom.mergeBtn.addEventListener('click', () => sessionActions.mergeWorktree());
+  // The ⋮ twins of Sync / Merge, shown instead of the bar buttons below
+  // MOBILE_LAYOUT_QUERY. Same actions; the menu closes first like every item.
+  dom.syncMenuBtn.addEventListener('click', () => { closeOverflow(); sessionActions.syncWorktree(); });
+  dom.mergeMenuBtn.addEventListener('click', () => { closeOverflow(); sessionActions.mergeWorktree(); });
   dom.resumeBtn.addEventListener('click', () => sessionActions.respawnActive());
 
   // Combined ctx + rl chip. ctx half is per-session; rl half reads from
@@ -697,7 +708,12 @@ export function installHeader({
     closePicker();
     const inst = getInstances().find(i => i.id === getActiveId());
     const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
-    if (!canMenu || inst?.id !== overflowOwnerId) closeOverflow();
+    const narrow = narrowMq.matches;
+    const hasWorktree = !!inst?.worktree?.worktreeName;
+    // Below the breakpoint Sync / Merge live in ⋮, so a crashed or exited
+    // worktree session keeps the menu — they are its only visible items.
+    const menuShown = canMenu || (narrow && hasWorktree);
+    if (!menuShown || inst?.id !== overflowOwnerId) closeOverflow();
     currentInst = inst ?? null;
     conversation.setCallUsageVisible(isCallUsageShown(inst?.sessionId));
     if (!inst) {
@@ -707,6 +723,8 @@ export function installHeader({
       dom.killBtn.disabled = true;
       dom.resumeBtn.hidden = true;
       dom.overflowMenu.hidden = true;
+      dom.syncMenuBtn.hidden = true;
+      dom.mergeMenuBtn.hidden = true;
       composer.disable();
       dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
       dom.turnIndicator.hidden = true;
@@ -716,9 +734,12 @@ export function installHeader({
     }
     setActiveStatus(inst.status);
     setActiveMode(inst.mode);
-    // Build the title as discrete chips so it wraps cleanly on mobile —
-    // a single text string was wrapping at the `·` separators and landing
-    // them alone on lines.
+    // Build the title as discrete chips in two lines so each can be truncated
+    // on mobile — a single text string was wrapping at the `·` separators and
+    // landing them alone on lines. Line 1 is the lead (custom title, else the
+    // project) plus the status chips; line 2 is the project (when a title
+    // leads) and the worktree. Width never changes this DOM: styles.css makes
+    // the lines transparent on desktop and stacks them below the breakpoint.
     dom.instanceTitle.textContent = '';
     const chip = (cls, text) => {
       const e = document.createElement('span');
@@ -726,21 +747,28 @@ export function installHeader({
       e.textContent = text;
       return e;
     };
+    const mainLine = document.createElement('span');
+    mainLine.className = 'ih-line ih-line-main';
+    const subLine = document.createElement('span');
+    subLine.className = 'ih-line ih-line-sub';
+    // Project chip carries the full session id as a tooltip — long-press on
+    // mobile / hover on desktop — instead of taking a dedicated header chip.
+    const projectChip = chip('ih-project', inst.project);
+    projectChip.title = `session ${inst.sessionId ?? '?'}`;
     // Custom session title (set via ⋮ → Rename session) leads the chip row
     // when present, so the human label is the first thing the user reads.
     if (inst.title) {
       const titleChip = chip('ih-title', inst.title);
       titleChip.title = 'custom session title — change via ⋮ → Rename session';
-      dom.instanceTitle.appendChild(titleChip);
+      mainLine.appendChild(titleChip);
+      projectChip.classList.add('ih-secondary');
+      subLine.appendChild(projectChip);
+    } else {
+      mainLine.appendChild(projectChip);
     }
-    // Project chip carries the full session id as a tooltip — long-press on
-    // mobile / hover on desktop — instead of taking a dedicated header chip.
-    const projectChip = chip('ih-project', inst.project);
-    projectChip.title = `session ${inst.sessionId ?? '?'}`;
-    dom.instanceTitle.appendChild(projectChip);
-    if (inst.worktree?.worktreeName) {
+    if (hasWorktree) {
       const wtShort = `wt:${inst.worktree.worktreeName}`;
-      dom.instanceTitle.appendChild(chip('ih-worktree',
+      subLine.appendChild(chip('ih-worktree',
         `${wtShort} (← ${inst.worktree.baseBranch})`));
     }
     // Status chip only when it's signalling something actionable. `idle` is
@@ -749,12 +777,10 @@ export function installHeader({
     // mid-turn shows a distinct "stopping…" chip. Cosmetic only — the real
     // `inst.status` (not `displayStatus`) still gates every action below.
     if (inst.status === 'turn' && inst.interrupting) {
-      dom.instanceTitle.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
+      mainLine.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
     } else if (inst.displayStatus !== 'idle') {
-      dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.displayStatus}`, inst.displayStatus));
+      mainLine.appendChild(chip(`ih-status ih-status-${inst.displayStatus}`, inst.displayStatus));
     }
-    if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
-    if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
     // Overage paused chip. armed (autoResumeAt) shows the resume time + queued
     // count; a not-yet-queued session paused by the GLOBAL window (overageActive,
     // no armed deadline yet) shows a bare "paused" chip off overageResetsAt.
@@ -765,13 +791,15 @@ export function installHeader({
       rc.title = n > 0
         ? `auto-stopped on overage — ${n} message${n === 1 ? '' : 's'} queued; will resume when the window resets`
         : 'auto-stopped on overage — will resume when the rate-limit window resets';
-      dom.instanceTitle.appendChild(rc);
+      mainLine.appendChild(rc);
     } else if (inst.overageActive) {
       const rc = chip('ih-status ih-auto-resume',
         formatAutoResumeTime(inst.overageResetsAt) || 'paused');
       rc.title = 'rate-limit window active — messages are queued until it resets';
-      dom.instanceTitle.appendChild(rc);
+      mainLine.appendChild(rc);
     }
+    dom.instanceTitle.appendChild(mainLine);
+    if (subLine.childElementCount) dom.instanceTitle.appendChild(subLine);
     // Combined ctx+rl chip: right slot of the bottom bar. ctx half is
     // per-session; rl half reads from globalRLTracker (account-wide).
     dom.tiUsageSlot.textContent = '';
@@ -782,11 +810,17 @@ export function installHeader({
     dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
     dom.turnIndicator.hidden = false;
     renderTiLeft(inst);
-    const hasWorktree = !!inst.worktree?.worktreeName;
-    dom.syncBtn.hidden = !hasWorktree;
-    dom.syncBtn.disabled = !hasWorktree;
-    dom.mergeBtn.hidden = !hasWorktree;
-    dom.mergeBtn.disabled = !hasWorktree;
+    // One predicate for both placements, so the bar button and its ⋮ twin
+    // cannot disagree.
+    const showWorktreeOps = hasWorktree;
+    dom.syncBtn.hidden = !showWorktreeOps || narrow;
+    dom.syncBtn.disabled = !showWorktreeOps;
+    dom.mergeBtn.hidden = !showWorktreeOps || narrow;
+    dom.mergeBtn.disabled = !showWorktreeOps;
+    dom.syncMenuBtn.hidden = !showWorktreeOps || !narrow;
+    dom.syncMenuBtn.disabled = !showWorktreeOps;
+    dom.mergeMenuBtn.hidden = !showWorktreeOps || !narrow;
+    dom.mergeMenuBtn.disabled = !showWorktreeOps;
     // Overflow menu (⋮) hosts secondary actions: Interrupt/Kill, per-session
     // mute, and Debug capture. The whole trigger is hidden when no items
     // apply (i.e. the instance isn't alive). Debug button: shown while
@@ -796,6 +830,11 @@ export function installHeader({
     // plans lives in the controls row (sibling of #mode-toggle), not in
     // this menu, so the toggle is one click from anywhere — including
     // mid-turn.
+    // Summarize and Interrupt/Terminate hide with the rest when the session is
+    // dead, so the ⋮ kept open for Sync / Merge (below the breakpoint) shows
+    // only those.
+    dom.summarizeSessionBtn.hidden = !canMenu;
+    dom.killBtn.hidden = !canMenu;
     dom.debugBtn.hidden = !canMenu;
     dom.renameSessionBtn.hidden = !canMenu;
     dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
@@ -848,7 +887,7 @@ export function installHeader({
       ? 'Illegal playbook moves are refused for this conductor — tap to only record them'
       : 'Illegal playbook moves are recorded but allowed — tap to refuse them';
     dom.playbookEnforcementBtn.setAttribute('aria-pressed', enforcing ? 'true' : 'false');
-    dom.overflowMenu.hidden = !canMenu;
+    dom.overflowMenu.hidden = !menuShown;
     if (inst.debug) {
       dom.debugBtn.textContent = '🐛 capturing';
       dom.debugBtn.disabled = true;

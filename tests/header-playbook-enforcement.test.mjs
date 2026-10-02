@@ -55,6 +55,8 @@ async function setup() {
     tiUsageSlot: document.getElementById('ti-usage-slot'),
     syncBtn: document.getElementById('sync-btn'),
     mergeBtn: document.getElementById('merge-btn'),
+    syncMenuBtn: document.getElementById('sync-menu-btn'),
+    mergeMenuBtn: document.getElementById('merge-menu-btn'),
     debugBtn: document.getElementById('debug-btn'),
     summarizeSessionBtn: document.getElementById('summarize-session-btn'),
     renameSessionBtn: document.getElementById('rename-session-btn'),
