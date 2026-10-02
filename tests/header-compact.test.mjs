@@ -1,5 +1,5 @@
 // The one-row phone header (header.js + index.html): below MOBILE_LAYOUT_QUERY
-// (720px) Sync and Merge leave the bar for the ⋮ menu; the title block is two
+// (720px) Sync leaves the bar for the ⋮ menu; Merge is not in the header at any width; the title block is two
 // chip lines; the TEMP / DEBUG pills are gone at every width.
 //
 // Real index.html and real installHeader() in happy-dom at a chosen viewport
@@ -13,23 +13,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setupHeader, session, WORKTREE, lineClasses } from './headerCompactHarness.mjs';
+import { assertNull } from './dom-assert.mjs';
 
 const hasOpen = (t) => !t.dom.overflowPanel.hidden;
 const openMenu = (t) => t.dom.overflowToggle.click();
 const visibleMenuItems = (t) => [...t.dom.overflowPanel.children].filter(b => !b.hidden).map(b => b.id);
 
-// Invariant: Sync / Merge are in the bar from 721px up and in ⋮ from 720px
+// Invariant: Sync is in the bar from 721px up and in ⋮ from 720px
 // down, one place at a time — the edge is exact on both sides.
-test('at 720px Sync and Merge leave the bar and appear in ⋮; at 721px they are back in the bar', async (tt) => {
+test('at 720px Sync leaves the bar and appears in ⋮; at 721px it is back in the bar', async (tt) => {
   for (const [width, where] of [[720, 'menu'], [721, 'bar']]) {
-    await tt.test(`${width}px: Sync and Merge are in the ${where}`, async () => {
+    await tt.test(`${width}px: Sync is in the ${where}`, async () => {
       const t = await setupHeader({ width });
       t.show(session('idle', { worktree: WORKTREE }));
-      const { syncBtn, mergeBtn, syncMenuBtn, mergeMenuBtn } = t.dom;
+      const { syncBtn, syncMenuBtn } = t.dom;
       assert.equal(syncBtn.hidden, where === 'menu');
-      assert.equal(mergeBtn.hidden, where === 'menu');
       assert.equal(syncMenuBtn.hidden, where === 'bar');
-      assert.equal(mergeMenuBtn.hidden, where === 'bar');
       assert.equal(t.placement(syncMenuBtn), 'menu', 'the twin lives in the ⋮ panel');
       assert.equal(t.placement(syncBtn), 'bar');
     });
@@ -39,7 +38,7 @@ test('at 720px Sync and Merge leave the bar and appear in ⋮; at 721px they are
 // Invariant: the ⋮ items follow the same show/disable rules as the bar
 // buttons — the menu item at 720px equals the bar button at 721px, for every
 // status, with and without a worktree.
-test('the ⋮ Sync/Merge items are shown and disabled exactly as the bar buttons are at desktop width', async (tt) => {
+test('the ⋮ Sync item is shown and disabled exactly as the bar button is at desktop width', async (tt) => {
   for (const status of ['idle', 'turn', 'spawning', 'crashed', 'exited']) {
     for (const worktree of [WORKTREE, null]) {
       await tt.test(`${status}, ${worktree ? 'worktree' : 'no worktree'}`, async () => {
@@ -49,22 +48,43 @@ test('the ⋮ Sync/Merge items are shown and disabled exactly as the bar buttons
         narrow.show(session(status, { worktree }));
         assert.equal(narrow.dom.syncMenuBtn.hidden, wide.dom.syncBtn.hidden, 'Sync hidden');
         assert.equal(narrow.dom.syncMenuBtn.disabled, wide.dom.syncBtn.disabled, 'Sync disabled');
-        assert.equal(narrow.dom.mergeMenuBtn.hidden, wide.dom.mergeBtn.hidden, 'Merge hidden');
-        assert.equal(narrow.dom.mergeMenuBtn.disabled, wide.dom.mergeBtn.disabled, 'Merge disabled');
         assert.equal(wide.dom.syncBtn.hidden, !worktree, 'sanity: shown exactly with a worktree');
       });
     }
   }
 });
 
-// Invariant: a crashed worktree session keeps ⋮ below the breakpoint (Sync and
-// Merge are its only visible items there), while at desktop width ⋮ stays
+// Invariant: Merge lives in the commits view, not the session header — at no
+// width is there a Merge element or a button reading "Merge" under the header,
+// and Sync (which stays) is still reachable and still runs its action.
+test('Merge is nowhere in the session header at any width, and Sync is still reachable', async (tt) => {
+  for (const width of [720, 721, 1024]) {
+    await tt.test(`${width}px`, async () => {
+      const t = await setupHeader({ width });
+      t.show(session('idle', { worktree: WORKTREE }));
+      assertNull(t.document.getElementById('merge-btn'), '#merge-btn');
+      assertNull(t.document.getElementById('merge-menu-btn'), '#merge-menu-btn');
+      const labels = [...t.document.querySelectorAll('#instance-header button')].map(b => b.textContent.trim());
+      assert.deepEqual(labels.filter(l => /Merge/.test(l)), [], 'no header button is labelled Merge');
+
+      const sync = width <= 720 ? t.dom.syncMenuBtn : t.dom.syncBtn;
+      assert.equal(t.placement(sync), width <= 720 ? 'menu' : 'bar');
+      assert.equal(sync.hidden, false, 'Sync is shown for a worktree session');
+      if (width <= 720) openMenu(t);
+      sync.click();
+      assert.deepEqual(t.actions, ['sync']);
+    });
+  }
+});
+
+// Invariant: a crashed worktree session keeps ⋮ below the breakpoint (Sync is
+// its only visible item there), while at desktop width ⋮ stays
 // hidden for it as before.
-test('below the breakpoint ⋮ appears for a crashed worktree session with only Sync and Merge visible; at desktop width it stays hidden', async () => {
+test('below the breakpoint ⋮ appears for a crashed worktree session with only Sync visible; at desktop width it stays hidden', async () => {
   const narrow = await setupHeader({ width: 720 });
   narrow.show(session('crashed', { worktree: WORKTREE }));
   assert.equal(narrow.dom.overflowMenu.hidden, false, '⋮ is reachable');
-  assert.deepEqual(visibleMenuItems(narrow), ['sync-menu-btn', 'merge-menu-btn']);
+  assert.deepEqual(visibleMenuItems(narrow), ['sync-menu-btn']);
 
   const wide = await setupHeader({ width: 721 });
   wide.show(session('crashed', { worktree: WORKTREE }));
@@ -75,20 +95,16 @@ test('below the breakpoint ⋮ appears for a crashed worktree session with only 
   assert.equal(noWt.dom.overflowMenu.hidden, true, 'a dead session with no worktree has nothing in ⋮');
 });
 
-// Invariant: the ⋮ items run the very actions the bar buttons run — once each —
-// and the menu closes behind them.
-test('the ⋮ Sync and Merge items run the same worktree actions and close the menu', async (tt) => {
-  for (const [btn, action] of [['syncMenuBtn', 'sync'], ['mergeMenuBtn', 'merge']]) {
-    await tt.test(`${action}`, async () => {
-      const t = await setupHeader({ width: 720 });
-      t.show(session('idle', { worktree: WORKTREE }));
-      openMenu(t);
-      assert.ok(hasOpen(t), 'precondition: the menu is open');
-      t.dom[btn].click();
-      assert.deepEqual(t.actions, [action], 'one call to the matching session action');
-      assert.equal(hasOpen(t), false, 'the menu closed');
-    });
-  }
+// Invariant: the ⋮ Sync item runs the very action the bar button runs — once —
+// and the menu closes behind it.
+test('the ⋮ Sync item runs the same worktree action and closes the menu', async () => {
+  const t = await setupHeader({ width: 720 });
+  t.show(session('idle', { worktree: WORKTREE }));
+  openMenu(t);
+  assert.ok(hasOpen(t), 'precondition: the menu is open');
+  t.dom.syncMenuBtn.click();
+  assert.deepEqual(t.actions, ['sync'], 'one call to the session action');
+  assert.equal(hasOpen(t), false, 'the menu closed');
 });
 
 // Invariant: Plan | Code and 📋 stay in the bar at every width — not in ⋮ —
@@ -115,11 +131,11 @@ test('Plan/Code and 📋 stay in the bar at every width', async (tt) => {
   }
 });
 
-// Invariant: the breakpoint is live — crossing it re-places Sync / Merge from
+// Invariant: the breakpoint is live — crossing it re-places Sync from
 // the matchMedia change alone (no status frame), and widening past it closes a
 // ⋮ that was open only for them.
-test('crossing the breakpoint re-places Sync and Merge without a status frame', async (tt) => {
-  await tt.test('narrowing moves them into ⋮, widening moves them back', async () => {
+test('crossing the breakpoint re-places Sync without a status frame', async (tt) => {
+  await tt.test('narrowing moves it into ⋮, widening moves it back', async () => {
     const t = await setupHeader({ width: 721 });
     t.show(session('idle', { worktree: WORKTREE }));
     assert.equal(t.dom.syncBtn.hidden, false);
@@ -218,20 +234,20 @@ test('the title DOM is identical at 720 and 1024', async () => {
   assert.equal(narrow.dom.instanceTitle.innerHTML, wide.dom.instanceTitle.innerHTML);
 });
 
-// Invariant: with no instance selected, Sync and Merge are hidden in both
+// Invariant: with no instance selected, Sync is hidden in both
 // placements (bar and ⋮) at every width — a worktree session selected just
 // before leaves neither behind.
-test('deselecting a worktree session hides Sync and Merge in the bar and in ⋮', async (tt) => {
+test('deselecting a worktree session hides Sync in the bar and in ⋮', async (tt) => {
   for (const width of [720, 721, 1024]) {
     await tt.test(`${width}px`, async () => {
       const t = await setupHeader({ width });
       t.show(session('idle', { worktree: WORKTREE }));
-      const { syncBtn, mergeBtn, syncMenuBtn, mergeMenuBtn } = t.dom;
+      const { syncBtn, syncMenuBtn } = t.dom;
       const shown = width <= 720 ? syncMenuBtn : syncBtn;
       assert.equal(shown.hidden, false, 'precondition: Sync is visible for the worktree session');
       t.deselect();
       assert.equal(t.dom.instanceTitle.textContent, 'no instance selected', 'precondition: no-instance branch ran');
-      for (const [name, el] of Object.entries({ syncBtn, mergeBtn, syncMenuBtn, mergeMenuBtn })) {
+      for (const [name, el] of Object.entries({ syncBtn, syncMenuBtn })) {
         assert.equal(el.hidden, true, `${name} hidden with no instance`);
       }
     });

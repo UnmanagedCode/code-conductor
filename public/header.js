@@ -1,7 +1,7 @@
 // Active-instance header: the chip rows (line 1: custom title or project, status,
 // auto-resume; line 2: project and worktree), the primary controls (mode switch,
-// resume, sync/merge, overflow + auto-approve buttons; below MOBILE_LAYOUT_QUERY
-// sync/merge sit in the ⋮ menu instead), the composer/turn-indicator
+// resume, sync, overflow + auto-approve buttons; below MOBILE_LAYOUT_QUERY
+// sync sits in the ⋮ menu instead), the composer/turn-indicator
 // enablement, and the combined context+rate-limit chip with its usage popover.
 //
 // Extracted from app.js (slice 8). app.js stays the orchestrator: it owns
@@ -37,7 +37,7 @@
 //                        stale by the server (backoff/failure window) rather than
 //                        freshly fetched — drives the popover's "(stale)" suffix.
 //   - composer/conversation: enablement toggles and per-call usage visibility.
-//   - sessionActions:    the REST action handles (rename / sync / merge / respawn).
+//   - sessionActions:    the REST action handles (rename / sync / respawn).
 //   - openSummary()/openStats()/openPrune(): lazy dialog openers — those handles
 //                        are built after this install, so they arrive as arrows.
 
@@ -132,7 +132,7 @@ export function installHeader({
   }
   dom.overflowToggle.addEventListener('click', toggleOverflow);
 
-  // Crossing the phone breakpoint moves Sync / Merge between the bar and ⋮, so
+  // Crossing the phone breakpoint moves Sync between the bar and ⋮, so
   // it re-renders without waiting for a status frame.
   const narrowMq = window.matchMedia(MOBILE_LAYOUT_QUERY);
   narrowMq.addEventListener('change', () => update());
@@ -571,11 +571,9 @@ export function installHeader({
   });
 
   dom.syncBtn.addEventListener('click', () => sessionActions.syncWorktree());
-  dom.mergeBtn.addEventListener('click', () => sessionActions.mergeWorktree());
-  // The ⋮ twins of Sync / Merge, shown instead of the bar buttons below
-  // MOBILE_LAYOUT_QUERY. Same actions; the menu closes first like every item.
+  // The ⋮ twin of Sync, shown instead of the bar button below
+  // MOBILE_LAYOUT_QUERY. Same action; the menu closes first like every item.
   dom.syncMenuBtn.addEventListener('click', () => { closeOverflow(); sessionActions.syncWorktree(); });
-  dom.mergeMenuBtn.addEventListener('click', () => { closeOverflow(); sessionActions.mergeWorktree(); });
   dom.resumeBtn.addEventListener('click', () => sessionActions.respawnActive());
 
   // Combined ctx + rl chip. ctx half is per-session; rl half reads from
@@ -710,8 +708,8 @@ export function installHeader({
     const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
     const narrow = narrowMq.matches;
     const hasWorktree = !!inst?.worktree?.worktreeName;
-    // Below the breakpoint Sync / Merge live in ⋮, so a crashed or exited
-    // worktree session keeps the menu — they are its only visible items.
+    // Below the breakpoint Sync lives in ⋮, so a crashed or exited
+    // worktree session keeps the menu — it is its only visible item.
     const menuShown = canMenu || (narrow && hasWorktree);
     if (!menuShown || inst?.id !== overflowOwnerId) closeOverflow();
     currentInst = inst ?? null;
@@ -724,9 +722,7 @@ export function installHeader({
       dom.resumeBtn.hidden = true;
       dom.overflowMenu.hidden = true;
       dom.syncMenuBtn.hidden = true;
-      dom.mergeMenuBtn.hidden = true;
       dom.syncBtn.hidden = true;
-      dom.mergeBtn.hidden = true;
       composer.disable();
       dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
       dom.turnIndicator.hidden = true;
@@ -817,12 +813,8 @@ export function installHeader({
     const showWorktreeOps = hasWorktree;
     dom.syncBtn.hidden = !showWorktreeOps || narrow;
     dom.syncBtn.disabled = !showWorktreeOps;
-    dom.mergeBtn.hidden = !showWorktreeOps || narrow;
-    dom.mergeBtn.disabled = !showWorktreeOps;
     dom.syncMenuBtn.hidden = !showWorktreeOps || !narrow;
     dom.syncMenuBtn.disabled = !showWorktreeOps;
-    dom.mergeMenuBtn.hidden = !showWorktreeOps || !narrow;
-    dom.mergeMenuBtn.disabled = !showWorktreeOps;
     // Overflow menu (⋮) hosts secondary actions: Interrupt/Kill, per-session
     // mute, and Debug capture. The whole trigger is hidden when no items
     // apply (i.e. the instance isn't alive). Debug button: shown while
@@ -833,8 +825,8 @@ export function installHeader({
     // this menu, so the toggle is one click from anywhere — including
     // mid-turn.
     // Summarize and Interrupt/Terminate hide with the rest when the session is
-    // dead, so the ⋮ kept open for Sync / Merge (below the breakpoint) shows
-    // only those.
+    // dead, so the ⋮ kept open for Sync (below the breakpoint) shows
+    // only that.
     dom.summarizeSessionBtn.hidden = !canMenu;
     dom.killBtn.hidden = !canMenu;
     dom.debugBtn.hidden = !canMenu;

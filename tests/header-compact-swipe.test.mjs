@@ -63,13 +63,13 @@ test('a swipe down/up starting anywhere on the one-row bar reveals/conceals', as
   }
 });
 
-// Invariant: the menu exclusion covers the Sync / Merge items relocated into ⋮.
+// Invariant: the menu exclusion covers the Sync item relocated into ⋮.
 test('a swipe starting on the relocated ⋮ Sync item is ignored', async () => {
   const t = await swipeSetup();
   t.dom.overflowToggle.click();
   assert.equal(t.dom.syncMenuBtn.hidden, false, 'precondition: the item is shown');
   t.swipe(t.dom.syncMenuBtn, SWIPE_MIN_PX + 20);
-  t.swipe(t.dom.mergeMenuBtn, -(SWIPE_MIN_PX + 20));
+  t.swipe(t.dom.syncMenuBtn, -(SWIPE_MIN_PX + 20));
   assert.deepEqual(t.calls, []);
 });
 

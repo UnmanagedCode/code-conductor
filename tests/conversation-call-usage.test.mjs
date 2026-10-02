@@ -174,7 +174,7 @@ async function setupHeader({ instances, activeId }) {
   for (const id of [
     'composer-input', 'mode-toggle', 'kill-btn', 'mute-btn', 'resume-btn', 'instance-title',
     'turn-indicator', 'ti-left', 'ti-dot', 'ti-label', 'ti-ellipsis', 'ti-interrupt-now',
-    'ti-usage-slot', 'sync-btn', 'merge-btn', 'sync-menu-btn', 'merge-menu-btn', 'debug-btn', 'summarize-session-btn',
+    'ti-usage-slot', 'sync-btn', 'sync-menu-btn', 'debug-btn', 'summarize-session-btn',
     'rename-session-btn', 'change-model-btn', 'change-effort-btn', 'session-stats-btn',
     'prune-session-btn', 'auto-approve-plan-btn', 'playbook-enforcement-btn',
     'overflow-menu', 'overflow-toggle', 'overflow-panel', 'stats-dialog',
@@ -208,7 +208,7 @@ async function setupHeader({ instances, activeId }) {
     conversation: conv,
     sessionActions: {
       applySessionTitle: async () => {}, syncWorktree: async () => {},
-      mergeWorktree: async () => {}, respawnActive: async () => {},
+      respawnActive: async () => {},
     },
     openSummary: () => {}, openStats: () => {}, openPrune: () => {},
   });

@@ -99,6 +99,10 @@ async function setupView() {
       <button id="commits-back"></button>
       <div id="commits-title"></div>
       <div id="commits-stats"></div>
+      <div id="commits-actions" hidden>
+        <button id="commits-sync-btn"></button>
+        <button id="commits-merge-btn"></button>
+      </div>
       <div id="commits-list"></div>
     </section>
     <section id="review-view" hidden></section>`;
@@ -113,6 +117,45 @@ async function setupView() {
   };
   return { window, requested };
 }
+
+// The same view over the REAL public/index.html, so the new control ids are
+// pinned to real markup rather than to a fixture that could drift from it.
+async function setupRealView() {
+  const html = await fs.readFile(path.join(PUB, 'index.html'), 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.Element = window.Element;
+  globalThis.Node = window.Node;
+  globalThis.history = window.history;
+  window.document.documentElement.innerHTML = html;
+
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return { ok: true, json: async () => ({
+      project: 'demo', branch: 'code-conductor/feature', truncated: false, limit: 100,
+      hasUncommitted: false, aheadCount: 0, aheadOf: null, commits: [],
+    }) };
+  };
+  // Targets each injected action was called with, the result it answers, and
+  // `impl` for a test that needs to control the action itself (it is installed once).
+  const calls = { sync: [], merge: [] };
+  const results = { sync: { ok: true }, merge: { ok: true } };
+  const impl = {};
+  for (const kind of ['sync', 'merge']) {
+    impl[kind] = async (t) => { calls[kind].push(t); return results[kind]; };
+  }
+  const { installCommits } = await import('../public/commits.js');
+  const commits = installCommits({
+    syncWorktree: (t) => impl.sync(t),
+    mergeWorktree: (t) => impl.merge(t),
+  });
+  const el = (id) => document.getElementById(id);
+  return { window, requested, calls, results, impl, commits, el };
+}
+const flush = () => new Promise(r => setTimeout(r, 0));
 
 test('ahead divider is inserted above the first already-merged row', async () => {
   const listEl = await setup();
@@ -382,4 +425,109 @@ test('a worktree-opened view hands its rows worktree-scoped diff URLs', async ()
     ['demo', `${base}/commits/uncommitted/diff`],
     ['demo', `${base}/commits/${sha('a')}/diff`],
   ]);
+});
+
+// PINS: the controls exist only for a worktree's history — a project's own tree
+// has nothing to land back, so showing them there would offer a no-op.
+test('Sync and Merge show for a worktree\'s history and are hidden for the project\'s own tree', async (t) => {
+  const { commits, el } = await setupRealView();
+  await t.test('a worktree\'s history shows them', async () => {
+    commits.open('demo', 'wt');
+    await flush();
+    assert.equal(el('commits-actions').hidden, false);
+    assert.equal(el('commits-sync-btn').textContent.trim(), 'Sync');
+    assert.equal(el('commits-merge-btn').textContent.trim(), 'Merge');
+  });
+  await t.test('reopening on the project\'s own tree hides them again', async () => {
+    commits.open('demo');
+    await flush();
+    assert.equal(el('commits-actions').hidden, true);
+  });
+  await t.test('closing a worktree view hides them', async () => {
+    commits.open('demo', 'wt');
+    await flush();
+    commits.close();
+    assert.equal(el('commits-actions').hidden, true);
+  });
+});
+
+// PINS: the action's target is the (project, worktree) on screen at click time,
+// not whatever was captured at install or at the first open.
+test('Sync and Merge pass the viewed (project, worktree) to the injected actions, following a reopen', async () => {
+  const { commits, calls, el } = await setupRealView();
+  commits.open('demo', 'wt1');
+  await flush();
+  el('commits-sync-btn').click();
+  await flush();
+  el('commits-merge-btn').click();
+  await flush();
+  commits.open('other', 'wt2');
+  await flush();
+  el('commits-sync-btn').click();
+  await flush();
+  el('commits-merge-btn').click();
+  await flush();
+  assert.deepEqual(calls.sync, [{ project: 'demo', worktree: 'wt1' }, { project: 'other', worktree: 'wt2' }]);
+  assert.deepEqual(calls.merge, [{ project: 'demo', worktree: 'wt1' }, { project: 'other', worktree: 'wt2' }]);
+});
+
+// PINS: refresh-on-success, and only on success — a refused or cancelled action
+// changed nothing, so re-fetching would only blank the list for no reason.
+test('an ok result re-fetches the list; ok:false or a cancelled (null) result does not', async (t) => {
+  for (const [name, result, reloads] of [
+    ['ok result', { ok: true }, true],
+    ['ok:false refusal', { ok: false, reason: 'no' }, false],
+    ['cancelled (null)', null, false],
+  ]) {
+    for (const kind of ['sync', 'merge']) {
+      await t.test(`${kind}: ${name}`, async () => {
+        const { commits, results, requested, el } = await setupRealView();
+        commits.open('demo', 'wt');
+        await flush();
+        const before = requested.length;
+        results[kind] = result;
+        el(`commits-${kind}-btn`).click();
+        await flush();
+        assert.equal(requested.length - before, reloads ? 1 : 0);
+        if (reloads) assert.equal(requested.at(-1), '/api/projects/demo/worktrees/wt/commits');
+      });
+    }
+  }
+});
+
+// PINS: the stale-target guard — an action that resolves after the user moved to
+// another worktree must not reload (and so retitle) the view they moved to.
+test('a result landing after the view moved to another target does not reload it', async () => {
+  const { commits, requested, impl, el } = await setupRealView();
+  let finish;
+  impl.sync = () => new Promise(r => { finish = r; });
+  commits.open('demo', 'wt1');
+  await flush();
+  el('commits-sync-btn').click();
+  commits.open('demo', 'wt2');
+  await flush();
+  const before = requested.length;
+  finish({ ok: true });
+  await flush();
+  assert.equal(requested.length, before, 'no reload for the stale target');
+});
+
+// PINS: single dispatch — a second tap while a confirm/alert chain is in flight
+// must not start a second action.
+test('both buttons are disabled while an action is in flight and re-enabled after', async () => {
+  const { commits, impl, el } = await setupRealView();
+  let finish; let started = 0;
+  impl.sync = () => { started++; return new Promise(r => { finish = r; }); };
+  commits.open('demo', 'wt');
+  await flush();
+  el('commits-sync-btn').click();
+  await flush();
+  assert.equal(el('commits-sync-btn').disabled, true);
+  assert.equal(el('commits-merge-btn').disabled, true);
+  el('commits-sync-btn').click();
+  assert.equal(started, 1, 'a disabled button does not start a second action');
+  finish({ ok: false });
+  await flush();
+  assert.equal(el('commits-sync-btn').disabled, false);
+  assert.equal(el('commits-merge-btn').disabled, false);
 });

@@ -150,9 +150,7 @@ const dom = {
   sdAdvanced: document.getElementById('sd-advanced'),
   conductBtn: document.getElementById('conduct-btn'),
   syncBtn: document.getElementById('sync-btn'),
-  mergeBtn: document.getElementById('merge-btn'),
   syncMenuBtn: document.getElementById('sync-menu-btn'),
-  mergeMenuBtn: document.getElementById('merge-menu-btn'),
   debugBtn: document.getElementById('debug-btn'),
   summarizeSessionBtn: document.getElementById('summarize-session-btn'),
   summaryDialog: document.getElementById('summary-dialog'),
@@ -630,10 +628,14 @@ sidebar.onReviewWorktree = (project, wt) => {
 // Commit history view (full-page list opened from the sidebar ≡ button).
 // Tapping a commit opens the shared diff renderer on top; backing out of the
 // diff returns to the list via location.hash = '#commits'.
-const commits = installCommits({ onClose: () => {
-  const inst = state.instances.find(i => i.id === state.activeId);
-  writeSessionAnchor(inst?.sessionId || null);
-} });
+const commits = installCommits({
+  onClose: () => {
+    const inst = state.instances.find(i => i.id === state.activeId);
+    writeSessionAnchor(inst?.sessionId || null);
+  },
+  syncWorktree: (target) => sessionActions.syncWorktree(target),
+  mergeWorktree: (target) => sessionActions.mergeWorktree(target),
+});
 sidebar.onShowCommits = (project, worktree) => {
   closeSidebarOnMobile();
   commits.open(project, worktree);

@@ -251,7 +251,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   // role's CURRENT binding (Settings → Models → Roles), falling back to the
   // default spawn tier if that binding has gone dead (docs/models.md → Roles).
   // Failures surface via alert(), matching the other direct-click actions
-  // that have no dialog of their own (resumeBtn/syncBtn/mergeBtn/debugBtn).
+  // that have no dialog of their own (resumeBtn/syncBtn/debugBtn).
   dom.conductBtn.addEventListener('click', async () => {
     closeSidebarOverflow();
     dom.conductBtn.disabled = true;

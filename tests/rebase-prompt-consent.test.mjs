@@ -8,18 +8,11 @@
 // the change. These drive `installSessionActions`'s real `syncWorktree` against
 // a scripted fetch, so the confirm→POST edge is the thing under test.
 //
-// sessionActions.js has no import-time browser deps (see anchor-autoresume),
-// so it loads here directly; only `fetch`/`alert`/`confirm` are stubbed.
+// The shared harness (tests/sessionActionsHarness.mjs) loads the real module;
+// only `fetch`/`alert`/`confirm` are stubbed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
-const load = (name) => import(pathToFileURL(path.join(PUB, name)).href + `?t=${Math.random()}`);
-
-const ID = 'inst-1';
+import { ID, setupSessionActions } from './sessionActionsHarness.mjs';
 
 const BLOCKED = {
   ok: true, action: 'rebase-conflict', ahead: 1, behind: 1,
@@ -27,28 +20,12 @@ const BLOCKED = {
   rebasePrompt: 'You are running in an isolated git worktree.\n…',
 };
 
-// A world where /sync answers `syncBody` and /rebase-prompt answers `sendBody`,
-// recording every request so "no POST" is an assertion rather than an absence
-// of visible effect.
-async function setup({ instance, syncBody = BLOCKED, sendBody = { ok: true, action: 'rebase-prompt-sent', blocker: 'conflict' }, confirmAnswer = true } = {}) {
-  const { installSessionActions } = await load('sessionActions.js');
-  const calls = [];
-  const alerts = [];
-  const confirms = [];
-  globalThis.alert = (m) => alerts.push(String(m));
-  globalThis.confirm = (m) => { confirms.push(String(m)); return confirmAnswer; };
-  globalThis.fetch = async (url, opts) => {
-    calls.push({ url: String(url), method: opts?.method });
-    const body = String(url).endsWith('/rebase-prompt') ? sendBody : syncBody;
-    return { ok: true, status: 200, json: async () => body };
-  };
-  const handles = installSessionActions({
-    getActiveId: () => ID, setActiveId: () => {}, getInstances: () => (instance ? [instance] : []),
-    refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: () => {}, sidebar: {}, clearUnread: () => {}, headerUpdate: () => {},
+// A world where /sync answers `syncBody` and /rebase-prompt answers `sendBody`.
+const setup = ({ instance, syncBody = BLOCKED, sendBody = { ok: true, action: 'rebase-prompt-sent', blocker: 'conflict' }, confirmAnswer = true } = {}) =>
+  setupSessionActions({
+    instances: instance ? [instance] : [], confirmAnswer,
+    bodies: { sync: syncBody, rebasePrompt: sendBody },
   });
-  return { ...handles, calls, alerts, confirms };
-}
 
 const sent = (calls) => calls.filter(c => c.url.endsWith('/rebase-prompt'));
 const LIVE = { id: ID, sessionId: 'sid-abcdef12', status: 'idle', title: 'auth worker' };

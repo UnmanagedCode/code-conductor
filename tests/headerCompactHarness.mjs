@@ -18,7 +18,7 @@ export const PUB = path.resolve(__dirname, '..', 'public');
 const DOM_IDS = [
   'composer-input', 'mode-toggle', 'kill-btn', 'mute-btn', 'resume-btn', 'instance-title',
   'turn-indicator', 'ti-left', 'ti-dot', 'ti-label', 'ti-ellipsis', 'ti-interrupt-now',
-  'ti-usage-slot', 'sync-btn', 'merge-btn', 'sync-menu-btn', 'merge-menu-btn', 'debug-btn',
+  'ti-usage-slot', 'sync-btn', 'sync-menu-btn', 'debug-btn',
   'summarize-session-btn', 'rename-session-btn', 'change-model-btn', 'change-effort-btn',
   'session-stats-btn', 'prune-session-btn', 'auto-approve-plan-btn', 'playbook-enforcement-btn',
   'overflow-menu', 'overflow-toggle', 'overflow-panel',
@@ -83,7 +83,6 @@ export async function setupHeader({ width = 1024 } = {}) {
     conversation: { setUserActionsEnabled() {}, setCallUsageVisible() {} },
     sessionActions: {
       syncWorktree: () => actions.push('sync'),
-      mergeWorktree: () => actions.push('merge'),
       respawnActive: () => actions.push('respawn'),
     },
   });
