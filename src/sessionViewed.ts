@@ -7,8 +7,8 @@ import { markViewed, type TurnMarks } from './sessionStore.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
 
 // Raise the session's viewedSeq to `seq` (clamped by markViewed) and push the
-// stored marks to every live instance attached to it; their status emit is what
-// tells every client to re-fetch.
+// stored marks to every live instance attached to it; their `turn_marks` event
+// is what tells every client to re-fetch the instances list.
 export async function applySessionViewed(
   instances: Pick<InstanceManagerLike, 'idsForSession' | 'get'> | null | undefined,
   sid: string,

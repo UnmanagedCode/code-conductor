@@ -78,8 +78,9 @@ test('a later server-started turn makes a viewed session unread again', async ()
 });
 
 // Invariant: POST /viewed sets viewedSeq, answers both counters, updates the
-// live summary, and tells every WS client to re-fetch the instances list.
-test('POST /viewed sets the marker and broadcasts instances to every client', async () => {
+// live summary, and tells every WS client to re-fetch the instances list — and
+// only that list: a turn-marks change sends no `projects` hint.
+test('POST /viewed sets the marker and broadcasts instances, not projects, to every client', async () => {
   const inst = await spawn();
   await serverTurn(inst);
   const ws = new WebSocket(ctx.wsUrl);
@@ -94,9 +95,34 @@ test('POST /viewed sets the marker and broadcasts instances to every client', as
     assert.deepEqual(r.body, { ok: true, sessionId: inst.sessionId, turnEndSeq: 1, viewedSeq: 1 });
     assert.equal((await summaryOf(inst)).viewedSeq, 1);
     await waitFor(() => messages.slice(mark).some(m => m.t === 'instances'), { timeout: 4000 });
+    await settle();
+    assert.deepEqual(messages.slice(mark).filter(m => m.t === 'projects'), [], 'no projects hint');
     assert.deepEqual(await getTurnMarks(inst.sessionId), { turnEndSeq: 1, viewedSeq: 1 });
   } finally {
     ws.terminate();
+  }
+});
+
+// Invariant: a turn-marks change is its own event, never a `status` emit —
+// `status` drives the playbook gate's retire record (a late emit on a killed
+// worker would ledger a second retire) and every client's projects refetch.
+test('setTurnMarks emits turn_marks and never status', async () => {
+  const inst = await spawn();
+  await serverTurn(inst);
+  await settle();
+  const seen = [];
+  const onStatus = () => seen.push('status');
+  const onMarks = () => seen.push('turn_marks');
+  inst.on('status', onStatus);
+  inst.on('turn_marks', onMarks);
+  try {
+    inst.setTurnMarks({ turnEndSeq: inst.turnEndSeq + 1, viewedSeq: inst.viewedSeq });
+    inst.setTurnMarks({ turnEndSeq: inst.turnEndSeq, viewedSeq: inst.viewedSeq });
+    assert.deepEqual(seen, ['turn_marks'], 'one event for the change, none for the no-op, no status');
+    assert.equal(inst.summary().turnEndSeq, 2);
+  } finally {
+    inst.off('status', onStatus);
+    inst.off('turn_marks', onMarks);
   }
 });
 

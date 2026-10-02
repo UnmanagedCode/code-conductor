@@ -63,6 +63,7 @@ const sorted = (a) => a.slice().sort();
 const WITHHELD_KEYS = [
   'id', 'callerInstanceId', 'debugDir', 'autoApprovePlan',
   'playbookEnforcement', 'interrupting', 'overageStoppedUnarmed',
+  'turnEndSeq', 'viewedSeq',
 ];
 
 // Pull the documented key names out of the single `{…}` block in the

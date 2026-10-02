@@ -1353,13 +1353,17 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // Merge stored turn marks into memory. Both counters are monotonic, so each
   // takes the max — a read that raced a newer write can never regress them.
+  // A change emits `turn_marks`, NEVER `status`: the turn-end write lands
+  // asynchronously, often after a kill, and every `status` on a dead instance
+  // is a playbook retire (src/mcp/playbookGate.ts onStatus) plus a projects
+  // refetch on every client.
   setTurnMarks(m: TurnMarks): void {
     const turnEndSeq = Math.max(this.turnEndSeq, m.turnEndSeq);
     const viewedSeq = Math.max(this.viewedSeq, m.viewedSeq);
     if (turnEndSeq === this.turnEndSeq && viewedSeq === this.viewedSeq) return;
     this.turnEndSeq = turnEndSeq;
     this.viewedSeq = viewedSeq;
-    this.emit('status', this.summary());
+    this.emit('turn_marks');
   }
 
   // _hydrateTitle's twin: the turn marks survive a resume/respawn.
@@ -5535,6 +5539,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
+    inst.on('turn_marks', () => this.emit('turn_marks', { id }));
 
     // ---- the resume reclaim ----
     // LAST THING BEFORE REGISTRATION, and that placement is the point. Everything

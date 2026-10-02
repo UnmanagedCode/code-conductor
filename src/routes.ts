@@ -1116,7 +1116,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
 
   // The browser marks the turn end it showed the human (public/viewedMarker.js).
   // No MCP equivalent, by design: a conductor's reads never count as viewed.
-  // The broadcast is the live instances' status emit (setTurnMarks).
+  // The broadcast is the live instances' `turn_marks` event (setTurnMarks).
   r.post('/sessions/:sessionId/viewed', async (req, res, next) => {
     try {
       const { sid } = await sidParam(req.params.sessionId);

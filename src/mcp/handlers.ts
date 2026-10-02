@@ -146,7 +146,9 @@ interface DiffFileRow {
 // `playbookEnforcement` (the gate reads the CALLING conductor's level, never its
 // target's — a worker's copy is the inert default), `interrupting` (transient; a
 // conductor that called interrupt_turn knows), `overageStoppedUnarmed` (the
-// OVERAGE_STOPPED_UNARMED refusal delivers it where a conductor would act on it).
+// OVERAGE_STOPPED_UNARMED refusal delivers it where a conductor would act on it),
+// `turnEndSeq` + `viewedSeq` (the human's unread state — UI-only, like the route
+// that writes it).
 export const CONDUCTOR_VIEW_KEYS = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its
