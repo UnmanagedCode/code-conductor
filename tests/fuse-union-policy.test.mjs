@@ -409,6 +409,12 @@ describe('the compiled policy driver', { skip }, () => {
     ['b53-name-exists-on-a-fixed-node',
                       'an op creating a NAME at a fixed node answers -EEXIST for exactly {T_SYNTH, T_BIND} over every enum tier, and every other mutation of those two stays -EROFS',
                       'answer EROFS for the name ⇒ a recursive mkdir that reaches a pin ancestor fails; widen it to T_PROJECT or T_HOST ⇒ a real create is refused as already existing; fold it into policy_mutation_check ⇒ rmdir/chmod on a scaffold node read EEXIST'],
+    // THE KERNEL'S PERMISSION GETATTR PRECEDES EVERY OPENDIR, so a STAT entry
+    // that answered a LIST would keep cc's `#list` from ever shaping a
+    // directory's children.
+    ['b54-list-is-its-own-cache-class',
+                      'a STAT answer and a LIST answer are separate cache entries — neither satisfies the other, for READY or ABSENT, and each keeps the TTL saving — and every invalidation (FETCH at the path or a child, abandon) clears both, across tgids',
+                      'drop the op from cache_get’s match or from cache_put’s ⇒ the STAT before every opendir answers its LIST; narrow cache_invalidate to one op class ⇒ the other class survives a create; make LIST bypass the cache ⇒ every listing costs a frame; restore the LIST→STAT hit ⇒ a listed directory’s own attributes are never shaped'],
     ['b48-probe-falls-not-absent',
                       'policy_host_absent answers ABSENT for ENOENT / ENOTDIR / ENAMETOOLONG and for a negative fd, NOT ABSENT for a present file, directory or DANGLING symlink, and NOT ABSENT for an ELOOP — the failure direction that keeps an unknown error loud instead of silently hiding a host directory',
                       '`return fstatat(...) != 0` ⇒ ELOOP reads as absence and a synthetic node hides real host data, the silent-hiding direction; reuse policy_host_has’s polarity ⇒ every answer inverts; drop AT_SYMLINK_NOFOLLOW ⇒ a dangling symlink reads as absent and gets an overlay node; return 0 for a negative fd ⇒ the seam-unset axis every other case leans on collapses'],

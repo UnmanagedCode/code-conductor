@@ -3482,7 +3482,6 @@ static void b52_pin_ancestor_never_reaches_the_remote(void)
 	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "a second STAT at /ws inside the TTL agrees with the first (%d)", rc);
 	CHECK(xport_calls == calls, "and is answered from the cache (%d calls)", xport_calls - calls);
 
-	b52_expire();
 	calls = xport_calls;
 	rc = policy_project_route("opendir", "/ws/cc", 4000, CCU_LIST, 0);
 	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "LIST ABSENT at /ws/cc is positive (%d)", rc);
@@ -3620,6 +3619,114 @@ static void b53_name_exists_on_a_fixed_node(void)
 	CHECK(policy_mutation_check(T_BIND) == -EROFS, "and of T_BIND");
 }
 
+/* ── B54: a STAT answer and a LIST answer are separate cache entries ────── */
+/*
+ * THE KERNEL ASKS A GETATTR BEFORE EVERY OPENDIR — the path walk's LOOKUP and
+ * the open's `default_permissions` check both reach `pt_getattr` — so a STAT
+ * from the same tgid at the same path always lands just ahead of the LIST. A
+ * LIST answered from that STAT's entry sends no frame, and cc's `#list`, the
+ * only handler that shapes a directory's children, never runs: the listing is
+ * whatever earlier ops happened to leave in the mirror.
+ *
+ * Observed only through `policy_project_route`, the frame count and the last
+ * frame's op byte, never through the cache's own functions. Every row is its
+ * own CHECK, and CHECK does not stop the case, so one red row cannot hide the
+ * rest.
+ */
+
+/* Frames one route call sent. */
+static int b54_frames(const char *op, const char *path, pid_t tid, uint8_t fop, uint8_t flags)
+{
+	int calls = xport_calls;
+	(void)policy_project_route(op, path, tid, fop, flags);
+	return xport_calls - calls;
+}
+
+static void b54_list_is_its_own_cache_class(void)
+{
+	int n, rc, calls;
+
+	pin("project\t/srv/app");
+	anc_build();
+	proc_set(1000, 1000, 11);
+	proc_set(2000, 2000, 22);
+	policy_mark_tid(1000);
+	policy_mark_tid(2000);
+	canned_reply(CCU_READY, 0);
+
+	/* ── 1. a STAT does not answer the LIST that follows it ── */
+	CHECK(b54_frames("getattr", "/srv/app/d", 1000, CCU_STAT, 0) == 1, "a cold STAT at /srv/app/d sends a frame");
+	last_req[4] = 0;
+	n = b54_frames("opendir", "/srv/app/d", 1000, CCU_LIST, 0);
+	CHECK(n == 1, "a LIST inside the STAT's TTL sends its own frame (%d frames)", n);
+	CHECK(last_req[4] == CCU_LIST, "and that frame is a LIST (op %u)", last_req[4]);
+
+	/* ── 2. each class keeps the TTL saving ── */
+	n = b54_frames("opendir", "/srv/app/d", 1000, CCU_LIST, 0);
+	CHECK(n == 0, "a second LIST inside the TTL is answered from the cache (%d frames)", n);
+	n = b54_frames("getattr", "/srv/app/d", 1000, CCU_STAT, 0);
+	CHECK(n == 0, "and so is a second STAT — the LIST did not displace it (%d frames)", n);
+
+	/* ── 3. a LIST does not answer the STAT that follows it ── */
+	CHECK(b54_frames("opendir", "/srv/app/e", 1000, CCU_LIST, 0) == 1, "a cold LIST at /srv/app/e sends a frame");
+	last_req[4] = 0;
+	n = b54_frames("getattr", "/srv/app/e", 1000, CCU_STAT, 0);
+	CHECK(n == 1, "a STAT inside the LIST's TTL sends its own frame (%d frames)", n);
+	CHECK(last_req[4] == CCU_STAT, "and that frame is a STAT (op %u)", last_req[4]);
+
+	/* ── 4. a negative answer stays in its class ── */
+	canned_reply(CCU_ABSENT, 0);
+	rc = policy_project_route("getattr", "/srv/app/g", 1000, CCU_STAT, 0);
+	CHECK(rc == -ENOENT, "a STAT ABSENT at /srv/app/g is -ENOENT (%d)", rc);
+	n = b54_frames("opendir", "/srv/app/g", 1000, CCU_LIST, 0);
+	CHECK(n == 1, "a LIST at /srv/app/g is not answered by the STAT's cached -ENOENT (%d frames)", n);
+	canned_reply(CCU_READY, 0);
+
+	/* ── 5. a child create clears both classes at the parent, across tgids ── */
+	(void)b54_frames("opendir", "/srv/app/d", 1000, CCU_LIST, 0);
+	(void)b54_frames("getattr", "/srv/app/d", 1000, CCU_STAT, 0);
+	(void)b54_frames("opendir", "/srv/app/d", 2000, CCU_LIST, 0);
+	calls = xport_calls;
+	rc = policy_project_route("create", "/srv/app/d/new", 1000, CCU_FETCH,
+	                          CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE);
+	CHECK(rc == 0 && xport_calls == calls + 1, "the create of /srv/app/d/new FETCHes (rc %d)", rc);
+	last_req[4] = 0;
+	n = b54_frames("opendir", "/srv/app/d", 1000, CCU_LIST, 0);
+	CHECK(n == 1, "after the child create a LIST at the parent asks again (%d frames)", n);
+	CHECK(last_req[4] == CCU_LIST, "and that frame is a LIST (op %u)", last_req[4]);
+	n = b54_frames("getattr", "/srv/app/d", 1000, CCU_STAT, 0);
+	CHECK(n == 1, "and a STAT at the parent asks again too (%d frames)", n);
+	n = b54_frames("opendir", "/srv/app/d", 2000, CCU_LIST, 0);
+	CHECK(n == 1, "and another tgid's LIST at the parent asks again (%d frames)", n);
+
+	/* ── 6. a FETCH at the path itself clears both classes there ── */
+	(void)b54_frames("opendir", "/srv/app/d", 1000, CCU_LIST, 0);
+	(void)b54_frames("getattr", "/srv/app/d", 1000, CCU_STAT, 0);
+	CHECK(b54_frames("chmod", "/srv/app/d", 1000, CCU_FETCH, 0) == 1, "a chmod-style FETCH at /srv/app/d sends a frame");
+	n = b54_frames("opendir", "/srv/app/d", 1000, CCU_LIST, 0);
+	CHECK(n == 1, "after a FETCH at the path a LIST there asks again (%d frames)", n);
+	n = b54_frames("getattr", "/srv/app/d", 1000, CCU_STAT, 0);
+	CHECK(n == 1, "and a STAT there asks again (%d frames)", n);
+
+	/* ── 7. an abandon clears both classes ── */
+	(void)b54_frames("opendir", "/srv/app/f", 1000, CCU_LIST, 0);
+	(void)b54_frames("getattr", "/srv/app/f", 1000, CCU_STAT, 0);
+	policy_abandon_claim("/srv/app/f", T_PROJECT);
+	n = b54_frames("opendir", "/srv/app/f", 1000, CCU_LIST, 0);
+	CHECK(n == 1, "after an abandon a LIST at the path asks again (%d frames)", n);
+	n = b54_frames("getattr", "/srv/app/f", 1000, CCU_STAT, 0);
+	CHECK(n == 1, "and a STAT there asks again (%d frames)", n);
+
+	/* ── 8. the LIST class keeps the TTL, against the injected clock ── */
+	CHECK(b54_frames("opendir", "/srv/app/h", 1000, CCU_LIST, 0) == 1, "a cold LIST at /srv/app/h sends a frame");
+	fake_now += CACHE_TTL_MS - 1;
+	n = b54_frames("opendir", "/srv/app/h", 1000, CCU_LIST, 0);
+	CHECK(n == 0, "a LIST just before the TTL is still cached (%d frames)", n);
+	fake_now += 2;
+	n = b54_frames("opendir", "/srv/app/h", 1000, CCU_LIST, 0);
+	CHECK(n == 1, "and one just past it asks again (%d frames)", n);
+}
+
 static void print_vec(const char *label, const char *b, size_t n)
 {
 	size_t i;
@@ -3751,6 +3858,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b51-cwd-chain-intermediate-under-a-host-pin")) b51_cwd_chain_intermediate_under_a_host_pin();
 	else if (!strcmp(c, "b52-pin-ancestor-never-reaches-the-remote")) b52_pin_ancestor_never_reaches_the_remote();
 	else if (!strcmp(c, "b53-name-exists-on-a-fixed-node")) b53_name_exists_on_a_fixed_node();
+	else if (!strcmp(c, "b54-list-is-its-own-cache-class")) b54_list_is_its_own_cache_class();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
