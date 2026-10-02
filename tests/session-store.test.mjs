@@ -19,6 +19,7 @@ const {
   loadSessions, loadSessionsSync, mutateSessions, orphanedTempIdsSync,
   getTitle, setTitle, getSessionMode, setSessionMode, setSegmentTemp, isTemp, setSummary, getSummaries,
   setSessionBackend, getSessionBackend, markConducted, isConducted, setSegmentArchived, isArchived,
+  getTurnMarks, recordTurnEnd, markViewed,
 } = store;
 
 let testNo = 0;
@@ -387,4 +388,77 @@ test('an on-disk value outside the schema is dropped, not trusted', async () => 
   assert.deepEqual([...idx.byPublic.keys()], [A], 'a record with no valid segment is dropped');
   assert.deepEqual(idx.byPublic.get(A), { current: A, segments: [{ id: A, reason: 'initial', at: '' }] },
     'every malformed fact is dropped');
+});
+
+// Invariant: a record that predates the turn marks (neither counter on disk)
+// reads 0/0 — read — and so does an id with no record at all.
+test('a record with neither turn counter reads {0, 0}', async () => {
+  const root = await freshRoot();
+  await fs.writeFile(storeFile(root), doc([A]));
+  assert.deepEqual(await getTurnMarks(A), { turnEndSeq: 0, viewedSeq: 0 });
+  assert.deepEqual(await getTurnMarks(B), { turnEndSeq: 0, viewedSeq: 0 }, 'no record reads the same');
+});
+
+// Invariant: recordTurnEnd increments turnEndSeq by one per call, returns both
+// counters, and the value is on disk (a cache-free sync read sees it).
+test('recordTurnEnd increments and persists turnEndSeq', async () => {
+  const root = await freshRoot();
+  assert.deepEqual(await recordTurnEnd(A), { turnEndSeq: 1, viewedSeq: 0 });
+  assert.deepEqual(await recordTurnEnd(A), { turnEndSeq: 2, viewedSeq: 0 });
+  assert.equal((await readJson(storeFile(root))).sessions[A].turnEndSeq, 2);
+  const rec = loadSessionsSync().byPublic.get(A);
+  assert.equal(rec.turnEndSeq, 2, 'a read that never consults the cache sees the counter');
+  assert.deepEqual(await getTurnMarks(A), { turnEndSeq: 2, viewedSeq: 0 });
+});
+
+// Invariant: markViewed clamps to turnEndSeq (no pre-marking a future turn).
+test('markViewed clamps the marker to turnEndSeq', async () => {
+  const root = await freshRoot();
+  await recordTurnEnd(A);
+  await recordTurnEnd(A);
+  assert.deepEqual(await markViewed(A, 9), { turnEndSeq: 2, viewedSeq: 2 });
+  assert.equal((await readJson(storeFile(root))).sessions[A].viewedSeq, 2);
+  await recordTurnEnd(A);
+  assert.deepEqual(await getTurnMarks(A), { turnEndSeq: 3, viewedSeq: 2 }, 'the next turn end is unread');
+});
+
+// Invariant: markViewed never lowers viewedSeq.
+test('markViewed never moves the marker backwards', async () => {
+  const root = await freshRoot();
+  for (let i = 0; i < 3; i++) await recordTurnEnd(A);
+  assert.deepEqual(await markViewed(A, 3), { turnEndSeq: 3, viewedSeq: 3 });
+  assert.deepEqual(await markViewed(A, 1), { turnEndSeq: 3, viewedSeq: 3 });
+  assert.equal((await readJson(storeFile(root))).sessions[A].viewedSeq, 3);
+});
+
+// Invariant: an unchanged marker is a no-op that takes no lock and writes nothing.
+test('markViewed at the stored marker takes no lock', async () => {
+  const root = await freshRoot();
+  await recordTurnEnd(A);
+  await markViewed(A, 1);
+  const before = await fs.stat(storeFile(root), { bigint: true });
+  await holdLock(root);
+  try {
+    assert.deepEqual(await markViewed(A, 1), { turnEndSeq: 1, viewedSeq: 1 });
+    const after = await fs.stat(storeFile(root), { bigint: true });
+    assert.equal(after.mtimeNs, before.mtimeNs, 'no write happened');
+  } finally {
+    await fs.rm(lockFile(root), { force: true });
+  }
+});
+
+// Invariant: a negative or non-integer counter on disk is dropped on parse
+// (reads 0); a valid one is kept.
+test('an on-disk turn counter outside the schema is dropped', async () => {
+  const root = await freshRoot();
+  const seg = (id) => [{ id, reason: 'initial', at: '' }];
+  await fs.writeFile(storeFile(root), JSON.stringify({ sessions: {
+    [A]: { current: A, segments: seg(A), turnEndSeq: -1, viewedSeq: 1.5 },
+    [B]: { current: B, segments: seg(B), turnEndSeq: '3', viewedSeq: null },
+    [C]: { current: C, segments: seg(C), turnEndSeq: 4, viewedSeq: 2 },
+  } }));
+  const idx = await loadSessions();
+  assert.deepEqual(idx.byPublic.get(A), { current: A, segments: seg(A) });
+  assert.deepEqual(idx.byPublic.get(B), { current: B, segments: seg(B) });
+  assert.deepEqual(await getTurnMarks(C), { turnEndSeq: 4, viewedSeq: 2 });
 });

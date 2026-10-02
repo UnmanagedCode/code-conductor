@@ -73,6 +73,7 @@ import {
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
 import { applySessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
+import { applySessionViewed } from './sessionViewed.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { getSummaries, setSummary, isArchived, setSegmentArchived, loadSessions, resolveOwner } from './sessionStore.ts';
 import { resolveBacking } from './sessionLineage.ts';
@@ -1110,6 +1111,25 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       const stored = await applySessionTitle(instances, sid, raw ?? '');
       broadcastProjects();
       res.json({ ok: true, sessionId: sid, title: stored, maxLength: MAX_TITLE_LEN });
+    } catch (e) { next(e); }
+  });
+
+  // The browser marks the turn end it showed the human (public/viewedMarker.js).
+  // No MCP equivalent, by design: a conductor's reads never count as viewed.
+  // The broadcast is the live instances' status emit (setTurnMarks).
+  r.post('/sessions/:sessionId/viewed', async (req, res, next) => {
+    try {
+      const { sid } = await sidParam(req.params.sessionId);
+      const seq = jsonBody(req).seq;
+      if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) {
+        throw httpError(400, 'seq must be a non-negative integer');
+      }
+      const known = (instances?.idsForSession(sid).length ?? 0) > 0
+        || resolveOwner(await loadSessions(), sid) !== null
+        || (await findSessionLocation(sid)) !== null;
+      if (!known) throw httpError(404, 'session not found');
+      const marks = await applySessionViewed(instances, sid, seq);
+      res.json({ ok: true, sessionId: sid, ...marks });
     } catch (e) { next(e); }
   });
 

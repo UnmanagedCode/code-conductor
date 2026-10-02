@@ -18,7 +18,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } f
 import { rotate } from './segmentChain.mjs';
 import { localPlace, listSessionsForCwdWithCounts, orchStoreRoot } from '../src/projects.ts';
 import { recordRotation, revertRotation, resolveBacking, dropSegment } from '../src/sessionLineage.ts';
-import { getTitle, setTitle, isTemp, loadSessions } from '../src/sessionStore.ts';
+import { getTitle, setTitle, isTemp, loadSessions, getTurnMarks } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -88,6 +88,21 @@ test('a typed /clear keeps the custom title on the session', async () => {
   const row = rows.find(r => r.sessionId === publicId);
   assert.ok(row, `the post-clear transcript lists under the public id: ${JSON.stringify(rows)}`);
   assert.equal(row.title, TITLE, 'the listing row must show the title set before the clear');
+});
+
+// Invariant: a rotation moves only `current`; the turn marks are record facts
+// and survive it, readable through the public id and the new segment alike.
+test('a typed /clear keeps both turn marks on the session', async () => {
+  const inst = await spawn({});
+  const publicId = inst.sessionId;
+  await inst.prompt('go', [], { internal: true });
+  await waitFor(() => inst.turnEndSeq === 1);
+  const r = await api(baseUrl, 'POST', `/api/sessions/${publicId}/viewed`, { seq: 1 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const { newBacking } = await typedClear(inst);
+  assert.deepEqual(await getTurnMarks(publicId), { turnEndSeq: 1, viewedSeq: 1 });
+  assert.deepEqual(await getTurnMarks(newBacking), { turnEndSeq: 1, viewedSeq: 1 });
+  assert.deepEqual([inst.summary().turnEndSeq, inst.summary().viewedSeq], [1, 1]);
 });
 
 test('a typed /clear keeps a substitution backend and exact model on resume', async () => {

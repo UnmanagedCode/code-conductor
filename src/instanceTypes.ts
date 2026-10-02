@@ -21,6 +21,7 @@ import type { TranscriptPlacement } from './projects.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { PlaybookEnforcement } from './playbooks.ts';
 import type { SessionRedirect } from './systems/toolRedirect.ts';
+import type { TurnMarks } from './sessionStore.ts';
 import type { Response } from 'express';
 
 // One backing segment's claim on the ring's seq space: ring content with
@@ -47,6 +48,9 @@ export interface InstanceSummary {
   // The latest top-level API call's prompt (contextReading), or null until a
   // call measures it.
   contextTokens?: number | null;
+  // The session record's turn marks (src/sessionStore.ts getTurnMarks).
+  turnEndSeq?: number;
+  viewedSeq?: number;
   [key: string]: unknown;
 }
 
@@ -214,6 +218,8 @@ export interface InstanceLike {
   // Accepts null (clears the title) — the routes title endpoint stores
   // `setSessionTitle(...)`'s result, which is null when the title is cleared.
   setTitle(title: string | null): void;
+  // Merge stored turn marks (src/sessionViewed.ts after POST .../viewed).
+  setTurnMarks(m: TurnMarks): void;
   // Route surface (src/routes.ts): the three destructive session rewrites,
   // debug mutation and the hook-callback envelope. `_mutating` is the guard
   // fork/rewind/prune claim synchronously; it stays on the contract for the

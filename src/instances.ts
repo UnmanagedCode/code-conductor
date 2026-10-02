@@ -72,7 +72,8 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, isTemp, setSegmentTemp, type SessionBackendRecord,
+  isConducted, markConducted, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd,
+  type SessionBackendRecord, type TurnMarks,
 } from './sessionStore.ts';
 import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
@@ -732,6 +733,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   _planFiles: PlanFileTracker;
   firstPrompt: string | null;
   title: string | null;
+  turnEndSeq: number;
+  viewedSeq: number;
   autoApprovePlan: boolean;
   playbookEnforcement: PlaybookEnforcement;
   interrupting: boolean;
@@ -961,6 +964,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     // store after sessionId is known; mutated by setTitle() from the PUT
     // /api/sessions/:sid/title route.
     this.title = null;
+    // In-memory mirror of the session record's turn marks (sessionStore.ts
+    // getTurnMarks): unread ⇔ turnEndSeq > viewedSeq. Written only through
+    // setTurnMarks — by the turn_end store write, the resume hydrate and the
+    // POST /api/sessions/:sid/viewed route.
+    this.turnEndSeq = 0;
+    this.viewedSeq = 0;
     // When true and the instance is in plan mode, an incoming
     // plan_request is auto-approved server-side (mode flip + approval
     // prompt) without waiting for a client click. Lives on the server so
@@ -1238,6 +1247,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
       title: this.title,
+      turnEndSeq: this.turnEndSeq,
+      viewedSeq: this.viewedSeq,
       lastResponseAt: this.lastResponseAt,
       // Rotation tell. Pinning the public id makes a rotation invisible, which
       // removes the ONLY signal a conductor previously had that one happened — a
@@ -1338,6 +1349,23 @@ export class Instance extends EventEmitter implements InstanceLike {
         this.emit('status', this.summary());
       }
     } catch { /* store read is best-effort */ }
+  }
+
+  // Merge stored turn marks into memory. Both counters are monotonic, so each
+  // takes the max — a read that raced a newer write can never regress them.
+  setTurnMarks(m: TurnMarks): void {
+    const turnEndSeq = Math.max(this.turnEndSeq, m.turnEndSeq);
+    const viewedSeq = Math.max(this.viewedSeq, m.viewedSeq);
+    if (turnEndSeq === this.turnEndSeq && viewedSeq === this.viewedSeq) return;
+    this.turnEndSeq = turnEndSeq;
+    this.viewedSeq = viewedSeq;
+    this.emit('status', this.summary());
+  }
+
+  // _hydrateTitle's twin: the turn marks survive a resume/respawn.
+  async _hydrateTurnMarks(): Promise<void> {
+    if (!this.sessionId) return;
+    this.setTurnMarks(await getTurnMarks(this.sessionId));
   }
 
   ringSnapshot(): Array<UiEvent & { _seq: number }> { return this.ring.toArray(); }
@@ -2268,6 +2296,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // exists). Every later mode change goes through _recordMode.
     this._recordMode(this.mode);
     this._hydrateTitle().catch(() => {});
+    this._hydrateTurnMarks().catch((e) => {
+      console.error(`instances: turn-mark hydrate for ${this.sessionId} failed: ${(e as Error).message}`);
+    });
     const args = [
       ...launchPrefix,
       '-p',
@@ -2750,6 +2781,14 @@ export class Instance extends EventEmitter implements InstanceLike {
         // cross-turn comparison. A turn with no requests leaves P unchanged.
         if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
         this.lastResponseAt = Date.now();
+        // Every real turn end counts toward unread, whoever started the turn.
+        // Tracked so a read after this turn sees the new count.
+        const sid = this.sessionId;
+        if (sid) {
+          trackLineageWrite(recordTurnEnd(sid).then(m => this.setTurnMarks(m), (e) => {
+            console.error(`instances: recordTurnEnd ${sid} failed: ${(e as Error).message}`);
+          }));
+        }
         this._setStatus('idle');
         this._idleWindowDirty = false; // fresh idle window starts clean
         // This turn's plan-file writes stop corroborating the next turn's
