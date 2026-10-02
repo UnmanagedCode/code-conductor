@@ -15,8 +15,9 @@ const load = (name) => import(pathToFileURL(path.join(PUB, name)).href + `?t=${M
 export const ID = 'inst-1';
 
 // `bodies` answers by URL suffix: `sync`, `rebasePrompt`, `merge`.
+// `refreshProjectsError`: when set, `refreshProjects()` rejects with it.
 export async function setupSessionActions({
-  activeId = ID, instances = [], bodies = {}, confirmAnswer = true,
+  activeId = ID, instances = [], bodies = {}, confirmAnswer = true, refreshProjectsError = null,
 } = {}) {
   const { installSessionActions } = await load('sessionActions.js');
   const calls = [];
@@ -36,7 +37,7 @@ export async function setupSessionActions({
   };
   const handles = installSessionActions({
     getActiveId: () => activeId, setActiveId: () => {}, getInstances: () => instances,
-    refreshProjects: async () => { refreshes.projects++; }, refreshInstances: async () => {},
+    refreshProjects: async () => { refreshes.projects++; if (refreshProjectsError) throw refreshProjectsError; }, refreshInstances: async () => {},
     selectInstance: () => {}, sidebar: {}, clearUnread: () => {}, headerUpdate: () => {},
   });
   return { ...handles, calls, alerts, confirms, refreshes };

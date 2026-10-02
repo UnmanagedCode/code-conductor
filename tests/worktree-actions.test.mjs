@@ -125,3 +125,68 @@ test('a refused merge alerts the server\'s reason', async () => {
   assert.equal(result.ok, false, 'the view keys its refresh on ok');
   assert.equal(t.refreshes.projects, 0);
 });
+
+// PINS: a sidebar-refresh failure never turns a confirmed server result into a
+// failure — the merge/sync already happened, so no "failed" alert, and the
+// helper still returns the result (the commits view reloads its list off it).
+test('a refreshProjects() rejection after a merge or sync leaves the result intact: no failure alert, result returned', async (t) => {
+  const boom = new Error('projects fetch blew up');
+  for (const [kind, body, call] of [
+    ['merge', { ok: true, newSha: '0123456789abcdef' }, (w) => w.mergeWorktree(TARGET)],
+    ['sync', { ok: true, action: 'fast-forwarded', newSha: '0123456789abcdef' }, (w) => w.syncWorktree(TARGET)],
+  ]) {
+    await t.test(kind, async () => {
+      const w = await setupSessionActions({ bodies: { [kind]: body }, refreshProjectsError: boom });
+      const result = await call(w);
+      assert.deepEqual(result, body, 'the server result is returned');
+      assert.equal(w.refreshes.projects, 1, 'the refresh was attempted');
+      assert.doesNotMatch(w.alerts.join('\n'), /failed/);
+    });
+  }
+});
+
+// PINS: a blocked sync's rebase prompt is still offered when the sidebar
+// refresh fails — the refresh sits before the offer, so it must not abort it.
+test('a refreshProjects() rejection does not swallow the rebase-prompt offer', async () => {
+  const w = await setupSessionActions({
+    activeId: null, instances: [inst('B', 'wt-a')],
+    bodies: { sync: BLOCKED, rebasePrompt: SENT }, refreshProjectsError: new Error('boom'),
+  });
+  await w.syncWorktree(TARGET);
+  assert.equal(w.confirms.length, 1);
+  assert.equal(posts(w.calls, '/rebase-prompt').length, 1);
+});
+
+// PINS: the target's names are URL-encoded in the MERGE route as in the sync one.
+test('mergeWorktree encodes the project and worktree names in the URL', async () => {
+  const w = await setupSessionActions({ bodies: { merge: { ok: true, newSha: 'abcdef0123456789' } } });
+  await w.mergeWorktree({ project: 'my proj#1', worktree: 'a/b c' });
+  assert.equal(w.calls[0].url, '/api/projects/my%20proj%231/worktrees/a%2Fb%20c/merge');
+});
+
+// PINS: the rebase prompt goes to a LIVE session on the worktree even when the
+// active one there is dead; "No agent is running here" only when none is live.
+test('a crashed or exited active session on the worktree does not shadow a live one', async (t) => {
+  for (const status of ['crashed', 'exited']) {
+    await t.test(`${status} active + live other`, async () => {
+      const w = await setupSessionActions({
+        activeId: 'dead', instances: [inst('dead', 'wt-a', { status }), inst('live', 'wt-a')],
+        bodies: { sync: BLOCKED, rebasePrompt: SENT },
+      });
+      await w.syncWorktree(TARGET);
+      assert.equal(w.confirms.length, 1);
+      assert.match(w.confirms[0], /title live/);
+      assert.equal(posts(w.calls, '/rebase-prompt')[0]?.url, '/api/instances/live/rebase-prompt');
+      assert.doesNotMatch(w.alerts.join('\n'), /No agent is running here/);
+    });
+  }
+  await t.test('only dead sessions: still told, not asked', async () => {
+    const w = await setupSessionActions({
+      activeId: 'dead', instances: [inst('dead', 'wt-a', { status: 'crashed' })],
+      bodies: { sync: BLOCKED, rebasePrompt: SENT },
+    });
+    await w.syncWorktree(TARGET);
+    assert.equal(w.confirms.length, 0);
+    assert.match(w.alerts.join('\n'), /No agent is running here/);
+  });
+});

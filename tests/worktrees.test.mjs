@@ -869,20 +869,50 @@ test('POST /projects/:name/worktrees/:wt/merge refuses WORKTREE_DIRTY when the w
   assert.equal(allowed.body.ok, true, `merge failed: ${allowed.body.reason}`);
 });
 
-test('a merge through the worktree route shows in the next GET /api/projects mergeStatus', async () => {
+// The suite pins the projects cache TTL at 0, which would make every listing a
+// recompute and any "fresh after the action" assertion vacuous — so these tests
+// run under a real TTL and put it back afterwards. Each carries a positive
+// control: a change made behind the server's back is NOT visible until the route
+// under test runs, proving the cache is live and invalidate() is what clears it.
+async function withLiveProjectsCache(fn) {
+  const cache = await import('../src/projectsCache.ts');
+  cache._resetForTest(60_000);
+  try { await fn(); } finally { cache._resetForTest(0); }
+}
+const mergeStatusOf = async (wtName) => {
+  const r = await api(baseUrl, 'GET', '/api/projects');
+  return r.body.find(p => p.name === 'demo').worktrees.find(w => w.worktreeName === wtName).mergeStatus;
+};
+
+test('a merge through the worktree route invalidates the cached listing, so the next GET /api/projects shows the fresh mergeStatus', async () => {
   await makeRealRepo('demo');
   const wt = await createWorktree('demo');
   await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
-  const statusOf = async () => {
-    const r = await api(baseUrl, 'GET', '/api/projects');
-    return r.body.find(p => p.name === 'demo').worktrees.find(w => w.worktreeName === wt.worktreeName).mergeStatus;
-  };
-  // Prime the projects cache with the ahead:1 reading.
-  assert.deepEqual(await statusOf(), { ahead: 1, behind: 0 });
+  await withLiveProjectsCache(async () => {
+    assert.deepEqual(await mergeStatusOf(wt.worktreeName), { ahead: 1, behind: 0 });
+    // Behind the server's back: a second commit the cache has not seen.
+    await commitInWorktree(wt.worktreePath, 'more.txt', 'more\n', 'more work');
+    assert.deepEqual(await mergeStatusOf(wt.worktreeName), { ahead: 1, behind: 0 }, 'control: the cache is serving');
 
-  const r = await wtMerge(wt.worktreeName);
-  assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
-  assert.deepEqual(await statusOf(), { ahead: 0, behind: 0 });
+    const r = await wtMerge(wt.worktreeName);
+    assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
+    assert.deepEqual(await mergeStatusOf(wt.worktreeName), { ahead: 0, behind: 0 });
+  });
+});
+
+test('a sync through the worktree route invalidates the cached listing, so the next GET /api/projects shows the fresh mergeStatus', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createWorktree('demo');
+  await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+  await withLiveProjectsCache(async () => {
+    assert.deepEqual(await mergeStatusOf(wt.worktreeName), { ahead: 0, behind: 1 });
+    await commitInParent(repoPath, 'parent2.txt', 'more parent\n', 'more parent work');
+    assert.deepEqual(await mergeStatusOf(wt.worktreeName), { ahead: 0, behind: 1 }, 'control: the cache is serving');
+
+    const r = await wtSync(wt.worktreeName);
+    assert.equal(r.body.ok, true, `sync failed: ${r.body.reason}`);
+    assert.deepEqual(await mergeStatusOf(wt.worktreeName), { ahead: 0, behind: 0 });
+  });
 });
 
 test('GET /api/projects exposes mergeStatus tracking ahead/behind for each worktree', async () => {

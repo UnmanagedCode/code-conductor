@@ -344,13 +344,21 @@ export function installSessionActions({
   }
 
   // The session a rebase prompt for `{project, worktree}` goes to: the active
-  // one if it is on that worktree, else any live one, else the first. `inst.project`
+  // one if it is live on that worktree, else any live one there, else (so the
+  // no-agent alert still fires) the active/first dead one. `inst.project`
   // is the parent project, so a worktree session matches on its parent's name.
   function worktreeSession({ project, worktree }) {
     const mine = getInstances().filter(i => i.project === project && i.worktree?.worktreeName === worktree);
-    return mine.find(i => i.id === getActiveId())
-      ?? mine.find(i => i.status !== 'crashed' && i.status !== 'exited')
-      ?? mine[0];
+    const live = mine.filter(i => i.status !== 'crashed' && i.status !== 'exited');
+    return live.find(i => i.id === getActiveId()) ?? live[0] ?? mine.find(i => i.id === getActiveId()) ?? mine[0];
+  }
+
+  // The sidebar refresh after a land-back op is a courtesy: the server already
+  // answered, so a failed re-fetch is logged and must never be reported as the
+  // op failing (or swallow the result the commits view reloads on).
+  async function refreshProjectsAfterOp() {
+    try { await refreshProjects(); }
+    catch (e) { console.warn('refreshProjects after worktree op failed:', e); }
   }
 
   // Sync only measures + lands what git can do alone. Dispatching the rebase is a
@@ -377,7 +385,7 @@ export function installSessionActions({
       } else if (result.action === 'rebased') {
         alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — Merge it from the worktree's commit history (≡) when ready.`);
       }
-      await refreshProjects();
+      await refreshProjectsAfterOp();
       if (result.action === 'commit-required' || result.action === 'rebase-conflict') {
         await offerRebasePrompt(target ? worktreeSession(target) : getInstances().find(i => i.id === id), result);
       }
@@ -417,7 +425,7 @@ export function installSessionActions({
         { method: 'POST' });
       if (result.ok) {
         alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
-        await refreshProjects();
+        await refreshProjectsAfterOp();
       } else {
         alert(`Cannot merge:\n${result.reason}`);
       }
