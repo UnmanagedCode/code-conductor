@@ -586,9 +586,60 @@ test('TurnEndBlock: no reading, no ctx segment — the line is exactly the pre-c
   assert.equal(absent.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · in=10 out=252');
 });
 
+
+test('TurnEndBlock: the turn\'s growth prefixes the ctx segment', async (t) => {
+  setupDOM();
+  await t.test('with a window', () => {
+    const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: 200_000, contextGrowthTokens: 3_200 });
+    assert.equal(b.node.textContent,
+      '✓ turn ended · (end_turn) · 1200ms · $0.0123 · +3.2k → ctx 35k / 200k (18%) · in=10 out=252');
+  });
+  await t.test('without a window', () => {
+    const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: null, contextGrowthTokens: 3_200 });
+    assert.equal(b.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · +3.2k → ctx 35k · in=10 out=252');
+  });
+});
+
+test('TurnEndBlock: negative growth keeps its sign', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: 200_000, contextGrowthTokens: -1_500 });
+  assert.equal(b.node.textContent,
+    '✓ turn ended · (end_turn) · 1200ms · $0.0123 · -1.5k → ctx 35k / 200k (18%) · in=10 out=252');
+});
+
+test('TurnEndBlock: no growth, no prefix — the line is exactly the ctx-only line', () => {
+  setupDOM();
+  const want = '✓ turn ended · (end_turn) · 1200ms · $0.0123 · ctx 35k / 200k (18%) · in=10 out=252';
+  const nulled = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: 200_000, contextGrowthTokens: null });
+  assert.equal(nulled.node.textContent, want);
+  const absent = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: 35_000, contextWindowTokens: 200_000 });
+  assert.equal(absent.node.textContent, want);
+});
+
+test('TurnEndBlock: growth without a reading renders no ctx segment at all', () => {
+  setupDOM();
+  const b = new TurnEndBlock({ ...TURN_END_BASE, contextTokens: null, contextWindowTokens: 200_000, contextGrowthTokens: 3_200 });
+  assert.equal(b.node.textContent, '✓ turn ended · (end_turn) · 1200ms · $0.0123 · in=10 out=252');
+});
+
 // ── per-call usage line and the Agent row's subagent total ──
 
 const CALL = { kind: 'call_usage', msgId: 'm1', outputTokens: 460, thinkingTokens: 73, promptTokens: 84_000, growthTokens: 3_200 };
+
+test('TurnEndBlock: the turn prefix is the per-call line\'s prefix for the same growth', async (t) => {
+  setupDOM();
+  const beforeCtx = (text) => text.slice(0, text.indexOf('ctx '));
+  for (const g of [3_200, -1_500, 0, 12_400]) {
+    await t.test(String(g), () => {
+      const turn = new TurnEndBlock({ ...TURN_END_BASE, usage: null, durationMs: null, costDelta: null, stopReason: null,
+        contextTokens: 35_000, contextWindowTokens: null, contextGrowthTokens: g });
+      const segment = turn.node.textContent.split(' · ').find(p => p.includes('ctx '));
+      const line = new CallUsageLine({ ...CALL, growthTokens: g });
+      assert.notEqual(beforeCtx(line.node.textContent), '', 'premise: the per-call line has a prefix');
+      assert.equal(beforeCtx(segment), beforeCtx(line.node.textContent));
+    });
+  }
+});
 
 test('CallUsageLine: growth, context and output with its thinking portion', async (t) => {
   setupDOM();

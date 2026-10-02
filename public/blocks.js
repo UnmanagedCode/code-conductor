@@ -1386,6 +1386,12 @@ const CALL_USAGE_TITLE = 'Prompt size of this API call (exact). Growth = this ca
   + 'that call\'s output plus everything appended since (tool results, user message, injected context, hook output) '
   + '— not per-tool attribution.';
 
+// `+3.2k → ` / `-1.5k → `, or '' when the growth is unknown. Shared by the
+// per-call line and the turn-end row.
+function growthPrefix(growthTokens) {
+  return growthTokens == null ? '' : `${growthTokens < 0 ? '-' : '+'}${formatTokens(Math.abs(growthTokens))} → `;
+}
+
 // One API call's figures, from a live `call_usage` event: growth over the
 // previous call, this call's prompt, and its output with the thinking portion.
 // A `div.call-usage`, deliberately NOT a `.block`, so an action group's tally
@@ -1393,11 +1399,7 @@ const CALL_USAGE_TITLE = 'Prompt size of this API call (exact). Growth = this ca
 export class CallUsageLine {
   constructor({ promptTokens, growthTokens, outputTokens, thinkingTokens }) {
     const parts = [];
-    if (promptTokens != null) {
-      const growth = growthTokens == null ? ''
-        : `${growthTokens < 0 ? '-' : '+'}${formatTokens(Math.abs(growthTokens))} → `;
-      parts.push(`${growth}ctx ${formatTokens(promptTokens)}`);
-    }
+    if (promptTokens != null) parts.push(`${growthPrefix(growthTokens)}ctx ${formatTokens(promptTokens)}`);
     const thinking = thinkingTokens ? ` (${formatTokens(thinkingTokens)} thinking)` : '';
     parts.push(`out ${formatTokens(outputTokens)}${thinking}`);
     this.node = el('div', { class: 'call-usage', title: CALL_USAGE_TITLE }, parts.join(' · '));
@@ -1405,17 +1407,18 @@ export class CallUsageLine {
 }
 
 // The context in use at the turn's end — the latest API call's prompt — against
-// the window the server measured it with. Both are stamped on turn_end by the
-// server (live only); either may be null.
-function contextSegment(contextTokens, contextWindowTokens) {
+// the window the server measured it with, prefixed by the turn's growth
+// (contextGrowthTokens). All three are stamped on turn_end by the server (live
+// only); any may be null.
+function contextSegment(contextTokens, contextWindowTokens, contextGrowthTokens) {
   if (contextTokens == null || !Number.isFinite(contextTokens)) return '';
-  const ctx = `ctx ${formatTokens(contextTokens)}`;
+  const ctx = `${growthPrefix(contextGrowthTokens)}ctx ${formatTokens(contextTokens)}`;
   if (contextWindowTokens == null || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return ctx;
   return `${ctx} / ${formatTokens(contextWindowTokens)} (${formatPct(contextTokens / contextWindowTokens)})`;
 }
 
 export class TurnEndBlock {
-  constructor({ subtype, durationMs, cost, costDelta, usage, isError, stopReason, contextTokens, contextWindowTokens }) {
+  constructor({ subtype, durationMs, cost, costDelta, usage, isError, stopReason, contextTokens, contextWindowTokens, contextGrowthTokens }) {
     // costDelta is the actual cost of this turn; cost is the cumulative session total.
     // Prefer costDelta for display so each line shows what that turn cost, not the running total.
     const displayCost = costDelta ?? cost;
@@ -1424,7 +1427,7 @@ export class TurnEndBlock {
       stopReason ? `(${stopReason})` : '',
       durationMs != null ? `${durationMs}ms` : '',
       displayCost != null ? fmtCost(displayCost) : '',
-      contextSegment(contextTokens, contextWindowTokens),
+      contextSegment(contextTokens, contextWindowTokens, contextGrowthTokens),
       usage ? `in=${usage.input_tokens ?? '?'} out=${usage.output_tokens ?? '?'}` : '',
     ].filter(Boolean);
     this.node = el('div', { class: 'block turn-end' }, parts.join(' · '));

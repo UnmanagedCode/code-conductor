@@ -1,8 +1,9 @@
 // CallUsageTracker (src/callUsage.ts): the per-call figures Instance stamps on a
 // `call_usage` event — the call's prompt and its growth over the previous
-// reading. Pure: the instance hands it the latch value read BEFORE each call's
-// message_start updates the latch, which is what makes the baseline "null
-// exactly when the latch is".
+// reading — and the turn's growth endTurn hands to `turn_end`. Pure: the
+// instance hands it the latch value read BEFORE each call's message_start
+// updates the latch, which is what makes the baseline "null exactly when the
+// latch is".
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -70,4 +71,132 @@ test('negative growth keeps its sign', () => {
   const t = new CallUsageTracker();
   t.onMessageStart('m', 50_000, u(48_000));
   assert.deepEqual(stamped(t), { promptTokens: 48_000, growthTokens: -2_000 });
+});
+
+// ── the turn's growth (endTurn), stamped on turn_end ──
+
+test('turn growth: the turn-end reading minus the first call\'s baseline, equal to the sum of the turn\'s stamped growths', () => {
+  const t = new CallUsageTracker();
+  const growths = [];
+  t.onMessageStart('m1', 40_000, u(42_500));
+  growths.push(stamped(t, 'm1').growthTokens);
+  t.onMessageStart('m2', 42_500, u(47_000));
+  growths.push(stamped(t, 'm2').growthTokens);
+  t.onMessageStart('m3', 47_000, u(46_200));
+  growths.push(stamped(t, 'm3').growthTokens);
+  assert.deepEqual(growths, [2_500, 4_500, -800], 'premise: distinct growths, one negative');
+  const turn = t.endTurn(46_200);
+  assert.equal(turn, 46_200 - 40_000);
+  assert.equal(turn, growths.reduce((a, b) => a + b, 0));
+});
+
+test('turn growth: negative keeps its sign', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m', 50_000, u(48_000));
+  stamped(t);
+  assert.equal(t.endTurn(48_000), -2_000);
+});
+
+test('turn growth: null when the turn\'s first call had no baseline', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m', null, u(40_000));
+  stamped(t);
+  assert.equal(t.endTurn(40_000), null);
+});
+
+test('turn growth: null for a turn with no usage-bearing call', async (tt) => {
+  await tt.test('no call opened, and the previous turn\'s baseline does not leak', () => {
+    const t = new CallUsageTracker();
+    t.onMessageStart('m1', 10_000, u(12_000));
+    stamped(t, 'm1');
+    assert.equal(t.endTurn(12_000), 2_000, 'premise: the previous turn had growth');
+    assert.equal(t.endTurn(12_000), null);
+  });
+  await tt.test('a zero-usage call opened but nothing measured it', () => {
+    const t = new CallUsageTracker();
+    t.onMessageStart('m', 30_000, null);
+    assert.equal(stamped(t).growthTokens, null, 'premise: the line carries no growth');
+    assert.equal(t.endTurn(30_000), null, 'not +0');
+  });
+});
+
+test('turn growth: a reset() mid-turn voids the turn even when later calls have baselines', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  stamped(t, 'm1');
+  t.reset();
+  t.onMessageStart('m2', 20_000, u(23_000));
+  assert.equal(stamped(t, 'm2').growthTokens, 3_000, 'premise: the later call measures its own growth');
+  assert.equal(t.endTurn(23_000), null);
+});
+
+test('turn growth: a cut-off call that moved the baseline drops the prefix', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  const sum = stamped(t, 'm1').growthTokens;
+  t.onMessageStart('m2', 12_000, u(15_000)); // never reaches message_delta: no stamp
+  assert.notEqual(15_000 - 10_000, sum, 'premise: ctx-end − baseline differs from the stamped sum');
+  assert.equal(t.endTurn(15_000), null);
+});
+
+test('turn growth: a cut-off call with zero growth leaves the figures equal, so the prefix stays', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  stamped(t, 'm1');
+  t.onMessageStart('m2', 12_000, u(12_000)); // cut off, no stamp, same prompt
+  assert.equal(t.endTurn(12_000), 2_000);
+});
+
+test('turn growth: a line for a call the tracker never opened adds nothing to the sum', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  stamped(t, 'm1');
+  t.onContextUsage('m-next', u(13_000));
+  stamped(t, 'm-next');
+  assert.equal(t.endTurn(12_000), 2_000);
+});
+
+test('turn growth: each turn baselines afresh from its own first call', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  stamped(t, 'm1');
+  assert.equal(t.endTurn(12_000), 2_000, 'premise: turn 1');
+  t.onMessageStart('m2', 12_000, u(17_500));
+  stamped(t, 'm2');
+  assert.equal(t.endTurn(17_500), 17_500 - 12_000);
+});
+
+test('turn growth: a reset() mid-turn voids the turn even when the next call\'s baseline continues from the last prompt', async (tt) => {
+  const run = (withReset) => {
+    const t = new CallUsageTracker();
+    t.onMessageStart('m1', 10_000, u(12_000));
+    const g1 = stamped(t, 'm1').growthTokens;
+    if (withReset) t.reset();
+    t.onMessageStart('m2', 12_000, u(13_000));
+    const g2 = stamped(t, 'm2').growthTokens;
+    return { sum: g1 + g2, turn: t.endTurn(13_000) };
+  };
+  await tt.test('control: without the reset the two figures are equal and the prefix is published', () => {
+    const { sum, turn } = run(false);
+    assert.equal(13_000 - 10_000, sum, 'premise: ctx-end − baseline equals the stamped sum');
+    assert.equal(turn, 3_000);
+  });
+  await tt.test('with the reset the turn is voided', () => {
+    assert.equal(run(true).turn, null);
+  });
+});
+
+// Invariant: reset() clearing the turn's baseline is load-bearing on its own —
+// a post-reset call whose baseline equals the turn's FIRST baseline must not
+// let that retained baseline pair with the post-reset sum.
+test('turn growth: a reset() mid-turn voids the turn even when the next call\'s baseline equals the turn\'s first baseline', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  stamped(t, 'm1');
+  t.reset();
+  t.onMessageStart('m2', 10_000, u(13_000));
+  const after = stamped(t, 'm2').growthTokens;
+  assert.equal(13_000 - 10_000, after,
+    'premise: ctx-end − the turn\'s first baseline equals the post-reset stamped sum, so a retained baseline would publish');
+  assert.equal(t.endTurn(13_000), null);
 });

@@ -1,5 +1,6 @@
 // The context-used figure: `Instance.summary().contextTokens`, the turn-end
-// line's `contextTokens`/`contextWindowTokens` stamp, and the MCP `context` line.
+// line's `contextTokens`/`contextWindowTokens`/`contextGrowthTokens` stamp, and
+// the MCP `context` line.
 //
 // The figure is the latest TOP-LEVEL API call's prompt (input + cache_read +
 // cache_creation), read off the same latch the header chip uses. A compaction,
@@ -468,4 +469,152 @@ test('zero-usage backend: call_usage takes its prompt from the context_usage fal
   const [c1, c2] = events.filter(e => e.kind === 'call_usage');
   assert.deepEqual([c1.promptTokens, c1.growthTokens], [60_000, null]);
   assert.deepEqual([c2.promptTokens, c2.growthTokens], [63_500, 3_500]);
+});
+
+// ── turn growth on turn_end ────────────────────────────────────────────────
+
+const turnEnds = (events) => events.filter(e => e.kind === 'turn_end');
+const RESULT_LINE = JSON.stringify(RESULT);
+// A completed turn measuring READING, so the next turn's first call has a baseline.
+const seedTurn = (inst) => {
+  inst._handleStdoutLine(msgStartLine('m-seed', READING));
+  inst._handleStdoutLine(msgDeltaLine());
+  inst._handleStdoutLine(RESULT_LINE);
+};
+
+test('turn growth: the real capture\'s turn_end carries ctx-end minus its baseline, and it equals the sum of the turn\'s call_usage growths', async (t) => {
+  const { inst, events } = await makeInstance(t, { model: MODEL });
+  // The capture's init names its own session: adopt it so the init is a re-report, not a rotation.
+  inst.backingSessionId = EMIT.find(l => l.type === 'system' && l.subtype === 'init').session_id;
+  seedTurn(inst);
+  assert.equal(turnEnds(events)[0].contextGrowthTokens, null, 'a fresh session\'s first turn has no baseline');
+  const seeded = events.length;
+  for (const l of EMIT) inst._handleStdoutLine(JSON.stringify(l));
+  const turn = events.slice(seeded);
+  const calls = turn.filter(e => e.kind === 'call_usage');
+  assert.equal(calls.length, CALLS.length, 'premise: every capture call stamped a line');
+  assert.ok(calls.every(c => c.growthTokens != null), 'premise: every line in the turn has a growth');
+  assert.ok(SUBAGENT_PROMPTS.length > 0, 'premise: the capture has usage-bearing subagent calls');
+  const turnEnd = turnEnds(turn)[0];
+  assert.equal(turnEnd.contextTokens, LAST_PROMPT, 'premise');
+  assert.equal(turnEnd.contextGrowthTokens, LAST_PROMPT - 27_047);
+  assert.equal(turnEnd.contextGrowthTokens, calls.reduce((a, c) => a + c.growthTokens, 0));
+});
+
+test('turn growth: a fresh session\'s first turn has none, on the live WS feed too', async (t) => {
+  const { events } = await runScenario(t);
+  const turnEnd = events.find(e => e.kind === 'turn_end');
+  assert.equal(turnEnd.contextTokens, LAST_PROMPT, 'premise: the turn has a reading');
+  assert.ok('contextGrowthTokens' in turnEnd, 'the live feed carries the field');
+  assert.equal(turnEnd.contextGrowthTokens, null);
+});
+
+test('turn growth: a call cut off before its message_delta drops the prefix', async (t) => {
+  const BIGGER = { ...NEXT, cache_read_input_tokens: 34_000 };
+  await t.test('cut off', async (st) => {
+    const { inst, events } = await makeInstance(st);
+    seedTurn(inst);
+    inst._handleStdoutLine(msgStartLine('m1', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(msgStartLine('m2', BIGGER)); // no delta
+    inst._handleStdoutLine(RESULT_LINE);
+    const turnEnd = turnEnds(events).at(-1);
+    assert.equal(turnEnd.contextTokens, promptOf(BIGGER), 'premise: the cut-off call moved the reading');
+    assert.equal(turnEnd.contextGrowthTokens, null);
+  });
+  await t.test('control: the same turn without the cut-off call', async (st) => {
+    const { inst, events } = await makeInstance(st);
+    seedTurn(inst);
+    inst._handleStdoutLine(msgStartLine('m1', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(RESULT_LINE);
+    const turnEnd = turnEnds(events).at(-1);
+    assert.equal(turnEnd.contextGrowthTokens, promptOf(NEXT) - 27_047);
+    assert.equal(turnEnd.contextGrowthTokens, lastCall(events).growthTokens);
+  });
+});
+
+test('turn growth: null when a top-level compaction lands mid-turn', async (t) => {
+  const boundary = JSON.parse(COMPACT_LINES.find(l => JSON.parse(l).subtype === 'compact_boundary'));
+  const AFTER = { ...NEXT, cache_read_input_tokens: 12_000 };
+  const run = async (st, parentToolUseId) => {
+    const { inst, events } = await makeInstance(st);
+    seedTurn(inst);
+    const seeded = events.length;
+    inst._handleStdoutLine(msgStartLine('m1', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(JSON.stringify({ ...boundary, parent_tool_use_id: parentToolUseId }));
+    inst._handleStdoutLine(msgStartLine('m2', AFTER));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(RESULT_LINE);
+    return { turn: events.slice(seeded), turnEnd: turnEnds(events).at(-1) };
+  };
+  await t.test('top-level: the turn is voided', async (st) => {
+    const { turnEnd } = await run(st, null);
+    assert.equal(turnEnd.contextTokens, promptOf(AFTER), 'premise: the post-compaction call measured');
+    assert.equal(turnEnd.contextGrowthTokens, null);
+  });
+  await t.test('parent-tagged (a subagent compacting): the turn keeps its growth', async (st) => {
+    const { turn, turnEnd } = await run(st, 'toolu_sub');
+    assert.equal(turnEnd.contextGrowthTokens, promptOf(AFTER) - 27_047);
+    assert.equal(turnEnd.contextGrowthTokens,
+      turn.filter(e => e.kind === 'call_usage').reduce((a, c) => a + c.growthTokens, 0));
+  });
+});
+
+test('turn growth: the real /compact turn has none', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  inst.backingSessionId = COMPACT_SID;
+  inst._handleStdoutLine(msgStartLine('m-pre', READING));
+  for (const l of COMPACT_LINES) inst._handleStdoutLine(l);
+  const turnEnd = turnEnds(events).at(-1);
+  assert.ok(turnEnd, 'premise: the capture ends in a result');
+  assert.equal(turnEnd.contextGrowthTokens, null);
+});
+
+test('turn growth: a turn whose only call carried no usage has none', async (t) => {
+  const { inst, events } = await makeInstance(t);
+  seedTurn(inst);
+  inst._handleStdoutLine(msgStartLine('m2', undefined));
+  inst._handleStdoutLine(msgDeltaLine(200));
+  inst._handleStdoutLine(RESULT_LINE);
+  const turnEnd = turnEnds(events).at(-1);
+  assert.equal(lastCall(events).msgId, 'm2', 'premise: the call stamped a line');
+  assert.equal(turnEnd.contextTokens, 27_047, 'premise: the seed reading still stands');
+  assert.equal(turnEnd.contextGrowthTokens, null);
+});
+
+test('turn growth: a model switch mid-turn voids the turn though the next call\'s baseline continues', async (t) => {
+  // m2's message_start reports a new model: _trackModel drops the reading, and
+  // the same frame re-latches it at m1's prompt, so m3 grows from a baseline
+  // continuous with the turn's.
+  const AFTER = { ...NEXT, cache_read_input_tokens: 33_000 };
+  const run = async (st, m2Model) => {
+    const { inst, events } = await makeInstance(st);
+    seedTurn(inst);
+    const seeded = events.length;
+    inst._handleStdoutLine(msgStartLine('m1', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(msgStartLine('m2', NEXT, m2Model));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(msgStartLine('m3', AFTER));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(RESULT_LINE);
+    const turn = events.slice(seeded);
+    return { inst, turn, turnEnd: turnEnds(events).at(-1), sum: turn.filter(e => e.kind === 'call_usage').reduce((a, c) => a + (c.growthTokens ?? 0), 0) };
+  };
+  await t.test('control: the same turn with no switch publishes the stamped sum', async (st) => {
+    const { turnEnd, sum } = await run(st, undefined);
+    assert.equal(turnEnd.contextTokens - 27_047, sum, 'premise: ctx-end − baseline equals the stamped sum');
+    assert.equal(turnEnd.contextGrowthTokens, sum);
+  });
+  await t.test('switch: the turn is voided', async (st) => {
+    const { inst, turn, turnEnd, sum } = await run(st, 'claude-sonnet-5');
+    assert.ok(turn.some(e => e.kind === 'system' && e.subtype === 'model_changed'), 'premise: the switch fired mid-turn');
+    assert.equal(turn.filter(e => e.kind === 'call_usage').at(-1).growthTokens, promptOf(AFTER) - promptOf(NEXT),
+      'premise: the call after the switch grows from a continuous baseline');
+    assert.equal(turnEnd.contextTokens - 27_047, sum, 'premise: without the reset the figures would agree');
+    assert.equal(inst.summary().contextTokens, promptOf(AFTER), 'premise');
+    assert.equal(turnEnd.contextGrowthTokens, null);
+  });
 });
