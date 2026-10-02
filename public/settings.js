@@ -245,11 +245,12 @@ export function installSettings({
     else if (hide()) mainViewClosed();
   }
 
-  // After requestClose, which restores the session anchor (replaceState).
+  // The signal after requestClose, which restores the session anchor
+  // (replaceState) — and only when Settings was open.
   function close() {
-    hide();
+    const wasOpen = hide();
     requestClose?.();
-    mainViewClosed();
+    if (wasOpen) mainViewClosed();
   }
 
 

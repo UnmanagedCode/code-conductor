@@ -50,9 +50,10 @@ test('a hidden document posts nothing until it becomes visible', async () => {
   assert.deepEqual(posts.map(p => p.body), [{ seq: 2 }], 'visibilitychange to visible posts');
 });
 
-// Invariant: a full-page main view covering the pane is not viewing it;
-// a view closing back to the session (mainViewClosed, after a replaceState
-// anchor restore that fires no hashchange) re-runs the check and posts.
+// Invariant: a hash naming a full-page view blocks the check even when no
+// view reports open (it is about to show); a view closing back to the session
+// (mainViewClosed, after a replaceState anchor restore that fires no
+// hashchange) re-runs the check one microtask later, and it posts.
 test('a full-page view hash posts nothing until a view closes back to the session', async () => {
   const { window, posts, marker } = await setup({ hash: '#settings' });
   const { mainViewClosed } = await import(pub('mainViews.js'));
@@ -60,6 +61,8 @@ test('a full-page view hash posts nothing until a view closes back to the sessio
   assert.equal(posts.length, 0, '#settings: no POST');
   window.history.replaceState(null, '', '#session=s1');
   mainViewClosed();
+  assert.equal(posts.length, 0, 'the check is deferred past the signal\'s tick');
+  await Promise.resolve();
   assert.deepEqual(posts.map(p => p.body), [{ seq: 2 }], 'the view closing posts');
 });
 
@@ -126,4 +129,28 @@ test('install removes the legacy unread key and survives a throwing storage', as
   assert.deepEqual(removed, ['code-conductor:unread']);
   const { marker } = await setup({ storage: { removeItem: () => { throw new Error('denied'); } } });
   assert.equal(typeof marker.check, 'function', 'install completed');
+});
+
+// Invariant: an open registered view blocks the check even when the hash
+// already names the session.
+test('an open full-page view blocks the check whatever the hash', async () => {
+  const window = new Window({ url: 'http://localhost/#session=s1' });
+  globalThis.window = window;
+  const { registerMainView } = await import(pub('mainViews.js'));
+  let open = true;
+  registerMainView({ matches: (h) => h === '#costs', isOpen: () => open, supersede: () => {} });
+  const { installViewedMarker } = await import(`${pub('viewedMarker.js')}?t=${++counter}`);
+  const doc = new EventTarget();
+  doc.visibilityState = 'visible';
+  const posts = [];
+  const marker = installViewedMarker({
+    getActiveInstance: () => ({ id: 'i1', sessionId: 's1', turnEndSeq: 2, viewedSeq: 1 }),
+    fetchJson: async (url, opts) => { posts.push(JSON.parse(opts.body)); return {}; },
+    doc, win: window, storage: { removeItem() {} },
+  });
+  marker.check();
+  assert.equal(posts.length, 0, 'an open view: no POST');
+  open = false;
+  marker.check();
+  assert.deepEqual(posts, [{ seq: 2 }]);
 });

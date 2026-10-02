@@ -860,12 +860,12 @@ function selectInstance(id, opts = {}) {
   } else {
     writeSessionAnchor(inst?.sessionId || null);
   }
-  // The pane is open on this session: its latest turn end is seen, if the tab
-  // is visible and no full-page view covers it (viewedMarker checks both).
-  viewedMarker.check();
   // The URL now names the session: close whichever full-page view was showing
   // so the conversation is visible.
   reconcileMainViews();
+  // The pane is open on this session: its latest turn end is seen, if the tab
+  // is visible. After the reconcile, or a superseded view would still read open.
+  viewedMarker.check();
   closeSidebarOnMobile();
   promptFocus.afterSelect(opts);
 }
