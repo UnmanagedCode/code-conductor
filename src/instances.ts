@@ -2735,9 +2735,13 @@ export class Instance extends EventEmitter implements InstanceLike {
         ev.firstReqCacheCreation = this._turnFirstReqCacheCreation ?? 0;
         ev.firstReqEvicted = this._turnEvicted ?? 0;
         // The context in use at this turn's end and the window it was measured
-        // against, so the line keeps its own denominator. Ring and live only:
-        // costTracking copies its fields one by one and takes neither.
-        ev.contextTokens = contextReading(this._lastContextUsage);
+        // against, so the line keeps its own denominator; and the turn's growth
+        // over its first call's baseline, null unless it equals the sum of the
+        // turn's call_usage growths. Ring and live only: costTracking copies
+        // its fields one by one and takes none of them.
+        const contextTokens = contextReading(this._lastContextUsage);
+        ev.contextTokens = contextTokens;
+        ev.contextGrowthTokens = this._callUsage.endTurn(contextTokens);
         ev.contextWindowTokens = this.contextWindowTokens;
         // Latch this turn's fully-accumulated prefix as P for next turn's
         // cross-turn comparison. A turn with no requests leaves P unchanged.
