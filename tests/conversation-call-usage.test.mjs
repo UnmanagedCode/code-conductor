@@ -4,11 +4,12 @@
 // `.block`, so it never changes a group's tally, never opens or splits a
 // group, and never creates a wrap of its own.
 //
-// The line is also debug-only: styles.css hides `.call-usage` unless the
+// The line is also opt-in per session: styles.css hides `.call-usage` unless the
 // conversation root carries `show-call-usage`, and header.js update() sets that
-// class (Conversation.setCallUsageVisible) from the active session's
-// `inst.debug`. The visibility tests load the real stylesheet and assert the
-// computed display, not the class.
+// class (Conversation.setCallUsageVisible) from the active session's "Show
+// mid-turn statistics" box in the Statistics dialog (sessionStats.js). Debug mode
+// does not enter into it. The visibility tests load the real stylesheet and
+// assert the computed display, not the class.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -176,7 +177,7 @@ async function setupHeader({ instances, activeId }) {
     'ti-usage-slot', 'sync-btn', 'merge-btn', 'debug-btn', 'summarize-session-btn',
     'rename-session-btn', 'change-model-btn', 'change-effort-btn', 'session-stats-btn',
     'prune-session-btn', 'auto-approve-plan-btn', 'playbook-enforcement-btn',
-    'overflow-menu', 'overflow-toggle', 'overflow-panel',
+    'overflow-menu', 'overflow-toggle', 'overflow-panel', 'stats-dialog',
   ]) {
     const key = id.replace(/-(\w)/g, (_, c) => c.toUpperCase());
     dom[key] = doc.getElementById(id);
@@ -211,8 +212,32 @@ async function setupHeader({ instances, activeId }) {
     },
     openSummary: () => {}, openStats: () => {}, openPrune: () => {},
   });
-  return { window, dom, conv, header, state, root: conversationRoot };
+  const { installSessionStats } = await import(pathToFileURL(path.join(PUB, 'sessionStats.js')).href + `?t=${Math.random()}`);
+  const stats = installSessionStats({
+    dom,
+    getActiveSid: () => state.instances.find(i => i.id === state.activeId)?.sessionId ?? null,
+    isCallUsageShown: header.isCallUsageShown,
+    setCallUsageShown: header.setCallUsageShown,
+  });
+  const box = doc.getElementById('stats-call-usage');
+  assert.ok(box, '#stats-call-usage resolves from index.html');
+  // The dialog's cost fetch is stubbed; the box is synced before it, so a test
+  // reads the box straight after open() resolves.
+  const openStats = () => stats.open();
+  // A bubbling change, as the browser fires on a user's tick.
+  const tick = (on) => {
+    box.checked = on;
+    box.dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+  return { window, dom, conv, header, state, root: conversationRoot, box, openStats, tick };
 }
+
+// Runs `fn` with the Statistics dialog's cost fetch stubbed, restoring fetch after.
+const withStatsFetch = async (fn) => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ own: {}, rolled: {}, workerSessions: 0 }) });
+  try { await fn(); } finally { globalThis.fetch = realFetch; }
+};
 
 const inst = (id, debug) => ({
   id, sessionId: `s-${id}`, status: 'idle', mode: 'plan', model: 'claude-sonnet-4-6',
@@ -220,59 +245,133 @@ const inst = (id, debug) => ({
   interrupting: false, debug,
 });
 
-test('turning debug on mid-session through the Debug button reveals the line already on screen', async () => {
+const renderLine = (conv, root) => {
+  feed(conv, [...text('m1', 0, 'hi'), callUsage('m1')]);
+  return root.querySelector('.call-usage');
+};
+
+test('default off: a fresh session hides the line and its Statistics box opens unticked', () => withStatsFetch(async () => {
+  const { window, header, conv, root, box, openStats } = await setupHeader({ instances: [inst('i1', false)], activeId: 'i1' });
+  header.update();
+  const line = renderLine(conv, root);
+  assert.equal(displayOf(window, line), 'none');
+  box.checked = true; // a stale tick must not survive the open
+  await openStats();
+  assert.equal(box.checked, false);
+}));
+
+test('ticking the Statistics box reveals the line already on screen; unticking hides it again', () => withStatsFetch(async () => {
+  const { window, header, conv, root, openStats, tick } = await setupHeader({ instances: [inst('i1', false)], activeId: 'i1' });
+  header.update();
+  const line = renderLine(conv, root);
+  assert.equal(displayOf(window, line), 'none', 'premise: hidden before the tick');
+  await openStats();
+
+  tick(true);
+  assert.ok(root.querySelector('.call-usage') === line, 'the same node, not a re-render');
+  assert.notEqual(displayOf(window, line), 'none');
+
+  tick(false);
+  assert.equal(displayOf(window, line), 'none');
+}));
+
+test('debug alone does not reveal the line: a session that starts with debug on still computes display:none', () => withStatsFetch(async () => {
+  const { window, header, conv, root } = await setupHeader({ instances: [inst('D', true)], activeId: 'D' });
+  header.update();
+  assert.equal(displayOf(window, renderLine(conv, root)), 'none');
+}));
+
+test('turning debug on mid-session through the Debug button leaves the line on screen hidden', async () => {
   const live = inst('i1', false);
   const { window, dom, conv, header, root } = await setupHeader({ instances: [live], activeId: 'i1' });
   const realFetch = globalThis.fetch;
   const realAlert = globalThis.alert;
   try {
     header.update();
-    feed(conv, [...text('m1', 0, 'the answer'), callUsage('m1')]);
-    const line = root.querySelector('.call-usage');
-    assert.ok(line, 'premise: the line was rendered');
-    assert.equal(displayOf(window, line), 'none', 'premise: hidden while debug is off');
-
+    const line = renderLine(conv, root);
     globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, debugDir: '/tmp/dbg' }) });
     globalThis.alert = () => {};
     dom.debugBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
-    for (let i = 0; i < 20 && !root.classList.contains('show-call-usage'); i++) {
-      await new Promise(r => setImmediate(r));
-    }
-
+    for (let i = 0; i < 20 && !live.debug; i++) await new Promise(r => setImmediate(r));
     assert.equal(live.debug, true, 'premise: the click handler flipped the flag');
+    header.update();
     assert.ok(root.querySelector('.call-usage') === line, 'the same node, not a re-render');
-    assert.notEqual(displayOf(window, line), 'none');
+    assert.equal(displayOf(window, line), 'none');
   } finally {
     globalThis.fetch = realFetch;
     globalThis.alert = realAlert;
   }
 });
 
-test('the line follows the active session: debug A shows, non-debug B hides, back to A shows, none hides', async () => {
-  const { window, conv, header, state, root } = await setupHeader({
-    instances: [inst('A', true), inst('B', false)], activeId: 'A',
+test('the setting is per session: A ticked shows on A only, B opens unticked, back on A it is still ticked, no session hides', () => withStatsFetch(async () => {
+  const { window, conv, header, state, root, box, openStats, tick } = await setupHeader({
+    instances: [inst('A', false), inst('B', false)], activeId: 'A',
   });
   // selectInstance: clear the shared conversation, then header.update().
   const switchTo = (id) => { state.activeId = id; conv.clear(); header.update(); };
-  const renderLine = () => {
-    feed(conv, [...text('m1', 0, 'hi'), callUsage('m1')]);
-    return root.querySelector('.call-usage');
-  };
 
   header.update();
-  assert.notEqual(displayOf(window, renderLine()), 'none', 'debug session A');
+  await openStats();
+  tick(true);
+  assert.notEqual(displayOf(window, renderLine(conv, root)), 'none', 'A ticked');
 
   switchTo('B');
-  assert.equal(displayOf(window, renderLine()), 'none', 'non-debug session B');
+  assert.equal(displayOf(window, renderLine(conv, root)), 'none', 'B never ticked');
+  await openStats();
+  assert.equal(box.checked, false, 'B opens unticked');
 
   switchTo('A');
-  assert.notEqual(displayOf(window, renderLine()), 'none', 'back on A');
+  assert.notEqual(displayOf(window, renderLine(conv, root)), 'none', 'back on A');
+  await openStats();
+  assert.equal(box.checked, true, 'A opens ticked');
 
   conv.setCallUsageVisible(true);
   state.activeId = null;
   header.update();
   assert.equal(displayOf(window, root.querySelector('.call-usage')), 'none', 'no active instance');
-});
+}));
+
+test('a tick made in a dialog opened on A lands on A even if the active session moves before the change', () => withStatsFetch(async () => {
+  const { window, conv, header, state, root, openStats, tick } = await setupHeader({
+    instances: [inst('A', false), inst('B', false)], activeId: 'A',
+  });
+  header.update();
+  await openStats();
+  state.activeId = 'B';
+  conv.clear();
+  header.update();
+  tick(true);
+  assert.equal(displayOf(window, renderLine(conv, root)), 'none', 'B stays off');
+  state.activeId = 'A';
+  header.update();
+  assert.equal(header.isCallUsageShown('s-A'), true);
+  assert.equal(header.isCallUsageShown('s-B'), false);
+}));
+
+test('the setting follows the session across a respawn: a new instance id with the same sessionId stays ticked', () => withStatsFetch(async () => {
+  const { window, conv, header, state, root, openStats, tick } = await setupHeader({
+    instances: [inst('old', false)], activeId: 'old',
+  });
+  header.update();
+  await openStats();
+  tick(true);
+
+  state.instances = [{ ...inst('new', false), sessionId: 's-old' }];
+  state.activeId = 'new';
+  conv.clear();
+  header.update();
+  assert.notEqual(displayOf(window, renderLine(conv, root)), 'none');
+}));
+
+test('a session with no sessionId yet is never shown, and the query for it is false', () => withStatsFetch(async () => {
+  const { window, conv, header, root } = await setupHeader({
+    instances: [{ ...inst('i1', false), sessionId: null }], activeId: 'i1',
+  });
+  header.setCallUsageShown(null, true);
+  header.update();
+  assert.equal(header.isCallUsageShown(null), false);
+  assert.equal(displayOf(window, renderLine(conv, root)), 'none');
+}));
 
 test('the turn-end segment and the Agent-row total stay displayed with show-call-usage off and on', async () => {
   const { window, conv, header, root } = await setupHeader({ instances: [inst('B', false)], activeId: 'B' });
@@ -296,9 +395,9 @@ test('the turn-end segment and the Agent-row total stay displayed with show-call
     assert.notEqual(displayOf(window, turnEnd), 'none', `turn-end segment, ${when}`);
     assert.notEqual(displayOf(window, badge), 'none', `Agent-row total, ${when}`);
   };
-  assertBothShown('debug off');
+  assertBothShown('toggle off');
 
   conv.setCallUsageVisible(true);
   assert.notEqual(displayOf(window, root.querySelector('.call-usage')), 'none', 'premise: the call line shows once the class is on');
-  assertBothShown('debug on');
+  assertBothShown('toggle on');
 });

@@ -787,7 +787,11 @@ const getActiveSid = () => {
   return inst?.sessionId ?? null;
 };
 const summaryHandle = installSessionSummary({ dom, getActiveSid, applySessionTitle: sessionActions.applySessionTitle });
-const statsHandle = installSessionStats({ dom, getActiveSid });
+const statsHandle = installSessionStats({
+  dom, getActiveSid,
+  isCallUsageShown: headerHandle.isCallUsageShown,
+  setCallUsageShown: headerHandle.setCallUsageShown,
+});
 const pruneHandle = installPruneDialog({
   dom, getActiveId: () => state.activeId, refreshInstances,
 });

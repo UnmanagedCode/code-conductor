@@ -15,7 +15,9 @@
 // handles: `update` (full rebuild) and `tickIdleAgo` (a cheap idle-only
 // refresh of the turn-indicator's "last response Xm ago" label, called on
 // a timer from app.js so it doesn't re-run update()'s popover-closing side
-// effects every tick).
+// effects every tick). It also owns the per-session "Show mid-turn statistics"
+// state behind the per-call usage lines and returns its accessors
+// (`isCallUsageShown` / `setCallUsageShown`) for the Statistics dialog.
 //
 // Injected interface:
 //   - dom:               the live dom singleton (header reads ~16 elements off it).
@@ -33,7 +35,7 @@
 //   - getAccountUsageStale(): true when the current accountUsage value was served
 //                        stale by the server (backoff/failure window) rather than
 //                        freshly fetched — drives the popover's "(stale)" suffix.
-//   - composer/conversation: enablement toggles and per-call usage visibility (debug sessions).
+//   - composer/conversation: enablement toggles and per-call usage visibility.
 //   - sessionActions:    the REST action handles (rename / sync / merge / respawn).
 //   - openSummary()/openStats()/openPrune(): lazy dialog openers — those handles
 //                        are built after this install, so they arrive as arrows.
@@ -93,6 +95,17 @@ export function installHeader({
   // closeOverflow() early-returns while disarmed, so a stale value here is
   // never observed.
   let overflowOwnerId = null;
+
+  // Sessions whose per-call usage lines are shown. Keyed by sessionId, not
+  // instance id: a respawn or resume gives the same session a new instance id.
+  // Page-load lifetime only, off by default.
+  const callUsageShown = new Set();
+  const isCallUsageShown = (sid) => !!sid && callUsageShown.has(sid);
+  function setCallUsageShown(sid, on) {
+    if (!sid) return;
+    if (on) callUsageShown.add(sid); else callUsageShown.delete(sid);
+    if (currentInst?.sessionId === sid) conversation.setCallUsageVisible(on);
+  }
 
   // Header ⋮ overflow menu — hosts the secondary actions (Interrupt/Kill, Mute,
   // Debug, Rename, Change model, Summarize, Session stats, Prune) so they don't
@@ -686,7 +699,7 @@ export function installHeader({
     const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
     if (!canMenu || inst?.id !== overflowOwnerId) closeOverflow();
     currentInst = inst ?? null;
-    conversation.setCallUsageVisible(!!inst?.debug);
+    conversation.setCallUsageVisible(isCallUsageShown(inst?.sessionId));
     if (!inst) {
       dom.instanceTitle.textContent = 'no instance selected';
       setModeToggle(null, true);
@@ -873,5 +886,5 @@ export function installHeader({
           : 'Send a message — Enter to send, Shift+Enter for newline';
   }
 
-  return { update, tickIdleAgo };
+  return { update, tickIdleAgo, isCallUsageShown, setCallUsageShown };
 }
