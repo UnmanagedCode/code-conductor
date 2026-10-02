@@ -317,13 +317,13 @@ function ancestorsOf(dir: string): string[] {
 //   1. Host pins are prefix-inheriting, so `/usr/lib` SUBSUMES
 //      `/usr/lib/node_modules` and everything under it. The floor is not a
 //      wider class of grant — it is the same grant, one level up.
-//   2. It is strictly more robust, and the residual is the benign one. Neither
-//      depth removes the dependence on unpinnable ancestors existing on the
-//      remote; this one reduces it to `/usr` alone, which every Linux rootfs
-//      that could host a provider has. The SECOND component is the
-//      install-specific one — `/usr/lib` vs `/usr/lib64` vs `/usr/share` vs
-//      `/usr/lib/<triplet>` vary by distro, and a minimal remote image can
-//      legitimately lack the one cc's own layout uses.
+//   2. The remote's layout decides neither depth. Under a wide `mirrorRoot`
+//      the ancestors above a host pin are `project` tier, and where the remote
+//      lacks one the daemon serves the synthetic node instead
+//      (`policy_pin_ancestor`, policy.h) — so a minimal remote image missing
+//      the install-specific component (`/usr/lib` vs `/usr/lib64` vs
+//      `/usr/share` vs `/usr/lib/<triplet>` vary by distro) does not stop the
+//      marked walk at either depth.
 //   3. It adds one rule, not two: the floor, applied to the chain instead of to
 //      a single common ancestor.
 //   4. The cost is near-nil. A host pin refuses a worker's file tools on that

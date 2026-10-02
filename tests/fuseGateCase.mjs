@@ -5,8 +5,10 @@
 //   TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
 //
 // THE CAP IS PART OF THE INVOCATION, NOT A TUNING KNOB. Every file here spawns
-// real workers into real FUSE mounts, and at the default concurrency the four
-// starve each other: measured 3 kills in 18 runs of the BARE glob, always the
+// real workers into real FUSE mounts, and at the default concurrency the files
+// starve each other: measured over fuse-lifecycle.real and the three
+// fuse-union-{mount,routing,marking}.real files, 3 kills in 18 runs of the
+// BARE glob, always the
 // same shape — one arm rides the runner's 60s per-test timeout, and its whole
 // file then dies at FILE_KILL_MS, taking that file's arm names with it. The
 // stalled arm varied (R9, R10, R14), so it is contention, not an arm-specific
@@ -35,8 +37,8 @@
 // claude binary (`bootServer({realProcess:true})`), because the question is
 // about mounts and pids, not about tools. No tokens and no network.
 //
-// The four files of the family, which each import from here — one harness, four
-// consumers, so the mount geometry cannot drift between them:
+// The files of the family, which each import from here — one harness, every
+// file a consumer, so the mount geometry cannot drift between them:
 //
 //   fuse-lifecycle.real     the spawn, the three teardown paths, the boot
 //                           sweep, the busy-mount wedge, the cost control, the
@@ -53,6 +55,11 @@
 //                           event, the unmarked bootstrap chain at a wide root,
 //                           a backend launcher's handoff, and a symlinked
 //                           launcher's link-then-realpath walk
+//   fuse-union-pin-ancestors.real
+//                           a wide `mirrorRoot` whose remote lacks the
+//                           directories above a host pin: the marked CLI's
+//                           recursive mkdir reaches the pin and no frame
+//                           creates them on the remote
 //
 // SPLIT ACROSS FILES ON PURPOSE. Every arm here is a real spawn, a real mount
 // and a real teardown costing ~2.4s, so one file was charged their SUM and sat
@@ -244,13 +251,14 @@ const timings = { chroot: [], control: [] };
 //   POPULATION-SIDE (this check). A field this harness stopped publishing, or
 //   one it derived to an empty string. `before()` throws here, BEFORE
 //   `onReady`, so the failure is at DESCRIBE level and no arm runs at all.
-//   Verified in all four files against a bag published with `runRoot: ''`.
+//   Verified in fuse-lifecycle.real and the union-{mount,routing,marking}.real
+//   files against a bag published with `runRoot: ''`.
 //
 //   CONSUMER-SIDE (not this check). A typo in a file's own destructure leaves
 //   the bag COMPLETE, so this passes silently and the `undefined` travels into
 //   that file's arms. What catches it is `mountsUnder`'s refusal one level
-//   down, at ARM level. Verified in all four files by dropping `runRoot` from
-//   the destructure: every arm that takes a residue delta reds.
+//   down, at ARM level. Verified in those same files by dropping `runRoot`
+//   from the destructure: every arm that takes a residue delta reds.
 //
 // So do not read this check as guarding the destructure — it guards what the
 // harness itself hands over.
@@ -397,27 +405,23 @@ export function setupFuseGate(label, onReady) {
         false, `the host has an entry at <box>/${app}/remote-only.txt, so the denial arms are vacuous`);
     }
 
-    // ── THE MIRROR SOURCE HAS TO LOOK LIKE A SYSTEM, NOT LIKE ONE PROJECT ──
+    // ── THE MIRROR SOURCE LOOKS LIKE A SYSTEM, NOT LIKE ONE PROJECT ─────────
     //
-    // MEASURED, and it is the fixture precondition a wide root imposes: at
-    // `mirrorRoot: '/'` every UNPINNED DIRECTORY becomes `project` tier —
-    // including the ancestors of the host pins (`/usr` above
-    // `/usr/lib/x86_64-linux-gnu/libc.so.6`, and `/usr/lib/x86_64-linux-gnu`
-    // above `libc.so.6` itself). A MARKED caller resolves those through the
-    // control channel, so the mirror SOURCE must have a directory at each of
-    // them. A real remote system has them by construction; this fixture's fake
-    // remote is deliberately narrow (one project tree), and without this
-    // scaffold a marked walk dies at `/usr` with `remote-absent` — the daemon
-    // names the path — and the worker never reaches the CLI.
+    // FIXTURE REALISM: at `mirrorRoot: '/'` every UNPINNED DIRECTORY becomes
+    // `project` tier — including the ancestors of the host pins (`/usr` above
+    // `/usr/lib/x86_64-linux-gnu/libc.so.6`) — and a real remote system has
+    // those directories. This scaffold gives the fake remote them too, so R14
+    // runs the REMOTE-PRESENT arm of the pin-ancestor rule: the marked CLI is
+    // served the remote's own directory at each. It is not what makes a host
+    // pin reachable — where the remote lacks such an ancestor the daemon serves
+    // the synthetic node (`policy_pin_ancestor`, policy.h), and
+    // tests/fuse-union-pin-ancestors.real.test.mjs strips its own copy of this
+    // scaffold to drive that arm.
     //
     // DIRECTORIES ONLY, WHICH IS WHY IT DOES NOT REINTRODUCE THE HAZARD the
     // narrow fake remote exists to avoid: an unpinned FILE under one of these
     // is still absent on "the system" and still answers -ENOENT to a marked
     // caller, exactly as it did when the same path was `fail`.
-    //
-    // R14 CHECKS THIS PRECONDITION AGAINST THE DAEMON'S OWN PIN LIST rather
-    // than trusting the depth constant, so a future pin whose ancestors the
-    // walk does not reach fails by name instead of as a mystery spawn death.
     for (const p of [orchStoreRoot(), runRoot, home, process.env.CLAUDE_PROJECTS_ROOT])
       // `/tmp` is skipped by the walk below (it holds this run's own store and
       // ~10k sibling temp dirs), so the chains of the run's own roots — the

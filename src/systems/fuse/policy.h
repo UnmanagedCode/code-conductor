@@ -274,9 +274,13 @@ static inline int pins_parse_line(char *line)
  *
  * Each ancestor keeps the index it was assigned at load, which is what gives a
  * synthetic node a STABLE inode for the life of the mount.
+ *
+ * `host_pin` says the path is a strict ancestor of at least one `host` pin,
+ * OR'd across every pin that derives it — the input `policy_pin_ancestor`
+ * reads.
  */
 #define MAX_ANC 8192
-struct anc { char path[PATH_MAX]; size_t len; };
+struct anc { char path[PATH_MAX]; size_t len; int host_pin; };
 static struct anc ancs[MAX_ANC];
 static size_t     nancs = 0;
 
@@ -293,13 +297,19 @@ static inline int anc_find(const char *path)
 	return -1;
 }
 
-static inline void anc_add(const char *path)
+/* The entry's index, new or existing; -1 when the table is full. */
+static inline int anc_add(const char *path)
 {
-	if (anc_find(path) >= 0 || nancs >= MAX_ANC)
-		return;
+	int i = anc_find(path);
+
+	if (i >= 0)
+		return i;
+	if (nancs >= MAX_ANC)
+		return -1;
 	snprintf(ancs[nancs].path, sizeof(ancs[nancs].path), "%s", path);
 	ancs[nancs].len = strlen(ancs[nancs].path);
-	nancs++;
+	ancs[nancs].host_pin = 0;
+	return (int)nancs++;
 }
 
 /*
@@ -318,13 +328,16 @@ static inline void anc_build(void)
 	for (i = 0; i < npins; i++) {
 		char buf[PATH_MAX];
 		char *slash;
+		int k;
 		snprintf(buf, sizeof(buf), "%s", pins[i].prefix);
 		for (;;) {
 			slash = strrchr(buf, '/');
 			if (!slash || slash == buf)
 				break;
 			*slash = '\0';
-			anc_add(buf);
+			k = anc_add(buf);
+			if (k >= 0 && pins[i].tier == T_HOST)
+				ancs[k].host_pin = 1;
 		}
 	}
 	/* A path that carries an exact pin is that pin's tier, not a synthetic
@@ -343,10 +356,45 @@ static inline void anc_build(void)
 }
 
 /*
+ * A PIN ANCESTOR: a `project`-tier path in `VIEW_CLI` that is a strict ancestor
+ * of a `host` pin and carries no exact pin of its own. THIS IS THE ONE PLACE
+ * THE RULE LIVES; `policy_project_route` is its only consumer.
+ *
+ * WHY IT EXISTS: under a wide `mirrorRoot` (`project /`) nothing above a host
+ * pin is `fail`, so `resolve_class`'s ancestor promotion never fires and every
+ * such directory is the REMOTE's question for the marked CLI. A remote that
+ * lacks one would stop the walk short of the pin, and the CLI's own recursive
+ * mkdir would then push a create of it to the remote — EACCES for an exec user
+ * that cannot write there, a stray directory for one that can. A directory
+ * holding a host pin is cc's scaffolding wherever it sits, so where the remote
+ * lacks it the CLI gets the synthetic node the narrow geometry serves, and no
+ * op on it ever sends a FETCH.
+ *
+ * HOST PINS ONLY. An ancestor of only a `project` pin is the remote's own
+ * directory; one of only a `hide` or `fail` pin needs no reachability; a `bind`
+ * target is depth 1, so its only ancestor is `/`, which carries an exact pin
+ * whenever it is `project` tier.
+ */
+static inline int policy_pin_ancestor(const char *path)
+{
+	int i;
+
+	if (tier_of(path, VIEW_CLI) != T_PROJECT)
+		return 0;
+	i = anc_find(path);
+	return i >= 0 && ancs[i].host_pin;
+}
+
+/*
  * THE ONE CLASSIFIER. `tier_of` plus the derived fifth class, and every op body
  * in union.c goes through it. A path is synthetic only where it is EXACTLY a
  * member of the ancestor set — membership by prefix would make every leaf under
  * an unpinned directory a directory too.
+ *
+ * A `project`-tier ancestor of a `host` pin is NOT promoted here — it stays
+ * T_PROJECT, so the remote is asked first. It becomes T_SYNTH in `route()`, and
+ * only where the remote answers ABSENT or the op is a FETCH (see
+ * `policy_pin_ancestor` and `policy_project_route`).
  *
  * THE TWO VIEWS DIVERGE HERE AS WELL AS IN `tier_of`, AND THAT SECOND DIVERGENCE
  * IS WHY `policy_tier_is_caller_sensitive` CARRIES T_SYNTH. `VIEW_HOST` does not
@@ -484,8 +532,10 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
  * from the EMIT: `policy_table_child_exists` drops every table name the
  * orchestrator does not have, and it has nothing under a path it has nothing
  * at. What survives is fixed nodes, which name nothing remote either.
- * `policy_mutation_check`'s -EROFS still applies and is still right: the
- * orchestrator has nothing at this path, so constraint 1 owes nothing there.
+ * `policy_mutation_check`'s -EROFS still applies to every op that mutates the
+ * node and is still right: the orchestrator has nothing at this path, so
+ * constraint 1 owes nothing there. An op creating the node's own name answers
+ * -EEXIST (`policy_name_exists`).
  *
  * THE INODE COMES FROM THE VIEW'S OWN RANGE. `policy_cwd_ino` has a sub-range
  * disjoint from the ancestor and exact-pin ranges precisely because the chain
@@ -677,8 +727,11 @@ static inline size_t policy_synth_children(const char *dir, enum view v,
 }
 
 /*
- * WHAT EVERY MUTATING OP OWES A SYNTHETIC OR BIND NODE, in ONE place so the
- * choice is a fact of the policy rather than of twelve op bodies.
+ * WHAT A MUTATING OP OWES A SYNTHETIC OR BIND NODE, in ONE place so the choice
+ * is a fact of the policy rather than of a dozen op bodies. Every op that
+ * mutates the node asks this; an op that creates the node's own NAME asks
+ * `policy_name_exists` first; `setxattr` and `removexattr` answer -EOPNOTSUPP
+ * at their own call sites.
  *
  * EROFS, NOT EACCES, AND THAT IS PINNED. The node is a read-only scaffold cc
  * derived from the pin list; EACCES would tell the caller a permissions fix
@@ -689,6 +742,22 @@ static inline size_t policy_synth_children(const char *dir, enum view v,
 static inline int policy_mutation_check(enum tier t)
 {
 	return (t == T_SYNTH || t == T_BIND) ? -EROFS : 0;
+}
+
+/*
+ * WHAT AN OP CREATING A NAME OWES A FIXED NODE ALREADY STANDING THERE: -EEXIST,
+ * the answer the kernel gives for any positive dentry. `mkdir`, `mknod`,
+ * `symlink`, `create` and `link`'s target end ask it BEFORE
+ * `policy_mutation_check`, because the name exists and EROFS would say the
+ * create was refused rather than redundant. `mkdir -p` and
+ * `fs.mkdirSync({recursive:true})` read EEXIST at a directory as success, so a
+ * recursive mkdir that reaches a pin ancestor finishes rather than failing.
+ *
+ * 0 = no fixed node here; the op asks `policy_mutation_check` next.
+ */
+static inline int policy_name_exists(enum tier t)
+{
+	return (t == T_SYNTH || t == T_BIND) ? -EEXIST : 0;
 }
 
 /*
@@ -2008,18 +2077,14 @@ static inline int policy_cwd_normalised(const char *p)
  * CRITERION 6, AND THE ORDER IS THE POLICY.
  *
  * Takes the CALLING THREAD's id — union.c hands it `fuse_get_context()->pid`,
- * measured to be a TID — and answers 0 (serve the path from the
- * mirror) or a negative errno. It reaches libfuse through nothing, so the whole
- * of it is drivable from a unit fixture with a fake /proc, a fake clock and a
- * fake transport.
+ * measured to be a TID — and answers 0 (serve the path from the mirror),
+ * POLICY_ROUTE_PIN_ANCESTOR (serve the synthetic node) or a negative errno. It
+ * reaches libfuse through nothing, so the whole of it is drivable from a unit
+ * fixture with a fake /proc, a fake clock and a fake transport.
  *
- * THE THREE STEPS, IN THIS ORDER AND NO OTHER:
+ * THE STEPS, IN THIS ORDER AND NO OTHER:
  *
- *  1. THE CACHE, consulted first. That placement is what makes the tgid in the
- *     key load-bearing: an unmarked caller reaches the lookup, and only the
- *     tgid stops it matching a marked caller's warmed entry. FETCH skips it —
- *     an open always revalidates.
- *  2. THE MARK — RETAINED AS DEFENCE IN DEPTH. An UNMARKED caller cannot reach
+ *  1. THE MARK — RETAINED AS DEFENCE IN DEPTH. An UNMARKED caller cannot reach
  *     here: it resolves in `VIEW_HOST`, where `tier_of` skips every `project`
  *     pin, so no unmarked resolution can produce T_PROJECT and route() cannot
  *     dispatch one to this function. The invariant — an unmarked caller never
@@ -2031,15 +2096,28 @@ static inline int policy_cwd_normalised(const char *p)
  *     structural proof is not worth the risk, and its -ENOENT is the correct
  *     answer if a later edit ever reopens the route. `b7` pins it under that
  *     reading.
- *  3. THE CONTROL CALL. A bare local stat of the mirror would report ENOENT for
+ *  2. THE PIN-ANCESTOR FETCH. A FETCH at a `policy_pin_ancestor` path answers
+ *     the synthetic node with no frame and no cache touch, whatever the remote
+ *     holds: every op that routes FETCH there either creates the ancestor's own
+ *     name or mutates it, and neither may reach the remote.
+ *  3. THE CACHE. FETCH skips it — an open always revalidates.
+ *  4. THE CONTROL CALL. A bare local stat of the mirror would report ENOENT for
  *     a file that exists on the remote and has simply not been materialised
  *     yet, so no remote-tier op touches the mirror before cc has answered.
+ *
+ * AT A PIN ANCESTOR THE REMOTE STILL ANSWERS FIRST: READY serves its directory
+ * and every error but ABSENT keeps its errno and its row. ABSENT — fresh or
+ * cached, converted at the one exit below so the two cannot disagree — becomes
+ * POLICY_ROUTE_PIN_ANCESTOR with no `remote-absent` row, because the scaffold
+ * node is the answer and not a refusal. The cache still records the -ENOENT.
  */
+#define POLICY_ROUTE_PIN_ANCESTOR 1
+
 static inline int policy_project_route(const char *op, const char *path, pid_t tid,
                                        uint8_t fop, uint8_t flags)
 {
 	pid_t tgid = policy_proc.tgid(tid);
-	int cached = 0, rc;
+	int cached = 0, rc, pa;
 
 	/*
 	 * FIRST, AND ON EVERY OP. `mark_of` re-reads field 22 and evicts a thread
@@ -2053,8 +2131,14 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 		return -ENOENT;
 	}
 
-	if (fop != (uint8_t)CCU_FETCH && cache_get(tgid, path, &cached))
-		return cached;
+	pa = policy_pin_ancestor(path);
+	if (pa && fop == (uint8_t)CCU_FETCH)
+		return POLICY_ROUTE_PIN_ANCESTOR;
+
+	if (fop != (uint8_t)CCU_FETCH && cache_get(tgid, path, &cached)) {
+		rc = cached;
+		goto out;
+	}
 
 	rc = fop ? ccu_call(fop, flags, path) : 0;
 	if (fop == (uint8_t)CCU_FETCH)
@@ -2078,9 +2162,10 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 	 * DERIVED from and "the remote does not have it" is a different finding
 	 * from "cc would not carry it" and from "cc could not be reached". */
 	if (rc == -EIO)         policy_event(EV_DENY, op, path, "control-unavailable", tid);
-	else if (rc == -ENOENT) policy_event(EV_DENY, op, path, "remote-absent", tid);
+	else if (rc == -ENOENT) { if (!pa) policy_event(EV_DENY, op, path, "remote-absent", tid); }
 	else if (rc)            policy_event(EV_DENY, op, path, "control-refused", tid);
-	return rc;
+out:
+	return pa && rc == -ENOENT ? POLICY_ROUTE_PIN_ANCESTOR : rc;
 }
 
 #endif /* CC_UNION_POLICY_H */

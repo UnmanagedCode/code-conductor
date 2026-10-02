@@ -777,6 +777,15 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		 * GRANT REACHES THIS ARM, so there is no op allow-list and no
 		 * traversal bound here to get right. */
 		rc = policy_project_route(op, path, (pid_t)fuse_get_context()->pid, fop, cflags);
+		if (rc == POLICY_ROUTE_PIN_ANCESTOR) {
+			/* AN ANCESTOR OF A `host` PIN THE REMOTE LACKS, OR A FETCH
+			 * AT ONE: the synthetic node, served by the op bodies'
+			 * SYNTHETIC() arms in the view the gate above already seeded
+			 * (VIEW_CLI — only a marked caller reaches this arm). See
+			 * `policy_pin_ancestor`. */
+			r->tier = T_SYNTH;
+			return 0;
+		}
 		if (rc)
 			return rc;
 		r->fd = remote_fd;      /* no fallback, by design */
@@ -863,8 +872,8 @@ static int pt_access(const char *path, int mask)
 {
 	ROUTE("access", path, 0, CCU_STAT);
 	/* A synthetic node is 0555 root:root and there is nothing to widen it
-	 * to: EROFS on every mutation, so a write probe is a refusal rather than
-	 * a permissions question. */
+	 * to: EROFS on every op that mutates it, so a write probe is a refusal
+	 * rather than a permissions question. */
 	if (SYNTHETIC(r.tier))
 		return (mask & W_OK) ? -EROFS : 0;
 	/* FLOOR SITE 4 of 4, and without it the floor is a seam inside the seam
@@ -1393,13 +1402,16 @@ static void fd_mark_dirty(uint64_t fh)
  * RATHER THAN EACCES. The node is a read-only scaffold cc derived from the pin
  * list; EACCES would tell the caller a permissions fix exists, and it does not.
  * THERE IS NO ARM THAT LANDS A CREATE ON THE REMOTE BY THE PARENT'S TIER: a
- * mutation on a synthetic or bind node refuses EROFS before any fd is chosen,
- * full stop.
+ * mutation on a synthetic or bind node is refused before any fd is chosen,
+ * full stop. An op creating the node's own NAME — mkdir, mknod, symlink,
+ * create, link's target — answers -EEXIST first (`policy_name_exists`): the
+ * name is there, and EEXIST is what lets a recursive mkdir walk through it.
  */
 
 static int pt_mkdir(const char *path, mode_t mode)
 {
 	ROUTE("mkdir", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
+	if ((rrc = policy_name_exists(r.tier)) != 0) return rrc;
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = mkdirat(r.fd, rp, mode);
@@ -1412,6 +1424,7 @@ static int pt_mkdir(const char *path, mode_t mode)
 static int pt_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	ROUTE("mknod", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
+	if ((rrc = policy_name_exists(r.tier)) != 0) return rrc;
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	/* -EPERM here, not the shared -EOPNOTSUPP: see refuse_unreconcilable. */
 	if (refuse_unreconcilable("mknod", path, r.tier) != 0) { abandon_claim(path, r.tier); return -EPERM; }
@@ -1450,6 +1463,7 @@ static int pt_rmdir(const char *path)
 static int pt_symlink(const char *target, const char *path)
 {
 	ROUTE("symlink", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
+	if ((rrc = policy_name_exists(r.tier)) != 0) return rrc;
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = symlinkat(target, r.fd, rp);
@@ -1544,6 +1558,7 @@ static int pt_link(const char *from, const char *to)
 	if ((rc = route("link", from, 0, CCU_FETCH, &rf))) return rc;
 	if ((rc = route("link", to, CCU_FLAG_FOR_CREATE, CCU_FETCH, &rt))) return rc;
 	tr("link", to, tier_name(rt.tier), rt.intent);
+	if ((rc = policy_name_exists(rt.tier))) return rc;
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {
@@ -1647,6 +1662,7 @@ static int pt_utimens(const char *path, const struct timespec ts[2],
 static int pt_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	ROUTE("create", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
+	if ((rrc = policy_name_exists(r.tier)) != 0) return rrc;
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int fd = openat(r.fd, rp, fi->flags | O_CREAT, mode);
