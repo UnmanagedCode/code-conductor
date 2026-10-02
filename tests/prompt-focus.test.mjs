@@ -34,6 +34,7 @@ async function setup({ canType = true, touch = false } = {}) {
     </form>
     <button id="other-button" type="button"></button>
     <input id="other-input" type="text" />
+    <input id="other-checkbox" type="checkbox" />
     <div id="other-editable" contenteditable="true" tabindex="0"></div>
     <dialog id="modal"></dialog>`;
   const textarea = doc.getElementById('composer-input');
@@ -145,6 +146,23 @@ test('typing in a contenteditable element keeps focus', async () => {
   assert.ok(doc.activeElement === editable, 'precondition: the contenteditable took focus');
   promptFocus.afterSelect({ userGesture: true });
   assert.ok(doc.activeElement === editable, 'focus stayed in the contenteditable');
+});
+
+test('a focused checkbox input does not block focus', async () => {
+  const { doc, byId, textarea, promptFocus } = await setup();
+  const checkbox = byId('other-checkbox');
+  checkbox.focus();
+  assert.ok(doc.activeElement === checkbox, 'precondition: the checkbox took focus');
+  promptFocus.afterSelect({ userGesture: true });
+  assert.ok(doc.activeElement === textarea, 'an input that takes no text is not text entry');
+});
+
+test('a truthy userGesture that is not true leaves focus where it was', async () => {
+  const { doc, byId, promptFocus } = await setup();
+  const button = byId('other-button');
+  button.focus();
+  promptFocus.afterSelect({ userGesture: 1 });
+  assert.ok(doc.activeElement === button, 'only an explicit true asks for focus');
 });
 
 test('a focused button does not block focus', async () => {
