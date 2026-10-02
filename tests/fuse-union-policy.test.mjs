@@ -404,8 +404,11 @@ describe('the compiled policy driver', { skip }, () => {
     // above a host pin a remote question for the marked CLI, and a remote that
     // lacks one must neither stop the walk nor receive the create it provokes.
     ['b52-pin-ancestor-never-reaches-the-remote',
-                      'at a `project`-tier strict ancestor of a `host` pin, the remote is asked first and its ABSENT becomes a positive route with no remote-absent row — fresh or from the cache — while a FETCH there sends no frame at all; READY is still the remote’s, REFUSED and a dead channel keep their errno and their row, the mark check still comes first, and ancestors of a project or hide pin only, a string-prefix sibling and a non-ancestor child stay -ENOENT with a create of that child still reaching the remote; an ancestor shared with a host pin qualifies',
-                      'drop the ABSENT conversion ⇒ the marked walk dies at the first ancestor the remote lacks; send the FETCH ⇒ a recursive mkdir lands on the remote (EACCES as non-root, a stray dir as root); key the rule on every ancestor rather than host-pin ones ⇒ /srv and /run stop answering -ENOENT; convert only the fresh answer ⇒ the cached one disagrees; take the flag from the last pin rather than OR-ing it ⇒ the shared ancestor is missed; convert before the mark check ⇒ an unmarked caller is answered past it'],
+                      'at a `project`-tier strict ancestor of a `host` pin, the remote is asked first and its ABSENT becomes a positive route with no remote-absent row — fresh or from the cache — while a FETCH there sends no frame at all; READY is still the remote’s, REFUSED and a dead channel keep their errno and their row, the mark check still comes first, and ancestors of a project or hide pin only, a string-prefix sibling and a non-ancestor child stay -ENOENT with a create of that child still reaching the remote; an ancestor shared with a host pin qualifies whatever pin order derives it; the positive route is POLICY_ROUTE_PIN_ANCESTOR, policy_pin_ancestor’s truth table excludes the pin itself, exact pins and every non-host-pin ancestor, and at the narrow geometry the same path is the resolve_class ancestor with the rule silent',
+                      'drop the ABSENT conversion ⇒ the marked walk dies at the first ancestor the remote lacks; send the FETCH ⇒ a recursive mkdir lands on the remote (EACCES as non-root, a stray dir as root); key the rule on every ancestor rather than host-pin ones ⇒ /srv and /run stop answering -ENOENT; convert only the fresh answer ⇒ the cached one disagrees; take the flag from the last pin rather than OR-ing it ⇒ the shared ancestor is missed; convert before the mark check ⇒ an unmarked caller is answered past it; drop the T_PROJECT test ⇒ the rule claims a narrow-geometry ancestor'],
+    ['b53-name-exists-on-a-fixed-node',
+                      'an op creating a NAME at a fixed node answers -EEXIST for exactly {T_SYNTH, T_BIND} over every enum tier, and every other mutation of those two stays -EROFS',
+                      'answer EROFS for the name ⇒ a recursive mkdir that reaches a pin ancestor fails; widen it to T_PROJECT or T_HOST ⇒ a real create is refused as already existing; fold it into policy_mutation_check ⇒ rmdir/chmod on a scaffold node read EEXIST'],
     ['b48-probe-falls-not-absent',
                       'policy_host_absent answers ABSENT for ENOENT / ENOTDIR / ENAMETOOLONG and for a negative fd, NOT ABSENT for a present file, directory or DANGLING symlink, and NOT ABSENT for an ELOOP — the failure direction that keeps an unknown error loud instead of silently hiding a host directory',
                       '`return fstatat(...) != 0` ⇒ ELOOP reads as absence and a synthetic node hides real host data, the silent-hiding direction; reuse policy_host_has’s polarity ⇒ every answer inverts; drop AT_SYMLINK_NOFOLLOW ⇒ a dangling symlink reads as absent and gets an overlay node; return 0 for a negative fd ⇒ the seam-unset axis every other case leans on collapses'],
@@ -1337,6 +1340,45 @@ describe('the compiled policy driver', { skip }, () => {
       assert.match(bodyOfIn(src, op), /fd_dirty\[|fd_mark_dirty\(/,
         `pt_${op} mutates content without re-arming the push`);
     }
+  });
+
+  // INVARIANT: the ops that create a NAME — and only they — answer a fixed node
+  // -EEXIST, and they ask before the EROFS check, so a recursive mkdir that
+  // reaches a pin ancestor sees "already there" rather than "refused".
+  test('the name-creating ops ask policy_name_exists before policy_mutation_check, and no other op asks it', async () => {
+    const src = stripCComments(await fs.readFile(UNION_C, 'utf8'));
+    const NAME_CREATING = ['mkdir', 'mknod', 'symlink', 'create', 'link'];
+    for (const op of NAME_CREATING) {
+      const body = bodyOfIn(src, op);
+      const at = body.indexOf('policy_name_exists(');
+      assert.ok(at > 0, `pt_${op} does not ask policy_name_exists`);
+      assert.ok(at < body.indexOf('policy_mutation_check('),
+        `pt_${op} asks policy_mutation_check before policy_name_exists, so the name reads EROFS`);
+    }
+    // `link`'s question is about its TARGET end, the name it creates.
+    assert.match(bodyOfIn(src, 'link'), /policy_name_exists\(rt\.tier\)/,
+      'pt_link asks policy_name_exists of the wrong end');
+    const askers = [...src.matchAll(/^static int pt_([a-z]+)\(/gm)].map(m => m[1])
+      .filter(op => bodyOfIn(src, op).includes('policy_name_exists('));
+    assert.deepEqual(askers.sort(), [...NAME_CREATING].sort(),
+      'policy_name_exists is asked by an op that creates no name, or missed by one that does');
+  });
+
+  // INVARIANT: route()'s project arm turns POLICY_ROUTE_PIN_ANCESTOR into the
+  // synthetic node and SUCCEEDS — the union.c half `b52` cannot reach. Read any
+  // other way, the positive sentinel would be returned as an errno or served
+  // from the mirror the remote never filled.
+  test('route() serves POLICY_ROUTE_PIN_ANCESTOR as the synthetic node', async () => {
+    const src = stripCComments(await fs.readFile(UNION_C, 'utf8'));
+    const at = src.indexOf('static int route(');
+    assert.ok(at > 0, 'route() is missing from union.c');
+    const body = src.slice(at, src.indexOf('\n}\n', at));
+    const arm = body.slice(body.indexOf('case T_PROJECT:'), body.indexOf('case T_FAIL:'));
+    assert.match(arm,
+      /if\s*\(\s*rc\s*==\s*POLICY_ROUTE_PIN_ANCESTOR\s*\)\s*\{\s*r->tier\s*=\s*T_SYNTH\s*;\s*return\s+0\s*;\s*\}/,
+      'the T_PROJECT arm does not map POLICY_ROUTE_PIN_ANCESTOR to T_SYNTH and return 0');
+    assert.ok(arm.indexOf('POLICY_ROUTE_PIN_ANCESTOR') < arm.indexOf('if (rc)'),
+      'the sentinel is tested after `if (rc)`, which returns it as an errno');
   });
 
   // AND THAT EVERY PROJECT-TIER MUTATION EITHER LANDS OR REFUSES — the bar M1

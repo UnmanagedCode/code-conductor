@@ -10,14 +10,16 @@
 //
 //   TEST_CONCURRENCY=1 RUN_FUSE_LIFECYCLE=1 node tests/run.mjs tests/fuse-*.real.test.mjs
 //
-// THE CAP IS NOT OPTIONAL. These four files each spawn real workers into real
-// FUSE mounts, and at the default concurrency they starve each other: measured
-// 3 kills in 18 runs of the bare glob, always one arm riding the runner's 60s
-// per-test timeout until its whole file died at FILE_KILL_MS. tests/run.mjs has
-// no per-file exclusivity, so the cap lives in the invocation. See
-// docs/architecture.md -> "The FUSE-union chroot" for the measurements.
+// THE CAP IS NOT OPTIONAL. The tests/fuse-*.real.test.mjs files each spawn
+// real workers into real FUSE mounts, and at the default concurrency they
+// starve each other: measured over the lifecycle, mount, routing and marking
+// files, 3 kills in 18 runs of the bare glob, always one arm riding the
+// runner's 60s per-test timeout until its whole file died at FILE_KILL_MS.
+// tests/run.mjs has no per-file exclusivity, so the cap lives in the
+// invocation. See docs/architecture.md -> "The FUSE-union chroot" for the
+// measurements.
 //
-// One of the four tests/fuse-*.real.test.mjs files. The dependency preflight,
+// One of the tests/fuse-*.real.test.mjs files. The dependency preflight,
 // the server, the three systems, the mirror scaffold, the shared observation
 // helpers and the family-wide rules (PID DISCIPLINE, the before/after delta)
 // live in ./fuseGateCase.mjs, which lists the family.
@@ -32,7 +34,7 @@ import { fuseRunDir } from '../src/systems/fuse/plan.ts';
 import { resolveTierEntry } from '../src/systems/fuse/tierTable.ts';
 import {
   ENABLED, setupFuseGate, spawnWorker, snapshot, readRecord, assertNoResidue,
-  mountsOf, sh, ancestorsOf, inNs, inside, eventsOf,
+  mountsOf, sh, inNs, inside, eventsOf,
 } from './fuseGateCase.mjs';
 
 // The handles every test body below reads. Bound inside the harness's own
@@ -895,27 +897,6 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
         `the daemon did not parse a \`project /\` pin, so this is not the wide configuration:\n${pins}`);
       assert.equal(resolveTierEntry(inst._redirect.tiers, '/bin')?.tier, 'project',
         '/bin is not project tier, so the synthetic scaffold did not collapse and the arm is vacuous');
-
-      // THE FIXTURE'S OWN PRECONDITION, CHECKED AGAINST THE DAEMON'S PIN LIST
-      // rather than trusted from the walk's depth constant. Every strict
-      // ancestor of a non-project pin that is itself `project` tier here must
-      // exist as a DIRECTORY in the mirror source, or a MARKED caller cannot
-      // traverse to the pin. Without it the arm dies at `/usr`, with the CLI
-      // never reaching exec. Named, not mysterious.
-      const missing = [];
-      for (const row of pins.split('\n')) {
-        if (!row || row.startsWith('#')) continue;
-        const [kind, p] = row.split('\t');
-        if (kind === 'project' || !p?.startsWith('/')) continue;
-        for (const anc of ancestorsOf(p)) {
-          if (resolveTierEntry(inst._redirect.tiers, anc)?.tier !== 'project') continue;
-          if (!await fs.stat(path.join(fakeRemote, anc)).then(st => st.isDirectory(), () => false))
-            missing.push(anc);
-        }
-      }
-      assert.deepEqual([...new Set(missing)].sort(), [],
-        'the mirror source has no directory at these project-tier ancestors of a host pin, so a '
-        + 'MARKED caller cannot traverse to that pin — extend the scaffold in before()');
 
       // …and the three binds still land, exactly as R3 asserts for the narrow
       // root: a wide `project /` must not stop /proc, /sys and /dev from being

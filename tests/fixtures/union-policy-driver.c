@@ -3468,24 +3468,24 @@ static void b52_pin_ancestor_never_reaches_the_remote(void)
 	canned_reply(CCU_ABSENT, 0);
 	calls = xport_calls;
 	rc = policy_project_route("getattr", "/ws", 4000, CCU_STAT, 0);
-	CHECK(rc > 0, "STAT ABSENT at the pin ancestor /ws is a positive route, not an errno (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "STAT ABSENT at the pin ancestor /ws is a positive route, not an errno (%d)", rc);
 	CHECK(xport_calls == calls + 1, "and the remote was asked first (%d calls)", xport_calls - calls);
 	CHECK(b52_rows("/ws", "remote-absent", 4000) == 0,
 	      "and no remote-absent row names /ws");
 	rc = policy_project_route("getattr", "/ws/cc", 4000, CCU_STAT, 0);
-	CHECK(rc > 0, "STAT ABSENT at the deeper pin ancestor /ws/cc is positive too (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "STAT ABSENT at the deeper pin ancestor /ws/cc is positive too (%d)", rc);
 	CHECK(b52_rows("/ws/cc", "remote-absent", 4000) == 0,
 	      "and no remote-absent row names /ws/cc");
 
 	calls = xport_calls;
 	rc = policy_project_route("getattr", "/ws", 4000, CCU_STAT, 0);
-	CHECK(rc > 0, "a second STAT at /ws inside the TTL agrees with the first (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "a second STAT at /ws inside the TTL agrees with the first (%d)", rc);
 	CHECK(xport_calls == calls, "and is answered from the cache (%d calls)", xport_calls - calls);
 
 	b52_expire();
 	calls = xport_calls;
 	rc = policy_project_route("opendir", "/ws/cc", 4000, CCU_LIST, 0);
-	CHECK(rc > 0, "LIST ABSENT at /ws/cc is positive (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "LIST ABSENT at /ws/cc is positive (%d)", rc);
 	CHECK(xport_calls == calls + 1, "and the remote was asked (%d calls)", xport_calls - calls);
 
 	/* ── no FETCH frame for a pin ancestor, whatever the remote would say ── */
@@ -3493,11 +3493,11 @@ static void b52_pin_ancestor_never_reaches_the_remote(void)
 	calls = xport_calls;
 	rc = policy_project_route("mkdir", "/ws", 4000, CCU_FETCH,
 	                          CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE);
-	CHECK(rc > 0, "FETCH(FOR_CREATE|FOR_WRITE) at /ws is positive (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "FETCH(FOR_CREATE|FOR_WRITE) at /ws is positive (%d)", rc);
 	CHECK(xport_calls == calls, "and sent NO frame (%d calls)", xport_calls - calls);
 	calls = xport_calls;
 	rc = policy_project_route("open", "/ws/cc", 4000, CCU_FETCH, 0);
-	CHECK(rc > 0, "a bare FETCH at /ws/cc is positive (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "a bare FETCH at /ws/cc is positive (%d)", rc);
 	CHECK(xport_calls == calls, "and sent NO frame (%d calls)", xport_calls - calls);
 
 	/* ── where the remote HAS it, the remote serves it ── */
@@ -3558,17 +3558,66 @@ static void b52_pin_ancestor_never_reaches_the_remote(void)
 	policy_mark_tid(4100);
 	canned_reply(CCU_ABSENT, 0);
 	rc = policy_project_route("getattr", "/srv", 4100, CCU_STAT, 0);
-	CHECK(rc > 0, "with host /srv/home added, /srv is a pin ancestor and ABSENT is positive (%d)", rc);
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR, "with host /srv/home added, /srv is a pin ancestor and ABSENT is positive (%d)", rc);
 	CHECK(b52_rows("/srv", "remote-absent", 4100) == 0, "and no remote-absent row names it");
 	calls = xport_calls;
 	rc = policy_project_route("mkdir", "/srv", 4100, CCU_FETCH,
 	                          CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE);
-	CHECK(rc > 0 && xport_calls == calls,
+	CHECK(rc == POLICY_ROUTE_PIN_ANCESTOR && xport_calls == calls,
 	      "and a FETCH at /srv sends no frame (rc %d, %d calls)", rc, xport_calls - calls);
+
+	/* ── the flag is OR'd: a later non-host pin sharing the ancestor keeps it ── */
+	pin("hide\t/srv/later");
+	anc_build();
+	CHECK(policy_pin_ancestor("/srv") == 1,
+	      "a hide pin added after host /srv/home leaves /srv a pin ancestor");
+
+	/* ── the rule, stated directly ── */
+	{
+		static const struct { const char *p; int want; } tt[] = {
+			{ "/ws", 1 }, { "/ws/cc", 1 }, { "/srv", 1 },
+			{ "/ws/cc/root", 0 },   /* the host pin itself */
+			{ "/", 0 },             /* carries the exact `project /` pin */
+			{ "/srv/app", 0 },      /* an exact project pin */
+			{ "/srv/app/x", 0 }, { "/run", 0 }, { "/run/cc-x", 0 },
+			{ "/wsx", 0 }, { "/ws/other", 0 },
+		};
+		size_t k;
+		for (k = 0; k < sizeof(tt) / sizeof(tt[0]); k++)
+			CHECK(policy_pin_ancestor(tt[k].p) == tt[k].want,
+			      "policy_pin_ancestor(%s) == %d", tt[k].p, tt[k].want);
+	}
+
+	/* ── at the narrow geometry the ancestor is T_SYNTH already, and the rule
+	 *    does not fire: only a T_PROJECT path qualifies ── */
+	npins = 0;
+	pin("host\t/ws/cc/root");
+	pin("project\t/srv/app");
+	anc_build();
+	CHECK(resolve_class("/ws", VIEW_CLI) == T_SYNTH,
+	      "with no `project /`, /ws is the synthetic ancestor (%s)",
+	      tier_name(resolve_class("/ws", VIEW_CLI)));
+	CHECK(policy_pin_ancestor("/ws") == 0, "and policy_pin_ancestor does not claim it");
 
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
+}
+
+/* ── B53: a name-creating op on a fixed node is EEXIST ──────────────────── */
+static void b53_name_exists_on_a_fixed_node(void)
+{
+	static const enum tier all[] = { T_FAIL, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH };
+	size_t i;
+
+	for (i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+		enum tier t = all[i];
+		int want = (t == T_SYNTH || t == T_BIND) ? -EEXIST : 0;
+		CHECK(policy_name_exists(t) == want,
+		      "policy_name_exists(%s) == %d", tier_name(t), want);
+	}
+	CHECK(policy_mutation_check(T_SYNTH) == -EROFS, "and every other mutation of T_SYNTH is still EROFS");
+	CHECK(policy_mutation_check(T_BIND) == -EROFS, "and of T_BIND");
 }
 
 static void print_vec(const char *label, const char *b, size_t n)
@@ -3701,6 +3750,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b50-cwd-overlay-under-a-host-pin")) b50_cwd_overlay_under_a_host_pin();
 	else if (!strcmp(c, "b51-cwd-chain-intermediate-under-a-host-pin")) b51_cwd_chain_intermediate_under_a_host_pin();
 	else if (!strcmp(c, "b52-pin-ancestor-never-reaches-the-remote")) b52_pin_ancestor_never_reaches_the_remote();
+	else if (!strcmp(c, "b53-name-exists-on-a-fixed-node")) b53_name_exists_on_a_fixed_node();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
