@@ -13,7 +13,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl } from './helpers.mjs';
+import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -21,6 +22,7 @@ const SCENARIO_PLAN_FILE = path.join(__dirname, 'fixtures', 'scenario-exit-plan-
 const SCENARIO_PLAN_FILE_INLINE = path.join(__dirname, 'fixtures', 'scenario-exit-plan-file-inline.json');
 const SCENARIO_PLAN_FILE_LATER_TURN = path.join(__dirname, 'fixtures', 'scenario-exit-plan-file-later-turn.json');
 const SCENARIO_PLAN_NAMED_PATH = path.join(__dirname, 'fixtures', 'scenario-exit-plan-named-path.json');
+const SCENARIO_PLAN_EMPTY = path.join(__dirname, 'fixtures', 'scenario-exit-plan-empty.json');
 
 let nextRpcId = 1;
 async function rpc(baseUrl, method, params) {
@@ -51,14 +53,14 @@ function unwrapMessages(result) {
   };
 }
 
-let ctx, baseUrl, instances, home;
+let ctx, baseUrl, instances, home, projectsRoot;
 
 before(async () => {
   ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   ({ baseUrl, instances } = ctx);
 });
 after(async () => { await ctx.close(); });
-beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => {
   await instances.shutdown();
   await rmrf(home);
@@ -189,5 +191,44 @@ test('get_recent_messages: a path named by the ExitPlanMode input itself is surf
     assert.equal(res.messages[0].hasPlan, true);
     assert.equal(res.messages[0].text, `--- plan · saved to ${planFile} ---`,
       'the input carried no plan text, so the header stands alone');
+  } finally { await cleanup(); }
+});
+
+test('restart mid-plan: a resumed session\'s empty-input ExitPlanMode still carries the plan written before the restart', async () => {
+  const { planFile, cleanup } = await seedPlanFile('# Plan\n- Survive restart\n');
+  try {
+    // The transcript a restarted cc finds: the plan Write landed, ExitPlanMode
+    // never did. The resumed instance is brand new, so its live tracker is empty.
+    const sid = '5eed0000-aaaa-bbbb-cccc-dddddddddddd';
+    await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+    await seedSessionJsonl(localPlace(path.join(projectsRoot, 'a')), sid, [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'plan this' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', model: 'claude-opus-4-8',
+        content: [{ type: 'tool_use', id: 'tu_w', name: 'Write', input: { file_path: planFile, content: '# Plan\n- Survive restart\n' } }] } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_w', content: 'ok' }] } },
+    ]);
+
+    process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_PLAN_EMPTY;
+    let sessionId;
+    try {
+      const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'plan', resume: sid }));
+      sessionId = spawn.sessionId;
+      await waitFor(() => instForSession(instances, sessionId)?.status === 'idle');
+    } finally { delete process.env.FAKE_CLAUDE_SCENARIO; }
+    const inst = instForSession(instances, sessionId);
+    await waitFor(() => inst.ringSnapshot().some(e => e.kind === 'system' && e.subtype === 'history_replayed'));
+
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'continue' }));
+
+    const pr = inst.ringSnapshot().find(e => e.kind === 'plan_request' && e.toolUseId === 'tu_epe_exit');
+    assert.ok(pr, 'the fixture\'s ExitPlanMode produced a plan_request');
+    assert.equal(pr.planPath, planFile, 'the live event binds the plan file written before the restart');
+    assert.equal(pr.plan, '# Plan\n- Survive restart\n', 'and presents that file\'s contents as the plan');
+
+    const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+    const planMsg = res.messages.find(m => m.hasPlan);
+    assert.ok(planMsg, 'get_recent_messages reports a plan message');
+    assert.equal(planMsg.planPath, planFile);
+    assert.equal(planMsg.text, `--- plan · saved to ${planFile} ---\n# Plan\n- Survive restart\n`);
   } finally { await cleanup(); }
 });

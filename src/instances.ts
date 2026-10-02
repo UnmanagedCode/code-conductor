@@ -1844,6 +1844,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       for (const ev of line.events) this._emitUi(ev, { replayed: true });
     }
     if (result.lastLeafUuid) this._lastLeafUuid = result.lastLeafUuid;
+    // The wipe reset the live tracker; without this an ExitPlanMode after a
+    // restart can't find a plan file written before it.
+    if (result.planFile) this._planFiles.seed(result.planFile);
     // One-shot, set by pruneSession(): the jsonl's newest assistant `usage` still
     // reports the PRE-prune context size, so seeding it would tell the user the
     // prune did nothing until the first live turn re-measures. A known-wrong

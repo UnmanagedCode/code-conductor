@@ -6,7 +6,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planPathFromInput, planFileFromToolUse } from '../src/planFile.ts';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { planPathFromInput, planFileFromToolUse, PlanFileTracker } from '../src/planFile.ts';
 
 test('planPathFromInput prefers planFilePath, falls back to planPath', () => {
   assert.equal(planPathFromInput({ planFilePath: '/a.md' }), '/a.md');
@@ -37,4 +40,47 @@ test('planFileFromToolUse recognises only a Write under ~/.claude/plans/*.md', (
   assert.equal(planFileFromToolUse('Write', { file_path: '/home/u/notes/p.md' }), null);
   assert.equal(planFileFromToolUse('Write', { file_path: 42 }), null);
   assert.equal(planFileFromToolUse('Write', null), null);
+});
+
+// A real file, so branch 3's readFileSync is observable on the enriched event.
+function tmpPlan(content) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'planseed-'));
+  const file = path.join(dir, 'p.md');
+  writeFileSync(file, content);
+  return { file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+const emptyPlanRequest = () => ({ kind: 'plan_request', plan: null, planPath: null });
+
+test('seed into an empty tracker binds an empty-input plan_request (branch 3): planPath + file contents', () => {
+  const a = tmpPlan('# seeded\n');
+  try {
+    const t = new PlanFileTracker();
+    t.seed(a.file);
+    const ev = emptyPlanRequest();
+    t.enrich(ev);
+    assert.equal(ev.planPath, a.file);
+    assert.equal(ev.plan, '# seeded\n');
+  } finally { a.cleanup(); }
+});
+
+test('seed never overrides a live Write latched before it', () => {
+  const b = tmpPlan('B\n');
+  try {
+    const t = new PlanFileTracker();
+    t.noteToolUse('Write', { file_path: '/home/u/.claude/plans/live.md' });
+    t.seed(b.file);
+    assert.equal(t.lastPath, '/home/u/.claude/plans/live.md');
+  } finally { b.cleanup(); }
+});
+
+test('a seeded path does not bind an inline plan (branch 1)', () => {
+  const a = tmpPlan('A\n');
+  try {
+    const t = new PlanFileTracker();
+    t.seed(a.file);
+    const ev = { kind: 'plan_request', plan: 'x', planPath: null };
+    t.enrich(ev);
+    assert.equal(ev.planPath, null);
+    assert.equal(ev.plan, 'x');
+  } finally { a.cleanup(); }
 });

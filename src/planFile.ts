@@ -45,10 +45,24 @@ export class PlanFileTracker {
     this.#writtenThisTurn = false;
   }
 
-  // Resume/respawn wipe — the replayed session must not inherit either.
+  // Resume/respawn wipe — drops the pre-wipe run's state; loadHistory then
+  // re-seeds the path from the transcript replay.
   reset(): void {
     this.#last = null;
     this.#writtenThisTurn = false;
+  }
+
+  // The path latched so far, or null.
+  get lastPath(): string | null {
+    return this.#last;
+  }
+
+  // Adopt a path recovered from the transcript. Never overrides a live latch —
+  // a live Write can land while loadHistory is still awaiting, and it is the
+  // newer one. Leaves the this-turn flag false: a path from before the wipe
+  // belongs to an earlier turn, so branch 1 must not bind it.
+  seed(path: string): void {
+    if (this.#last === null) this.#last = path;
   }
 
   // Attach the plan file to a plan_request, in place.
