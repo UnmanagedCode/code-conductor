@@ -392,6 +392,7 @@ export async function loadPersistedTranscript(options: {
   replayedCount: number;
   lastLeafUuid: string | null;
   lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null;
+  planFile: string | null;
 } | null> {
   const { place, sessionId, seqHint = 0 } = options;
   if (!place?.cwd || !sessionId) return null;
@@ -408,6 +409,7 @@ export async function loadPersistedTranscript(options: {
   const blockCursor = new Map<string, number>();
   const pendingSkillLoads: PendingSkillLoad[] = [];
   const questionAnswers = new QuestionAnswerCorrelator();
+  // Its final path is handed back so the live tracker can resume from it.
   // Deliberately NOT threaded into loadSubAgentTranscript below: a sub-agent's
   // plan file is not the outer session's.
   const planFiles = new PlanFileTracker();
@@ -486,7 +488,7 @@ export async function loadPersistedTranscript(options: {
     if (typeof line.uuid === 'string') lastLeafUuid = line.uuid;
     lines.push({ events });
   }
-  return { lines, replayedCount, lastLeafUuid, lastAssistantUsage };
+  return { lines, replayedCount, lastLeafUuid, lastAssistantUsage, planFile: planFiles.lastPath };
 }
 
 // Scan the persisted jsonl and return the bare model id from the
