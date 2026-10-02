@@ -222,7 +222,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       });
       await refreshProjects();
       await refreshInstances();
-      selectInstance(inst.id);
+      selectInstance(inst.id, { userGesture: true });
       // If a post-worktree-create hook ran, show its result in the dialog.
       const hook = inst.worktree?.postWorktreeCreate;
       if (hook?.ran) {
@@ -271,7 +271,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       });
       await refreshProjects();
       await refreshInstances();
-      selectInstance(inst.id);
+      selectInstance(inst.id, { userGesture: true });
     } catch (e) {
       alert(`Conduct session failed to start: ${e.message}`);
     } finally {

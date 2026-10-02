@@ -119,6 +119,13 @@ test('a click selects the live instance and never resumes a session', async () =
   assert.deepEqual(calls.resume, []);
 });
 
+test('clicking a needs-you entry selects with a user gesture', async () => {
+  const { strip, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('C1', ask('plan', 'tool'))] });
+  entryOf(strip, 'C1').click();
+  assert.deepEqual(calls.selectOpts, [{ userGesture: true }]);
+});
+
 test('a click after a crash + resume selects the new instanceId', async () => {
   const { strip, sidebar, calls } = await setupSidebar();
   await render(sidebar, { instances: [conductor('C1')] });

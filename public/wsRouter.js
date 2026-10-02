@@ -283,10 +283,10 @@ export function installWsRouter({
   // `anchor` is an arbitrary sessionId from a (possibly stale) notification,
   // unrelated to whatever the user is currently anchored to — clearing the
   // hash there would blow away the user's actual current session anchor.
-  async function resumeSessionByAnchor(anchor, { clearAnchorOnMiss = true } = {}) {
+  async function resumeSessionByAnchor(anchor, { clearAnchorOnMiss = true, userGesture = false } = {}) {
     const live = state.instances.find(i => i.sessionId === anchor);
     if (live) {
-      selectInstance(live.id);
+      selectInstance(live.id, { userGesture });
       return true;
     }
     // No live instance owns this anchor — locate the session on disk
@@ -314,7 +314,7 @@ export function installWsRouter({
           // after a resume-restart) may already own this session — coalesced
           // or 409'd server-side. Don't alert; just re-sync and select the
           // instance that now owns the anchor.
-          await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true });
+          await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true, userGesture });
         } finally { setSidebarStatus(''); }
         return true;
       }
@@ -346,10 +346,10 @@ export function installWsRouter({
     const { instanceId, sessionId } = data;
     const target = resolveNotificationInstance({ instanceId, sessionId }, state.instances);
     if (target) {
-      selectInstance(target.id);
+      selectInstance(target.id, { userGesture: true });
       return;
     }
-    if (sessionId) await resumeSessionByAnchor(sessionId, { clearAnchorOnMiss: false });
+    if (sessionId) await resumeSessionByAnchor(sessionId, { clearAnchorOnMiss: false, userGesture: true });
   }
   if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
     navigator.serviceWorker.addEventListener('message', (event) => {

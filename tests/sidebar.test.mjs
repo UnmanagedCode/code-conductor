@@ -27,10 +27,10 @@ async function setupSidebar({ onLoadSessions } = {}) {
   document.body.innerHTML = '<ul id="root"></ul>';
   const root = document.getElementById('root');
 
-  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [], close: [] };
+  const calls = { select: [], selectOpts: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [], close: [] };
   const sidebar = new Sidebar({
     rootList: root,
-    onSelectInstance: (id) => calls.select.push(id),
+    onSelectInstance: (id, opts) => { calls.select.push(id); calls.selectOpts.push(opts); },
     onCreateInstanceClick: (name, opts) => calls.create.push({ name, opts }),
     onResumeSession: (s) => calls.resume.push(s),
     onRemoveWorktree: (p, w) => calls.removeWorktree.push({ p, w }),
@@ -41,6 +41,23 @@ async function setupSidebar({ onLoadSessions } = {}) {
   });
   return { window, document, root, sidebar, calls };
 }
+
+test('clicking a live session row selects with a user gesture', async () => {
+  const { root, sidebar, calls } = await setupSidebar({
+    onLoadSessions: async () => [],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [],
+    sessions: { count: 0, lastActivity: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-fresh', project: 'demo', sessionId: 'sid-fresh', status: 'spawning', mode: 'plan', worktree: null },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  root.querySelector('.session-row').click();
+  assert.deepEqual(calls.selectOpts, [{ userGesture: true }]);
+});
 
 test('Sessions subnode merges a live instance with its on-disk row (single combined entry)', async () => {
   const { root, sidebar } = await setupSidebar({

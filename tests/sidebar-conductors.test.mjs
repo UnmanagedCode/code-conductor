@@ -381,7 +381,7 @@ test('project chips are display-only: neither kind is a button, and clicking eit
     c.click();
   }
   await tick();
-  assert.deepEqual(calls, { select: [], resume: [], create: [], close: [], promote: [] });
+  assert.deepEqual(calls, { select: [], selectOpts: [], resume: [], create: [], close: [], promote: [] });
 });
 
 const TREE_FIXTURE = {
@@ -549,6 +549,13 @@ test('no Inactive group when every conductor is live', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, { instances: [conductor('A'), conductor('B')] });
   assertNull(conductorList.querySelector('.conductor-inactive'), 'no Inactive group');
+});
+
+test('clicking a live conductor row selects with a user gesture', async () => {
+  const { conductorList, sidebar, calls } = await setupSidebar();
+  await render(sidebar, { instances: [conductor('A')] });
+  conductorOf(conductorList, 'A').querySelector('.conductor-row').click();
+  assert.deepEqual(calls.selectOpts, [{ userGesture: true }]);
 });
 
 test('row click selects a live conductor and resumes an inactive one in .conduct; a caret click does neither', async () => {

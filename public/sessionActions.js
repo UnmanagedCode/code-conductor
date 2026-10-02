@@ -90,7 +90,7 @@ export function installSessionActions({
   // session, so the POST can 409 ("already attached") even though the session
   // IS coming up. Rather than alert, re-sync and select whatever instance now
   // owns the sessionId; only clear focus if it truly didn't come up.
-  async function resumeSession({ projectName, worktreeName, sessionId, silent = false }) {
+  async function resumeSession({ projectName, worktreeName, sessionId, silent = false, userGesture = !silent }) {
     try {
       const r = await fetch('/api/instances', {
         method: 'POST',
@@ -106,7 +106,7 @@ export function installSessionActions({
           // Someone else is/just resumed it — find and select that instance.
           await refreshInstances();
           const live = getInstances().find(i => i.sessionId === sessionId);
-          if (live) selectInstance(live.id);
+          if (live) selectInstance(live.id, { userGesture });
           return;
         }
         throw new Error((await r.json()).error);
@@ -114,7 +114,7 @@ export function installSessionActions({
       const inst = await r.json();
       await refreshProjects();
       await refreshInstances();
-      selectInstance(inst.id);
+      selectInstance(inst.id, { userGesture });
     } catch (e) {
       if (silent) { console.warn('anchor auto-resume failed', e); return; }
       alert(`resume failed: ${e.message}`);
@@ -162,7 +162,7 @@ export function installSessionActions({
       });
       await refreshProjects();
       await refreshInstances();
-      selectInstance(newInst.id);
+      selectInstance(newInst.id, { userGesture: true });
     } catch (e) {
       alert(`fork failed: ${e.message}`);
     }
