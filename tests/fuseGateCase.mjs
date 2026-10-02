@@ -60,6 +60,8 @@
 //                           directories above a host pin: the marked CLI's
 //                           recursive mkdir reaches the pin and no frame
 //                           creates them on the remote
+//   fuse-union-listing.real what a marked listing of a remote directory
+//                           names, at the wide and the narrow default root
 //
 // SPLIT ACROSS FILES ON PURPOSE. Every arm here is a real spawn, a real mount
 // and a real teardown costing ~2.4s, so one file was charged their SUM and sat

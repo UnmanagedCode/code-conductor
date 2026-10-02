@@ -83,7 +83,8 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
   // P1 — only the top ancestor is on the remote, and it is read-only there.
   // INVARIANT: a pin ancestor the remote lacks is traversable to the marked CLI
   // and no create frame reaches the remote for it; one the remote has is
-  // served as the remote's own node, its listing naming the pin's child.
+  // served as the remote's own node, its listing naming the remote's entries
+  // merged with the pin's child.
   test('P1 — the remote has only the top ancestor, read-only: the spawn and the CLI’s recursive mkdir succeed, and the remote is untouched', async () => {
     const before = snapshot(runRoot);
     const top = topAncestor();
@@ -117,17 +118,32 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
       const [uid, ino] = st.stdout.trim().split(' ').map(BigInt);
       assert.ok(uid === BigInt(process.getuid()) && ino < 0x7000000000000000n,
         `${top} is not the remote's node (uid ${uid}, ino ${ino}) although the remote has it`);
-      // …and its listing names the child leading to the pin. The remote-entry
-      // half of the merged listing is not asserted here: a marked readdir's
-      // LIST is answered from the resolution cache entry its own lookup's STAT
-      // just filled, because that cache is keyed on (tgid, path) and not on
-      // the op, so no LIST frame fills the mirror directory.
+      // …and its listing is the remote's entries merged with the pin
+      // children: every name a tier prefix under `top` leads through, less the
+      // ones `hide` or `fail` suppress.
+      //
+      // LISTED AT 0755, NOT 0555. A known gap: a child shaped into a mirror
+      // directory without owner-write fails, because `#stat` gives the mirror
+      // directory the remote's mode and cc's uid cannot then create the
+      // children `#list` shapes into it, so the marked readdir of a read-only
+      // remote directory answers EIO. The 0555 half above is the mkdir one.
+      await fs.chmod(remoteTop, 0o755);
+      const pinChildren = new Set();
+      for (const e of inst._redirect.tiers) {
+        const rel = path.relative(top, e.prefix);
+        if (!rel || rel.startsWith('..')) continue;
+        const child = path.join(top, rel.split('/')[0]);
+        const tier = resolveTierEntry(inst._redirect.tiers, child)?.tier;
+        if (tier !== 'hide' && tier !== 'fail') pinChildren.add(path.basename(child));
+      }
+      const pinChild = path.relative(top, process.env.PROJECTS_ROOT).split('/')[0];
+      assert.ok(pinChildren.has(pinChild),
+        `the derived pin children of ${top} do not include ${pinChild}: ${JSON.stringify([...pinChildren])}`);
+      const want = [...new Set([...await fs.readdir(remoteTop), ...pinChildren])].sort();
       const ls = await markedNode(inst, record, READDIR, inside(record, top));
       assert.equal(ls.ok, true, `the marked readdir of ${top} failed: ${ls.stderr}`);
-      const names = JSON.parse(ls.stdout.trim());
-      const pinChild = path.relative(top, process.env.PROJECTS_ROOT).split('/')[0];
-      assert.ok(names.includes(pinChild),
-        `the listing of ${top} does not name the pin's child ${pinChild}: ${JSON.stringify(names)}`);
+      assert.deepEqual(JSON.parse(ls.stdout.trim()), want,
+        `the listing of ${top} is not the remote's entries merged with the pin children`);
 
       const denials = (await eventsOf(inst.id)).filter(r => r[0] === 'deny' && ancestors.has(r[2]));
       assert.deepEqual(denials, [], 'a deny row names a host-pin ancestor');
