@@ -151,6 +151,8 @@ const dom = {
   conductBtn: document.getElementById('conduct-btn'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
+  syncMenuBtn: document.getElementById('sync-menu-btn'),
+  mergeMenuBtn: document.getElementById('merge-menu-btn'),
   debugBtn: document.getElementById('debug-btn'),
   summarizeSessionBtn: document.getElementById('summarize-session-btn'),
   summaryDialog: document.getElementById('summary-dialog'),

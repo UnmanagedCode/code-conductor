@@ -653,6 +653,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 1 1 auto; min-width: 0;
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
 }
+/* The two chip lines header.js builds. On desktop they are transparent, so the
+ * chips are flex items of #instance-title; status chips (the auto-resume chip
+ * carries .ih-status too) order after the project/worktree chips. The phone
+ * block below stacks the lines. */
+.ih-line { display: contents; }
+#instance-title .ih-status { order: 1; }
 .ih-chip {
   display: inline-flex; align-items: center;
   font-family: ui-monospace, monospace; font-size: 11px;
@@ -661,8 +667,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   white-space: nowrap;
 }
 .ih-chip.ih-title { font-family: inherit; font-size: 13px; font-weight: 600; font-style: italic; color: var(--text); background: transparent; padding-left: 0; padding-right: 0; }
-.ih-chip.ih-title + .ih-chip.ih-project { color: var(--muted); font-weight: 400; }
-.ih-chip.ih-title + .ih-chip.ih-project::before { content: '· '; opacity: .6; }
+.ih-chip.ih-project.ih-secondary { color: var(--muted); font-weight: 400; }
+.ih-chip.ih-project.ih-secondary::before { content: '· '; opacity: .6; }
 .ih-chip.ih-project { font-family: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: transparent; padding-left: 0; }
 .ih-chip.ih-sid { color: var(--muted); }
 .ih-chip.ih-mode { color: var(--text); }
@@ -672,8 +678,6 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-status-spawning { color: var(--amber); }
 .ih-chip.ih-status-interrupting { color: var(--amber); animation: pulse 1s infinite alternate; }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }
-.ih-chip.ih-temp { background: rgba(223, 132, 90, .25); color: #ffc7a3; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
-.ih-chip.ih-debug { background: rgba(110, 168, 255, .25); color: #b6d1ff; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 
 /* Combined ctx+rl chip — toggleable button. Color-graded by the worse of
  * context fill and rate-limit utilization: green under 50%, amber 50-80%,
@@ -1676,6 +1680,22 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #sidebar-resize-handle { display: none; }
   #sidebar-toggle { display: block; }
   #sidebar-toggle[aria-expanded="true"] { display: none; }
+  /* One-row session header: ≡, a two-line title block that takes the leftover
+   * width (title truncates first), then the controls. Sync/Merge are in ⋮ here
+   * (header.js hides the bar buttons). overflow: clip, never hidden — hidden
+   * makes a scroll container, which can end the touch-action intersection
+   * #instance-header's swipe zone relies on. */
+  #instance-header { flex-wrap: nowrap; padding: 6px 8px; gap: 6px; }
+  #sidebar-toggle { width: 32px; }
+  #instance-title { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 0; }
+  .ih-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ih-line-main > .ih-title, .ih-line-main > .ih-project { display: block; overflow: clip; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+  .ih-line-main > .ih-status { flex: none; }
+  .ih-line-sub { display: block; white-space: nowrap; overflow: clip; text-overflow: ellipsis; font-size: 11px; }
+  .ih-line-sub > .ih-chip { display: inline; padding: 0; background: transparent; font-size: 11px; }
+  #instance-controls { flex-wrap: nowrap; flex: 0 0 auto; gap: 4px; }
+  #instance-controls .qs-mode-toggle .qs-mode-opt { padding: 6px 8px; }
+  #auto-approve-plan-btn, #overflow-toggle { padding: 6px 8px; }
   .settings-nav { display: none; }
   .settings-content { padding: 10px 12px; }
   .settings-header { margin-bottom: 8px; }

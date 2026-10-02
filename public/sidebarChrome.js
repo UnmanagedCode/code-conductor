@@ -13,6 +13,7 @@
 // anywhere in public/), one localStorage read and one --sidebar-width write.
 
 import { makeDismissable } from './dismissable.js';
+import { MOBILE_LAYOUT_QUERY } from './layout.js';
 
 const SIDEBAR_WIDTH_STORAGE_KEY = 'code-conductor:sidebar-width';
 const SIDEBAR_MIN_WIDTH = 220;
@@ -41,7 +42,7 @@ export function installSidebarChrome({ dom }) {
   // desktop column. Every navigation call site routes through this instead of
   // calling setSidebarOpen(false) directly, so the guard lives in one place.
   function closeSidebarOnMobile() {
-    if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+    if (window.matchMedia(MOBILE_LAYOUT_QUERY).matches) setSidebarOpen(false);
   }
 
   // Sidebar resize (desktop grid layout only — the mobile drawer has a fixed
@@ -63,7 +64,7 @@ export function installSidebarChrome({ dom }) {
 
   if (dom.sidebarResizeHandle) {
     dom.sidebarResizeHandle.addEventListener('pointerdown', (e) => {
-      if (window.matchMedia('(max-width: 720px)').matches) return; // mobile drawer — handle is hidden/inert anyway
+      if (window.matchMedia(MOBILE_LAYOUT_QUERY).matches) return; // mobile drawer — handle is hidden/inert anyway
       e.preventDefault();
       const startX = e.clientX;
       const startWidth = dom.sidebar.getBoundingClientRect().width;
