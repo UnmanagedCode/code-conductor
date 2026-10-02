@@ -83,6 +83,17 @@ test('a stage change re-renders the label in place, with no stale duplicate', as
   assert.equal(labels[0].textContent, 'gatelab · build');
 });
 
+test('clicking a worker navigates with a user gesture', async () => {
+  const { host, SubagentPanel } = await setupDOM();
+  const panel = new SubagentPanel(host);
+  let navigatedOpts = null;
+  panel.onNavigate = (id, opts) => { navigatedOpts = opts; };
+  panel.setInstances([worker({ id: 'w5' })], CONDUCTOR_ID);
+
+  host.querySelector('li.task-row').click();
+  assert.deepEqual(navigatedOpts, { userGesture: true });
+});
+
 test('clicking the playbook label still navigates to the worker — it does not break tap-to-navigate', async () => {
   const { host, SubagentPanel } = await setupDOM();
   const panel = new SubagentPanel(host);

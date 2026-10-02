@@ -385,7 +385,7 @@ export class Sidebar {
         class: 'session-row',
         onclick: () => {
           const s = holder.session;
-          if (s.instanceId) this.onSelectInstance(s.instanceId);
+          if (s.instanceId) this.onSelectInstance(s.instanceId, { userGesture: true });
           else if (this.onResumeSession) this.onResumeSession({
             projectName: holder.projectName, worktreeName: holder.worktreeName, sessionId: s.sessionId,
           });
@@ -1181,7 +1181,7 @@ export class Sidebar {
       holder = { entry };
       btn = el('button', {
         type: 'button', class: 'strip-entry',
-        onclick: () => this.onSelectInstance(holder.entry.instanceId),
+        onclick: () => this.onSelectInstance(holder.entry.instanceId, { userGesture: true }),
       });
       li.appendChild(btn);
       li._holder = holder;
@@ -1419,7 +1419,7 @@ export class Sidebar {
         class: 'conductor-row',
         onclick: () => {
           const c = holder.conductor;
-          if (c.instanceId) this.onSelectInstance(c.instanceId);
+          if (c.instanceId) this.onSelectInstance(c.instanceId, { userGesture: true });
           else if (this.onResumeSession) this.onResumeSession({ projectName: '.conduct', worktreeName: null, sessionId: c.sessionId });
         },
       });

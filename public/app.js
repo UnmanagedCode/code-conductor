@@ -5,6 +5,7 @@ import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
 import { attachComposer, probeMicAvailability } from './composer.js';
+import { installPromptFocus } from './promptFocus.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
@@ -205,7 +206,7 @@ const taskPanel = new TaskPanel(dom.taskPanel);
 // Sub-agent panel: shows workers spawned by the active conductor instance.
 // Populated from state.instances; updates arrive via instances hint.
 const subagentPanel = new SubagentPanel(dom.subagentPanel);
-subagentPanel.onNavigate = (instanceId) => selectInstance(instanceId, { push: true });
+subagentPanel.onNavigate = (instanceId, opts) => selectInstance(instanceId, { ...opts, push: true });
 
 // Per-instance context-usage trackers. Same lifecycle as the task
 // trackers: reset()+replay on snapshot, apply(ev) on each live event.
@@ -435,6 +436,7 @@ const composer = attachComposer({
   onDraftChange: (d) => composerDrafts.noteChange(d),
   claimTranscriptTarget: () => composerDrafts.claimTranscriptTarget(),
 });
+const promptFocus = installPromptFocus({ textarea: dom.composerInput });
 // Per-session composer drafts (public/drafts.js): selectInstance calls
 // composerDrafts.switchTo(sessionId) to save the outgoing text and load the
 // incoming session's; it also swaps the pending attachments and routes a
@@ -868,6 +870,7 @@ function selectInstance(id, opts = {}) {
   // so the conversation is visible.
   reconcileMainViews();
   closeSidebarOnMobile();
+  promptFocus.afterSelect(opts);
 }
 
 installExternalLinkOpener({

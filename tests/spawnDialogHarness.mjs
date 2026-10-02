@@ -100,7 +100,7 @@ export function buildDOM(document) {
   };
 }
 
-export async function setup(tierEffort, { projects } = {}) {
+export async function setup(tierEffort, { projects, selectInstance = () => {} } = {}) {
   const spawns = [];
   const window = new Window({ url: 'http://localhost/' });
   const fetchImpl = (u, opts = {}) => {
@@ -134,7 +134,7 @@ export async function setup(tierEffort, { projects } = {}) {
     getProjects: () => projects ?? [{ name: 'p', isGitRepo: true }],
     refreshProjects: async () => {},
     refreshInstances: async () => {},
-    selectInstance: () => {},
+    selectInstance,
     closeSidebarOverflow: () => {},
   });
   return { window, dom, handles, spawns };

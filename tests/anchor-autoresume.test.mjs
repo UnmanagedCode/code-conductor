@@ -205,6 +205,70 @@ test('popstate back to a live session anchor still restores it (guard does not b
   assert.equal(selectedWith, 'inst-2', 'a genuine back-navigation onto a live session anchor still selects it');
 });
 
+// ── gesture flag: passive selections never ask for prompt focus ─────────────
+//
+// public/promptFocus.js focuses only when selectInstance receives
+// `{ userGesture: true }`; page-load restore and popstate carry no gesture.
+
+test('page-load restore of a live anchor selects without a user gesture', async () => {
+  const sid = 'gesture-live-sid';
+  installDom(`#session=${sid}`);
+  const { installWsRouter } = await load('wsRouter.js');
+
+  const instances = [{ id: 'gesture-live-inst', sessionId: sid }];
+  const state = { activeId: null, instances };
+  let selected = null;
+  installWsRouter({
+    ...baseDeps({ instances, resumeSpy: async () => {} }),
+    state,
+    selectInstance: (id, opts) => { selected = { id, opts }; state.activeId = id; },
+  });
+
+  bus.dispatchEvent(new Event('open'));
+  await waitFor(() => selected !== null);
+  assert.equal(selected.id, 'gesture-live-inst');
+  assert.ok(!selected.opts?.userGesture, 'a page-load restore is not a user gesture');
+});
+
+test('page-load auto-resume asks for no user gesture', async () => {
+  const sid = 'gesture-resume-sid';
+  installDom(`#session=${sid}`);
+  const { installWsRouter } = await load('wsRouter.js');
+
+  let resumeArgs = null;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/locate')) {
+      return { ok: true, json: async () => ({ project: 'p', worktreeName: null, archived: false }) };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  installWsRouter(baseDeps({ resumeSpy: async (args) => { resumeArgs = args; } }));
+  bus.dispatchEvent(new Event('open'));
+
+  await waitFor(() => resumeArgs !== null);
+  assert.ok(!resumeArgs.userGesture, 'the anchor auto-resume is not a user gesture');
+});
+
+test('popstate selects without a user gesture', async () => {
+  const sid = 'gesture-pop-sid';
+  installDom(`#session=${sid}`);
+  const { installWsRouter } = await load('wsRouter.js');
+
+  const instances = [{ id: 'gesture-pop-inst', sessionId: sid }];
+  let selected = null;
+  installWsRouter({
+    ...baseDeps({ instances, resumeSpy: async () => {} }),
+    state: { activeId: null, instances },
+    selectInstance: (id, opts) => { selected = { id, opts }; },
+  });
+
+  window.dispatchEvent(new window.Event('popstate'));
+  await waitFor(() => selected !== null);
+  assert.equal(selected.id, 'gesture-pop-inst');
+  assert.ok(!selected.opts?.userGesture, 'back/forward is not a user gesture');
+});
+
 // ── firstConnect double-subscribe regression ────────────────────────────────
 //
 // resumeSessionByAnchor's live-match branch (`selectInstance(live.id); return

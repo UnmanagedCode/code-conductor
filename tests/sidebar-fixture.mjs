@@ -38,13 +38,13 @@ export async function setupSidebar({ withCss = false, onLoadSessions } = {}) {
   const select = document.getElementById('conductor-filter-select');
   const strip = document.getElementById('sidebar-strip-slot');
 
-  const calls = { select: [], resume: [], create: [], close: [], promote: [] };
+  const calls = { select: [], selectOpts: [], resume: [], create: [], close: [], promote: [] };
   const sidebar = new Sidebar({
     rootList: root,
     conductorList,
     filterRoot,
     stripRoot: strip,
-    onSelectInstance: (id) => calls.select.push(id),
+    onSelectInstance: (id, opts) => { calls.select.push(id); calls.selectOpts.push(opts); },
     onCreateInstanceClick: (name, opts) => calls.create.push({ name, opts }),
     onResumeSession: (s) => calls.resume.push(s),
     onRemoveWorktree: () => {},

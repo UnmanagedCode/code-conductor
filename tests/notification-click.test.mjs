@@ -84,7 +84,19 @@ test('notification click selects the live instance matching instanceId', async (
   // anchor-driven selectInstance call in wsRouter.js (popstate,
   // first-connect) — a notification click is treated as a page-load-style
   // restore, not a forward navigation that should leave a back-button entry.
-  assert.equal(selected.opts, undefined, 'notification-driven selection does not push a history entry');
+  assert.ok(!selected.opts?.push, 'notification-driven selection does not push a history entry');
+});
+
+test('notification click selects the live instance with a user gesture', async () => {
+  installDom();
+  const { installWsRouter } = await load('wsRouter.js');
+  const instances = [{ id: 'inst-1', sessionId: 'sess-1' }];
+  let selected = null;
+  installWsRouter(baseDeps({ instances, selectSpy: (id, opts) => { selected = { id, opts }; } }));
+
+  dispatchClick({ instanceId: 'inst-1', sessionId: 'sess-1' });
+  await waitFor(() => selected !== null);
+  assert.equal(selected.opts.userGesture, true, 'the user clicked the notification to reply');
 });
 
 test('notification click falls back to sessionId when instanceId is no longer live (respawn)', async () => {
@@ -118,6 +130,25 @@ test('notification click with neither id live locates + auto-resumes the session
   assert.equal(resumeArgs.sessionId, 'sess-3');
   assert.equal(resumeArgs.projectName, 'p');
   assert.equal(resumeArgs.silent, true);
+});
+
+test('a notification click for a reaped instance resumes with a user gesture', async () => {
+  installDom();
+  const { installWsRouter } = await load('wsRouter.js');
+
+  let resumeArgs = null;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/locate')) {
+      return { ok: true, json: async () => ({ project: 'p', worktreeName: null, archived: false }) };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  installWsRouter(baseDeps({ instances: [], resumeSpy: async (args) => { resumeArgs = args; } }));
+
+  dispatchClick({ instanceId: 'gone', sessionId: 'sess-4' });
+  await waitFor(() => resumeArgs !== null);
+  assert.equal(resumeArgs.silent, true);
+  assert.equal(resumeArgs.userGesture, true);
 });
 
 test('notification click with no sessionId and no live match is a graceful no-op', async () => {

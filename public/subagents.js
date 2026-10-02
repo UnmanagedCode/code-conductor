@@ -49,7 +49,7 @@ export class SubagentPanel {
       const playbookLabel = this._playbookLabel(w);
       if (playbookLabel) li.append(playbookLabel);
 
-      li.addEventListener('click', () => this.onNavigate?.(w.id));
+      li.addEventListener('click', () => this.onNavigate?.(w.id, { userGesture: true }));
 
       ul.appendChild(li);
     }
