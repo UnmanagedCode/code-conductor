@@ -185,3 +185,18 @@ test('turn growth: a reset() mid-turn voids the turn even when the next call\'s 
     assert.equal(run(true).turn, null);
   });
 });
+
+// Invariant: reset() clearing the turn's baseline is load-bearing on its own —
+// a post-reset call whose baseline equals the turn's FIRST baseline must not
+// let that retained baseline pair with the post-reset sum.
+test('turn growth: a reset() mid-turn voids the turn even when the next call\'s baseline equals the turn\'s first baseline', () => {
+  const t = new CallUsageTracker();
+  t.onMessageStart('m1', 10_000, u(12_000));
+  stamped(t, 'm1');
+  t.reset();
+  t.onMessageStart('m2', 10_000, u(13_000));
+  const after = stamped(t, 'm2').growthTokens;
+  assert.equal(13_000 - 10_000, after,
+    'premise: ctx-end − the turn\'s first baseline equals the post-reset stamped sum, so a retained baseline would publish');
+  assert.equal(t.endTurn(13_000), null);
+});
