@@ -126,6 +126,31 @@ test('setTurnMarks emits turn_marks and never status', async () => {
   }
 });
 
+// Invariant: setTurnMarks max-merges each counter on its own — a lower
+// incoming value (a hydrate snapshot landing after a newer turn-end write)
+// leaves that counter at the higher one, and an all-stale call emits nothing.
+test('setTurnMarks never lowers either counter', async () => {
+  const inst = await spawn();
+  await serverTurn(inst);
+  await serverTurn(inst);
+  assert.equal((await view(inst.sessionId, 1)).status, 200);
+  await settle();
+  assert.deepEqual([inst.turnEndSeq, inst.viewedSeq], [2, 1], 'precondition');
+  const seen = [];
+  const onMarks = () => seen.push('turn_marks');
+  inst.on('turn_marks', onMarks);
+  try {
+    inst.setTurnMarks({ turnEndSeq: 1, viewedSeq: 1 });
+    assert.deepEqual([inst.turnEndSeq, inst.viewedSeq], [2, 1], 'a lower turnEndSeq is ignored');
+    inst.setTurnMarks({ turnEndSeq: 2, viewedSeq: 0 });
+    assert.deepEqual([inst.turnEndSeq, inst.viewedSeq], [2, 1], 'a lower viewedSeq is ignored');
+    assert.deepEqual([inst.summary().turnEndSeq, inst.summary().viewedSeq], [2, 1]);
+    assert.deepEqual(seen, [], 'no turn_marks emit for a stale merge');
+  } finally {
+    inst.off('turn_marks', onMarks);
+  }
+});
+
 // Invariant: the route takes only a non-negative integer seq (400 otherwise)
 // and only a known session (404 otherwise).
 // Each row breaks alone; a plain loop, because the file's afterEach would run
