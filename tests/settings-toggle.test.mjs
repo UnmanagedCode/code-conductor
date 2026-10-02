@@ -156,6 +156,91 @@ test('settings: group select switches visible panel', async () => {
   window.happyDOM.abort();
 });
 
+// ── group nav stays in step with the shown group ─────────────────────────────
+// A browser's form-state restoration writes the select's value with no
+// `change` event (Back after a cross-document navigation, a discarded tab
+// coming back). happy-dom does none, so each test writes `groupSelect.value`
+// without dispatching `change`, the only way that write reaches the page.
+
+function assertNavMatchesPage(window, groupSelect, expected) {
+  const shown = [...window.document.querySelectorAll('.settings-group')].filter(g => !g.hidden).map(g => g.id);
+  assert.deepEqual(shown, [`settings-${groupSelect.value}`], 'the select names the one group shown');
+  assert.equal(groupSelect.value, expected);
+}
+
+test('settings: install renders the markup-default group, not a select value written without change', async () => {
+  const { window, mod, groupSelect } = await setup();
+  groupSelect.value = 'models';
+  const s = mod.installSettings({ requestClose: () => {} });
+  assertNavMatchesPage(window, groupSelect, 'voice');
+
+  s.open();
+  await window.happyDOM.waitUntilComplete();
+  assertNavMatchesPage(window, groupSelect, 'voice');
+  window.happyDOM.abort();
+});
+
+test('settings: pageshow repaints the nav over a select value written without change after install', async () => {
+  // Chromium's restore on Back lands after `load`, before `pageshow`: past
+  // install, and past the initial sync() onto #settings.
+  const { window, mod, groupSelect } = await setup();
+  mod.installSettings({ requestClose: () => {} });
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+
+  groupSelect.value = 'models';
+  window.dispatchEvent(new window.Event('pageshow'));
+  assertNavMatchesPage(window, groupSelect, 'voice');
+  window.happyDOM.abort();
+});
+
+test('settings: the markup default is the option carrying the selected attribute', async () => {
+  const { window, mod, groupSelect } = await setup();
+  groupSelect.querySelector('option[value="models"]').setAttribute('selected', '');
+  window.document.getElementById('settings-voice').hidden = true;
+  window.document.getElementById('settings-models').hidden = false;
+  groupSelect.value = 'voice';
+  mod.installSettings({ requestClose: () => {} });
+  assertNavMatchesPage(window, groupSelect, 'models');
+  window.happyDOM.abort();
+});
+
+test('settings: re-entering Settings repaints the nav from the last picked group', async () => {
+  const { window, mod, groupSelect } = await setup();
+  // Moves the hash off #settings as app.js's closeSettings does, so the
+  // reopen's `location.hash = '#settings'` is a real hashchange.
+  const s = mod.installSettings({ requestClose: () => { window.location.hash = '#session=x'; } });
+  s.open();
+  await window.happyDOM.waitUntilComplete();
+  groupSelect.value = 'models';
+  groupSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  s.close();
+  await window.happyDOM.waitUntilComplete();
+
+  groupSelect.value = 'voice';
+  s.open();
+  await window.happyDOM.waitUntilComplete();
+  assertNavMatchesPage(window, groupSelect, 'models');
+  window.happyDOM.abort();
+});
+
+test('settings: entering and leaving by hashchange keeps nav and page in step', async () => {
+  const { window, mod, groupSelect } = await setup();
+  mod.installSettings({ requestClose: () => {} });
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  groupSelect.value = 'models';
+  groupSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  window.location.hash = '#session=x';
+  await window.happyDOM.waitUntilComplete();
+
+  groupSelect.value = 'voice';
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  assertNavMatchesPage(window, groupSelect, 'models');
+  window.happyDOM.abort();
+});
+
 test('settings: Escape key closes panel', async () => {
   const { window, mod, main, view } = await setup();
   const s = mod.installSettings({ requestClose: () => {} });
