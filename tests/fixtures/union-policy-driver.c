@@ -531,8 +531,8 @@ static void b10_cache_key(void)
 	 * resolved for; it is NOT what stops an unmarked caller being served. */
 	{
 		int err = -1;
-		CHECK(cache_get(1000, "/srv/app/f", &err) == 1, "A's entry is in the cache");
-		CHECK(cache_get(2000, "/srv/app/f", &err) == 0, "B's is not");
+		CHECK(cache_get(1000, CCU_STAT, "/srv/app/f", &err) == 1, "A's STAT entry is in the cache");
+		CHECK(cache_get(2000, CCU_STAT, "/srv/app/f", &err) == 0, "B's is not");
 	}
 
 	/* The TTL, against the injected clock — no sleeping. */
@@ -559,11 +559,11 @@ static void b10_cache_key(void)
 	 */
 	{
 		int e = -1;
-		CHECK(cache_get(1000, "/srv/app/f", &e) == 1, "A's entry is still warm");
+		CHECK(cache_get(1000, CCU_STAT, "/srv/app/f", &e) == 1, "A's STAT entry is still warm");
 		proc_set(1000, 1000, 999);        /* pid 1000 is now a different process */
 		CHECK(policy_project_route("getattr", "/srv/app/f", 1000, CCU_STAT, 0) == -ENOENT,
 		      "a RECYCLED tgid was served the mark's warm entry");
-		CHECK(cache_get(1000, "/srv/app/f", &e) == 1,
+		CHECK(cache_get(1000, CCU_STAT, "/srv/app/f", &e) == 1,
 		      "and the entry is untouched — the mark check, not eviction, is what refused it");
 		/* The eviction is permanent for this tgid, which is why this arm
 		 * is last: a re-mark would be a different measurement. */
@@ -905,9 +905,10 @@ static void b16_abandon(void)
 	policy_mark_tid(1300);
 	canned_reply(CCU_READY, 0);
 
-	/* A warm cache entry, so the invalidation has something to remove. */
-	cache_put(1300, "/srv/app/f", 0);
-	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 1, "the entry is warm to begin with");
+	/* A warm STAT entry, so the invalidation has something to remove. That
+	 * it clears the LIST class too is `b54`'s. */
+	cache_put(1300, CCU_STAT, "/srv/app/f", 0);
+	CHECK(cache_get(1300, CCU_STAT, "/srv/app/f", &cerr) == 1, "the STAT entry is warm to begin with");
 
 	last_req_len = 0;
 	policy_abandon_claim("/srv/app/f", T_PROJECT);
@@ -932,8 +933,8 @@ static void b16_abandon(void)
 	 * copy. */
 	CHECK(last_req[5] == CCU_FLAG_RELEASE_ONLY,
 	      "the abandon frame is not RELEASE_ONLY, so cc reads it as a reconcile of worker bytes");
-	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 0,
-	      "the abandon left a stale routing decision cached");
+	CHECK(cache_get(1300, CCU_STAT, "/srv/app/f", &cerr) == 0,
+	      "the abandon left a stale STAT routing decision cached");
 
 	/* AND NOTHING AT ANY OTHER TIER — no claim was ever taken there, so a
 	 * frame would be cc reconciling a path the worker never wrote. */

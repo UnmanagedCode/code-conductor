@@ -274,9 +274,10 @@ describe('the compiled policy driver', { skip }, () => {
     // `pt_readdir` (union.c), which no unit fixture can reach. cc's half is
     // killed by `tests/systems-mirror-geometry-follow.test.mjs`'s fail-pin arm.
     // THE DAEMON'S HALF IS CURRENTLY UNKILLED, and saying so is the point of
-    // this note: R2 is easily credited with it and R2 reads a FILE — no arm
-    // anywhere runs a real directory listing through the mount. A real gap,
-    // recorded rather than assigned to an arm that does not cover it.
+    // this note: R2 is easily credited with it and R2 reads a FILE. The real
+    // arms that do list a directory through the mount (R15, R14, P1, L1, L2)
+    // list none holding a `hide` or `fail` child. A real gap, recorded rather
+    // than assigned to an arm that does not cover it.
     ['b5-getattr',    'the synthetic node is fixed 0555/uid0/mtime0 and touches no filesystem',
                       'fstatat the host directory of the same name'],
     ['b6-erofs',      'a mutation on a synthetic or bind node is EROFS, not EACCES',
@@ -295,7 +296,7 @@ describe('the compiled policy driver', { skip }, () => {
                       "delete mark_of's starttime comparison"],
     ['b9-tgid-key',   'the mark is keyed on the TGID, resolved through the injected reader',
                       'look the mark up by the calling TID'],
-    ['b10-cache-key', 'the mark check runs before the lookup, so a recycled tgid is never served a warm entry',
+    ['b10-cache-key', 'the mark check runs before the lookup, so a recycled tgid is never served a warm STAT entry; the STAT entry is keyed on the tgid and keeps the TTL',
                       'move the cache lookup ahead of the mark check, or drop tgid from the key'],
     ['b11-codec',     'the frame codec round-trips and rejects short, bad-magic and over-long',
                       'drop the length check or the magic check'],
@@ -314,8 +315,8 @@ describe('the compiled policy driver', { skip }, () => {
     // as a mutant for one round; removed rather than "killed", because the only
     // way to kill it would be to assert on a cross-kind emission the daemon
     // cannot produce.
-    ['b16-abandon',   'a project-tier abandon sends a RELEASE_ONLY DIRTY and drops the cached decision; no other tier sends anything',
-                      'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit or a BARE ZERO (which cc cannot tell from a killed handle\'s release); widen the tier test'],
+    ['b16-abandon',   'a project-tier abandon sends a RELEASE_ONLY DIRTY and drops the cached STAT decision (the LIST class is b54’s); no other tier sends anything',
+                      'delete the ccu_call or the cache_invalidate; narrow cache_invalidate to one op class; give the frame a REMOVED or FOR_WRITE bit or a BARE ZERO (which cc cannot tell from a killed handle\'s release); widen the tier test'],
     ['b19-caller-tier-matrix',
                       'all 6 tiers × {marked, unmarked}, run once per HOST AXIS: the marked side is identity everywhere, the unmarked side is host at fail/project/synth and identity at host/hide/bind — and THE TWO PASSES AGREE, so the host axis is out of the decision',
                       'restore a host-existence gate at T_PROJECT or T_SYNTH ⇒ the two passes diverge; drop the T_SYNTH re-resolution ⇒ the synth row stays synth; T_HIDE → T_HOST (the confinement hole); T_BIND → T_HOST (breaks the three bind targets); let the MARKED branch substitute'],

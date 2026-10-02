@@ -1071,12 +1071,22 @@ static inline int policy_is_marked_tid(pid_t tid)
  * decision can stand in for the materialisation an open needs. What that buys
  * is that a per-open revalidate inherits a contract with no cache in front of
  * it, rather than a one-second-stale one.
+ *
+ * THE OP CLASS IS IN THE KEY. The kernel's permission GETATTR precedes every
+ * opendir, and so does the path walk's LOOKUP, so a STAT from the same tgid at
+ * the same path always lands just ahead of the LIST; under a shared key every
+ * LIST would be answered from that STAT and never reach cc. Neither answer
+ * stands for the other: cc's `#stat` shapes a directory without its children,
+ * and `#list` shapes the children without the directory's own attributes. The
+ * op is in the entry MATCH and not in `cache_slot`'s hash, so both classes of
+ * one path share a probe run. `cache_invalidate` clears both classes.
  */
 #define CACHE_SLOTS  1024
 #define CACHE_TTL_MS 1000
 
 struct centry {
 	pid_t      tgid;
+	uint8_t    op;         /* the op class: CCU_STAT or CCU_LIST */
 	char      *path;
 	int        err;        /* 0 = the mirror may serve it; else the errno */
 	long long  expires;
@@ -1107,7 +1117,7 @@ static inline size_t cache_slot(pid_t tgid, const char *path)
 }
 
 /* 1 = hit and unexpired; fills *err. */
-static inline int cache_get(pid_t tgid, const char *path, int *err)
+static inline int cache_get(pid_t tgid, uint8_t op, const char *path, int *err)
 {
 	size_t slot = cache_slot(tgid, path), i;
 	int found = 0;
@@ -1117,7 +1127,7 @@ static inline int cache_get(pid_t tgid, const char *path, int *err)
 		struct centry *e = &cache[(slot + i) % CACHE_SLOTS];
 		if (!e->path)
 			break;
-		if (e->tgid != tgid || strcmp(e->path, path) != 0)
+		if (e->tgid != tgid || e->op != op || strcmp(e->path, path) != 0)
 			continue;
 		if (policy_clock() >= e->expires)
 			break;
@@ -1129,19 +1139,20 @@ static inline int cache_get(pid_t tgid, const char *path, int *err)
 	return found;
 }
 
-static inline void cache_put(pid_t tgid, const char *path, int err)
+static inline void cache_put(pid_t tgid, uint8_t op, const char *path, int err)
 {
 	size_t slot = cache_slot(tgid, path), i;
 
 	pthread_mutex_lock(&cache_mu);
 	for (i = 0; i < 64; i++) {
 		struct centry *e = &cache[(slot + i) % CACHE_SLOTS];
-		if (e->path && (e->tgid != tgid || strcmp(e->path, path) != 0))
+		if (e->path && (e->tgid != tgid || e->op != op || strcmp(e->path, path) != 0))
 			continue;
 		if (!e->path) {
 			if (!(e->path = strdup(path)))
 				break;
 			e->tgid = tgid;
+			e->op = op;
 		}
 		e->err = err;
 		e->expires = policy_clock() + CACHE_TTL_MS;
@@ -1153,7 +1164,10 @@ static inline void cache_put(pid_t tgid, const char *path, int err)
 /*
  * A mutation at `path` invalidates `path` — its bytes and its attributes have
  * moved — AND its parent, whose listing has. Across every tgid: the resolution
- * a caller holds says nothing about who mutated the file.
+ * a caller holds says nothing about who mutated the file. And across EVERY OP
+ * CLASS: the match tests neither the op nor the tgid, so a mutation clears the
+ * STAT and the LIST answer alike; narrowing it to one class leaves the other
+ * serving the pre-mutation answer.
  */
 static inline void cache_invalidate(const char *path)
 {
@@ -2100,7 +2114,7 @@ static inline int policy_cwd_normalised(const char *p)
  *     the synthetic node with no frame and no cache touch, whatever the remote
  *     holds: every op that routes FETCH there either creates the ancestor's own
  *     name or mutates it, and neither may reach the remote.
- *  3. THE CACHE. FETCH skips it — an open always revalidates.
+ *  3. THE CACHE, per op class. FETCH skips it — an open always revalidates.
  *  4. THE CONTROL CALL. A bare local stat of the mirror would report ENOENT for
  *     a file that exists on the remote and has simply not been materialised
  *     yet, so no remote-tier op touches the mirror before cc has answered.
@@ -2135,7 +2149,7 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 	if (pa && fop == (uint8_t)CCU_FETCH)
 		return POLICY_ROUTE_PIN_ANCESTOR;
 
-	if (fop != (uint8_t)CCU_FETCH && cache_get(tgid, path, &cached)) {
+	if (fop != (uint8_t)CCU_FETCH && cache_get(tgid, fop, path, &cached)) {
 		rc = cached;
 		goto out;
 	}
@@ -2157,7 +2171,7 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 		 */
 		cache_invalidate(path);
 	else if (fop)
-		cache_put(tgid, path, rc);
+		cache_put(tgid, fop, path, rc);
 	/* Three distinct reasons, because the event log is what the pin list is
 	 * DERIVED from and "the remote does not have it" is a different finding
 	 * from "cc would not carry it" and from "cc could not be reached". */

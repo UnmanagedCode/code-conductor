@@ -118,16 +118,32 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
       const [uid, ino] = st.stdout.trim().split(' ').map(BigInt);
       assert.ok(uid === BigInt(process.getuid()) && ino < 0x7000000000000000n,
         `${top} is not the remote's node (uid ${uid}, ino ${ino}) although the remote has it`);
-      // …and its listing names the remote's entry merged with the child
-      // leading to the pin.
+      // …and its listing is the remote's entries merged with the pin
+      // children: every name a tier prefix under `top` leads through, less the
+      // ones `hide` or `fail` suppress.
+      //
+      // LISTED AT 0755, NOT 0555. A known gap: a child shaped into a mirror
+      // directory without owner-write fails, because `#stat` gives the mirror
+      // directory the remote's mode and cc's uid cannot then create the
+      // children `#list` shapes into it, so the marked readdir of a read-only
+      // remote directory answers EIO. The 0555 half above is the mkdir one.
+      await fs.chmod(remoteTop, 0o755);
+      const pinChildren = new Set();
+      for (const e of inst._redirect.tiers) {
+        const rel = path.relative(top, e.prefix);
+        if (!rel || rel.startsWith('..')) continue;
+        const child = path.join(top, rel.split('/')[0]);
+        const tier = resolveTierEntry(inst._redirect.tiers, child)?.tier;
+        if (tier !== 'hide' && tier !== 'fail') pinChildren.add(path.basename(child));
+      }
+      const pinChild = path.relative(top, process.env.PROJECTS_ROOT).split('/')[0];
+      assert.ok(pinChildren.has(pinChild),
+        `the derived pin children of ${top} do not include ${pinChild}: ${JSON.stringify([...pinChildren])}`);
+      const want = [...new Set([...await fs.readdir(remoteTop), ...pinChildren])].sort();
       const ls = await markedNode(inst, record, READDIR, inside(record, top));
       assert.equal(ls.ok, true, `the marked readdir of ${top} failed: ${ls.stderr}`);
-      const names = JSON.parse(ls.stdout.trim());
-      const pinChild = path.relative(top, process.env.PROJECTS_ROOT).split('/')[0];
-      assert.ok(names.includes(pinChild),
-        `the listing of ${top} does not name the pin's child ${pinChild}: ${JSON.stringify(names)}`);
-      assert.ok(names.includes('remote-sentinel.txt'),
-        `the listing of ${top} does not name the remote's remote-sentinel.txt: ${JSON.stringify(names)}`);
+      assert.deepEqual(JSON.parse(ls.stdout.trim()), want,
+        `the listing of ${top} is not the remote's entries merged with the pin children`);
 
       const denials = (await eventsOf(inst.id)).filter(r => r[0] === 'deny' && ancestors.has(r[2]));
       assert.deepEqual(denials, [], 'a deny row names a host-pin ancestor');
