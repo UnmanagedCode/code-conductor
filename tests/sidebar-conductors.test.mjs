@@ -1137,9 +1137,14 @@ test('styles.css: a conductor row\'s highlight box starts past its block\'s bar,
   const stateRules = rules.filter(r => r.selectors.some(s => /\.conductor-row(:hover|\.active)/.test(s)
     && !/\.conductor-row(:hover|\.active)\s+\S/.test(s)));
   assert.ok(stateRules.length >= 2, 'sanity: the scan finds the hover and the selected rules');
+  // Invariant: no state rule declares any margin* or padding* property, logical spellings included
+  // (margin-inline-start is the left margin in a left-to-right document).
+  const insetProp = /^(margin|padding)(-|$)/;
+  for (const p of ['margin', 'margin-left', 'margin-inline', 'margin-inline-start', 'padding-inline-start', 'padding']) {
+    assert.ok(insetProp.test(p), `sanity: the scan matches ${p}`);
+  }
   for (const r of stateRules) {
-    for (const p of ['margin', 'margin-left', 'padding', 'padding-left']) {
-      assert.equal(r.decls.has(p), false, `${r.selectors.join(', ')} must not declare ${p}`);
-    }
+    const hits = [...r.decls.keys()].filter(p => insetProp.test(p));
+    assert.deepEqual(hits, [], `${r.selectors.join(', ')} must not declare margin or padding`);
   }
 });
