@@ -184,10 +184,10 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
 // otherwise land in the wrong conversation) — bumped on every snapshot /
 // reset_snapshot / instance switch.
 //
-// `ready` is false from construction and from a session switch until that
-// session's snapshot runs init(); a same-session reset (reset_snapshot after a
-// rewind) keeps it, because no init() follows one — lazy paging simply stays
-// off. A caller that must page until a condition holds (the sticky prompt's
+// Readiness is derived: init() has run for the session that is active now. A
+// switch makes it false until that session's snapshot runs init(); a
+// same-session reset (reset_snapshot after a rewind) keeps it, because no
+// init() follows one — lazy paging simply stays off. A caller that must page until a condition holds (the sticky prompt's
 // reveal) uses loadUntil(); it joins a fetch already in flight rather than
 // racing it.
 //
@@ -198,8 +198,7 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
 //   getActiveId         — () => state.activeId
 //   getInstances        — () => state.instances
 // Returns { reset, init, loadUntil, state } — reset/init are the snapshot /
-// reset_snapshot / selectInstance call sites (selectInstance passes
-// `{ switching: true }`).
+// reset_snapshot / selectInstance call sites.
 export function installLazyHistoryController({
   conversationEl,
   conversation,
@@ -209,7 +208,8 @@ export function installLazyHistoryController({
 }) {
   const lazy = {
     epoch: 0, hasMore: false, nextBefore: 0, segment: null, visited: new Set([null]),
-    loading: false, emptyStreak: 0, silent: false, ready: false,
+    loading: false, emptyStreak: 0, silent: false,
+    initFor: null, // the active id init() last ran for (see isReady)
     inflight: null, // the running fetch's promise while `loading`
   };
   let lazySentinel = null;
@@ -218,9 +218,10 @@ export function installLazyHistoryController({
   // Starts as the live tail's, then advances page by page.
   let oldestLeadingWrap = null;
 
-  function reset({ switching = false } = {}) {
+  const isReady = () => lazy.initFor !== null && lazy.initFor === getActiveId();
+
+  function reset() {
     lazy.epoch += 1;
-    if (switching) lazy.ready = false;
     lazy.hasMore = false;
     lazy.nextBefore = 0;
     lazy.segment = null;
@@ -237,7 +238,7 @@ export function installLazyHistoryController({
   // has been rendered.
   function init(frame) {
     lazy.epoch += 1;
-    lazy.ready = true;
+    lazy.initFor = getActiveId();
     lazy.loading = false;
     lazy.inflight = null;
     lazy.nextBefore = frame.tailStartSeq
@@ -378,10 +379,11 @@ export function installLazyHistoryController({
   // made no progress — never retried here) | 'cancelled' (keepGoing went
   // false, or the view was reset or switched) | 'not-ready' (no init() yet).
   async function loadUntil(found, keepGoing) {
-    if (!lazy.ready) return 'not-ready';
+    if (!isReady()) return 'not-ready';
     const epoch = lazy.epoch;
     for (;;) {
-      if (epoch !== lazy.epoch || !keepGoing()) return 'cancelled';
+      // An epoch bump can only land while a page is awaited: checked below.
+      if (!keepGoing()) return 'cancelled';
       if (found()) return 'found';
       if (!lazy.hasMore) return 'exhausted';
       const joined = lazy.loading;
@@ -397,7 +399,7 @@ export function installLazyHistoryController({
     }
   }
 
-  const state = () => ({ ready: lazy.ready, hasMore: lazy.hasMore, loading: lazy.loading });
+  const state = () => ({ ready: isReady(), hasMore: lazy.hasMore, loading: lazy.loading });
 
   // Auto-trigger when the user scrolls near the top (loadEarlier no-ops
   // unless there is actually more history and no fetch is in flight).

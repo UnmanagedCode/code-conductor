@@ -10,8 +10,9 @@
 // bar and the pin itself). Touch events keep targeting the element the touch
 // started on, so a finger drifting into the transcript is still tracked, and
 // nothing listens on the transcript, so its own scrolling is never taken over.
-// The zones carry `touch-action: pan-x` in styles.css so the browser starts no
-// vertical pan there (no pull-to-refresh, no scroll chaining). Not gated on the
+// The zones carry `touch-action: pan-x pinch-zoom` in styles.css so the
+// browser starts no vertical pan there (no pull-to-refresh, no scroll
+// chaining) and pinch zoom still works. Not gated on the
 // mobile layout breakpoint: touch events come only from touch input, and the
 // breakpoint would shut out touch tablets.
 

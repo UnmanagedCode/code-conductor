@@ -41,6 +41,14 @@ globalThis.fetch = async () => ({
 
 const PIN_HEIGHT = 60;
 
+// The real #pinned-prompt's attributes (its jump-button role, tabindex and
+// title), copied onto the harness pin.
+const INDEX_PIN_ATTRS = await (async () => {
+  const doc = new Window().document;
+  doc.write((await fs.readFile(path.join(PUB, 'index.html'), 'utf8')).replace(/<script\b[\s\S]*?<\/script>/g, ''));
+  return [...doc.getElementById('pinned-prompt').attributes].map(a => [a.name, a.value]);
+})();
+
 function setupDOM() {
   const win = new Window({ url: 'http://localhost/' });
   globalThis.window = win;
@@ -82,6 +90,7 @@ async function harness({ conducted = false, revealed = true, history = fakeHisto
   const pane = document.createElement('div');
   const scrollEl = document.createElement('div');
   const pinEl = document.createElement('div');
+  for (const [name, value] of INDEX_PIN_ATTRS) pinEl.setAttribute(name, value);
   pinEl.hidden = true;
   pane.append(pinEl, scrollEl);
   host.append(pane);
@@ -97,7 +106,7 @@ async function harness({ conducted = false, revealed = true, history = fakeHisto
   // The scroll root's viewport: 0 while a full-page view hides the pane.
   Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => (layout.viewOpen ? 0 : layout.clientHeight) });
   scrollEl.getBoundingClientRect = () => ({ top: 0 });
-  const state = { conducted };
+  const state = { conducted, activeId: 'inst1' };
   let conv = null;
   let lazy = null;
   if (history === 'real') {
@@ -105,11 +114,11 @@ async function harness({ conducted = false, revealed = true, history = fakeHisto
     conv = new Conversation(scrollEl, {});
     lazy = installLazyHistoryController({
       conversationEl: scrollEl, conversation: conv, conversationOptions: {},
-      getActiveId: () => 'inst1', getInstances: () => [],
+      getActiveId: () => state.activeId, getInstances: () => [],
     });
     history = lazy;
   }
-  const ctl = installStickyPrompt({ scrollEl, pinEl, isConducted: () => state.conducted, viewHostEl: host, history, schedule: fn => fn() });
+  const ctl = installStickyPrompt({ scrollEl, pinEl, isConducted: () => state.conducted, getActiveId: () => state.activeId, viewHostEl: host, history, schedule: fn => fn() });
   conv ??= new Conversation(scrollEl, {});
   if (revealed) ctl.reveal();
   let userIndex = 0;
@@ -700,16 +709,103 @@ test('after a same-session reset (rewind) a revealed pin reads none, after a swi
     assertStatus(h.pinEl, STATUS_NONE, 'paging stays off after a rewind');
     assert.equal(calls.length, fetched, 'nothing to page');
   });
-  await t.test('reset({ switching: true }): loading until the next snapshot', async () => {
+  await t.test('a switch to another session: loading until its snapshot', async () => {
     const calls = [];
     stubFetch(calls);
     const h = await harness({ revealed: false, history: 'real' });
     h.lazy.init({ tailStartSeq: 0 });
     await h.settle();
-    h.lazy.reset({ switching: true });
+    h.state.activeId = 'inst2'; // selectInstance sets the id, then resets
+    h.lazy.reset();
     h.ctl.reveal();
     await h.settle();
     assertStatus(h.pinEl, STATUS_LOADING, 'waiting for the snapshot');
+  });
+});
+
+test('a status line is a status region, not a jump button; a pinned prompt is the button again', async () => {
+  const attr = (name) => INDEX_PIN_ATTRS.find(([n]) => n === name)[1];
+  assert.equal(attr('role'), 'button', 'index.html declares the pin a button');
+  const assertButton = (pinEl, msg) => {
+    for (const name of ['role', 'tabindex', 'title']) assert.equal(pinEl.getAttribute(name), attr(name), `${msg}: ${name}`);
+  };
+  const assertStatusRegion = (pinEl, msg) => {
+    assert.equal(pinEl.getAttribute('role'), 'status', `${msg}: role`);
+    assert.equal(pinEl.hasAttribute('tabindex'), false, `${msg}: not focusable`);
+    assert.equal(pinEl.hasAttribute('title'), false, `${msg}: no jump tooltip`);
+  };
+
+  const h = await harness();
+  h.say('first', 0); h.say('second', 900);
+  await h.scrollTo(0);
+  assert.equal(statusOf(h.pinEl), STATUS_NONE);
+  assertStatusRegion(h.pinEl, 'status line');
+
+  await h.scrollTo(300);
+  assert.equal(pinText(h.pinEl), 'first');
+  assertButton(h.pinEl, 'prompt pinned after a status line');
+
+  await h.scrollTo(0);
+  assertStatusRegion(h.pinEl, 'status line again');
+
+  h.ctl.conceal(); // hidden straight from a status line
+  await h.scrollTo(300);
+  h.ctl.reveal();
+  assert.equal(pinText(h.pinEl), 'first');
+  assertButton(h.pinEl, 'prompt pinned on a reveal after the status line was hidden');
+});
+
+test('with a stalled run and history since exhausted, the status reads none, never failed', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  h.history.runs[0].resolve('stalled');
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_FAILED, 'stalled');
+  h.history.st.hasMore = false; // a later scroll-triggered fetch reached the start
+  await h.scrollTo(1);
+  assertStatus(h.pinEl, STATUS_NONE, 'nothing left to retry');
+});
+
+test('a concealed run resolving after a new reveal does not end the new run', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  const first = h.history.runs[0];
+  h.ctl.conceal();
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 2, 'the new reveal started its own run');
+  first.resolve('stalled');
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_LOADING, 'the new run is still in flight');
+  for (let y = 1; y < 4; y++) await h.scrollTo(y);
+  assert.equal(h.history.runs.length, 2, 'still counted as running: no third run');
+  assertStatus(h.pinEl, STATUS_LOADING, 'not marked failed by the stale result');
+});
+
+test('a session switch conceals the pin and cancels its run; a same-session clear (rewind) keeps it revealed', async (t) => {
+  await t.test('switch', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: true }) });
+    h.say('first', 0); h.say('second', 900);
+    await h.scrollTo(0);
+    const run = h.history.runs[0];
+    h.state.activeId = 'inst2'; // selectInstance sets the id, then clears the transcript
+    h.conv.clear();
+    await h.settle();
+    assert.equal(h.pinEl.hidden, true);
+    assert.equal(h.pinEl.childElementCount, 0);
+    assert.equal(run.keepGoing(), false, 'the old session\'s run stops');
+    h.say('other session', 0); h.say('next', 900);
+    await h.scrollTo(300);
+    assert.equal(h.pinEl.hidden, true, 'the new session starts concealed');
+    h.ctl.reveal();
+    assert.equal(pinText(h.pinEl), 'other session', 'and reveals normally');
+  });
+  await t.test('same session', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: false }) });
+    h.say('first', 0); h.say('second', 900);
+    await h.scrollTo(300);
+    h.conv.clear();
+    await h.settle();
+    assertStatus(h.pinEl, STATUS_NONE, 'still revealed after the transcript reset');
   });
 });
 
@@ -730,7 +826,7 @@ test('no full-page view hides #conversation without its pane', async () => {
 // read from styles.css: the declarations of one rule, by exact selector.
 async function pinRule(selector) {
   const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
-  const esc = selector.replace(/[.]/g, '\\.');
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const m = css.match(new RegExp(`(?:^|\\n)${esc}\\s*\\{([^}]*)\\}`));
   assert.ok(m, `${selector} rule not found`);
   return m[1];
@@ -763,8 +859,12 @@ test('the pin\'s shadow sits on the outer box, adds a light edge line, and takes
   assert.equal(/overflow/.test(outer), false, 'no overflow clip on the outer box');
 });
 
-test('the swipe zones (the top bar and the pin) start no browser vertical pan', async () => {
+test('the swipe zones (the top bar and the pin) start no browser vertical pan but keep pinch zoom', async () => {
   for (const selector of ['#instance-header', '.pinned-prompt']) {
-    assert.match(await pinRule(selector), /(?:^|[\s;])touch-action:\s*pan-x;/, `${selector} declares touch-action: pan-x`);
+    assert.match(await pinRule(selector), /(?:^|[\s;])touch-action:\s*pan-x pinch-zoom;/, `${selector} declares touch-action: pan-x pinch-zoom`);
   }
+});
+
+test('a status line has no pointer cursor', async () => {
+  assert.match(await pinRule('.pinned-prompt[role="status"]'), /(?:^|[\s;])cursor:\s*default;/);
 });

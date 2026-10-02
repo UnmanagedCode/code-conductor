@@ -371,6 +371,7 @@ const stickyPrompt = installStickyPrompt({
   pinEl: dom.pinnedPrompt,
   viewHostEl: document.getElementById('main'),
   isConducted: () => !!state.instances.find(i => i.id === state.activeId)?.conducted,
+  getActiveId: () => state.activeId,
   history: lazyController,
 });
 installPromptReveal({
@@ -837,8 +838,7 @@ function selectInstance(id, opts = {}) {
   state.activeId = id;
   sidebar.setActive(id);
   conversation.clear();
-  lazyController.reset({ switching: true }); // invalidate any in-flight earlier-history fetch
-  stickyPrompt.conceal(); // a reveal is for the session it was summoned in
+  lazyController.reset(); // invalidate any in-flight earlier-history fetch
   headerHandle.update();
   const inst = id ? state.instances.find(i => i.id === id) : null;
   // After headerHandle.update() (canType is set) and before subscribe, so a

@@ -15,11 +15,14 @@
 //
 // The pin is summoned, not automatic: it stays hidden until reveal() (Down in
 // the composer, a swipe down on the top bar — public/promptReveal.js) and hides
-// again on conceal(). While revealed with nothing scrolled past, it pages older
+// again on conceal() or once the active session is no longer the one it was
+// revealed in. While revealed with nothing scrolled past, it pages older
 // history into the transcript (in-band: the pin clones the real bubble, and a
 // click jumps to it) through the lazy-history controller's loadUntil(), and
 // shows a status line instead of a prompt until one pins. The status is derived
-// from the run's flags and the history state, never stored.
+// from the run's flags and the history state, never stored. While a status line
+// shows, the pin is a `role="status"` region, not the jump button index.html
+// declares; the button attributes come back with the next prompt.
 
 import { isPinEligible } from './promptOrigin.js';
 
@@ -50,17 +53,28 @@ export function pickPinned(topAt, n, pinHeight) {
 
 // `history` is the lazy-history controller's { loadUntil, state }; without it
 // nothing autoloads and an empty reveal reads STATUS_NONE.
-export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, history = null, schedule = requestAnimationFrame }) {
+export function installStickyPrompt({ scrollEl, pinEl, isConducted, getActiveId, viewHostEl, history = null, schedule = requestAnimationFrame }) {
   let eligible = null;   // null = dirty; rebuilt on the next refresh
   let eligibleFor = null; // the session role `eligible` was filtered for
   let pinned = null;     // the bubble the pin's clone shows, visible or pushed off
   let pinHeight = 0;     // that clone's height, measured while it was visible
   let pending = false;
   let revealed = false;
+  let revealedFor = null; // the active session id reveal() was called in
   let running = false;   // a loadUntil run is in flight
   let failed = false;    // the last run stalled: refreshes do not retry, reveal() does
   let runToken = 0;      // bumped by conceal() so a cancelled run's result is ignored
   let statusShown = null; // the status line's text while one shows
+  // index.html's jump-button attributes, restored whenever a prompt pins.
+  const buttonAttrs = ['role', 'tabindex', 'title'].map(name => [name, pinEl.getAttribute(name)]);
+
+  const setButton = (on) => {
+    for (const [name, value] of buttonAttrs) {
+      if (on && value !== null) pinEl.setAttribute(name, value);
+      else pinEl.removeAttribute(name);
+    }
+    if (!on) pinEl.setAttribute('role', 'status');
+  };
 
   const refreshSoon = () => {
     if (pending) return;
@@ -86,6 +100,7 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, 
     body.appendChild(text.cloneNode(true));
     pinEl.replaceChildren(body);
     pinEl.hidden = false;
+    setButton(true);
     statusShown = null;
     body.classList.toggle('overflowing', body.scrollHeight > body.clientHeight + 1);
     pinned = bubble;
@@ -111,6 +126,7 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, 
     line.className = 'pinned-prompt-status';
     line.textContent = text;
     pinEl.replaceChildren(line);
+    setButton(false);
     pinEl.hidden = false;
     pinEl.style.transform = '';
     pinned = null;
@@ -143,7 +159,16 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, 
       });
   };
 
+  const stopRevealing = () => {
+    revealed = false;
+    runToken++;
+    running = false;
+    failed = false;
+  };
+
   function refresh() {
+    // A session switch clears the transcript, so this runs right after one.
+    if (revealed && getActiveId() !== revealedFor) stopRevealing();
     if (!revealed) { hide(); return; }
     // Eligibility is judged here, not when the bubble renders, so a late
     // instances-list update can never leave a stale decision baked in.
@@ -211,6 +236,7 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, 
   // Down again after a failure retries: reveal() clears `failed`.
   const reveal = () => {
     revealed = true;
+    revealedFor = getActiveId();
     failed = false;
     refresh();
   };
@@ -218,10 +244,7 @@ export function installStickyPrompt({ scrollEl, pinEl, isConducted, viewHostEl, 
   // A fetch already in flight still lands in the transcript; the run stops at
   // its next check.
   const conceal = () => {
-    revealed = false;
-    runToken++;
-    running = false;
-    failed = false;
+    stopRevealing();
     refresh();
   };
 

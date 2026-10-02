@@ -3,8 +3,8 @@
 //
 // happy-dom's TouchEvent carries `touches` from its init dict, so the swipes are
 // real TouchEvents with plain `{ clientX, clientY }` touch points. Whether
-// `touch-action: pan-x` really suppresses pull-to-refresh is a property of the
-// browser UI and is not reachable here (the declaration itself is pinned in
+// `touch-action: pan-x pinch-zoom` really suppresses pull-to-refresh is a
+// property of the browser UI and is not reachable here (the declaration itself is pinned in
 // tests/sticky-prompt.test.mjs).
 
 import { test } from 'node:test';
@@ -250,6 +250,26 @@ test('a two-finger touch does nothing', async (t) => {
     h.touch(el, 'touchstart', [[0, 0]]);
     h.touch(el, 'touchmove', [[0, 10], [50, 10]]);
     h.touch(el, 'touchmove', [[0, SWIPE_MIN_PX]]);
+    assert.deepEqual(h.calls, []);
+  });
+});
+
+test('a gesture that starts with two fingers is never tracked, even once one lifts', async (t) => {
+  await t.test('one finger left, dragged with no lift event in between', async () => {
+    const h = await harness();
+    const el = h.$('instance-header');
+    h.touch(el, 'touchstart', [[0, 0], [50, 0]]);
+    h.touch(el, 'touchmove', [[0, SWIPE_MIN_PX]]);
+    h.touch(el, 'touchmove', [[0, 3 * SWIPE_MIN_PX]]);
+    assert.deepEqual(h.calls, []);
+  });
+  await t.test('one finger lifts (touchend with one touch left), then the other drags', async () => {
+    const h = await harness();
+    const el = h.$('instance-header');
+    h.touch(el, 'touchstart', [[0, 0], [50, 0]]);
+    h.touch(el, 'touchend', [[0, 0]]);
+    h.touch(el, 'touchmove', [[0, SWIPE_MIN_PX]]);
+    h.touch(el, 'touchmove', [[0, 3 * SWIPE_MIN_PX]]);
     assert.deepEqual(h.calls, []);
   });
 });

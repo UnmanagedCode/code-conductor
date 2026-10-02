@@ -61,7 +61,8 @@ function makeFetch(pages, calls, sh, grow) {
 
 // Build the controller wired to a conversationEl with overridden layout
 // metrics. clientHeight is fixed; scrollHeight is driven by `sh.value`.
-function install(ctx, sh, clientHeight = 800) {
+// `active.id` is the active session (a switch sets it before reset()).
+function install(ctx, sh, clientHeight = 800, active = { id: 'inst1' }) {
   const { conversationEl, Conversation, installLazyHistoryController } = ctx;
   Object.defineProperty(conversationEl, 'clientHeight', { configurable: true, get: () => clientHeight });
   Object.defineProperty(conversationEl, 'scrollHeight', { configurable: true, get: () => sh.value });
@@ -70,10 +71,10 @@ function install(ctx, sh, clientHeight = 800) {
     conversationEl,
     conversation,
     conversationOptions: {},
-    getActiveId: () => 'inst1',
+    getActiveId: () => active.id,
     getInstances: () => [{ id: 'inst1', status: 'idle' }],
   });
-  return { controller, conversation };
+  return { controller, conversation, active };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -260,14 +261,17 @@ test('a served page in the middle of a run resets the empty-page streak', async 
 // The viewport is already scrollable (sh 1000 > 800) so the auto-fill never
 // fetches on its own: every fetch below is loadUntil's or the scroll trigger's.
 
-// fetch stub whose responses the test releases one at a time.
+// fetch stub whose responses the test releases one at a time. A page given as
+// 'error' answers HTTP 500.
 function gatedFetch(pages, calls) {
   const gates = [];
   const fetch = (url) => {
     calls.push(url);
     const page = pages.shift() ?? { events: [], nextBefore: 0, hasMore: false };
-    return new Promise((resolve) => gates.push(() =>
-      resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(page)) })));
+    const response = page === 'error'
+      ? { ok: false, status: 500, json: async () => ({ error: 'boom' }) }
+      : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(page)) };
+    return new Promise((resolve) => gates.push(() => resolve(response)));
   };
   return { fetch, release: () => gates.shift()() };
 }
@@ -329,12 +333,13 @@ test('a session switch mid-fetch cancels loadUntil and the stale page is not spl
   const calls = [];
   const gate = gatedFetch(makePages(5), calls);
   globalThis.fetch = gate.fetch;
-  const { controller } = install(ctx, { value: 1000 });
+  const { controller, active } = install(ctx, { value: 1000 });
   controller.init({ tailStartSeq: 1000 });
   const run = controller.loadUntil(() => false, () => true);
   await flush();
   assert.equal(calls.length, 1);
-  controller.reset({ switching: true });
+  active.id = 'inst2'; // selectInstance: the id changes, then reset()
+  controller.reset();
   gate.release();
   assert.equal(await run, 'cancelled');
   assert.equal(hasText(ctx.conversationEl, 'old0'), false, 'the page fetched for the old view never lands');
@@ -351,14 +356,17 @@ test('loadUntil is not-ready before the first init() and after a switch, but a s
     assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
     assert.equal(calls.length, 0);
   });
-  await t.test('after a switching reset', async () => {
+  await t.test('after a switch, until the new session\'s init()', async () => {
     const ctx = await setupDOM();
     globalThis.fetch = makeFetch(makePages(5), [], { value: 1000 }, 0);
-    const { controller } = install(ctx, { value: 1000 });
+    const { controller, active } = install(ctx, { value: 1000 });
     controller.init({ tailStartSeq: 1000 });
-    controller.reset({ switching: true });
+    active.id = 'inst2';
+    controller.reset();
     assert.equal(controller.state().ready, false);
     assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+    controller.init({ tailStartSeq: 1000 });
+    assert.equal(controller.state().ready, true, 'the new session\'s snapshot makes it ready');
   });
   await t.test('after a same-session reset (reset_snapshot)', async () => {
     const ctx = await setupDOM();
@@ -387,4 +395,41 @@ test('loadUntil joins a scroll-triggered fetch already in flight instead of star
   gate.release();
   assert.equal(await run, 'found');
   assert.equal(calls.length, 1);
+});
+
+test('a joined fetch that fails is not a stall: loadUntil goes round and makes its own fetch', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const gate = gatedFetch(['error', ...makePages(5)], calls);
+  globalThis.fetch = gate.fetch;
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  ctx.conversationEl.dispatchEvent(new ctx.window.Event('scroll')); // the scroll trigger's fetch: it will fail
+  const run = controller.loadUntil(() => hasText(ctx.conversationEl, 'old0'), () => true);
+  await flush();
+  assert.equal(calls.length, 1, 'joined');
+  gate.release(); // the joined fetch errors, cursor unchanged
+  for (let i = 0; i < 5 && calls.length < 2; i++) await flush();
+  assert.equal(calls.length, 2, 'loadUntil fetched for itself');
+  gate.release();
+  assert.equal(await run, 'found');
+});
+
+test('a reset landing between pages cancels loadUntil instead of reading as exhausted', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const gate = gatedFetch(makePages(5), calls);
+  globalThis.fetch = gate.fetch;
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const run = controller.loadUntil(() => false, () => true);
+  await flush();
+  gate.release(); // the first page lands
+  for (let i = 0; i < 5 && calls.length < 2; i++) await flush();
+  assert.equal(hasText(ctx.conversationEl, 'old0'), true, 'the first page is in');
+  assert.equal(calls.length, 2, 'the second fetch is in flight');
+  controller.reset(); // same session (reset_snapshot): keepGoing stays true
+  gate.release();
+  assert.equal(await run, 'cancelled');
+  assert.equal(hasText(ctx.conversationEl, 'old1'), false, 'the second page never lands');
 });
