@@ -583,3 +583,38 @@ test('turn growth: a turn whose only call carried no usage has none', async (t) 
   assert.equal(turnEnd.contextTokens, 27_047, 'premise: the seed reading still stands');
   assert.equal(turnEnd.contextGrowthTokens, null);
 });
+
+test('turn growth: a model switch mid-turn voids the turn though the next call\'s baseline continues', async (t) => {
+  // m2's message_start reports a new model: _trackModel drops the reading, and
+  // the same frame re-latches it at m1's prompt, so m3 grows from a baseline
+  // continuous with the turn's.
+  const AFTER = { ...NEXT, cache_read_input_tokens: 33_000 };
+  const run = async (st, m2Model) => {
+    const { inst, events } = await makeInstance(st);
+    seedTurn(inst);
+    const seeded = events.length;
+    inst._handleStdoutLine(msgStartLine('m1', NEXT));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(msgStartLine('m2', NEXT, m2Model));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(msgStartLine('m3', AFTER));
+    inst._handleStdoutLine(msgDeltaLine());
+    inst._handleStdoutLine(RESULT_LINE);
+    const turn = events.slice(seeded);
+    return { inst, turn, turnEnd: turnEnds(events).at(-1), sum: turn.filter(e => e.kind === 'call_usage').reduce((a, c) => a + (c.growthTokens ?? 0), 0) };
+  };
+  await t.test('control: the same turn with no switch publishes the stamped sum', async (st) => {
+    const { turnEnd, sum } = await run(st, undefined);
+    assert.equal(turnEnd.contextTokens - 27_047, sum, 'premise: ctx-end − baseline equals the stamped sum');
+    assert.equal(turnEnd.contextGrowthTokens, sum);
+  });
+  await t.test('switch: the turn is voided', async (st) => {
+    const { inst, turn, turnEnd, sum } = await run(st, 'claude-sonnet-5');
+    assert.ok(turn.some(e => e.kind === 'system' && e.subtype === 'model_changed'), 'premise: the switch fired mid-turn');
+    assert.equal(turn.filter(e => e.kind === 'call_usage').at(-1).growthTokens, promptOf(AFTER) - promptOf(NEXT),
+      'premise: the call after the switch grows from a continuous baseline');
+    assert.equal(turnEnd.contextTokens - 27_047, sum, 'premise: without the reset the figures would agree');
+    assert.equal(inst.summary().contextTokens, promptOf(AFTER), 'premise');
+    assert.equal(turnEnd.contextGrowthTokens, null);
+  });
+});

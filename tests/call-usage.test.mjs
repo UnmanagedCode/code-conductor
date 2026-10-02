@@ -165,3 +165,23 @@ test('turn growth: each turn baselines afresh from its own first call', () => {
   stamped(t, 'm2');
   assert.equal(t.endTurn(17_500), 17_500 - 12_000);
 });
+
+test('turn growth: a reset() mid-turn voids the turn even when the next call\'s baseline continues from the last prompt', async (tt) => {
+  const run = (withReset) => {
+    const t = new CallUsageTracker();
+    t.onMessageStart('m1', 10_000, u(12_000));
+    const g1 = stamped(t, 'm1').growthTokens;
+    if (withReset) t.reset();
+    t.onMessageStart('m2', 12_000, u(13_000));
+    const g2 = stamped(t, 'm2').growthTokens;
+    return { sum: g1 + g2, turn: t.endTurn(13_000) };
+  };
+  await tt.test('control: without the reset the two figures are equal and the prefix is published', () => {
+    const { sum, turn } = run(false);
+    assert.equal(13_000 - 10_000, sum, 'premise: ctx-end − baseline equals the stamped sum');
+    assert.equal(turn, 3_000);
+  });
+  await tt.test('with the reset the turn is voided', () => {
+    assert.equal(run(true).turn, null);
+  });
+});
