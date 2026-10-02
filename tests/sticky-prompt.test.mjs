@@ -8,6 +8,11 @@
 // these tests can prove is the pick, the eligibility, the DOM the pin shows and
 // what click does; whether it LOOKS right needs the headless pass
 // (docs/frontend-testing.md).
+//
+// The pin is shown only once revealed: the harness reveals by default, so the
+// geometry tests prove the revealed behaviour. History is a scriptable fake
+// ({ loadUntil, state }) whose runs the test resolves by hand; one test drives
+// the real lazy-history controller instead.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +21,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { pickPinned } from '../public/stickyPrompt.js';
+import { pickPinned, STATUS_LOADING, STATUS_FAILED, STATUS_NONE } from '../public/stickyPrompt.js';
 import { buildApprovePrompt } from '../public/planApproval.js';
 import { buildWakeStub } from '../public/wakeCallback.js';
 
@@ -36,6 +41,14 @@ globalThis.fetch = async () => ({
 
 const PIN_HEIGHT = 60;
 
+// The real #pinned-prompt's attributes (its jump-button role, tabindex and
+// title), copied onto the harness pin.
+const INDEX_PIN_ATTRS = await (async () => {
+  const doc = new Window().document;
+  doc.write((await fs.readFile(path.join(PUB, 'index.html'), 'utf8')).replace(/<script\b[\s\S]*?<\/script>/g, ''));
+  return [...doc.getElementById('pinned-prompt').attributes].map(a => [a.name, a.value]);
+})();
+
 function setupDOM() {
   const win = new Window({ url: 'http://localhost/' });
   globalThis.window = win;
@@ -53,9 +66,23 @@ async function importFresh(file) {
   return import(pathToFileURL(path.join(PUB, file)).href + `?uid=${uid}`);
 }
 
+// A fake lazy-history controller. Each loadUntil call is recorded with its
+// predicates and a `resolve` the test calls to end the run.
+function fakeHistory({ ready = true, hasMore = false } = {}) {
+  const h = {
+    st: { ready, hasMore, loading: false },
+    runs: [],
+    state: () => ({ ...h.st }),
+    loadUntil: (found, keepGoing) => new Promise((resolve) => h.runs.push({ found, keepGoing, resolve })),
+  };
+  return h;
+}
+
 // A Conversation on a scroll root, the pin, and the installed controller. The
 // module graph is imported fresh so the controller binds THIS window's globals.
-async function harness({ conducted = false } = {}) {
+// `history: 'real'` wires the real lazy-history controller (fetch stubbed by
+// the test) in place of the fake.
+async function harness({ conducted = false, revealed = true, history = fakeHistory() } = {}) {
   const win = setupDOM();
   const { Conversation } = await importFresh('conversation.js');
   const { installStickyPrompt } = await importFresh('stickyPrompt.js');
@@ -63,22 +90,37 @@ async function harness({ conducted = false } = {}) {
   const pane = document.createElement('div');
   const scrollEl = document.createElement('div');
   const pinEl = document.createElement('div');
+  for (const [name, value] of INDEX_PIN_ATTRS) pinEl.setAttribute(name, value);
   pinEl.hidden = true;
   pane.append(pinEl, scrollEl);
   host.append(pane);
   document.body.append(host);
   // viewOpen: a full-page view has the pane display:none, so every rect reads 0.
-  const layout = { viewOpen: false, pinHeight: PIN_HEIGHT, tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57 };
+  const layout = { viewOpen: false, pinHeight: PIN_HEIGHT, tops: new Map(), bodyScrollHeight: 20, bodyClientHeight: 57, clientHeight: 600 };
   // A display:none element measures 0, as in a browser.
   Object.defineProperty(pinEl, 'offsetHeight', { get: () => (pinEl.hidden ? 0 : layout.pinHeight) });
   // The pin's body is created by the controller, so its clamp is faked on the prototype.
   const isPinBody = (el) => el.classList.contains('pinned-prompt-body');
   Object.defineProperty(win.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return isPinBody(this) ? layout.bodyScrollHeight : 0; } });
   Object.defineProperty(win.HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return isPinBody(this) ? layout.bodyClientHeight : 0; } });
+  // The scroll root's viewport: 0 while a full-page view hides the pane.
+  Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => (layout.viewOpen ? 0 : layout.clientHeight) });
   scrollEl.getBoundingClientRect = () => ({ top: 0 });
-  const state = { conducted };
-  const ctl = installStickyPrompt({ scrollEl, pinEl, isConducted: () => state.conducted, viewHostEl: host, schedule: fn => fn() });
-  const conv = new Conversation(scrollEl, {});
+  const state = { conducted, activeId: 'inst1' };
+  let conv = null;
+  let lazy = null;
+  if (history === 'real') {
+    const { installLazyHistoryController } = await importFresh('lazyHistory.js');
+    conv = new Conversation(scrollEl, {});
+    lazy = installLazyHistoryController({
+      conversationEl: scrollEl, conversation: conv, conversationOptions: {},
+      getActiveId: () => state.activeId, getInstances: () => [],
+    });
+    history = lazy;
+  }
+  const ctl = installStickyPrompt({ scrollEl, pinEl, isConducted: () => state.conducted, getActiveId: () => state.activeId, viewHostEl: host, history, schedule: fn => fn() });
+  conv ??= new Conversation(scrollEl, {});
+  if (revealed) ctl.reveal();
   let userIndex = 0;
   // Appends a user echo and gives its bubble a document position.
   const say = (text, top, extra = {}) => {
@@ -92,10 +134,24 @@ async function harness({ conducted = false } = {}) {
   // A browser delivers the childList records before the next scroll frame; the
   // await gives the test the same order.
   const scrollTo = async (y) => { await settle(); scrollEl.scrollTop = y; ctl.refresh(); };
-  return { win, Conversation, conv, scrollEl, pinEl, pane, host, ctl, layout, state, say, scrollTo, settle };
+  return { win, Conversation, conv, scrollEl, pinEl, pane, host, ctl, layout, state, say, scrollTo, settle, history, lazy };
 }
 
 const pinText = (pinEl) => pinEl.querySelector('.user-text')?.textContent.trim();
+// The status line's text, or undefined when none shows. A status line is the
+// pin's only child and never sits beside a clone.
+const statusOf = (pinEl) => {
+  const line = pinEl.querySelector('.pinned-prompt-status');
+  if (!line) return undefined;
+  assert.equal(pinEl.childElementCount, 1, 'the status line is alone in the pin');
+  assert.equal(pinEl.hidden, false, 'a status line is visible');
+  return line.textContent;
+};
+// Revealed with nothing pinned: no clone, the given status line instead.
+const assertStatus = (pinEl, want, msg) => {
+  assertNull(pinEl.querySelector('.user-text'), `${msg}: no clone`);
+  assert.equal(statusOf(pinEl), want, msg);
+};
 
 // ── pickPinned ───────────────────────────────────────────────────────────
 
@@ -164,8 +220,7 @@ test('a bubble with no user-text block is stamped synthetic even when promptOrig
   assertNull(bubble.querySelector('.user-text'), 'the bubble renders no user-text block');
   assert.equal(bubble.getAttribute('data-prompt-origin'), 'synthetic');
   await h.scrollTo(300); // past the bare bubble: a typed stamp would clone a missing node
-  assert.equal(h.pinEl.hidden, true);
-  assert.equal(h.pinEl.childElementCount, 0);
+  assertStatus(h.pinEl, STATUS_NONE, 'nothing eligible above the top');
 });
 
 test('a stamped question-answer bubble is synthetic, faithful or raw-fallback, and never pins even in a worker session', async (t) => {
@@ -182,7 +237,7 @@ test('a stamped question-answer bubble is synthetic, faithful or raw-fallback, a
       h.say('next prompt', 900);
       assert.equal(bubble.getAttribute('data-prompt-origin'), 'synthetic');
       await h.scrollTo(300); // a template stamp here would clone a node that is not there
-      assert.equal(h.pinEl.hidden, true);
+      assertStatus(h.pinEl, STATUS_NONE, 'nothing eligible above the top');
     });
   }
 });
@@ -212,7 +267,7 @@ test('scrolling past a typed prompt pins a clone of its text without rewind/fork
   const h = await harness();
   const bubble = h.say('the **original** prompt', 0);
   h.say('next prompt', 1000);
-  assert.equal(h.pinEl.hidden, true, 'nothing scrolled past yet');
+  assertStatus(h.pinEl, STATUS_NONE, 'nothing scrolled past yet');
 
   await h.scrollTo(300);
   assert.equal(h.pinEl.hidden, false);
@@ -244,7 +299,7 @@ test('a synthetic turn never pins, whatever the session role', async () => {
   h.say(buildWakeStub({ targetSessionId: 'abcd1234', payloadText: 'worker output' }), 0);
   h.say('/clear', 400);
   await h.scrollTo(2000);
-  assert.equal(h.pinEl.hidden, true);
+  assertStatus(h.pinEl, STATUS_NONE, 'nothing eligible above the top');
 });
 
 test('the pin shifts by the next prompt\'s overlap', async () => {
@@ -287,10 +342,10 @@ test('scrolling back above a prompt un-pins it and leaves the older one', async 
   await h.scrollTo(300);
   assert.equal(pinText(h.pinEl), 'first');
   await h.scrollTo(0);
-  assert.equal(h.pinEl.hidden, true);
+  assertStatus(h.pinEl, STATUS_NONE, 'above every prompt');
 });
 
-test('clicking the pin (or Enter/Space) scrolls the original bubble to the top; with no earlier prompt the pin hides', async (t) => {
+test('clicking the pin (or Enter/Space) scrolls the original bubble to the top; with no earlier prompt the status line replaces it', async (t) => {
   for (const [label, fire] of [
     ['click', (el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))],
     ['Enter', (el) => el.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))],
@@ -305,7 +360,7 @@ test('clicking the pin (or Enter/Space) scrolls the original bubble to the top; 
       fire(h.pinEl);
       assert.equal(h.scrollEl.scrollTop, 100, 'the full bubble lands at the viewport top');
       h.ctl.refresh();
-      assert.equal(h.pinEl.hidden, true, 'a bubble at the top is no longer scrolled past, and nothing is above it');
+      assertStatus(h.pinEl, STATUS_NONE, 'a bubble at the top is no longer scrolled past, and nothing is above it');
     });
   }
   await t.test('another key does nothing', async () => {
@@ -353,20 +408,24 @@ test('after a jump, the previous prompt stays pinned but a fully-pushed-off pin 
   await t.test('nothing left to pin drops the clone', async () => {
     const h = await setup();
     await h.scrollTo(0);
-    assert.equal(h.pinEl.hidden, true);
-    assert.equal(h.pinEl.childElementCount, 0);
+    assertStatus(h.pinEl, STATUS_NONE, 'above every prompt');
   });
 });
 
-test('a hidden pin with nothing pinned is not rewritten on later frames', async () => {
-  const h = await harness();
-  h.say('P1', 100); // stays below the viewport top for every scroll below
-  await h.scrollTo(0);
-  let writes = 0;
-  new h.win.MutationObserver(() => { writes++; }).observe(h.pinEl, { attributes: true, childList: true });
-  for (let y = 0; y < 5; y++) await h.scrollTo(y);
-  await h.settle();
-  assert.equal(writes, 0, 'the pin element is untouched while there is nothing to pin');
+test('with nothing to pin, the pin is not rewritten on later frames', async (t) => {
+  for (const revealed of [true, false]) {
+    await t.test(revealed ? 'revealed: the status line stays as written' : 'not revealed: the hidden pin stays untouched', async () => {
+      const h = await harness({ revealed });
+      h.say('P1', 100); // stays below the viewport top for every scroll below
+      await h.scrollTo(0);
+      assert.equal(statusOf(h.pinEl), revealed ? STATUS_NONE : undefined);
+      let writes = 0;
+      new h.win.MutationObserver(() => { writes++; }).observe(h.pinEl, { attributes: true, childList: true, subtree: true, characterData: true });
+      for (let y = 0; y < 5; y++) await h.scrollTo(y);
+      await h.settle();
+      assert.equal(writes, 0, 'the pin element is untouched while there is nothing to pin');
+    });
+  }
 });
 
 test('closing a full-page view brings the pin back without a scroll (the view host\'s class change refreshes)', async () => {
@@ -411,15 +470,14 @@ test('the fade class is set only when the clone overflows the clamp', async (t) 
   });
 });
 
-test('clearing the conversation hides the pin', async () => {
+test('clearing the conversation drops the clone', async () => {
   const h = await harness();
   h.say('first', 0); h.say('second', 900);
   await h.scrollTo(300);
   assert.equal(h.pinEl.hidden, false);
   h.conv.clear();
   await h.settle();
-  assert.equal(h.pinEl.hidden, true);
-  assert.equal(h.pinEl.childElementCount, 0, 'the clone does not linger');
+  assertStatus(h.pinEl, STATUS_NONE, 'the clone does not linger');
 });
 
 test('a prompt appended after the pin was shown is picked up (the candidate list rebuilds on childList)', async () => {
@@ -472,6 +530,323 @@ test('the pin lives outside the scroll root', async () => {
   assert.equal(conversation.contains(pin), false);
 });
 
+// ── Reveal and autoload ──────────────────────────────────────────────────
+
+test('the pin stays hidden until revealed, even with a prompt scrolled past; conceal() hides it and drops the clone', async () => {
+  const h = await harness({ revealed: false });
+  h.say('first', 0); h.say('second', 900);
+  await h.scrollTo(300);
+  assert.equal(h.pinEl.hidden, true, 'not revealed');
+  assert.equal(h.pinEl.childElementCount, 0);
+
+  h.ctl.reveal();
+  assert.equal(h.pinEl.hidden, false);
+  assert.equal(pinText(h.pinEl), 'first');
+
+  h.ctl.conceal();
+  assert.equal(h.pinEl.hidden, true);
+  assert.equal(h.pinEl.childElementCount, 0, 'the clone is dropped');
+  await h.scrollTo(310);
+  assert.equal(h.pinEl.hidden, true, 'scrolling while concealed shows nothing');
+});
+
+test('revealed with no prompt above the top, history loads until one is pinned; found() sees a spliced bubble before any observer runs', async () => {
+  const h = await harness({ revealed: false, history: fakeHistory({ hasMore: true }) });
+  h.say('only', 100);
+  await h.settle();
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 1, 'a run starts');
+  const run = h.history.runs[0];
+  assert.equal(run.found(), false, 'nothing above the top yet');
+  assert.equal(run.keepGoing(), true);
+
+  // A page lands above: synchronous, as loadEarlier splices before resolving.
+  const older = h.say('older', -200);
+  h.scrollEl.prepend(older);
+  assert.equal(run.found(), true, 'the eligible list was rebuilt inside found()');
+  assert.equal(pinText(h.pinEl), 'older');
+  assert.equal(statusOf(h.pinEl), undefined);
+
+  run.resolve('found');
+  await h.settle();
+  assert.equal(pinText(h.pinEl), 'older');
+  assert.equal(h.history.runs.length, 1, 'no further run');
+});
+
+test('revealed with nothing pinned, the status line says what the history is doing', async (t) => {
+  await t.test('loading while a run is in flight', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: true }) });
+    h.say('only', 100);
+    await h.scrollTo(0);
+    assert.equal(h.history.runs.length, 1);
+    assertStatus(h.pinEl, STATUS_LOADING, 'run pending');
+  });
+  await t.test('loading while history is not ready (no snapshot yet), with no run started', async () => {
+    const h = await harness({ history: fakeHistory({ ready: false, hasMore: false }) });
+    await h.scrollTo(0);
+    assertStatus(h.pinEl, STATUS_LOADING, 'not ready');
+    assert.equal(h.history.runs.length, 0);
+  });
+  await t.test('none when history is exhausted', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: false }) });
+    h.say('only', 100);
+    await h.scrollTo(0);
+    assertStatus(h.pinEl, STATUS_NONE, 'exhausted');
+    assert.equal(h.history.runs.length, 0);
+  });
+  await t.test('none once a run ends exhausted', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: true }) });
+    await h.scrollTo(0);
+    h.history.st.hasMore = false;
+    h.history.runs[0].resolve('exhausted');
+    await h.settle();
+    assertStatus(h.pinEl, STATUS_NONE, 'run exhausted');
+  });
+  await t.test('failed after a stalled run', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: true }) });
+    await h.scrollTo(0);
+    h.history.runs[0].resolve('stalled');
+    await h.settle();
+    assertStatus(h.pinEl, STATUS_FAILED, 'stalled');
+  });
+  await t.test('without a history controller: none', async () => {
+    const h = await harness({ history: null });
+    await h.scrollTo(0);
+    assertStatus(h.pinEl, STATUS_NONE, 'no history');
+  });
+  await t.test('a pushed-off pin counts as found and shows no status', async () => {
+    const h = await harness({ revealed: false, history: fakeHistory({ hasMore: true }) });
+    h.say('P1', 10); h.say('P2', 400);
+    await h.settle();
+    h.ctl.reveal();
+    const run = h.history.runs[0];
+    h.scrollEl.scrollTop = 400; // P1 above the top, P2 at it: P1 is held but fully pushed off
+    assert.equal(run.found(), true);
+    assert.equal(h.pinEl.hidden, true);
+    assert.equal(statusOf(h.pinEl), undefined);
+    assert.equal(pinText(h.pinEl), 'P1');
+  });
+});
+
+test('a stalled run is not retried by refreshes; reveal() retries', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  h.history.runs[0].resolve('stalled');
+  await h.settle();
+  for (let y = 0; y < 4; y++) await h.scrollTo(y);
+  assert.equal(h.history.runs.length, 1, 'scrolling does not hammer a failing endpoint');
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 2, 'pressing Down again retries');
+  assertStatus(h.pinEl, STATUS_LOADING, 'retrying');
+});
+
+test('conceal() mid-run cancels it; its late result shows nothing', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  const run = h.history.runs[0];
+  assert.equal(run.keepGoing(), true);
+  h.ctl.conceal();
+  assert.equal(run.keepGoing(), false, 'the run stops at its next check');
+  run.resolve('stalled');
+  await h.settle();
+  assert.equal(h.pinEl.hidden, true);
+  assert.equal(h.pinEl.childElementCount, 0, 'neither a pin nor a status line');
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 2, 'a new reveal starts a fresh run, not blocked by the cancelled one');
+  assert.equal(run.keepGoing(), false, 'the cancelled run stays cancelled');
+  assertStatus(h.pinEl, STATUS_LOADING, 'the stale stall did not mark the new reveal failed');
+});
+
+test('no layout (a full-page view) starts no run; closing the view starts one', async () => {
+  const h = await harness({ revealed: false, history: fakeHistory({ hasMore: true }) });
+  h.layout.viewOpen = true;
+  h.host.classList.add('settings-open');
+  await h.settle();
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 0, 'every rect reads 0: a run would page the whole history');
+  assert.equal(h.pinEl.hidden, true, 'no status line in a hidden pane');
+
+  h.layout.viewOpen = false;
+  h.host.classList.remove('settings-open');
+  await h.settle();
+  assert.equal(h.history.runs.length, 1);
+  assertStatus(h.pinEl, STATUS_LOADING, 'view closed');
+});
+
+test('a view opening mid-run stops it at the next check', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  const run = h.history.runs[0];
+  h.layout.viewOpen = true;
+  assert.equal(run.keepGoing(), false);
+});
+
+test('refreshes while a run is in flight start no second run', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  for (let y = 0; y < 4; y++) await h.scrollTo(y);
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 1);
+});
+
+test('after a same-session reset (rewind) a revealed pin reads none, after a switch it reads loading', async (t) => {
+  const stubFetch = (calls) => {
+    globalThis.fetch = async (url) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => ({ events: [], nextBefore: 0, hasMore: false }) };
+    };
+  };
+  await t.test('reset() without switching: none, no fetch', async () => {
+    const calls = [];
+    stubFetch(calls);
+    const h = await harness({ revealed: false, history: 'real' });
+    h.lazy.init({ tailStartSeq: 0 }); // the silent probe finds nothing earlier
+    await h.settle();
+    h.lazy.reset();
+    const fetched = calls.length;
+    h.ctl.reveal();
+    await h.settle();
+    assertStatus(h.pinEl, STATUS_NONE, 'paging stays off after a rewind');
+    assert.equal(calls.length, fetched, 'nothing to page');
+  });
+  await t.test('a switch to another session: loading until its snapshot', async () => {
+    const calls = [];
+    stubFetch(calls);
+    const h = await harness({ revealed: false, history: 'real' });
+    h.lazy.init({ tailStartSeq: 0 });
+    await h.settle();
+    h.state.activeId = 'inst2'; // selectInstance sets the id, then resets
+    h.lazy.reset();
+    h.ctl.reveal();
+    await h.settle();
+    assertStatus(h.pinEl, STATUS_LOADING, 'waiting for the snapshot');
+  });
+});
+
+test('a status line is a status region, not a jump button; a pinned prompt is the button again', async () => {
+  const attr = (name) => INDEX_PIN_ATTRS.find(([n]) => n === name)[1];
+  assert.equal(attr('role'), 'button', 'index.html declares the pin a button');
+  const assertButton = (pinEl, msg) => {
+    for (const name of ['role', 'tabindex', 'title']) assert.equal(pinEl.getAttribute(name), attr(name), `${msg}: ${name}`);
+  };
+  const assertStatusRegion = (pinEl, msg) => {
+    assert.equal(pinEl.getAttribute('role'), 'status', `${msg}: role`);
+    assert.equal(pinEl.hasAttribute('tabindex'), false, `${msg}: not focusable`);
+    assert.equal(pinEl.hasAttribute('title'), false, `${msg}: no jump tooltip`);
+  };
+
+  const h = await harness();
+  h.say('first', 0); h.say('second', 900);
+  await h.scrollTo(0);
+  assert.equal(statusOf(h.pinEl), STATUS_NONE);
+  assertStatusRegion(h.pinEl, 'status line');
+
+  await h.scrollTo(300);
+  assert.equal(pinText(h.pinEl), 'first');
+  assertButton(h.pinEl, 'prompt pinned after a status line');
+
+  await h.scrollTo(0);
+  assertStatusRegion(h.pinEl, 'status line again');
+
+  h.ctl.conceal(); // hidden straight from a status line
+  await h.scrollTo(300);
+  h.ctl.reveal();
+  assert.equal(pinText(h.pinEl), 'first');
+  assertButton(h.pinEl, 'prompt pinned on a reveal after the status line was hidden');
+});
+
+test('with a stalled run and history since exhausted, the status reads none, never failed', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  h.history.runs[0].resolve('stalled');
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_FAILED, 'stalled');
+  h.history.st.hasMore = false; // a later scroll-triggered fetch reached the start
+  await h.scrollTo(1);
+  assertStatus(h.pinEl, STATUS_NONE, 'nothing left to retry');
+});
+
+test('a concealed run resolving after a new reveal does not end the new run', async () => {
+  const h = await harness({ history: fakeHistory({ hasMore: true }) });
+  await h.scrollTo(0);
+  const first = h.history.runs[0];
+  h.ctl.conceal();
+  h.ctl.reveal();
+  assert.equal(h.history.runs.length, 2, 'the new reveal started its own run');
+  first.resolve('stalled');
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_LOADING, 'the new run is still in flight');
+  for (let y = 1; y < 4; y++) await h.scrollTo(y);
+  assert.equal(h.history.runs.length, 2, 'still counted as running: no third run');
+  assertStatus(h.pinEl, STATUS_LOADING, 'not marked failed by the stale result');
+});
+
+test('a session switch conceals the pin and cancels its run; a same-session clear (rewind) keeps it revealed', async (t) => {
+  await t.test('switch', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: true }) });
+    h.say('first', 0); h.say('second', 900);
+    await h.scrollTo(0);
+    const run = h.history.runs[0];
+    h.state.activeId = 'inst2'; // selectInstance sets the id, then clears the transcript
+    h.conv.clear();
+    await h.settle();
+    assert.equal(h.pinEl.hidden, true);
+    assert.equal(h.pinEl.childElementCount, 0);
+    assert.equal(run.keepGoing(), false, 'the old session\'s run stops');
+    h.say('other session', 0); h.say('next', 900);
+    await h.scrollTo(300);
+    assert.equal(h.pinEl.hidden, true, 'the new session starts concealed');
+    h.ctl.reveal();
+    assert.equal(pinText(h.pinEl), 'other session', 'and reveals normally');
+  });
+  await t.test('same session', async () => {
+    const h = await harness({ history: fakeHistory({ hasMore: false }) });
+    h.say('first', 0); h.say('second', 900);
+    await h.scrollTo(300);
+    h.conv.clear();
+    await h.settle();
+    assertStatus(h.pinEl, STATUS_NONE, 'still revealed after the transcript reset');
+  });
+});
+
+test('a revealed pin after switching A→B→A reads loading until A\'s snapshot, not none', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ events: [], nextBefore: 0, hasMore: false }) });
+  const h = await harness({ revealed: false, history: 'real' });
+  h.state.activeId = 'A';
+  h.lazy.init({ tailStartSeq: 1000 }); // A has earlier history
+  await h.settle();
+  const switchTo = async (id) => { h.state.activeId = id; h.conv.clear(); h.lazy.reset(); await h.settle(); };
+  await switchTo('B');
+  await switchTo('A');
+  h.ctl.reveal();
+  assertStatus(h.pinEl, STATUS_LOADING, 'A\'s snapshot has not arrived');
+});
+
+test('a revealed pin with no session selected and no snapshot reads loading, not none', async () => {
+  const h = await harness({ revealed: false, history: 'real' });
+  h.state.activeId = null;
+  h.ctl.reveal();
+  assertStatus(h.pinEl, STATUS_LOADING, 'not ready');
+});
+
+test('a revealed pin after the active session is stopped or archived (id nulled, no reset) reads loading, not failed', async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(url); return { ok: true, status: 200, json: async () => ({ events: [], nextBefore: 0, hasMore: false }) }; };
+  const h = await harness({ revealed: false, history: 'real' });
+  Object.defineProperty(h.scrollEl, 'scrollHeight', { configurable: true, get: () => 10000 }); // scrollable: no auto-fill
+  h.lazy.init({ tailStartSeq: 1000 }); // inst1 has earlier history
+  await h.settle();
+  h.state.activeId = null; // sessionActions' stop / archive / delete path
+  assert.equal(h.lazy.state().ready, false);
+  h.ctl.reveal();
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_LOADING, 'no session: nothing to page, nothing failed');
+  h.ctl.reveal(); // a retry changes nothing
+  await h.settle();
+  assertStatus(h.pinEl, STATUS_LOADING, 'after a second reveal');
+  assert.equal(calls.length, 0);
+});
+
 // ── Static wiring ────────────────────────────────────────────────────────
 
 test('no full-page view hides #conversation without its pane', async () => {
@@ -489,7 +864,7 @@ test('no full-page view hides #conversation without its pane', async () => {
 // read from styles.css: the declarations of one rule, by exact selector.
 async function pinRule(selector) {
   const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
-  const esc = selector.replace(/[.]/g, '\\.');
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const m = css.match(new RegExp(`(?:^|\\n)${esc}\\s*\\{([^}]*)\\}`));
   assert.ok(m, `${selector} rule not found`);
   return m[1];
@@ -520,4 +895,14 @@ test('the pin\'s shadow sits on the outer box, adds a light edge line, and takes
   // The mask belongs to the inner body: on the outer box it would clip the shadow.
   assert.equal(/mask/.test(outer), false, 'no mask on the outer box');
   assert.equal(/overflow/.test(outer), false, 'no overflow clip on the outer box');
+});
+
+test('the swipe zones (the top bar and the pin) start no browser vertical pan but keep pinch zoom', async () => {
+  for (const selector of ['#instance-header', '.pinned-prompt']) {
+    assert.match(await pinRule(selector), /(?:^|[\s;])touch-action:\s*pan-x pinch-zoom;/, `${selector} declares touch-action: pan-x pinch-zoom`);
+  }
+});
+
+test('a status line has no pointer cursor', async () => {
+  assert.match(await pinRule('.pinned-prompt[role="status"]'), /(?:^|[\s;])cursor:\s*default;/);
 });

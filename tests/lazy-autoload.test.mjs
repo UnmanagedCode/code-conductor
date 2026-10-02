@@ -3,7 +3,9 @@
 // tail is shorter than the scroll viewport, the controller should page in
 // earlier chunks automatically (via the same loadEarlier path) until the
 // container is scrollable or history is exhausted — without hot-looping on a
-// fetch error and without pulling anything when already scrollable.
+// fetch error and without pulling anything when already scrollable. Also
+// loadUntil(), the bounded "page until a condition holds" loop the sticky
+// prompt's reveal drives, and the readiness its state() reports.
 //
 // happy-dom does no layout, so clientHeight/scrollHeight are overridden on a
 // real conversationEl via Object.defineProperty, and global.fetch is stubbed
@@ -59,7 +61,8 @@ function makeFetch(pages, calls, sh, grow) {
 
 // Build the controller wired to a conversationEl with overridden layout
 // metrics. clientHeight is fixed; scrollHeight is driven by `sh.value`.
-function install(ctx, sh, clientHeight = 800) {
+// `active.id` is the active session (a switch sets it before reset()).
+function install(ctx, sh, clientHeight = 800, active = { id: 'inst1' }) {
   const { conversationEl, Conversation, installLazyHistoryController } = ctx;
   Object.defineProperty(conversationEl, 'clientHeight', { configurable: true, get: () => clientHeight });
   Object.defineProperty(conversationEl, 'scrollHeight', { configurable: true, get: () => sh.value });
@@ -68,10 +71,10 @@ function install(ctx, sh, clientHeight = 800) {
     conversationEl,
     conversation,
     conversationOptions: {},
-    getActiveId: () => 'inst1',
+    getActiveId: () => active.id,
     getInstances: () => [{ id: 'inst1', status: 'idle' }],
   });
-  return { controller, conversation };
+  return { controller, conversation, active };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -252,4 +255,217 @@ test('a served page in the middle of a run resets the empty-page streak', async 
 
   assert.equal(calls.length, 6,
     'the served 3rd page resets the streak, so two more empty pages are allowed afterward');
+});
+
+// ── loadUntil: page until a condition holds (the sticky prompt's reveal) ────
+// The viewport is already scrollable (sh 1000 > 800) so the auto-fill never
+// fetches on its own: every fetch below is loadUntil's or the scroll trigger's.
+
+// fetch stub whose responses the test releases one at a time. A page given as
+// 'error' answers HTTP 500.
+function gatedFetch(pages, calls) {
+  const gates = [];
+  const fetch = (url) => {
+    calls.push(url);
+    const page = pages.shift() ?? { events: [], nextBefore: 0, hasMore: false };
+    const response = page === 'error'
+      ? { ok: false, status: 500, json: async () => ({ error: 'boom' }) }
+      : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(page)) };
+    return new Promise((resolve) => gates.push(() => resolve(response)));
+  };
+  return { fetch, release: () => gates.shift()() };
+}
+
+const hasText = (el, text) => el.textContent.includes(text);
+
+test('loadUntil pages until found() holds, then stops', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  globalThis.fetch = makeFetch(makePages(5), calls, { value: 1000 }, 0);
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const result = await controller.loadUntil(() => hasText(ctx.conversationEl, 'old1'), () => true);
+  assert.equal(result, 'found');
+  assert.equal(calls.length, 2, 'the second page carries old1: no third fetch');
+});
+
+test('loadUntil returns exhausted at the start of the transcript after a finite number of fetches', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const pages = [...makePages(2), ...makePages(1, { hasMore: false })];
+  globalThis.fetch = makeFetch(pages, calls, { value: 1000 }, 0);
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const result = await controller.loadUntil(() => false, () => true);
+  assert.equal(result, 'exhausted');
+  assert.equal(calls.length, 3);
+});
+
+test('loadUntil returns stalled on a fetch error: one fetch, no hot-loop, sentinel kept', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return { ok: false, status: 500, json: async () => ({ error: 'boom' }) };
+  };
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const result = await controller.loadUntil(() => false, () => true);
+  assert.equal(result, 'stalled');
+  assert.equal(calls.length, 1);
+  assert.equal(controller.state().hasMore, true, 'a failure keeps hasMore for a retry');
+  assert.ok(ctx.conversationEl.querySelector('.history-sentinel'), 'sentinel stays tappable');
+});
+
+test('loadUntil returns cancelled once keepGoing goes false, before the next fetch', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  globalThis.fetch = makeFetch(makePages(5), calls, { value: 1000 }, 0);
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const result = await controller.loadUntil(() => false, () => calls.length < 1);
+  assert.equal(result, 'cancelled');
+  assert.equal(calls.length, 1);
+});
+
+test('a session switch mid-fetch cancels loadUntil and the stale page is not spliced', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const gate = gatedFetch(makePages(5), calls);
+  globalThis.fetch = gate.fetch;
+  const { controller, active } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const run = controller.loadUntil(() => false, () => true);
+  await flush();
+  assert.equal(calls.length, 1);
+  active.id = 'inst2'; // selectInstance: the id changes, then reset()
+  controller.reset();
+  gate.release();
+  assert.equal(await run, 'cancelled');
+  assert.equal(hasText(ctx.conversationEl, 'old0'), false, 'the page fetched for the old view never lands');
+  assert.equal(calls.length, 1);
+});
+
+test('loadUntil is not-ready before the first init() and after a switch, but a same-session reset() keeps readiness', async (t) => {
+  await t.test('before init', async () => {
+    const ctx = await setupDOM();
+    const calls = [];
+    globalThis.fetch = makeFetch(makePages(5), calls, { value: 1000 }, 0);
+    const { controller } = install(ctx, { value: 1000 });
+    assert.equal(controller.state().ready, false);
+    assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+    assert.equal(calls.length, 0);
+  });
+  await t.test('after a switch, until the new session\'s init()', async () => {
+    const ctx = await setupDOM();
+    globalThis.fetch = makeFetch(makePages(5), [], { value: 1000 }, 0);
+    const { controller, active } = install(ctx, { value: 1000 });
+    controller.init({ tailStartSeq: 1000 });
+    active.id = 'inst2';
+    controller.reset();
+    assert.equal(controller.state().ready, false);
+    assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+    controller.init({ tailStartSeq: 1000 });
+    assert.equal(controller.state().ready, true, 'the new session\'s snapshot makes it ready');
+  });
+  await t.test('after a same-session reset (reset_snapshot)', async () => {
+    const ctx = await setupDOM();
+    globalThis.fetch = makeFetch(makePages(5), [], { value: 1000 }, 0);
+    const { controller } = install(ctx, { value: 1000 });
+    controller.init({ tailStartSeq: 1000 });
+    controller.reset();
+    assert.deepEqual(controller.state(), { ready: true, hasMore: false, loading: false });
+    assert.equal(await controller.loadUntil(() => false, () => true), 'exhausted');
+  });
+});
+
+test('loadUntil joins a scroll-triggered fetch already in flight instead of starting a second', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const gate = gatedFetch(makePages(5), calls);
+  globalThis.fetch = gate.fetch;
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  ctx.conversationEl.dispatchEvent(new ctx.window.Event('scroll')); // scrollTop 0: near the top
+  assert.equal(calls.length, 1, 'the scroll trigger fetched');
+  assert.equal(controller.state().loading, true);
+  const run = controller.loadUntil(() => hasText(ctx.conversationEl, 'old0'), () => true);
+  await flush();
+  assert.equal(calls.length, 1, 'joined, not duplicated');
+  gate.release();
+  assert.equal(await run, 'found');
+  assert.equal(calls.length, 1);
+});
+
+test('a joined fetch that fails is not a stall: loadUntil goes round and makes its own fetch', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const gate = gatedFetch(['error', ...makePages(5)], calls);
+  globalThis.fetch = gate.fetch;
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  ctx.conversationEl.dispatchEvent(new ctx.window.Event('scroll')); // the scroll trigger's fetch: it will fail
+  const run = controller.loadUntil(() => hasText(ctx.conversationEl, 'old0'), () => true);
+  await flush();
+  assert.equal(calls.length, 1, 'joined');
+  gate.release(); // the joined fetch errors, cursor unchanged
+  for (let i = 0; i < 5 && calls.length < 2; i++) await flush();
+  assert.equal(calls.length, 2, 'loadUntil fetched for itself');
+  gate.release();
+  assert.equal(await run, 'found');
+});
+
+test('a reset landing between pages cancels loadUntil instead of reading as exhausted', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  const gate = gatedFetch(makePages(5), calls);
+  globalThis.fetch = gate.fetch;
+  const { controller } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  const run = controller.loadUntil(() => false, () => true);
+  await flush();
+  gate.release(); // the first page lands
+  for (let i = 0; i < 5 && calls.length < 2; i++) await flush();
+  assert.equal(hasText(ctx.conversationEl, 'old0'), true, 'the first page is in');
+  assert.equal(calls.length, 2, 'the second fetch is in flight');
+  controller.reset(); // same session (reset_snapshot): keepGoing stays true
+  gate.release();
+  assert.equal(await run, 'cancelled');
+  assert.equal(hasText(ctx.conversationEl, 'old1'), false, 'the second page never lands');
+});
+
+test('switching A→B→A before either snapshot leaves A not-ready until its own next init()', async () => {
+  const ctx = await setupDOM();
+  const calls = [];
+  globalThis.fetch = makeFetch(makePages(5), calls, { value: 1000 }, 0);
+  const { controller, active } = install(ctx, { value: 1000 });
+  active.id = 'A';
+  controller.init({ tailStartSeq: 1000 });            // A has earlier history
+  active.id = 'B'; controller.reset();                // to B — its snapshot never runs init()
+  active.id = 'A'; controller.reset();                // back to A — its snapshot not here yet
+  assert.deepEqual(controller.state(), { ready: false, hasMore: false, loading: false },
+    'the init() for A before the switch does not count');
+  assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+  controller.init({ tailStartSeq: 1000 });            // A's new snapshot
+  assert.equal(controller.state().ready, true);
+  assert.equal(calls.length, 0);
+});
+
+test('with no session selected and no init(), history is not ready', async () => {
+  const ctx = await setupDOM();
+  const { controller } = install(ctx, { value: 1000 }, 800, { id: null });
+  assert.equal(controller.state().ready, false);
+  controller.reset(); // selectInstance(null)
+  assert.equal(controller.state().ready, false);
+  assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
+});
+
+test('the active id going null without a reset() (stop / archive / delete) makes history not ready', async () => {
+  const ctx = await setupDOM();
+  const { controller, active } = install(ctx, { value: 1000 });
+  controller.init({ tailStartSeq: 1000 });
+  assert.equal(controller.state().ready, true);
+  active.id = null; // sessionActions: no reset() follows
+  assert.equal(controller.state().ready, false);
+  assert.equal(await controller.loadUntil(() => false, () => true), 'not-ready');
 });

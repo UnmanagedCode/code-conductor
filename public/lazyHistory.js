@@ -184,13 +184,24 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
 // otherwise land in the wrong conversation) — bumped on every snapshot /
 // reset_snapshot / instance switch.
 //
+// Readiness: init() has run for the session active now, with no switch since.
+// Not ready whenever the active id differs from the one init() last ran for —
+// sessionActions nulls it on stop / archive / delete without a reset(). A
+// reset() whose active id differs (selectInstance sets the id first) is a
+// switch and forgets that init(), so A→B→A stays not-ready until A's next
+// snapshot; a same-session reset (reset_snapshot after a rewind) keeps it,
+// because no init() follows one — lazy paging simply stays off. A caller
+// that must page until a condition holds (the sticky prompt's reveal) uses
+// loadUntil(); it joins a fetch already in flight rather than racing it.
+//
 // Injected deps:
 //   conversationEl      — dom.conversation: scroll container + sentinel mount + prepend root
 //   conversation        — live Conversation instance (for setUserActionsEnabled after a prepend)
 //   conversationOptions — same callbacks the live view was built with
 //   getActiveId         — () => state.activeId
 //   getInstances        — () => state.instances
-// Returns { reset, init } — the snapshot / reset_snapshot / selectInstance call sites.
+// Returns { reset, init, loadUntil, state } — reset/init are the snapshot /
+// reset_snapshot / selectInstance call sites.
 export function installLazyHistoryController({
   conversationEl,
   conversation,
@@ -201,6 +212,8 @@ export function installLazyHistoryController({
   const lazy = {
     epoch: 0, hasMore: false, nextBefore: 0, segment: null, visited: new Set([null]),
     loading: false, emptyStreak: 0, silent: false,
+    initFor: null, // the active id init() last ran for; null once a switch forgets it
+    inflight: null, // the running fetch's promise while `loading`
   };
   let lazySentinel = null;
   // The current OLDEST chunk's leading assistant wrap (it begins mid-turn) —
@@ -208,13 +221,17 @@ export function installLazyHistoryController({
   // Starts as the live tail's, then advances page by page.
   let oldestLeadingWrap = null;
 
+  const isReady = () => lazy.initFor !== null && lazy.initFor === getActiveId();
+
   function reset() {
     lazy.epoch += 1;
+    if (lazy.initFor !== getActiveId()) lazy.initFor = null; // a switch
     lazy.hasMore = false;
     lazy.nextBefore = 0;
     lazy.segment = null;
     lazy.visited = new Set([null]);
     lazy.loading = false;
+    lazy.inflight = null;
     lazy.emptyStreak = 0;
     lazy.silent = false;
     lazySentinel = null; // the conversation DOM is cleared wholesale alongside
@@ -225,7 +242,9 @@ export function installLazyHistoryController({
   // has been rendered.
   function init(frame) {
     lazy.epoch += 1;
+    lazy.initFor = getActiveId();
     lazy.loading = false;
+    lazy.inflight = null;
     lazy.nextBefore = frame.tailStartSeq
       ?? (frame.events?.length ? frame.events[0]._seq : 0);
     lazy.segment = null;
@@ -265,8 +284,15 @@ export function installLazyHistoryController({
     lazySentinel.textContent = lazy.loading ? 'loading earlier…' : '⋯ earlier messages';
   }
 
-  async function loadEarlier() {
-    if (!lazy.hasMore || lazy.loading || !getActiveId()) return;
+  // Always a promise; while a fetch is in flight, that fetch's.
+  function loadEarlier() {
+    if (lazy.loading) return lazy.inflight;
+    if (!lazy.hasMore || !getActiveId()) return Promise.resolve();
+    lazy.inflight = fetchEarlier();
+    return lazy.inflight;
+  }
+
+  async function fetchEarlier() {
     const id = getActiveId();
     const epoch = lazy.epoch;
     const prevBefore = lazy.nextBefore;
@@ -323,6 +349,7 @@ export function installLazyHistoryController({
     } finally {
       if (epoch === lazy.epoch) {
         lazy.loading = false;
+        lazy.inflight = null;
         if (lazy.hasMore) ensureSentinel();
         else if (lazySentinel) { lazySentinel.remove(); lazySentinel = null; }
       }
@@ -349,11 +376,40 @@ export function installLazyHistoryController({
     }
   }
 
+  // Page earlier history until `found()` holds. `found` is asked before every
+  // fetch and right after each page lands (before any MutationObserver record
+  // is delivered); `keepGoing` lets the caller cancel between pages. Resolves
+  // to 'found' | 'exhausted' (no more history) | 'stalled' (a page failed or
+  // made no progress — never retried here) | 'cancelled' (keepGoing went
+  // false, or the view was reset or switched) | 'not-ready' (no init() yet).
+  async function loadUntil(found, keepGoing) {
+    if (!isReady()) return 'not-ready';
+    const epoch = lazy.epoch;
+    for (;;) {
+      // An epoch bump can only land while a page is awaited: checked below.
+      if (!keepGoing()) return 'cancelled';
+      if (found()) return 'found';
+      if (!lazy.hasMore) return 'exhausted';
+      const joined = lazy.loading;
+      const before = lazy.nextBefore;
+      const segment = lazy.segment;
+      await loadEarlier();
+      if (epoch !== lazy.epoch) return 'cancelled';
+      // Only a fetch this loop made itself can prove a stall; after joining
+      // another caller's, it simply goes round again.
+      if (!joined && lazy.hasMore && lazy.nextBefore === before && lazy.segment === segment) {
+        return found() ? 'found' : 'stalled';
+      }
+    }
+  }
+
+  const state = () => ({ ready: isReady(), hasMore: lazy.hasMore, loading: lazy.loading });
+
   // Auto-trigger when the user scrolls near the top (loadEarlier no-ops
   // unless there is actually more history and no fetch is in flight).
   conversationEl.addEventListener('scroll', () => {
     if (conversationEl.scrollTop < 200) loadEarlier();
   });
 
-  return { reset, init };
+  return { reset, init, loadUntil, state };
 }
