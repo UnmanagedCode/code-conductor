@@ -17,6 +17,7 @@ import { installExternalLinkOpener } from './external-links.js';
 import { makeDismissable } from './dismissable.js';
 import { installLazyHistoryController } from './lazyHistory.js';
 import { installStickyPrompt } from './stickyPrompt.js';
+import { installPromptReveal } from './promptReveal.js';
 import { buildApprovePrompt, buildRejectPrompt } from './planApproval.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
@@ -363,12 +364,20 @@ const lazyController = installLazyHistoryController({
   getInstances: () => state.instances,
 });
 
-// Pin the prompt that started the turn in view at the top of the transcript.
-installStickyPrompt({
+// Pin the prompt that started the turn in view at the top of the transcript,
+// on demand: Down in the composer / a swipe down on the top bar reveals it.
+const stickyPrompt = installStickyPrompt({
   scrollEl: dom.conversation,
   pinEl: dom.pinnedPrompt,
   viewHostEl: document.getElementById('main'),
   isConducted: () => !!state.instances.find(i => i.id === state.activeId)?.conducted,
+  history: lazyController,
+});
+installPromptReveal({
+  textarea: dom.composerInput,
+  swipeZones: [document.getElementById('instance-header'), dom.pinnedPrompt],
+  onReveal: () => stickyPrompt.reveal(),
+  onConceal: () => stickyPrompt.conceal(),
 });
 
 // Handles returned by installWorkspaceDialog ({ openNew, openEdit }). Declared
@@ -828,7 +837,8 @@ function selectInstance(id, opts = {}) {
   state.activeId = id;
   sidebar.setActive(id);
   conversation.clear();
-  lazyController.reset(); // invalidate any in-flight earlier-history fetch
+  lazyController.reset({ switching: true }); // invalidate any in-flight earlier-history fetch
+  stickyPrompt.conceal(); // a reveal is for the session it was summoned in
   headerHandle.update();
   const inst = id ? state.instances.find(i => i.id === id) : null;
   // After headerHandle.update() (canType is set) and before subscribe, so a

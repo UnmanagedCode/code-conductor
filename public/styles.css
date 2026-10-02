@@ -643,6 +643,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
   gap: 10px; flex-wrap: wrap;
+  /* A vertical swipe here reveals/hides the pinned prompt (promptReveal.js):
+     no browser vertical pan, so no pull-to-refresh or scroll chaining. */
+  touch-action: pan-x;
 }
 #instance-title {
   font-size: 13px; color: var(--muted);
@@ -790,9 +793,11 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   padding: 8px 12px; background: var(--panel-2);
   border: 1px solid var(--accent); border-top: none; border-radius: 0 0 8px 8px;
   box-shadow: 0 1px 0 rgba(255, 255, 255, .08), 0 6px 16px rgba(0, 0, 0, .6), 0 1px 3px rgba(0, 0, 0, .5);
+  touch-action: pan-x; /* a swipe zone, as #instance-header */
 }
 /* The clamp: how many lines show before the fade. The controller measures the
    overflow, so this is the only place the count lives. */
+.pinned-prompt-status { font-size: 13px; line-height: 1.45; color: var(--muted); font-style: italic; }
 .pinned-prompt-body { font-size: 13px; line-height: 1.45; max-height: calc(5 * 1lh); overflow: hidden; }
 .pinned-prompt-body.overflowing {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5lh), transparent);
