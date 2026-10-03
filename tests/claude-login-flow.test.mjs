@@ -36,6 +36,11 @@ async function withLogin({ mode = 'normal', bin = FAKE, ...opts } = {}, fn) {
     return await fn({ flow, header, lines });
   } finally {
     flow.dispose();
+    // Backstop for a regression in the code under test: a child it failed to
+    // kill must not outlive the test and hold the file open. Every assertion
+    // has already run inside `fn`, so this masks none of them.
+    const pids = (await readRecord().catch(() => [])).map(r => r.pid).filter(Boolean);
+    for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
     for (const [k, v] of Object.entries(prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -175,12 +180,12 @@ test('a child that ignores SIGTERM is SIGKILLed after the grace period', async (
   });
 });
 
-test('timeout → failed naming the timeout, and the child is killed', async () => {
-  await withLogin({ mode: 'hang', timeoutMs: 150 }, async ({ flow, header }) => {
+test('timeout → failed with the exact timeout message, and the child is killed', async () => {
+  await withLogin({ mode: 'hang', timeoutMs: 1000 }, async ({ flow, header }) => {
     flow.start();
     const { pid } = await header();
     await awaitState(flow, 'failed');
-    assert.match(flow.snapshot().error, /timed out/);
+    assert.equal(flow.snapshot().error, 'Login timed out after 1s');
     await waitFor(() => pidGone(pid));
     assert.equal(flow.snapshot().state, 'failed');
   });
@@ -228,5 +233,74 @@ test('a CLI that exits before printing a URL → failed with its stderr line', a
     const s = flow.snapshot();
     assert.equal(s.error, 'Login failed: unable to reach the authorization server');
     assert.equal(s.url, null);
+  });
+});
+
+test('cancel → immediate start, repeated: one process "exit" listener while a flow lives, none after', async () => {
+  await withLogin({ killGraceMs: 60_000 }, async ({ flow }) => {
+    const baseline = process.listenerCount('exit');
+    for (let i = 0; i < 12; i++) {
+      flow.start();
+      assert.ok(process.listenerCount('exit') <= baseline + 1, `cycle ${i}: ${process.listenerCount('exit') - baseline} listeners`);
+      flow.cancel();
+    }
+    flow.start();
+    await awaitState(flow, 'awaiting_code');
+    assert.equal(process.listenerCount('exit'), baseline + 1, 'while the flow is live');
+    flow.cancel();
+    await waitFor(() => process.listenerCount('exit') === baseline);
+  });
+});
+
+test('a cancelled child that ignores SIGTERM is still SIGKILLed when a new flow starts at once', async () => {
+  await withLogin({ mode: 'ignore-term', killGraceMs: 100 }, async ({ flow, header }) => {
+    flow.start();
+    await awaitState(flow, 'awaiting_code');
+    const { pid } = await header();
+    flow.cancel();
+    flow.start();
+    await waitFor(() => pidGone(pid), { timeout: 5000 });
+    assert.notEqual(flow.snapshot().state, 'cancelled', 'the old child dying does not end the new flow');
+  });
+});
+
+test('a URL line split across stdout chunks is read whole', async () => {
+  await withLogin({ mode: 'split-url' }, async ({ flow }) => {
+    flow.start();
+    await awaitState(flow, 'awaiting_code');
+    assert.equal(flow.snapshot().url, FAKE_LOGIN_URL);
+  });
+});
+
+test('dispose() SIGKILLs a child that ignores SIGTERM', async () => {
+  await withLogin({ mode: 'ignore-term', killGraceMs: 100 }, async ({ flow, header }) => {
+    flow.start();
+    await awaitState(flow, 'awaiting_code');
+    const { pid } = await header();
+    flow.dispose();
+    await waitFor(() => pidGone(pid), { timeout: 5000 });
+  });
+});
+
+test('an "Invalid code" complaint with no trailing newline still returns to awaiting_code', async () => {
+  await withLogin({ mode: 'complaint-no-newline' }, async ({ flow }) => {
+    flow.start();
+    await awaitState(flow, 'awaiting_code');
+    flow.submitCode('nohash');
+    await waitFor(() => flow.snapshot().state === 'awaiting_code', { timeout: 3000 });
+    assert.equal(flow.snapshot().error, 'Invalid code. Please make sure the full code was copied.');
+    flow.submitCode('GOOD#STATE');
+    await awaitState(flow, 'succeeded');
+  });
+});
+
+test('onStart fires once per started flow', async () => {
+  let starts = 0;
+  await withLogin({ onStart: () => { starts++; } }, async ({ flow }) => {
+    flow.start();
+    assert.equal(starts, 1);
+    flow.cancel();
+    flow.start();
+    assert.equal(starts, 2);
   });
 });

@@ -7,6 +7,9 @@
 // read-only field to copy to another device — the Clipboard API is unavailable
 // over plain-http remote access.
 //
+// `onLoginSuccess` fires once when a flow this tab is watching reaches
+// `succeeded` — the account may have changed, so account-wide displays refresh.
+//
 // Element ids: ca-status, ca-login, ca-flow, ca-await, ca-url, ca-url-text,
 // ca-code, ca-submit, ca-cancel, ca-flow-msg.
 
@@ -18,7 +21,7 @@ const POST = { method: 'POST', headers: { 'content-type': 'application/json' } }
 
 const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function installClaudeAuth({ pollMs = 1000 } = {}) {
+export function installClaudeAuth({ pollMs = 1000, onLoginSuccess } = {}) {
   const $ = (id) => document.getElementById(id);
   const statusEl = $('ca-status');
   const loginBtn = $('ca-login');
@@ -34,6 +37,14 @@ export function installClaudeAuth({ pollMs = 1000 } = {}) {
 
   let pollTimer = null;
   let flowActive = false;
+  // Bumped by every action (start, submit, cancel, load) and every terminal
+  // render. A login-flow response is rendered only if no bump happened since
+  // its request went out, so a slow poll can never repaint a flow the user has
+  // since cancelled or seen end.
+  let gen = 0;
+  // A refused start's message, kept under the flow it surfaced until the user
+  // acts or that flow ends.
+  let notice = '';
 
   function line(text, cls) {
     const div = document.createElement('div');
@@ -97,8 +108,8 @@ export function installClaudeAuth({ pollMs = 1000 } = {}) {
     if (codeEl) codeEl.disabled = snap.state !== 'awaiting_code';
     if (submitBtn) submitBtn.disabled = snap.state !== 'awaiting_code';
     switch (snap.state) {
-      case 'starting': setMsg('Starting…'); break;
-      case 'awaiting_code': setMsg(snap.error || ''); break;
+      case 'starting': setMsg(notice || 'Starting…'); break;
+      case 'awaiting_code': setMsg(snap.error || notice); break;
       case 'verifying': setMsg('Verifying…'); break;
       case 'succeeded': setMsg('Signed in.'); break;
       case 'failed': setMsg(snap.error || 'Login failed.'); break;
@@ -106,8 +117,11 @@ export function installClaudeAuth({ pollMs = 1000 } = {}) {
       default: setMsg('');
     }
     if (active) schedulePoll();
-    else stopPoll();
-    if (wasActive && snap.state === 'succeeded') loadStatus();
+    else { gen++; notice = ''; stopPoll(); }
+    if (wasActive && snap.state === 'succeeded') {
+      loadStatus();
+      onLoginSuccess?.();
+    }
   }
 
   function stopPoll() {
@@ -120,26 +134,44 @@ export function installClaudeAuth({ pollMs = 1000 } = {}) {
   }
   async function poll() {
     pollTimer = null;
+    const g = gen;
     try {
-      renderFlow(await apiFetch(`${BASE}/login`, { cache: 'no-store' }));
+      const snap = await apiFetch(`${BASE}/login`, { cache: 'no-store' });
+      if (g === gen) renderFlow(snap);
     } catch (e) {
+      if (g !== gen) return;
       setMsg(`Could not read the login progress: ${e.message || e}`);
       schedulePoll();
     }
   }
 
+  // Resolves to the error message on a refusal, else null.
   async function act(url, body) {
+    notice = '';
+    stopPoll();
+    const g = ++gen;
     try {
-      renderFlow(await apiFetch(url, { ...POST, body: JSON.stringify(body ?? {}) }));
+      const snap = await apiFetch(url, { ...POST, body: JSON.stringify(body ?? {}) });
+      if (g === gen) renderFlow(snap);
+      return null;
     } catch (e) {
-      setMsg(e.message || String(e));
+      const msg = e.message || String(e);
+      if (g === gen) setMsg(msg);
+      return msg;
     }
   }
 
-  loginBtn?.addEventListener('click', () => {
+  loginBtn?.addEventListener('click', async () => {
     if (codeEl) codeEl.value = '';
     if (flowEl) flowEl.hidden = false;
-    act(`${BASE}/login`);
+    const refused = await act(`${BASE}/login`);
+    if (!refused) return;
+    // Refused — usually a flow another tab started. Surface whatever is running
+    // (so it can be cancelled), keeping the refusal on screen.
+    notice = refused;
+    await load();
+    if (flowEl) flowEl.hidden = false;
+    setMsg(refused);
   });
   function submit() {
     if (!codeEl || codeEl.disabled) return;
@@ -151,11 +183,12 @@ export function installClaudeAuth({ pollMs = 1000 } = {}) {
 
   async function load() {
     stopPoll();
+    const g = ++gen;
     const [, snap] = await Promise.all([
       loadStatus(),
       apiFetch(`${BASE}/login`, { cache: 'no-store' }).catch(() => null),
     ]);
-    if (snap) renderFlow(snap, { initial: true });
+    if (snap && g === gen) renderFlow(snap, { initial: true });
   }
 
   return { load };

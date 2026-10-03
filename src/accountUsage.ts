@@ -43,6 +43,11 @@ export interface UsageRetryState {
 
 let _cache: UsageCacheState = { data: null, fetchedAt: 0 };
 let _retryState: UsageRetryState = { failureCount: 0, nextAllowedAt: 0 };
+// Bumped by invalidateAccountUsage(). A fetch remembers the epoch it started
+// under and, if it has moved by the time the fetch settles, writes neither
+// `_cache` nor `_retryState`: a fetch begun with the previous account's token
+// must not land that account's usage (or its failure) after a re-login.
+let _epoch = 0;
 
 // Parse the Retry-After response header. Returns milliseconds to wait, or null
 // if the header is absent or unparseable.
@@ -151,6 +156,7 @@ export async function getAccountUsage({
   maxStaleMs?: number;
 } = {}): Promise<AccountUsageResult> {
   const now = _now();
+  const epoch = _epoch;
 
   // 1. Valid success cache.
   if (_cache.data !== null && now - _cache.fetchedAt < CACHE_TTL_MS) {
@@ -167,6 +173,8 @@ export async function getAccountUsage({
     if (!token) return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
     const { data, status, retryAfterHeader } = await fetchFromApi(token);
+    // Superseded by a re-login mid-fetch: the answer belongs to the old account.
+    if (epoch !== _epoch) return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
     if (data !== null) {
       _cache      = { data, fetchedAt: now };
@@ -186,6 +194,7 @@ export async function getAccountUsage({
     return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
   } catch (e) {
+    if (epoch !== _epoch) return allowStale ? maybeServeStale(now, maxStaleMs) : null;
     // Network error / timeout. Same surfacing as the non-OK branch above — the
     // only difference is there is no HTTP status to name, so the thrown message
     // stands in for it. Silently swallowing this made a persistently-hidden
@@ -201,6 +210,7 @@ export async function getAccountUsage({
 // Called after a Claude re-login (the cache would otherwise serve the previous
 // account's usage) and by tests between runs.
 export function invalidateAccountUsage(): void {
+  _epoch++;
   _cache      = { data: null, fetchedAt: 0 };
   _retryState = { failureCount: 0, nextAllowedAt: 0 };
 }

@@ -215,3 +215,49 @@ test('headerUpdate does not fire on the !ok or null-usage early returns', async 
   await b.handle.refresh();
   assert.equal(b.updates(), 0);
 });
+
+// A fetch stub whose replies are settled by hand, one per call.
+function deferredFetch() {
+  const calls = [];
+  globalThis.fetch = (url, init) => new Promise((resolve) => {
+    calls.push({ url, init, reply: (body) => resolve({ ok: true, json: () => Promise.resolve(body) }) });
+  });
+  return calls;
+}
+const NEW = { usage: { seven_day: { utilization: 7, resets_at: '2026-02-01T00:00:00.000Z' } } };
+
+test('accountChanged drops the last-good value and the tracker, repaints, and refetches at once', async () => {
+  stubFetch(ok(GOOD));
+  const { handle, tracker, updates } = setup();
+  await handle.refresh();
+  assert.equal(tracker.info.rateLimitType, 'five_hour');
+  const before = updates();
+
+  const calls = deferredFetch();
+  const done = handle.accountChanged();
+  assert.equal(handle.get(), null, 'the previous account\'s usage is gone');
+  assert.equal(tracker.info, null, 'and so are its merged buckets');
+  assert.equal(updates(), before + 1, 'the header repaints without them');
+  assert.equal(calls.length, 1, 'the new account\'s usage is fetched immediately');
+  assert.equal(calls[0].url, '/api/usage');
+
+  calls[0].reply(NEW);
+  await done;
+  assert.deepEqual(handle.get(), NEW.usage);
+  assert.deepEqual(Object.keys(tracker.info).sort(), ['rateLimitType', 'resetsAt', 'utilization']);
+  assert.equal(tracker.info.rateLimitType, 'seven_day', 'no five_hour bucket carried over');
+});
+
+test('a refresh in flight when the account changes is dropped when it lands', async () => {
+  const calls = deferredFetch();
+  const { handle, tracker } = setup();
+  const old = handle.refresh();
+  const fresh = handle.accountChanged();
+  assert.equal(calls.length, 2);
+  calls[1].reply(NEW);
+  await fresh;
+  calls[0].reply(GOOD);
+  await old;
+  assert.deepEqual(handle.get(), NEW.usage);
+  assert.equal(tracker.info.rateLimitType, 'seven_day');
+});

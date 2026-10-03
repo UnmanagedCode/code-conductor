@@ -9,7 +9,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseAuthStatus, getClaudeAuthStatus } from '../src/claudeAuthStatus.ts';
+import { parseAuthStatus, getClaudeAuthStatus, createClaudeAuthStatusReader } from '../src/claudeAuthStatus.ts';
 import { hostPlatform } from '../src/platform/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -118,4 +118,76 @@ test('spawns with CLAUDE_CONFIG_DIR exactly as cc\'s env has it', async () => {
     assert.deepEqual(recs.map(r => r.argv), [['auth', 'status', '--json'], ['auth', 'status', '--json']]);
     assert.deepEqual(recs.map(r => r.env.CLAUDE_CONFIG_DIR), ['/some/config/dir', null]);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+// A reader over a scripted `read`: each call is recorded and resolved by hand.
+function scriptedReader({ ttlMs = 5000 } = {}) {
+  let t = 0;
+  const pending = [];
+  const read = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
+  const reader = createClaudeAuthStatusReader({ platform: hostPlatform, ttlMs, now: () => t, read });
+  return { reader, pending, advance: (ms) => { t += ms; } };
+}
+const status = (email) => ({ ...parseAuthStatus(JSON.stringify(SIGNED_IN)), email });
+
+test('reader: concurrent readers share one CLI run', async () => {
+  const { reader, pending } = scriptedReader();
+  const all = Promise.all([reader.get(), reader.get(), reader.get()]);
+  assert.equal(pending.length, 1);
+  pending[0].resolve(status('a@example.com'));
+  assert.deepEqual((await all).map(s => s.email), ['a@example.com', 'a@example.com', 'a@example.com']);
+});
+
+test('reader: an answer serves until the TTL lapses, then the CLI runs again', async () => {
+  const { reader, pending, advance } = scriptedReader({ ttlMs: 5000 });
+  const first = reader.get();
+  pending[0].resolve(status('a@example.com'));
+  await first;
+  advance(4999);
+  assert.equal((await reader.get()).email, 'a@example.com');
+  assert.equal(pending.length, 1, 'served from the cache inside the TTL');
+  advance(1);
+  const next = reader.get();
+  assert.equal(pending.length, 2, 'a run at the TTL boundary');
+  pending[1].resolve(status('b@example.com'));
+  assert.equal((await next).email, 'b@example.com');
+});
+
+test('reader: a failure reaches the waiting readers but is not cached', async () => {
+  const { reader, pending } = scriptedReader();
+  const a = reader.get();
+  const b = reader.get();
+  pending[0].reject(new Error('claude CLI could not be started (claude): ENOENT'));
+  await assert.rejects(a, /ENOENT/);
+  await assert.rejects(b, /ENOENT/);
+  const c = reader.get();
+  assert.equal(pending.length, 2, 'the next reader runs the CLI again');
+  pending[1].resolve(status('a@example.com'));
+  assert.equal((await c).email, 'a@example.com');
+});
+
+test('reader: invalidate() drops the cached answer', async () => {
+  const { reader, pending } = scriptedReader();
+  const a = reader.get();
+  pending[0].resolve(status('old@example.com'));
+  await a;
+  reader.invalidate();
+  const b = reader.get();
+  assert.equal(pending.length, 2);
+  pending[1].resolve(status('new@example.com'));
+  assert.equal((await b).email, 'new@example.com');
+});
+
+test('reader: a run in flight at invalidate() is neither cached nor shared with later readers', async () => {
+  const { reader, pending } = scriptedReader();
+  const before = reader.get();
+  reader.invalidate();
+  const after = reader.get();
+  assert.equal(pending.length, 2, 'a reader after invalidate starts its own run');
+  pending[0].resolve(status('old@example.com'));
+  assert.equal((await before).email, 'old@example.com', 'the earlier reader still gets its answer');
+  pending[1].resolve(status('new@example.com'));
+  assert.equal((await after).email, 'new@example.com');
+  assert.equal((await reader.get()).email, 'new@example.com');
+  assert.equal(pending.length, 2, 'the fresh answer is the cached one');
 });

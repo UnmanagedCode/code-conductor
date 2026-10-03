@@ -50,19 +50,25 @@ afterEach(async () => {
 // `status` answers GET status (an Error → 500 {error}); `login` is the list of
 // snapshots GET login answers in turn (the last repeats); `post` maps a POST
 // path to the snapshot it answers.
-async function setup({ status = SIGNED_IN, login = [snap('idle')], post = {} } = {}) {
+async function setup({ status = SIGNED_IN, login = [snap('idle')], post = {}, opts = {} } = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
   window.document.body.innerHTML = CLAUDE_LOGIN_MARKUP;
   const calls = [];
   const queue = [...login];
+  // While `holding`, a GET login stays pending until the test releases it.
+  let holding = false;
+  const held = [];
   const reply = (code, body) => ({ ok: code < 400, status: code, json: async () => structuredClone(body) });
   globalThis.fetch = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push({ url, method, body: opts.body ? JSON.parse(opts.body) : undefined });
     if (url === '/api/claude-auth/status') return status instanceof Error ? reply(500, { error: status.message }) : reply(200, status);
-    if (url === '/api/claude-auth/login' && method === 'GET') return reply(200, queue.length > 1 ? queue.shift() : queue[0]);
+    if (url === '/api/claude-auth/login' && method === 'GET') {
+      if (holding) return new Promise(resolve => held.push((body) => resolve(reply(200, body))));
+      return reply(200, queue.length > 1 ? queue.shift() : queue[0]);
+    }
     if (method === 'POST' && post[url]) {
       const r = post[url];
       return r instanceof Error ? reply(409, { error: r.message }) : reply(200, r);
@@ -70,11 +76,15 @@ async function setup({ status = SIGNED_IN, login = [snap('idle')], post = {} } =
     return reply(404, { error: 'unexpected' });
   };
   const { installClaudeAuth } = await freshImport();
-  const ui = installClaudeAuth({ pollMs: 1 });
+  const ui = installClaudeAuth({ pollMs: 1, ...opts });
   const $ = (id) => window.document.getElementById(id);
   const count = (url, method = 'GET') => calls.filter(c => c.url === url && c.method === method).length;
   endFlow = () => { queue.splice(0, queue.length, snap('cancelled', { endedAt: 3 })); };
-  return { window, ui, calls, $, count, setLogin: (list) => { queue.splice(0, queue.length, ...list); } };
+  return {
+    window, ui, calls, $, count, held,
+    setLogin: (list) => { queue.splice(0, queue.length, ...list); },
+    hold: (on) => { holding = on; },
+  };
 }
 
 const click = (el, window) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -264,4 +274,78 @@ test('reopening: a code typed into a cancelled flow is cleared when a new login 
   click($('ca-submit'), window);
   await settle(3);
   assert.deepEqual(calls.filter(c => c.url === '/api/claude-auth/login/code').map(c => c.body), [{ code: 'fresh#STATE' }]);
+});
+
+test('a poll still in flight when Cancel lands is dropped: no re-enabled input, no restarted polling', async () => {
+  const { window, ui, $, count, held, hold } = await setup({
+    login: [snap('awaiting_code', { url: URL_ })],
+    post: { '/api/claude-auth/login/cancel': snap('cancelled', { url: URL_, endedAt: 2 }) },
+  });
+  await ui.load();
+  hold(true);
+  await settle(3);
+  assert.equal(held.length, 1, 'one poll in flight');
+  click($('ca-cancel'), window);
+  await settle(3);
+  assert.equal($('ca-flow-msg').textContent, 'Login cancelled.');
+  held[0](snap('awaiting_code', { url: URL_ }));
+  await settle();
+  assert.equal($('ca-code').disabled, true);
+  assert.equal($('ca-cancel').hidden, true);
+  assert.equal($('ca-flow-msg').textContent, 'Login cancelled.');
+  const polls = count('/api/claude-auth/login');
+  await settle();
+  assert.equal(count('/api/claude-auth/login'), polls, 'polling stays stopped');
+});
+
+test('a poll in flight when the flow ends is dropped', async () => {
+  const { ui, $, held, hold, setLogin } = await setup({ login: [snap('verifying', { url: URL_ })] });
+  await ui.load();
+  hold(true);
+  await settle(3);
+  assert.equal(held.length, 1);
+  hold(false);
+  setLogin([snap('failed', { error: 'Login failed: Request failed with status code 400', endedAt: 2 })]);
+  await ui.load();
+  held[0](snap('verifying', { url: URL_ }));
+  await settle();
+  assert.equal($('ca-login').disabled, false, 'the stale verifying snapshot did not re-disable Log in');
+});
+
+test('a start refused because another tab\'s flow is running surfaces that flow, cancellable and polled', async () => {
+  const { window, ui, $, count } = await setup({
+    login: [snap('idle'), snap('awaiting_code', { url: URL_ })],
+    post: { '/api/claude-auth/login': new Error('a Claude login is already in progress') },
+  });
+  await ui.load();
+  assert.equal($('ca-flow').hidden, true);
+  click($('ca-login'), window);
+  await settle(3);
+  assert.equal($('ca-flow').hidden, false);
+  assert.equal($('ca-cancel').hidden, false, 'the running flow can be cancelled');
+  assert.equal($('ca-await').hidden, false);
+  assert.equal($('ca-url-text').value, URL_);
+  assert.equal($('ca-flow-msg').textContent, 'a Claude login is already in progress');
+  const polls = count('/api/claude-auth/login');
+  await settle();
+  assert.ok(count('/api/claude-auth/login') > polls, 'polling the surfaced flow');
+});
+
+test('onLoginSuccess fires once when a watched flow succeeds', async () => {
+  let n = 0;
+  const { ui, setLogin } = await setup({ login: [snap('verifying', { url: URL_ })], opts: { onLoginSuccess: () => { n++; } } });
+  await ui.load();
+  setLogin([snap('succeeded', { url: URL_, endedAt: 2 })]);
+  await settle();
+  assert.equal(n, 1);
+  await ui.load();
+  assert.equal(n, 1, 'reloading the finished flow is not a second success');
+});
+
+test('onLoginSuccess does not fire for a flow that had already succeeded before load()', async () => {
+  let n = 0;
+  const { ui } = await setup({ login: [snap('succeeded', { endedAt: 2 })], opts: { onLoginSuccess: () => { n++; } } });
+  await ui.load();
+  await settle();
+  assert.equal(n, 0);
 });

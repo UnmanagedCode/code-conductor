@@ -1,6 +1,6 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
 // `#settings`. Built as a group-nav + content scaffold: Models, Backends,
-// Systems, Account (overage protection), Voice (Dictation + Speech grouping boxes),
+// Systems, Account (Claude login + overage protection), Voice (Dictation + Speech grouping boxes),
 // Conventions (Conductor / Workspace / Project blocks, each a reusable
 // conventionsPanel), Plugins, Archived. Each adds a nav item + a panel.
 //
@@ -27,7 +27,7 @@ export function installSettings({
   requestClose, onAvailabilityChange, onModelsChange,
   onTtsAvailabilityChange, onTtsPrefsChange, onOpenCostDashboard,
   onArchivedChanged, onPluginsChanged, onSessionRestored,
-  requestRestartWithResume,
+  requestRestartWithResume, onClaudeLogin,
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
@@ -140,7 +140,7 @@ export function installSettings({
   });
 
   // Account group's Claude login block — its own module; load() on every open.
-  const claudeAuth = installClaudeAuth();
+  const claudeAuth = installClaudeAuth({ onLoginSuccess: onClaudeLogin });
 
   // Plugins group — feature logic lives in its own module; settings only owns
   // the group panel + calls load() on open. Enabling/disabling/installing a

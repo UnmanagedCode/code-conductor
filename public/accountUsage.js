@@ -22,12 +22,17 @@ export function installAccountUsage({ globalRLTracker, getActiveId, headerUpdate
   // clobber a good render.
   let accountUsage = null;
   let accountUsageStale = false;
+  // Bumped by accountChanged(): a refresh that went out before it was asked
+  // about the previous account, so its answer is dropped.
+  let generation = 0;
 
   async function refreshAccountUsage() {
+    const g = generation;
     try {
       const r = await fetch('/api/usage', { cache: 'no-store' });
       if (!r.ok) return;
       const j = await r.json();
+      if (g !== generation) return;
       if (j.usage == null) return; // keep last-good accountUsage, don't blank it
       accountUsage = j.usage;
       accountUsageStale = !!j.stale;
@@ -53,8 +58,22 @@ export function installAccountUsage({ globalRLTracker, getActiveId, headerUpdate
     } catch { /* ignore — keep last-good accountUsage */ }
   }
 
+  // The signed-in account changed (a Claude login succeeded). The last-good value
+  // and the account-wide tracker both describe the previous account, so drop
+  // them, repaint, and fetch the new account's usage now instead of at the next
+  // poll.
+  function accountChanged() {
+    generation++;
+    accountUsage = null;
+    accountUsageStale = false;
+    globalRLTracker.reset();
+    if (getActiveId()) headerUpdate();
+    return refreshAccountUsage();
+  }
+
   return {
     refresh: refreshAccountUsage,
+    accountChanged,
     get: () => accountUsage,
     isStale: () => accountUsageStale,
   };

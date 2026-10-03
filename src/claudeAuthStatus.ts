@@ -16,6 +16,9 @@ import { runGroupedCommand } from './groupedCommand.ts';
 import type { Platform } from './platform/index.ts';
 
 const STATUS_TIMEOUT_MS = 10_000;
+// How long one answer serves every reader. `GET /api/claude-auth/status` is a
+// plain unauthenticated GET any page can fire, and each miss forks the CLI.
+export const STATUS_CACHE_TTL_MS = 5_000;
 
 export interface ClaudeAuthStatus {
   loggedIn: boolean;
@@ -70,4 +73,54 @@ export async function getClaudeAuthStatus({ platform, timeoutMs = STATUS_TIMEOUT
     const tail = r.stderr.trim().slice(-500);
     throw new Error(`${(e as Error).message} (exit ${r.code}${tail ? `, stderr: ${tail}` : ''})`);
   }
+}
+
+export interface ClaudeAuthStatusReader {
+  get(): Promise<ClaudeAuthStatus>;
+  invalidate(): void;
+}
+
+// The cached, single-flight front of getClaudeAuthStatus — one per createServer.
+// Concurrent readers share one in-flight CLI run; a success serves for `ttlMs`;
+// a failure is shared by the readers already waiting but never cached.
+// `invalidate()` (a login started or succeeded) drops the cached answer AND
+// detaches any run in flight, whose result is then neither cached nor handed to
+// later readers.
+export function createClaudeAuthStatusReader({
+  platform, ttlMs = STATUS_CACHE_TTL_MS, now = Date.now, read = () => getClaudeAuthStatus({ platform }),
+}: {
+  platform: Platform;
+  ttlMs?: number;
+  now?: () => number;
+  read?: () => Promise<ClaudeAuthStatus>;
+}): ClaudeAuthStatusReader {
+  let cached: { value: ClaudeAuthStatus; at: number } | null = null;
+  let inflight: Promise<ClaudeAuthStatus> | null = null;
+  let generation = 0;
+
+  function get(): Promise<ClaudeAuthStatus> {
+    if (cached && now() - cached.at < ttlMs) return Promise.resolve(cached.value);
+    if (inflight) return inflight;
+    const gen = generation;
+    const p = read().then(
+      (value) => {
+        if (gen === generation) { cached = { value, at: now() }; inflight = null; }
+        return value;
+      },
+      (e: unknown) => {
+        if (gen === generation) inflight = null;
+        throw e;
+      },
+    );
+    inflight = p;
+    return p;
+  }
+
+  function invalidate(): void {
+    generation++;
+    cached = null;
+    inflight = null;
+  }
+
+  return { get, invalidate };
 }

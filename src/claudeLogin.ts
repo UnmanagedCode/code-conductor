@@ -28,7 +28,8 @@ const KILL_GRACE_MS = 2000;
 const STDOUT_CAP = 16 * 1024;
 const STDERR_TAIL = 4 * 1024;
 const MAX_CODE_LEN = 4096;
-const URL_RE = /visit:\s*(https:\/\/\S+)/;
+// The whole line: a URL split across stdout chunks must not be read half-way.
+const URL_RE = /visit:\s*(https:\/\/\S+)\r?\n/;
 
 export type LoginState = 'idle' | 'starting' | 'awaiting_code' | 'verifying' | 'succeeded' | 'failed' | 'cancelled';
 export interface LoginSnapshot {
@@ -49,12 +50,33 @@ export interface ClaudeLoginFlow {
 const ACTIVE: ReadonlySet<LoginState> = new Set(['starting', 'awaiting_code', 'verifying']);
 
 export function createClaudeLoginFlow({
-  platform, timeoutMs = LOGIN_TIMEOUT_MS, killGraceMs = KILL_GRACE_MS, onSuccess,
-}: { platform: Platform; timeoutMs?: number; killGraceMs?: number; onSuccess?: () => void }): ClaudeLoginFlow {
+  platform, timeoutMs = LOGIN_TIMEOUT_MS, killGraceMs = KILL_GRACE_MS, onStart, onSuccess,
+}: { platform: Platform; timeoutMs?: number; killGraceMs?: number; onStart?: () => void; onSuccess?: () => void }): ClaudeLoginFlow {
   let snap: LoginSnapshot = { state: 'idle', url: null, error: null, startedAt: null, endedAt: null };
-  // The live run, or null. Every handler checks it is still the current run, so
-  // a late event from a killed child never writes into the next flow.
-  let run: { child: ChildProcess; timer: NodeJS.Timeout; onProcessExit: () => void } | null = null;
+  // The active flow's child and timeout, or null. Cancel and timeout end the run
+  // at once, so a start right after them never meets a stale one, and every
+  // handler checks it is still the current run: a late event from a killed
+  // child never writes into the next flow.
+  let run: { child: ChildProcess; timer: NodeJS.Timeout } | null = null;
+  // Every child not yet closed, current or killed. A killed child can outlive its
+  // run by up to `killGraceMs`, so cc exiting by any `process.exit` path must
+  // still reach it: ONE process-exit hook is held while this set is non-empty.
+  const live = new Set<ChildProcess>();
+  // The current run's stderr since the last submitted code — the CLI's answer
+  // to that code — and whether it has already turned into a complaint.
+  let answer = '';
+  let complaining = false;
+  const killAllSync = (): void => {
+    for (const c of live) { try { platform.killProcess(c, 'SIGTERM'); } catch { /* already gone */ } }
+  };
+  function track(child: ChildProcess): void {
+    if (live.size === 0) process.once('exit', killAllSync);
+    live.add(child);
+  }
+  function untrack(child: ChildProcess): void {
+    if (!live.delete(child) || live.size > 0) return;
+    process.off('exit', killAllSync);
+  }
 
   const view = (): LoginSnapshot => ({ ...snap });
   const active = (): boolean => ACTIVE.has(snap.state);
@@ -68,12 +90,12 @@ export function createClaudeLoginFlow({
     }, killGraceMs).unref();
   }
 
-  // Ends the run: no more timer, no process-exit hook. The child itself is
-  // killed separately by whichever path needs it.
+  // Ends the run: no more timer, and the child's events stop driving the state.
+  // The child itself is killed separately by whichever path needs it, and leaves
+  // `live` only when it closes.
   function release(): void {
     if (!run) return;
     clearTimeout(run.timer);
-    process.off('exit', run.onProcessExit);
     run = null;
   }
 
@@ -85,6 +107,8 @@ export function createClaudeLoginFlow({
     if (active()) throw httpError(409, 'a Claude login is already in progress');
     const { command, prefixArgs } = resolveClaudeBin(platform);
     snap = { state: 'starting', url: null, error: null, startedAt: Date.now(), endedAt: null };
+    answer = '';
+    complaining = false;
     let child: ChildProcess;
     try {
       child = spawn(command, [...prefixArgs, 'auth', 'login'], {
@@ -96,17 +120,17 @@ export function createClaudeLoginFlow({
       finish('failed', `claude CLI could not be started (${command}): ${(e as Error).message}`);
       return view();
     }
+    onStart?.();
 
     const timer = setTimeout(() => {
       if (run?.child !== child) return;
       finish('failed', `Login timed out after ${humanizeDuration(timeoutMs)}`);
+      release();
       kill(child);
     }, timeoutMs);
     timer.unref();
-    // cc exiting by any `process.exit` path must not leave the child waiting on stdin.
-    const onProcessExit = (): void => { try { platform.killProcess(child, 'SIGTERM'); } catch { /* already gone */ } };
-    process.once('exit', onProcessExit);
-    run = { child, timer, onProcessExit };
+    track(child);
+    run = { child, timer };
 
     let stdout = '';
     child.stdout?.setEncoding('utf8');
@@ -118,18 +142,20 @@ export function createClaudeLoginFlow({
     });
 
     let stderrTail = '';
-    let partial = '';
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
       stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL);
-      const lines = (partial + chunk).split('\n');
-      partial = lines.pop() ?? '';
       // A complaint while the CLI is still alive after a code is its re-prompt
-      // ("Invalid code…"): it keeps reading stdin.
-      const last = lines.map(l => l.trim()).filter(Boolean).pop();
-      if (last && run?.child === child && snap.state === 'verifying' && alive(child)) {
-        snap = { ...snap, state: 'awaiting_code', error: last };
-      }
+      // ("Invalid code…"): it keeps reading stdin. Its last line counts even
+      // unterminated, and a complaint arriving in pieces keeps updating the
+      // error until the next submit.
+      if (run?.child !== child || !alive(child)) return;
+      if (snap.state !== 'verifying' && !(snap.state === 'awaiting_code' && complaining)) return;
+      answer = (answer + chunk).slice(-STDERR_TAIL);
+      const last = answer.split('\n').map(l => l.trim()).filter(Boolean).pop();
+      if (!last) return;
+      complaining = true;
+      snap = { ...snap, state: 'awaiting_code', error: last };
     });
 
     // A write to a child that has just exited is EPIPE; the exit handler reports it.
@@ -138,7 +164,9 @@ export function createClaudeLoginFlow({
     // A spawn failure (ENOENT) is the one 'error' that ends the run: the child
     // never got a pid. Any other (a failed kill) leaves a live child to close.
     child.on('error', (e) => {
-      if (run?.child !== child || child.pid !== undefined) return;
+      if (child.pid !== undefined) return;
+      untrack(child);
+      if (run?.child !== child) return;
       release();
       if (active()) finish('failed', `claude CLI could not be started (${command}): ${e.message}`);
     });
@@ -146,6 +174,7 @@ export function createClaudeLoginFlow({
     // 'close', not 'exit': it fires once stderr is drained, so a CLI that writes
     // its reason and exits at once still has that reason read.
     child.on('close', (code, signal) => {
+      untrack(child);
       if (run?.child !== child) return;
       release();
       // Cancel and timeout already settled the state; the exit they caused keeps it.
@@ -171,6 +200,9 @@ export function createClaudeLoginFlow({
     if (/[\r\n]/.test(trimmed)) throw httpError(400, 'code must be a single line');
     if (snap.state !== 'awaiting_code' || !run) throw httpError(409, 'no Claude login is waiting for a code');
     run.child.stdin?.write(trimmed + '\n');
+    // Stderr from here on is the CLI's answer to THIS code.
+    answer = '';
+    complaining = false;
     snap = { ...snap, state: 'verifying', error: null };
     return view();
   }
@@ -178,16 +210,18 @@ export function createClaudeLoginFlow({
   function cancel(): LoginSnapshot {
     if (!active()) return view();
     finish('cancelled', null);
-    if (run) kill(run.child);
+    const child = run?.child;
+    release();
+    if (child) kill(child);
     return view();
   }
 
+  // Server close: ends any flow and kills every child still alive, with the same
+  // SIGKILL backstop as cancel.
   function dispose(): void {
-    if (!run) return;
-    const { child } = run;
     if (active()) finish('cancelled', null);
     release();
-    try { platform.killProcess(child, 'SIGTERM'); } catch { /* already gone */ }
+    for (const c of live) kill(c);
   }
 
   return { start, submitCode, cancel, snapshot: view, dispose };

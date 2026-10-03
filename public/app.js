@@ -576,6 +576,9 @@ const settings = installSettings({
   // Self-update hands off to the shared restart+resume engine after its pull
   // succeeds — resume carries live sessions across the respawn.
   requestRestartWithResume: () => restartHandle?.performRestart({ resume: true }),
+  // A Claude login succeeded: the header's usage and rate-limit state belong to
+  // the previous account until refetched.
+  onClaudeLogin: () => accountUsage.accountChanged(),
   onModelsChange: data => {
     if (data.tierBackend) setActiveTierBackend(data.tierBackend);
     setDefaultEffort(data.defaultEffort);

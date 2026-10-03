@@ -579,3 +579,92 @@ test('allowStale — returns null when there is no prior successful fetch to ser
     await cleanTmpHome();
   }
 });
+
+// ── Re-login mid-fetch ───────────────────────────────────────────────────────
+
+// A fetch stub whose responses are settled by hand: `pending[i].settle(res)`
+// resolves the i-th call with a response-like object, `.fail(err)` rejects it.
+function deferredFetch() {
+  const original = globalThis.fetch;
+  const pending = [];
+  globalThis.fetch = () => new Promise((resolve, reject) => {
+    pending.push({ settle: resolve, fail: reject });
+  });
+  const response = (body, status = 200, headers = {}) => ({
+    ok: status >= 200 && status < 300, status,
+    headers: { get: (h) => headers[h.toLowerCase()] ?? null },
+    json: async () => body,
+  });
+  return { pending, response, restore() { globalThis.fetch = original; } };
+}
+// Bounded: a read that never reaches the API (served from a cache or a backoff) fails here.
+const waitForCalls = async (pending, n) => {
+  const deadline = Date.now() + 2000;
+  while (pending.length < n) {
+    if (Date.now() > deadline) throw new Error(`expected API call #${n}; the read never reached the API`);
+    await new Promise(r => setTimeout(r, 1));
+  }
+};
+
+test('a fetch begun before invalidateAccountUsage() that succeeds after it is not cached', async () => {
+  await makeTmpHome({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });
+  const configDir = path.join(tmpHome, '.claude');
+  const stub = deferredFetch();
+  invalidateAccountUsage();
+  try {
+    const old = getAccountUsage({ configDir });
+    await waitForCalls(stub.pending, 1);
+    invalidateAccountUsage();
+    stub.pending[0].settle(stub.response({ who: 'old-account' }));
+    assert.equal(await old, null, 'the superseded answer is not handed out either');
+    const next = getAccountUsage({ configDir });
+    await waitForCalls(stub.pending, 2);
+    stub.pending[1].settle(stub.response({ who: 'new-account' }));
+    assert.deepEqual(await next, { who: 'new-account' });
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
+
+test('a fetch begun before invalidateAccountUsage() that fails after it arms no backoff', async () => {
+  await makeTmpHome({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });
+  const configDir = path.join(tmpHome, '.claude');
+  const stub = deferredFetch();
+  invalidateAccountUsage();
+  try {
+    const old = getAccountUsage({ configDir });
+    await waitForCalls(stub.pending, 1);
+    invalidateAccountUsage();
+    stub.pending[0].settle(stub.response({}, 429, { 'retry-after': '600' }));
+    await old;
+    const next = getAccountUsage({ configDir });
+    await waitForCalls(stub.pending, 2);
+    stub.pending[1].settle(stub.response({ who: 'new-account' }));
+    assert.deepEqual(await next, { who: 'new-account' });
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
+
+test('a fetch begun before invalidateAccountUsage() that errors after it arms no backoff', async () => {
+  await makeTmpHome({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });
+  const configDir = path.join(tmpHome, '.claude');
+  const stub = deferredFetch();
+  invalidateAccountUsage();
+  try {
+    const old = getAccountUsage({ configDir });
+    await waitForCalls(stub.pending, 1);
+    invalidateAccountUsage();
+    stub.pending[0].fail(new Error('socket hang up'));
+    await old;
+    const next = getAccountUsage({ configDir });
+    await waitForCalls(stub.pending, 2);
+    stub.pending[1].settle(stub.response({ who: 'new-account' }));
+    assert.deepEqual(await next, { who: 'new-account' });
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
