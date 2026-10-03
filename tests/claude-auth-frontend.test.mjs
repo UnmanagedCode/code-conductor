@@ -47,7 +47,8 @@ afterEach(async () => {
   await settle();
 });
 
-// `status` answers GET status (an Error → 500 {error}); `login` is the list of
+// `status` answers GET status (an Error → 500 {error}; a function is called per
+// request and may return a promise); `login` is the list of
 // snapshots GET login answers in turn (the last repeats); `post` maps a POST
 // path to the snapshot it answers.
 async function setup({ status = SIGNED_IN, login = [snap('idle')], post = {}, opts = {} } = {}) {
@@ -64,7 +65,11 @@ async function setup({ status = SIGNED_IN, login = [snap('idle')], post = {}, op
   globalThis.fetch = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push({ url, method, body: opts.body ? JSON.parse(opts.body) : undefined });
-    if (url === '/api/claude-auth/status') return status instanceof Error ? reply(500, { error: status.message }) : reply(200, status);
+    if (url === '/api/claude-auth/status') {
+      // A function answers each request in turn, possibly with a held promise.
+      if (typeof status === 'function') return reply(200, await status());
+      return status instanceof Error ? reply(500, { error: status.message }) : reply(200, status);
+    }
     if (url === '/api/claude-auth/login' && method === 'GET') {
       if (holding) return new Promise(resolve => held.push((body) => resolve(reply(200, body))));
       return reply(200, queue.length > 1 ? queue.shift() : queue[0]);
@@ -348,4 +353,49 @@ test('onLoginSuccess does not fire for a flow that had already succeeded before 
   await ui.load();
   await settle();
   assert.equal(n, 0);
+});
+
+test('a start refused while another tab\'s flow is verifying keeps the refusal on screen', async () => {
+  const { window, ui, $ } = await setup({
+    login: [snap('idle'), snap('verifying', { url: URL_ })],
+    post: { '/api/claude-auth/login': new Error('a Claude login is already in progress') },
+  });
+  await ui.load();
+  click($('ca-login'), window);
+  await settle();
+  assert.equal($('ca-cancel').hidden, false, 'the running flow is shown');
+  assert.equal($('ca-flow-msg').textContent, 'a Claude login is already in progress');
+});
+
+test('overlapping loads: an older status answer landing last does not repaint the previous account', async () => {
+  const releases = [];
+  const answers = [{ ...SIGNED_IN, email: 'old@example.com' }, { ...SIGNED_IN, email: 'new@example.com' }];
+  let n = 0;
+  const { ui, $ } = await setup({
+    status: () => { const i = n++; return i === 0 ? new Promise(r => releases.push(() => r(answers[0]))) : answers[i] ?? answers[1]; },
+  });
+  const first = ui.load();
+  await settle(3);
+  await ui.load();
+  assert.ok($('ca-status').textContent.includes('new@example.com'));
+  releases[0]();
+  await first;
+  await settle(3);
+  const text = $('ca-status').textContent;
+  assert.ok(text.includes('new@example.com') && !text.includes('old@example.com'), text);
+});
+
+test('overlapping loads: an older status FAILURE landing last does not overwrite the newer state', async () => {
+  const fails = [];
+  let n = 0;
+  const { ui, $ } = await setup({
+    status: () => (n++ === 0 ? new Promise((_, reject) => fails.push(reject)) : SIGNED_IN),
+  });
+  const first = ui.load();
+  await settle(3);
+  await ui.load();
+  fails[0](new Error('boom'));
+  await first;
+  await settle(3);
+  assert.match($('ca-status').textContent, /^Signed in/);
 });

@@ -79,12 +79,17 @@ export function installClaudeAuth({ pollMs = 1000, onLoginSuccess } = {}) {
     if (loginBtn) loginBtn.textContent = s.loggedIn ? 'Re-log in' : 'Log in';
   }
 
+  // Only the latest status request paints: an older answer landing last would
+  // show the account from before a re-login.
+  let statusGen = 0;
   async function loadStatus() {
+    const g = ++statusGen;
     try {
-      renderStatus(await apiFetch(`${BASE}/status`, { cache: 'no-store' }));
+      const s = await apiFetch(`${BASE}/status`, { cache: 'no-store' });
+      if (g === statusGen) renderStatus(s);
     } catch (e) {
       // Never "Not signed in": an unreadable state is not a signed-out one.
-      statusEl.textContent = `Could not read the Claude login state: ${e.message || e}`;
+      if (g === statusGen) statusEl.textContent = `Could not read the Claude login state: ${e.message || e}`;
     }
   }
 
@@ -110,7 +115,7 @@ export function installClaudeAuth({ pollMs = 1000, onLoginSuccess } = {}) {
     switch (snap.state) {
       case 'starting': setMsg(notice || 'Starting…'); break;
       case 'awaiting_code': setMsg(snap.error || notice); break;
-      case 'verifying': setMsg('Verifying…'); break;
+      case 'verifying': setMsg(notice || 'Verifying…'); break;
       case 'succeeded': setMsg('Signed in.'); break;
       case 'failed': setMsg(snap.error || 'Login failed.'); break;
       case 'cancelled': setMsg('Login cancelled.'); break;

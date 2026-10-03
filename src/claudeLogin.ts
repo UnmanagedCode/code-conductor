@@ -120,7 +120,6 @@ export function createClaudeLoginFlow({
       finish('failed', `claude CLI could not be started (${command}): ${(e as Error).message}`);
       return view();
     }
-    onStart?.();
 
     const timer = setTimeout(() => {
       if (run?.child !== child) return;
@@ -131,6 +130,11 @@ export function createClaudeLoginFlow({
     timer.unref();
     track(child);
     run = { child, timer };
+    // Only once the child is tracked and owned by the run: a throwing hook must
+    // not strand a live child no cleanup path can reach. It is a side effect of
+    // the start, not a condition of it, so a throw is logged and the flow goes on.
+    try { onStart?.(); }
+    catch (e) { console.warn(`${new Date().toISOString()} [claudeLogin] onStart hook threw: ${(e as Error)?.message ?? String(e)}`); }
 
     let stdout = '';
     child.stdout?.setEncoding('utf8');

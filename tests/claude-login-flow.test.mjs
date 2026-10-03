@@ -304,3 +304,38 @@ test('onStart fires once per started flow', async () => {
     assert.equal(starts, 2);
   });
 });
+
+test('an "Invalid code" complaint arriving in two stderr writes ends up as the whole line', async () => {
+  await withLogin({ mode: 'complaint-split' }, async ({ flow }) => {
+    flow.start();
+    await awaitState(flow, 'awaiting_code');
+    flow.submitCode('nohash');
+    const full = 'Invalid code. Please make sure the full code was copied.';
+    await waitFor(() => flow.snapshot().error === full, { timeout: 3000 });
+    assert.equal(flow.snapshot().state, 'awaiting_code');
+  });
+});
+
+test('an onStart hook that throws strands no child: the flow runs and dispose() still reaches it', async () => {
+  const warn = console.warn;
+  const warnings = [];
+  console.warn = (...a) => { warnings.push(a.join(' ')); };
+  try {
+    await withLogin({ onStart: () => { throw new Error('hook boom'); } }, async ({ flow, header }) => {
+      // By identity, not count: an earlier test's killed child may still be
+      // closing, and its flow's hook leaves the listener list on its own time.
+      const before = process.listeners('exit');
+      assert.equal(flow.start().state, 'starting');
+      const added = process.listeners('exit').filter(l => !before.includes(l));
+      assert.equal(added.length, 1, 'the child is tracked by a process-exit hook');
+      assert.ok(warnings.some(w => w.includes('hook boom')), 'the throw is reported');
+      await awaitState(flow, 'awaiting_code');
+      const { pid } = await header();
+      flow.dispose();
+      await waitFor(() => pidGone(pid));
+      await waitFor(() => !process.listeners('exit').includes(added[0]));
+    });
+  } finally {
+    console.warn = warn;
+  }
+});

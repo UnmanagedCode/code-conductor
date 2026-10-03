@@ -18,6 +18,8 @@
 //     split-url            normal, but the `visit:` line arrives in two writes
 //                          50 ms apart, split inside the URL
 //     complaint-no-newline normal, but the "Invalid code…" line has no newline
+//     complaint-split      normal, but the "Invalid code…" line arrives in two
+//                          stderr writes 50 ms apart
 //     hang                 prints nothing, waits forever
 //     exit-before-url      a stderr line, exit 1
 //
@@ -37,9 +39,23 @@ import { pathToFileURL } from 'node:url';
 
 export const FAKE_LOGIN_URL = 'https://claude.com/cai/oauth/authorize?code=true&client_id=fake-client&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=fake&code_challenge_method=S256&state=STATE';
 
+// The real location of `p`, which need not exist yet: the deepest existing
+// ancestor is resolved through its symlinks and the missing tail re-appended.
+function realTarget(p) {
+  let head = path.resolve(p);
+  const tail = [];
+  while (!fs.existsSync(head)) {
+    tail.unshift(path.basename(head));
+    head = path.dirname(head);
+  }
+  return path.join(fs.realpathSync(head), ...tail);
+}
+
 function writeCredentials(token) {
-  const dir = path.resolve(process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'));
-  if (!dir.startsWith(fs.realpathSync(os.tmpdir()) + path.sep) && !dir.startsWith(os.tmpdir() + path.sep)) {
+  // Resolved through symlinks first, so a link under the temp dir pointing at a
+  // real store cannot pass the prefix check.
+  const dir = realTarget(process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'));
+  if (!dir.startsWith(fs.realpathSync(os.tmpdir()) + path.sep)) {
     process.stderr.write(`fake-claude-auth: refusing to write credentials outside the temp dir: ${dir}\n`);
     process.exit(3);
   }
@@ -103,7 +119,12 @@ function main() {
         process.exit(0);
       }
       if (!line.includes('#')) {
-        process.stderr.write('Invalid code. Please make sure the full code was copied.' + (mode === 'complaint-no-newline' ? '' : '\n'));
+        if (mode === 'complaint-split') {
+          process.stderr.write('Invalid code. Please make');
+          setTimeout(() => process.stderr.write(' sure the full code was copied.\n'), 50);
+        } else {
+          process.stderr.write('Invalid code. Please make sure the full code was copied.' + (mode === 'complaint-no-newline' ? '' : '\n'));
+        }
         continue;
       }
       process.stderr.write('Login failed: Request failed with status code 400\n');

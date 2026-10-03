@@ -191,3 +191,17 @@ test('reader: a run in flight at invalidate() is neither cached nor shared with 
   assert.equal((await reader.get()).email, 'new@example.com');
   assert.equal(pending.length, 2, 'the fresh answer is the cached one');
 });
+
+test('reader: a run detached by invalidate() never writes the cache, even when it settles last', async () => {
+  const { reader, pending } = scriptedReader({ ttlMs: 5000 });
+  const detached = reader.get();
+  reader.invalidate();
+  const fresh = reader.get();
+  assert.equal(pending.length, 2);
+  pending[1].resolve(status('new@example.com'));
+  assert.equal((await fresh).email, 'new@example.com');
+  pending[0].resolve(status('old@example.com'));
+  assert.equal((await detached).email, 'old@example.com', 'its own reader still gets its answer');
+  for (let i = 0; i < 3; i++) assert.equal((await reader.get()).email, 'new@example.com');
+  assert.equal(pending.length, 2, 'served from the cache inside the TTL');
+});
