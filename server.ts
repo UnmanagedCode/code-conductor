@@ -16,6 +16,9 @@ import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/p
 import { loadSessions } from './src/sessionStore.ts';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
+import { createClaudeLoginFlow } from './src/claudeLogin.ts';
+import { createClaudeAuthStatusReader } from './src/claudeAuthStatus.ts';
+import { invalidateAccountUsage } from './src/accountUsage.ts';
 import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
 import { cleanupSessionsWithoutTranscripts } from './src/sessionCleanup.ts';
 import { ensureConductProject } from './src/conduct.ts';
@@ -110,7 +113,19 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   // retire/enforcement-toggle events, so a second instance would double-append
   // those and read a projection the other router's writes never reach.
   const playbookGate = createPlaybookGate({ instances });
-  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities }));
+  // Settings → Account's Claude login. Starting one drops the cached auth status
+  // (the CLI can rewrite credentials at start); a success also drops the usage
+  // cache, which would otherwise serve the previous account's usage.
+  const claudeAuthStatus = createClaudeAuthStatusReader({ platform });
+  const claudeLogin = createClaudeLoginFlow({
+    platform,
+    onStart: claudeAuthStatus.invalidate,
+    onSuccess: () => { claudeAuthStatus.invalidate(); invalidateAccountUsage(); },
+  });
+  app.use('/api', buildRoutes({
+    instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
+    claudeLogin, claudeAuthStatus: claudeAuthStatus.get,
+  }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
@@ -137,6 +152,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   if (instances) initCostTracking(instances);
   serverCtx.server = server;
   serverCtx.wss = wss;
+  server.on('close', () => claudeLogin.dispose());
 
   return { app, server, instances, wss, pluginHost, pluginLibrary };
 }

@@ -126,7 +126,7 @@ export async function checkClaudeReadiness({ configDir = claudeConfigDir(), time
     issues.push({
       code: 'not_authenticated',
       title: 'Claude is not signed in',
-      hint: 'Run `claude` in a terminal and complete sign-in, then restart this server. (Or set `ANTHROPIC_API_KEY`.)',
+      hint: 'Sign in from Settings → Account in the web UI, or run `claude auth login` in a terminal. (Or set `ANTHROPIC_API_KEY`.)',
     });
   }
   // The host shell cc runs its own commands through (and the claude CLI's Bash

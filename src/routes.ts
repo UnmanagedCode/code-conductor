@@ -79,6 +79,8 @@ import { getSummaries, setSummary, isArchived, setSegmentArchived, loadSessions,
 import { resolveBacking } from './sessionLineage.ts';
 import { generateSummary, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
+import type { ClaudeAuthStatus } from './claudeAuthStatus.ts';
+import type { ClaudeLoginFlow } from './claudeLogin.ts';
 import { getCostSummary, getSessionStats } from './costTracking.ts';
 import {
   getCatalog as getProjectConventionsCatalog,
@@ -304,7 +306,7 @@ interface RoleBackendPatch { role: string; backend?: unknown }
 interface TierEffortPatch { tier: TierName; effort?: unknown }
 interface RoleEffortPatch { role: string; effort?: unknown }
 
-export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities }:
+export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus }:
   {
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
@@ -312,6 +314,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     pluginLibrary?: PluginLibraryApiLike | null;
     playbookGate?: PlaybookGate | null;
     capabilities?: PlatformCapabilities;
+    claudeLogin?: ClaudeLoginFlow | null;
+    claudeAuthStatus?: (() => Promise<ClaudeAuthStatus>) | null;
   } = {}): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
@@ -2399,6 +2403,33 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       const r = result as { data: unknown; stale: boolean; fetchedAt: number };
       res.json({ usage: r.data, stale: r.stale, fetchedAt: r.fetchedAt });
     } catch (e) { next(e); }
+  });
+
+  // Settings → Account's Claude login: the CLI's own `auth status`, and the one
+  // `claude auth login` flow createServer owns (src/claudeLogin.ts). Every
+  // login response is the flow's snapshot, which never carries the code.
+  const loginFlow = (): ClaudeLoginFlow => {
+    if (!claudeLogin) throw httpError(503, 'login flow unavailable');
+    return claudeLogin;
+  };
+  r.get('/claude-auth/status', async (req, res, next) => {
+    try {
+      if (!claudeAuthStatus) throw httpError(503, 'Claude auth status unavailable');
+      // A CLI that cannot be run or answers garbage is the upstream's failure.
+      res.json(await claudeAuthStatus().catch((e: unknown) => { throw httpError(502, errMessage(e)); }));
+    } catch (e) { next(e); }
+  });
+  r.get('/claude-auth/login', (req, res, next) => {
+    try { res.json(loginFlow().snapshot()); } catch (e) { next(e); }
+  });
+  r.post('/claude-auth/login', (req, res, next) => {
+    try { res.json(loginFlow().start()); } catch (e) { next(e); }
+  });
+  r.post('/claude-auth/login/code', (req, res, next) => {
+    try { res.json(loginFlow().submitCode(jsonBody(req).code)); } catch (e) { next(e); }
+  });
+  r.post('/claude-auth/login/cancel', (req, res, next) => {
+    try { res.json(loginFlow().cancel()); } catch (e) { next(e); }
   });
 
   r.get('/costs/summary', async (req, res, next) => {

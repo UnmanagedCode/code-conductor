@@ -34,7 +34,7 @@ Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — 
 
 Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=<abs-path>` to override.
 
-**Startup check.** Server probes `claude --version` (3s timeout) and credentials (`<configDir>/.credentials.json` or `ANTHROPIC_API_KEY`, where `<configDir>` honours `CLAUDE_CONFIG_DIR` and defaults to `~/.claude`). Emits `claude OK — v…, authenticated via…` or a framed `WARNING` block per issue. Server starts either way. Implemented in `src/health.ts`.
+**Startup check.** Server probes `claude --version` (3s timeout) and credentials (`<configDir>/.credentials.json` or `ANTHROPIC_API_KEY`, where `<configDir>` honours `CLAUDE_CONFIG_DIR` and defaults to `~/.claude`). Emits `claude OK — v…, authenticated via…` or a framed `WARNING` block per issue. Server starts either way; a not-signed-in warning is fixed from **Settings → Account → Claude login** in the web UI (or `claude auth login` in a terminal), no restart needed. Implemented in `src/health.ts`.
 
 **Startup session cleanup.** Each boot drops session records none of whose Claude session ids has a transcript left on this machine, after writing the store's pre-image to `<store>/sessions.json.startup.bak` (overwritten every boot that finds a store file; none is written when `sessions.json` is absent). It removes nothing when the scan finds no transcript at all or every record looks transcript-less, which is what a wrong `HOME` / `CLAUDE_CONFIG_DIR` looks like. Implemented in `src/sessionCleanup.ts`; rules in [docs/architecture.md](docs/architecture.md).
 

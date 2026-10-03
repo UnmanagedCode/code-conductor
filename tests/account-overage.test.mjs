@@ -11,12 +11,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // A models payload as GET /api/settings/models returns it — overage prefs ride
-// along here (there is no separate Account endpoint).
+// along here (there is no separate overage endpoint).
 function modelsPayload(over) {
   return {
     backends: [{ id: 'claude', label: 'Claude', template: '', env: [], managed: true },
@@ -298,5 +299,60 @@ test('account: a prefs save elsewhere (e.g. a tier toggle) does not clobber a st
   assert.equal(d.getElementById('sm-overage-threshold-enabled').checked, true, 'staged threshold-enabled preserved');
   assert.equal(d.getElementById('sm-overage-threshold').value, '60', 'staged threshold value preserved');
   assert.equal(d.getElementById('sm-overage-dirty').hidden, false, 'still dirty after the outside refresh');
+  window.happyDOM.abort();
+});
+
+test('account: opening Settings loads the Claude login state (public/claudeAuth.js)', async () => {
+  const { impl } = stubFetch(modelsPayload({ onOverage: 'none', overageThreshold: { enabled: false, value: 85 } }));
+  const authGets = [];
+  const withAuth = (u, opts = {}) => {
+    if (u === '/api/claude-auth/status') {
+      authGets.push(u);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ loggedIn: false, authMethod: 'none', configDirectory: null }) });
+    }
+    if (u === '/api/claude-auth/login') {
+      authGets.push(u);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ state: 'idle', url: null, error: null, startedAt: null, endedAt: null }) });
+    }
+    return impl(u, opts);
+  };
+  const { window, mod, account } = await setup(withAuth);
+  account.insertAdjacentHTML('afterbegin', '<div id="ca-status"></div><button id="ca-login" type="button">Log in</button>');
+  mod.installSettings({ requestClose: () => {} });
+
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+
+  assert.deepEqual(authGets.sort(), ['/api/claude-auth/login', '/api/claude-auth/status']);
+  assert.match(window.document.getElementById('ca-status').textContent, /^Not signed in/);
+  window.happyDOM.abort();
+});
+
+test('account: a Claude login that succeeds while Settings watches it calls onClaudeLogin once', async () => {
+  const { impl } = stubFetch(modelsPayload({ onOverage: 'none', overageThreshold: { enabled: false, value: 85 } }));
+  const flow = [{ state: 'verifying', url: 'https://claude.com/x', error: null, startedAt: 1, endedAt: null }];
+  const withAuth = (u, opts = {}) => {
+    const reply = (body) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    if (u === '/api/claude-auth/status') return reply({ loggedIn: true, authMethod: 'claude.ai', configDirectory: null });
+    if (u === '/api/claude-auth/login') return reply(flow.length > 1 ? flow.shift() : flow[0]);
+    return impl(u, opts);
+  };
+  const { window, mod, account } = await setup(withAuth);
+  // The real Claude login fieldset, so the flow panel the success path renders exists.
+  const html = readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
+  account.insertAdjacentHTML('afterbegin', /<fieldset class="sm-group">\s*<legend>Claude login<\/legend>[\s\S]*?<\/fieldset>/.exec(html)[0]);
+  let logins = 0;
+  mod.installSettings({ requestClose: () => {}, onClaudeLogin: () => { logins++; } });
+
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  flow.push({ state: 'succeeded', url: 'https://claude.com/x', error: null, startedAt: 1, endedAt: 2 });
+  flow.shift();
+  // The module's own poll cadence (1 s) carries the success.
+  const deadline = Date.now() + 5000;
+  while (logins === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 20));
+  assert.equal(logins, 1);
   window.happyDOM.abort();
 });
