@@ -52,6 +52,27 @@ test('deriveConductors splits live from inactive by instance status', () => {
   assert.equal(inactive.find(c => c.sessionId === 'disk').instanceId, null);
 });
 
+// Invariant: a conductor row carries its instance's armed auto-resume and
+// queued count; a disk-only conductor reads none.
+test('deriveConductors carries autoResumeAt and queuedCount from the instance; a disk-only row reads null and 0', () => {
+  const { live, inactive } = M.deriveConductors({
+    conductRows: [{ sessionId: 'disk', lastActivity: 5 }, { sessionId: 'both', lastActivity: 4 }],
+    instances: [
+      inst({ id: 'i1', project: '.conduct', sessionId: 'both', status: 'idle', autoResumeAt: 1234, queuedCount: 3 }),
+      inst({ id: 'i2', project: '.conduct', sessionId: 'fresh', status: 'turn', autoResumeAt: 99, queuedCount: 1 }),
+    ],
+  });
+  const both = live.find(c => c.sessionId === 'both');
+  assert.equal(both.autoResumeAt, 1234);
+  assert.equal(both.queuedCount, 3);
+  const fresh = live.find(c => c.sessionId === 'fresh');
+  assert.equal(fresh.autoResumeAt, 99, 'an instance-only conductor too');
+  assert.equal(fresh.queuedCount, 1);
+  const disk = inactive.find(c => c.sessionId === 'disk');
+  assert.equal(disk.autoResumeAt, null);
+  assert.equal(disk.queuedCount, 0);
+});
+
 test('archived conduct rows appear in neither group; a running conductor is placed by its instance', () => {
   const { live, inactive } = M.deriveConductors({
     conductRows: [

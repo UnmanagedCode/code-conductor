@@ -43,7 +43,7 @@
 
 import {
   formatTokens, formatPct, formatDuration,
-  fillClass, formatResetTime, formatAutoResumeTime, rlChipSegment,
+  fillClass, formatResetTime, formatAutoResumeTime, autoResumeBadge, rlChipSegment,
   RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
 } from './usage.js';
 import { makeDismissable } from './dismissable.js';
@@ -782,13 +782,10 @@ export function installHeader({
     // Overage paused chip. armed (autoResumeAt) shows the resume time + queued
     // count; a not-yet-queued session paused by the GLOBAL window (overageActive,
     // no armed deadline yet) shows a bare "paused" chip off overageResetsAt.
-    if (inst.autoResumeAt) {
-      const n = inst.queuedCount || 0;
-      const label = formatAutoResumeTime(inst.autoResumeAt) + (n > 0 ? ` · ${n} queued` : '');
-      const rc = chip('ih-status ih-auto-resume', label);
-      rc.title = n > 0
-        ? `auto-stopped on overage — ${n} message${n === 1 ? '' : 's'} queued; will resume when the window resets`
-        : 'auto-stopped on overage — will resume when the rate-limit window resets';
+    const resumeBadge = autoResumeBadge(inst);
+    if (resumeBadge) {
+      const rc = chip('ih-status ih-auto-resume', resumeBadge.text);
+      rc.title = resumeBadge.title;
       mainLine.appendChild(rc);
     } else if (inst.overageActive) {
       const rc = chip('ih-status ih-auto-resume',

@@ -6,8 +6,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { assertNull } from './dom-assert.mjs';
 import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
+
+const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
+// The clock alone, as the existing formatter renders it.
+const clockOf = (t) => formatAutoResumeTime(t).replace('resumes at ', '');
 
 const conductorOf = (list, sid) => list.querySelector(`[data-key="conductor:${sid}"]`);
 const conductorRowOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-row');
@@ -1166,4 +1171,104 @@ test('a conductor row pills its turn-mark difference from a live instance or a .
   assert.equal(pill('D')?.textContent, '3', 'inactive conductor, from its disk row');
   assertNull(pill('B'), 'a read live conductor has no pill');
   assertNull(pill('R'), 'a read disk conductor has no pill');
+});
+
+// Invariant: an overage-paused conductor's row carries the compact auto-resume
+// badge — "⏸ <time>", plus "· N" while messages wait — with the full wording in
+// its tooltip, updated in place as the count changes and removed when the armed
+// resume clears.
+test('a paused conductor row shows the compact auto-resume badge with its queued count, updated in place and dropped on clear', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  const badgeOf = () => conductorRowOf(conductorList, 'A').querySelectorAll(':scope > .session-resume-badge');
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: T, queuedCount: 2 })] });
+  const row = conductorRowOf(conductorList, 'A');
+  assert.equal(badgeOf().length, 1, 'one badge on the row');
+  const badge = badgeOf()[0];
+  assert.equal(badge.textContent, `⏸ ${clockOf(T)} · 2`);
+  assert.equal(badge.title, `${formatAutoResumeTime(T)} · 2 queued\nauto-stopped on overage — 2 messages queued; will resume when the window resets`);
+
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: T, queuedCount: 0 })] });
+  assert.ok(badgeOf()[0] === badge, 'the badge is updated in place');
+  assert.equal(badge.textContent, `⏸ ${clockOf(T)}`, 'no count with nothing queued');
+  assert.equal(badge.title, `${formatAutoResumeTime(T)}\nauto-stopped on overage — will resume when the rate-limit window resets`);
+
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: null, queuedCount: 0 })] });
+  assertNull(conductorRowOf(conductorList, 'A').querySelector('.session-resume-badge'), 'the badge goes with the armed resume');
+  assert.ok(conductorRowOf(conductorList, 'A') === row, 'the row itself is kept');
+});
+
+// Invariant: a paused worker in an expanded conductor's tree carries the same
+// compact badge on its session row, and loses it when the armed resume clears.
+test('a paused worker row in the conductor tree shows the compact auto-resume badge and drops it on clear', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  const base = { projects: [project('p')] };
+  await render(sidebar, { ...base, instances: [conductor('A'), worker('w', 'A', 'p', null, { autoResumeAt: T, queuedCount: 1 })] });
+  const tree = await expand(conductorList, 'A');
+  const badge = rowOf(tree, 'w').querySelector('.session-resume-badge');
+  assert.equal(badge?.textContent, `⏸ ${clockOf(T)} · 1`);
+  assert.equal(badge.title, `${formatAutoResumeTime(T)} · 1 queued\nauto-stopped on overage — 1 message queued; will resume when the window resets`);
+  assertNull(conductorRowOf(conductorList, 'A').querySelector('.session-resume-badge'), 'the unpaused conductor has none');
+
+  await render(sidebar, { ...base, instances: [conductor('A'), worker('w', 'A', 'p', null, { autoResumeAt: null, queuedCount: 0 })] });
+  assertNull(rowOf(treeOf(conductorList, 'A'), 'w').querySelector('.session-resume-badge'));
+});
+
+// Invariant: a row's label never shrinks to nothing, and only the resume badge
+// gives way once the label is at that floor — the label's flex basis is 0, so
+// any spare width goes to it and the badge keeps its full text until then —
+// while the ago label and the ↑ / × buttons keep their size, so nothing is
+// pushed past the row's edge. Applies to the conductor row's title, a session
+// row's preview and a worker row's label column.
+test('a row label keeps a non-zero floor and only the resume badge gives way below it', async () => {
+  const { window, root, conductorList, sidebar } = await setupSidebar({ withCss: true });
+  const T = 1_900_000_000;
+  await render(sidebar, {
+    projects: [project('p')],
+    instances: [
+      conductor('A', { autoResumeAt: T, queuedCount: 1 }),
+      worker('w', 'A', 'p', null, { autoResumeAt: T, queuedCount: 1, temp: true }),
+      hand('h', 'p', null, { autoResumeAt: T, queuedCount: 1, temp: true }),
+    ],
+  });
+  const tree = await expand(conductorList, 'A');
+  const cRow = conductorRowOf(conductorList, 'A');
+  const labels = {
+    'conductor title': cRow.querySelector('.conductor-title'),
+    'worker label column': rowOf(tree, 'w').querySelector('.session-label-col'),
+    'session preview': rowOf(root, 'h').querySelector('.session-preview'),
+  };
+  for (const [name, node] of Object.entries(labels)) {
+    assert.ok(node, `sanity: the ${name} renders`);
+    const cs = window.getComputedStyle(node);
+    assert.ok(parseFloat(cs.minWidth) > 0, `${name}: min-width is a non-zero floor (got ${cs.minWidth})`);
+    assert.equal(parseFloat(cs.flexBasis), 0, `${name}: flex-basis 0, so spare width grows it rather than shrinking the badge (got ${cs.flexBasis})`);
+    assert.equal(cs.flexGrow, '1', `${name}: takes the spare width`);
+  }
+  // Invariant: inside the worker row's label column (a column flexbox, so the
+  // flex basis is a height) the preview sizes from its content and never
+  // shrinks: a 0 basis or a shrinkable preview with overflow: hidden (whose
+  // automatic min-height is 0) collapses the worker's name to 0px high.
+  const colPreview = labels['worker label column'].querySelector(':scope > .session-preview');
+  assert.ok(colPreview, 'sanity: the label column holds the preview');
+  assert.equal(window.getComputedStyle(labels['worker label column']).flexDirection, 'column', 'sanity: the label column is a column flexbox');
+  const pcs = window.getComputedStyle(colPreview);
+  assert.equal(pcs.flexBasis, 'auto', `column preview: flex-basis auto, its content height (got ${pcs.flexBasis})`);
+  assert.equal(pcs.flexShrink, '0', `column preview: never shrinks below that height (got ${pcs.flexShrink})`);
+  assert.equal(pcs.flexGrow, '0', `column preview: leaves the stage line its own height (got ${pcs.flexGrow})`);
+
+  const rows = { 'conductor row': cRow, 'worker row': rowOf(tree, 'w'), 'session row': rowOf(root, 'h') };
+  for (const [name, row] of Object.entries(rows)) {
+    const badge = row.querySelector(':scope > .session-resume-badge');
+    assert.ok(badge, `sanity: the ${name} carries a badge`);
+    const cs = window.getComputedStyle(badge);
+    assert.ok(parseFloat(cs.flexShrink) > 0, `${name} badge: may shrink`);
+    assert.equal(parseFloat(cs.minWidth), 0, `${name} badge: down to nothing`);
+    assert.equal(cs.overflow, 'hidden', `${name} badge: clips its text`);
+    assert.equal(cs.textOverflow, 'ellipsis', `${name} badge: with an ellipsis`);
+    const fixed = [...row.querySelectorAll(':scope > .session-ago, :scope > .session-promote, :scope > .session-delete')];
+    assert.ok(fixed.some(n => n.classList.contains('session-promote')), `sanity: the ${name} carries ↑`);
+    for (const n of fixed) assert.equal(window.getComputedStyle(n).flexShrink, '0', `${name} ${n.className}: keeps its size`);
+  }
 });

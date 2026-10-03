@@ -460,13 +460,19 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   font-family: ui-monospace, monospace; flex: 0 0 auto;
   color: var(--accent); min-width: 48px;
 }
+/* A row label (this, .session-label-col, .conductor-title) grows from a 0
+   basis to a 2em floor: spare width goes to it, and only once it is at the
+   floor does the row's .session-resume-badge give way. */
 .session-preview {
-  flex: 1 1 auto; min-width: 0;
+  flex: 1 1 0; min-width: 2em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* Conductors tree worker rows: the label with the verbatim playbook · stage on
    its own line underneath, wrapped rather than truncated away. */
-.session-label-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.session-label-col { flex: 1 1 0; min-width: 2em; display: flex; flex-direction: column; }
+/* In the column the flex basis is a height: the preview takes its content's,
+   as the 0 basis above would clip it to nothing under overflow: hidden. */
+.session-label-col > .session-preview { flex: none; }
 .session-stage {
   font-family: ui-monospace, monospace; font-size: 10px; color: var(--thinking);
   white-space: normal; overflow-wrap: anywhere;
@@ -529,7 +535,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .conductor-caret:hover:not(:disabled) { background: none; color: var(--text); }
 .conductor-block.open > .conductor-row > .conductor-caret { transform: rotate(90deg); }
 .conductor-title {
-  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text);
+  flex: 1 1 0; min-width: 2em; font-size: 13px; font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .conductor-title.untitled { font-weight: 400; font-style: italic; color: var(--muted); }
@@ -573,14 +579,17 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
    reads bold italic, since selected is bold by spec. */
 .session-row.active .session-preview, .conductor-row.active .conductor-title,
 .strip-entry.active .strip-title { font-weight: 700; }
-/* Overage auto-resume badge — shown on a stopped session awaiting resume. */
+/* Overage auto-resume badge — shown on a stopped session awaiting resume. The
+   one row part that shrinks below its text, after the label hits its floor,
+   so the ago label and the ↑ / × stay inside the row; the tooltip has it all. */
 .session-resume-badge {
   font-size: 10px;
   color: var(--amber, #e0a000);
   padding: 0 5px;
   border: 1px solid var(--amber, #e0a000);
   border-radius: 8px;
-  flex: 0 0 auto;
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
   line-height: 1.4;
   white-space: nowrap;
 }

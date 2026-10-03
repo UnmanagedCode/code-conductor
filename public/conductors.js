@@ -73,6 +73,10 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
       awaitingUserSource: null,
       // Instance-only: only a live instance can be promoted.
       instanceTemp: false,
+      // Instance-only: an armed overage resume and its queue live on the
+      // instance.
+      autoResumeAt: null,
+      queuedCount: 0,
       live: false,
       onDisk: true,
     });
@@ -89,6 +93,8 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
     row.awaitingUser = inst.awaitingUser ?? null;
     row.awaitingUserSource = inst.awaitingUserSource ?? null;
     row.instanceTemp = !!inst.temp;
+    row.autoResumeAt = inst.autoResumeAt ?? null;
+    row.queuedCount = inst.queuedCount ?? 0;
     if (inst.title) row.title = inst.title;
     if (!row.firstPrompt && inst.firstPrompt) row.firstPrompt = inst.firstPrompt;
     row.lastActivity = Math.max(row.lastActivity ?? 0, inst.lastResponseAt ?? inst.createdAt ?? 0);
