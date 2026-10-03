@@ -1,6 +1,7 @@
 import type { Platform } from './platform.ts';
 
 export const posixPlatform: Platform = {
+  capabilities: { remoteSystems: true, fuseUnion: true, voice: true },
   commandFor(spec) {
     return 'shell' in spec
       ? { command: 'bash', args: ['-lc', spec.shell] }
