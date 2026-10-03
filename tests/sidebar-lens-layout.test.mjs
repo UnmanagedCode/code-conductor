@@ -186,4 +186,15 @@ test('.strip-entry.unread: a 600 title and the waiting-on-you ring in accent, un
     'the fill stays the plain idle one');
   assert.equal(cs(window, entry('strip-entry active unread').querySelector('.strip-title')).fontWeight, '700');
   assert.doesNotMatch(css, /\.strip-unread\b/, 'no trailing-dot rule remains');
+  // The text checks above read the rule; this reads what the cascade renders,
+  // so a later rule overriding the ring fails here. Only the geometry is
+  // compared (colours stripped): the ring colour is pinned through the text.
+  const geometry = (shadow) => shadow.replace(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|var\([^)]*\)/gi, '_');
+  const unreadShadow = cs(window, unread.querySelector('.dot')).boxShadow;
+  const readShadow = cs(window, entry('strip-entry').querySelector('.dot')).boxShadow;
+  const needsYouShadowRendered = cs(window, stripDot(document, 'dot idle needs-you')).boxShadow;
+  assert.ok(unreadShadow && unreadShadow !== 'none', 'an unread entry\'s dot renders a box-shadow');
+  assert.ok(needsYouShadowRendered && needsYouShadowRendered !== 'none', 'fixture: a needs-you dot renders a box-shadow');
+  assert.equal(geometry(unreadShadow), geometry(needsYouShadowRendered), 'the rendered ring has the needs-you geometry');
+  assert.ok(!readShadow || readShadow === 'none', 'a read entry\'s dot has no ring');
 });
