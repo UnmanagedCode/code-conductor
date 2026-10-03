@@ -46,6 +46,20 @@ function errCode(e: unknown): string | undefined {
 // Concurrent writers to one target are last-write-wins, not merged or locked.
 let atomicWriteSeq = 0;
 
+// Windows refuses a rename onto a file another process (a scanner, an indexer)
+// has open, and the hold is brief: retry a few times before giving up.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RENAME_ATTEMPTS = 5;
+async function renameWithRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try { return await fs.rename(from, to); }
+    catch (e) {
+      if (attempt >= RENAME_ATTEMPTS || !RENAME_RETRY_CODES.has(errCode(e) ?? '')) throw e;
+      await new Promise(r => setTimeout(r, 10 * 2 ** (attempt - 1)));
+    }
+  }
+}
+
 export async function writeFileAtomic(filePath: string, data: string | Buffer, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
@@ -54,7 +68,7 @@ export async function writeFileAtomic(filePath: string, data: string | Buffer, m
     // On the TEMP file, before the rename: the target must never be observable
     // with the wrong mode, and after the rename there is no handle to fix.
     if (mode !== undefined) await fs.chmod(tmp, mode & 0o7777);
-    await fs.rename(tmp, filePath);
+    await renameWithRetry(tmp, filePath);
   } catch (e) {
     await fs.unlink(tmp).catch(() => {});
     throw e;

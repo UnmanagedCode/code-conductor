@@ -341,7 +341,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // this for a CHANGED bootId to confirm it's talking to the replacement
   // process, not the old one still up during a resume drain (see bootId.ts).
   r.get('/health', (req, res) => {
-    res.json({ ok: true, bootId: BOOT_ID, capabilities });
+    res.json({ ok: true, app: 'code-conductor', pid: process.pid, bootId: BOOT_ID, capabilities });
   });
 
   r.post('/admin/restart', (req, res) => {

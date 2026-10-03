@@ -15,6 +15,9 @@ import { createSupervisor, headSha } from '../src/plugins/supervisor.ts';
 import { RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from '../src/claudeLauncher.ts';
 import { fetchOriginBounded } from '../src/gitLive.ts';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
+import { cliEnvBase } from '../src/cliEnv.ts';
+import { projectsRoot } from '../src/projects.ts';
+import { checkClaudeReadiness } from '../src/health.ts';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 
 function fakePlatform(overrides = {}) {
@@ -23,6 +26,7 @@ function fakePlatform(overrides = {}) {
   const p = {
     calls,
     capabilities: posixPlatform.capabilities,
+    softSigterm: true, cliEnv: () => ({}), canonicalPath: (p) => p,
     commandFor: rec('commandFor'), spawnOptions: rec('spawnOptions'), killProcess: rec('killProcess'),
     killGroup: rec('killGroup'), splitCommand: rec('splitCommand'), pathKey: rec('pathKey'),
   };
@@ -160,4 +164,46 @@ test('Instance.spawn splits CLAUDE_BIN and the backend template through the inje
     await waitFor(() => fake.calls.some(c => c[0] === 'splitCommand' && c[1] === 'probectl claude --model {model} --'));
     assert.ok(fake.calls.some(c => c[0] === 'splitCommand' && c[1] === process.env.CLAUDE_BIN), 'CLAUDE_BIN split via the platform');
   } finally { await ctx.close(); }
+});
+
+test('cliEnvBase merges the platform cliEnv under the host env, which wins', () => {
+  const fake = fakePlatform({ cliEnv: () => ({ PLATFORM_ONLY: 'p', PLATFORM_AND_HOST: 'platform' }) });
+  const prev = process.env.PLATFORM_AND_HOST;
+  process.env.PLATFORM_AND_HOST = 'host';
+  try {
+    const env = cliEnvBase(fake);
+    assert.equal(env.PLATFORM_ONLY, 'p');
+    assert.equal(env.PLATFORM_AND_HOST, 'host');
+  } finally {
+    if (prev === undefined) delete process.env.PLATFORM_AND_HOST; else process.env.PLATFORM_AND_HOST = prev;
+  }
+});
+
+test('projectsRoot goes through the host platform canonicalPath', async () => {
+  const { hostPlatform } = await import('../src/platform/index.ts');
+  const prevRoot = process.env.PROJECTS_ROOT;
+  const orig = hostPlatform.canonicalPath;
+  hostPlatform.canonicalPath = (p) => `${p}/CANON`;
+  try {
+    process.env.PROJECTS_ROOT = '/tmp/cc-canon-probe';
+    assert.equal(projectsRoot(), '/tmp/cc-canon-probe/CANON');
+  } finally {
+    hostPlatform.canonicalPath = orig;
+    process.env.PROJECTS_ROOT = prevRoot;
+  }
+});
+
+test('runGroupedCommand resolves a spawnError when commandFor throws', async () => {
+  const fake = fakePlatform({ commandFor: () => { throw new Error('no bash here'); } });
+  const r = await runGroupedCommand({ shell: 'x' }, { cwd: os.tmpdir() }, fake);
+  assert.equal(r.code, 1);
+  assert.match(r.spawnError, /no bash here/);
+});
+
+test('checkClaudeReadiness reports an unresolvable host shell', async () => {
+  const fake = fakePlatform({ commandFor: () => { throw new Error('bash.exe not found'); } });
+  const r = await checkClaudeReadiness({ configDir: os.tmpdir(), timeoutMs: 200, platform: fake });
+  const issue = r.issues.find(i => i.code === 'shell_missing');
+  assert.ok(issue);
+  assert.match(issue.title, /bash\.exe not found/);
 });

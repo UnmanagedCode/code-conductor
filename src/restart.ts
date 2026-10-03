@@ -32,6 +32,7 @@ interface RestartManagerLike {
   shutdownTempSync?(): void;
   tempCleanupSnapshot?(): Array<{ sessionId: string }>;
   shutdown?(): Promise<unknown> | void;
+  stopLiveSync?(): void;
 }
 
 interface RestartLog {
@@ -101,6 +102,9 @@ export function scheduleRestart({ server, wss, instances, log = console }: {
       try { server.close(); } catch { /* ignore */ }
     }
     runTempCleanup({ instances, log });
+    // Where SIGTERM is not soft, the CLI's children would outlive the exit below.
+    try { instances?.stopLiveSync?.(); }
+    catch (e) { log.warn?.('restart: live stop error', e); }
     if (instances && typeof instances.shutdown === 'function') {
       // Fire-and-forget — instance subprocesses outlive us. Captured before
       // the closure so the narrowed function isn't lost (TS re-widens

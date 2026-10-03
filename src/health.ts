@@ -129,6 +129,16 @@ export async function checkClaudeReadiness({ configDir = claudeConfigDir(), time
       hint: 'Run `claude` in a terminal and complete sign-in, then restart this server. (Or set `ANTHROPIC_API_KEY`.)',
     });
   }
+  // The host shell cc runs its own commands through (and the claude CLI's Bash
+  // tool) — when it cannot be resolved, both fail.
+  try { platform.commandFor({ shell: 'true' }); }
+  catch (e) {
+    issues.push({
+      code: 'shell_missing',
+      title: e instanceof Error ? e.message : String(e),
+      hint: 'Without it claude falls back to PowerShell only and cc\'s own shell commands fail.',
+    });
+  }
   return {
     ok: issues.length === 0,
     claudeBin,

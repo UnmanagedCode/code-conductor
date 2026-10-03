@@ -316,6 +316,11 @@ function answersTo(i: Instance, id: string): boolean {
 // if spurious turns are observed arriving later; decrease if the window blocks
 // intentional follow-up prompts that come in very quickly after an abort.
 const POST_ABORT_DRAIN_WINDOW_MS = 3000;
+
+// How long a host without a soft SIGTERM (`Platform.softSigterm` false) waits
+// for the CLI to exit on its own after an interrupt + stdin EOF before a tree
+// kill. A clean exit from a busy turn takes ~4.4 s on Windows; the rest is margin.
+export const CLEAN_STOP_GRACE_MS = 5000;
 // Safety cap: max spurious turns killed per window. Guards against a
 // misbehaving subprocess that emits system/init in a tight loop.
 const POST_ABORT_DRAIN_MAX = 20;
@@ -3889,6 +3894,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
     // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
+    if (!this._platform.softSigterm) {
+      // A hard signal here would orphan the CLI's children and lose the
+      // in-flight message: interrupt a busy turn, then let EOF end the process.
+      // The pipe orders the two writes; the signal ladder is only a backstop.
+      if (this.status === 'turn') this._controlRequest({ subtype: 'interrupt' }, { timeout: CLEAN_STOP_GRACE_MS }).catch(() => {});
+      graceMs = Math.max(graceMs, CLEAN_STOP_GRACE_MS);
+    }
     try { this.proc.stdin?.end(); } catch { /* ignore */ }
     const proc = this.proc;
     // The launch's terminal latch, NOT a fresh proc.once('exit'): a child whose
@@ -4484,6 +4496,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
   // reorder those registrations without revisiting this method.
   shouldSuppressTurnNotification(instanceId: string): boolean {
+    if (this.byId.get(instanceId)?._killing) return true;  // an interrupted turn of a commanded teardown
     if (this._idleHub.isCaller(instanceId)) return true;   // Condition 1
     if (this._idleHub.wasConsumed(instanceId)) return true; // Condition 2
     return false;
@@ -6374,25 +6387,49 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // waits for all-idle), so the session JSONL is fully flushed.
       try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
-    // Bounded sync wait for processes to exit after stdin close. As in
-    // shutdownTempSync, the pid polled is the recorded inner one under the FUSE
-    // wrap, and this path CANNOT run the mount teardown — it is async and
+    // As in shutdownTempSync, the pid polled is the recorded inner one under the
+    // FUSE wrap, and this path CANNOT run the mount teardown — it is async and
     // process.exit follows immediately. sweepFuseSessions() at the next boot is
     // what unmounts and reaps the daemon.
-    // 2 s gives the CLI enough time to handle the EOF and exit cleanly.
-    // Atomics.wait is Node's only non-spinning sync sleep primitive.
+    this._stopAllSync(live, this._platform.softSigterm ? 2000 : CLEAN_STOP_GRACE_MS, !this._platform.softSigterm);
+  }
+
+  // Plain-restart counterpart for hosts without a soft SIGTERM: the CLI's
+  // children (bash, conhost) do not die with it, and `scheduleRestart` exits
+  // right after. EOF every live non-temp instance, wait, then tree-kill any
+  // survivor. A no-op where SIGTERM is soft: the children exit on EOF once cc
+  // is gone. (Temps are handled by shutdownTempSync.)
+  stopLiveSync(): void {
+    if (this._platform.softSigterm) return;
+    const live: Instance[] = [];
+    for (const inst of this.byId.values()) {
+      if (!inst.proc || inst.temp) continue;
+      live.push(inst);
+      try { inst.proc.stdin?.end(); } catch { /* gone */ }
+    }
+    this._stopAllSync(live, CLEAN_STOP_GRACE_MS, true);
+  }
+
+  // Bounded sync wait for every instance's process to exit (they were already
+  // sent EOF), polled together so the worst case is `deadlineMs` in total, then
+  // optionally a SIGKILL — a tree kill where the platform has no soft signal —
+  // for any pid still alive. Atomics.wait is Node's only non-spinning sync sleep.
+  private _stopAllSync(live: Instance[], deadlineMs: number, killSurvivors: boolean): void {
     const sab = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      let allDead = true;
+    const deadline = Date.now() + deadlineMs;
+    const survivors = (): number[] => {
+      const out: number[] = [];
       for (const inst of live) {
         const victim = killablePid(inst);
-        if (!victim) continue;
         // ESRCH only — see pidIsAlive. EPERM is not death.
-        if (pidIsAlive(victim)) { allDead = false; break; }
+        if (victim && pidIsAlive(victim)) out.push(victim);
       }
-      if (allDead) break;
-      Atomics.wait(sab, 0, 0, 20);
+      return out;
+    };
+    while (Date.now() < deadline && survivors().length) Atomics.wait(sab, 0, 0, 20);
+    if (!killSurvivors) return;
+    for (const victim of survivors()) {
+      try { this._platform.killProcess(victim, 'SIGKILL'); } catch { /* gone */ }
     }
   }
 

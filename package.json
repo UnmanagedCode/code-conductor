@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "./conductor.sh",
+    "start": "node server.ts",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run typecheck",
     "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs",

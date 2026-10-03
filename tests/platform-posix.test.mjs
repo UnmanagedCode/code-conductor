@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { posixPlatform } from '../src/platform/posix.ts';
-import { selectPlatform, hostPlatform, samePath } from '../src/platform/index.ts';
+import { selectPlatform, hostPlatform, samePath, win32Platform } from '../src/platform/index.ts';
 import { resolveClaudeBin, resolveBackendLaunch } from '../src/claudeLauncher.ts';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -69,8 +69,14 @@ test('killProcess: a handle gets .kill(sig); a pid is signalled directly', async
   assert.ok(await dies(child.pid));
 });
 
-test('selectPlatform: posix for non-Windows hosts, loud failure for win32', () => {
+test('selectPlatform: posix for non-Windows hosts, win32Platform for win32', () => {
   for (const os of ['linux', 'android', 'darwin']) assert.equal(selectPlatform(os), posixPlatform);
-  assert.throws(() => selectPlatform('win32'), /no Platform implementation for win32/);
+  assert.equal(selectPlatform('win32'), win32Platform);
   assert.equal(hostPlatform, posixPlatform);
+});
+
+test('softSigterm, cliEnv and canonicalPath are the identity / no-op on posix', () => {
+  assert.equal(posixPlatform.softSigterm, true);
+  assert.deepEqual(posixPlatform.cliEnv(), {});
+  assert.equal(posixPlatform.canonicalPath('/a/B/c'), '/a/B/c');
 });

@@ -169,6 +169,8 @@ export interface InstanceLike {
   // defers the armed wake while `rotationPending`, and the two mechanisms refuse
   // to interleave on it. See src/instances.ts for the comesUpIdle contract.
   readonly rotationPending: boolean;
+  // Set by Instance.kill(): the process is being torn down on command.
+  readonly _killing: boolean;
   readonly rotationInFlight: 'renew' | 'prune' | null;
   // Wider than rotationPending: covers the reseed window the rotation flag
   // deliberately leaves open. Any destructive rewrite must check the union.
