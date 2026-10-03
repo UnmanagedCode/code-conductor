@@ -33,7 +33,7 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree, requireWorktree, unknownWorktreeMessage,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
-  listDependentWorktrees, dependentsRefusal, resolveProjectCwd,
+  listDependentWorktrees, dependentsRefusal, worktreeLockedRefusal, resolveProjectCwd,
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
@@ -1950,6 +1950,13 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   // yanking the directory out from under live workers. Reused for the dirty
   // check further down, so this is one resolution, not two.
   const wt = await getWorktree(project, worktree);
+  // The user's lock refuses an agent's delete, and it is the ONE refusal here
+  // that force does not override: it precedes the attached-instance check and
+  // the whole `!force` block, so force reaches neither the kill nor
+  // removeWorktree. removeWorktree itself stays lock-agnostic — it is also the
+  // human's REST delete, which the lock deliberately leaves alone. An unknown
+  // name falls through to removeWorktree's 404.
+  if (wt?.locked === true) return worktreeLockedRefusal(wt, 'deleting');
   const wtName = wt?.worktreeName ?? worktree;
   let running: InstanceLike[] = [];
   if (instances) {

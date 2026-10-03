@@ -1697,6 +1697,9 @@ export async function adoptProject(
       await deliverAdoptedConventions(name, real);
       return { ok: true, name, path: real, system: location.kind === 'remote' ? location.system : LOCAL_SYSTEM_ID, remoteId: placement?.remoteId ?? null };
     }
+    // This drops locked worktrees' registrations too, deliberately: the lock
+    // guards branches against being landed or destroyed, and this touches no
+    // branch, checkout or commit — only cc's records of them.
     await removeProjectStoreDir(name);
   }
 
