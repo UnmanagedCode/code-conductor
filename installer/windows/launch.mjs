@@ -1,6 +1,6 @@
 // The launcher the Start-menu stub (code-conductor.exe) runs:
 //   node launch.mjs            start (or reuse) the server and open the UI
-//   node launch.mjs --status   exit 0 iff code-conductor answers on the port
+//   node launch.mjs --status   exit 0 running, 1 not running, 2 unidentified answer
 //   node launch.mjs --stop     kill the running server tree
 // It lives in the checkout, so self-update updates it. Every side effect is
 // injectable (`deps`) so tests drive it without Windows.
@@ -132,25 +132,18 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
       d.openUrl(url);
       return { reused: false, pid: s.pid };
     }
-    if (s.kind === 'unidentified') {
-      // Possibly our own child, but it cannot be told apart from a stranger: leave it alone.
-      log(`start: ${unidentifiedMessage(port)}; leaving it running`);
-      throw new LaunchError(`${unidentifiedMessage(port)}. See ${logFile}`, tail(logFile));
-    }
     if (exited) {
       log(`start: server ${exited}`);
       throw new LaunchError(`code-conductor server ${exited}. See ${logFile}`, tail(logFile));
     }
     if (d.now() > deadline) {
-      // Only a port that answers nothing is ours to clean up; anything that
-      // answers HTTP may be a server we must not kill.
-      if (s.kind === 'none') {
-        log('start: gave up waiting for health; killing the server');
-        try { d.kill(child.pid); } catch { /* already gone */ }
-      } else {
-        log(`start: gave up waiting for health; port answers (${s.kind}), leaving it alone`);
-      }
-      throw new LaunchError(`code-conductor did not become healthy in time. See ${logFile}`, tail(logFile));
+      // The pre-spawn probe refused any existing listener, so child.pid is
+      // provably ours — and the only process this ever kills.
+      const why = s.kind === 'unidentified' ? unidentifiedMessage(port)
+        : s.kind === 'other' ? otherMessage(port) : 'code-conductor did not become healthy in time';
+      log(`start: gave up waiting for the server to identify itself (port: ${s.kind}); killing pid ${child.pid}`);
+      try { if (child.pid) d.kill(child.pid); } catch { /* already gone */ }
+      throw new LaunchError(`${why}. See ${logFile}`, tail(logFile));
     }
     await d.sleep(d.pollMs);
   }
@@ -160,6 +153,7 @@ export async function stop({ env = process.env, ...overrides }) {
   const d = { ...defaults, ...overrides };
   const port = portOf(env);
   const state = await probe(port, d.fetch);
+  if (state.kind === 'unidentified') throw new LaunchError(`cannot stop: ${unidentifiedMessage(port)}; close it by hand`);
   if (state.kind !== 'cc') return { stopped: false };
   if (!Number.isInteger(state.pid)) throw new LaunchError('code-conductor is running but its health endpoint reports no pid');
   d.kill(state.pid);
@@ -171,10 +165,22 @@ export async function stop({ env = process.env, ...overrides }) {
   return { stopped: true, pid: state.pid };
 }
 
+// 0 running, 1 not running (or a stranger holds the port), 2 answering but
+// not identifiable as cc (a build that predates the identity field).
+export async function status(port, fetchFn = fetch, err = console.error) {
+  const kind = (await probe(port, fetchFn)).kind;
+  if (kind === 'cc') return 0;
+  if (kind === 'unidentified') {
+    err(unidentifiedMessage(port));
+    return 2;
+  }
+  return 1;
+}
+
 export async function main(argv, env = process.env) {
   const installDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   if (argv.includes('--status')) {
-    return (await probe(portOf(env))).kind === 'cc' ? 0 : 1;
+    return status(portOf(env));
   }
   try {
     if (argv.includes('--stop')) {

@@ -40,6 +40,8 @@ ShowInstDetails show
       ${If} $0 != 0
         Abort "Could not stop the running code-conductor."
       ${EndIf}
+    ${ElseIf} $0 == 2
+      Abort "A server is answering on the code-conductor port but cannot be identified or stopped automatically. Close it, then run this again."
     ${EndIf}
   ${EndIf}
 !macroend

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
-import { launch, stop, probe } from '../installer/windows/launch.mjs';
+import { launch, stop, probe, status } from '../installer/windows/launch.mjs';
 
 // Tool detection is injected (its own tests are in win-installer-toolchain).
 const detect = { detectGit: () => ({ gitExe: 'C:\\Git\\cmd\\git.exe', cmdDir: 'C:\\Git\\cmd' }), detectClaude: () => null };
@@ -202,26 +202,7 @@ test('launch: a server with the pre-identity health shape is reported clearly an
   } finally { await s.close(); fx.cleanup(); }
 });
 
-test('launch: our own spawned server answering with the old shape is left alone, with a clear message', async () => {
-  const fx = fixture();
-  const s = await healthServer(CC());
-  const port = s.port;
-  await s.close();
-  let server;
-  try {
-    await assert.rejects(launch({
-      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...quick, readCommit: () => 'x',
-      spawn: () => {
-        setTimeout(() => { server = http.createServer((q, res) => res.end(JSON.stringify(OLD_SHAPE))).listen(port, '127.0.0.1'); }, 20);
-        return Object.assign(fakeChild(), { pid: 99 });
-      },
-      kill: () => assert.fail('must not kill a server that answers HTTP'),
-      openUrl: () => assert.fail('must not open'),
-    }), /doesn't identify as code-conductor/);
-  } finally { server?.close(); fx.cleanup(); }
-});
-
-test('launch: a deadline while the port answers HTTP (foreign) does not kill', async () => {
+test('launch: a spawned server that never identifies itself (old shape) is killed by pid at the deadline', async () => {
   const fx = fixture();
   const s = await healthServer(CC());
   const port = s.port;
@@ -229,6 +210,30 @@ test('launch: a deadline while the port answers HTTP (foreign) does not kill', a
   let server;
   let now = 0;
   try {
+    const killed = [];
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...detect, readCommit: () => 'x',
+      sleep: async () => { now += 20_000; }, now: () => now,
+      spawn: () => {
+        server = http.createServer((q, res) => res.end(JSON.stringify(OLD_SHAPE))).listen(port, '127.0.0.1');
+        return Object.assign(fakeChild(), { pid: 99 });
+      },
+      kill: (pid) => killed.push(pid),
+      openUrl: () => assert.fail('must not open'),
+    }), /doesn't identify as code-conductor/);
+    assert.deepEqual(killed, [99]);
+  } finally { server?.close(); fx.cleanup(); }
+});
+
+test('launch: a spawned server behind a foreign answer is killed by pid at the deadline', async () => {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  let server;
+  let now = 0;
+  try {
+    const killed = [];
     await assert.rejects(launch({
       installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...detect, readCommit: () => 'x',
       sleep: async () => { now += 20_000; }, now: () => now,
@@ -236,7 +241,51 @@ test('launch: a deadline while the port answers HTTP (foreign) does not kill', a
         server = http.createServer((q, res) => res.end('<html>')).listen(port, '127.0.0.1');
         return Object.assign(fakeChild(), { pid: 5 });
       },
-      kill: () => assert.fail('must not kill'),
-    }), /did not become healthy/);
+      kill: (pid) => killed.push(pid),
+    }), /in use by another program/);
+    assert.deepEqual(killed, [5]);
   } finally { server?.close(); fx.cleanup(); }
+});
+
+test('launch: a child that died while a stranger holds the port reports the child exit and log tail, no kill', async () => {
+  const fx = fixture();
+  const s = await healthServer(OLD_SHAPE);
+  const port = s.port;
+  await s.close();
+  let stranger;
+  try {
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...quick, readCommit: () => 'x',
+      spawn: (cmd, args, opts) => {
+        stranger = http.createServer((q, res) => res.end(JSON.stringify(OLD_SHAPE))).listen(port, '127.0.0.1');
+        fs.writeSync(opts.stdio[1], 'Error: listen EADDRINUSE\n');
+        const c = Object.assign(fakeChild(), { pid: 8 });
+        setTimeout(() => c.emit('exit', 1, null), 10);
+        return c;
+      },
+      kill: () => assert.fail('a dead child is not killed'),
+    }), (e) => /exited with 1/.test(e.message) && !/pre-Windows/.test(e.message) && /EADDRINUSE/.test(e.tail));
+  } finally { stranger?.close(); fx.cleanup(); }
+});
+
+test('status: 0 for cc, 1 for none or a stranger, 2 with a message for an unidentified answer', async () => {
+  const cc = await healthServer(CC());
+  const old = await healthServer(OLD_SHAPE);
+  const foreign = await healthServer('<html>');
+  try {
+    const msgs = [];
+    assert.equal(await status(cc.port, fetch, (m) => msgs.push(m)), 0);
+    assert.equal(await status(foreign.port, fetch, (m) => msgs.push(m)), 1);
+    assert.deepEqual(msgs, []);
+    assert.equal(await status(old.port, fetch, (m) => msgs.push(m)), 2);
+    assert.match(msgs[0], /doesn't identify as code-conductor/);
+  } finally { await cc.close(); await old.close(); await foreign.close(); }
+  assert.equal(await status(cc.port), 1);
+});
+
+test('stop: an unidentified server cannot be stopped and is reported, not killed', async () => {
+  const old = await healthServer(OLD_SHAPE);
+  try {
+    await assert.rejects(stop({ env: { PORT: String(old.port) }, kill: () => assert.fail('no kill') }), /cannot stop.*doesn't identify/);
+  } finally { await old.close(); }
 });
