@@ -49,7 +49,7 @@ Nothing is written outside `%USERPROFILE%` and HKCU. `/S` silences both the inst
 4. **Checkout** (`checkout` in `setup.mjs`):
    - Fresh: `git clone --branch <branch>` from the bundle with `core.autocrlf=false`, then `origin` is set to the real remote URL. The clone gives `branch.<b>.remote/merge`, so self-update has an upstream.
    - Existing: fetch the bundle; fast-forward when `HEAD` is an ancestor of the bundle tip, otherwise keep the checkout (never downgraded or clobbered). If the fast-forward itself is refused (local changes in the way) the checkout is kept, the log says so, and the install continues; in-app self-update handles it. A non-empty directory that is not a checkout is refused.
-   - The checkout carries local `core.autocrlf=false` regardless of the user's global Git setting.
+   - The checkout carries local `core.autocrlf=false` regardless of the user's global Git setting. Dev clones under the Git installer's default `autocrlf=true` are not covered.
 5. **`npm ci`** in `app\` with the bundled Node's `npm` (full dependencies, matching what self-update's `npm install` yields).
 
 Re-running a newer installer fast-forwards the checkout; an older one keeps it.
