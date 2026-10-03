@@ -429,6 +429,20 @@ export function installSessionActions({
     } catch (e) { alert(`merge failed: ${e.message}`); return null; }
   }
 
+  // Set `target` = {project, worktree}'s lock to `locked` (the commits view is
+  // the only caller). No confirm either way: it is undone by the same click.
+  // Returns the server result, or null when the call threw.
+  async function setWorktreeLock(target, locked) {
+    try {
+      const result = await apiFetch(
+        `/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/lock`,
+        { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ locked }) });
+      if (result.ok) await refreshProjectsAfterOp();
+      else alert(`Cannot change the lock:\n${result.reason}`);
+      return result;
+    } catch (e) { alert(`lock failed: ${e.message}`); return null; }
+  }
+
   // Respawn a crashed/exited instance in place and re-subscribe to it. Reads
   // the active id again after the refresh — the same guard the original had.
   async function respawnActive() {
@@ -445,6 +459,6 @@ export function installSessionActions({
     promoteSession, loadSessions, resumeSession,
     rewindActiveSession, forkActiveSession,
     deleteProject, closeSession, stopSession, deleteSession, removeWorktree,
-    applySessionTitle, syncWorktree, mergeWorktree, respawnActive,
+    applySessionTitle, syncWorktree, mergeWorktree, setWorktreeLock, respawnActive,
   };
 }

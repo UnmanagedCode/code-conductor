@@ -416,6 +416,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 0 0 auto;
   line-height: 1.4;
 }
+.wt-locked { font-size: 11px; flex: 0 0 auto; line-height: 1.4; }
 
 /* Sessions subnode: parallel structure to .worktree-group. */
 .sessions-group { margin: 2px 0 4px 12px; }
@@ -2334,6 +2335,10 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #commits-back:hover,
 #commits-actions button:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
 #commits-actions button:disabled { opacity: 0.5; cursor: default; }
+#commits-actions button[aria-pressed="true"] {
+  color: var(--amber); background: rgba(245,158,11,.15); border-color: var(--amber);
+}
+#commits-actions button[aria-pressed="true"]:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 #commits-info {
   flex: 1 1 auto; min-width: 0;
   display: flex; flex-direction: column; overflow: hidden;

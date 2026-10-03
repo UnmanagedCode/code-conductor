@@ -1122,3 +1122,26 @@ test('the commit-history button names the project, and on a worktree row the pai
   root.querySelector(':scope > li > .project-row .commit-log').click();
   assert.deepEqual(shown[1], ['demo'], 'a project row names the project alone');
 });
+
+// PINS: the 🔒 marker follows `wt.locked` on every render of the same
+// reconciled row — present when locked, removed when unlocked, back on relock.
+test('a locked worktree row carries the 🔒 marker, and it follows the lock across renders', async () => {
+  const { root, sidebar } = await setupSidebar();
+  const withWorktree = (locked) => [proj({
+    worktrees: [{
+      worktreeName: 'wt-a', branch: 'code-conductor/wt-a', baseBranch: 'main', baseSha: 'deadbeef0000',
+      parentProject: 'demo', sessions: { count: 0, lastActivity: 0 }, ...(locked ? { locked: true } : {}),
+    }],
+  })];
+  sidebar.setInstances([]);
+  sidebar.setProjects(withWorktree(true));
+  const marker = root.querySelector('.worktree-row .wt-locked');
+  assert.ok(marker, 'a locked row carries the marker');
+  assert.match(marker.title, /locked/i);
+
+  sidebar.setProjects(withWorktree(false));
+  assertNull(root.querySelector('.worktree-row .wt-locked'), 'an unlocked row does not');
+
+  sidebar.setProjects(withWorktree(true));
+  assert.ok(root.querySelector('.worktree-row .wt-locked'), 'relocking brings it back');
+});

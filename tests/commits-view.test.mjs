@@ -102,6 +102,7 @@ async function setupView() {
       <div id="commits-actions" hidden>
         <button id="commits-sync-btn"></button>
         <button id="commits-merge-btn"></button>
+        <button id="commits-lock-btn"></button>
       </div>
       <div id="commits-list"></div>
     </section>
@@ -131,30 +132,49 @@ async function setupRealView() {
   globalThis.history = window.history;
   window.document.documentElement.innerHTML = html;
 
+  // `payloads[url]` is merged into that URL's /commits answer (e.g. a worktree's
+  // `locked`), read when the answer is consumed; `hold(url)` makes the next
+  // answers for `url` wait until the returned release() is called.
   const requested = [];
+  const payloads = {};
+  const holds = {};
   globalThis.fetch = async (url) => {
-    requested.push(String(url));
+    const u = String(url);
+    requested.push(u);
+    if (holds[u]) await holds[u];
     return { ok: true, json: async () => ({
       project: 'demo', branch: 'code-conductor/feature', truncated: false, limit: 100,
       hasUncommitted: false, aheadCount: 0, aheadOf: null, commits: [],
+      ...payloads[u],
     }) };
+  };
+  const hold = (url) => {
+    let release;
+    holds[url] = new Promise(r => { release = r; });
+    return () => { delete holds[url]; release(); };
   };
   // Targets each injected action was called with, the result it answers, and
   // `impl` for a test that needs to control the action itself (it is installed once).
-  const calls = { sync: [], merge: [] };
-  const results = { sync: { ok: true }, merge: { ok: true } };
+  // A lock call records [target, locked].
+  const calls = { sync: [], merge: [], lock: [] };
+  const results = { sync: { ok: true }, merge: { ok: true }, lock: { ok: true, locked: true } };
   const impl = {};
   for (const kind of ['sync', 'merge']) {
     impl[kind] = async (t) => { calls[kind].push(t); return results[kind]; };
   }
+  impl.lock = async (t, locked) => { calls.lock.push([t, locked]); return results.lock; };
   const { installCommits } = await import('../public/commits.js');
   const commits = installCommits({
     syncWorktree: (t) => impl.sync(t),
     mergeWorktree: (t) => impl.merge(t),
+    setLock: (t, locked) => impl.lock(t, locked),
   });
   const el = (id) => document.getElementById(id);
-  return { window, requested, calls, results, impl, commits, el };
+  return { window, requested, payloads, hold, calls, results, impl, commits, el };
 }
+const MERGE_TITLE = /id="commits-merge-btn"[^>]*title="([^"]*)"/.exec(
+  await fs.readFile(path.join(PUB, 'index.html'), 'utf8'))[1];
+const commitsUrl = (wt, project = 'demo') => `/api/projects/${project}/worktrees/${wt}/commits`;
 const flush = () => new Promise(r => setTimeout(r, 0));
 
 test('ahead divider is inserted above the first already-merged row', async () => {
@@ -513,8 +533,8 @@ test('a result landing after the view moved to another target does not reload it
 });
 
 // PINS: single dispatch — a second tap while a confirm/alert chain is in flight
-// must not start a second action.
-test('both buttons are disabled while an action is in flight and re-enabled after', async () => {
+// must not start a second action, and that holds for all three buttons.
+test('every action button is disabled while an action is in flight and re-enabled after', async () => {
   const { commits, impl, el } = await setupRealView();
   let finish; let started = 0;
   impl.sync = () => { started++; return new Promise(r => { finish = r; }); };
@@ -524,10 +544,177 @@ test('both buttons are disabled while an action is in flight and re-enabled afte
   await flush();
   assert.equal(el('commits-sync-btn').disabled, true);
   assert.equal(el('commits-merge-btn').disabled, true);
+  assert.equal(el('commits-lock-btn').disabled, true);
   el('commits-sync-btn').click();
   assert.equal(started, 1, 'a disabled button does not start a second action');
   finish({ ok: false });
   await flush();
   assert.equal(el('commits-sync-btn').disabled, false);
   assert.equal(el('commits-merge-btn').disabled, false);
+  assert.equal(el('commits-lock-btn').disabled, false);
+});
+
+// ── The Lock toggle ──────────────────────────────────────────────────────────
+
+// PINS: the view shows the payload's lock state — pressed Lock and a disabled
+// Merge whose title says why when locked; unpressed Lock and an enabled Merge
+// with the markup's own title when not.
+test('the Lock button and Merge follow the payload\'s `locked`', async (t) => {
+  await t.test('locked', async () => {
+    const { commits, payloads, el } = await setupRealView();
+    payloads[commitsUrl('wt')] = { locked: true };
+    commits.open('demo', 'wt');
+    await flush();
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'true');
+    assert.equal(el('commits-lock-btn').disabled, false);
+    assert.equal(el('commits-merge-btn').disabled, true);
+    assert.match(el('commits-merge-btn').title, /locked/i);
+  });
+  await t.test('unlocked', async () => {
+    const { commits, payloads, el } = await setupRealView();
+    payloads[commitsUrl('wt')] = { locked: false };
+    commits.open('demo', 'wt');
+    await flush();
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false');
+    assert.equal(el('commits-lock-btn').disabled, false);
+    assert.equal(el('commits-merge-btn').disabled, false);
+    assert.equal(el('commits-merge-btn').title, MERGE_TITLE);
+  });
+});
+
+// PINS: a click asks for the opposite of the shown state for the on-screen
+// target, applies the SERVER's answer (not the requested state), and does not
+// reload the list.
+test('clicking Lock requests the toggled state and shows the server\'s answer', async (t) => {
+  await t.test('unlocked → lock, answered locked', async () => {
+    const { commits, payloads, results, calls, requested, el } = await setupRealView();
+    payloads[commitsUrl('wt')] = { locked: false };
+    commits.open('demo', 'wt');
+    await flush();
+    const before = requested.length;
+    results.lock = { ok: true, worktree: 'wt', locked: true };
+    el('commits-lock-btn').click();
+    await flush();
+    assert.deepEqual(calls.lock, [[{ project: 'demo', worktree: 'wt' }, true]]);
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'true');
+    assert.equal(el('commits-merge-btn').disabled, true);
+    assert.equal(requested.length, before, 'the lock action does not reload the list');
+  });
+  await t.test('locked → unlock', async () => {
+    const { commits, payloads, results, calls, el } = await setupRealView();
+    payloads[commitsUrl('wt')] = { locked: true };
+    commits.open('demo', 'wt');
+    await flush();
+    results.lock = { ok: true, worktree: 'wt', locked: false };
+    el('commits-lock-btn').click();
+    await flush();
+    assert.deepEqual(calls.lock, [[{ project: 'demo', worktree: 'wt' }, false]]);
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false');
+    assert.equal(el('commits-merge-btn').disabled, false);
+  });
+  await t.test('the answer wins over the request', async () => {
+    const { commits, payloads, results, el } = await setupRealView();
+    payloads[commitsUrl('wt')] = { locked: false };
+    commits.open('demo', 'wt');
+    await flush();
+    results.lock = { ok: true, worktree: 'wt', locked: false };
+    el('commits-lock-btn').click();
+    await flush();
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false');
+    assert.equal(el('commits-merge-btn').disabled, false);
+  });
+  await t.test('a refused or cancelled lock changes nothing', async () => {
+    for (const result of [{ ok: false, reason: 'no' }, null]) {
+      const { commits, payloads, results, el } = await setupRealView();
+      payloads[commitsUrl('wt')] = { locked: false };
+      commits.open('demo', 'wt');
+      await flush();
+      results.lock = result;
+      el('commits-lock-btn').click();
+      await flush();
+      assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false', JSON.stringify(result));
+      assert.equal(el('commits-merge-btn').disabled, false, JSON.stringify(result));
+    }
+  });
+});
+
+// PINS: the re-enable after an action re-applies the lock — Merge on a locked
+// worktree stays disabled after a Sync, whether that Sync reloaded or not.
+test('a Sync on a locked view leaves Merge disabled', async (t) => {
+  for (const [name, result] of [['ok (reloads)', { ok: true }], ['refused (no reload)', { ok: false, reason: 'no' }]]) {
+    await t.test(name, async () => {
+      const { commits, payloads, results, el } = await setupRealView();
+      payloads[commitsUrl('wt')] = { locked: true };
+      commits.open('demo', 'wt');
+      await flush();
+      results.sync = result;
+      el('commits-sync-btn').click();
+      await flush();
+      assert.equal(el('commits-sync-btn').disabled, false, 'the action settled');
+      assert.equal(el('commits-merge-btn').disabled, true);
+      assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'true');
+    });
+  }
+});
+
+// PINS: no lock state carries across targets — reopening on another worktree
+// shows the lock as unknown (Lock disabled, unpressed) until that worktree's own
+// payload lands, and then shows that payload's state.
+test('reopening onto another worktree resets the lock state until its payload lands', async () => {
+  const { commits, payloads, hold, el } = await setupRealView();
+  payloads[commitsUrl('wt1')] = { locked: true };
+  payloads[commitsUrl('wt2')] = { locked: false };
+  commits.open('demo', 'wt1');
+  await flush();
+  assert.equal(el('commits-merge-btn').disabled, true, 'precondition: wt1 shows locked');
+
+  const release = hold(commitsUrl('wt2'));
+  commits.open('demo', 'wt2');
+  await flush();
+  assert.equal(el('commits-lock-btn').disabled, true, 'unknown until the payload lands');
+  assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false');
+  assert.equal(el('commits-merge-btn').disabled, false, 'wt1\'s lock does not disable wt2\'s Merge');
+  assert.equal(el('commits-merge-btn').title, MERGE_TITLE);
+
+  release();
+  await flush();
+  assert.equal(el('commits-lock-btn').disabled, false);
+  assert.equal(el('commits-merge-btn').disabled, false);
+});
+
+// PINS: the stale-target guard on the lock state's two writers — a lock result,
+// or a commits payload, landing after the view moved to another worktree does
+// not change the view it moved to.
+test('a lock result or payload landing after the view moved on does not touch the new view', async (t) => {
+  await t.test('a lock result', async () => {
+    const { commits, payloads, impl, el } = await setupRealView();
+    payloads[commitsUrl('wt1')] = { locked: false };
+    payloads[commitsUrl('wt2')] = { locked: false };
+    let finish;
+    impl.lock = () => new Promise(r => { finish = r; });
+    commits.open('demo', 'wt1');
+    await flush();
+    el('commits-lock-btn').click();
+    commits.open('demo', 'wt2');
+    await flush();
+    finish({ ok: true, worktree: 'wt1', locked: true });
+    await flush();
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false');
+    assert.equal(el('commits-merge-btn').disabled, false);
+  });
+  await t.test('a commits payload', async () => {
+    const { commits, payloads, hold, el } = await setupRealView();
+    payloads[commitsUrl('wt1')] = { locked: true };
+    payloads[commitsUrl('wt2')] = { locked: false };
+    const release = hold(commitsUrl('wt1'));
+    commits.open('demo', 'wt1');
+    await flush();
+    commits.open('demo', 'wt2');
+    await flush();
+    assert.equal(el('commits-lock-btn').disabled, false, 'precondition: wt2\'s payload landed');
+    release();
+    await flush();
+    assert.equal(el('commits-lock-btn').getAttribute('aria-pressed'), 'false');
+    assert.equal(el('commits-merge-btn').disabled, false);
+  });
 });

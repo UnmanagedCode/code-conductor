@@ -78,7 +78,7 @@ function buildDOM(document) {
   el(document, 'pre', 'pll-tail-pre', pllTail);
 
   const commits = el(document, 'section', 'commits-view', main, true);
-  for (const id of ['commits-back', 'commits-title', 'commits-stats', 'commits-list', 'commits-actions', 'commits-sync-btn', 'commits-merge-btn']) el(document, 'div', id, commits);
+  for (const id of ['commits-back', 'commits-title', 'commits-stats', 'commits-list', 'commits-actions', 'commits-sync-btn', 'commits-merge-btn', 'commits-lock-btn']) el(document, 'div', id, commits);
 
   const review = el(document, 'section', 'review-view', main, true);
   for (const id of ['review-back', 'review-title', 'review-stats', 'review-commit-message', 'review-file-list']) el(document, 'div', id, review);

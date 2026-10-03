@@ -633,9 +633,9 @@ export class Sidebar {
   }
 
   // Create-or-update the head row of a worktree item (buttons + name + base +
-  // the merge-status pill). Buttons capture stable strings, so they're built
-  // create-only; the pill is inserted/removed at its fixed position (between
-  // name and base) on update. `readOnly` (the Conductors tree, fixed for the
+  // the merge-status pill + the 🔒 lock marker). Buttons capture stable strings,
+  // so they're built create-only; the pill and the marker are inserted/removed
+  // at their fixed positions (between name and base, pill first) on update. `readOnly` (the Conductors tree, fixed for the
   // node's life) builds it without the spawn and remove buttons.
   _worktreeHead(existing, { project: p, wt, readOnly = false }) {
     let head = existing;
@@ -666,8 +666,12 @@ export class Sidebar {
       head._nameSpan = nameSpan;
       head._baseSpan = baseSpan;
       head._pill = el('span', { class: 'wt-unmerged' });
+      head._lock = el('span', {
+        class: 'wt-locked',
+        title: 'Locked against merging and against deletion by agents — unlock from its commit history (≡)',
+      }, '🔒');
     }
-    const { _nameSpan: nameSpan, _baseSpan: baseSpan, _pill: pill } = head;
+    const { _nameSpan: nameSpan, _baseSpan: baseSpan, _pill: pill, _lock: lock } = head;
     nameSpan.textContent = wt.worktreeName;
     nameSpan.title = `${wt.branch}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}`;
     baseSpan.textContent = `← ${wt.baseBranch}`;
@@ -688,6 +692,11 @@ export class Sidebar {
       if (!pill.isConnected) nameSpan.after(pill);
     } else if (pill.isConnected) {
       pill.remove();
+    }
+    if (wt.locked === true) {
+      if (!lock.isConnected) baseSpan.before(lock);
+    } else if (lock.isConnected) {
+      lock.remove();
     }
     return head;
   }
