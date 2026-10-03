@@ -82,10 +82,14 @@ export function launcherEnv({ env, installDir, git, claude }) {
   return out;
 }
 
-// Git's `cmd` dir and git.exe, from the Git Bash the server will use.
-function gitOfBash(bash) {
-  const cmdDir = w.join(gitRootOfBash(bash), 'cmd');
-  return { gitExe: w.join(cmdDir, 'git.exe'), cmdDir };
+// The git.exe to put on the server's PATH: the Git Bash install's own
+// (`cmd`, then `bin`), else one on PATH; null when none exists, e.g. a
+// CLAUDE_CODE_GIT_BASH_PATH outside a Git for Windows layout.
+function gitOfBash(bash, env, exists) {
+  const root = gitRootOfBash(bash);
+  const own = ['cmd', 'bin'].map((d) => w.join(root, d, 'git.exe')).find(exists);
+  const gitExe = own ?? findOnPath('git', env, exists);
+  return gitExe ? { gitExe, cmdDir: w.dirname(gitExe) } : null;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -130,6 +134,7 @@ export class LaunchError extends Error {
 }
 
 function defaultCommit(git, appDir) {
+  if (!git) return 'unknown';
   try {
     return execFileSync(git.gitExe, ['-C', appDir, 'rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim();
   } catch { return 'unknown'; }
@@ -151,6 +156,7 @@ const defaults = {
   },
   readCommit: defaultCommit,
   mkdir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+  exists: fs.existsSync,
   gitBash: (env) => resolveGitBash(env, fs.existsSync),
   detectClaude,
 };
@@ -173,12 +179,13 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
     return { reused: true, pid: state.pid };
   }
 
-  let git;
+  let bash;
   try {
-    git = gitOfBash(d.gitBash(env));
+    bash = d.gitBash(env);
   } catch {
     throw new LaunchError('Git for Windows (with Git Bash) was not found; run the installer again');
   }
+  const git = gitOfBash(bash, env, d.exists);
   const claude = d.detectClaude(env);
   const serverEnv = launcherEnv({ env, installDir, git, claude });
   const projectsRoot = getEnv(serverEnv, 'PROJECTS_ROOT');
@@ -193,6 +200,7 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
   log(`start: commit ${d.readCommit(git, appDir)}, cwd ${appDir}`);
   log(`start: PROJECTS_ROOT=${projectsRoot}`);
   log(`start: PATH head ${pathHead}`);
+  log(`start: git bash ${bash}, git ${git ? git.gitExe : 'NOT FOUND in its install or on PATH'}`);
   log(`start: claude ${claude ? claude.claudeExe : 'NOT FOUND (run "claude auth login" after installing it)'}`);
   d.mkdir(projectsRoot);
 

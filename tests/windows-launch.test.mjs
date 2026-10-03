@@ -18,7 +18,14 @@ after(() => {
   const added = fs.readdirSync(process.cwd()).filter((n) => !cwdBefore.has(n));
   assert.deepEqual(added, [], 'the tests must not create anything in the cwd');
 });
-const detect = { mkdir: (dir) => made.push(dir), gitBash: () => 'C:\\Git\\bin\\bash.exe', detectClaude: () => null };
+const existsIn = (...files) => {
+  const set = new Set(files.map((f) => f.toLowerCase()));
+  return (p) => set.has(p.toLowerCase());
+};
+const USER = 'C:\\Users\\Jo Bloggs';
+const detect = {
+  mkdir: (dir) => made.push(dir), gitBash: () => 'C:\\Git\\bin\\bash.exe', exists: existsIn('C:\\Git\\cmd\\git.exe'), detectClaude: () => null,
+};
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
   const installDir = path.join(root, 'inst');
@@ -316,11 +323,43 @@ test('launch: no Git Bash fails with a run-the-installer-again message, nothing 
   } finally { fx.cleanup(); }
 });
 
-const existsIn = (...files) => {
-  const set = new Set(files.map((f) => f.toLowerCase()));
-  return (p) => set.has(p.toLowerCase());
-};
-const USER = 'C:\\Users\\Jo Bloggs';
+
+// launch() up to the spawn: the server env and the git readCommit was given.
+async function spawnedWith(deps) {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  let seen;
+  try {
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...quick, ...deps,
+      readCommit: (git) => { seen = { git }; return 'x'; },
+      spawn: (cmd, args, opts) => { seen.env = opts.env; const c = fakeChild(); setTimeout(() => c.emit('exit', 1), 5); return c; },
+    }), /exited with 1/);
+    seen.node = path.win32.join(fx.installDir, 'node');
+    seen.log = fs.readFileSync(path.join(fx.installDir, 'logs', 'server.log'), 'utf8');
+    return seen;
+  } finally { fx.cleanup(); }
+}
+
+test('launch: the server PATH gets the Git install\'s existing git.exe dir: cmd, else bin, else PATH; none is omitted', async () => {
+  const binOnly = await spawnedWith({ exists: existsIn('C:\\Git\\bin\\git.exe') });
+  assert.equal(binOnly.git.gitExe, 'C:\\Git\\bin\\git.exe');
+  assert.ok(binOnly.env.Path.startsWith(`${binOnly.node};C:\\Git\\bin;`), binOnly.env.Path);
+
+  const onPath = await spawnedWith({
+    gitBash: () => 'X:\\tools\\bash.exe',
+    exists: existsIn('C:\\Windows\\git.exe'),
+  });
+  assert.equal(onPath.git.gitExe, 'C:\\Windows\\git.exe');
+  assert.ok(onPath.env.Path.startsWith(`${onPath.node};C:\\Windows`), onPath.env.Path);
+
+  const none = await spawnedWith({ gitBash: () => 'X:\\tools\\bash.exe', exists: existsIn() });
+  assert.equal(none.git, null);
+  assert.equal(none.env.Path, `${none.node};C:\\Windows`);
+  assert.match(none.log, /git bash X:\\tools\\bash\.exe, git NOT FOUND/);
+});
 
 test('detectClaude: .cmd shim rejected, .local\\bin fallback used', () => {
   const exe = `${USER}\\.local\\bin\\claude.exe`;

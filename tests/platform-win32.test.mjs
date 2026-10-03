@@ -26,6 +26,7 @@ test('resolveGitBash: tiers win in order', () => {
 test('resolveGitBash: Path spelling, Git\\bin on PATH, and the failure lists every candidate', () => {
   assert.equal(resolveGitBash({ Path: `C:\\x;${GIT}\\cmd` }, existsIn(`${GIT}\\cmd\\git.exe`, BASH)), BASH);
   assert.equal(resolveGitBash({ PATH: `${GIT}\\bin` }, existsIn(`${GIT}\\bin\\git.exe`, BASH)), BASH);
+  assert.equal(resolveGitBash({ PATH: `C:\\x;"${GIT}\\cmd"` }, existsIn(`${GIT}\\cmd\\git.exe`, BASH)), BASH, 'a quoted PATH entry');
   assert.throws(
     () => resolveGitBash({ CLAUDE_CODE_GIT_BASH_PATH: 'Z:\\b.exe', PATH: `${GIT}\\cmd`, ProgramFiles: 'C:\\Program Files' }, existsIn(`${GIT}\\cmd\\git.exe`)),
     (e) => /Git for Windows' bash\.exe not found/.test(e.message)

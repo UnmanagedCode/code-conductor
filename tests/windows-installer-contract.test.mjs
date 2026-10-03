@@ -1,7 +1,8 @@
 // What the Windows installer (the separate code-conductor-windows project)
-// relies on from a cc ref: docs/windows.md#installer-contract. One test per
-// clause pinned here; a failure means an installer release breaks against
-// this tree, so change the contract (and the installer) rather than the test.
+// relies on from a cc ref: docs/windows.md#installer-contract. Every clause
+// has a test here except C1 (doc only) and C7 (tests/windows-launch.test.mjs).
+// A failure means an installer release breaks against this tree, so change
+// the contract (and the installer) rather than the test.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,14 +46,15 @@ test('C4: the launcher is bin/windows-launch.mjs and its install dir is the chec
 });
 
 // The launcher run from a throwaway <install>\app, so default mode's logs\
-// lands in the temp install dir rather than beside this checkout.
+// lands in the temp install dir rather than beside this checkout. A copy, not
+// a link: node runs a linked entry from its real path. `src` is linked whole,
+// so whatever the launcher imports from it resolves as in a real checkout.
 function installLayout() {
   const inst = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-'));
   const app = path.join(inst, 'app');
-  for (const f of [LAUNCHER, 'src/platform/win32.ts', 'package.json']) {
-    fs.mkdirSync(path.dirname(path.join(app, f)), { recursive: true });
-    fs.copyFileSync(path.join(repo, f), path.join(app, f));
-  }
+  fs.mkdirSync(path.join(app, path.dirname(LAUNCHER)), { recursive: true });
+  fs.copyFileSync(path.join(repo, LAUNCHER), path.join(app, LAUNCHER));
+  fs.symlinkSync(path.join(repo, 'src'), path.join(app, 'src'), 'junction');
   return { inst, launcher: path.join(app, LAUNCHER), cleanup: () => fs.rmSync(inst, { recursive: true, force: true }) };
 }
 
@@ -96,7 +98,7 @@ test('C5: exit codes of --status, --stop and the default mode, from any cwd', as
   } finally { await cc.close(); await unidentified.close(); await html.close(); L.cleanup(); }
 });
 
-test('C6: --status recognises a real server by /api/health app + pid', async () => {
+test('C6: a real server\'s /api/health carries app (what --status checks) and an integer pid (what --stop kills)', async () => {
   const L = installLayout();
   const srv = await bootServer();
   try {
@@ -115,10 +117,11 @@ test('C8: Git Bash and claude are found at the installer\'s locations with an em
   assert.deepEqual(detectClaude(env, existsIn(claude)), { claudeExe: claude, dir: `${USER}\\.local\\bin` });
 });
 
-test('C8: every Git layout the installer accepts (git.exe in cmd or bin, plus bin\\bash.exe) resolves to the same root', () => {
+test('C8: every Git layout the installer accepts (git.exe in cmd or bin, quoted PATH entries included, plus bin\\bash.exe) resolves to the same root', () => {
   const layouts = [
     { root: 'C:\\Git', env: { PATH: 'C:\\Git\\cmd' }, git: 'C:\\Git\\cmd\\git.exe' },
     { root: 'C:\\Git', env: { PATH: 'C:\\Git\\bin' }, git: 'C:\\Git\\bin\\git.exe' },
+    { root: 'C:\\Git', env: { PATH: '"C:\\Git\\cmd"' }, git: 'C:\\Git\\cmd\\git.exe' },
     { root: `${LOCAL}\\Programs\\Git`, env: { PATH: '', LOCALAPPDATA: LOCAL }, git: `${LOCAL}\\Programs\\Git\\cmd\\git.exe` },
     { root: 'C:\\Program Files\\Git', env: { PATH: '', ProgramFiles: 'C:\\Program Files' }, git: 'C:\\Program Files\\Git\\cmd\\git.exe' },
   ];

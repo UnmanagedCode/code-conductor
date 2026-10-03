@@ -27,7 +27,8 @@ function bashCandidates(env: Win32Env, exists: (p: string) => boolean): string[]
   const out: string[] = [];
   if (env.CLAUDE_CODE_GIT_BASH_PATH) out.push(env.CLAUDE_CODE_GIT_BASH_PATH);
   // `Git\cmd` (the only dir the installer puts on PATH) and `Git\bin` both hold git.exe.
-  for (const dir of (env.PATH ?? env.Path ?? '').split(';')) {
+  for (const entry of (env.PATH ?? env.Path ?? '').split(';')) {
+    const dir = entry.replace(/^"|"$/g, '');
     if (!dir || !exists(w.join(dir, 'git.exe'))) continue;
     out.push(w.join(dir, '..', 'bin', 'bash.exe'), w.join(dir, 'bash.exe'));
   }
