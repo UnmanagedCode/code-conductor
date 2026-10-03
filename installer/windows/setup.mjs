@@ -49,10 +49,20 @@ async function mustRun(log, file, args, opts) {
   if (code !== 0) throw new Error(`${path.basename(file)} ${args.slice(0, 2).join(' ')} failed (exit ${code})`);
 }
 
-async function download(url) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`download ${url} failed: HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+// Retried: the first attempt after a cold network is the one that times out.
+async function download(url, attempts = 3) {
+  let last;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await fetch(url, { redirect: 'follow' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (e) {
+      last = new Error(`download ${url} failed (attempt ${i}/${attempts}): ${e.message}${e.cause ? ` (${e.cause.code || e.cause.message})` : ''}`);
+      if (i < attempts) await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
+  throw last;
 }
 
 export async function ensureGit({ env, pin, log, fetchBuffer = download, run = runLogged }) {
