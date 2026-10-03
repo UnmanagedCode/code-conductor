@@ -256,7 +256,7 @@ export async function generateSummary(sessionId: string, place: TranscriptPlacem
     const child = spawn(command, args, {
       ...platform.spawnOptions('child'),
       cwd: spawnDir,
-      env: { ...cliEnvBase(), ...backendEnvVars },
+      env: { ...cliEnvBase(platform), ...backendEnvVars },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

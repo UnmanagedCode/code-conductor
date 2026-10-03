@@ -112,6 +112,8 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   // /api/health for a CHANGED bootId to detect the replacement process).
   const healthBefore = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
   assert.ok(healthBefore?.bootId, 'GET /api/health returns a bootId');
+  assert.equal(healthBefore.app, 'code-conductor');
+  assert.equal(healthBefore.pid, originalPid, 'health.pid is the booted server\'s pid');
 
   // Never POST a destructive endpoint at a port whose owner we have not
   // established. The banner above came from OUR child; these together say the

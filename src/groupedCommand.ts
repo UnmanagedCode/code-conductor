@@ -70,7 +70,6 @@ export function runGroupedCommand(
 ): Promise<GroupedCommandResult> {
   return new Promise((resolve) => {
     const start = Date.now();
-    const { command: cmd, args } = platform.commandFor(spec);
     let proc: ReturnType<typeof spawn>;
     // Output accounting is the SHARED implementation (src/systems/execCollector.ts):
     // the wire `exec` must be indistinguishable from this one, so both read the
@@ -80,6 +79,7 @@ export function runGroupedCommand(
       () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform }),
     );
     try {
+      const { command: cmd, args } = platform.commandFor(spec);
       proc = spawn(cmd, args, {
         cwd, env, ...platform.spawnOptions('group'),
         // 'ignore' gives the command a closed stdin so an interactive one sees
@@ -89,7 +89,8 @@ export function runGroupedCommand(
     } catch (e) {
       // spawn throws SYNCHRONOUSLY for an invalid argument — a NUL byte in an
       // argv entry is the reachable case, since the caller's own string lands
-      // there — where a missing binary or a bad cwd arrives as an 'error'
+      // there (so does `commandFor`, when the host shell cannot be resolved) —
+      // where a missing binary or a bad cwd arrives as an 'error'
       // event. The runner never rejects either way: both become a spawnError.
       const msg = e instanceof Error ? e.message : String(e);
       resolve(collector.result(1, { timedOut: false, spawnError: msg, durationMs: Date.now() - start }));

@@ -538,7 +538,16 @@ export function createPluginHost(opts: {
         CONDUCTOR_PROJECT_DIR: selfProjectDir(),
         ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
       };
-      const rec = await supervisor.start({ id, manifest: { backend }, cwd, env });
+      let rec;
+      try { rec = await supervisor.start({ id, manifest: { backend }, cwd, env }); }
+      catch (e) {
+        // The spawn itself failed (e.g. the host shell cannot be resolved):
+        // the same failure as a backend that never became ready.
+        const tail = e instanceof Error ? e.message : String(e);
+        await store.clearRuntime(id);
+        recordCrash(id, tail);
+        throw httpError(502, `plugin '${id}' failed to start`, { tail });
+      }
       await store.recordStart(id, rec);
 
       const settled = await waitSettled(id);

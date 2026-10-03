@@ -17,6 +17,14 @@ export interface PlatformCapabilities { remoteSystems: boolean; fuseUnion: boole
 
 export interface Platform {
   capabilities: PlatformCapabilities;
+  // True when SIGTERM lets the target run its shutdown handler; false where it
+  // is `TerminateProcess` (the target gets no chance to flush or reap children).
+  softSigterm: boolean;
+  // Variables the claude CLI needs on this host, merged UNDER the caller's env.
+  cliEnv(): Record<string, string>;
+  // The spelling the claude CLI's `getcwd()` reports for an existing directory
+  // (it names its transcript dir after that spelling).
+  canonicalPath(p: string): string;
   // `{shell}` → the login shell running the string; `{argv}` → executable + args.
   commandFor(spec: ExecSpec): { command: string; args: string[] };
   // Base spawn options; spread FIRST so a call site's own options win.

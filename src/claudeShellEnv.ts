@@ -134,7 +134,7 @@ Then stop — do not summarize the output.`;
   await new Promise<void>((resolve, reject) => {
     let proc;
     try {
-      proc = spawn(spawnCommand, args, { ...platform.spawnOptions('child'), cwd: spawnDir, env: { ...cliEnvBase(), ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
+      proc = spawn(spawnCommand, args, { ...platform.spawnOptions('child'), cwd: spawnDir, env: { ...cliEnvBase(platform), ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
       reject(new Error(`claudeShellEnv: failed to spawn claude -p: ${errMsg(err)}`));
       return;

@@ -15,7 +15,7 @@ import {
 } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
 import type { System } from './systems/system.ts';
-import { samePath } from './platform/index.ts';
+import { hostPlatform, samePath } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 
 // Re-exported from its implementation on the local system: the store is always
@@ -69,8 +69,19 @@ const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 // Project + worktree directories themselves stay clean.
 export const ORCH_STORE_DIRNAME = '.code-conductor';
 
+// Memoised per raw value: called per request, and tests swap PROJECTS_ROOT.
+const canonicalRoots = new Map<string, string>();
+
+// The root spelled as the claude CLI's `getcwd()` reports it, so every cwd
+// derived from it names the transcript dir the CLI will use.
 export function projectsRoot(): string {
-  return process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
+  const raw = process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
+  let canon = canonicalRoots.get(raw);
+  if (canon === undefined) {
+    canon = hostPlatform.canonicalPath(raw);
+    canonicalRoots.set(raw, canon);
+  }
+  return canon;
 }
 
 // The conductor's own running checkout dir (the dir holding server.ts /
