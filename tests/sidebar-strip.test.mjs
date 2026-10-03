@@ -17,6 +17,8 @@ const entryOf = (strip, sid) => strip.querySelector(`[data-key="entry:${sid}"] >
 const groupSids = (strip, name) =>
   [...strip.querySelectorAll(`.strip-group.${name} .strip-list > li`)].map(li => li.dataset.key.slice(6));
 const heads = (strip) => [...strip.querySelectorAll('.strip-head')].map(h => h.textContent);
+// The ring selector styles.css draws on an unread entry's status dot.
+const RING = '.strip-entry.unread > .dot';
 const ask = (kind, source) => ({ awaitingUser: kind, awaitingUserSource: source });
 
 test('the slot has no children when nothing is eligible', async () => {
@@ -323,10 +325,11 @@ test('a strip × after a crash + resume closes the new instanceId', async () => 
 });
 
 // Invariant: the Finished group marks its unread entries (turnEndSeq >
-// viewedSeq): .strip-entry.unread with exactly one trailing .strip-unread dot,
-// the head counts them as `· K new`, and the reason says `· unread`; a read
-// entry carries none of it, and viewing an entry clears all of it.
-test('unread Finished entries: the dot, the class, the head count and the reason', async (t) => {
+// viewedSeq): .strip-entry.unread, whose status dot the ring selector matches;
+// the entry holds only the dot and the title, with no trailing element. The
+// head counts them as `· K new`, and the reason says `· unread`; a read entry
+// carries none of it, and viewing an entry clears all of it.
+test('unread Finished entries: the ring, the class, the head count and the reason', async (t) => {
   const { strip, sidebar } = await setupSidebar();
   const fixture = (u) => [
     conductor('U', { title: 'Um', turnEndSeq: 2, viewedSeq: 1, ...u }),
@@ -334,20 +337,22 @@ test('unread Finished entries: the dot, the class, the head count and the reason
     conductor('S', { title: 'Sm', turnEndSeq: 2, viewedSeq: 2 }),
   ];
   await render(sidebar, { instances: fixture() });
-  const dots = (sid) => entryOf(strip, sid).querySelectorAll(':scope > .strip-unread');
+  const dotOf = (sid) => entryOf(strip, sid).querySelector(':scope > .dot');
 
-  await t.test('an unread entry has .unread and one trailing dot', () => {
+  await t.test('an unread entry has .unread and a ringed dot', () => {
     for (const sid of ['U', 'h']) {
       const e = entryOf(strip, sid);
       assert.ok(e.classList.contains('unread'), `${sid}: .unread`);
-      assert.equal(dots(sid).length, 1, `${sid}: one dot`);
-      assert.ok(e.lastElementChild === dots(sid)[0], `${sid}: the dot follows the title`);
-      assert.equal(dots(sid)[0].getAttribute('aria-hidden'), 'true');
+      assert.ok(dotOf(sid).matches(RING), `${sid}: ringed dot`);
+      assert.equal(dotOf(sid).className, 'dot idle', `${sid}: plain idle fill`);
+      assert.equal(e.children.length, 2, `${sid}: dot and title only`);
+      assert.ok(e.lastElementChild.classList.contains('strip-title'), `${sid}: no trailing element`);
     }
   });
   await t.test('a read entry has neither', () => {
     assert.ok(!entryOf(strip, 'S').classList.contains('unread'));
-    assert.equal(dots('S').length, 0);
+    assert.ok(!dotOf('S').matches(RING));
+    assert.equal(entryOf(strip, 'S').children.length, 2);
   });
   await t.test('the head counts the unread entries', () => {
     assert.deepEqual(heads(strip), ['Finished (3 · 2 new)']);
@@ -357,10 +362,12 @@ test('unread Finished entries: the dot, the class, the head count and the reason
     assert.equal(entryOf(strip, 'U').title, 'Um\nturn ended · unread');
     assert.equal(entryOf(strip, 'S').getAttribute('aria-label'), 'Sm — turn ended');
   });
-  await t.test('viewing an entry clears its dot and class, and the head drops the suffix once none is unread', async () => {
+  await t.test('viewing an entry clears its ring and class, and the head drops the suffix once none is unread', async () => {
+    assert.equal(strip.querySelectorAll('.strip-unread').length, 0, 'no trailing-dot element before viewing');
     await render(sidebar, { instances: fixture({ viewedSeq: 2 }) });
     assert.ok(!entryOf(strip, 'U').classList.contains('unread'));
-    assert.equal(dots('U').length, 0);
+    assert.ok(!dotOf('U').matches(RING));
+    assert.equal(strip.querySelectorAll('.strip-unread').length, 0, 'no trailing-dot element after viewing');
     assert.deepEqual(heads(strip), ['Finished (3 · 1 new)']);
     await render(sidebar, { instances: fixture({ viewedSeq: 2 }).filter(i => i.sessionId !== 'h') });
     assert.deepEqual(heads(strip), ['Finished (2)']);
@@ -368,7 +375,7 @@ test('unread Finished entries: the dot, the class, the head count and the reason
 });
 
 // Invariant: only Finished shows unread — a Waiting or Running entry with
-// unread counters gets no dot and no class, and those heads keep their plain
+// unread counters gets no ring and no class, and those heads keep their plain
 // count.
 test('unread counters on Waiting and Running entries render nothing', async () => {
   const { strip, sidebar } = await setupSidebar();
@@ -379,7 +386,7 @@ test('unread counters on Waiting and Running entries render nothing', async () =
   assert.deepEqual(heads(strip), ['Waiting on you (1)', 'Running (1)']);
   for (const sid of ['W', 'R']) {
     assert.ok(!entryOf(strip, sid).classList.contains('unread'), `${sid}: no .unread`);
-    assert.equal(entryOf(strip, sid).querySelectorAll('.strip-unread').length, 0, `${sid}: no dot`);
+    assert.ok(!entryOf(strip, sid).querySelector(':scope > .dot').matches(RING), `${sid}: no ring`);
     assert.ok(!entryOf(strip, sid).getAttribute('aria-label').includes('unread'), `${sid}: no unread reason`);
   }
 });

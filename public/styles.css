@@ -492,9 +492,13 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .strip-list > li:hover > .strip-entry:not(:disabled) { background: var(--panel-2); }
 .strip-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-/* An unread Finished entry's trailing dot: smaller than the status dot, and
-   Finished never carries the accent awaiting-wake dot it could be mistaken for. */
-.strip-unread { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+/* An unread Finished entry: the waiting-on-you ring's geometry in --accent, so
+   unread never reads as waiting (amber). A Finished dot is always a plain idle
+   one (never awaiting, never needs-you), so the ring sits on the --muted fill. */
+.strip-entry.unread > .dot {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--accent);
+  margin: 0 2px;
+}
 /* The × is the entry's sibling (a button cannot hold a button) but is drawn
    inside its box: out of flow, so the entry fills the row, and over the right
    padding the entry reserves (at least right + width), so the title never runs
