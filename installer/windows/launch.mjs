@@ -64,6 +64,8 @@ const defaults = {
   },
   kill: (pid) => execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' }),
   readCommit: defaultCommit,
+  detectGit,
+  detectClaude,
 };
 
 export async function launch({ installDir, env = process.env, ...overrides }) {
@@ -85,9 +87,9 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
     return { reused: true, pid: state.pid };
   }
 
-  const git = detectGit(env);
+  const git = d.detectGit(env);
   if (!git) throw new LaunchError('Git for Windows (with Git Bash) was not found; run the installer again');
-  const claude = detectClaude(env);
+  const claude = d.detectClaude(env);
   const serverEnv = launcherEnv({ env, installDir, git, claude });
   const projectsRoot = serverEnv.PROJECTS_ROOT;
 

@@ -12,7 +12,7 @@ Name "code-conductor"
 OutFile "${OUTFILE}"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\code-conductor"
-SetCompressor /SOLID lzma
+SetCompressor /SOLID zlib
 ShowInstDetails show
 
 !define MUI_FINISHPAGE_RUN "$INSTDIR\code-conductor.exe"
