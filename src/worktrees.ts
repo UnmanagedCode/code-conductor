@@ -14,8 +14,9 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { httpError } from './httpError.ts';
 import {
-  getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot, localWorktreesRoot,
+  getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot, localWorktreesRoot, writeFileAtomic,
 } from './projects.ts';
+import { withLock } from './storeLock.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import { getSystem } from './appSettings.ts';
 import {
@@ -66,6 +67,15 @@ export interface WorktreeMeta {
   // filters on it, so a derived worktree that recorded its base there would
   // disappear from every listing in the app.
   baseWorktree?: string;
+  // The user's lock. Absent means unlocked — the canonical shape: unlocking
+  // deletes the key, never writes `false`. Its one writer is setWorktreeLock,
+  // browser-only by construction. It refuses two things: merging this worktree
+  // into its base (gate 0 of mergeWorktreeIntoParent, so every merge surface
+  // inherits it) and an AGENT deleting it (the MCP deleteWorktree handler, even
+  // under force). The human's delete paths and sync never read it. Read it only
+  // through listWorktrees / getWorktree / requireWorktree: an instance's
+  // `inst.worktree` is a snapshot taken at spawn and goes stale.
+  locked?: true;
   createdAt: string;
 }
 
@@ -276,9 +286,43 @@ export async function getHeadBranchAndSha(system: System, projectPath: string): 
   return { branch, sha: sha.stdout.trim() };
 }
 
+// Atomic, because readMeta reads a torn file as `null` — and a null record is a
+// worktree that vanishes from every listing, so its merge and delete 404.
 async function writeMeta(project: string, worktreeName: string, meta: WorktreeMeta): Promise<void> {
-  await fs.mkdir(worktreeStoreDir(project, worktreeName), { recursive: true });
-  await fs.writeFile(metaPath(project, worktreeName), JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  await writeFileAtomic(metaPath(project, worktreeName), JSON.stringify(meta, null, 2) + '\n');
+}
+
+// THE read-modify-write of an existing record: re-read under the record's
+// store lock, so two writers (a lock toggle, a project-move repair) cannot
+// each write back a copy that predates the other's change. A record that is
+// gone 404s rather than being recreated from `fn`'s idea of it.
+async function updateMeta(
+  project: string, worktreeName: string, fn: (meta: WorktreeMeta) => WorktreeMeta,
+): Promise<WorktreeMeta> {
+  const file = metaPath(project, worktreeName);
+  try {
+    return await withLock(file, async () => {
+      const meta = await readMeta(project, worktreeName);
+      if (!meta) {
+        // The dir withLock just made for its lockfile is not a registration,
+        // so it is not offered as a valid name in the same breath as "not found".
+        const names = (await registeredWorktreeNames(project)).filter(n => n !== worktreeName);
+        throw httpError(404, unknownWorktreeMessage(project, worktreeName, names));
+      }
+      const next = fn(meta);
+      await writeMeta(project, worktreeName, next);
+      return next;
+    });
+  } finally {
+    // withLock creates the store dir to hold its lockfile BEFORE it acquires,
+    // so every exit — a missing record, a failed acquire, a throw from `fn` —
+    // can leave behind a dir that holds no record, and an empty dir is still a
+    // registration to registeredWorktreeNames. Decided on the record itself,
+    // not on how the call ended; rmdir also refuses a dir that is not empty,
+    // so a dir still holding anything (another caller's lockfile, attachments)
+    // is never removed.
+    if (!(await fileExists(file))) await fs.rmdir(path.dirname(file)).catch(() => {});
+  }
 }
 
 async function readMeta(project: string, worktreeName: string): Promise<WorktreeMeta | null> {
@@ -762,8 +806,47 @@ export async function repairWorktreesAfterProjectMove(projectName: string): Prom
   for (const meta of metas) {
     if (meta.baseWorktree !== undefined) continue;
     if (meta.parentPath === proj.path) continue;
-    await writeMeta(projectName, meta.worktreeName, { ...meta, parentPath: proj.path });
+    // Through updateMeta, so a lock toggled since the read above survives.
+    await updateMeta(projectName, meta.worktreeName, m => ({ ...m, parentPath: proj.path }));
   }
+}
+
+// Set or clear the user's lock (see WorktreeMeta.locked). Browser-only by
+// construction: routes.ts is its one importer and no MCP handler reaches it,
+// so no agent can lock or unlock a worktree (pinned by
+// tests/worktree-lock.test.mjs). Returns the stored state, not the requested one.
+export async function setWorktreeLock(
+  projectName: string, worktreeName: string, locked: boolean,
+): Promise<{ worktree: string; locked: boolean }> {
+  const meta = await requireWorktree(projectName, worktreeName);
+  const next = await updateMeta(projectName, meta.worktreeName, m => {
+    const out: WorktreeMeta = { ...m };
+    if (locked) out.locked = true;
+    else delete out.locked;
+    return out;
+  });
+  return { worktree: next.worktreeName, locked: next.locked === true };
+}
+
+// The shared refusal for a worktree the user has locked. Minted once, like
+// dependentsRefusal: both audiences act identically — only the user can unlock,
+// from the UI — so the wording names the UI control rather than a tool. `verb`
+// keys the one clause that differs; the deleting one tells an agent what to do
+// instead, since force is exactly what it would otherwise try next.
+export function worktreeLockedRefusal(
+  meta: Pick<WorktreeMeta, 'worktreeName' | 'baseBranch'>, verb: 'merging' | 'deleting',
+): { ok: false; code: 'WORKTREE_LOCKED'; reason: string } {
+  const blocked = verb === 'merging'
+    ? `merging it into '${meta.baseBranch}'`
+    : 'deleting it from here — force does not override the lock; to retire a worker on it, '
+      + 'kill the worker and leave the worktree in place';
+  return {
+    ok: false,
+    code: 'WORKTREE_LOCKED',
+    reason: `worktree '${meta.worktreeName}' is locked by the user, which blocks ${blocked}. `
+      + 'Only the user can unlock it, from the lock toggle in its commit history view in the cc UI. '
+      + 'Syncing it is unaffected.',
+  };
 }
 
 // Every worktree that descends from this one — the whole subtree, DEEPEST FIRST.
@@ -1068,7 +1151,7 @@ export async function mergeWorktreeIntoParent(
   // FALSE: killed mid-merge, the orphaned command was observed completing the
   // merge commit AFTER cc had already reported failure, leaving the parent's
   // HEAD moved, MERGE_HEAD set, and the worktree branch never fast-forwarded. So
-  // once step 6 is issued, a refusal must say the merge MAY have landed — the
+  // once step 7 is issued, a refusal must say the merge MAY have landed — the
   // same rule as descendantsMaySurvive, applied to a merge.
   let mergeStarted = false;
   try {
@@ -1088,9 +1171,16 @@ export async function mergeWorktreeIntoParent(
 
   async function runMerge(): Promise<MergeSuccess | MergeFailure> {
   const meta = await requireWorktree(projectName, worktreeName);
+  // 0. Refuse if the user has locked this worktree. First of all the gates:
+  //    a locked feature worktree always has children, and the dependents
+  //    refusal below would send the caller off to DELETE them — a destructive
+  //    step — only to be refused for the lock afterwards. It needs no git, so
+  //    it also runs ahead of resolveSystem. Keyed on the worktree being MERGED,
+  //    never on the one being merged INTO: a child lands into a locked base.
+  if (meta.locked === true) return worktreeLockedRefusal(meta, 'merging');
   const system = await resolveSystem(projectName);
-  // 0. Refuse if another worktree is based on this one. THIS merge moves their
-  //    base on its own: step 7 below fast-forwards this worktree's own branch
+  // 1. Refuse if another worktree is based on this one. THIS merge moves their
+  //    base on its own: step 8 below fast-forwards this worktree's own branch
   //    onto the merge commit, and that branch IS what the children were created
   //    from, so their baseSha stops being its tip the moment this call succeeds.
   //    A fast-forward only moves the tip — the old sha stays a reachable
@@ -1106,7 +1196,7 @@ export async function mergeWorktreeIntoParent(
   if (dependents.length > 0) {
     return dependentsRefusal(worktreeName, dependents, 'merging');
   }
-  // 1. Refuse if the worktree branch is behind its base — the merge would
+  // 2. Refuse if the worktree branch is behind its base — the merge would
   //    still work, but conflicts would surface on the parent side instead of
   //    being resolved inside the worktree (where the agent can help). Checked
   //    before the branch-mismatch / dirty gates, matching the order the REST +
@@ -1118,7 +1208,7 @@ export async function mergeWorktreeIntoParent(
   if (status.behind != null && status.behind > 0) {
     return { ok: false, code: 'WORKTREE_BEHIND', behind: status.behind, baseBranch: meta.baseBranch };
   }
-  // 2. Parent must currently be on the captured base branch — otherwise
+  // 3. Parent must currently be on the captured base branch — otherwise
   //    the merge would land work somewhere unexpected. A worktree base
   //    satisfies this by construction: its HEAD *is* its own branch, which is
   //    exactly this worktree's baseBranch.
@@ -1131,7 +1221,7 @@ export async function mergeWorktreeIntoParent(
         `Switch the parent back to '${meta.baseBranch}' before merging.`,
     };
   }
-  // 3. Parent's working tree must be clean — `git merge` refuses
+  // 4. Parent's working tree must be clean — `git merge` refuses
   //    otherwise, but the error message is friendlier from us. Note there is no
   //    override: a worktree used as a base is a merge target, so it has to be
   //    kept clean.
@@ -1166,7 +1256,7 @@ export async function mergeWorktreeIntoParent(
       reason: `parent repo has uncommitted changes — commit or stash them before merging`,
     };
   }
-  // 4. The worktree's own tree must be clean too — only committed work gets
+  // 5. The worktree's own tree must be clean too — only committed work gets
   //    merged, so uncommitted/untracked changes there would silently not
   //    land. Overridable: allowDirty:true merges anyway.
   if (!allowDirty) {
@@ -1193,7 +1283,7 @@ export async function mergeWorktreeIntoParent(
       };
     }
   }
-  // 5. Nothing to do if the branch has no commits ahead of its base — a
+  // 6. Nothing to do if the branch has no commits ahead of its base — a
   //    --no-ff merge here would either no-op ("Already up to date") or,
   //    depending on git version/state, still be a pointless call.
   if (status.ahead != null && status.ahead === 0) {
@@ -1203,7 +1293,7 @@ export async function mergeWorktreeIntoParent(
       reason: `worktree branch has no commits ahead of '${meta.baseBranch}' — nothing to merge`,
     };
   }
-  // 6. Attempt the merge. --no-ff forces a merge commit even when FF would
+  // 7. Attempt the merge. --no-ff forces a merge commit even when FF would
   //    be possible; --no-edit makes git use its default message non-
   //    interactively (we'd hang otherwise waiting on an editor).
   // PAST THIS LINE cc can no longer be sure nothing happened (see the header).
@@ -1218,7 +1308,7 @@ export async function mergeWorktreeIntoParent(
     };
   }
   const newHead = await runGit(system, meta.parentPath, ['rev-parse', 'HEAD']);
-  // 7. Fast-forward the worktree's own branch up to the merge commit. The
+  // 8. Fast-forward the worktree's own branch up to the merge commit. The
   //    worktree branch is one of that commit's two parents, so it's always
   //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
   //    Must run from inside the worktree dir: the branch is checked out
@@ -1534,7 +1624,7 @@ interface CommitRow {
 // own tree; resolveProjectCwd validates both (404 for an unknown project or worktree).
 // Caps the log at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`)
 // and sets `truncated` when more commits exist.
-// Returns { project, worktreeName?, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
+// Returns { project, worktreeName?, locked?, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
 // where each commit is { sha, shortSha, subject, author, relativeDate, isoDate, parents },
 // and `parents` is the array of parent SHAs (empty for the root, ≥2 for a merge) — the
 // frontend uses it to compute the branch/merge graph lanes.
@@ -1552,6 +1642,9 @@ export async function getProjectCommits(
   // was named — as getWorktreeDiff already does, so a caller's bare-slug
   // spelling never comes back as the answer.
   worktreeName?: string;
+  // Echoed alongside worktreeName, and only then: whether the user has locked
+  // that worktree. The commits view's Lock toggle reads its state from here.
+  locked?: boolean;
   branch: string | null;
   commits: CommitRow[];
   truncated: boolean;
@@ -1568,7 +1661,9 @@ export async function getProjectCommits(
   const { cwd, worktreeMeta, system } = await resolveProjectCwd(projectName, worktree);
   // Spread into every return so the echo cannot drift between the early exits
   // and the answer.
-  const named = worktreeMeta ? { worktreeName: worktreeMeta.worktreeName } : {};
+  const named = worktreeMeta
+    ? { worktreeName: worktreeMeta.worktreeName, locked: worktreeMeta.locked === true }
+    : {};
   const n = Number(limit);
   const cap = Math.max(1, Math.min(COMMITS_MAX_LIMIT, Number.isFinite(n) ? Math.floor(n) : COMMITS_DEFAULT_LIMIT));
   if (!(await isGitRepo(system, cwd))) {

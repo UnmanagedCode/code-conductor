@@ -14,7 +14,8 @@ const load = (name) => import(pathToFileURL(path.join(PUB, name)).href + `?t=${M
 
 export const ID = 'inst-1';
 
-// `bodies` answers by URL suffix: `sync`, `rebasePrompt`, `merge`.
+// `bodies` answers by URL suffix: `sync`, `rebasePrompt`, `merge`, `lock`.
+// A request that carries a body is recorded with it, parsed, as `body`.
 // `refreshProjectsError`: when set, `refreshProjects()` rejects with it.
 export async function setupSessionActions({
   activeId = ID, instances = [], bodies = {}, confirmAnswer = true, refreshProjectsError = null,
@@ -28,10 +29,11 @@ export async function setupSessionActions({
   globalThis.confirm = (m) => { confirms.push(String(m)); return confirmAnswer; };
   globalThis.fetch = async (url, opts) => {
     const u = String(url);
-    calls.push({ url: u, method: opts?.method });
+    calls.push({ url: u, method: opts?.method, ...(opts?.body !== undefined ? { body: JSON.parse(opts.body) } : {}) });
     const body = u.endsWith('/rebase-prompt') ? bodies.rebasePrompt
       : u.endsWith('/sync') ? bodies.sync
       : u.endsWith('/merge') ? bodies.merge
+      : u.endsWith('/lock') ? bodies.lock
       : undefined;
     return { ok: true, status: 200, json: async () => body };
   };

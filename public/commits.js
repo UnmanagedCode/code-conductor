@@ -7,18 +7,29 @@
 // (review.js) on top, showing just that commit's change; the row carries its own
 // `diffUrl`, so the worktree scoping travels with it.
 //
-// A worktree's history also carries Sync / Merge (`#commits-actions`), acting on
-// the VIEWED worktree. The actions are injected — installCommits({onClose,
-// syncWorktree, mergeWorktree}), each called with {project, worktree} and
-// resolving to the server result — so the confirm/alert/rebase-prompt logic stays
-// in sessionActions.js. A successful result re-fetches the list. The controls are
-// hidden for a project's own tree.
+// A worktree's history also carries Sync / Merge / Lock (`#commits-actions`),
+// acting on the VIEWED worktree. The actions are injected — installCommits({onClose,
+// syncWorktree, mergeWorktree, setLock}), each called with {project, worktree}
+// (setLock also with the wanted state) and resolving to the server result — so
+// the confirm/alert/rebase-prompt logic stays in sessionActions.js. A successful
+// Sync / Merge re-fetches the list; a successful Lock applies the server's
+// answer. The lock state comes from the /commits payload's `locked`, so it is
+// unknown — and the Lock button disabled — until that payload lands; while
+// locked, Merge is disabled with a title saying why. The controls are hidden for
+// a project's own tree.
 
 import { installHashView } from './hashView.js';
 
 let _project = null;
 let _worktree = null;
 let _onClose = null;
+// The viewed worktree's lock: null = not known yet, else the server's boolean.
+let _locked = null;
+// An action is in flight: every action button stays disabled until it settles.
+let _busy = false;
+// Installed by installCommits: re-derive every action button's disabled /
+// pressed / title state from _busy + _locked.
+let applyButtonState = () => {};
 
 function getEl(id) { return document.getElementById(id); }
 
@@ -397,6 +408,12 @@ async function loadCommits() {
       throw new Error(body.error || `HTTP ${res.status}`);
     }
     data = await res.json();
+    // Only for the view that asked: a payload landing after the view moved on
+    // must not set another worktree's lock state.
+    if (worktree && _project === project && _worktree === worktree) {
+      _locked = data.locked === true;
+      applyButtonState();
+    }
   } catch (e) {
     listEl.innerHTML = '';
     listEl.appendChild(Object.assign(document.createElement('div'), {
@@ -426,27 +443,51 @@ async function loadCommits() {
 // SAME object identity must be returned from installCommits.
 const api = { open: null, close: null, onOpenCommit: null };
 
-export function installCommits({ onClose, syncWorktree, mergeWorktree } = {}) {
+export function installCommits({ onClose, syncWorktree, mergeWorktree, setLock } = {}) {
   _onClose = onClose;
 
-  // Run a worktree action against the (project, worktree) on screen NOW; both
-  // buttons stay disabled while it is in flight. The list is re-fetched only on
-  // an ok result AND only if the view still shows the same target — a result
-  // landing after the view moved on must not reload someone else's history.
-  const actionBtns = [getEl('commits-sync-btn'), getEl('commits-merge-btn')];
-  async function runAction(action) {
+  const syncBtn = getEl('commits-sync-btn');
+  const mergeBtn = getEl('commits-merge-btn');
+  const lockBtn = getEl('commits-lock-btn');
+  const mergeTitle = mergeBtn.title;
+  applyButtonState = () => {
+    const locked = _locked === true;
+    syncBtn.disabled = _busy;
+    mergeBtn.disabled = _busy || locked;
+    mergeBtn.title = locked ? 'Locked against merging into its base — unlock to merge' : mergeTitle;
+    lockBtn.disabled = _busy || _locked === null;
+    lockBtn.setAttribute('aria-pressed', String(locked));
+    lockBtn.textContent = locked ? '🔒 Locked' : 'Lock';
+    lockBtn.title = locked
+      ? 'Locked against merging and against deletion by agents — click to unlock'
+      : 'Lock this worktree against merging into its base and against deletion by agents (Sync and your own delete still work)';
+  };
+  applyButtonState();
+
+  // Run a worktree action against the (project, worktree) on screen NOW; every
+  // action button stays disabled while it is in flight. `onOk` runs only on an
+  // ok result AND only if the view still shows the same target — a result
+  // landing after the view moved on must not touch someone else's view.
+  async function runAction(action, onOk = () => loadCommits()) {
     if (!_worktree) return;
     const target = { project: _project, worktree: _worktree };
-    actionBtns.forEach(b => { b.disabled = true; });
+    _busy = true;
+    applyButtonState();
     try {
       const result = await action(target);
-      if (result?.ok && _project === target.project && _worktree === target.worktree) await loadCommits();
+      if (result?.ok && _project === target.project && _worktree === target.worktree) await onOk(result);
     } finally {
-      actionBtns.forEach(b => { b.disabled = false; });
+      _busy = false;
+      applyButtonState();
     }
   }
-  getEl('commits-sync-btn').addEventListener('click', () => runAction(syncWorktree));
-  getEl('commits-merge-btn').addEventListener('click', () => runAction(mergeWorktree));
+  syncBtn.addEventListener('click', () => runAction(syncWorktree));
+  mergeBtn.addEventListener('click', () => runAction(mergeWorktree));
+  // The server's answer, not the requested state, is what the view shows.
+  lockBtn.addEventListener('click', () => runAction(
+    t => setLock(t, !(_locked === true)),
+    result => { _locked = result.locked === true; },
+  ));
 
   // Capture-phase Escape (escapeCapture:true) runs before review.js's
   // bubble-phase handler, so when the diff is layered on top (review-view
@@ -463,11 +504,16 @@ export function installCommits({ onClose, syncWorktree, mergeWorktree } = {}) {
     navigate: () => history.pushState(null, '', '#commits'),
     onShow: (project, worktree) => {
       _project = project; _worktree = worktree ?? null;
+      _locked = null;
+      applyButtonState();
       getEl('commits-actions').hidden = !_worktree;
       loadCommits();
     },
     onLeave: () => { _onClose?.(); },
-    onTeardown: () => { _project = null; _worktree = null; getEl('commits-actions').hidden = true; },
+    onTeardown: () => {
+      _project = null; _worktree = null; _locked = null;
+      getEl('commits-actions').hidden = true;
+    },
   });
   api.open = open;
   api.close = close;

@@ -634,6 +634,7 @@ const commits = installCommits({
   },
   syncWorktree: (target) => sessionActions.syncWorktree(target),
   mergeWorktree: (target) => sessionActions.mergeWorktree(target),
+  setLock: (target, locked) => sessionActions.setWorktreeLock(target, locked),
 });
 sidebar.onShowCommits = (project, worktree) => {
   closeSidebarOnMobile();

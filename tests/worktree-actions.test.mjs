@@ -190,3 +190,37 @@ test('a crashed or exited active session on the worktree does not shadow a live 
     assert.match(w.alerts.join('\n'), /No agent is running here/);
   });
 });
+
+// ── setWorktreeLock (the commits view's Lock toggle) ─────────────────────────
+
+// PINS: the wire call — a PUT of {locked} to the worktree's lock route, names
+// encoded — then a projects refresh (the sidebar's 🔒), returning the server's
+// result for the view to apply. No confirm in either direction.
+test('setWorktreeLock PUTs {locked} to the lock route, refreshes projects and returns the result', async (t) => {
+  for (const locked of [true, false]) {
+    await t.test(`locked: ${locked}`, async () => {
+      const body = { ok: true, worktree: 'wt-a', locked };
+      const w = await setupSessionActions({ bodies: { lock: body } });
+      const result = await w.setWorktreeLock(TARGET, locked);
+      assert.deepEqual(w.calls, [{ url: '/api/projects/demo/worktrees/wt-a/lock', method: 'PUT', body: { locked } }]);
+      assert.equal(w.refreshes.projects, 1);
+      assert.deepEqual(result, body);
+      assert.deepEqual(w.confirms, []);
+      assert.deepEqual(w.alerts, []);
+    });
+  }
+  await t.test('names are encoded', async () => {
+    const w = await setupSessionActions({ bodies: { lock: { ok: true, locked: true } } });
+    await w.setWorktreeLock({ project: 'my proj#1', worktree: 'a/b c' }, true);
+    assert.equal(w.calls[0].url, '/api/projects/my%20proj%231/worktrees/a%2Fb%20c/lock');
+  });
+});
+
+// PINS: a refusal is alerted with its reason, returned, and refreshes nothing.
+test('a refused setWorktreeLock alerts the reason and returns the refusal', async () => {
+  const w = await setupSessionActions({ bodies: { lock: { ok: false, reason: 'nope' } } });
+  const result = await w.setWorktreeLock(TARGET, true);
+  assert.match(w.alerts.join('\n'), /Cannot change the lock:\nnope/);
+  assert.equal(result.ok, false);
+  assert.equal(w.refreshes.projects, 0);
+});

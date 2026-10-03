@@ -90,7 +90,8 @@ export function buildTools(): Tool[] {
         'List every project as PLAIN TEXT (this tool returns no JSON). ' +
         'One block per project, headed by its name and absolute path, then its workspace when set, session counts, a ' +
         'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
-        + 'and each worktree with branch, base, ahead/behind and its path. ' +
+        + 'and each worktree with branch, base, ahead/behind and its path, plus a `locked` marker on a worktree ' +
+        'the user has locked (merging it and deleting it are refused; only the user can unlock it). ' +
         'A project lives wherever its record says — inside the projects root, nested in a container ' +
         'directory, elsewhere on disk, or on a registered system — and every row has the same shape. ' +
         'The NAME is the `project` argument every other tool takes; the path is informational. ' +
@@ -199,7 +200,8 @@ export function buildTools(): Tool[] {
       description:
         'List orchestrator-owned git worktrees for a project as PLAIN TEXT (this tool returns ' +
         'no JSON), oldest-first: the parent project and path as a header, then each worktree\'s ' +
-        'name, branch, base branch@sha, creation time and absolute path. The name is the ' +
+        'name, branch, base branch@sha, creation time and absolute path, plus a `locked` marker on a ' +
+        'worktree the user has locked (merging it and deleting it are refused; only the user can unlock it). The name is the ' +
         '`worktree` argument every other worktree tool takes, exactly as printed — there is one ' +
         'spelling per worktree.',
       inputSchema: {
@@ -623,7 +625,8 @@ export function buildTools(): Tool[] {
         'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
         'is attached, the working tree is dirty, or another worktree is based on this one ' +
         '(WORKTREE_HAS_DEPENDENTS, listing them — delete those first) — unless force:true, which kills any ' +
-        'attached instance and deletes the branch its children are based on.',
+        'attached instance and deletes the branch its children are based on. Refuses a worktree the user has ' +
+        'locked (WORKTREE_LOCKED), checked first and even with force:true; only the user can unlock it.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -665,7 +668,8 @@ export function buildTools(): Tool[] {
       description:
         'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff), then ' +
         'fast-forwards the worktree\'s own branch onto that merge commit so the same worktree stays ' +
-        'mergeable again later. Refuses with a friendly reason if the worktree hasn\'t been synced ' +
+        'mergeable again later. Refuses with a friendly reason if the user has locked the worktree ' +
+        '(WORKTREE_LOCKED — checked first; no tool unlocks it; sync is unaffected), the worktree hasn\'t been synced ' +
         'first (WORKTREE_BEHIND), the parent is on the wrong branch or dirty (BASE_BRANCH_MISMATCH / ' +
         'PARENT_DIRTY), the worktree\'s own tree has uncommitted or untracked changes that would not ' +
         'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), the branch has no commits ' +

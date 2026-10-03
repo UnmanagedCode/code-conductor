@@ -197,6 +197,23 @@ describe('renderProjects', () => {
     assert.ok(!rootRow.includes('←'), rootRow);
   });
 
+  // PINS: a locked worktree's row ends in a `locked` cell, outside the name
+  // cell; an unlocked row in the same table renders exactly as it would alone.
+  test('a locked worktree row ends in `locked`, and an unlocked one is unchanged', () => {
+    const project = (worktrees) => ({
+      name: 'code-conductor', path: '/w/cc-projects/code-conductor', workspace: null,
+      liveCount: 0, isGitRepo: true, worktrees,
+      sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
+    });
+    const other = { ...WORKTREE, worktreeName: 'code-conductor_worktree_other',
+      worktreePath: '/w/cc-projects/code-conductor_worktree_other' };
+    const lines = renderProjects([project([{ ...WORKTREE, locked: true }, other])]).split('\n');
+    assert.ok(lines.includes(
+      '    code-conductor_worktree_dcd22e  br code-conductor/dcd22e  base main@04746607c1b2  ahead 2  behind 0  sessions 3  created 2026-08-06 09:12Z  locked'));
+    assert.ok(lines.includes(
+      '    code-conductor_worktree_other   br code-conductor/dcd22e  base main@04746607c1b2  ahead 2  behind 0  sessions 3  created 2026-08-06 09:12Z'));
+  });
+
   test('neither cold worktree key reaches the text', () => {
     // Sentinel parent values that share no substring with any hot field, so a
     // leak of either cold key is unambiguous.
@@ -699,6 +716,24 @@ describe('renderWorktrees', () => {
 
   test('no worktrees', () => {
     assert.equal(renderWorktrees([]), 'WORKTREES (none)');
+  });
+
+  // PINS: a locked worktree's row ends in a `locked` cell, outside the name
+  // cell; an unlocked row in the same table renders exactly as it would alone.
+  test('a locked worktree row ends in `locked`, and an unlocked one is unchanged', () => {
+    const row = (worktree, extra = {}) => ({
+      worktree, parentProject: 'demo', parentPath: '/w/cc-projects/demo',
+      worktreePath: `/w/cc-projects/${worktree}`, branch: `demo/${worktree}`,
+      baseBranch: 'main', baseSha: 'abc1234', createdAt: '2026-08-01T10:00:00.000Z', ...extra,
+    });
+    assert.equal(renderWorktrees([row('held', { locked: true }), row('free')]), [
+      'WORKTREES (2) — demo',
+      '',
+      'held  br demo/held  base main@abc1234  created 2026-08-01 10:00Z  locked',
+      '  /w/cc-projects/held',
+      'free  br demo/free  base main@abc1234  created 2026-08-01 10:00Z',
+      '  /w/cc-projects/free',
+    ].join('\n'));
   });
 });
 

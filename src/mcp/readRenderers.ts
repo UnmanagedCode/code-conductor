@@ -125,6 +125,15 @@ const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'remoteId', default: null, label: 'remoteId' },
 ];
 
+// A worktree row's trailing `locked` marker, present only when the user has
+// locked it. Trailing and conditional, so an unlocked row renders unchanged
+// (table() leaves a row's last cell unpadded) — and never in the name cell,
+// which list_projects / list_worktrees promise is the `worktree` argument
+// exactly as printed.
+function lockedCell(w: Row): string[] {
+  return w.locked === true ? ['locked'] : [];
+}
+
 export function renderProjects(projects: unknown): string {
   const rows = asRows(projects);
   const parts: Array<string | string[]> = [heading('PROJECTS', rows.length), ''];
@@ -149,6 +158,7 @@ export function renderProjects(projects: unknown): string {
         aheadBehind(w.mergeStatus),
         `sessions ${dash(asRow(w.sessions).count ?? 0)}`,
         `created ${ts(w.createdAt)}`,
+        ...lockedCell(w),
       ]);
       const lines: string[] = [];
       table(cells).forEach((line, i) => {
@@ -400,6 +410,7 @@ export function renderWorktrees(worktrees: unknown): string {
     `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}` +
       (typeof w.baseWorktree === 'string' && w.baseWorktree ? ` ← ${w.baseWorktree}` : ''),
     `created ${ts(w.createdAt)}`,
+    ...lockedCell(w),
   ]);
   const lines: string[] = [];
   table(cells).forEach((line, i) => {

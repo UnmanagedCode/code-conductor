@@ -18,7 +18,7 @@ import {
   isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, requireWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
-  getProjectUpstreamStatus, getProjectCommits,
+  getProjectUpstreamStatus, getProjectCommits, setWorktreeLock,
 } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from './systems/registry.ts';
 import {
@@ -1035,8 +1035,23 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     } catch (e) { next(e); }
   });
 
+  // Set or clear the user's lock on a worktree (see WorktreeMeta.locked). The
+  // only writer of it on any surface: there is no MCP twin, by design.
+  r.put('/projects/:name/worktrees/:wt/lock', async (req, res, next) => {
+    try {
+      const locked = jsonBody(req).locked;
+      if (typeof locked !== 'boolean') throw httpError(400, 'locked must be a boolean');
+      const result = await setWorktreeLock(req.params.name, req.params.wt, locked);
+      invalidate(req.params.name);
+      broadcastProjects();
+      res.json({ ok: true, ...result });
+    } catch (e) { next(e); }
+  });
+
   // Remove a worktree. Refuses if there's a live instance attached or
-  // the worktree has uncommitted changes (unless ?force=1).
+  // the worktree has uncommitted changes (unless ?force=1). The user's lock
+  // does not apply here: this is the human's delete, and only MCP
+  // delete_worktree refuses a locked worktree.
   r.delete('/projects/:name/worktrees/:wt', async (req, res, next) => {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';

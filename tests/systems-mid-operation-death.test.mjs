@@ -388,11 +388,11 @@ describe('a system that dies mid-operation', () => {
     assert.equal(r.code, 'SYSTEM_UNREACHABLE', JSON.stringify(r));
   });
 
-  // PINS: merge's step-4 guard — the worktree's OWN tree — refuses on an
+  // PINS: merge's step-5 guard — the worktree's OWN tree — refuses on an
   // unmeasurable status like its three siblings. `wtDirty.ok && lines.length`
   // read a failed check as clean, so with the default allowDirty:false a merge
   // proceeded and silently did not land uncommitted work, which is the exact
-  // thing step 4 exists to prevent.
+  // thing step 5 exists to prevent.
   test('merge refuses when the WORKTREE status could not be read', async () => {
     // A GIT-level failure on a LIVE system, which is the case the transport
     // throw does not cover: `git status` answered non-zero (the output fence
