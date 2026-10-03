@@ -664,7 +664,7 @@ function stampAgentTotals(events: UiEvent[], obj: WireEnvelope): void {
 // recognized — anchors the match so unrelated prose mentioning
 // "Attached file:" isn't accidentally promoted.
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-const ATT_LINE_RE = /^Attached file:\s*`([^`]*?\/\.code-conductor\/[^`]+?\/attachments\/[^`]+)`\s*$/;
+const ATT_LINE_RE = /^Attached file:\s*`([^`]*?[\\/]\.code-conductor[\\/][^`]+?[\\/]attachments[\\/][^`]+)`\s*$/;
 
 export interface Attachment {
   kind: 'image' | 'file';
@@ -761,7 +761,7 @@ export function extractAttachedMarkers(text: string): { text: string; attachment
     const m = line.match(ATT_LINE_RE);
     if (!m) { keptLines.push(line); continue; }
     const attPath = m[1];
-    const filename = attPath.split('/').pop() ?? '';
+    const filename = attPath.split(/[\\/]/).pop() ?? '';
     const ext = (filename.split('.').pop() || '').toLowerCase();
     const kind = IMG_EXT.has(ext) ? 'image' : 'file';
     attachments.push({ kind, path: attPath, filename, name: filename });

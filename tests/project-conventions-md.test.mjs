@@ -552,3 +552,22 @@ test('composeProjectConventionsDocWithMeta returns the same document, plus the c
     }
   }
 });
+
+test('a CRLF CONVENTIONS.md keeps its selection and stays CRLF; a CRLF CLAUDE.md gains a CRLF import', async () => {
+  const doc = await composeProjectConventionsDoc(['documentation-guidelines']);
+  await createProject('crlf-proj', { conventionsDoc: doc });
+  const target = conventionsPath('crlf-proj');
+  await fs.writeFile(target, doc.replace(/\n/g, '\r\n'));
+  await fs.writeFile(claudeMdPath('crlf-proj'), '# mine\r\nbody\r\n');
+
+  await ensureProjectConventionsMd('crlf-proj');
+  const first = await fs.readFile(target, 'utf8');
+  assert.equal(first, doc.replace(/\n/g, '\r\n'), 'selection kept, whole file CRLF');
+  assert.ok(!/(?<!\r)\n/.test(first), 'no lone LF');
+  const claude = await fs.readFile(claudeMdPath('crlf-proj'), 'utf8');
+  assert.equal(claude, '@CONVENTIONS.md\r\n# mine\r\nbody\r\n');
+
+  await ensureProjectConventionsMd('crlf-proj');
+  assert.equal(await fs.readFile(target, 'utf8'), first, 'a second run is byte-identical');
+  assert.equal(await fs.readFile(claudeMdPath('crlf-proj'), 'utf8'), claude);
+});

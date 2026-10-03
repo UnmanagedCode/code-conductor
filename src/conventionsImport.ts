@@ -4,13 +4,16 @@
 // the same `@`-import channel, and a CONVENTIONS.md nothing imports delivers
 // nothing. The content half (withConventionsImport) is also what
 // src/conventionsCheckout.ts compares a working-tree CLAUDE.md against to tell
-// cc's own write from a hand edit — so it must stay the writer's exact bytes.
+// cc's own write from a hand edit — so it must stay the writer's exact output.
 //
 // migrations/0031-conduct-conventions-import.mjs duplicates the literal and the
 // prepend shape (built-ins only — see migrations/migrations.md); all three must
-// emit the identical line so a migrated install and a fresh ensure converge.
+// emit the identical line (for LF input) so a migrated install and a fresh
+// ensure converge. Into a CRLF file the line is written CRLF, so the file is
+// never mixed; the migration only touches cc's own LF `.conduct/CLAUDE.md`.
 
 import path from 'node:path';
+import { eolOf } from './lineEndings.ts';
 import type { System } from './systems/system.ts';
 
 export const CONVENTIONS_IMPORT_LINE = '@CONVENTIONS.md';
@@ -48,7 +51,7 @@ export async function ensureConventionsImport(system: System, dir: string): Prom
 export function withConventionsImport(existing: string | null): string | null {
   if (existing === null) return `${CONVENTIONS_IMPORT_LINE}\n`;
   if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return null;
-  return `${CONVENTIONS_IMPORT_LINE}\n${existing}`;
+  return `${CONVENTIONS_IMPORT_LINE}${eolOf(existing)}${existing}`;
 }
 
 // The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the
