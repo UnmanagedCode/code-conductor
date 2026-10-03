@@ -14,6 +14,7 @@ import { LocalSystem } from '../src/systems/localSystem.ts';
 import { createSupervisor, headSha } from '../src/plugins/supervisor.ts';
 import { RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from '../src/claudeLauncher.ts';
 import { fetchOriginBounded } from '../src/gitLive.ts';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 
 function fakePlatform(overrides = {}) {
@@ -132,5 +133,30 @@ test('Instance.kill escalates through platform.killProcess with the launch handl
     await waitFor(() => child);
     await inst.kill({ graceMs: 20 });
     assert.ok(fake.calls.some(c => c[0] === 'killProcess' && c[1] === child && c[2] === 'SIGTERM'));
+  } finally { await ctx.close(); }
+});
+
+test('Instance.spawn splits CLAUDE_BIN and the backend template through the injected platform', async () => {
+  const fake = fakePlatform();
+  const launcher = {
+    inProcess: true,
+    launch() {
+      const child = new EventEmitter();
+      child.pid = null;
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      child.kill = () => { child.stdout.end(); child.stderr.end(); setImmediate(() => child.emit('exit', null, 'SIGTERM')); return true; };
+      return child;
+    },
+  };
+  const ctx = await bootServer({ claudeLauncher: launcher, platform: fake });
+  try {
+    await freshProjectsRoot();
+    await addBackend({ id: 'split-probe', label: 'Split probe', template: 'probectl claude --model {model} --', env: [] });
+    await addCustomModel({ label: 'Probe', model: 'probe:v1', backend: 'split-probe', contextWindow: 100_000 });
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'probe:v1', backend: 'split-probe' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    await waitFor(() => fake.calls.some(c => c[0] === 'splitCommand' && c[1] === 'probectl claude --model {model} --'));
+    assert.ok(fake.calls.some(c => c[0] === 'splitCommand' && c[1] === process.env.CLAUDE_BIN), 'CLAUDE_BIN split via the platform');
   } finally { await ctx.close(); }
 });

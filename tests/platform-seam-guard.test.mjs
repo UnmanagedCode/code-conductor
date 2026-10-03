@@ -20,12 +20,16 @@ async function walk(dir) {
   return out;
 }
 
-// Sites removed on Windows by capability gating, so they never run there.
+// Files W3 gates off on Windows (remote providers and the FUSE union), so they
+// never run there. The built-in local System (localSystem.ts, system.ts, ...)
+// does run there and is NOT exempt.
 const ALLOWED = [
-  'src/systems/',        // System providers / FUSE: gated off on Windows
-  'src/tts.ts',          // voice: gated off on Windows
-  'src/transcribe.ts',   // voice: gated off on Windows
-  'src/installRunner.ts', // voice installers: gated off on Windows
+  'src/systems/referenceProvider.ts', // reference remote provider: no remote systems on Windows
+  'src/systems/providerSystem.ts',    // remote-provider System client: no remote systems on Windows
+  'src/systems/fuse/',                // FUSE-union chroot for remote workers: POSIX-only
+  'src/tts.ts',                       // voice: gated off on Windows
+  'src/transcribe.ts',                // voice: gated off on Windows
+  'src/installRunner.ts',             // voice installers: gated off on Windows
 ];
 
 const files = [...await walk(path.join(root, 'src')), path.join(root, 'server.ts')]

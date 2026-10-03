@@ -4345,6 +4345,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _overageClearTimer: NodeJS.Timeout | null;
   _overageResumeMode: boolean;
 
+  // Keep the shared singleton for the host platform; any other platform gets its own launcher so spawn options follow it.
   constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
     super();
     this._platform = platform;
