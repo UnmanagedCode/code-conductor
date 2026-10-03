@@ -1195,7 +1195,7 @@ export class Sidebar {
     return group === 'finished' && (this.unreadBySessionId.get(entry.sessionId) ?? 0) > 0;
   }
 
-  // One strip entry: the dot, the label, the unread dot, and the ×. Its state is not rendered as
+  // One strip entry: the dot (ringed while unread), the label, and the ×. Its state is not rendered as
   // text (the dot and the heading carry it); it is in the tooltip and the
   // accessible name. The entry button cannot hold the ×, so the × is its sibling.
   _stripEntry(existing, entry, group) {
@@ -1221,14 +1221,13 @@ export class Sidebar {
     this._applyOwner(btn, entry.conductor ? entry.sessionId : null);
     btn.title = `${entry.label}\n${reason}`;
     btn.setAttribute('aria-label', `${entry.label} — ${reason}`);
-    reconcileChildren(btn, ['dot', 'title', ...(unread ? ['unread'] : [])], (k, ex) => {
+    reconcileChildren(btn, ['dot', 'title'], (k, ex) => {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
           status: entry.status, awaitingWake: entry.awaitingWake,
           awaitingUser: entry.awaitingUser, awaitingUserSource: entry.awaitingUserSource,
         });
       }
-      if (k === 'unread') return ex ?? el('span', { class: 'strip-unread', 'aria-hidden': 'true' });
       const t = ex ?? el('span', { class: 'strip-title' });
       t.textContent = entry.label;
       return t;

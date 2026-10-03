@@ -157,26 +157,44 @@ test('an owned strip entry draws the inset 3px owner bar, as a conductor block d
   assert.match(ruleBody(css, '.worktree-row.owned, .conductor-block, .strip-entry.owned'), /box-shadow:\s*inset 3px 0 0 var\(--owner-color\)/);
 });
 
-// Invariant: an unread strip entry's title is semibold (600) and its dot is a
-// 6px accent circle; a selected unread entry's title stays at the selection's
-// 700, which must outrank the unread weight.
-test('.strip-entry.unread: a 600 title and a 6px accent dot, under the selection\'s 700', async () => {
-  const { window, document } = await renderIndex();
+// Invariant: an unread strip entry's title is semibold (600) and its status dot
+// carries the waiting-on-you ring's geometry (same box-shadow shape and margin)
+// in --accent rather than --amber, on the unchanged idle fill; a selected unread
+// entry's title stays at the selection's 700, which must outrank the unread
+// weight. No trailing-dot rule remains.
+test('.strip-entry.unread: a 600 title and the waiting-on-you ring in accent, under the selection\'s 700', async () => {
+  const { window, document, css } = await renderIndex();
   const entry = (classes) => {
     const slot = document.getElementById('sidebar-strip-slot');
     const div = document.createElement('div');
-    div.innerHTML = `<div class="sidebar-strip"><div class="strip-group finished"><ul class="strip-list"><li><button class="${classes}"><span class="dot idle"></span><span class="strip-title">x</span><span class="strip-unread"></span></button></li></ul></div></div>`;
+    div.innerHTML = `<div class="sidebar-strip"><div class="strip-group finished"><ul class="strip-list"><li><button class="${classes}"><span class="dot idle"></span><span class="strip-title">x</span></button></li></ul></div></div>`;
     slot.appendChild(div);
     return div.querySelector('.strip-entry');
   };
   const unread = entry('strip-entry unread');
   assert.equal(cs(window, unread.querySelector('.strip-title')).fontWeight, '600');
-  const dot = cs(window, unread.querySelector('.strip-unread'));
-  assert.equal(dot.width, '6px');
-  assert.equal(dot.height, '6px');
-  assert.equal(dot.borderRadius, '50%');
-  const accent = cs(window, document.documentElement).getPropertyValue('--accent').trim();
-  assert.ok(accent, 'fixture: --accent resolves');
-  assert.equal(dot.backgroundColor, accent, 'the dot is the accent colour');
+  const decl = (body, prop) => body.match(new RegExp(`${prop}:\\s*([^;]+);`))?.[1].trim();
+  const ringBody = ruleBody(css, '.strip-entry.unread > .dot');
+  const needsYouBody = ruleBody(css, '.dot.needs-you');
+  const needsYouShadow = decl(needsYouBody, 'box-shadow');
+  assert.ok(needsYouShadow, 'fixture: the needs-you ring declares a box-shadow');
+  assert.equal(decl(ringBody, 'box-shadow'), needsYouShadow.replace('var(--amber)', 'var(--accent)'),
+    'the same ring geometry, with only the colour swapped');
+  assert.equal(decl(ringBody, 'margin'), decl(needsYouBody, 'margin'), 'the same margin');
+  assert.doesNotMatch(ringBody, /--amber/);
+  assert.match(cs(window, unread.querySelector('.dot')).backgroundColor, /var\(--muted\)|#8a90a3|rgb\(138, 144, 163\)/,
+    'the fill stays the plain idle one');
   assert.equal(cs(window, entry('strip-entry active unread').querySelector('.strip-title')).fontWeight, '700');
+  assert.doesNotMatch(css, /\.strip-unread\b/, 'no trailing-dot rule remains');
+  // The text checks above read the rule; this reads what the cascade renders,
+  // so a later rule overriding the ring fails here. Only the geometry is
+  // compared (colours stripped): the ring colour is pinned through the text.
+  const geometry = (shadow) => shadow.replace(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|var\([^)]*\)/gi, '_');
+  const unreadShadow = cs(window, unread.querySelector('.dot')).boxShadow;
+  const readShadow = cs(window, entry('strip-entry').querySelector('.dot')).boxShadow;
+  const needsYouShadowRendered = cs(window, stripDot(document, 'dot idle needs-you')).boxShadow;
+  assert.ok(unreadShadow && unreadShadow !== 'none', 'an unread entry\'s dot renders a box-shadow');
+  assert.ok(needsYouShadowRendered && needsYouShadowRendered !== 'none', 'fixture: a needs-you dot renders a box-shadow');
+  assert.equal(geometry(unreadShadow), geometry(needsYouShadowRendered), 'the rendered ring has the needs-you geometry');
+  assert.ok(!readShadow || readShadow === 'none', 'a read entry\'s dot has no ring');
 });
