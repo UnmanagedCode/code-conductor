@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,7 +8,16 @@ import { EventEmitter } from 'node:events';
 import { launch, stop, probe, status } from '../installer/windows/launch.mjs';
 
 // Tool detection is injected (its own tests are in win-installer-toolchain).
-const detect = { detectGit: () => ({ gitExe: 'C:\\Git\\cmd\\git.exe', cmdDir: 'C:\\Git\\cmd' }), detectClaude: () => null };
+// The projects root is a Windows-style path; on Linux a real mkdir would create
+// a directory literally named after it relative to the cwd. `mkdir` is
+// injected (recorded in `made`), and the hook below proves the cwd stays clean.
+const made = [];
+const cwdBefore = new Set(fs.readdirSync(process.cwd()));
+after(() => {
+  const added = fs.readdirSync(process.cwd()).filter((n) => !cwdBefore.has(n));
+  assert.deepEqual(added, [], 'the tests must not create anything in the cwd');
+});
+const detect = { mkdir: (dir) => made.push(dir), detectGit: () => ({ gitExe: 'C:\\Git\\cmd\\git.exe', cmdDir: 'C:\\Git\\cmd' }), detectClaude: () => null };
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
   const installDir = path.join(root, 'inst');
@@ -96,7 +105,7 @@ test('launch: spawns server.ts with the composed env, then waits for health and 
     assert.equal(opts.windowsHide, true);
     assert.equal(opts.env.PROJECTS_ROOT, path.win32.join(fx.root, 'code-conductor'));
     assert.ok(opts.env.Path.startsWith(path.win32.join(fx.installDir, 'node')));
-    assert.ok(fs.existsSync(opts.env.PROJECTS_ROOT));
+    assert.deepEqual(made.at(-1), opts.env.PROJECTS_ROOT);
     assert.equal(opened.length, 1);
     const log = fs.readFileSync(path.join(fx.installDir, 'logs', 'server.log'), 'utf8');
     assert.match(log, /commit abc12345/);

@@ -69,6 +69,7 @@ const defaults = {
   },
   kill: (pid) => execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' }),
   readCommit: defaultCommit,
+  mkdir: (dir) => fs.mkdirSync(dir, { recursive: true }),
   detectGit,
   detectClaude,
 };
@@ -108,7 +109,7 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
   log(`start: PROJECTS_ROOT=${projectsRoot}`);
   log(`start: PATH head ${pathHead}`);
   log(`start: claude ${claude ? claude.claudeExe : 'NOT FOUND (run "claude auth login" after installing it)'}`);
-  fs.mkdirSync(projectsRoot, { recursive: true });
+  d.mkdir(projectsRoot);
 
   const fd = fs.openSync(logFile, 'a');
   let exited = null;
