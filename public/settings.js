@@ -234,10 +234,11 @@ export function installSettings({
     loadModels();
     loadDebugDefaultPref();
     loadCapabilities().then((caps) => {
-      if (!caps) return; // unknown: groups stay as marked up; the next open retries
-      applyCapabilities(caps);
-      if (caps.voice) { load(); loadTts(); }
-      if (caps.remoteSystems) loadSystems();
+      if (caps) applyCapabilities(caps);
+      // Unknown (the health read failed): load every group as marked up — a route this
+      // host lacks answers with its refusal — and the next open retries.
+      if (!caps || caps.voice) { load(); loadTts(); }
+      if (!caps || caps.remoteSystems) loadSystems();
     });
     loadArchived();
     conductorPanel.load();

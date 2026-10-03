@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { createWin32Platform, resolveGitBash, taskkillArgv } from '../src/platform/win32.ts';
 import { win32Platform } from '../src/platform/index.ts';
-import { samePath } from '../src/platform/index.ts';
 
 const GIT = 'C:\\Program Files\\Git';
 const BASH = `${GIT}\\bin\\bash.exe`;
@@ -70,9 +69,10 @@ test('pathKey: separators, trailing slash, drive root and case', () => {
   assert.equal(win32Platform.pathKey('\\\\?\\UNC\\srv\\share'), '\\\\?\\unc\\srv\\share', 'UNC keeps its prefix');
 });
 
-test('samePath pins createProject\'s git-dir check: git\'s C:/…/.git equals path.join(real, ".git")', () => {
-  assert.equal(samePath('C:/Users/Me/Proj/.git', path.win32.join('c:\\users\\me\\proj', '.git'), win32Platform), true);
-  assert.equal(samePath('C:/Users/Me/Other/.git', path.win32.join('C:\\Users\\Me\\Proj', '.git'), win32Platform), false);
+test('pathKey pins createProject\'s git-dir check (samePath): git\'s C:/…/.git equals path.join(real, ".git")', () => {
+  const same = (a, b) => win32Platform.pathKey(a) === win32Platform.pathKey(b);
+  assert.equal(same('C:/Users/Me/Proj/.git', path.win32.join('c:\\users\\me\\proj', '.git')), true);
+  assert.equal(same('C:/Users/Me/Other/.git', path.win32.join('C:\\Users\\Me\\Proj', '.git')), false);
 });
 
 test('taskkillArgv: absolute path under SystemRoot, falling back to C:\\Windows', () => {
@@ -115,12 +115,12 @@ test('cliEnv: {} when the operator set it or Git is unresolved; the resolved pat
   assert.deepEqual(plat({ env: { PATH: `${GIT}\\cmd` }, files: [`${GIT}\\cmd\\git.exe`, BASH] }).cliEnv(), { CLAUDE_CODE_GIT_BASH_PATH: BASH });
 });
 
-test('canonicalPath: native, then native(js) for a junction, then the input', () => {
+test('canonicalPath: native, then native(js) for a junction, then null', () => {
   const boom = () => { throw new Error('UNKNOWN'); };
   assert.equal(plat({ realpathNative: () => 'C:\\Real' }).canonicalPath('c:\\real'), 'C:\\Real');
   assert.equal(plat({
     realpathNative: (p) => { if (p === 'C:\\junction') throw new Error('UNKNOWN'); return p.toUpperCase(); },
     realpathJs: () => 'c:\\target',
   }).canonicalPath('C:\\junction'), 'C:\\TARGET');
-  assert.equal(plat({ realpathNative: boom, realpathJs: boom }).canonicalPath('c:\\gone'), 'c:\\gone');
+  assert.equal(plat({ realpathNative: boom, realpathJs: boom }).canonicalPath('c:\\gone'), null);
 });

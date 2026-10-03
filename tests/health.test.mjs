@@ -4,6 +4,7 @@ import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { checkClaudeReadiness, formatReadiness } from '../src/health.ts';
+import { posixPlatform } from '../src/platform/index.ts';
 
 async function mkTmp(prefix = 'cc-health-') {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -42,7 +43,7 @@ test('happy path: bin works + credentials.json present', async () => {
   await seedClaudeDir(home, { credentials: true });
   const bin = await writeFake(home, `process.stdout.write('2.1.223 (Claude Code)\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.ok, true);
     assert.deepEqual(r.issues, []);
     assert.equal(r.claudeBin.found, true);
@@ -57,7 +58,7 @@ test('bin missing (ENOENT) flags claude_bin_missing', async () => {
   const home = await mkTmp();
   await seedClaudeDir(home, { credentials: true });
   await withEnv({ CLAUDE_BIN: '/nonexistent/path/claude-xyz', ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.ok, false);
     assert.equal(r.claudeBin.found, false);
     assert.equal(r.claudeBin.error, 'enoent');
@@ -71,7 +72,7 @@ test('bin times out flags claude_bin_missing with error=timeout', async () => {
   await seedClaudeDir(home, { credentials: true });
   const bin = await writeFake(home, `setInterval(() => {}, 1000000);`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 250 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 250, platform: posixPlatform });
     assert.equal(r.claudeBin.found, false);
     assert.equal(r.claudeBin.error, 'timeout');
     assert.ok(r.issues.some(i => i.code === 'claude_bin_missing'));
@@ -83,7 +84,7 @@ test('bin exits non-zero flags claude_bin_missing with error=exit', async () => 
   await seedClaudeDir(home, { credentials: true });
   const bin = await writeFake(home, `process.exit(1);`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.claudeBin.found, false);
     assert.equal(r.claudeBin.error, 'exit');
     assert.equal(r.claudeBin.exitCode, 1);
@@ -96,7 +97,7 @@ test('auth via ANTHROPIC_API_KEY env, no credentials file', async () => {
   await seedClaudeDir(home, { credentials: false });
   const bin = await writeFake(home, `process.stdout.write('9.9.9\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: 'sk-test' }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.authenticated.ok, true);
     assert.equal(r.authenticated.source, 'env');
     assert.ok(!r.issues.some(i => i.code === 'not_authenticated'));
@@ -108,7 +109,7 @@ test('auth missing entirely flags not_authenticated', async () => {
   await seedClaudeDir(home, { credentials: false });
   const bin = await writeFake(home, `process.stdout.write('9.9.9\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.authenticated.ok, false);
     assert.equal(r.authenticated.source, null);
     assert.ok(r.issues.some(i => i.code === 'not_authenticated'));
@@ -121,7 +122,7 @@ test('~/.claude missing flags both claude_dir_missing and not_authenticated', as
   const bin = path.join(home, 'fake-claude.mjs');
   await fsp.writeFile(bin, `process.stdout.write('9.9.9\\n');`, 'utf8');
   await withEnv({ CLAUDE_BIN: `node ${bin}`, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     const codes = r.issues.map(i => i.code);
     assert.ok(codes.includes('claude_dir_missing'));
     assert.ok(codes.includes('not_authenticated'));
@@ -146,7 +147,7 @@ test('a parseable version well below the retired floor produces NO issues', asyn
   await seedClaudeDir(home, { credentials: true });
   const bin = await writeFake(home, `process.stdout.write('2.1.100 (Claude Code)\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.claudeBin.found, true);
     assert.equal(r.claudeBin.version, '2.1.100');
     assert.deepEqual(r.issues, [], 'no version floor is enforced');
@@ -164,7 +165,7 @@ test('a non-N.N.N version string is still found:true with no issues', async () =
   // claudeBin.version verbatim.
   const bin = await writeFake(home, `process.stdout.write('ollama-wrapper-v3 (custom)\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.claudeBin.found, true);
     assert.equal(r.claudeBin.version, 'ollama-wrapper-v3');
     assert.deepEqual(r.issues, [], 'the bin ran fine — no issue of any kind');
@@ -220,7 +221,7 @@ test('an EMPTY CLAUDE_BIN reaches the probe as the stock claude, never as ""', a
   const home = await mkTmp();
   await seedClaudeDir(home, { credentials: true });
   await withEnv({ CLAUDE_BIN: '', ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000 });
+    const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.claudeBin.command, 'claude');
   });
 });

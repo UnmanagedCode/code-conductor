@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { runGroupedCommand } from './groupedCommand.ts';
-import { hostPlatform, type Platform } from './platform/index.ts';
+import type { Platform } from './platform/index.ts';
 
 // Shared git-subprocess helpers used wherever the app pulls/fetches a git
 // checkout it manages (the Plugin Library — src/plugins/library.ts — and the
@@ -42,7 +42,7 @@ export interface GitLiveResult {
 export function runGitLive(
   args: string[],
   cwd: string,
-  { timeoutMs = GIT_LIVE_TIMEOUT_MS, onChunk, platform = hostPlatform }: { timeoutMs?: number; onChunk?: (s: string) => void; platform?: Platform } = {},
+  { timeoutMs = GIT_LIVE_TIMEOUT_MS, onChunk, platform }: { timeoutMs?: number; onChunk?: (s: string) => void; platform: Platform },
 ): Promise<GitLiveResult> {
   // No `cap`: git porcelain output is small and callers parse it whole.
   return runGroupedCommand({ argv: ['git', ...args] }, { cwd, timeoutMs, onChunk }, platform)
@@ -56,7 +56,7 @@ export function runGitLive(
 // to stale-or-null status. Uses a raw execFile timeout (not runGit, which has
 // none) since a hung fetch must not block the caller. NO_PROMPT_GIT_ENV makes
 // credential failures fail fast rather than hang until the timeout.
-export function fetchOriginBounded(cwd: string, platform: Platform = hostPlatform): Promise<void> {
+export function fetchOriginBounded(cwd: string, platform: Platform): Promise<void> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, 'fetch', '--quiet'], {
       ...platform.spawnOptions('child'),

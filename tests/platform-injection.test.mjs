@@ -8,7 +8,6 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import { posixPlatform } from '../src/platform/posix.ts';
-import { samePath } from '../src/platform/index.ts';
 import { runGroupedCommand, killProcessGroup } from '../src/groupedCommand.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { createSupervisor, headSha } from '../src/plugins/supervisor.ts';
@@ -16,7 +15,7 @@ import { RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from '../s
 import { fetchOriginBounded } from '../src/gitLive.ts';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { cliEnvBase } from '../src/cliEnv.ts';
-import { projectsRoot } from '../src/projects.ts';
+import { canonicalRootMemo } from '../src/projects.ts';
 import { checkClaudeReadiness } from '../src/health.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
@@ -99,12 +98,6 @@ test('resolveClaudeBin / resolveBackendLaunch use platform.splitCommand', () => 
   assert.deepEqual([r.command, r.prefixArgs], ['a b', ['c']]);
 });
 
-test('samePath uses the platform key', () => {
-  const lower = fakePlatform({ pathKey: (p) => p.toLowerCase() });
-  assert.equal(samePath('C:/X', 'c:/x', lower), true);
-  assert.equal(samePath('C:/X', 'c:/x'), false);
-});
-
 test('headSha and fetchOriginBounded consult spawnOptions(child)', async () => {
   const fake = fakePlatform();
   await headSha(os.tmpdir(), fake);
@@ -180,18 +173,23 @@ test('cliEnvBase merges the platform cliEnv under the host env, which wins', () 
   }
 });
 
-test('projectsRoot goes through the host platform canonicalPath', async () => {
-  const { hostPlatform } = await import('../src/platform/index.ts');
-  const prevRoot = process.env.PROJECTS_ROOT;
-  const orig = hostPlatform.canonicalPath;
-  hostPlatform.canonicalPath = (p) => `${p}/CANON`;
-  try {
-    process.env.PROJECTS_ROOT = '/tmp/cc-canon-probe';
-    assert.equal(projectsRoot(), '/tmp/cc-canon-probe/CANON');
-  } finally {
-    hostPlatform.canonicalPath = orig;
-    process.env.PROJECTS_ROOT = prevRoot;
-  }
+test('canonicalRootMemo returns the platform spelling and asks once per root', () => {
+  const fake = fakePlatform({ canonicalPath: (p) => `${p}/CANON` });
+  const root = canonicalRootMemo(fake);
+  assert.equal(root('/tmp/cc-canon-probe'), '/tmp/cc-canon-probe/CANON');
+  assert.equal(root('/tmp/cc-canon-probe'), '/tmp/cc-canon-probe/CANON');
+  assert.equal(names(fake).filter(n => n === 'canonicalPath').length, 1);
+});
+
+test('canonicalRootMemo returns an unresolvable root raw and memoises it only once it resolves', () => {
+  let exists = false;
+  const fake = fakePlatform({ canonicalPath: (p) => (exists ? `${p}/CANON` : null) });
+  const root = canonicalRootMemo(fake);
+  assert.equal(root('/tmp/cc-not-yet'), '/tmp/cc-not-yet');
+  exists = true;
+  assert.equal(root('/tmp/cc-not-yet'), '/tmp/cc-not-yet/CANON');
+  assert.equal(root('/tmp/cc-not-yet'), '/tmp/cc-not-yet/CANON');
+  assert.equal(names(fake).filter(n => n === 'canonicalPath').length, 2);
 });
 
 test('runGroupedCommand resolves a spawnError when commandFor throws', async () => {

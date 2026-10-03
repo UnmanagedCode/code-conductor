@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { resolveClaudeBin } from './claudeLauncher.ts';
-import { hostPlatform, type Platform } from './platform/index.ts';
+import type { Platform } from './platform/index.ts';
 import { claudeConfigDir } from './projects.ts';
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -101,7 +101,7 @@ export interface ReadinessResult {
 // `configDir` is the CLI's CONFIG DIRECTORY, not a home: the CLI honours
 // CLAUDE_CONFIG_DIR, so probing `<home>/.claude` would report on a directory it
 // is not reading. Injectable for tests; production takes the derivation.
-export async function checkClaudeReadiness({ configDir = claudeConfigDir(), timeoutMs = DEFAULT_TIMEOUT_MS, platform = hostPlatform }: { configDir?: string; timeoutMs?: number; platform?: Platform } = {}): Promise<ReadinessResult> {
+export async function checkClaudeReadiness({ configDir = claudeConfigDir(), timeoutMs = DEFAULT_TIMEOUT_MS, platform }: { configDir?: string; timeoutMs?: number; platform: Platform }): Promise<ReadinessResult> {
   const [claudeBin, claudeDir, authenticated] = await Promise.all([
     probeBin({ timeoutMs, platform }),
     probeDir(configDir),

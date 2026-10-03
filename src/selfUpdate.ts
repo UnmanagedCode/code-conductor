@@ -8,6 +8,7 @@ import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
 // Self-update operates on cc's OWN checkout — always the local system, never a
 // project on one.
 import { localSystem, LOCAL_SYSTEM_ID } from './systems/registry.ts';
+import { hostPlatform } from './platform/index.ts';
 import { findSelfProject } from './projects.ts';
 import { pullPastGeneratedConventions } from './conventionsCheckout.ts';
 
@@ -54,7 +55,7 @@ async function readVersion(repoRoot: string): Promise<string | null> {
 function runNpmInstall(cmd: string, cwd: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<{ code: number; output: string }> {
   return runGroupedCommand({ shell: cmd }, {
     cwd, env: process.env, timeoutMs: NPM_TIMEOUT_MS, cap: GROUP_OUTPUT_CAP, onChunk,
-  }).then(r => ({ code: r.code, output: r.output.trimEnd() }));
+  }, hostPlatform).then(r => ({ code: r.code, output: r.output.trimEnd() }));
 }
 
 // { version, upstream, behind, canCheck, updateAvailable }. Mirrors
@@ -72,7 +73,7 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
   updateAvailable: boolean;
 }> {
   const version = await readVersion(repoRoot);
-  await fetchOriginBounded(repoRoot);
+  await fetchOriginBounded(repoRoot, hostPlatform);
   const status = await getProjectUpstreamStatus(localSystem(), repoRoot);
   const canCheck = typeof status.behind === 'number';
   const behind = canCheck ? status.behind : null;
@@ -137,7 +138,7 @@ export async function applySelfUpdate({
     system: localSystem(), dir: repoRoot, project,
     note: (t) => onChunk?.('pull', t),
     run: async () => {
-      const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t) });
+      const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t), platform: hostPlatform });
       if (pull.code !== 0) {
         const tail = (pull.stderr || pull.stdout || '').slice(-TAIL_CAP);
         throw httpError(502, 'git pull --ff-only failed', { tail });

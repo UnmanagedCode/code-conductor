@@ -64,6 +64,7 @@ test('killing a busy worker interrupts the turn, then ends stdin, with no signal
   const inst = await busyInstance();
   await inst.kill({ graceMs: 200 });
   assert.equal(interrupts(await stdinLines()).length, 1);
+  assert.equal(inst._stopInterruptedTurn, true);
   assert.deepEqual(hard.kills, [], 'a clean exit never signals');
 });
 
@@ -102,6 +103,7 @@ test('a soft-SIGTERM host sends no interrupt on kill', async () => {
     await inst.kill({ graceMs: 200 });
     const lines = (await fs.readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     assert.equal(interrupts(lines).length, 0);
+    assert.equal(inst._stopInterruptedTurn, false);
     await rmrf(r0.home);
   } finally {
     await ctx2.close();
@@ -111,11 +113,11 @@ test('a soft-SIGTERM host sends no interrupt on kill', async () => {
 const mkFake = (id, sessionId) => ({
   id, sessionId, project: 'p', proc: { pid: 1 }, status: 'turn', acceptsMidTurnSteering: true,
   steerPending: false, activeAgentTaskCount: 0, taskNotificationPending: false, rotationPending: false,
-  _killing: false, _emitUi() {}, ring: { trimmedBefore: 0 }, ringSnapshot() { return []; },
+  _stopInterruptedTurn: false, _emitUi() {}, ring: { trimmedBefore: 0 }, ringSnapshot() { return []; },
   async prompt() {}, async interrupt() {},
 });
 
-test('on a soft-SIGTERM host a killing worker\'s turn_end is NOT suppressed (Linux unchanged)', async () => {
+test('a killing worker whose turn was not interrupted is not suppressed', async () => {
   const instances = new InstanceManager({ platform: posixPlatform });
   const worker = mkFake('w', 'ws'); const conductor = mkFake('c', 'cs');
   instances.byId.set('w', worker); instances.byId.set('c', conductor);
@@ -125,23 +127,23 @@ test('on a soft-SIGTERM host a killing worker\'s turn_end is NOT suppressed (Lin
   instances.emit('event', { id: 'w', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
   assert.equal(instances._idleHub.subscribers.get('w')?.size ?? 0, 0, 'the wake was consumed as before');
   await Promise.resolve(); // past the hub's same-dispatch "consumed" marker
-  assert.equal(instances.shouldSuppressTurnNotification('w'), false, '_killing alone suppresses nothing here');
+  assert.equal(instances.shouldSuppressTurnNotification('w'), false, '_killing alone suppresses nothing');
   instances._idleHub.subscribers.clear();
   await instances.shutdown().catch(() => {});
 });
 
+// The hub and the suppression read only the flag: the manager runs on posix.
 test('the interrupted turn_end of a killed worker neither wakes the conductor nor notifies', async () => {
-  const instances = new InstanceManager({ platform: hard.p });
-  const mk = mkFake;
-  const worker = mk('w', 'ws'); const conductor = mk('c', 'cs');
+  const instances = new InstanceManager({ platform: posixPlatform });
+  const worker = mkFake('w', 'ws'); const conductor = mkFake('c', 'cs');
   instances.byId.set('w', worker); instances.byId.set('c', conductor);
   instances.noteDispatch('cs', 'ws');
   instances._idleHub.onTurnStart('w');
-  worker._killing = true;
+  worker._stopInterruptedTurn = true;
   instances.emit('event', { id: 'w', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
   assert.ok(instances._idleHub.subscribers.get('w')?.size, 'the armed wake is still armed');
   assert.equal(instances.shouldSuppressTurnNotification('w'), true);
-  worker._killing = false;
+  worker._stopInterruptedTurn = false;
   assert.equal(instances.shouldSuppressTurnNotification('w'), instances._idleHub.isCaller('w'));
   instances._idleHub.subscribers.clear();
   await instances.shutdown().catch(() => {});
@@ -164,8 +166,11 @@ test('a commanded kill\'s clean exit is not an uncommanded exit: no cause, no ow
 });
 
 function fakeLive({ ignoresEof, temp = false, pid }) {
-  let ended = 0;
-  return { proc: { stdin: { end() { ended++; } } }, pid, temp, get ended() { return ended; }, ignoresEof, _suppressTempDelete: false, _fuse: null };
+  const log = [];
+  return {
+    proc: { stdin: { end() { log.push('eof'); } } }, pid, temp, log, get ended() { return log.filter(e => e === 'eof').length; },
+    ignoresEof, _suppressTempDelete: false, _fuse: null, interruptTurnForStop() { log.push('interrupt'); },
+  };
 }
 
 test('stopLiveSync and shutdownForResumeSync tree-kill survivors; posix stopLiveSync is a no-op', () => {
@@ -180,8 +185,8 @@ test('stopLiveSync and shutdownForResumeSync tree-kill survivors; posix stopLive
   const realNow = Date.now;
   Date.now = () => (now += 1000);
   try { mgr.stopLiveSync(); } finally { Date.now = realNow; }
-  assert.equal(stuck.ended, 1, 'EOF sent');
-  assert.equal(temp.ended, 0, 'temps are shutdownTempSync\'s');
+  assert.deepEqual(stuck.log, ['interrupt', 'eof'], 'a busy turn is interrupted before EOF');
+  assert.deepEqual(temp.log, [], 'temps are shutdownTempSync\'s');
   assert.deepEqual(kills, [[process.pid, 'SIGKILL']]);
 
   kills.length = 0;
@@ -193,5 +198,12 @@ test('stopLiveSync and shutdownForResumeSync tree-kill survivors; posix stopLive
   const s2 = fakeLive({ pid: process.pid });
   posixMgr.byId.set('a', s2);
   posixMgr.stopLiveSync();
-  assert.equal(s2.ended, 0);
+  assert.deepEqual(s2.log, []);
+});
+
+test('stopLiveSync interrupts a busy turn before EOF', async () => {
+  await busyInstance();
+  ctx.instances.stopLiveSync(); // the in-process pid is null, so the wait returns at once
+  await waitFor(async () => interrupts(await stdinLines()).length === 1);
+  assert.equal(interrupts(await stdinLines()).length, 1);
 });

@@ -226,7 +226,7 @@ export function httpOk(port: number, path: string): Promise<boolean> {
 
 // HEAD sha of the checkout the child was started from (staleness display).
 // Null on any failure — a plugin dir need not be a git repo.
-export function headSha(cwd: string, platform: Platform = hostPlatform): Promise<string | null> {
+export function headSha(cwd: string, platform: Platform): Promise<string | null> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, 'rev-parse', 'HEAD'], { ...platform.spawnOptions('child') }, (err, stdout) => {
       resolve(err ? null : stdout.trim());

@@ -21,7 +21,7 @@
 // which callers already branch on.
 
 import { spawn } from 'node:child_process';
-import { hostPlatform, type Platform } from './platform/index.ts';
+import type { Platform } from './platform/index.ts';
 import { ExecOutputCollector } from './systems/execCollector.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './systems/system.ts';
 
@@ -48,7 +48,7 @@ export type GroupedCommandOptions = ExecOptions;
 // throws ESRCH, which is the expected outcome, not an error.
 export function killProcessGroup(
   pid: number | null | undefined,
-  { graceMs = DEFAULT_KILL_GRACE_MS, fallback, platform = hostPlatform }: { graceMs?: number; fallback?: (signal: NodeJS.Signals) => void; platform?: Platform } = {},
+  { graceMs = DEFAULT_KILL_GRACE_MS, fallback, platform }: { graceMs?: number; fallback?: (signal: NodeJS.Signals) => void; platform: Platform },
 ): void {
   const signalGroup = (sig: NodeJS.Signals): void => {
     if (pid == null) { try { fallback?.(sig); } catch { /* already gone */ } return; }
@@ -66,7 +66,7 @@ export type GroupedCommandSpec = ExecSpec;
 export function runGroupedCommand(
   spec: GroupedCommandSpec,
   { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin, signal }: GroupedCommandOptions,
-  platform: Platform = hostPlatform,
+  platform: Platform,
 ): Promise<GroupedCommandResult> {
   return new Promise((resolve) => {
     const start = Date.now();

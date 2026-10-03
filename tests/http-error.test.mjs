@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { httpError } from '../src/httpError.ts';
+import { errorBody } from '../src/routes.ts';
 
 test('httpError carries the message and statusCode the caller passed', () => {
   const e = httpError(404, "project 'x' not found");
@@ -34,4 +35,10 @@ test('omitting extra leaves exactly one own enumerable field', () => {
   // summarize.ts still uses for ENOENT.
   const e = httpError(400, 'bad');
   assert.deepEqual(Object.keys(e), ['statusCode']);
+});
+
+test('errorBody carries `code` only for a deliberate refusal, never a raw errno', () => {
+  assert.deepEqual(errorBody(httpError(409, 'x', { code: 'X' })), { error: 'x', code: 'X' });
+  assert.deepEqual(errorBody(Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })), { error: 'ENOENT: no such file' });
+  assert.deepEqual(errorBody(httpError(400, 'y')), { error: 'y' });
 });

@@ -1,4 +1,5 @@
 import { headSha } from './supervisor.ts';
+import type { Platform } from '../platform/index.ts';
 import { claudePluginPaths, type PluginManifest, type ManifestSource } from './manifest.ts';
 
 // The PluginRow view-model: the projection GET /api/plugins serializes verbatim
@@ -68,9 +69,11 @@ export interface PluginRowInput {
   // The checkout the plugin actually runs from — the worktree path for a
   // worktree-pinned plugin, else the discovered project dir.
   cwd: string;
+  // The registry's platform, which reads the checkout's HEAD.
+  platform: Platform;
 }
 
-export async function buildPluginRow({ entry, reg, runtime, record, activeVersion, cwd }: PluginRowInput): Promise<PluginRow> {
+export async function buildPluginRow({ entry, reg, runtime, record, activeVersion, cwd, platform }: PluginRowInput): Promise<PluginRow> {
   const id = entry.id;
   const hasBackend = !!entry.manifest?.backend;
   let state: string;
@@ -84,7 +87,7 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
   // running child's code may have moved past the sha it was started at.
   let stale = false;
   if (state === 'ready' && record?.gitHead) {
-    const currentHead = await headSha(cwd);
+    const currentHead = await headSha(cwd, platform);
     stale = !!currentHead && currentHead !== record.gitHead;
   }
   // One code per local-only capability the manifest actually declares, so a

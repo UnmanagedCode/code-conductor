@@ -15,7 +15,7 @@ import {
 } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
 import type { System } from './systems/system.ts';
-import { hostPlatform, samePath } from './platform/index.ts';
+import { hostPlatform, samePath, type Platform } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 
 // Re-exported from its implementation on the local system: the store is always
@@ -69,19 +69,28 @@ const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 // Project + worktree directories themselves stay clean.
 export const ORCH_STORE_DIRNAME = '.code-conductor';
 
-// Memoised per raw value: called per request, and tests swap PROJECTS_ROOT.
-const canonicalRoots = new Map<string, string>();
+// Memoised per raw value: called per request, and tests swap PROJECTS_ROOT. A root
+// the platform cannot resolve yet is returned raw and NOT memoised, so its spelling
+// is fixed only once the directory exists.
+export function canonicalRootMemo(platform: Platform): (raw: string) => string {
+  const canonicalRoots = new Map<string, string>();
+  return (raw) => {
+    let canon = canonicalRoots.get(raw);
+    if (canon === undefined) {
+      const resolved = platform.canonicalPath(raw);
+      if (resolved === null) return raw;
+      canon = resolved;
+      canonicalRoots.set(raw, canon);
+    }
+    return canon;
+  };
+}
+const canonicalRoot = canonicalRootMemo(hostPlatform);
 
 // The root spelled as the claude CLI's `getcwd()` reports it, so every cwd
 // derived from it names the transcript dir the CLI will use.
 export function projectsRoot(): string {
-  const raw = process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
-  let canon = canonicalRoots.get(raw);
-  if (canon === undefined) {
-    canon = hostPlatform.canonicalPath(raw);
-    canonicalRoots.set(raw, canon);
-  }
-  return canon;
+  return canonicalRoot(process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT);
 }
 
 // The conductor's own running checkout dir (the dir holding server.ts /

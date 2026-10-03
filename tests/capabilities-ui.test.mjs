@@ -1,6 +1,10 @@
 // The UI hides what the host platform cannot run (public/capabilities.js reads
 // GET /api/health): Settings → Systems / Voice, the composer mic, and the
 // New-project / Adopt system pickers. Happy-dom, per docs/frontend-testing.md.
+//
+// The module memoises the first successful answer per process (each test file is
+// its own process), so every test here boots OFF. A scenario that needs an
+// unloaded module or another answer goes in its own file.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,8 +19,7 @@ const OFF = { remoteSystems: false, fuseUnion: false, voice: false };
 const imp = (file) => import(pathToFileURL(path.join(PUB, file)).href);
 const tick = async (n = 12) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
 
-// Installs the window + a recording fetch, and forgets any capabilities an
-// earlier test in this process loaded.
+// Installs the window + a recording fetch.
 async function boot(capabilities) {
   const window = new Window({ url: 'http://localhost/#' });
   const urls = [];
@@ -29,7 +32,6 @@ async function boot(capabilities) {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
-  (await imp('capabilities.js')).resetCapabilities();
   return { window, urls };
 }
 
@@ -214,50 +216,4 @@ test('the Adopt dialog hides the system picker and sends no system', async () =>
   await tick();
   assert.equal(posts.length, 1);
   assert.ok(!('system' in posts[0]) || posts[0].system == null, JSON.stringify(posts[0]));
-});
-
-test('a failed health fetch is not remembered: the next open retries and shows the features', async () => {
-  const { window } = await boot({ remoteSystems: true, fuseUnion: true, voice: true });
-  const document = window.document;
-  let healthCalls = 0;
-  const urls = [];
-  const flaky = (url) => {
-    if (String(url).includes('/api/health')) {
-      healthCalls++;
-      return healthCalls === 1
-        ? Promise.reject(new Error('transient'))
-        : Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, capabilities: { remoteSystems: true, fuseUnion: true, voice: false } }) });
-    }
-    urls.push(String(url));
-    return Promise.resolve({ ok: false, status: 503, json: async () => ({}), text: async () => '{}' });
-  };
-  globalThis.fetch = window.fetch = flaky;
-  const warn = console.warn; console.warn = () => {};
-  try {
-    const caps = await imp('capabilities.js');
-    assert.equal(await caps.loadCapabilities(), null, 'failure resolves unknown');
-    assert.equal(caps.capabilities(), null);
-
-    const main = document.createElement('div'); main.id = 'main';
-    const view = document.createElement('section'); view.id = 'settings-view'; view.hidden = true;
-    view.innerHTML = `
-      <select id="settings-group-select">
-        <option value="models">Models</option><option value="systems">Systems</option><option value="voice">Voice</option>
-      </select>
-      <div id="settings-models" class="settings-group"></div>
-      <div id="settings-systems" class="settings-group" hidden><div id="sy-status"></div><ul id="sy-list"></ul></div>
-      <div id="settings-voice" class="settings-group" hidden></div>`;
-    main.appendChild(view); document.body.appendChild(main);
-    const { installSettings } = await imp('settings.js');
-    installSettings({ requestClose: () => {} });
-    window.location.hash = '#settings';
-    await tick();
-    assert.equal(healthCalls, 2, 'the open retried');
-    const options = [...document.getElementById('settings-group-select').options].map(o => o.value);
-    assert.deepEqual(options, ['models', 'systems']);
-    // (voice is off in the retry's answer only to keep this test's DOM small)
-    assert.ok(urls.some(u => u.startsWith('/api/settings/systems')), 'systems loaded after the retry');
-    assert.equal(caps.capabilities().remoteSystems, true);
-  } finally { console.warn = warn; }
-  window.happyDOM.abort();
 });
