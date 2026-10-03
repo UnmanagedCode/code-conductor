@@ -429,6 +429,8 @@ Three input forms are accepted, all resolving to the same session: (1) the publi
 | `exit.signal` | the signal name, `null` when it exited with a code |
 | `exit.stderrTail` | the end of **that launch's** stderr up to its EOF (waited for at most `EXIT_STDERR_SETTLE_MS`), bounded by `EXIT_STDERR_TAIL_LINES` / `EXIT_STDERR_TAIL_CHARS` (`src/instances.ts`); `null` when it wrote none |
 
+The `system/launch_failed` event's `stderr` does **not** wait for EOF: `Instance._handleExit` cuts it at the exit event, so for a wrapper that prints after exiting it can be `null` while `exit.stderrTail` carries the line.
+
 - The cause makes the session **known**: a temp worker leaves `byId` on exit and one that died before its first prompt has no transcript, yet it answers `SESSION_NOT_LIVE` with `exit`, never `SESSION_UNKNOWN`. This holds on the addressing tools, on the read tools (`getInstOrDisk`, after the transcript and orphan probes miss) and on `describe_session`.
 - `reason` leads with the code/signal and the last stderr line, then advises by transcript: one exists → `spawn_instance({resume})`; none → spawn a fresh worker (a resume would refuse `SESSION_UNKNOWN`).
 - `describe_session` on a retired session with a cause adds one `exited code <c> signal <s> — <last stderr line>` line under its location.
