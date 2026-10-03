@@ -1882,3 +1882,27 @@ test('list()/install(): a refused override still takes its id — no built-in ro
     await env.restore();
   }
 });
+
+test('update(): a CRLF working tree of cc-generated files (core.autocrlf=true, LF blobs) is proven generated and the pull succeeds', async () => {
+  const env = await makePluginRoot();
+  const r = await setupConventionsRepo(env);
+  try {
+    await git(r.clone, 'config', 'core.autocrlf', 'true');
+    await fs.rm(path.join(r.clone, 'CLAUDE.md'));
+    await fs.rm(path.join(r.clone, 'CONVENTIONS.md'));
+    await git(r.clone, 'checkout', '--', 'CLAUDE.md', 'CONVENTIONS.md');
+    assert.match(await r.read('CONVENTIONS.md'), /\r\n/, 'precondition: CRLF checkout');
+    await r.regenerate();
+    const before = await r.snapshot();
+    assert.match(before.claude, /^@CONVENTIONS\.md\r\n/, 'precondition: CRLF import line');
+    await r.pushUpstream({ 'file.txt': 'v2' });
+
+    await createPluginLibrary().update('code-x');
+    assert.equal(await r.head(), await r.remoteHead());
+    assert.equal(await r.read('file.txt'), 'v2');
+    assert.deepEqual(await r.snapshot(), before);
+  } finally {
+    await r.cleanup();
+    await env.restore();
+  }
+});

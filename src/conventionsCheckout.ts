@@ -9,9 +9,10 @@
 // are never discarded; git alone decides whether they block the pull.
 //
 // Proof is the generator's own functions applied to HEAD's blob:
-//   - CLAUDE.md is cc's iff its bytes equal withConventionsImport(HEAD's blob);
-//   - CONVENTIONS.md is cc's iff its line 1 equals the marker cc derives from
-//     HEAD's copy. The body is app-owned; line 1 is the project's selection,
+//   - CLAUDE.md is cc's iff it equals withConventionsImport(HEAD's blob), modulo
+//     line endings (a CRLF checkout of an LF blob is still cc's write);
+//   - CONVENTIONS.md is cc's iff its line 1 (without its `\r`) equals the marker
+//     cc derives from HEAD's copy. The body is app-owned; line 1 is the project's selection,
 //     which nothing in cc rewrites after creation — so a different line 1 is
 //     a hand edit.
 // Only ` M` / `??` at the checkout root are candidates. Staged, deleted,
@@ -22,6 +23,7 @@ import type { System } from './systems/system.ts';
 import { runGit } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { withConventionsImport } from './conventionsImport.ts';
+import { firstLine, withEol } from './lineEndings.ts';
 import { buildMarker, selectionOf, ensureProjectConventionsMd } from './projectClaudeMd.ts';
 
 const CANDIDATES = new Set(['CLAUDE.md', 'CONVENTIONS.md']);
@@ -122,8 +124,11 @@ async function isGenerated(system: System, dir: string, file: string, kind: 'tra
   // what the generator produced from HEAD.
   if ((kind === 'untracked') !== (head === null)) return false;
   const current = await system.readFile(path.join(dir, file));
-  if (file === 'CLAUDE.md') return current === withConventionsImport(head);
-  return current.split('\n', 1)[0] === buildMarker(selectionOf(head));
+  if (file === 'CLAUDE.md') {
+    const want = withConventionsImport(head);
+    return want !== null && withEol(current, '\n') === withEol(want, '\n');
+  }
+  return firstLine(current) === buildMarker(selectionOf(head));
 }
 
 async function headBlob(system: System, dir: string, file: string): Promise<string | null> {

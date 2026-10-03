@@ -51,3 +51,21 @@ test('no detached spawn, login-shell flag or group kill outside src/platform/', 
   assert.deepEqual(offenders(/'-lc'/), []);
   assert.deepEqual(offenders(/process\.kill\(-/), []);
 });
+
+// A `/.claude/…` or `/.code-conductor/…` fragment in a literal or regex is
+// matched against host paths, which on Windows use `\`. Use `[\\/]`.
+const FRAGMENT_RE = /(?<!~)\\?\/\\?\.(?:claude|code-conductor)\b/;
+const DISPLAY_TEXT = [
+  '<projectsRoot>/.code-conductor/playbooks/',   // tool description shown to the model
+];
+
+test('no `/`-separated .claude / .code-conductor fragment in a literal', () => {
+  const hits = [];
+  for (const f of files) {
+    for (const line of sources.get(f).split('\n')) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (FRAGMENT_RE.test(line) && !DISPLAY_TEXT.some(s => line.includes(s))) hits.push(`${f}: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(hits, []);
+});

@@ -194,8 +194,8 @@ export function remoteConfigDirName(system: string, remoteId: string | null): st
 //
 // ITS LAST COMPONENT IS `.claude`, and that is load-bearing rather than
 // decorative: the CLI resolves its plans directory as `<configDir>/plans`, and
-// `planFileFromToolUse` (src/planFile.ts) recognises a plan file by the
-// `/.claude/plans/` fragment — home-agnostically, so it holds for a worker
+// `planFileFromToolUse` (src/planFile.ts) recognises a plan file by a
+// `.claude` / `plans` segment pair (either separator) — home-agnostically, so it holds for a worker
 // whatever machine spelling its config dir has. Renaming this component breaks
 // plan-file detection for every remote-backed session.
 export function remoteConfigDir(p: { system: string; remoteId: string | null }): string {

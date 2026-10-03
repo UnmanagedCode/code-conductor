@@ -120,3 +120,20 @@ test('replay does not attach a path to an inline plan from a later turn', async 
   assert.equal(planRequests[1].plan, 'Step 1\nStep 2');
   assert.equal(planRequests[1].planPath, null, 'a stale path would silently name another task\'s plan');
 });
+
+test('replay derives planPath from a backslash plan-file Write', async () => {
+  const win = 'C:\\Users\\u\\.claude\\plans\\the-plan.md';
+  const { planRequests } = await replay(
+    () => [
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'plan this' } },
+      writeLine(win),
+      writeResultLine,
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_p', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_exit', name: 'ExitPlanMode', input: { plan: 'Step 1' } },
+      ] } },
+    ],
+    null,
+  );
+  assert.equal(planRequests.length, 1);
+  assert.equal(planRequests[0].planPath, win, 'the backslash Write is latched and bound');
+});
