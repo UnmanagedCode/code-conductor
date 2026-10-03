@@ -22,6 +22,7 @@ import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { withHealth } from './capabilitiesStub.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -85,7 +86,7 @@ function buildDOM(document) {
 let counter = 0;
 async function setup(fetchImpl) {
   const window = new Window({ url: 'http://localhost/#' });
-  window.fetch = fetchImpl;
+  window.fetch = withHealth(fetchImpl);
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.location = window.location;

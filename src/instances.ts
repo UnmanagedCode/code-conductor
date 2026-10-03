@@ -120,6 +120,7 @@ import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
 import type { WriteStream } from 'node:fs';
 import { httpError } from './httpError.ts';
+import { capabilityRefusal } from './capabilities.ts';
 import { isKnownEffort } from './effortLevels.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
@@ -4920,6 +4921,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // every non-local system is reached over the provider protocol, so this
     // refuses rather than silently degrading to a session with no Bash.
     const remote = proj.system.id !== LOCAL_SYSTEM_ID;
+    if (remote && !this._platform.capabilities.fuseUnion) throw capabilityRefusal('fuseUnion');
     if (remote && !isRedirectable(proj.system)) {
       throw httpError(
         501,

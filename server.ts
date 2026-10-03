@@ -109,8 +109,8 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   // retire/enforcement-toggle events, so a second instance would double-append
   // those and read a projection the other router's writes never reach.
   const playbookGate = createPlaybookGate({ instances });
-  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate }));
-  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate }));
+  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   app.use(express.static(path.join(__dirname, 'public')));
@@ -164,7 +164,16 @@ async function listenWithRetry(server: http.Server, port: number, host: string, 
   }
 }
 
-export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
+// The boot sweep of FUSE-union mounts a previous process left behind; skipped
+// where the host cannot run the union. `sweep` is a parameter so a test can
+// observe the call.
+export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promise<unknown> = sweepFuseSessions): Promise<void> {
+  if (!platform.capabilities.fuseUnion) return;
+  try { await sweep(); }
+  catch (e) { console.warn('fuse sweep failed:', e); }
+}
+
+export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform }: { port?: number; host?: string; platform?: Platform } = {}) {
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
@@ -196,8 +205,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // exits ~50 ms after firing shutdown(), and neither synchronous shutdown path
   // can run the (async) mount teardown at all, so a mount and a root-owned
   // daemon would otherwise survive the orchestrator that created them.
-  try { await sweepFuseSessions(); }
-  catch (e) { console.warn('fuse sweep failed:', e); }
+  await sweepFuseLeftovers(platform);
   // Drop session records with no transcript left anywhere in their lineage
   // (pre-image: <store>/sessions.json.startup.bak). ORDER IS LOAD-BEARING: after
   // migrations and the temp sweep (whose store write it queues behind), before
@@ -205,7 +213,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // unlinks pending-resume.json, which names the sessions it must keep.
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer();
+  const { server, instances, wss, pluginHost } = createServer({ platform });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)

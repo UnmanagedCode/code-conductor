@@ -3,7 +3,7 @@
 import type { Platform } from './platform.ts';
 import { posixPlatform } from './posix.ts';
 
-export type { Platform, SpawnRole, KillSignal, ChildHandle } from './platform.ts';
+export type { Platform, PlatformCapabilities, SpawnRole, KillSignal, ChildHandle } from './platform.ts';
 export { posixPlatform };
 
 export function selectPlatform(os: NodeJS.Platform): Platform {

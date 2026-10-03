@@ -22,6 +22,7 @@ function fakePlatform(overrides = {}) {
   const rec = (name) => (...a) => { calls.push([name, ...a]); return posixPlatform[name](...a); };
   const p = {
     calls,
+    capabilities: posixPlatform.capabilities,
     commandFor: rec('commandFor'), spawnOptions: rec('spawnOptions'), killProcess: rec('killProcess'),
     killGroup: rec('killGroup'), splitCommand: rec('splitCommand'), pathKey: rec('pathKey'),
   };

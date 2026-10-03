@@ -22,6 +22,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { withHealth } from './capabilitiesStub.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -77,7 +78,7 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
   const requests = [];
   let scans = 0;
   let postIdx = 0;
-  globalThis.fetch = async (url, opts) => {
+  globalThis.fetch = withHealth(async (url, opts) => {
     if (String(url).includes('/api/projects/suggestions')) {
       scans++;
       return { ok: scanStatus < 400, status: scanStatus, json: async () => scan };
@@ -91,7 +92,7 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
     const next = posts[Math.min(postIdx++, posts.length - 1)] ?? { status: 201, body: { ok: true } };
     if (next.networkError) throw new Error(next.networkError);
     return { ok: next.status < 400, status: next.status, json: async () => next.body };
-  };
+  });
 
   const el = id => window.document.getElementById(id);
   let refreshed = 0;

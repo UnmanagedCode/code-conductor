@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { withHealth } from './capabilitiesStub.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -85,10 +86,10 @@ let counter = 0;
 async function setup(fetchImpl) {
   const window = new Window({ url: 'http://localhost/#' });
   // Stub fetch so load() doesn't throw when the panel opens.
-  window.fetch = fetchImpl || (() => Promise.resolve({
+  window.fetch = withHealth(fetchImpl || (() => Promise.resolve({
     ok: false, status: 503,
     json: () => Promise.resolve({}),
-  }));
+  })));
 
   globalThis.window = window;
   globalThis.document = window.document;

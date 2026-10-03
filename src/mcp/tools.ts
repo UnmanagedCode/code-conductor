@@ -6,6 +6,7 @@
 import * as h from './handlers.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
+import type { PlatformCapabilities } from '../platform/platform.ts';
 
 import { MODES as VALID_MODES } from '../sessionModes.ts';
 // The heartbeat window's single source: its default IS the schema ceiling, so
@@ -58,6 +59,7 @@ const bashOutputDescription = (metaKeys: string) =>
 interface ToolCtx {
   instances?: InstanceManagerLike | null;
   callerId?: string | null;
+  capabilities?: PlatformCapabilities;
 }
 
 interface ToolAnnotations {
@@ -80,6 +82,8 @@ interface Tool {
   inputSchema: Record<string, unknown>;
   handler(args: unknown, ctx: ToolCtx): Promise<unknown>;
   annotations?: ToolAnnotations;
+  // Omitted from the tool list when the host platform lacks this capability.
+  requires?: keyof PlatformCapabilities;
 }
 
 export function buildTools(): Tool[] {
@@ -782,6 +786,7 @@ export function buildTools(): Tool[] {
     },
     {
       name: 'set_project_remote',
+      requires: 'remoteSystems',
       description:
         'Change WHICH TARGET of its system a project is on, or clear it back to the provider\'s own '
         + 'default with remoteId:null (or ""). One registered system can serve many targets (ten '
@@ -1135,6 +1140,7 @@ export function buildTools(): Tool[] {
     },
     {
       name: 'system_bash',
+      requires: 'remoteSystems',
       description:
         'Read-only inspection only: run non-mutating commands (rg/grep/find, git log/diff, wc, jq, ' +
         '…); anything that writes files, installs dependencies, commits, or starts long-lived ' +

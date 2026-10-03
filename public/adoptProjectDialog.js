@@ -84,6 +84,8 @@ export function messageFor(result) {
   return reason;
 }
 
+import { loadCapabilities } from './capabilities.js';
+
 export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOverflow }) {
   // The {name, path, system, remoteId} the open dialog is about. Module-local
   // rather than captured per listener because it has to survive the stale
@@ -112,6 +114,17 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
 
   async function buildSystems() {
     dom.apdSystem.innerHTML = '';
+    // A platform without remote Systems offers only this machine: no picker,
+    // no note, no remote row, no registry fetch. (Unknown flags, after a failed
+    // load, leave the picker as it is; the next open retries.)
+    const caps = await loadCapabilities();
+    if (caps && !caps.remoteSystems) {
+      const row = dom.apdSystem.closest('label');
+      if (row) row.hidden = true;
+      dom.apdSystemNote.hidden = true;
+      syncPlacement();
+      return;
+    }
     let systems = [{ id: 'local', label: 'This machine', managed: true }];
     let note = '';
     try {

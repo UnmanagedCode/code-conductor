@@ -12,7 +12,11 @@ export type SpawnRole = 'child' | 'group' | 'daemon';
 export type KillSignal = 'SIGTERM' | 'SIGKILL';
 export interface ChildHandle { pid?: number | null; kill(signal?: NodeJS.Signals): unknown }
 
+// A flag marks a feature this host can run; when off, the feature is hidden and refused.
+export interface PlatformCapabilities { remoteSystems: boolean; fuseUnion: boolean; voice: boolean }
+
 export interface Platform {
+  capabilities: PlatformCapabilities;
   // `{shell}` → the login shell running the string; `{argv}` → executable + args.
   commandFor(spec: ExecSpec): { command: string; args: string[] };
   // Base spawn options; spread FIRST so a call site's own options win.
