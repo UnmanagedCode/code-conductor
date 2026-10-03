@@ -124,6 +124,16 @@ test('plugin UI anchors: app switcher in sidebar header, plugin view in #main, s
     'settings group select opts out of form-state restoration');
 });
 
+test('settings group select lists the sections in usage-first order', async () => {
+  const html = await fs.readFile(INDEX_HTML, 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  window.document.documentElement.innerHTML = html;
+  const values = [...window.document.querySelectorAll('#settings-group-select option')].map(o => o.value);
+  assert.deepEqual(values, [
+    'models', 'conventions', 'plugins', 'backends', 'systems', 'account', 'voice', 'archived', 'about',
+  ]);
+});
+
 test('DOM-free public modules import cleanly in Node', async () => {
   // Use file:// imports — these modules have no top-level browser-globals
   // access, so a successful import proves their syntax + imports resolve.

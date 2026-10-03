@@ -1,8 +1,9 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
-// `#settings`. Built as a group-nav + content scaffold: Models, Backends,
-// Systems, Account (Claude login + overage protection), Voice (Dictation + Speech grouping boxes),
-// Conventions (Conductor / Workspace / Project blocks, each a reusable
-// conventionsPanel), Plugins, Archived. Each adds a nav item + a panel.
+// `#settings`. Built as a group-nav + content scaffold, sections in dropdown
+// order: Models, Conventions (Conductor / Workspace / Project blocks, each a
+// reusable conventionsPanel), Plugins, Backends, Systems, Account (Claude
+// login + overage protection), Voice (Dictation + Speech grouping boxes),
+// Archived, About. Each adds a nav item + a panel.
 //
 // Navigation is hash-driven so a refresh keeps the page. app.js owns the
 // hash (it knows the active session to restore on close) and passes a
