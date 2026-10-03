@@ -342,12 +342,12 @@ marked otherwise.
   `instances` 3.48 s, `overage-action` 4.53 s. Same shape as the original claim (sub-second to
   ~4–5 s across the suite); do not re-cite these five numbers either without re-measuring — this
   section's whole point is that the bench-branch figures cannot be trusted without their source.
-- Runtimes scale with core count: `tests/run.mjs` runs files at `min(4, cores/2)` concurrency
-  (`TEST_CONCURRENCY` overrides). `tests/run.mjs` passes node a 60 s **per-test** timeout
-  (`timeout: 60_000` to `run()`); the per-file bound is the hang guard's SIGKILL at `FILE_KILL_MS`
-  (`tests/hangGuardConfig.mjs`). Note the
-  consequence for reading the jobs numbers: a single run is **already 4-way concurrent** on 16 cores,
-  so `--jobs 4` means up to 16 concurrent test files plus their forked children and bound ports.
+- Runtimes scale with core count: `tests/run.mjs` runs several files at once, the count set by its
+  `resolveConcurrency` (`TEST_CONCURRENCY` overrides). `tests/run.mjs` passes node a 60 s
+  **per-test** timeout (`timeout: 60_000` to `run()`); the per-file bound is the hang guard's SIGKILL
+  at `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`). Note the consequence for reading the jobs
+  numbers: a single run is **already multi-file concurrent**, so `--jobs N` means N times
+  `resolveConcurrency`'s count of concurrent test files, plus their forked children and bound ports.
 
 ### §7 `config.json`, field by field
 
@@ -393,7 +393,7 @@ recipe, 16 cores, load average 25–41:
 ORCH_SUBSCRIBE_TIMEOUT_MS=999 npm test -- tests/idle-wake-<file>.test.mjs
 ```
 
-`ORCH_SUBSCRIBE_TIMEOUT_MS` < 1000 collapses `DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS`
+`ORCH_SUBSCRIBE_TIMEOUT_MS=999` collapses `DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS`
 (`src/idleSubscriptions.ts`) to 0, so every second-precision window is refused and the affected tests
 ride `waitFor` to expiry — no source edit. `tests/hangGuardConfig.mjs` records the same recipe
 against `FILE_KILL_MS`.
@@ -409,22 +409,30 @@ against `FILE_KILL_MS`.
 | `idle-wake-interval` | 37.9 s | 4/4 |
 | `idle-wake-defer`, `idle-wake-exit` | green under the recipe | — |
 
-For scale, `idle-wake-exit`'s green narrow command took 1.7 s quiet and 6.2 s loaded — a reference
-that, at `factor: 10`, puts the deadline on the floor.
+For scale, `idle-wake-exit`'s green narrow command took 1.7 s quiet and 6.2 s loaded. At
+`factor: 10` that is 17 s quiet, where the floor binds (50 s), and 62 s loaded, where the floor is
+inert: the deadline in force follows the load at the moment the narrow baseline ran.
 
 **Upper bound — a hang must stay `TIMEOUT`.** `tests/run.mjs` passes node a per-test timeout
 (`timeout: 60_000` to `run()`). A test whose await never settles is reported by node as a named
 failure, no earlier than 60 s after the command starts. A floor at or above that lets a genuine hang
-finish as a failure and grade `KILLED`. Keep `floorMs` under it. A wedged event loop is SIGKILLed
-later still, at `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`).
+finish as a failure and grade `KILLED`. Keep `floorMs` under it. That protects a hang only while
+the deadline in force stays under 60 s: a reference above 60 s / `factor` puts `factor × referenceMs` past the per-test timeout, and
+there a never-settling await reports as a named failure before the deadline. A wedged event loop is
+SIGKILLed later still, at `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`).
 
-**The margin.** `50000` covers the measured worst (37.9 s) by 12 s and a four-wait chain under load
-(~46 s), and sits 10 s under the per-test timeout.
+**The margin.** `50000` covers the recipe's measured worst (37.9 s) by 12 s and sits 10 s under the
+per-test timeout. The tightest measured margin is a real mutant's: a mutant failing four
+`idle-wake-exit` tests, run as `probe --learn` against that file, took 43.4 s at load average 22–34
+on 16 cores — 6.6 s under the floor.
 
 **Residue no floor under 60 s fixes:**
 - **A five-wait chain** — e.g. a mutant that fails every `idle-wake-exit` test — runs ~52 s quiet,
-  ~56 s loaded, so it still reads `TIMEOUT`. Re-measure it at whole-suite scope
-  (`narrowCommand: "npm test"`), whose reference lifts the deadline past it.
+  ~56 s loaded. It reads `TIMEOUT` whenever the deadline in force is shorter than that: always
+  while the floor binds, and above the floor while `factor × referenceMs` stays under the chain's
+  duration. A loaded narrow baseline (6.2 s → 62 s above) lets it finish, so the verdict depends on
+  load at both measurements. Re-measure it at whole-suite scope
+  (`narrowCommand: "npm test"`), whose reference lifts the deadline to the `timeoutMs` cap.
 - **A spinning mutant** (a busy loop) is a real hang; `TIMEOUT` is correct. Rewrite the mutant.
 - **A mutant that leaves a child process alive** is ended by the suite's Layer-B leak guard
   (`LEAK_GRACE_MS`, `tests/hangGuardConfig.mjs`), and reads `ERROR`/`IMPRECISE`, not `KILLED`.

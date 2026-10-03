@@ -31,9 +31,10 @@ node harness/mutation/run.mjs candidates --base main
 node harness/mutation/run.mjs run --all
 node harness/mutation/run.mjs run --id <id> --id <id>
 
-# Re-run after any catalog edit: re-measures only mutants whose measured fields changed
-# (waivers and prose are free; reused verdicts are labelled fromJournal). Make the final,
-# authoritative run a resume too.
+# Re-run after a catalog edit: re-measures only mutants whose measured fields changed
+# (waivers and prose are free; reused verdicts are labelled fromJournal). It reuses nothing
+# after a new commit or a change to config.json's measuring settings — those start a fresh
+# journal. Make the final, authoritative run a resume too.
 node harness/mutation/run.mjs run --all --resume
 
 # Explore one mutation without a catalog entry (clean-tree gate only warns here).
@@ -131,7 +132,9 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
   match a failing test id.
 - A mutant run's deadline derives from its narrow baseline, with a floor (`hang` in `config.json`).
   A mutant that breaks an awaited event can take tens of seconds to fail — that is not a hang.
-  `TIMEOUT` means the run outlived the deadline: treat it as a hang (RATIONALE.md §7.1).
+  `TIMEOUT` means the run outlived the deadline in force: a real hang, or a correctly failing
+  mutant whose chain of `waitFor` expiries is longer than that deadline. RATIONALE.md §7.1 lists
+  the shapes; re-measure the second at whole-suite scope (`narrowCommand: "npm test"`).
 
 ## Artifacts
 
