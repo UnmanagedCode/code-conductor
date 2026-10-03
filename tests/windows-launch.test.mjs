@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
-import { launch, stop, probe, status } from '../installer/windows/launch.mjs';
+import { launch, stop, probe, status, LaunchError, detectClaude, findOnPath, launcherEnv } from '../bin/windows-launch.mjs';
 
-// Tool detection is injected (its own tests are in win-installer-toolchain).
+// Git Bash and claude detection are injected into launch(); detectClaude,
+// findOnPath and launcherEnv have their own cases at the end.
 // The projects root is a Windows-style path; on Linux a real mkdir would create
 // a directory literally named after it relative to the cwd. `mkdir` is
 // injected (recorded in `made`), and the hook below proves the cwd stays clean.
@@ -17,7 +18,14 @@ after(() => {
   const added = fs.readdirSync(process.cwd()).filter((n) => !cwdBefore.has(n));
   assert.deepEqual(added, [], 'the tests must not create anything in the cwd');
 });
-const detect = { mkdir: (dir) => made.push(dir), detectGit: () => ({ gitExe: 'C:\\Git\\cmd\\git.exe', cmdDir: 'C:\\Git\\cmd' }), detectClaude: () => null };
+const existsIn = (...files) => {
+  const set = new Set(files.map((f) => f.toLowerCase()));
+  return (p) => set.has(p.toLowerCase());
+};
+const USER = 'C:\\Users\\Jo Bloggs';
+const detect = {
+  mkdir: (dir) => made.push(dir), gitBash: () => 'C:\\Git\\bin\\bash.exe', exists: existsIn('C:\\Git\\cmd\\git.exe'), detectClaude: () => null,
+};
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
   const installDir = path.join(root, 'inst');
@@ -104,7 +112,7 @@ test('launch: spawns server.ts with the composed env, then waits for health and 
     assert.equal(opts.detached, true);
     assert.equal(opts.windowsHide, true);
     assert.equal(opts.env.PROJECTS_ROOT, path.win32.join(fx.root, 'code-conductor'));
-    assert.ok(opts.env.Path.startsWith(path.win32.join(fx.installDir, 'node')));
+    assert.ok(opts.env.Path.startsWith(`${path.win32.join(fx.installDir, 'node')};C:\\Git\\cmd;`));
     assert.deepEqual(made.at(-1), opts.env.PROJECTS_ROOT);
     assert.equal(opened.length, 1);
     const log = fs.readFileSync(path.join(fx.installDir, 'logs', 'server.log'), 'utf8');
@@ -297,4 +305,97 @@ test('stop: an unidentified server cannot be stopped and is reported, not killed
   try {
     await assert.rejects(stop({ env: { PORT: String(old.port) }, kill: () => assert.fail('no kill') }), /cannot stop.*doesn't identify/);
   } finally { await old.close(); }
+});
+
+test('launch: no Git Bash fails with a run-the-installer-again message, nothing spawned', async () => {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  try {
+    await assert.rejects(
+      launch({
+        installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...quick,
+        gitBash: () => { throw new Error("Git for Windows' bash.exe not found"); },
+        spawn: () => assert.fail('must not spawn'),
+      }),
+      (e) => e instanceof LaunchError && /Git for Windows \(with Git Bash\) was not found; run the installer again/.test(e.message));
+  } finally { fx.cleanup(); }
+});
+
+
+// launch() up to the spawn: the server env and the git readCommit was given.
+async function spawnedWith(deps) {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  let seen;
+  try {
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...quick, ...deps,
+      readCommit: (git) => { seen = { git }; return 'x'; },
+      spawn: (cmd, args, opts) => { seen.env = opts.env; const c = fakeChild(); setTimeout(() => c.emit('exit', 1), 5); return c; },
+    }), /exited with 1/);
+    seen.node = path.win32.join(fx.installDir, 'node');
+    seen.log = fs.readFileSync(path.join(fx.installDir, 'logs', 'server.log'), 'utf8');
+    return seen;
+  } finally { fx.cleanup(); }
+}
+
+test('launch: the server PATH gets the Git install\'s existing git.exe dir: cmd, else bin, else PATH; none is omitted', async () => {
+  const binOnly = await spawnedWith({ exists: existsIn('C:\\Git\\bin\\git.exe') });
+  assert.equal(binOnly.git.gitExe, 'C:\\Git\\bin\\git.exe');
+  assert.ok(binOnly.env.Path.startsWith(`${binOnly.node};C:\\Git\\bin;`), binOnly.env.Path);
+
+  const onPath = await spawnedWith({
+    gitBash: () => 'X:\\tools\\bash.exe',
+    exists: existsIn('C:\\Windows\\git.exe'),
+  });
+  assert.equal(onPath.git.gitExe, 'C:\\Windows\\git.exe');
+  assert.ok(onPath.env.Path.startsWith(`${onPath.node};C:\\Windows`), onPath.env.Path);
+
+  const none = await spawnedWith({ gitBash: () => 'X:\\tools\\bash.exe', exists: existsIn() });
+  assert.equal(none.git, null);
+  assert.equal(none.env.Path, `${none.node};C:\\Windows`);
+  assert.match(none.log, /git bash X:\\tools\\bash\.exe, git NOT FOUND/);
+});
+
+test('detectClaude: .cmd shim rejected, .local\\bin fallback used', () => {
+  const exe = `${USER}\\.local\\bin\\claude.exe`;
+  assert.equal(detectClaude({ PATH: 'C:\\npm', USERPROFILE: USER }, existsIn('C:\\npm\\claude.cmd')), null);
+  const r = detectClaude({ PATH: 'C:\\npm', USERPROFILE: USER }, existsIn('C:\\npm\\claude.cmd', exe));
+  assert.deepEqual(r, { claudeExe: exe, dir: `${USER}\\.local\\bin` });
+});
+
+test('findOnPath: case-insensitive PATH key', () => {
+  assert.equal(findOnPath('git', { pAtH: 'C:\\a;C:\\b' }, existsIn('C:\\b\\git.exe')), 'C:\\b\\git.exe');
+});
+
+test('launcherEnv: PATH order, case-insensitive dedupe, spaces preserved', () => {
+  const inst = `${USER}\\AppData\\Local\\Programs\\code-conductor`;
+  const git = { gitExe: 'C:\\Git\\cmd\\git.exe', cmdDir: 'C:\\Git\\cmd' };
+  const claude = { claudeExe: `${USER}\\.local\\bin\\claude.exe`, dir: `${USER}\\.local\\bin` };
+  const env = launcherEnv({
+    env: { Path: `C:\\Windows;c:\\git\\cmd;${USER}\\.local\\bin`, USERPROFILE: USER },
+    installDir: inst, git, claude,
+  });
+  assert.equal(env.Path, [`${inst}\\node`, 'C:\\Git\\cmd', `${USER}\\.local\\bin`, 'C:\\Windows'].join(';'));
+  assert.equal(env.PATH, undefined);
+  assert.equal(env.PROJECTS_ROOT, `${USER}\\code-conductor`);
+});
+
+test('launcherEnv: PROJECTS_ROOT override kept, no CLAUDE_BIN/HOST/PORT/GIT_BASH injected', () => {
+  const env = launcherEnv({
+    env: { PATH: 'C:\\W', USERPROFILE: USER, PROJECTS_ROOT: 'D:\\work' },
+    installDir: 'C:\\i', git: null, claude: null,
+  });
+  assert.equal(env.PROJECTS_ROOT, 'D:\\work');
+  for (const k of ['CLAUDE_BIN', 'HOST', 'PORT', 'CLAUDE_CODE_GIT_BASH_PATH']) assert.equal(env[k], undefined);
+});
+
+test('launcherEnv: a mixed-case projects_root is normalised to PROJECTS_ROOT', () => {
+  const env = launcherEnv({ env: { PATH: 'C:\\W', USERPROFILE: USER, Projects_Root: 'D:\\work' }, installDir: 'C:\\i', git: null, claude: null });
+  assert.equal(env.PROJECTS_ROOT, 'D:\\work');
+  assert.deepEqual(Object.keys(env).filter((k) => k.toLowerCase() === 'projects_root'), ['PROJECTS_ROOT']);
 });

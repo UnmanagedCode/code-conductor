@@ -27,7 +27,8 @@ function bashCandidates(env: Win32Env, exists: (p: string) => boolean): string[]
   const out: string[] = [];
   if (env.CLAUDE_CODE_GIT_BASH_PATH) out.push(env.CLAUDE_CODE_GIT_BASH_PATH);
   // `Git\cmd` (the only dir the installer puts on PATH) and `Git\bin` both hold git.exe.
-  for (const dir of (env.PATH ?? env.Path ?? '').split(';')) {
+  for (const entry of (env.PATH ?? env.Path ?? '').split(';')) {
+    const dir = entry.replace(/^"|"$/g, '');
     if (!dir || !exists(w.join(dir, 'git.exe'))) continue;
     out.push(w.join(dir, '..', 'bin', 'bash.exe'), w.join(dir, 'bash.exe'));
   }
@@ -41,6 +42,13 @@ export function resolveGitBash(env: Win32Env, exists: (p: string) => boolean): s
   const candidates = bashCandidates(env, exists);
   for (const c of candidates) if (exists(c)) return w.normalize(c);
   throw new Error(`Git for Windows' bash.exe not found — install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH (looked in: ${candidates.join(', ') || 'nowhere: no candidate locations'})`);
+}
+
+// Git's install root from its bash: `<root>\bin\bash.exe` or `<root>\usr\bin\bash.exe`.
+export function gitRootOfBash(bash: string): string {
+  const bin = w.dirname(bash);
+  const up = w.dirname(bin);
+  return w.basename(up).toLowerCase() === 'usr' ? w.dirname(up) : up;
 }
 
 export function taskkillArgv(pid: number, env: Win32Env = process.env): [string, string[]] {
@@ -61,7 +69,7 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
   // Memoise success only: installing Git later takes effect without a restart.
   let bash: string | null = null;
   const gitBash = (): string => (bash ??= resolveGitBash(d.env, d.exists));
-  const gitRoot = (): string => w.dirname(w.dirname(gitBash()));
+  const gitRoot = (): string => gitRootOfBash(gitBash());
 
   const mapTool = (name: string): string => {
     if (name === 'bash') return gitBash();
