@@ -25,7 +25,7 @@
 // persisted, and every map is purged on remove(), so there is nothing to
 // "survive a restart."
 //
-// An ARMED entry is consumed by whichever of THREE trigger paths lands first:
+// An ARMED entry is consumed by whichever of FOUR trigger paths lands first:
 //   1. turn_end (the classic path — see _onTurnEnd and its defer gate),
 //   2. the idle task-drain settle (_onTaskEvent/_fireSettle — a background
 //      task finishing while the worker is already idle, with NO re-invocation
@@ -33,7 +33,10 @@
 //      thing the stream says),
 //   3. rotation completion (_onRotationComplete — a rotation that comes up IDLE
 //      with no turn at all, i.e. a prune; a renewal declares comesUpIdle:false
-//      and is delivered by its reseed turn's turn_end instead).
+//      and is delivered by its reseed turn's turn_end instead),
+//   4. the target's CLI exiting on its own (onTargetExit — no turn_end can ever
+//      follow, so the exit is the wake, reported as EXITED; a commanded kill is
+//      not this path and keeps the heartbeat retirement below).
 // A forced `interrupt_turn` clears only the INTERRUPTER's own entry
 // (disarmSilently) — every other owner is still woken at that turn_end and told
 // the turn was INTERRUPTED rather than finished, since silencing an owner that did
@@ -132,6 +135,9 @@ interface DeliverOpts {
   // The turn being reported was force-aborted, so its output is partial and the
   // worker did not finish. Never folded — see deliver().
   interrupted?: boolean;
+  // The target's CLI exited on its own mid-turn (onTargetExit). Carries the
+  // sessionId because a held wake can outlive the target's byId entry. Never folded.
+  exited?: { sessionId: string | null; code: number | null; signal: string | null };
 }
 
 // The wording for a declined renewal request, prefixed into the wake stub's
@@ -425,6 +431,22 @@ export class IdleSubscriptionHub {
       clearInterval(timerId); // stop the heartbeat — the rotation won
       this.deliver(callerInstanceId, targetInstanceId, abort);
     }
+  }
+
+  // The target's CLI exited ON ITS OWN (the manager's status listener, from
+  // Instance.lastExit) — no turn_end will ever arrive, so every armed owner is
+  // woken now with the EXITED stub, and each entry's heartbeat goes with it.
+  // Called BEFORE a temp target's purge, which would otherwise clear the entries
+  // and wake nobody.
+  onTargetExit(targetInstanceId: string, exited: { sessionId: string | null; code: number | null; signal: string | null }): void {
+    const subs = this.subscribers.get(targetInstanceId);
+    if (!subs || subs.size === 0) return;
+    const callers = [...subs.keys()];
+    for (const callerInstanceId of callers) {
+      this._dropArmed(targetInstanceId, callerInstanceId);
+      this.deliver(callerInstanceId, targetInstanceId, { exited });
+    }
+    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
 
   // A conductor's renewal request expired unconsumed on this target — the worker
@@ -811,7 +833,8 @@ export class IdleSubscriptionHub {
       this._deferredWakes.set(callerInstanceId, queue);
       return;
     }
-    const targetSessionId = this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
+    const targetSessionId = opts?.exited?.sessionId
+      ?? this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
     // Fold the worker's recent output into the stub ONLY on a real turn_end
     // delivered to an already-idle caller. The heartbeat path and the
     // live mid-turn steering path keep the plain pointer stub. Decided here,
@@ -822,7 +845,9 @@ export class IdleSubscriptionHub {
     // separator IS the client's "this is the finished result" signal, so folding
     // partial aborted output in would invite the conductor to act on exactly what
     // the abort was meant to stop it acting on. It gets the pointer instead.
-    const fold = !opts?.timedOut && !opts?.stale && !opts?.interrupted && caller.status !== 'turn';
+    // …and so does an EXITED one: there is no finished result to fold.
+    const fold = !opts?.timedOut && !opts?.stale && !opts?.interrupted && !opts?.exited
+      && caller.status !== 'turn';
     const deliver = async (): Promise<void> => {
       // Read-and-delete BEFORE any await: the expiry that recorded this note ran
       // synchronously in the dispatch that queued this microtask, and the note
@@ -860,7 +885,15 @@ export class IdleSubscriptionHub {
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
   _plainStub(targetSessionId: string, opts?: DeliverOpts): string {
-    const summary = opts?.interrupted
+    // EXITED must never say "did NOT finish": that phrase is the heartbeat's, which
+    // a conductor reads as "still running".
+    const exited = opts?.exited;
+    const summary = exited
+      ? `Worker \`${targetSessionId}\` EXITED on its own mid-turn (`
+        + (exited.signal ? `signal ${exited.signal}` : `exit code ${exited.code}`)
+        + `) — it is no longer running. `
+        + `\`mcp__code-conductor__describe_session({sessionId:"${targetSessionId}"})\` shows the cause.`
+      : opts?.interrupted
       ? `Worker \`${targetSessionId}\` was INTERRUPTED — its turn was force-aborted, so it did ` +
         `NOT finish and whatever it produced is PARTIAL; work in progress was discarded. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +

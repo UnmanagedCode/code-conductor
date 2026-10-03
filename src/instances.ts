@@ -3280,7 +3280,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   get rotationPending(): boolean { return this._rotation !== null; }
 
   // True while a rewindToUserMessage/InstanceManager.respawn relaunch is in
-  // flight — see the `_relaunching` field comment. Read ONLY by isSessionLive.
+  // flight — see the `_relaunching` field comment. Read by isSessionLive and by
+  // the idle-wake paths that must not treat the relaunch gap as death.
   get relaunching(): boolean { return this._relaunching; }
 
   // Which mechanism holds the window, or null. The refusal sites need the reason,
@@ -5557,6 +5558,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // earlier crash's cause can never describe a later death.
       if ((summary.status === 'exited' || summary.status === 'crashed') && inst.sessionId) {
         this._noteExitCause(inst.sessionId, inst.lastExit);
+      }
+      // …and wake every owner waiting on it, here for the same reason: the temp
+      // drop's purge clears the armed entries, which would wake nobody. Not inside
+      // a relaunch, whose own turn or rotation still owes the wake.
+      if ((summary.status === 'exited' || summary.status === 'crashed') && inst.lastExit && !inst.relaunching) {
+        this._idleHub.onTargetExit(inst.id, {
+          sessionId: inst.sessionId, code: inst.lastExit.code, signal: inst.lastExit.signal,
+        });
       }
       // Temp sessions are disposable: once the subprocess is gone the
       // session is archived by _archiveTempSession() (the jsonl is retained
