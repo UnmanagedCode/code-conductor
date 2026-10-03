@@ -147,6 +147,22 @@ test('the interrupted turn_end of a killed worker neither wakes the conductor no
   await instances.shutdown().catch(() => {});
 });
 
+test('a commanded kill\'s clean exit is not an uncommanded exit: no cause, no owner wake', async () => {
+  const inst = await busyInstance();
+  const causes = [];
+  const wakes = [];
+  inst.on('exit_cause', (c) => causes.push(c));
+  const realOnExit = ctx.instances._idleHub.onTargetExit.bind(ctx.instances._idleHub);
+  ctx.instances._idleHub.onTargetExit = (...a) => { wakes.push(a); return realOnExit(...a); };
+  const sid = inst.sessionId;
+  await inst.kill({ graceMs: 200 });
+  assert.deepEqual(hard.kills, [], 'the exit was clean, not signalled');
+  assert.equal(inst.lastExit, null);
+  assert.deepEqual(causes, [null], 'exit_cause announces a commanded exit as null');
+  assert.equal(ctx.instances.exitCauseFor(sid), null, 'nothing surfaces on the next MCP call');
+  assert.deepEqual(wakes, [], 'no owner is woken with an EXITED stub');
+});
+
 function fakeLive({ ignoresEof, temp = false, pid }) {
   let ended = 0;
   return { proc: { stdin: { end() { ended++; } } }, pid, temp, get ended() { return ended; }, ignoresEof, _suppressTempDelete: false, _fuse: null };
