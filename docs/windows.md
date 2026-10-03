@@ -81,11 +81,10 @@ Fixed at `%USERPROFILE%\code-conductor`; a user-level `PROJECTS_ROOT` environmen
 
 ## Limitations
 
-- Remote Systems, the FUSE union and Voice are off on Windows (`Platform.capabilities`).
-- Git Bash is required; a bare `git.exe` is not enough.
+- Git Bash is required; a bare `git.exe` is not enough. Runtime behaviour on win32 (capabilities, Git Bash resolution, kill semantics): [architecture.md](architecture.md) → `src/platform/win32.ts`.
 - Not signed: SmartScreen shows "More info → Run anyway".
 - Node's `fetch` ignores the system proxy, so the Git download needs direct access.
 - A logon over SSH cannot `taskkill /T` or use WMI; run those steps under an interactive-type logon (e.g. `Start-Process -Credential`).
 - The server dies with its logon session when started from a non-interactive logon; a desktop session is unaffected.
 - Default NSIS icon.
-- The runtime must itself support win32; until it does the launcher reports the server's startup error from `logs\server.log`.
+- A server that fails to start is reported by the launcher with the tail of `logs\server.log`.
