@@ -1548,8 +1548,8 @@ export async function adoptProject(
   //   --git-dir        "is there a git dir at or above `real`?" — asked ONLY on
   //                    that failure, which is where it separates those three.
   //
-  // Do not merge the probes and do not reorder them. Keeping the second inside
-  // the `else` holds the common repo-root path to one exec, and a system with no
+  // Do not merge the probes and do not reorder them. Asking the second only on
+  // the first's failure holds the common repo-root path to one exec, and a system with no
   // git fails BOTH and lands in the allow branch — the case this whole check
   // exists to admit.
   //
@@ -1569,8 +1569,20 @@ export async function adoptProject(
   //
   // Dynamic import for the same reason as createProject's — worktrees.ts
   // statically imports this module.
-  const { runGit, isGitRepo } = await import('./worktrees.ts');
-  const top = await runGit(system, real, ['rev-parse', '--show-toplevel']);
+  //
+  // Git refusing the repo on ownership answers neither question, and reading it
+  // as "no repo" would adopt a foreign-owned repo as a plain directory and
+  // write into it — so it is a refusal of its own, carrying git's fix.
+  const { runGit, isGitRepo, isGitOwnershipRefusal } = await import('./worktrees.ts');
+  let top: Awaited<ReturnType<typeof runGit>>;
+  let bareOrGitDir = false;
+  try {
+    top = await runGit(system, real, ['rev-parse', '--show-toplevel']);
+    if (top.code !== 0) bareOrGitDir = await isGitRepo(system, real);
+  } catch (e) {
+    if (!isGitOwnershipRefusal(e)) throw e;
+    return { ok: false, code: 'TARGET_DUBIOUS_OWNERSHIP', reason: errMsg(e) };
+  }
   if (top.code === 0) {
     let topReal = top.stdout.trim();
     try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
@@ -1580,7 +1592,7 @@ export async function adoptProject(
         reason: `'${real}' is inside the git repository whose toplevel is '${topReal}' — adopt that instead.`,
       };
     }
-  } else if (await isGitRepo(system, real)) {
+  } else if (bareOrGitDir) {
     // A repository cc cannot host a project in. Adopting one writes
     // CONVENTIONS.md and the @CONVENTIONS.md import INTO A REPOSITORY'S
     // INTERNALS — and for a `.git` that repository is an ENCLOSING one the user

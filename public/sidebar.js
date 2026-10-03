@@ -845,6 +845,10 @@ export class Sidebar {
         class: 'no-commits-pill',
         title: 'no commits yet — make a first commit to enable worktrees',
       }, 'no commits');
+      // Git refused the repo on ownership: the system answered, sessions still
+      // start, only the git facts are missing — so a pill naming the cause and
+      // carrying the `safe.directory` fix as its title, not the unreachable look.
+      row._gitRefusedPill = el('span', { class: 'git-refused-pill' }, 'dubious ownership');
       row._holder = holder;
     }
     row._holder.p = p;
@@ -883,6 +887,13 @@ export class Sidebar {
     } else if (noCommits.isConnected) {
       noCommits.remove();
     }
+    const gitRefused = row._gitRefusedPill;
+    if (p.gitRefusal) {
+      gitRefused.title = p.gitRefusal;
+      if (!gitRefused.isConnected) (noCommits.isConnected ? noCommits : pill.isConnected ? pill : nameSpan).after(gitRefused);
+    } else if (gitRefused.isConnected) {
+      gitRefused.remove();
+    }
     if (remote || unreachable) {
       // One system can serve many targets, so the pill names WHICH — a pill
       // saying only the system would leave the row silent about which machine
@@ -906,7 +917,7 @@ export class Sidebar {
         systemPill.removeAttribute('tabindex');
       }
       if (!systemPill.isConnected) {
-        (noCommits.isConnected ? noCommits : pill.isConnected ? pill : nameSpan).after(systemPill);
+        (gitRefused.isConnected ? gitRefused : noCommits.isConnected ? noCommits : pill.isConnected ? pill : nameSpan).after(systemPill);
       }
     } else if (systemPill.isConnected) {
       systemPill.remove();

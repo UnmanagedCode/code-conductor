@@ -1243,3 +1243,41 @@ describe('renderPlaybook', () => {
     });
   });
 });
+
+// PINS the renderer contract for git's ownership refusal: the reason prints in
+// place of the git facts, and neither surface ever claims `! not a git repo`
+// for a repository git merely refused to read.
+describe('a git ownership refusal', () => {
+  const REFUSAL = "git on system 'local' refused the repository at '/w/foreign': detected dubious ownership"
+    + ' — To trust it, run as that user on that system: git config --global --add safe.directory /w/foreign';
+
+  test('renderProjects prints `! git refused` leading the block, and no `! not a git repo`', () => {
+    assert.equal(renderProjects([{
+      name: 'foreign', path: '/w/foreign', workspace: null, liveCount: 0,
+      systemUnreachable: null, gitRefusal: REFUSAL, unbornHead: false,
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
+    }]), [
+      'PROJECTS (1)',
+      '',
+      '▸ foreign  /w/foreign',
+      `  ! git refused ${REFUSAL}`,
+      '  sessions 0   last —',
+      '  live 0',
+      '  worktrees 0',
+    ].join('\n'));
+  });
+
+  test('renderProjectStatus prints the refusal in place of branch/HEAD and stops after FILES', () => {
+    assert.equal(renderProjectStatus({
+      project: 'foreign', worktree: null, cwd: '/w/foreign',
+      files: [{ name: 'README.md', kind: 'file' }], gitRefusal: REFUSAL, unbornHead: false,
+    }), [
+      'foreign',
+      'cwd /w/foreign',
+      `! git refused ${REFUSAL}`,
+      '',
+      'FILES (1)',
+      '  README.md',
+    ].join('\n'));
+  });
+});

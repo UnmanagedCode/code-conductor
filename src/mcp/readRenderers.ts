@@ -109,6 +109,10 @@ const PROJECT_DEVIANT: DeviantSpec[] = [
   // (skipped) rather than `false` on such a row: "could not look" is not the
   // claim "not a git repo".
   { key: 'systemUnreachable', default: null, label: '! system unreachable' },
+  // The same absence for a reachable system: git refused the repository on
+  // ownership. The message carries the `safe.directory` fix, and `isGitRepo`
+  // is absent beside it for the same reason.
+  { key: 'gitRefusal', default: null, label: '! git refused' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
   { key: 'unbornHead', default: false, label: '! no commits yet — a worktree needs a first commit' },
   // The project's RECORD could not be parsed, so its path is absent and nothing
@@ -437,7 +441,9 @@ export function renderProjectStatus(status: unknown): string {
     `${dash(s.project)}${s.worktree ? `  worktree ${dash(s.worktree)}` : ''}`,
     `cwd ${dash(s.cwd)}`,
   ];
-  if (s.isGitRepo === false) {
+  if (s.gitRefusal) {
+    parts.push(`! git refused ${s.gitRefusal}`);
+  } else if (s.isGitRepo === false) {
     parts.push('! not a git repo');
   } else if (s.unbornHead) {
     // No `base …` line: that line is worktree-only, and a worktree is created
@@ -456,7 +462,7 @@ export function renderProjectStatus(status: unknown): string {
   if (files.length) {
     parts.push(indent([files.map(f => `${dash(f.name)}${f.kind === 'dir' ? '/' : ''}`).join('  ')], 2));
   }
-  if (s.isGitRepo === false) return block(...parts);
+  if (s.isGitRepo === false || s.gitRefusal) return block(...parts);
 
   const dirty = Array.isArray(s.dirty) ? s.dirty as unknown[] : [];
   // An unanswered status prints as UNKNOWN rather than as an empty DIRTY

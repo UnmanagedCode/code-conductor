@@ -31,7 +31,7 @@ import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import { capabilityRefusal, capabilitySoftRefusal, remotePlacementRefused } from '../capabilities.ts';
 import { hostPlatform, type PlatformCapabilities } from '../platform/index.ts';
 import {
-  isGitRepo, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
+  isGitRepo, isGitOwnershipRefusal, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree, requireWorktree, unknownWorktreeMessage,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
@@ -413,9 +413,12 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     // The try covers a system that dies DURING the listing rather than at
     // resolution: one project's mid-listing death degrades its own row instead
     // of rejecting the Promise.all and failing the tool for every project.
+    // Git's ownership refusal prints as `! git refused` instead: the system
+    // answered, so it is not `! system unreachable` either.
     let projIsGitRepo: boolean | undefined;
     let unborn = false;
     let deadMidListing: string | null = null;
+    let gitRefusal: string | null = null;
     if (system) {
       // BOTH probes inside one try. A death in the window between them used to
       // invent `unbornHead: false` — a measured-looking fact — on a row that
@@ -425,7 +428,8 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
         if (projIsGitRepo) unborn = await hasUnbornHead(system, p.path);
       } catch (e) {
         if (!isSystemRefusal(e)) throw e;
-        deadMidListing = (e as Error).message;
+        if (isGitOwnershipRefusal(e)) gitRefusal = e.message;
+        else deadMidListing = e.message;
         projIsGitRepo = undefined;
       }
     }
@@ -433,6 +437,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
       systemUnreachable: unreachable ?? deadMidListing,
+      gitRefusal,
       isGitRepo: projIsGitRepo,
       unbornHead: unborn,
       worktrees: worktreesWithSessions,
@@ -2606,7 +2611,9 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   const out: {
     project: string; worktree: string | null; cwd: string;
     files: Array<{ name: string; kind: string }>;
-    isGitRepo: boolean;
+    // Absent alongside `gitRefusal`: git refused to say.
+    isGitRepo?: boolean;
+    gitRefusal?: string;
     unbornHead: boolean;
     branch?: string | null;
     head?: { sha: string | null; subject: string | null } | null;
@@ -2629,9 +2636,16 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     isGitRepo: false,
     unbornHead: false,
   };
-  if (!(await isGitRepo(system, cwd))) {
+  let repo: boolean;
+  try { repo = await isGitRepo(system, cwd); }
+  catch (e) {
+    if (!isGitOwnershipRefusal(e)) throw e;
+    // The files were listed without git; everything below needs it.
+    delete out.isGitRepo;
+    out.gitRefusal = (e as Error).message;
     return textResult(renderProjectStatus(out));
   }
+  if (!repo) return textResult(renderProjectStatus(out));
   out.isGitRepo = true;
   out.unbornHead = await hasUnbornHead(system, cwd);
   // Branch (may be null on detached HEAD).

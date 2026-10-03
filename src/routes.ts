@@ -15,7 +15,7 @@ import {
 import { suggestAdoptableDirs } from './projectSuggestions.ts';
 import { conductorSpawnedProjects } from './conductorSpawns.ts';
 import {
-  isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
+  isGitRepo, isGitOwnershipRefusal, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, requireWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits, setWorktreeLock,
@@ -443,9 +443,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     // resolution: `runGit` throws a system refusal now, and one project's
     // mid-listing death must degrade its own row rather than reject the
     // Promise.all and take the whole page down with it.
+    //
+    // Git refusing the repo on ownership is the same "could not look", but the
+    // system answered: it gets its own `gitRefusal` so the row names that cause
+    // and its fix rather than calling a reachable system unreachable.
     let projIsGitRepo: boolean | undefined;
     let unborn = false;
     let deadMidListing: string | null = null;
+    let gitRefusal: string | null = null;
     if (system) {
       // BOTH probes inside one try. A death in the window between them used to
       // invent `unbornHead: false` — a measured-looking fact — on a row that
@@ -455,12 +460,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
         if (projIsGitRepo) unborn = await hasUnbornHead(system, p.path);
       } catch (e) {
         if (!isSystemRefusal(e)) throw e;
-        deadMidListing = (e as Error).message;
+        if (isGitOwnershipRefusal(e)) gitRefusal = e.message;
+        else deadMidListing = e.message;
         projIsGitRepo = undefined;
       }
     }
     return {
       systemUnreachable: unreachable ?? deadMidListing,
+      gitRefusal,
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
@@ -501,6 +508,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
           // System could not be resolved, in which case the git facts beside it
           // are unknown rather than measured.
           systemUnreachable: gitFacts.systemUnreachable,
+          // null, or git's ownership refusal carrying its `safe.directory` fix;
+          // set, `isGitRepo` is absent for the same reason as above.
+          gitRefusal: gitFacts.gitRefusal,
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,

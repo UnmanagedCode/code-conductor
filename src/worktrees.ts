@@ -229,7 +229,41 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     throw httpError(502, `git ${sub} could not be run on system '${system.id}' in ${cwd}: ${r.spawnError}`,
       { code: 'GIT_DID_NOT_RUN', systemRefusal: true });
   }
+  // GIT'S OWNERSHIP REFUSAL IS NOT GIT'S ANSWER. When the uid git runs as does
+  // not own the repository, git refuses EVERY command in it with exit 128 —
+  // the exit a genuine non-repo gets — so read as an answer it made a
+  // foreign-owned repo "not a git repo", its HEAD "unborn", and adoptable as a
+  // plain directory, while the fix never reached the user.
+  //
+  // The discriminator is git's own hint line, `git config --global --add
+  // safe.directory <path>`: the surrounding prose is translated and has been
+  // reworded across git versions, but that command is printed verbatim in every
+  // locale and every version that has the check, so no `LC_ALL=C` is needed.
+  // Gated on 128 so a hook merely printing that text on a non-fatal exit does
+  // not match. The captured path is git's (the repo toplevel, or a linked
+  // worktree's gitdir) — the one the fix needs, which may differ from `cwd`.
+  //
+  // Tagged a system refusal: like a timeout, git did not answer about the tree,
+  // so every path that already degrades "could not measure" handles it as-is.
+  // The CODE is what lets the listings name it rather than call the system
+  // unreachable. cc only reports it; it never sets `safe.directory`.
+  if (r.code === 128) {
+    const hint = /^\s*git config --global --add safe\.directory (.+?)\s*$/m.exec(r.stderr);
+    if (hint) {
+      const safeDir = hint[1];
+      throw httpError(403, `git on system '${system.id}' refused the repository at '${safeDir}': detected `
+        + 'dubious ownership — it is owned by a different user than the one cc runs git as. To trust it, '
+        + `run as that user on that system: git config --global --add safe.directory ${safeDir}`,
+      { code: GIT_DUBIOUS_OWNERSHIP, systemRefusal: true });
+    }
+  }
   return { stdout: r.stdout, stderr: r.stderr, code: r.code };
+}
+
+export const GIT_DUBIOUS_OWNERSHIP = 'GIT_DUBIOUS_OWNERSHIP';
+
+export function isGitOwnershipRefusal(e: unknown): boolean {
+  return isSystemRefusal(e) && e.code === GIT_DUBIOUS_OWNERSHIP;
 }
 
 export async function isGitRepo(system: System, projectPath: string): Promise<boolean> {

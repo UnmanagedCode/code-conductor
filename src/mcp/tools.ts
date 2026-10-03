@@ -863,7 +863,7 @@ export function buildTools(): Tool[] {
         'target directory; in a git target they are changes to commit. ' +
         'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
         'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_IS_CC_STATE, ' +
-        'TARGET_INSIDE_REPO, TARGET_NO_WORK_TREE, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, ' +
+        'TARGET_INSIDE_REPO, TARGET_NO_WORK_TREE, TARGET_DUBIOUS_OWNERSHIP, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, ' +
         'INVALID_REMOTE_ID, INVALID_STALE_ACTION, PROJECT_PLACEMENT_IN_USE, PROJECT_EXISTS, ' +
         'PROJECT_EXISTS_STALE, PROJECT_EXISTS_UNRESOLVABLE — not errors. PROJECT_EXISTS_STALE means the name is held by a ' +
         'record whose path no longer exists; it carries `heldPath` and `discards`, and re-calling ' +
