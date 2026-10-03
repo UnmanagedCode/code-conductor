@@ -1246,6 +1246,18 @@ test('a row label keeps a non-zero floor and only the resume badge gives way bel
     assert.equal(parseFloat(cs.flexBasis), 0, `${name}: flex-basis 0, so spare width grows it rather than shrinking the badge (got ${cs.flexBasis})`);
     assert.equal(cs.flexGrow, '1', `${name}: takes the spare width`);
   }
+  // Invariant: inside the worker row's label column (a column flexbox, so the
+  // flex basis is a height) the preview sizes from its content and never
+  // shrinks: a 0 basis or a shrinkable preview with overflow: hidden (whose
+  // automatic min-height is 0) collapses the worker's name to 0px high.
+  const colPreview = labels['worker label column'].querySelector(':scope > .session-preview');
+  assert.ok(colPreview, 'sanity: the label column holds the preview');
+  assert.equal(window.getComputedStyle(labels['worker label column']).flexDirection, 'column', 'sanity: the label column is a column flexbox');
+  const pcs = window.getComputedStyle(colPreview);
+  assert.equal(pcs.flexBasis, 'auto', `column preview: flex-basis auto, its content height (got ${pcs.flexBasis})`);
+  assert.equal(pcs.flexShrink, '0', `column preview: never shrinks below that height (got ${pcs.flexShrink})`);
+  assert.equal(pcs.flexGrow, '0', `column preview: leaves the stage line its own height (got ${pcs.flexGrow})`);
+
   const rows = { 'conductor row': cRow, 'worker row': rowOf(tree, 'w'), 'session row': rowOf(root, 'h') };
   for (const [name, row] of Object.entries(rows)) {
     const badge = row.querySelector(':scope > .session-resume-badge');

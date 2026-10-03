@@ -470,6 +470,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 /* Conductors tree worker rows: the label with the verbatim playbook · stage on
    its own line underneath, wrapped rather than truncated away. */
 .session-label-col { flex: 1 1 0; min-width: 2em; display: flex; flex-direction: column; }
+/* In the column the flex basis is a height: the preview takes its content's,
+   as the 0 basis above would clip it to nothing under overflow: hidden. */
+.session-label-col > .session-preview { flex: none; }
 .session-stage {
   font-family: ui-monospace, monospace; font-size: 10px; color: var(--thinking);
   white-space: normal; overflow-wrap: anywhere;
