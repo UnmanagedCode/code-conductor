@@ -112,7 +112,7 @@ import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import type { CreateInstanceInput, InstanceLike, InstanceManagerLike, InstanceSummary, RingSeam } from './instanceTypes.ts';
+import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RingSeam } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -316,6 +316,20 @@ const POST_ABORT_DRAIN_WINDOW_MS = 3000;
 // Safety cap: max spurious turns killed per window. Guards against a
 // misbehaving subprocess that emits system/init in a tight loop.
 const POST_ABORT_DRAIN_MAX = 20;
+
+// Bounds on the stderr kept as a spontaneous exit's cause (Instance.lastExit):
+// the last EXIT_STDERR_TAIL_LINES lines, then the last EXIT_STDERR_TAIL_CHARS of
+// those. A CLI dying on a crash loop can write without limit, and the tail is
+// carried in memory per dead session and into every refusal about it.
+export const EXIT_STDERR_TAIL_LINES = 20;
+export const EXIT_STDERR_TAIL_CHARS = 2000;
+// How many sessions' exit causes InstanceManager keeps, oldest dropped first.
+const EXIT_CAUSE_CAP = 256;
+
+function stderrTail(stderr: string): string | null {
+  const lines = stderr.trim().split('\n').slice(-EXIT_STDERR_TAIL_LINES).join('\n');
+  return lines.slice(-EXIT_STDERR_TAIL_CHARS).trim() || null;
+}
 
 // Bounded terminal outcome for an ARMED soft interrupt, for the three callers
 // that have no human behind them (the overage direct stop, the overage
@@ -729,6 +743,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _hooks: HookBroker;
   _readNudge: ConductorReadNudge | null;
   _stderr: string;
+  lastExit: ExitCause | null;
   _lastLeafUuid: string | null;
   _planFiles: PlanFileTracker;
   firstPrompt: string | null;
@@ -951,6 +966,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       onReadNudge: (n) => this._emitUi(readNudgeEvent(n)),
     });
     this._stderr = '';
+    // Set by _handleExit when the CLI exits on its own; reset per launch.
+    this.lastExit = null;
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._planFiles = new PlanFileTracker(); // binds a ~/.claude/plans/*.md Write to an ExitPlanMode
     // Cached first user-prompt text (200-char cap matching readFirstPrompt
@@ -2178,6 +2195,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A reused instance object (respawn) may carry _killing from its prior
     // teardown — clear it so this fresh launch's exit is judged on its own.
     this._killing = false;
+    // Same for the stderr a launch's exit cause is cut from, and the cause itself.
+    this._stderr = '';
+    this.lastExit = null;
     // Clear any overage auto-stop/resume state from a prior run — a fresh
     // process can re-trigger and any pending timer was cancelled at respawn.
     this.autoStoppedForOverage = false;
@@ -2994,6 +3014,18 @@ export class Instance extends EventEmitter implements InstanceLike {
         kind: 'system', subtype: 'launch_failed',
         data: { code, signal, stderr: this._stderr.trim() || null },
       });
+    }
+    // Any backend's CLI exiting on its own leaves its cause behind: one server-log
+    // line, and `lastExit`, which the manager's status listener records against the
+    // session — set BEFORE _setStatus, which is what that listener runs on. A temp
+    // worker leaves byId on this very transition, taking its ring with it, so
+    // without this the cause would exist nowhere.
+    if (crashed && !this._killing && !this._suppressTempDelete) {
+      const tail = stderrTail(this._stderr);
+      this.lastExit = { code, signal, stderrTail: tail, at: Date.now() };
+      const where = this.worktree ? `${this.project}/${this.worktree.worktreeName}` : this.project;
+      console.warn(`instances: session ${this.sessionId} (${where}) exited on its own: `
+        + `code=${code} signal=${signal} — stderr: ${tail ? tail.replace(/\n/g, ' ⏎ ') : 'none'}`);
     }
     this._setStatus(crashed ? 'crashed' : 'exited');
     for (const p of this._pending.values()) {
@@ -4262,6 +4294,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // check-and-claim that has NO await between the two halves — so of two concurrent
   // resumes exactly one proceeds and the other refuses.
   _resumingPublicIds: Set<string>;
+  // publicSessionId → its last spontaneous exit (Instance.lastExit), so an MCP
+  // call addressing a session that is no longer in byId — a temp worker drops
+  // out on exit — still learns why it died. Insertion-ordered and capped at
+  // EXIT_CAUSE_CAP; in memory only.
+  _exitCauses: Map<string, ExitCause>;
   serverPort: number | null;
   _claudePluginDirsResolver: () => Promise<string[]>;
   _idleHub: IdleSubscriptionHub;
@@ -4290,6 +4327,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // .proc is set and the live-guard in create() takes over.
     this._resuming = new Map<string, Promise<Instance>>();
     this._resumingPublicIds = new Set<string>();
+    this._exitCauses = new Map<string, ExitCause>();
     // Set by the server after `server.listen()` resolves. New instances
     // spawned without a port set get null hookCallbackUrl, which registers
     // no http hook.
@@ -5513,6 +5551,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           !this._autoResumeTimers.has(inst.id)) {
         this._armAutoResume(inst);
       }
+      // Record, or clear, the session's exit cause on every exit — BEFORE the temp
+      // drop below, which is the point: the cause has to outlive the instance. An
+      // exit with no cause (a commanded kill, a clean exit) clears it, so an
+      // earlier crash's cause can never describe a later death.
+      if ((summary.status === 'exited' || summary.status === 'crashed') && inst.sessionId) {
+        this._noteExitCause(inst.sessionId, inst.lastExit);
+      }
       // Temp sessions are disposable: once the subprocess is gone the
       // session is archived by _archiveTempSession() (the jsonl is retained
       // and stays resumable, just moved into the — archived — section), so
@@ -5603,8 +5648,26 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       inst._segments = segs.length > 0 ? segs : [resume as string];
     }
     await inst.launch({ resume });
+    // The session is running again, so an earlier exit no longer describes it.
+    // Guarded on `proc`: a relaunch that already died again recorded its own cause.
+    if (publicId && inst.proc) this._exitCauses.delete(publicId);
     this.emit('list_changed');
     return inst;
+  }
+
+  _noteExitCause(sessionId: string, cause: ExitCause | null): void {
+    this._exitCauses.delete(sessionId); // re-insert at the young end
+    if (!cause) return;
+    this._exitCauses.set(sessionId, cause);
+    while (this._exitCauses.size > EXIT_CAUSE_CAP) {
+      this._exitCauses.delete(this._exitCauses.keys().next().value as string);
+    }
+  }
+
+  // Exact public id only: the MCP boundary has already resolved a prefix to the
+  // handle, so a segment id simply finds no cause.
+  exitCauseFor(sessionId: string): ExitCause | null {
+    return this._exitCauses.get(sessionId) ?? null;
   }
 
   // Overage auto-resume timer machine — see src/overageResume.ts. The manager

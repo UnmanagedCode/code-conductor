@@ -76,7 +76,7 @@ import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import { buildForwardFrame } from '../../public/forwardFrame.js';
 import { contextReading } from '../sessionPrune.ts';
 import type { PlaybookGate } from './playbookGate.ts';
-import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
+import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
 import { httpError } from '../httpError.ts';
 
@@ -113,6 +113,8 @@ interface SoftRefusal {
   sessionId?: string | null;
   forwardSessionId?: string;
   reason: string;
+  // SESSION_NOT_LIVE only: the session's CLI exited on its own — see notLiveRefusal.
+  exit?: { code: number | null; signal: string | null; stderrTail: string | null };
 }
 
 // A per-file diff row (project_diff summary mode), optionally carrying the
@@ -240,8 +242,10 @@ function conductorRowView(
 // stays false, matching the deleteWorktree/mergeWorktree soft-refusal
 // convention). NEVER auto-respawns — a dead session is a refusal, not a
 // resurrection.
-//   - SESSION_NOT_LIVE: the session is known (in byId or on disk) but has no
-//     running process → tell the conductor to spawn_instance({resume}).
+//   - SESSION_NOT_LIVE: the session is known (in byId, on disk, or by a
+//     recorded exit cause) but has no running process → tell the conductor to
+//     spawn_instance({resume}), or — when its CLI died on its own before writing
+//     a transcript — to spawn a fresh worker.
 //   - SESSION_UNKNOWN: no such session anywhere.
 // The disk probe (findSessionLocation) runs ONLY on the not-live path, so the
 // hot path stays a pure in-memory lookup.
@@ -259,8 +263,13 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
   // NOTE: findSessionLocation may not match a session whose worktree is
   // unregistered; such an edge resolves to SESSION_UNKNOWN rather than
   // SESSION_NOT_LIVE. Accepted — it never throws.
-  const known = !!instances.anyForSession(sessionId) || !!(await findSessionLocation(sessionId).catch(() => null));
-  if (known) return { soft: notLiveRefusal(sessionId) };
+  // A recorded exit cause makes the session known on its own (a temp worker that
+  // died at startup is in neither byId nor on disk), and makes the transcript
+  // probe worth paying for even when byId holds it: the advice depends on it.
+  const exit = instances.exitCauseFor(sessionId);
+  const held = !!instances.anyForSession(sessionId);
+  const located = (!held || exit) ? !!(await findSessionLocation(sessionId).catch(() => null)) : false;
+  if (held || exit || located) return { soft: notLiveRefusal(sessionId, { exit, hasTranscript: located }) };
   return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` } };
 }
@@ -338,6 +347,10 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
     return { soft: { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
       reason: `session ${sessionId} has a transcript on disk (${orphan}) but no registered project or worktree owns its directory, so its content cannot be read. Re-register that worktree and retry — reads and forwards work off the transcript, so nothing has to be resurrected.` } };
   }
+  // Nothing to read, but the session's CLI died on its own: say so rather than
+  // deny a session the conductor was just handed.
+  const exit = instances.exitCauseFor(sessionId);
+  if (exit) return { soft: notLiveRefusal(sessionId, { exit, hasTranscript: false }) };
   return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` } };
 }
@@ -345,9 +358,28 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
 // getInst's SESSION_NOT_LIVE refusal, shared with getInstOrDisk's
 // no-backing-id branch so the two resolvers can't drift on the wording a
 // conductor is told to act on.
-function notLiveRefusal(sessionId: string): SoftRefusal {
+//
+// With an `exit` (the session's CLI exited on its own — see
+// InstanceManager.exitCauseFor) the refusal carries the cause and the reason
+// leads with it. The advice then turns on `hasTranscript`: with none, a resume
+// would be refused SESSION_UNKNOWN, so the conductor is told to re-spawn.
+function notLiveRefusal(sessionId: string, { exit = null, hasTranscript = true }: { exit?: ExitCause | null; hasTranscript?: boolean } = {}): SoftRefusal {
+  const resume = `call spawn_instance({resume:"${sessionId}"}) to bring it back.`;
+  if (!exit) {
+    return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+      reason: `session ${sessionId} has no running process — ${resume}` };
+  }
   return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
-    reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
+    exit: { code: exit.code, signal: exit.signal, stderrTail: exit.stderrTail },
+    reason: `session ${sessionId}'s process exited on its own (${describeExit(exit)}) — `
+      + (hasTranscript ? resume : 'it wrote no transcript, so there is nothing to resume — spawn a fresh worker.') };
+}
+
+// "exit code 1 — <last stderr line>", for a reason or a rendered row.
+function describeExit(exit: { code: number | null; signal: string | null; stderrTail: string | null }): string {
+  const how = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`;
+  const last = exit.stderrTail?.split('\n').at(-1);
+  return last ? `${how} — ${last}` : `${how}, no stderr`;
 }
 
 // ---------- read-only ----------
@@ -815,6 +847,7 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
         worktree: hit.worktreeName ?? null,
         path: hit.cwd,
         retired: { ...row, ...playbookBinding(proj, sessionId) },
+        exit: instances?.exitCauseFor(sessionId) ?? null,
       }));
     }
     // Located but not listed (the transcript went away under us) — fall through
@@ -837,7 +870,10 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
   // orchestrator is looking at. SESSION_NOT_LIVE is the existing code for
   // "known, nothing running", shared with getInst/getInstOrDisk through
   // notLiveRefusal so the wording a conductor acts on cannot drift.
-  if (instances?.anyForSession(sessionId)) return notLiveRefusal(sessionId);
+  // A recorded exit cause is the same "known" — a worker whose CLI died before
+  // writing a transcript, dropped from byId because it was temp.
+  const exit = instances?.exitCauseFor(sessionId) ?? null;
+  if (instances?.anyForSession(sessionId) || exit) return notLiveRefusal(sessionId, { exit, hasTranscript: false });
   return { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` };
 }
