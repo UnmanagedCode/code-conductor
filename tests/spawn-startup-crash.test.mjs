@@ -288,3 +288,44 @@ test('the exit-cause map is capped at EXIT_CAUSE_CAP, evicting the oldest entry'
   assert.notEqual(instances.exitCauseFor(`cap-${EXIT_CAUSE_CAP}`), null);
   instances._exitCauses.clear();
 });
+
+// Short lines, so the char cap cannot be what trims the tail — only the line cap.
+test('a many-line stderr is cut to exactly its last EXIT_STDERR_TAIL_LINES lines', async () => {
+  const { EXIT_STDERR_TAIL_LINES, EXIT_STDERR_TAIL_CHARS } = instancesModule;
+  const inst = await restWorker();
+  const lines = Array.from({ length: EXIT_STDERR_TAIL_LINES * 3 }, (_, i) => `L${i}`);
+  assert.ok(lines.at(-1).length * EXIT_STDERR_TAIL_LINES < EXIT_STDERR_TAIL_CHARS / 4,
+    'precondition: the kept lines are far under the char cap');
+  await crashMidFlight(inst, lines);
+
+  const tail = (await json('send_prompt', { sessionId: inst.sessionId, text: 'x' })).exit?.stderrTail ?? '';
+  assert.deepEqual(tail.split('\n'), lines.slice(-EXIT_STDERR_TAIL_LINES));
+});
+
+// The cause belongs to the launch that crashed: a respawn on the same Instance
+// followed by a commanded kill must leave the session with no cause.
+test('a commanded kill after a respawn leaves no cause from the earlier crash', async () => {
+  const inst = await restWorker();
+  await crashMidFlight(inst, ['FIRST-LAUNCH-CRASH']);
+  assert.notEqual(instances.exitCauseFor(inst.sessionId), null, 'precondition: the crash recorded a cause');
+  await instances.respawn(inst.id);
+  await waitFor(() => inst.status === 'idle');
+  await inst.kill({ graceMs: 50 });
+  await waitFor(() => !inst.proc);
+
+  assert.equal(instances.exitCauseFor(inst.sessionId), null);
+  const r = await json('send_prompt', { sessionId: inst.sessionId, text: 'x' });
+  assert.equal(r.code, 'SESSION_NOT_LIVE', JSON.stringify(r));
+  assert.equal('exit' in r, false);
+});
+
+test('a read tool addressing a startup-crashed worker is SESSION_NOT_LIVE with exit and re-spawn advice', async () => {
+  const { sessionId } = await startupCrashedWorker();
+  for (const tool of ['get_recent_messages', 'get_transcript']) {
+    const r = await json(tool, { sessionId });
+    assert.equal(r.code, 'SESSION_NOT_LIVE', `${tool}: ${JSON.stringify(r)}`);
+    assert.equal(r.exit?.code, 1, tool);
+    assert.match(r.exit?.stderrTail ?? '', /EIO/, tool);
+    assert.match(r.reason, /spawn a fresh worker/, tool);
+  }
+});

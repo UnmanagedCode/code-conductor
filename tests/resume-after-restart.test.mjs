@@ -109,6 +109,52 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
   await fs.access(normalJsonl);
 });
 
+// The resume-restart drain ends every CLI's stdin with `_suppressTempDelete` set
+// and no kill() — an exit nobody "commanded" in the _killing sense, and exactly
+// what every orchestrator restart does. It is not a spontaneous exit: no cause, no
+// log line, and no EXITED wake for an owner armed on the session. The wake is
+// watched at the hub (deliver), since the owner's own process is ended by the same
+// shutdown and could not receive a stub either way.
+test('shutdownForResumeSync records no exit cause, logs no spontaneous exit, and fires no EXITED wake', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'resumequiet' });
+  const spawnRest = async () => {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'resumequiet', temp: true });
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    return inst;
+  };
+  const owner = await spawnRest();
+  const worker = await spawnRest();
+  instances.noteDispatch(owner.sessionId, worker.sessionId);
+  instances._idleHub.onTurnStart(worker.id);
+  assert.equal(instances.hasArmedWake(worker.id), true, 'precondition: the owner is armed on the worker');
+
+  const exitedDeliveries = [];
+  const hub = instances._idleHub;
+  const realDeliver = hub.deliver.bind(hub);
+  hub.deliver = (callerId, targetId, opts) => {
+    if (opts?.exited) exitedDeliveries.push(targetId);
+    return realDeliver(callerId, targetId, opts);
+  };
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => { warns.push(a.join(' ')); };
+  try {
+    instances.shutdownForResumeSync();
+    await waitFor(() => worker.proc === null && owner.proc === null, { timeout: 20000 });
+    for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); // past any stderr settle
+  } finally {
+    console.warn = origWarn;
+    hub.deliver = realDeliver;
+  }
+  assert.equal(worker._suppressTempDelete, true, 'precondition: the drain flag was set');
+  assert.equal(worker.status, 'exited', 'precondition: the CLI ended through the exit path');
+  assert.equal(instances.exitCauseFor(worker.sessionId), null);
+  assert.equal(instances.exitCauseFor(owner.sessionId), null);
+  assert.deepEqual(warns.filter(l => l.includes('exited on its own')), []);
+  assert.deepEqual(exitedDeliveries, []);
+});
+
 // --- 3. drain stop semantics ----------------------------------------------
 
 // REGRESSION (card 2026-0183 Part B). Invariant, run for BOTH model
