@@ -14,7 +14,8 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, settledSessionBackend } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.ts';
-import { isTemp, isArchived, setSegmentTemp, getSessionMode } from '../src/sessionStore.ts';
+import { isTemp, isArchived, setSegmentTemp, getSessionMode, setTitle, getTitle } from '../src/sessionStore.ts';
+import { MAX_TITLE_LEN, FORK_TITLE_PREFIX } from '../src/sessionTitles.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -310,6 +311,59 @@ test('a fork of a non-temp session is not temp', async () => {
     await flushTempStore();
     assert.equal(await isTemp(fk.body.newSessionId), false,
       'no temp flag is written for a fork of a persistent session');
+  } finally { await ctx.close(); }
+});
+
+// Boots, seeds a two-turn session titled `title` (none when null), resumes it
+// and forks at index 1. Returns what the title assertions need.
+async function forkWithSourceTitle(ctx, projectName, sid, title) {
+  await seedSession({ ctx, projectName, sid, lines: TEMP_SEED_LINES });
+  if (title !== null) await setTitle(sid, title);
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    project: projectName, mode: 'bypassPermissions', resume: sid,
+  });
+  const id = r.body.id;
+  await waitFor(() => ctx.instances.get(id).status === 'idle');
+  const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
+  assert.equal(fk.status, 201);
+  return { newSid: fk.body.newSessionId, child: ctx.instances.get(fk.body.instance.id) };
+}
+
+test('a fork of a titled session starts titled "fork: <source title>"', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff1-2222-3333-4444-555555555555';
+    const { newSid, child } = await forkWithSourceTitle(ctx, 'forktitled', sid, 'Auth refactor');
+    assert.equal(await getTitle(newSid), 'fork: Auth refactor');
+    await waitFor(() => child.title === 'fork: Auth refactor');
+    assert.equal(await getTitle(sid), 'Auth refactor', 'the source keeps its title');
+
+    await ctx.instances.remove(child.id);
+    const resumed = await ctx.instances.create({ project: 'forktitled', resume: newSid });
+    await waitFor(() => resumed.title === 'fork: Auth refactor');
+  } finally { await ctx.close(); }
+});
+
+test('a fork of an untitled session gets no title', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff2-2222-3333-4444-555555555555';
+    const { newSid, child } = await forkWithSourceTitle(ctx, 'forkuntitled', sid, null);
+    await waitFor(() => child.status === 'idle');
+    assert.equal(await getTitle(newSid), null);
+    assert.equal(child.title, null);
+  } finally { await ctx.close(); }
+});
+
+test('a fork title is capped at MAX_TITLE_LEN like any title', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff3-2222-3333-4444-555555555555';
+    const src = 'x'.repeat(MAX_TITLE_LEN);
+    const { newSid } = await forkWithSourceTitle(ctx, 'forkcapped', sid, src);
+    const stored = await getTitle(newSid);
+    assert.equal(stored, (FORK_TITLE_PREFIX + src).slice(0, MAX_TITLE_LEN));
+    assert.equal(stored.length, MAX_TITLE_LEN);
   } finally { await ctx.close(); }
 });
 

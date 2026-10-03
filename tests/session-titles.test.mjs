@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { MAX_TITLE_LEN } from '../src/sessionTitles.ts';
+import { MAX_TITLE_LEN, forkTitle } from '../src/sessionTitles.ts';
 import { setTitle, getTitle, isArchived, setSessionMode } from '../src/sessionStore.ts';
 import { orchStoreRoot, encodeCwd } from '../src/projects.ts';
 
@@ -352,4 +352,11 @@ test('resuming a crashed session recovers firstPrompt from disk instead of losin
   await inst2.prompt('please continue');
   await waitFor(() => inst2.status === 'idle');
   assert.equal(inst2.firstPrompt, 'Foo bar', 'the next real message must not clobber the recovered label');
+});
+
+test('forkTitle: prefixes a titled source, null for untitled, stacks on a fork', () => {
+  assert.equal(forkTitle('X'), 'fork: X');
+  assert.equal(forkTitle(null), null);
+  assert.equal(forkTitle(''), null);
+  assert.equal(forkTitle('fork: X'), 'fork: fork: X');
 });

@@ -76,6 +76,7 @@ import {
   type SessionBackendRecord, type TurnMarks,
 } from './sessionStore.ts';
 import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
+import { applySessionTitle, forkTitle } from './sessionTitles.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isConductorInstance, materializeCurrentConduct } from './conduct.ts';
 import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
@@ -1365,8 +1366,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Update the cached custom session title and broadcast the new
   // summary so all subscribed clients re-render the active header chip.
   // Pass null/'' to clear. This only updates the in-memory mirror: the one
-  // store writer is applySessionTitle (the PUT route and MCP
-  // set_session_title); the resume path's _hydrateTitle only reads the
+  // store writer is applySessionTitle (the PUT route, MCP set_session_title
+  // and forkAtUserMessage); the resume path's _hydrateTitle only reads the
   // store into memory.
   setTitle(title: string | null): void {
     const next = (typeof title === 'string' && title.trim()) ? title.trim() : null;
@@ -4034,7 +4035,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // dropped prompt text, and the create() argument list the caller must spawn the
   // fork with — every one of those fields is read off THIS instance, so deriving
   // them belongs here and not in the route. The spawn itself stays with the caller:
-  // an Instance holds no manager reference.
+  // an Instance holds no manager reference. The fork's title is set here (a
+  // store write) rather than carried in `createArgs`.
   async forkAtUserMessage(userMessageIndex: number, expectedText: string): Promise<{
     newSessionId: string; droppedText: string; createArgs: CreateInstanceInput;
   }> {
@@ -4085,6 +4087,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     } finally {
       this._mutating = false;
     }
+    // The fork starts titled after its source (forkTitle). Written before the
+    // caller's create() so spawn's _hydrateTitle finds it on the new record.
+    const title = forkTitle(await getSessionTitle(backingId));
+    if (title) await applySessionTitle(null, forked.newSessionId, title);
     return {
       newSessionId: forked.newSessionId,
       droppedText: forked.droppedText,

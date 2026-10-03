@@ -1,5 +1,5 @@
-// The session-title vocabulary, and the one title write behind both the REST
-// rename and the MCP set_session_title. The title itself is a session-level
+// The session-title vocabulary, and the one title write behind the REST
+// rename, the MCP set_session_title and a fork's starting title. The title itself is a session-level
 // fact on the session's record in the unified store (src/sessionStore.ts), so a
 // rotation never strands it.
 
@@ -7,6 +7,14 @@ import { setTitle } from './sessionStore.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
 
 export const MAX_TITLE_LEN = 100;
+
+export const FORK_TITLE_PREFIX = 'fork: ';
+
+// The title a fork of a session titled `source` starts with; null (no title)
+// for an untitled source. Capping is left to the store write (normalizeTitle).
+export function forkTitle(source: string | null): string | null {
+  return source ? `${FORK_TITLE_PREFIX}${source}` : null;
+}
 
 // Trimmed and capped; '' means "no title".
 export function normalizeTitle(title: unknown): string {
