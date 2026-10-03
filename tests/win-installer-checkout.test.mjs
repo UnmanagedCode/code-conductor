@@ -107,3 +107,21 @@ test('a non-empty directory that is not a checkout is refused', async () => {
     await assert.rejects(checkout({ git: 'git', bundle: t.bundle('b.bundle'), dir, branch: 'main', remoteUrl: t.origin, log: t.log, env: t.env }), /not a git checkout/);
   } finally { t.cleanup(); }
 });
+
+test('a dirty checkout that blocks the fast-forward is kept and the install continues', async () => {
+  const t = setup();
+  try {
+    const dir = path.join(t.root, 'app');
+    const lines = [];
+    const args = { git: 'git', dir, branch: 'main', remoteUrl: t.origin, log: (m) => lines.push(m), env: t.env };
+    await checkout({ ...args, bundle: t.bundle('b1.bundle') });
+    const c1 = git(dir, 'rev-parse', 'HEAD');
+    fs.appendFileSync(path.join(dir, 'f.txt'), 'local edit\n');
+    t.commit('c2'); // touches f.txt too, so the ff would overwrite the edit
+    await checkout({ ...args, bundle: t.bundle('b2.bundle') });
+    assert.equal(git(dir, 'rev-parse', 'HEAD'), c1);
+    assert.match(fs.readFileSync(path.join(dir, 'f.txt'), 'utf8'), /local edit/);
+    assert.ok(lines.some((l) => /NOT fast-forwarded/.test(l) && /self-update/.test(l)));
+    assert.equal(git(dir, 'remote', 'get-url', 'origin'), t.origin);
+  } finally { t.cleanup(); }
+});

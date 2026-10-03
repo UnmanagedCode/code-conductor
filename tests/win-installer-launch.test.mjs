@@ -189,3 +189,54 @@ test('launch: a server that never becomes healthy is killed and reported', async
     assert.deepEqual(killed, [321]);
   } finally { fx.cleanup(); }
 });
+
+const OLD_SHAPE = { ok: true, bootId: 'b', capabilities: {} };
+
+test('launch: a server with the pre-identity health shape is reported clearly and never spawned over', async () => {
+  const fx = fixture();
+  const s = await healthServer(OLD_SHAPE);
+  try {
+    await assert.rejects(
+      launch({ installDir: fx.installDir, env: { ...fx.env, PORT: String(s.port) }, ...quick, spawn: () => assert.fail('no spawn'), kill: () => assert.fail('no kill') }),
+      /doesn't identify as code-conductor \(pre-Windows build\?\)/);
+  } finally { await s.close(); fx.cleanup(); }
+});
+
+test('launch: our own spawned server answering with the old shape is left alone, with a clear message', async () => {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  let server;
+  try {
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...quick, readCommit: () => 'x',
+      spawn: () => {
+        setTimeout(() => { server = http.createServer((q, res) => res.end(JSON.stringify(OLD_SHAPE))).listen(port, '127.0.0.1'); }, 20);
+        return Object.assign(fakeChild(), { pid: 99 });
+      },
+      kill: () => assert.fail('must not kill a server that answers HTTP'),
+      openUrl: () => assert.fail('must not open'),
+    }), /doesn't identify as code-conductor/);
+  } finally { server?.close(); fx.cleanup(); }
+});
+
+test('launch: a deadline while the port answers HTTP (foreign) does not kill', async () => {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  let server;
+  let now = 0;
+  try {
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...detect, readCommit: () => 'x',
+      sleep: async () => { now += 20_000; }, now: () => now,
+      spawn: () => {
+        server = http.createServer((q, res) => res.end('<html>')).listen(port, '127.0.0.1');
+        return Object.assign(fakeChild(), { pid: 5 });
+      },
+      kill: () => assert.fail('must not kill'),
+    }), /did not become healthy/);
+  } finally { server?.close(); fx.cleanup(); }
+});

@@ -16,7 +16,8 @@ export function portOf(env) {
   return Number(getEnv(env, 'PORT') || 8787);
 }
 
-// 'cc' (with pid) | 'other' (something answers, not us) | 'none'
+// 'cc' (with pid) | 'unidentified' (answers 200 JSON but has no `app`: a build
+// that predates the identity field) | 'other' (something else answers) | 'none'
 export async function probe(port, fetchFn = fetch) {
   let res;
   try {
@@ -27,6 +28,7 @@ export async function probe(port, fetchFn = fetch) {
   try {
     const body = await res.json();
     if (body && body.app === 'code-conductor') return { kind: 'cc', pid: body.pid };
+    if (res.ok && body && typeof body === 'object' && !('app' in body)) return { kind: 'unidentified' };
   } catch { /* not JSON */ }
   return { kind: 'other' };
 }
@@ -38,6 +40,9 @@ export function makeLog(logFile) {
 function tail(file, n = 15) {
   try { return fs.readFileSync(file, 'utf8').trimEnd().split('\n').slice(-n).join('\n'); } catch { return ''; }
 }
+
+const otherMessage = (port) => `port ${port} is in use by another program (set PORT to use a different one)`;
+const unidentifiedMessage = (port) => `a server is answering on port ${port} but doesn't identify as code-conductor (pre-Windows build?)`;
 
 export class LaunchError extends Error {
   constructor(message, tailText = '') {
@@ -78,9 +83,8 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
   fs.mkdirSync(logDir, { recursive: true });
 
   const state = await probe(port, d.fetch);
-  if (state.kind === 'other') {
-    throw new LaunchError(`port ${port} is in use by another program (set PORT to use a different one)`);
-  }
+  if (state.kind === 'other') throw new LaunchError(otherMessage(port));
+  if (state.kind === 'unidentified') throw new LaunchError(unidentifiedMessage(port));
   if (state.kind === 'cc') {
     makeLog(logFile)(`reuse: code-conductor already running (pid ${state.pid}); opening ${url}`);
     d.openUrl(url);
@@ -91,7 +95,7 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
   if (!git) throw new LaunchError('Git for Windows (with Git Bash) was not found; run the installer again');
   const claude = d.detectClaude(env);
   const serverEnv = launcherEnv({ env, installDir, git, claude });
-  const projectsRoot = serverEnv.PROJECTS_ROOT;
+  const projectsRoot = getEnv(serverEnv, 'PROJECTS_ROOT');
 
   const prev = path.join(logDir, 'server.prev.log');
   if (fs.existsSync(logFile)) {
@@ -128,13 +132,24 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
       d.openUrl(url);
       return { reused: false, pid: s.pid };
     }
+    if (s.kind === 'unidentified') {
+      // Possibly our own child, but it cannot be told apart from a stranger: leave it alone.
+      log(`start: ${unidentifiedMessage(port)}; leaving it running`);
+      throw new LaunchError(`${unidentifiedMessage(port)}. See ${logFile}`, tail(logFile));
+    }
     if (exited) {
       log(`start: server ${exited}`);
       throw new LaunchError(`code-conductor server ${exited}. See ${logFile}`, tail(logFile));
     }
     if (d.now() > deadline) {
-      log('start: gave up waiting for health; killing the server');
-      try { d.kill(child.pid); } catch { /* already gone */ }
+      // Only a port that answers nothing is ours to clean up; anything that
+      // answers HTTP may be a server we must not kill.
+      if (s.kind === 'none') {
+        log('start: gave up waiting for health; killing the server');
+        try { d.kill(child.pid); } catch { /* already gone */ }
+      } else {
+        log(`start: gave up waiting for health; port answers (${s.kind}), leaving it alone`);
+      }
       throw new LaunchError(`code-conductor did not become healthy in time. See ${logFile}`, tail(logFile));
     }
     await d.sleep(d.pollMs);

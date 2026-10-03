@@ -50,22 +50,22 @@ async function mustRun(log, file, args, opts) {
 }
 
 // Retried: the first attempt after a cold network is the one that times out.
-async function download(url, attempts = 3) {
+export async function downloadWithRetry(url, { fetchFn = fetch, attempts = 3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   let last;
   for (let i = 1; i <= attempts; i++) {
     try {
-      const res = await fetch(url, { redirect: 'follow' });
+      const res = await fetchFn(url, { redirect: 'follow' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return Buffer.from(await res.arrayBuffer());
     } catch (e) {
       last = new Error(`download ${url} failed (attempt ${i}/${attempts}): ${e.message}${e.cause ? ` (${e.cause.code || e.cause.message})` : ''}`);
-      if (i < attempts) await new Promise((r) => setTimeout(r, 2000 * i));
+      if (i < attempts) await sleep(2000 * i);
     }
   }
   throw last;
 }
 
-export async function ensureGit({ env, pin, log, fetchBuffer = download, run = runLogged }) {
+export async function ensureGit({ env, pin, log, fetchBuffer = (url) => downloadWithRetry(url), run = runLogged }) {
   const found = detectGit(env);
   if (found) {
     log(`git: found ${found.gitExe}`);
@@ -135,7 +135,9 @@ export async function checkout({ git, bundle, dir, branch, remoteUrl, log, env }
       log('checkout: already at the installer\'s commit');
     } else if ((await runLogged(log, git, ['merge-base', '--is-ancestor', 'HEAD', 'FETCH_HEAD'], { cwd: dir, env })) === 0) {
       log(`checkout: fast-forwarding ${head.slice(0, 8)} -> ${tip.slice(0, 8)}`);
-      await g(['merge', '--ff-only', 'FETCH_HEAD']);
+      if ((await runLogged(log, git, ['merge', '--ff-only', 'FETCH_HEAD'], { cwd: dir, env })) !== 0) {
+        log(`checkout: NOT fast-forwarded (local changes in the way); kept ${head.slice(0, 8)}. In-app self-update will handle it.`);
+      }
     } else {
       log(`checkout: kept ${head.slice(0, 8)}; it is at or ahead of the installer's commit ${tip.slice(0, 8)}`);
     }
@@ -160,10 +162,12 @@ export async function main(argv, env = process.env) {
   if (home && claude.dir.toLowerCase() === w.join(home, '.local', 'bin').toLowerCase()) {
     const added = await addToUserPath(claude.dir, {
       reg: (a) => new Promise((resolve) => {
-        const c = spawn('reg.exe', a, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+        const c = spawn('reg.exe', a, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
+        let stderr = '';
         c.stdout.on('data', (d) => { stdout += d; });
-        c.on('close', (code) => resolve({ code: code ?? -1, stdout }));
+        c.stderr.on('data', (d) => { stderr += d; });
+        c.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
       }),
       env,
     });

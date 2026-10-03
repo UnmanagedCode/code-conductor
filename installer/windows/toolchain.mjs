@@ -91,12 +91,14 @@ export function dedupePath(entries) {
 // CLAUDE_CODE_GIT_BASH_PATH.
 export function launcherEnv({ env, installDir, git, claude }) {
   const out = { ...env };
+  const rootKey = envKey(env, 'PROJECTS_ROOT');
+  if (rootKey && rootKey !== 'PROJECTS_ROOT') delete out[rootKey];
   const pathKey = envKey(env, 'PATH') || 'Path';
   const head = [w.join(installDir, 'node')];
   if (git) head.push(git.cmdDir);
   if (claude) head.push(claude.dir);
   out[pathKey] = dedupePath([...head, ...splitPath(getEnv(env, 'PATH'))]).join(';');
-  if (!getEnv(env, 'PROJECTS_ROOT')) out.PROJECTS_ROOT = defaultProjectsRoot(env);
+  out.PROJECTS_ROOT = getEnv(env, 'PROJECTS_ROOT') || defaultProjectsRoot(env);
   return out;
 }
 
@@ -107,13 +109,19 @@ function expandVars(value, env) {
 // Append `dir` to the user PATH (HKCU\Environment\Path) iff absent. Goes
 // through `reg.exe` rather than NSIS ReadRegStr (1024-char truncation) and
 // writes REG_EXPAND_SZ without a shell so `%VAR%` entries stay literal.
-// `reg(args)` -> {code, stdout}.
+// `reg(args)` -> {code, stdout, stderr}. Fails closed: only a not-found
+// result means "no Path value"; any other failed or unparseable query throws
+// without writing, since writing would replace a Path we could not read.
 export async function addToUserPath(dir, { reg, env = process.env }) {
   const q = await reg(['query', 'HKCU\\Environment', '/v', 'Path']);
   let current = '';
+  const notFound = q.code === 1 || /unable to find/i.test(`${q.stdout}${q.stderr ?? ''}`);
   if (q.code === 0) {
     const m = /^\s*Path\s+REG_\w+\s+(.*)$/im.exec(q.stdout);
-    if (m) current = m[1].replace(/\r$/, '');
+    if (!m) throw new Error('reg query HKCU\\Environment Path succeeded but its output could not be parsed');
+    current = m[1].replace(/\r$/, '');
+  } else if (!notFound) {
+    throw new Error(`reg query HKCU\\Environment Path failed (exit ${q.code})`);
   }
   const entries = splitPath(current);
   const want = dir.toLowerCase().replace(/[\\/]+$/, '');

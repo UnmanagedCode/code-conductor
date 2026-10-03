@@ -45,10 +45,10 @@ Nothing is written outside `%USERPROFILE%` and HKCU. `/S` silences both the inst
 
 1. **Git for Windows.** Detected via `detectGit` (`toolchain.mjs`): `git.exe` on PATH, then `%LOCALAPPDATA%\Programs\Git`, then `%ProgramFiles%\Git`. It counts only when `<root>\bin\bash.exe` exists (Git Bash is the requirement). Otherwise the pinned installer is downloaded (3 attempts), sha256-checked and run `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /CURRENTUSER /NOCANCEL /SP- /o:PathOption=Cmd`.
 2. **claude.** `detectClaude`: a `claude.exe` on PATH (an npm `.cmd` shim does not count), then `%USERPROFILE%\.local\bin\claude.exe`. Otherwise `powershell -NoProfile -NonInteractive -Command "irm https://claude.ai/install.ps1 | iex"` (no execution-policy bypass needed). **Signing in is manual:** run `claude auth login` once in a terminal.
-3. **User PATH.** `%USERPROFILE%\.local\bin` is appended to `HKCU\Environment\Path` (`addToUserPath`: `reg.exe`, `REG_EXPAND_SZ`, idempotent, case-insensitive, `%VAR%` entries preserved, no length limit), then the installer broadcasts `WM_SETTINGCHANGE`.
+3. **User PATH.** `%USERPROFILE%\.local\bin` is appended to `HKCU\Environment\Path` (`addToUserPath`: `reg.exe`, `REG_EXPAND_SZ`, idempotent, case-insensitive, fails closed (only a not-found query means "no Path"; any other failed or unparseable query throws without writing), `%VAR%` entries preserved, no length limit), then the installer broadcasts `WM_SETTINGCHANGE`.
 4. **Checkout** (`checkout` in `setup.mjs`):
    - Fresh: `git clone --branch <branch>` from the bundle with `core.autocrlf=false`, then `origin` is set to the real remote URL. The clone gives `branch.<b>.remote/merge`, so self-update has an upstream.
-   - Existing: fetch the bundle; fast-forward when `HEAD` is an ancestor of the bundle tip, otherwise keep the checkout (never downgraded or clobbered). A non-empty directory that is not a checkout is refused.
+   - Existing: fetch the bundle; fast-forward when `HEAD` is an ancestor of the bundle tip, otherwise keep the checkout (never downgraded or clobbered). If the fast-forward itself is refused (local changes in the way) the checkout is kept, the log says so, and the install continues; in-app self-update handles it. A non-empty directory that is not a checkout is refused.
    - **LF is required:** the line-1 marker read of `CONVENTIONS.md` breaks on CRLF, so the checkout carries local `core.autocrlf=false` regardless of the user's global Git setting. Dev clones under the Git installer's default `autocrlf=true` are not covered.
 5. **`npm ci`** in `app\` with the bundled Node's `npm` (full dependencies, matching what self-update's `npm install` yields).
 
@@ -60,7 +60,7 @@ The Start-menu shortcut runs `code-conductor.exe`, an NSIS stub built with `Sile
 
 | `launch.mjs` mode | Behaviour |
 |---|---|
-| (default) | Probe `http://127.0.0.1:<PORT or 8787>/api/health`. cc answering (`app: 'code-conductor'`) → reuse it. Something else answering → fail "port in use by another program". Nothing → rotate `server.log`, write a header (commit, `PROJECTS_ROOT`, PATH head, claude path), `mkdir` the projects root, spawn `node server.ts` detached + hidden with stdout/stderr on `server.log`, poll health every 250 ms (60 s deadline; a child that exits first fails with the log tail; on timeout the server is killed), then open the UI with `rundll32 url.dll,FileProtocolHandler`. |
+| (default) | Probe `http://127.0.0.1:<PORT or 8787>/api/health`. cc answering (`app: 'code-conductor'`) → reuse it. Something else answering → fail "port in use by another program"; a 200 health response without `app` → fail "doesn't identify as code-conductor (pre-Windows build?)" (never spawned over, never killed). Nothing → rotate `server.log`, write a header (commit, `PROJECTS_ROOT`, PATH head, claude path), `mkdir` the projects root, spawn `node server.ts` detached + hidden with stdout/stderr on `server.log`, poll health every 250 ms (60 s deadline; a child that exits first fails with the log tail; on timeout the server is killed only if the port answers nothing), then open the UI with `rundll32 url.dll,FileProtocolHandler`. |
 | `--status` | Exit 0 iff cc answers on the port. |
 | `--stop` | `taskkill /T /F /PID <health.pid>`, then wait until health stops answering; nonzero if still up. Used by the installer and uninstaller. |
 

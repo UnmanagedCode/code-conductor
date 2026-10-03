@@ -114,3 +114,27 @@ test('addToUserPath: no existing Path value is created; a long Path is not trunc
   await addToUserPath('C:\\n', { reg: g.reg, env: {} });
   assert.equal(g.value, `${long};C:\\n`);
 });
+
+test('launcherEnv: a mixed-case projects_root is normalised to PROJECTS_ROOT', () => {
+  const env = launcherEnv({ env: { PATH: 'C:\\W', USERPROFILE: USER, Projects_Root: 'D:\\work' }, installDir: 'C:\\i', git: null, claude: null });
+  assert.equal(env.PROJECTS_ROOT, 'D:\\work');
+  assert.deepEqual(Object.keys(env).filter((k) => k.toLowerCase() === 'projects_root'), ['PROJECTS_ROOT']);
+});
+
+test('addToUserPath fails closed: a failed or unparseable query throws without writing', async () => {
+  for (const q of [{ code: 5, stdout: '', stderr: 'ERROR: Access is denied.' }, { code: 0, stdout: 'garbage\r\n', stderr: '' }]) {
+    const calls = [];
+    await assert.rejects(addToUserPath('C:\\n', { reg: async (a) => { calls.push(a); return q; }, env: {} }));
+    assert.equal(calls.some((c) => c[0] === 'add'), false);
+  }
+});
+
+test('addToUserPath: reg query not-found output means absent', async () => {
+  const calls = [];
+  const reg = async (a) => {
+    calls.push(a);
+    return a[0] === 'query' ? { code: 2, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' } : { code: 0, stdout: '' };
+  };
+  assert.equal(await addToUserPath('C:\\n', { reg, env: {} }), true);
+  assert.equal(calls.find((c) => c[0] === 'add')[calls.find((c) => c[0] === 'add').indexOf('/d') + 1], 'C:\\n');
+});
