@@ -41,20 +41,45 @@ function WaitFor([scriptblock]$cond, [int]$sec = 60, [string]$what = 'condition'
 function Pids([string[]]$names) { @(Get-Process -Name $names -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) }
 $watched = 'claude', 'bash', 'sh', 'conhost'
 function Leaked([int[]]$before) { @(Pids $watched | Where-Object { $before -notcontains $_ }) }
-function Git([string]$dir, [string[]]$a) {
-  $out = & git -C $dir -c user.name=w2 -c user.email=w2@example.invalid @a 2>&1
-  if ($LASTEXITCODE -ne 0) { throw "git $($a -join ' ') failed: $out" }
-  "$out".Trim()
+function AllPids { @(Get-Process | ForEach-Object { $_.Id }) }
+# Name, parent and command line of every process started since $beforeAll.
+function NewProcs([int[]]$beforeAll) {
+  (Get-CimInstance Win32_Process | Where-Object { $beforeAll -notcontains $_.ProcessId } |
+    ForEach-Object { "$($_.ProcessId)/$($_.Name) ppid=$($_.ParentProcessId) [$($_.CommandLine)]" }) -join '; '
+}
+# The transcript the CLI wrote for the newest session in a project dir: its directory
+# is the encodeCwd of the cwd, so finding it checks cc and the CLI agree on spelling.
+function NewestJsonl([string]$cwd, [datetime]$since) {
+  $dir = Join-Path $env:USERPROFILE ('.claude\projects\' + ($cwd -replace '[^A-Za-z0-9]', '-'))
+  if (-not (Test-Path $dir)) { throw "no transcript dir $dir" }
+  $f = Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $f) { throw "no jsonl in $dir since $since" }
+  $f
+}
+function GitC([string]$dir, [string[]]$a) {
+  # git writes warnings (CRLF notices) to stderr; only the exit code is a failure.
+  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try {
+    $out = & git.exe -C $dir -c user.name=w2 -c user.email=w2@example.invalid -c core.autocrlf=false @a 2>&1
+    $code = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $prev }
+  if ($code -ne 0) { throw "git $($a -join ' ') failed: $out" }
+  (@($out | Where-Object { $_ -is [string] -or $_.GetType().Name -ne 'ErrorRecord' }) -join "`n").Trim()
 }
 function EventsOf([string]$id) { (Api GET "/api/instances/$id/events?limit=400").events }
+function Row([string]$id) { Api GET '/api/instances' | Where-Object { $_.id -eq $id } }
 function Status([string]$id) { (Api GET '/api/instances' | Where-Object { $_.id -eq $id }).status }
 function Spawn($extra = @{}) {
   $b = @{ project = 'demo'; mode = 'bypassPermissions'; temp = $false } + $extra
   $r = Api POST '/api/instances' $b
   WaitFor { (Status $r.id) -eq 'idle' } 90 "instance $($r.id) idle"
-  $r
+  WaitFor { (Row $r.id).sessionId } 30 'sessionId'
+  Row $r.id   # the spawn response predates the session id
 }
-function Send([string]$id, [string]$text) { & node (Join-Path $PSScriptRoot 'w2-send.mjs') $Port $id $text | Out-Null; if ($LASTEXITCODE) { throw "send failed ($LASTEXITCODE)" } }
+function Send([string]$id, [string]$text) {
+  $o = & node (Join-Path $PSScriptRoot 'w2-send.mjs') $Port $id $text 2>&1
+  if ($LASTEXITCODE) { throw "send failed ($LASTEXITCODE): $o" }
+}
 function AssistantText([string]$id) {
   (EventsOf $id | Where-Object { $_.kind -eq 'text_delta' } | ForEach-Object { $_.text }) -join ''
 }
@@ -78,8 +103,17 @@ function StartServer([string]$root = $projects) {
   WaitFor { try { (Api GET '/api/health').ok } catch { $false } } 60 'health'
   Api GET '/api/health'
 }
-function KillTree([int]$procId) { & "$env:SystemRoot\System32\taskkill.exe" /T /F /PID $procId 2>&1 | Out-Null }
+function KillTree([int]$procId) {
+  # taskkill reports an already-gone child on stderr; that is not a failure here.
+  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { & "$env:SystemRoot\System32\taskkill.exe" /T /F /PID $procId 2>&1 | Out-Null } finally { $ErrorActionPreference = $prev }
+}
 function HealthPid { try { (Api GET '/api/health').pid } catch { $null } }
+
+# The box has no git identity and the smoke must not change user config: the
+# server (merge commits) and git calls inherit one from the environment.
+$env:GIT_AUTHOR_NAME = 'w2'; $env:GIT_COMMITTER_NAME = 'w2'
+$env:GIT_AUTHOR_EMAIL = 'w2@example.invalid'; $env:GIT_COMMITTER_EMAIL = 'w2@example.invalid'
 
 $baseline = Pids $watched
 $health = $null
@@ -98,7 +132,7 @@ try {
   # 2 ───────────────────────────────────────────────────────────────────────
   Step '2 create project (initial commit)' {
     $null = Api POST '/api/projects' @{ name = 'demo' }
-    $n = Git (Join-Path $projects 'demo') @('rev-list', '--count', 'HEAD')
+    $n = GitC (Join-Path $projects 'demo') @('rev-list', '--count', 'HEAD')
     if ($n -ne '1') { throw "commit count $n" }
     if ((Get-Content $serverLog -Raw) -match 'refusing the initial commit') { throw 'initial commit refused' }
     "rev-list --count HEAD = $n"
@@ -130,16 +164,17 @@ try {
     [IO.File]::WriteAllText((Join-Path $storeDir 'post-worktree-create.sh'), "echo ran > `"`$TEMP/w2-hook-ran.txt`"`n")
     $w = Api POST '/api/instances' @{ project = 'demo'; mode = 'bypassPermissions'; worktree = $true; temp = $false }
     WaitFor { (Status $w.id) -eq 'idle' } 90 'worktree instance idle'
-    $wt = $w.worktree
+    $wt = @(Api GET '/api/projects/demo/worktrees')[0]
+    if (-not $wt.worktreePath) { throw "worktree list: $($wt | ConvertTo-Json -Compress)" }
     if (-not (Test-Path $marker)) { throw 'post-worktree hook did not run (env->bash mapping)' }
     [IO.File]::WriteAllText((Join-Path $wt.worktreePath 'w2.txt'), "from worktree`n")
-    Git $wt.worktreePath @('add', 'w2.txt') | Out-Null
-    Git $wt.worktreePath @('commit', '-q', '-m', 'w2 change') | Out-Null
+    GitC $wt.worktreePath @('add', 'w2.txt') | Out-Null
+    GitC $wt.worktreePath @('commit', '-q', '-m', 'w2 change') | Out-Null
     Api DELETE "/api/instances/$($w.id)" | Out-Null
     $s = Api POST "/api/projects/demo/worktrees/$($wt.worktreeName)/sync" @{}
     $m = Api POST "/api/projects/demo/worktrees/$($wt.worktreeName)/merge" @{}
     if (-not $m.ok) { throw "merge refused: $($m | ConvertTo-Json -Compress)" }
-    $merges = Git (Join-Path $projects 'demo') @('log', '--merges', '--oneline', '-1')
+    $merges = GitC (Join-Path $projects 'demo') @('log', '--merges', '--oneline', '-1')
     if (-not $merges) { throw 'no merge commit on parent' }
     if (-not (Test-Path (Join-Path $projects 'demo\w2.txt'))) { throw 'w2.txt not on parent' }
     "hook ran; merge commit: $merges"
@@ -154,7 +189,7 @@ try {
   }
   # 7 ───────────────────────────────────────────────────────────────────────
   Step '7 busy kill: fast, no orphans, jsonl intact' {
-    $before = Pids $watched
+    $before = Pids $watched; $beforeAll = AllPids; $t0 = Get-Date
     $w = Spawn
     Send $w.id 'Use the Bash tool to run `sleep 60`.'
     WaitFor { (EventsOf $w.id | Where-Object { $_.kind -eq 'tool_use' }) } 120 'tool_use'
@@ -164,24 +199,23 @@ try {
     if ($sw.Elapsed.TotalSeconds -gt 7) { throw "DELETE took $([int]$sw.Elapsed.TotalSeconds)s" }
     Start-Sleep -Seconds 1
     $leak = Leaked $before
-    if ($leak.Count) { throw "leaked pids: $($leak -join ',') ($((Get-Process -Id $leak -EA SilentlyContinue | % ProcessName) -join ','))" }
-    $jsonl = Get-ChildItem (Join-Path $env:USERPROFILE '.claude\projects') -Recurse -Filter "$($w.sessionId).jsonl" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $jsonl) { throw 'no session jsonl' }
+    if ($leak.Count) { throw "leaked pids: $($leak -join ','); new processes: $(NewProcs $beforeAll)" }
+    $jsonl = NewestJsonl (Join-Path $projects 'demo') $t0
     $last = Get-Content $jsonl.FullName -Tail 1
     $null = $last | ConvertFrom-Json   # parses: not truncated mid-line
     "DELETE in $([Math]::Round($sw.Elapsed.TotalSeconds,1))s; no leaked pids; jsonl tail parses"
   }
   # 8 ───────────────────────────────────────────────────────────────────────
   Step '8 idle kill: last-prompt tail, no orphans' {
-    $before = Pids $watched
+    $before = Pids $watched; $beforeAll = AllPids; $t0 = Get-Date
     $w = Spawn
     Send $w.id 'Reply with the single word ok.'
     WaitFor { (Status $w.id) -eq 'idle' -and (AssistantText $w.id) -match 'ok' } 120 'turn done'
     Api DELETE "/api/instances/$($w.id)" | Out-Null
     Start-Sleep -Seconds 1
     $leak = Leaked $before
-    if ($leak.Count) { throw "leaked pids: $($leak -join ',')" }
-    $jsonl = Get-ChildItem (Join-Path $env:USERPROFILE '.claude\projects') -Recurse -Filter "$($w.sessionId).jsonl" | Select-Object -First 1
+    if ($leak.Count) { throw "leaked pids: $($leak -join ','); new processes: $(NewProcs $beforeAll)" }
+    $jsonl = NewestJsonl (Join-Path $projects 'demo') $t0
     $tail = (Get-Content $jsonl.FullName -Tail 3) -join "`n"
     if ($tail -notmatch 'last-prompt') { throw "no last-prompt in tail: $tail" }
     'jsonl tail has last-prompt; no leaked pids'
@@ -234,30 +268,31 @@ try {
     $origin = Join-Path $Work 'origin.git'
     $seed = Join-Path $Work 'seed'
     Remove-Item $origin, $seed -Recurse -Force -ErrorAction SilentlyContinue
-    $null = & git init -q --bare $origin
-    $oldRemote = Git $Repo @('remote', 'get-url', 'origin')
-    $branch = Git $Repo @('rev-parse', '--abbrev-ref', 'HEAD')
-    Git $Repo @('push', '-q', $origin, "HEAD:refs/heads/$branch") | Out-Null
-    Git $Repo @('remote', 'set-url', 'origin', $origin) | Out-Null
-    Git $Repo @('fetch', '-q', 'origin') | Out-Null
-    Git $Repo @('branch', '--set-upstream-to', "origin/$branch") | Out-Null
-    $null = & git clone -q $origin $seed
+    GitC $Work @('init', '-q', '--bare', $origin) | Out-Null
+    $oldRemote = GitC $Repo @('remote', 'get-url', 'origin')
+    $branch = GitC $Repo @('rev-parse', '--abbrev-ref', 'HEAD')
+    GitC $Repo @('push', '-q', $origin, "HEAD:refs/heads/$branch") | Out-Null
+    GitC $Repo @('remote', 'set-url', 'origin', $origin) | Out-Null
+    GitC $Repo @('fetch', '-q', 'origin') | Out-Null
+    GitC $Repo @('branch', '--set-upstream-to', "origin/$branch") | Out-Null
+    GitC $Work @('clone', '-q', '-b', $branch, $origin, $seed) | Out-Null
     # A package.json edit (depsChanged) is what makes the update run npm install.
     $pj = Join-Path $seed 'package.json'
     $pkg = Get-Content $pj -Raw | ConvertFrom-Json
-    $pkg | Add-Member -NotePropertyName w2Marker -NotePropertyValue $true -Force
+    $pkg | Add-Member -NotePropertyName w2Marker -NotePropertyValue (Get-Date -Format o) -Force
     [IO.File]::WriteAllText($pj, (($pkg | ConvertTo-Json -Depth 20) + "`n"))
-    Git $seed @('commit', '-q', '-am', 'w2 update') | Out-Null
-    Git $seed @('push', '-q', 'origin', "HEAD:$branch") | Out-Null
-    $newHead = Git $seed @('rev-parse', 'HEAD')
+    GitC $seed @('commit', '-q', '-am', 'w2 update') | Out-Null
+    GitC $seed @('push', '-q', 'origin', "HEAD:$branch") | Out-Null
+    $newHead = GitC $seed @('rev-parse', 'HEAD')
     $st = Api GET '/api/settings/self-update'
     if (-not $st.updateAvailable) { throw "no update available: $($st | ConvertTo-Json -Compress)" }
     $oldBoot = (Api GET '/api/health').bootId; $oldPid = HealthPid
     $raw = Invoke-WebRequest -Method Post -Uri "$base/api/settings/self-update" -UseBasicParsing -TimeoutSec 300
-    $res = ($raw.Content -split "`n" | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.type -eq 'result' })
-    if (-not $res.ok) { throw "update failed: $($raw.Content.Substring([Math]::Max(0,$raw.Content.Length-400)))" }
+    $body = if ($raw.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($raw.Content) } else { [string]$raw.Content }
+    $res = ($body -split "`n" | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.type -eq 'result' })
+    if (-not $res.ok) { throw "update failed: $($body.Substring([Math]::Max(0,$body.Length-400)))" }
     if (-not $res.result.npm.ran -or -not $res.result.npm.ok) { throw "npm install did not run ok: $($res.result.npm | ConvertTo-Json -Compress)" }
-    if ((Git $Repo @('rev-parse', 'HEAD')) -ne $newHead) { throw 'HEAD is not the new commit' }
+    if ((GitC $Repo @('rev-parse', 'HEAD')) -ne $newHead) { throw 'HEAD is not the new commit' }
     $mark = (Get-Item $serverLog).Length
     $null = Api POST '/api/admin/restart' @{}
     WaitFor { $p = HealthPid; $p -and $p -ne $oldPid } 120 'replacement server'
@@ -281,7 +316,7 @@ try {
     if ($alive.Count) { throw "survivors: $($alive -join ',')" }
     $claudeLeft = @(Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object { $baseline -notcontains $_.Id })
     if ($claudeLeft.Count) { throw "claude survivors: $(($claudeLeft | % Id) -join ',')" }
-    "taskkill /T /F /PID $p: server and $($kids.Count) children gone"
+    "taskkill /T /F /PID ${p}: server and $($kids.Count) children gone"
   }
   # 13 ──────────────────────────────────────────────────────────────────────
   Step '13 no new visible windows (best effort)' {
