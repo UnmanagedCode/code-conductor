@@ -10,6 +10,7 @@ import {
   type PluginManifest, type PluginMcp, type ReadManifestResult, type ManifestSource,
 } from './manifest.ts';
 import { httpError } from '../httpError.ts';
+import { hostPlatform, type Platform } from '../platform/index.ts';
 import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { createContributions, type PluginPlacement } from './contributions.ts';
@@ -113,13 +114,15 @@ export function createPluginHost(opts: {
   instances?: InstanceManagerLike | null;
   _crashWindowMs?: number;
   _backoffUnitMs?: number;
-  _supervisorOpts?: Omit<Parameters<typeof createSupervisor>[0], 'onExit'>;
+  _supervisorOpts?: Omit<Parameters<typeof createSupervisor>[0], 'onExit' | 'platform'>;
+  platform?: Platform;
 } = {}) {
   const {
     instances = null,
     _crashWindowMs = CRASH_WINDOW_MS,
     _backoffUnitMs = BACKOFF_UNIT_MS,
     _supervisorOpts = {},
+    platform = hostPlatform,
   } = opts;
   // Discovery catalog: rebuilt by rescan(). `entries` keeps every
   // manifest-bearing dir (including invalid ones, for listing); `byId`
@@ -151,7 +154,7 @@ export function createPluginHost(opts: {
   // contributions cache from the store's single save path.
   const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
 
-  const supervisor = createSupervisor({ onExit: handleChildExit, ..._supervisorOpts });
+  const supervisor = createSupervisor({ onExit: handleChildExit, platform, ..._supervisorOpts });
 
   function runtimeState(id: string): RuntimeState {
     let s = rt.get(id);

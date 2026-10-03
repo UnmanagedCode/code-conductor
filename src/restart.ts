@@ -17,6 +17,7 @@
 //   5. Exit this process after a small delay so the 202 response can
 //      flush over the wire.
 import { spawn } from 'node:child_process';
+import { hostPlatform, type Platform } from './platform/index.ts';
 import type { Server } from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { writePendingTempCleanup } from './tempCleanup.ts';
@@ -119,11 +120,11 @@ export function scheduleRestart({ server, wss, instances, log = console }: {
 // Shared by the normal restart (scheduleRestart) and the graceful resume restart
 // (src/resumeRestart.ts drainAndScheduleRestart). The child's listen-with-retry
 // (server.ts) handles the EADDRINUSE race while our socket releases.
-export function spawnReplacementAndExit({ log = console }: { log?: RestartLog } = {}): void {
+export function spawnReplacementAndExit({ log = console, platform = hostPlatform }: { log?: RestartLog; platform?: Platform } = {}): void {
   const args = [process.argv[1], ...process.argv.slice(2)];
   try {
     const child = spawn(process.execPath, args, {
-      detached: true,
+      ...platform.spawnOptions('daemon'),
       stdio: 'inherit',
       cwd: process.cwd(),
       env: process.env,

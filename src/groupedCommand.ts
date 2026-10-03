@@ -2,11 +2,11 @@
 //
 // Five places in the tree spawn a child that can fork grandchildren (`npm ci`,
 // `npm install`, a plugin's start command, a post-worktree hook, `git`). All of
-// them need the same two things, and all of them had their own copy:
+// them need the same two things:
 //
-//   - `detached: true` so the child leads its own process GROUP, letting one
-//     `process.kill(-pid, sig)` reach every grandchild. Killing just the direct
-//     child orphans the rest, which is how a timed-out `npm ci` used to keep
+//   - the platform's `group` spawn options, so the child leads its own process
+//     GROUP and one `platform.killGroup` reaches every grandchild. Killing just
+//     the direct child orphans the rest, so a timed-out `npm ci` would keep
 //     running after the request that started it was gone.
 //   - a SIGTERM → SIGKILL backstop, because a shell script that traps or ignores
 //     SIGTERM (`sleep` does on some platforms) would otherwise never die.
@@ -21,6 +21,7 @@
 // which callers already branch on.
 
 import { spawn } from 'node:child_process';
+import { hostPlatform, type Platform } from './platform/index.ts';
 import { ExecOutputCollector } from './systems/execCollector.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './systems/system.ts';
 
@@ -47,39 +48,40 @@ export type GroupedCommandOptions = ExecOptions;
 // throws ESRCH, which is the expected outcome, not an error.
 export function killProcessGroup(
   pid: number | null | undefined,
-  { graceMs = DEFAULT_KILL_GRACE_MS, fallback }: { graceMs?: number; fallback?: (signal: NodeJS.Signals) => void } = {},
+  { graceMs = DEFAULT_KILL_GRACE_MS, fallback, platform = hostPlatform }: { graceMs?: number; fallback?: (signal: NodeJS.Signals) => void; platform?: Platform } = {},
 ): void {
   const signalGroup = (sig: NodeJS.Signals): void => {
     if (pid == null) { try { fallback?.(sig); } catch { /* already gone */ } return; }
-    try { process.kill(-pid, sig); }
+    try { platform.killGroup(pid, sig as 'SIGTERM' | 'SIGKILL'); }
     catch { try { fallback?.(sig); } catch { /* already gone */ } }
   };
   signalGroup('SIGTERM');
   setTimeout(() => signalGroup('SIGKILL'), graceMs).unref();
 }
 
-// `shell` runs the command string through `bash -lc` — what a user-authored
-// hook/start command expects (pipes, `&&`, login-shell PATH).
+// `shell` runs the command string through the platform's login shell — what a
+// user-authored hook/start command expects (pipes, `&&`, login-shell PATH).
 export type GroupedCommandSpec = ExecSpec;
 
 export function runGroupedCommand(
   spec: GroupedCommandSpec,
   { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin, signal }: GroupedCommandOptions,
+  platform: Platform = hostPlatform,
 ): Promise<GroupedCommandResult> {
   return new Promise((resolve) => {
     const start = Date.now();
-    const [cmd, args] = 'shell' in spec ? ['bash', ['-lc', spec.shell]] : [spec.argv[0], spec.argv.slice(1)];
+    const { command: cmd, args } = platform.commandFor(spec);
     let proc: ReturnType<typeof spawn>;
     // Output accounting is the SHARED implementation (src/systems/execCollector.ts):
     // the wire `exec` must be indistinguishable from this one, so both read the
     // caps, the fence and the decoders out of the same object.
     const collector = new ExecOutputCollector(
       { cap, headCapBytes, maxBufferBytes, onChunk },
-      () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) }),
+      () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform }),
     );
     try {
       proc = spawn(cmd, args, {
-        cwd, env, detached: true,
+        cwd, env, ...platform.spawnOptions('group'),
         // 'ignore' gives the command a closed stdin so an interactive one sees
         // EOF instead of blocking on a pipe nobody writes to.
         ...(stdin === 'ignore' ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),
@@ -98,7 +100,7 @@ export function runGroupedCommand(
     proc.stderr?.on('data', (chunk: Buffer) => collector.push('err', chunk));
 
     let timedOut = false;
-    const kill = () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) });
+    const kill = () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform });
     const timer = timeoutMs === undefined ? null : setTimeout(() => {
       timedOut = true;
       kill();

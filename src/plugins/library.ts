@@ -8,6 +8,7 @@ import {
 import { httpError } from '../httpError.ts';
 import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
+import { hostPlatform, type Platform } from '../platform/index.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import { localSystem } from '../systems/registry.ts';
 import { pullPastGeneratedConventions } from '../conventionsCheckout.ts';
@@ -170,9 +171,9 @@ interface GitCommandResult {
   stderr: string;
 }
 
-type CloneImpl = (url: CloneUrl, destDir: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
-type PullImpl = (cwd: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
-type RunHookImpl = (command: string, cwd: string, opts?: { timeoutMs?: number; onChunk?: (s: string) => void }) => Promise<{ code: number; output: string }>;
+type CloneImpl = (url: CloneUrl, destDir: string, opts?: { onChunk?: (s: string) => void; platform?: Platform }) => Promise<GitCommandResult>;
+type PullImpl = (cwd: string, opts?: { onChunk?: (s: string) => void; platform?: Platform }) => Promise<GitCommandResult>;
+type RunHookImpl = (command: string, cwd: string, opts?: { timeoutMs?: number; onChunk?: (s: string) => void; platform?: Platform }) => Promise<{ code: number; output: string }>;
 
 // update()'s restart outcome: either an attempt (ids restarted, ok/error) or
 // a deliberate skip — 'postPull-failed' means a broken postPull left the
@@ -376,13 +377,13 @@ function projectNameFor(entry: CatalogEntry): { cloneUrl: CloneUrl; name: string
 // `--no-local` is what stops a path clone hardlinking a directory mirror's
 // object files into the install; it applies to every URL and is ignored for a
 // remote one.
-function cloneRepo(url: CloneUrl, destDir: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<GitCommandResult> {
+function cloneRepo(url: CloneUrl, destDir: string, { onChunk, platform }: { onChunk?: (s: string) => void; platform?: Platform } = {}): Promise<GitCommandResult> {
   const source = new URL(url).protocol === 'file:' ? fileURLToPath(url) : url;
-  return runGitLive(['clone', '--no-local', '--', source, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
+  return runGitLive(['clone', '--no-local', '--', source, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk, platform });
 }
 
-function pullRepo(cwd: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<GitCommandResult> {
-  return runGitLive(['pull', '--ff-only'], cwd, { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
+function pullRepo(cwd: string, { onChunk, platform }: { onChunk?: (s: string) => void; platform?: Platform } = {}): Promise<GitCommandResult> {
+  return runGitLive(['pull', '--ff-only'], cwd, { timeoutMs: CLONE_TIMEOUT_MS, onChunk, platform });
 }
 
 // Runs an arbitrary postClone/postPull command via `bash -lc` — the same
@@ -391,14 +392,15 @@ function pullRepo(cwd: string, { onChunk }: { onChunk?: (s: string) => void } = 
 // kill on timeout rather than execFile's built-in timeout, since a command like
 // `npm install` or a browser-binary downloader can spawn grandchildren that a
 // plain kill of the direct child would orphan. Never rejects.
-function runHookCommand(command: string, cwd: string, { timeoutMs = POST_HOOK_TIMEOUT_MS, onChunk }: { timeoutMs?: number; onChunk?: (s: string) => void } = {}): Promise<{ code: number; output: string }> {
+function runHookCommand(command: string, cwd: string, { timeoutMs = POST_HOOK_TIMEOUT_MS, onChunk, platform }: { timeoutMs?: number; onChunk?: (s: string) => void; platform?: Platform } = {}): Promise<{ code: number; output: string }> {
   return runGroupedCommand({ shell: command }, {
     cwd, env: process.env, timeoutMs, cap: GROUP_OUTPUT_CAP, onChunk,
-  }).then(r => ({ code: r.code, output: r.output.trimEnd() }));
+  }, platform).then(r => ({ code: r.code, output: r.output.trimEnd() }));
 }
 
-export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pullImpl = null, _runHookImpl = null }: {
+export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pullImpl = null, _runHookImpl = null, platform = hostPlatform }: {
   pluginHost?: PluginHostLike | null;
+  platform?: Platform;
   _cloneImpl?: CloneImpl | null;
   _pullImpl?: PullImpl | null;
   _runHookImpl?: RunHookImpl | null;
@@ -419,7 +421,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
   // install()/update() below): the clone/pull it follows already succeeded.
   async function runHook(command: string | undefined, cwd: string, onChunk: (s: string) => void): Promise<{ ran: boolean; ok: boolean; code: number; tail: string } | null> {
     if (!command) return null;
-    const r = await runHookImpl(command, cwd, { onChunk });
+    const r = await runHookImpl(command, cwd, { onChunk, platform });
     return { ran: true, ok: r.code === 0, code: r.code, tail: (r.output ?? '').slice(-4000) };
   }
 
@@ -456,7 +458,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
         // Cached refs go stale between visits — a bounded, best-effort fetch
         // first means "update available" reflects the real remote, not
         // whatever was last fetched manually (see fetchOriginBounded in gitLive.ts).
-        await fetchOriginBounded(target);
+        await fetchOriginBounded(target, platform);
         // The library clone is cc's own, never a project on a system: always local.
         const status = await getProjectUpstreamStatus(localSystem(), target);
         behind = status.behind;
@@ -486,7 +488,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     onValidated?.();
 
     await fs.mkdir(pluginsRoot(), { recursive: true });
-    const result = await clone(cloneUrl, target, { onChunk: (text) => onChunk?.('clone', text) });
+    const result = await clone(cloneUrl, target, { onChunk: (text) => onChunk?.('clone', text), platform });
     if (result.code !== 0) {
       // A failed/timed-out clone can leave a partial dir — clear it so a
       // retry isn't permanently blocked by the "already installed" check.
@@ -554,7 +556,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
       system: resolved.system, dir: target, project: name,
       note: (text) => onChunk?.('pull', text),
       run: async () => {
-        const pullResult = await pull(target, { onChunk: (text) => onChunk?.('pull', text) });
+        const pullResult = await pull(target, { onChunk: (text) => onChunk?.('pull', text), platform });
         if (pullResult.code !== 0) {
           const tail = (pullResult.stderr || pullResult.stdout || '').slice(-4000);
           throw httpError(502, `git pull failed for '${name}'`, { tail });

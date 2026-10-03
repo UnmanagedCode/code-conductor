@@ -1,0 +1,28 @@
+// Host-OS differences in spawning, shells, killing, command-line splitting and
+// path identity. One implementation per OS (`posix.ts`), selected once in
+// `index.ts`; call sites take the platform by injection and never branch on the
+// OS themselves.
+
+import type { ExecSpec } from '../systems/system.ts';
+
+// How a spawned child relates to cc: `child` is tied to cc's lifetime, `group`
+// leads its own process group (one-shot commands that fork grandchildren),
+// `daemon` must outlive cc (plugin backends, the restart replacement).
+export type SpawnRole = 'child' | 'group' | 'daemon';
+export type KillSignal = 'SIGTERM' | 'SIGKILL';
+export interface ChildHandle { pid?: number | null; kill(signal?: NodeJS.Signals): unknown }
+
+export interface Platform {
+  // `{shell}` → the login shell running the string; `{argv}` → executable + args.
+  commandFor(spec: ExecSpec): { command: string; args: string[] };
+  // Base spawn options; spread FIRST so a call site's own options win.
+  spawnOptions(role: SpawnRole): { detached?: boolean; windowsHide?: boolean };
+  // One process, by handle where the caller has one. Throws like `process.kill`.
+  killProcess(target: number | ChildHandle, signal: KillSignal): void;
+  // The group a `group`/`daemon` child leads. Throws if there is none.
+  killGroup(pid: number, signal: KillSignal): void;
+  // A `CLAUDE_BIN` / backend launch template → argv.
+  splitCommand(line: string): string[];
+  // Equality key for two host paths.
+  pathKey(p: string): string;
+}
