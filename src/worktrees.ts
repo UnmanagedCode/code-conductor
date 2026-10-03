@@ -300,23 +300,28 @@ async function updateMeta(
   project: string, worktreeName: string, fn: (meta: WorktreeMeta) => WorktreeMeta,
 ): Promise<WorktreeMeta> {
   const file = metaPath(project, worktreeName);
-  let missing = false;
   try {
     return await withLock(file, async () => {
       const meta = await readMeta(project, worktreeName);
       if (!meta) {
-        missing = true;
-        throw httpError(404, unknownWorktreeMessage(project, worktreeName, await registeredWorktreeNames(project)));
+        // The dir withLock just made for its lockfile is not a registration,
+        // so it is not offered as a valid name in the same breath as "not found".
+        const names = (await registeredWorktreeNames(project)).filter(n => n !== worktreeName);
+        throw httpError(404, unknownWorktreeMessage(project, worktreeName, names));
       }
       const next = fn(meta);
       await writeMeta(project, worktreeName, next);
       return next;
     });
   } finally {
-    // withLock creates the store dir to hold its lockfile. For a record that
-    // was already gone, that dir must not outlive the call: an empty dir is
-    // still a registration to registeredWorktreeNames.
-    if (missing) await fs.rmdir(path.dirname(file)).catch(() => {});
+    // withLock creates the store dir to hold its lockfile BEFORE it acquires,
+    // so every exit — a missing record, a failed acquire, a throw from `fn` —
+    // can leave behind a dir that holds no record, and an empty dir is still a
+    // registration to registeredWorktreeNames. Decided on the record itself,
+    // not on how the call ended; rmdir also refuses a dir that is not empty,
+    // so a dir still holding anything (another caller's lockfile, attachments)
+    // is never removed.
+    if (!(await fileExists(file))) await fs.rmdir(path.dirname(file)).catch(() => {});
   }
 }
 
