@@ -16,7 +16,8 @@
 //
 // The file is app-owned: cc overwrites it, whatever is in it. No sentinel, no
 // backup, no hand-edit detection — recovery for a hand-authored body is git
-// (every project is a repo from birth, and the file is tracked). The one
+// (a project is a repo from birth when git could make one, and the file is
+// tracked there). The one
 // safety net is a transient-failure guard: regeneration composes whichever
 // marker slugs it *can* resolve and names the rest in a visible in-body note,
 // keeping them in the marker so they recover verbatim if they resolve again,

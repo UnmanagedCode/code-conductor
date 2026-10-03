@@ -876,7 +876,7 @@ export async function createProject(
     remoteId?: unknown;
     systemPath?: unknown;
   } = {},
-): Promise<{ name: string; path: string; system: string; remoteId: string | null }> {
+): Promise<{ name: string; path: string; system: string; remoteId: string | null; gitSkipped?: string }> {
   validateName(name);
   const placement = validatePlacementInput(systemId, remoteId, systemPath);
   // THE THIRD BRANCH. On a non-local system the mkdir, `git init` and the seed
@@ -935,16 +935,34 @@ export async function createProject(
   await registerProject(name, placement
     ? { kind: 'remote', system: placement.system, remoteId: placement.remoteId, path: placement.systemPath }
     : { kind: 'local', path: full });
-  // Every project is a git repo from birth — worktrees, diffs and commits are
-  // the whole workflow. The mkdir above proves the dir is brand new, so there
-  // is nothing to clobber and no repo check to make: isGitRepo() walks UP, so
-  // it would answer "yes" for this empty dir whenever the projects root itself
-  // sits inside a repo, and skip the init. Dynamic import because worktrees.ts
-  // statically imports this module (as with listWorktrees below).
+  // A repo from birth when git can make one — worktrees, diffs and commits are
+  // the whole workflow — and otherwise an ordinary non-git project, the same as
+  // an adopted plain directory. The mkdir above proves the dir is brand new, so
+  // there is nothing to clobber and no repo check to make: isGitRepo() walks UP,
+  // so it would answer "yes" for this empty dir whenever the projects root
+  // itself sits inside a repo, and skip the init. Dynamic import because
+  // worktrees.ts statically imports this module (as with listWorktrees below).
+  //
+  // NOT FATAL, and the failure is reported rather than thrown: by now the dir
+  // and the record exist, so a 500 here would leave a half-created project whose
+  // retry is a 409. The try wraps the CALL, not just `code`: runGit throws
+  // httpError(504 GIT_TIMED_OUT) / httpError(502 GIT_DID_NOT_RUN) before it
+  // returns a result — a timed-out init may even have run on the far side, so
+  // the reason for that shape is the throw's own text.
   const { runGit } = await import('./worktrees.ts');
-  const init = await runGit(system, full, ['init', '-q']);
-  if (init.code !== 0) {
-    throw httpError(500, `git init failed in ${full}: ${init.stderr.trim() || init.stdout.trim()}`);
+  let gitSkipped: string | undefined;
+  try {
+    const init = await runGit(system, full, ['init', '-q']);
+    if (init.code !== 0) {
+      gitSkipped = `git init failed in ${full}: ${init.stderr.trim() || init.stdout.trim()}`;
+    }
+  } catch (e) {
+    gitSkipped = errMsg(e);
+  }
+  if (gitSkipped !== undefined) {
+    gitSkipped += ' — the project was created without a repository; its first worktree needs '
+      + '`git init` and a commit first';
+    console.warn(`createProject: ${gitSkipped}`);
   }
   // Seed a CLAUDE.md importing the in-project CONVENTIONS.md — the sole channel
   // for both workspace and project conventions, so it is unconditional and
@@ -969,8 +987,12 @@ export async function createProject(
     await system.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
     scaffolded.push('CONVENTIONS.md');
   }
-  await commitScaffold(system, full, runGit, scaffolded);
-  return { name, path: full, system: system.id, remoteId: system.remoteId };
+  if (gitSkipped === undefined) await commitScaffold(system, full, runGit, scaffolded);
+  return {
+    name, path: full, system: system.id, remoteId: system.remoteId,
+    // Present only when skipped — its presence is the signal.
+    ...(gitSkipped === undefined ? {} : { gitSkipped }),
+  };
 }
 
 // The identity a scaffold commit falls back to when the repo has none of its
@@ -1012,9 +1034,9 @@ async function commitScaffold(
   // ever returns a result.
   try {
     // COMMIT ONLY TO THE REPO CREATION JUST MADE, and establish that BEFORE
-    // anything is staged. An ambient `GIT_DIR` already sends the `git init`
-    // above to a foreign repo (a pre-existing dent, pinned by `createProject
-    // fails loudly when git init fails`), and without this check the staging
+    // anything is staged. An ambient `GIT_DIR` can send the `git init` above to
+    // a foreign repo that accepts it (a pre-existing dent, pinned by
+    // tests/project-initial-commit-foreign-repo.test.mjs), and without this check the staging
     // below then writes a commit into somebody else's history: measured, the
     // stray "Initial commit" lands on their branch carrying a tree that DELETES
     // every file they had tracked. Misplacing a repo is recoverable; rewriting

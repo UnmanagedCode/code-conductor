@@ -15,6 +15,7 @@ import {
 import { setSegmentArchived } from '../src/sessionStore.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { localSystem } from '../src/systems/registry.ts';
+import { liveSystemProto } from './systemHandle.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
@@ -82,6 +83,9 @@ test('POST /api/projects leaves the project with no unborn HEAD', async () => {
   // clear at creation — on the REST surface, not just through the module.
   const created = await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
   assert.equal(created.status, 201);
+  // With git present the create is exactly what it was: the skip signal is
+  // PRESENT ONLY WHEN SKIPPED, so a healthy create must not carry the key.
+  assert.equal('gitSkipped' in created.body, false);
 
   const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'demo');
   assert.ok(row, 'created project is missing from the listing');
@@ -102,7 +106,7 @@ test('createProject roots the repo at the project dir, and commits the scaffold'
   assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
 });
 
-test('createProject fails loudly when git init fails', async (t) => {
+test('a git init that fails still creates the project, seeded and without a repo', async (t) => {
   // CONFIGURATION-CONDITIONAL, and it SKIPS rather than quietly asserting
   // nothing: the failure is forced through an ambient `GIT_DIR` set after boot,
   // and cc no longer puts its own environment on an `exec` frame, so under
@@ -115,7 +119,7 @@ test('createProject fails loudly when git init fails', async (t) => {
   //
   // THE DENT, NAMED: under every gate row this branch goes uncovered, and the
   // skipped count is where that shows. What it pins is cc-side error MAPPING
-  // (`init.code !== 0` → 500, src/projects.ts), not wire behaviour, so the gate
+  // (`init.code !== 0` → `gitSkipped`, src/projects.ts), not wire behaviour, so the gate
   // loses nothing the gate exists for.
   //
   // WHICH RUNNER POLICES THE GUARD'S POLARITY, since it is not this one:
@@ -135,19 +139,86 @@ test('createProject fails loudly when git init fails', async (t) => {
   await fs.writeFile(decoy, 'x');
   const prev = process.env.GIT_DIR;
   process.env.GIT_DIR = decoy;
-  let err;
+  let created;
   try {
-    await assert.rejects(() => createProject('boom'), e => { err = e; return true; });
+    created = await createProject('boom', { conventionsDoc: '# c\n' });
   } finally {
     if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev;
   }
-  // The throw is provably the init's: the mkdir succeeded first...
-  const dirStat = await fs.stat(path.join(projectsRoot, 'boom'));
-  assert.ok(dirStat.isDirectory());
-  assert.match(err.message, /git init failed in .*boom/);
-  assert.equal(err.statusCode, 500);
-  // ...and the init ran BEFORE the file seeding, so nothing was written.
-  await assert.rejects(fs.readFile(path.join(projectsRoot, 'boom', 'CLAUDE.md')));
+  // The create RESOLVES, and says why there is no repo.
+  assert.match(created.gitSkipped, /git init failed in .*boom/);
+  // The init ran BEFORE the seeding and its failure does not stop it, so the
+  // project is whole: both seed files exist and the record is held.
+  assert.equal(await fs.readFile(path.join(projectsRoot, 'boom', 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
+  await fs.access(path.join(projectsRoot, 'boom', 'CONVENTIONS.md'));
+  await assert.rejects(fs.stat(path.join(projectsRoot, 'boom', '.git')));
+  assert.ok(await readProjectRecord('boom'), 'the store record is held, so a retry is a clean 409');
+});
+
+test('POST /api/projects with no git on PATH creates a non-git project', async (t) => {
+  // LocalSystem only, for the reason the test above gives: the child a provider
+  // spawns has an environment fixed at spawn, so a PATH change here cannot
+  // reach it.
+  if (!(localSystem() instanceof LocalSystem)) {
+    t.skip('git is hidden through the ambient PATH, which does not cross a provider wire');
+    return;
+  }
+  const empty = path.join(home, 'no-binaries');
+  await fs.mkdir(empty);
+  const prev = process.env.PATH;
+  let created;
+  process.env.PATH = empty;
+  try {
+    created = await api(baseUrl, 'POST', '/api/projects', { name: 'nogit' });
+  } finally {
+    process.env.PATH = prev;
+  }
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.match(created.body.gitSkipped, /ENOENT/);
+  await assert.rejects(fs.stat(path.join(projectsRoot, 'nogit', '.git')));
+  // Listed as the ordinary non-git project it is, read live rather than from a
+  // stored flag (PATH is restored, so git can answer the listing's probe).
+  const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'nogit');
+  assert.ok(row, 'the created project is missing from the listing');
+  assert.equal(row.isGitRepo, false);
+  assert.equal(row.unbornHead, false);
+});
+
+// A `git init` that THROWS rather than returns: runGit raises GIT_TIMED_OUT /
+// GIT_DID_NOT_RUN before it hands back a result, which is how a remote system
+// that never answered (or whose git cannot be started) reaches createProject.
+// Stubbed on the live handle's own prototype so it holds in either System
+// implementation; subtests so each row is its own proof.
+test('a git init that throws still creates the project and attempts no commit', async (t) => {
+  const rows = [
+    ['GIT_TIMED_OUT', { timedOut: true, spawnError: null }, /git init did not answer on system 'local'/],
+    ['GIT_DID_NOT_RUN', { timedOut: false, spawnError: 'provider went away' }, /git init could not be run on system 'local'/],
+  ];
+  for (const [code, fault, expected] of rows) {
+    await t.test(code, async () => {
+      const proto = liveSystemProto(localSystem());
+      const orig = proto.exec;
+      const gitArgvs = [];
+      proto.exec = async function (spec, opts) {
+        const argv = spec?.argv ?? [];
+        if (argv[0] !== 'git') return orig.call(this, spec, opts);
+        gitArgvs.push(argv);
+        if (argv.includes('init')) {
+          return { code: 1, stdout: '', stderr: '', output: '', truncated: false, durationMs: 1, ...fault };
+        }
+        return orig.call(this, spec, opts);
+      };
+      let created;
+      try {
+        created = await createProject(`throws-${code.toLowerCase().replace(/_/g, '-')}`, { conventionsDoc: '# c\n' });
+      } finally { proto.exec = orig; }
+      assert.match(created.gitSkipped, expected);
+      await fs.access(path.join(created.path, 'CLAUDE.md'));
+      await fs.access(path.join(created.path, 'CONVENTIONS.md'));
+      assert.deepEqual(gitArgvs.filter(a => !a.includes('init')), [],
+        'no git command ran after the failed init: no identity probe, no staging, no commit');
+    });
+  }
 });
 
 test('POST /api/projects seeds CLAUDE.md that imports the in-project CONVENTIONS.md', async () => {

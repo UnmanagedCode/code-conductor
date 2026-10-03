@@ -32,6 +32,7 @@
 // Injected interface:
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
 //            npContributions, npForm, npConfirm, npScaffoldText,
+//            npScaffoldBlock, npGitSkipped,
 //            npSystem, npSystemPath, npSystemPathRow, npRemote, npRemoteRow } els.
 //   - refreshProjects():      reloads the sidebar project list after a create.
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
@@ -218,9 +219,15 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
       }
       const created = await apiFetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       await refreshProjects();
-      // A returned scaffold directive is shown read-only so it isn't lost.
-      if (created.scaffold) {
-        dom.npScaffoldText.value = created.scaffold;
+      // The confirm pane carries what the create returned beyond success: a
+      // scaffold directive (shown read-only so it isn't lost) and/or the reason
+      // git was skipped. Each block is set from its own field on every create,
+      // so one create's notice never survives into the next.
+      if (created.scaffold || created.gitSkipped) {
+        dom.npScaffoldText.value = created.scaffold ?? '';
+        dom.npScaffoldBlock.hidden = !created.scaffold;
+        dom.npGitSkipped.textContent = created.gitSkipped ?? '';
+        dom.npGitSkipped.hidden = !created.gitSkipped;
         dom.npForm.hidden = true;
         dom.npConfirm.hidden = false;
         dom.newProjectDialog.showModal();

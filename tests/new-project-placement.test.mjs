@@ -64,7 +64,10 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
         <div id="np-contributions"></div>
         <p id="np-error"></p>
       </form>
-      <form id="np-confirm" hidden><textarea id="np-scaffold-text"></textarea></form>
+      <form id="np-confirm" hidden>
+        <p id="np-git-skipped" hidden></p>
+        <div id="np-scaffold-block" hidden><textarea id="np-scaffold-text"></textarea></div>
+      </form>
     </dialog>`;
   // happy-dom's <dialog> needs these for showModal/close to be drivable.
   const dlg = document.getElementById('np-dialog');
@@ -84,6 +87,8 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
       npForm: document.getElementById('np-form'),
       npConfirm: document.getElementById('np-confirm'),
       npScaffoldText: document.getElementById('np-scaffold-text'),
+      npScaffoldBlock: document.getElementById('np-scaffold-block'),
+      npGitSkipped: document.getElementById('np-git-skipped'),
       npSystem: document.getElementById('np-system'),
       npSystemPath: document.getElementById('np-system-path'),
       npSystemPathRow: document.getElementById('np-system-path-row'),
@@ -226,4 +231,70 @@ test('a relative path is refused in the dialog', async () => {
   await submit();
   assert.equal(posts.length, 0);
   assert.match($('np-error').textContent, /absolute/i);
+});
+
+// A create answered 201 with `body` — the dialog's only input from the server
+// besides the scaffold directive.
+const created = (extra) => ({ ok: true, body: { name: 'demo', path: '/x', system: 'local', ...extra } });
+
+// PINS: a create that skipped git is reported where the user is looking. The
+// pane opens on `gitSkipped` ALONE (no scaffold), shows the server's reason,
+// and keeps the scaffold block out of it.
+test('a create that skipped git shows its reason on the confirm pane', async () => {
+  const { open, submit, dlg } = await setup({
+    createResponse: created({ gitSkipped: 'git init failed in /x: spawn git ENOENT' }),
+  });
+  await open();
+  $('np-name').value = 'demo';
+  await submit();
+  assert.equal($('np-confirm').hidden, false, 'the confirm pane opens for a git skip alone');
+  assert.equal($('np-form').hidden, true);
+  assert.equal(dlg.open, true);
+  assert.equal($('np-git-skipped').hidden, false);
+  assert.match($('np-git-skipped').textContent, /spawn git ENOENT/);
+  assert.equal($('np-scaffold-block').hidden, true, 'there is no scaffold to show');
+});
+
+// PINS: the notice is conditional on the field — a scaffold-only create shows
+// its scaffold and no git notice.
+test('a scaffold-only create shows no git notice', async () => {
+  const { open, submit } = await setup({ createResponse: created({ scaffold: 'do the thing' }) });
+  await open();
+  $('np-name').value = 'demo';
+  await submit();
+  assert.equal($('np-confirm').hidden, false);
+  assert.equal($('np-git-skipped').hidden, true);
+  assert.equal($('np-scaffold-block').hidden, false);
+  assert.equal($('np-scaffold-text').value, 'do the thing');
+});
+
+// PINS: the pane is rewritten from each response, so a git notice from one
+// create does not survive into the next create's pane.
+test('a git notice from one create is cleared by the next', async () => {
+  let n = 0;
+  const { open, submit, window } = await setup({
+    createResponse: created({ gitSkipped: 'no git' }),
+  });
+  await open();
+  $('np-name').value = 'one';
+  await submit();
+  assert.equal($('np-git-skipped').hidden, false);
+  // The next create answers with a scaffold and no skip. The stub reads
+  // createResponse once at setup, so swap what the same fetch returns.
+  const prior = window.fetch;
+  const next = async (url, opts = {}) => {
+    if (String(url) === '/api/projects' && opts.method === 'POST') {
+      n++;
+      const body = created({ scaffold: 'steps' }).body;
+      return { ok: true, status: 201, json: async () => body, text: async () => JSON.stringify(body) };
+    }
+    return prior(url, opts);
+  };
+  window.fetch = next; globalThis.fetch = next;
+  await open();
+  $('np-name').value = 'two';
+  await submit();
+  assert.equal(n, 1);
+  assert.equal($('np-git-skipped').hidden, true);
+  assert.equal($('np-scaffold-block').hidden, false);
 });

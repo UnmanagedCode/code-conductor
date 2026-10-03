@@ -2008,13 +2008,16 @@ function buildNewProjectDom(document) {
   const form = mk('form', 'np-form');
   const confirm = mk('form', 'np-confirm'); confirm.hidden = true;
   const scaffoldText = mk('textarea', 'np-scaffold-text');
+  const scaffoldBlock = mk('div', 'np-scaffold-block');
+  const gitSkipped = mk('p', 'np-git-skipped');
   const contributions = mk('div', 'np-contributions');
   const name = mk('input', 'np-name');
   const preview = mk('code', 'np-preview');
   const error = mk('p', 'np-error');
   const btn = mk('button', 'np-btn');
   form.append(name, preview, contributions, error);
-  confirm.append(scaffoldText);
+  scaffoldBlock.append(scaffoldText);
+  confirm.append(gitSkipped, scaffoldBlock);
   dialog.append(form, confirm);
   document.body.append(dialog, btn);
   // happy-dom lacks a full modal impl in some versions — make showModal a no-op.
@@ -2024,6 +2027,7 @@ function buildNewProjectDom(document) {
     newProjectBtn: btn, newProjectDialog: dialog, npName: name, npError: error,
     npPreview: preview, npContributions: contributions, npForm: form,
     npConfirm: confirm, npScaffoldText: scaffoldText,
+    npScaffoldBlock: scaffoldBlock, npGitSkipped: gitSkipped,
   };
 }
 
