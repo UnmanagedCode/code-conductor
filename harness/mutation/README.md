@@ -31,6 +31,11 @@ node harness/mutation/run.mjs candidates --base main
 node harness/mutation/run.mjs run --all
 node harness/mutation/run.mjs run --id <id> --id <id>
 
+# Re-run after any catalog edit: re-measures only mutants whose measured fields changed
+# (waivers and prose are free; reused verdicts are labelled fromJournal). Make the final,
+# authoritative run a resume too.
+node harness/mutation/run.mjs run --all --resume
+
 # Explore one mutation without a catalog entry (clean-tree gate only warns here).
 # No real id yet? Add --learn --json and read results[0].failedTests — never hand-construct one.
 node harness/mutation/run.mjs probe \
@@ -48,9 +53,11 @@ state.
 1. **A test id is its full `describe > name` path, not its leaf name.** Top-level tests are
    `tests/<file>.test.mjs::<test name>`; a test inside a `describe(...)` is
    `tests/<file>.test.mjs::<describe name> > <test name>`, with the describe name reproduced
-   verbatim, parentheses and all. **Never hand-construct an id** — take it from the observed set of
-   the `--learn` pass. A leaf-only ref for a nested test does not fail loudly; it reads
-   `IMPRECISE (extra-failures)` and advises you to rewrite a mutant that was already correct. To
+   verbatim, parentheses and all. **Never hand-construct an id** — take every `file::name` id from
+   the observed set of the `--learn` pass. A bare file path (`tests/<file>.test.mjs`, no `::`) is a
+   scope, not an id: it is the sanctioned pre-learn `expectFail` seed (see "What to expect"). A
+   leaf-only ref for a nested test does not fail loudly; it reads `IMPRECISE (extra-failures)` and
+   advises you to rewrite a mutant that was already correct. To
    check which files nest tests under `describe`, run `rg -l '^describe\(' tests/*.test.mjs` —
    don't rely on a remembered list, it drifts.
 
@@ -118,7 +125,13 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
   ~1 min, so budget ~2 min; a low-core host (Termux) is a multiple of that. It is not hung —
   `timeoutMs` in `config.json` is sized for the slow case.
 - A file-narrowed mutant is seconds, not minutes. **Always give every mutant an `expectFail`**: that
-  is what buys the narrowing.
+  is what buys the narrowing. Before the first `--learn`, the claimed killer's **file** alone
+  (`tests/<file>.test.mjs`, no `::`) is a sufficient seed — it is read only as scope. Replace it
+  with the observed ids from the learn pass before grading: a file-only ref in a graded run cannot
+  match a failing test id.
+- A mutant run's deadline derives from its narrow baseline, with a floor (`hang` in `config.json`).
+  A mutant that breaks an awaited event can take tens of seconds to fail — that is not a hang.
+  `TIMEOUT` means the run outlived the deadline: treat it as a hang (RATIONALE.md §7.1).
 
 ## Artifacts
 

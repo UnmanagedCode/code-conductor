@@ -4,5 +4,6 @@
   "runner": "node-test",
   "isolation": "in-place",
   "timeoutMs": 300000,
+  "hang": { "factor": 10, "floorMs": 50000 },
   "baseBranch": "main"
 }
