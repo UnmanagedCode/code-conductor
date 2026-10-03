@@ -123,6 +123,8 @@ const dom = {
   npForm: document.getElementById('np-form'),
   npConfirm: document.getElementById('np-confirm'),
   npScaffoldText: document.getElementById('np-scaffold-text'),
+  npScaffoldBlock: document.getElementById('np-scaffold-block'),
+  npGitSkipped: document.getElementById('np-git-skipped'),
   newWorkspaceBtn: document.getElementById('new-workspace-btn'),
   settingsBtn: document.getElementById('settings-btn'),
   workspaceDialog: document.getElementById('workspace-dialog'),

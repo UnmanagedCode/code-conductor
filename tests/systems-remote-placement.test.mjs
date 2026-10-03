@@ -505,6 +505,29 @@ describe('remote project placement', () => {
     assert.deepEqual(await readRecord('nogit'), { location: { kind: 'remote', system: remote.id, remoteId: null, path: tree } });
   });
 
+  // PINS: a system with no `git` binary creates a NON-GIT project rather than
+  // refusing. The init's exec frame is answered with a protocol `error` frame
+  // (command never started, ENOENT), which runGit classifies as git saying no,
+  // so createProject degrades to `gitSkipped` and still seeds the tree.
+  // The regex anchors on `git` as argv[0]: a derivation (realpath, stat) runs
+  // `env LC_ALL=C …`, so a bare `.git` in a path never matches it, and the
+  // positive control below — no `.git` appears on the system — proves the init
+  // really was intercepted.
+  test('a system with no git binary creates a non-git project rather than refusing', async () => {
+    const { updateSystem } = await import('../src/appSettings.ts');
+    const { flakyLaunch } = await import('./remoteSystem.mjs');
+    await updateSystem(remote.id, { launch: flakyLaunch({ errorFrame: '"argv":\\["git"', errorCode: 'ENOENT' }) });
+
+    const tree = path.join(remote.root, 'nogit-app');
+    const created = await createProject('nogit-app', { system: remote.id, systemPath: tree, conventionsDoc: '# c\n' });
+    assert.match(created.gitSkipped, /ENOENT/);
+    assert.equal(await fs.readFile(path.join(tree, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
+    assert.equal(await exists(path.join(tree, 'CONVENTIONS.md')), true);
+    assert.equal(await exists(path.join(tree, '.git')), false, 'the init never ran on the system');
+    assert.deepEqual(await readRecord('nogit-app'),
+      { location: { kind: 'remote', system: remote.id, remoteId: null, path: tree } });
+  });
+
   // ── SITE 6: createWorktree's parent directory ────────────────────────
 
   // PINS: a remote project's worktree DIRECTORY is created ON THE SYSTEM —
