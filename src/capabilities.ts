@@ -32,6 +32,6 @@ export function requireCapability(caps: PlatformCapabilities, cap: keyof Platfor
 }
 
 // A placement on a non-local system while this host cannot run remote Systems.
-export function remotePlacementRefused(caps: PlatformCapabilities | undefined, system: unknown): boolean {
-  return !!caps && !caps.remoteSystems && system !== undefined && system !== null && system !== '' && system !== LOCAL_SYSTEM_ID;
+export function remotePlacementRefused(caps: PlatformCapabilities, system: unknown): boolean {
+  return !caps.remoteSystems && system !== undefined && system !== null && system !== '' && system !== LOCAL_SYSTEM_ID;
 }

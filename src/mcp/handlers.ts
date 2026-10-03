@@ -29,7 +29,7 @@ import {
 } from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import { capabilityRefusal, capabilitySoftRefusal, remotePlacementRefused } from '../capabilities.ts';
-import type { PlatformCapabilities } from '../platform/platform.ts';
+import { hostPlatform, type PlatformCapabilities } from '../platform/index.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree, requireWorktree, unknownWorktreeMessage,
@@ -2146,7 +2146,7 @@ export async function setProjectRemote(
 // can make.
 export async function createProject({ name, conventions = [], system, remoteId, systemPath }: {
   name: string; conventions?: string[]; system?: unknown; remoteId?: unknown; systemPath?: unknown;
-}, { capabilities }: { capabilities?: PlatformCapabilities } = {}) {
+}, { capabilities = hostPlatform.capabilities }: { capabilities?: PlatformCapabilities } = {}) {
   if (remotePlacementRefused(capabilities, system)) throw capabilityRefusal('remoteSystems');
   const { text: conventionsDoc, degraded } = await composeProjectConventionsDocWithMeta(conventions, {
     system: placementDisclosure(system, systemPath),
@@ -2181,7 +2181,7 @@ export async function createProject({ name, conventions = [], system, remoteId, 
 
 export async function adoptProject({ name, path: targetPath, system, remoteId, onStaleRecord }: {
   name: string; path: string; system?: string; remoteId?: string; onStaleRecord?: string;
-}, { capabilities }: { capabilities?: PlatformCapabilities } = {}) {
+}, { capabilities = hostPlatform.capabilities }: { capabilities?: PlatformCapabilities } = {}) {
   if (remotePlacementRefused(capabilities, system)) return capabilitySoftRefusal('remoteSystems');
   return fsAdoptProject(name, targetPath, { system, remoteId, onStaleRecord });
 }

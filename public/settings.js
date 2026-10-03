@@ -234,6 +234,7 @@ export function installSettings({
     loadModels();
     loadDebugDefaultPref();
     loadCapabilities().then((caps) => {
+      if (!caps) return; // unknown: groups stay as marked up; the next open retries
       applyCapabilities(caps);
       if (caps.voice) { load(); loadTts(); }
       if (caps.remoteSystems) loadSystems();

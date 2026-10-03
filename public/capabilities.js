@@ -1,8 +1,7 @@
 // The host platform's feature flags, read once from GET /api/health. A feature
 // the platform lacks is hidden rather than offered and then refused.
-// `capabilities()` is null until `loadCapabilities()` resolves.
-
-const ALL_OFF = { remoteSystems: false, fuseUnion: false, voice: false };
+// `capabilities()` is null until a load succeeds. A failed load is not
+// remembered: `loadCapabilities()` resolves null and the next call retries.
 
 let loaded = null;
 let pending = null;
@@ -12,10 +11,12 @@ export function loadCapabilities() {
     try {
       const r = await fetch('/api/health', { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      loaded = (await r.json()).capabilities ?? ALL_OFF;
+      loaded = (await r.json()).capabilities;
+      if (!loaded) throw new Error('no capabilities in the response');
     } catch (e) {
-      console.warn('capabilities: could not read /api/health — platform features stay hidden:', e);
-      loaded = ALL_OFF;
+      console.warn('capabilities: could not read /api/health, will retry on next use:', e);
+      pending = null;
+      return null;
     }
     return loaded;
   })();

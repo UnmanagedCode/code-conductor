@@ -26,7 +26,7 @@ async function walk(dir) {
 // is NOT exempt.
 const ALLOWED = [
   'src/systems/referenceProvider.ts', // never imported by src/; runs as a provider process
-  'src/systems/providerSystem.ts',    // built only for a registered non-local row (none can be added with remoteSystems off) or the CC_LOCAL_SYSTEM_PROVIDER test seam
+  'src/systems/providerSystem.ts',    // built for a registered non-local row (none can be added through the API with remoteSystems off; a settings.json copied from another host can still carry one, whose provider is then run by read paths) or the CC_LOCAL_SYSTEM_PROVIDER test seam
   'src/systems/fuse/',                // imported, but run only for a remote session (refused FUSE_UNAVAILABLE with fuseUnion off) or the boot sweep (skipped with it off)
   'src/tts.ts',                       // run only behind routes refused VOICE_UNAVAILABLE with voice off
   'src/transcribe.ts',                // run only behind routes refused VOICE_UNAVAILABLE with voice off

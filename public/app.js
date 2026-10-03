@@ -512,12 +512,17 @@ function setMicAvailable(available) {
 }
 // Voice is probed only where the platform has it; until the capabilities load
 // (one local round trip) an empty composer shows Send rather than the mic.
-loadCapabilities().then((caps) => {
-  if (!caps.voice) return;
-  setMicAvailable(false);
-  probeMicAvailability(setMicAvailable);
-  probeTtsStatus();
-});
+const VOICE_PROBE_RETRY_MS = 5000;
+function probeVoice() {
+  loadCapabilities().then((caps) => {
+    if (!caps) { setTimeout(probeVoice, VOICE_PROBE_RETRY_MS); return; }
+    if (!caps.voice) return;
+    setMicAvailable(false);
+    probeMicAvailability(setMicAvailable);
+    probeTtsStatus();
+  });
+}
+probeVoice();
 
 // Settings page (full-page view at #settings). The burger-menu button routes
 // here; closing restores the previously-active session anchor.

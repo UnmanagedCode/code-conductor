@@ -149,8 +149,10 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     if (!dom.npSystem) return;
     dom.npSystem.innerHTML = '';
     // A platform without remote Systems offers only this machine: no picker,
-    // no path or remote rows, no registry fetch.
-    if (!(await loadCapabilities()).remoteSystems) {
+    // no path or remote rows, no registry fetch. (Unknown flags, after a failed
+    // load, leave the picker as it is; the next open retries.)
+    const caps = await loadCapabilities();
+    if (caps && !caps.remoteSystems) {
       const row = dom.npSystem.closest('label');
       if (row) row.hidden = true;
       syncSystemPathRow();
