@@ -32,13 +32,13 @@ test('splitCommand parity with resolveClaudeBin / resolveBackendLaunch', () => {
   const prev = process.env.CLAUDE_BIN;
   try {
     process.env.CLAUDE_BIN = '  node   /x/fake.mjs ';
-    assert.deepEqual(resolveClaudeBin(), { command: 'node', prefixArgs: ['/x/fake.mjs'] });
+    assert.deepEqual(resolveClaudeBin(posixPlatform), { command: 'node', prefixArgs: ['/x/fake.mjs'] });
     process.env.CLAUDE_BIN = '';
-    assert.deepEqual(resolveClaudeBin(), { command: 'claude', prefixArgs: [] });
+    assert.deepEqual(resolveClaudeBin(posixPlatform), { command: 'claude', prefixArgs: [] });
   } finally {
     if (prev === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = prev;
   }
-  const r = resolveBackendLaunch({ id: 'x', template: 'ollama launch  claude --model={model} --', env: [] }, 'm1', { command: 'claude', prefixArgs: [] });
+  const r = resolveBackendLaunch({ id: 'x', template: 'ollama launch  claude --model={model} --', env: [] }, 'm1', { command: 'claude', prefixArgs: [] }, posixPlatform);
   assert.equal(r.command, 'ollama');
   assert.deepEqual(r.prefixArgs, ['launch', 'claude', '--model=m1', '--']);
 });

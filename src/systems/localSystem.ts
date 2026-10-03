@@ -47,7 +47,8 @@ function errCode(e: unknown): string | undefined {
 let atomicWriteSeq = 0;
 
 // Windows refuses a rename onto a file another process (a scanner, an indexer)
-// has open, and the hold is brief: retry a few times before giving up.
+// has open, and the hold is brief: retry a few times before giving up. It runs on
+// every host, so a permanent refusal surfaces only after the full backoff.
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const RENAME_ATTEMPTS = 5;
 async function renameWithRetry(from: string, to: string): Promise<void> {

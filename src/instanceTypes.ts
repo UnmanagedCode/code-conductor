@@ -169,8 +169,9 @@ export interface InstanceLike {
   // defers the armed wake while `rotationPending`, and the two mechanisms refuse
   // to interleave on it. See src/instances.ts for the comesUpIdle contract.
   readonly rotationPending: boolean;
-  // Set by Instance.kill(): the process is being torn down on command.
-  readonly _killing: boolean;
+  // Set when a commanded stop interrupted a busy turn: that turn's turn_end is
+  // not a turn finishing.
+  readonly _stopInterruptedTurn: boolean;
   readonly rotationInFlight: 'renew' | 'prune' | null;
   // Wider than rotationPending: covers the reseed window the rotation flag
   // deliberately leaves open. Any destructive rewrite must check the union.
@@ -263,8 +264,6 @@ export interface InstanceLike {
 }
 
 export interface InstanceManagerLike {
-  // Platform.softSigterm of the host this manager runs on.
-  readonly softSigterm: boolean;
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
   // Both session lookups return null (not undefined) on a miss — the impl's

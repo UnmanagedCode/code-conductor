@@ -317,9 +317,12 @@ function answersTo(i: Instance, id: string): boolean {
 // intentional follow-up prompts that come in very quickly after an abort.
 const POST_ABORT_DRAIN_WINDOW_MS = 3000;
 
-// How long a host without a soft SIGTERM (`Platform.softSigterm` false) waits
-// for the CLI to exit on its own after an interrupt + stdin EOF before a tree
-// kill. A clean exit from a busy turn takes ~4.4 s on Windows; the rest is margin.
+// How long a stop on a host without a soft SIGTERM (`Platform.softSigterm` false)
+// waits, after the interrupt and stdin EOF, for the CLI to exit on its own before
+// a tree kill. It must exceed that exit time for a busy turn. To re-measure, on
+// such a host kill an instance mid-turn (`Instance.kill`) and time from the
+// interrupt write to the process `exit`; raise the constant if the measured time
+// comes near it.
 export const CLEAN_STOP_GRACE_MS = 5000;
 // Safety cap: max spurious turns killed per window. Guards against a
 // misbehaving subprocess that emits system/init in a tight loop.
@@ -784,6 +787,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   _drainListener: ((ev: UiEvent) => void) | null;
   _suppressTempDelete: boolean;
   _killing: boolean;
+  // Set when a commanded stop interrupted a busy turn: that turn's turn_end is
+  // not a turn finishing. Reset on every spawn().
+  _stopInterruptedTurn: boolean;
   autoStoppedForOverage: boolean;
   autoResumeAt: number | null;
   _overageResetsAt: number | null;
@@ -1061,6 +1067,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // through kill()) from a spontaneous crash, and not mislabel the former
     // as a substitution-backend launch failure. Reset to false on every spawn().
     this._killing = false;
+    this._stopInterruptedTurn = false;
     // Auto-stop / auto-resume on overage state. `autoStoppedForOverage` is
     // set true when an `onOverage: 'stop-resume'` overage event soft-interrupts
     // the turn; the manager arms a per-session resume timer on the next idle
@@ -2209,6 +2216,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A reused instance object (respawn) may carry _killing from its prior
     // teardown — clear it so this fresh launch's exit is judged on its own.
     this._killing = false;
+    this._stopInterruptedTurn = false;
     // Same for the stderr a launch's exit cause is cut from, and the cause itself.
     this._stderr = '';
     this.lastExit = null;
@@ -3880,6 +3888,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._drainListener) { this.off('event', this._drainListener); this._drainListener = null; }
   }
 
+  // A stop where SIGTERM is not soft must not cut a busy turn off: interrupt it so
+  // the CLI records the interrupted turn. Callers end stdin next; the pipe orders
+  // the two writes. That turn's turn_end is not a turn finishing — see _stopInterruptedTurn.
+  interruptTurnForStop(): void {
+    if (this.status !== 'turn') return;
+    this._stopInterruptedTurn = true;
+    this._controlRequest({ subtype: 'interrupt' }, { timeout: CLEAN_STOP_GRACE_MS }).catch(() => {});
+  }
+
   async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
     if (!this.proc) {
       // A SESSION CAN HOLD A PREPARED FuseSession WITH NO PROCESS. launch()
@@ -3897,8 +3914,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (!this._platform.softSigterm) {
       // A hard signal here would orphan the CLI's children and lose the
       // in-flight message: interrupt a busy turn, then let EOF end the process.
-      // The pipe orders the two writes; the signal ladder is only a backstop.
-      if (this.status === 'turn') this._controlRequest({ subtype: 'interrupt' }, { timeout: CLEAN_STOP_GRACE_MS }).catch(() => {});
+      // The signal ladder is only a backstop.
+      this.interruptTurnForStop();
       graceMs = Math.max(graceMs, CLEAN_STOP_GRACE_MS);
     }
     try { this.proc.stdin?.end(); } catch { /* ignore */ }
@@ -4328,6 +4345,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   byId: Map<string, Instance>;
   _claudeLauncher: LauncherLike;
   _platform: Platform;
+  // How the synchronous stops (shutdownForResumeSync, stopLiveSync) treat live CLIs.
+  _syncStop: { graceMs: number; killSurvivors: boolean };
   _resuming: Map<string, Promise<Instance>>;
   // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
   // whatever string the caller passed, and normalizing it to the public id means an
@@ -4362,6 +4381,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
     super();
     this._platform = platform;
+    // Where SIGTERM is soft a CLI's children exit on EOF once cc is gone, so
+    // survivors are left alone; where it is not, they are tree-killed at the deadline.
+    this._syncStop = platform.softSigterm
+      ? { graceMs: 2000, killSurvivors: false }
+      : { graceMs: CLEAN_STOP_GRACE_MS, killSurvivors: true };
     this.byId = new Map<string, Instance>();
     // Injected launcher, passed to every Instance so it spawns through the
     // seam rather than child_process.spawn directly. Production default is the
@@ -4431,7 +4455,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Live backing maps exposed for the subsystems' callers (tests reach for
   // `_idleSubscribers.clear()` / `_autoResumeTimers.has()/.size` directly, and
   // the maps must be the same objects the collaborators mutate).
-  get softSigterm(): boolean { return this._platform.softSigterm; }
   get _idleSubscribers() { return this._idleHub.subscribers; }
   get _autoResumeTimers() { return this._overageResume.timers; }
 
@@ -4497,7 +4520,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
   // reorder those registrations without revisiting this method.
   shouldSuppressTurnNotification(instanceId: string): boolean {
-    if (!this._platform.softSigterm && this.byId.get(instanceId)?._killing) return true;  // an interrupted turn of a commanded teardown
+    if (this.byId.get(instanceId)?._stopInterruptedTurn) return true;  // a turn a commanded stop interrupted
     if (this._idleHub.isCaller(instanceId)) return true;   // Condition 1
     if (this._idleHub.wasConsumed(instanceId)) return true; // Condition 2
     return false;
@@ -6392,32 +6415,34 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // FUSE wrap, and this path CANNOT run the mount teardown — it is async and
     // process.exit follows immediately. sweepFuseSessions() at the next boot is
     // what unmounts and reaps the daemon.
-    this._stopAllSync(live, this._platform.softSigterm ? 2000 : CLEAN_STOP_GRACE_MS, !this._platform.softSigterm);
+    this._stopAllSync(live, this._syncStop);
   }
 
-  // Plain-restart counterpart for hosts without a soft SIGTERM: the CLI's
-  // children (bash, conhost) do not die with it, and `scheduleRestart` exits
-  // right after. EOF every live non-temp instance, wait, then tree-kill any
-  // survivor. A no-op where SIGTERM is soft: the children exit on EOF once cc
-  // is gone. (Temps are handled by shutdownTempSync.)
+  // Plain-restart counterpart for a sync-stop policy that kills survivors: the
+  // CLI's children (bash, conhost) do not die with it, and `scheduleRestart`
+  // exits right after. Interrupt every busy turn and EOF every live non-temp
+  // instance, wait, then tree-kill any survivor. A no-op under a policy that
+  // leaves survivors: the children exit on EOF once cc is gone. (Temps are
+  // handled by shutdownTempSync.)
   stopLiveSync(): void {
-    if (this._platform.softSigterm) return;
+    if (!this._syncStop.killSurvivors) return;
     const live: Instance[] = [];
     for (const inst of this.byId.values()) {
       if (!inst.proc || inst.temp) continue;
       live.push(inst);
+      inst.interruptTurnForStop();
       try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
-    this._stopAllSync(live, CLEAN_STOP_GRACE_MS, true);
+    this._stopAllSync(live, this._syncStop);
   }
 
   // Bounded sync wait for every instance's process to exit (they were already
-  // sent EOF), polled together so the worst case is `deadlineMs` in total, then
+  // sent EOF), polled together so the worst case is `graceMs` in total, then
   // optionally a SIGKILL — a tree kill where the platform has no soft signal —
   // for any pid still alive. Atomics.wait is Node's only non-spinning sync sleep.
-  private _stopAllSync(live: Instance[], deadlineMs: number, killSurvivors: boolean): void {
+  private _stopAllSync(live: Instance[], { graceMs, killSurvivors }: { graceMs: number; killSurvivors: boolean }): void {
     const sab = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + deadlineMs;
+    const deadline = Date.now() + graceMs;
     const survivors = (): number[] => {
       const out: number[] = [];
       for (const inst of live) {

@@ -95,7 +95,7 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
 
     canonicalPath(p) {
       try { return d.realpathNative(p); } catch { /* a junction native cannot open */ }
-      try { return d.realpathNative(d.realpathJs(p)); } catch { return p; }
+      try { return d.realpathNative(d.realpathJs(p)); } catch { return null; }
     },
 
     // Git for Windows' /etc/profile defaults MSYS2_PATH_TYPE to `inherit`

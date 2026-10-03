@@ -15,6 +15,7 @@ import type { ProjectLocation } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { SystemError } from './protocol.ts';
 import { LocalSystem, LOCAL_SYSTEM_ID } from './localSystem.ts';
+import { hostPlatform } from '../platform/index.ts';
 import { ProviderSystem } from './providerSystem.ts';
 import type { Handshake } from './providerConnection.ts';
 import type { System } from './system.ts';
@@ -109,7 +110,7 @@ function buildLocalSystem(): System {
   const spec = process.env[LOCAL_PROVIDER_ENV];
   // THIS RETURN IS THE GUARD, and its position is the whole of it: the real
   // in-process system leaves before LOCAL_REMOTE_ENV is ever looked at.
-  if (!spec?.trim()) return new LocalSystem();
+  if (!spec?.trim()) return new LocalSystem(hostPlatform);  // process-wide, so host-bound
   const remoteId = process.env[LOCAL_REMOTE_ENV]?.trim() || null;
   return new ProviderSystem({ id: LOCAL_SYSTEM_ID, remoteId, launch: { argv: parseProviderLaunch(spec) } });
 }

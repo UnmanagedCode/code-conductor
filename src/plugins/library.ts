@@ -171,9 +171,9 @@ interface GitCommandResult {
   stderr: string;
 }
 
-type CloneImpl = (url: CloneUrl, destDir: string, opts?: { onChunk?: (s: string) => void; platform?: Platform }) => Promise<GitCommandResult>;
-type PullImpl = (cwd: string, opts?: { onChunk?: (s: string) => void; platform?: Platform }) => Promise<GitCommandResult>;
-type RunHookImpl = (command: string, cwd: string, opts?: { timeoutMs?: number; onChunk?: (s: string) => void; platform?: Platform }) => Promise<{ code: number; output: string }>;
+type CloneImpl = (url: CloneUrl, destDir: string, opts: { onChunk?: (s: string) => void; platform: Platform }) => Promise<GitCommandResult>;
+type PullImpl = (cwd: string, opts: { onChunk?: (s: string) => void; platform: Platform }) => Promise<GitCommandResult>;
+type RunHookImpl = (command: string, cwd: string, opts: { timeoutMs?: number; onChunk?: (s: string) => void; platform: Platform }) => Promise<{ code: number; output: string }>;
 
 // update()'s restart outcome: either an attempt (ids restarted, ok/error) or
 // a deliberate skip — 'postPull-failed' means a broken postPull left the
@@ -377,12 +377,12 @@ function projectNameFor(entry: CatalogEntry): { cloneUrl: CloneUrl; name: string
 // `--no-local` is what stops a path clone hardlinking a directory mirror's
 // object files into the install; it applies to every URL and is ignored for a
 // remote one.
-function cloneRepo(url: CloneUrl, destDir: string, { onChunk, platform }: { onChunk?: (s: string) => void; platform?: Platform } = {}): Promise<GitCommandResult> {
+function cloneRepo(url: CloneUrl, destDir: string, { onChunk, platform }: { onChunk?: (s: string) => void; platform: Platform }): Promise<GitCommandResult> {
   const source = new URL(url).protocol === 'file:' ? fileURLToPath(url) : url;
   return runGitLive(['clone', '--no-local', '--', source, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk, platform });
 }
 
-function pullRepo(cwd: string, { onChunk, platform }: { onChunk?: (s: string) => void; platform?: Platform } = {}): Promise<GitCommandResult> {
+function pullRepo(cwd: string, { onChunk, platform }: { onChunk?: (s: string) => void; platform: Platform }): Promise<GitCommandResult> {
   return runGitLive(['pull', '--ff-only'], cwd, { timeoutMs: CLONE_TIMEOUT_MS, onChunk, platform });
 }
 
@@ -392,7 +392,7 @@ function pullRepo(cwd: string, { onChunk, platform }: { onChunk?: (s: string) =>
 // kill on timeout rather than execFile's built-in timeout, since a command like
 // `npm install` or a browser-binary downloader can spawn grandchildren that a
 // plain kill of the direct child would orphan. Never rejects.
-function runHookCommand(command: string, cwd: string, { timeoutMs = POST_HOOK_TIMEOUT_MS, onChunk, platform }: { timeoutMs?: number; onChunk?: (s: string) => void; platform?: Platform } = {}): Promise<{ code: number; output: string }> {
+function runHookCommand(command: string, cwd: string, { timeoutMs = POST_HOOK_TIMEOUT_MS, onChunk, platform }: { timeoutMs?: number; onChunk?: (s: string) => void; platform: Platform }): Promise<{ code: number; output: string }> {
   return runGroupedCommand({ shell: command }, {
     cwd, env: process.env, timeoutMs, cap: GROUP_OUTPUT_CAP, onChunk,
   }, platform).then(r => ({ code: r.code, output: r.output.trimEnd() }));

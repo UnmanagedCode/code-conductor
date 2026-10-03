@@ -14,6 +14,6 @@ export function selectPlatform(os: NodeJS.Platform): Platform {
 
 export const hostPlatform: Platform = selectPlatform(process.platform);
 
-export function samePath(a: string, b: string, platform: Platform = hostPlatform): boolean {
-  return platform.pathKey(a) === platform.pathKey(b);
+export function samePath(a: string, b: string): boolean {
+  return hostPlatform.pathKey(a) === hostPlatform.pathKey(b);
 }

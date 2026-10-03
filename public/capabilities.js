@@ -26,9 +26,3 @@ export function loadCapabilities() {
 export function capabilities() {
   return loaded;
 }
-
-// Test hook: forget the memoized load so a test can supply its own fetch.
-export function resetCapabilities() {
-  loaded = null;
-  pending = null;
-}

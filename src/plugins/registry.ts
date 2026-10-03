@@ -672,6 +672,7 @@ export function createPluginHost(opts: {
       record: id ? store.runtimeRecord(id) ?? null : null,
       activeVersion,
       cwd,
+      platform,
     });
   }
 

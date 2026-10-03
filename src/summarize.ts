@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { cliEnvBase } from './cliEnv.ts';
 import { sessionFilePath, orchStoreRoot, findSessionLocation, type TranscriptPlacement } from './projects.ts'; // sessionFilePath used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import { hostPlatform, type Platform } from './platform/index.ts';
+import { hostPlatform } from './platform/index.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
@@ -214,7 +214,7 @@ async function projectNameHint(sessionId: string): Promise<string | null> {
 
 // Generate a summary (or title) of a session by running `claude -p` as a
 // one-shot subprocess. Returns { summary, messageCount, durationMs, costUsd }.
-export async function generateSummary(sessionId: string, place: TranscriptPlacement, length: SummaryLength = 'medium', { platform = hostPlatform }: { platform?: Platform } = {}): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
+export async function generateSummary(sessionId: string, place: TranscriptPlacement, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
   if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
     throw httpError(400, `invalid length: ${length}`);
   }
@@ -232,7 +232,7 @@ export async function generateSummary(sessionId: string, place: TranscriptPlacem
   // already falls through the `?? null` below.
   const fastBackend = getTierBackend('fast');
   const { command, prefixArgs, env: backendEnvVars } =
-    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, resolveClaudeBin(platform), platform);
+    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, resolveClaudeBin(hostPlatform), hostPlatform);
   // Throwaway session-id so each generation is independent (no accidental
   // resume of a prior one-shot call).
   const scratchId = randomUUID();
@@ -254,9 +254,9 @@ export async function generateSummary(sessionId: string, place: TranscriptPlacem
 
   const parsed = await new Promise<SummaryOutput>((resolve, reject) => {
     const child = spawn(command, args, {
-      ...platform.spawnOptions('child'),
+      ...hostPlatform.spawnOptions('child'),
       cwd: spawnDir,
-      env: { ...cliEnvBase(platform), ...backendEnvVars },
+      env: { ...cliEnvBase(hostPlatform), ...backendEnvVars },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -266,7 +266,7 @@ export async function generateSummary(sessionId: string, place: TranscriptPlacem
     child.stderr.on('data', chunk => stderrChunks.push(chunk));
 
     const timer = setTimeout(() => {
-      platform.killProcess(child, 'SIGTERM');
+      hostPlatform.killProcess(child, 'SIGTERM');
       reject(new Error(`summary generation timed out after ${GENERATION_TIMEOUT_MS / 1000}s`));
     }, GENERATION_TIMEOUT_MS);
 

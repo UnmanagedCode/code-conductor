@@ -23,8 +23,9 @@ export interface Platform {
   // Variables the claude CLI needs on this host, merged UNDER the caller's env.
   cliEnv(): Record<string, string>;
   // The spelling the claude CLI's `getcwd()` reports for an existing directory
-  // (it names its transcript dir after that spelling).
-  canonicalPath(p: string): string;
+  // (it names its transcript dir after that spelling); null when p cannot be
+  // resolved (it does not exist yet).
+  canonicalPath(p: string): string | null;
   // `{shell}` → the login shell running the string; `{argv}` → executable + args.
   commandFor(spec: ExecSpec): { command: string; args: string[] };
   // Base spawn options; spread FIRST so a call site's own options win.

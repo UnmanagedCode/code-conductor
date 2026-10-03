@@ -23,6 +23,7 @@ import {
   MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
 } from '../src/modelVersions.ts';
 import { resolveBackendLaunch, backendEnv, resolveClaudeBin } from '../src/claudeLauncher.ts';
+import { posixPlatform } from '../src/platform/index.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import { getSessionBackend, setSessionBackend, sessionsFile } from '../src/sessionStore.ts';
 
@@ -71,7 +72,7 @@ describe('resolveClaudeBin (CLAUDE_BIN → {command, prefixArgs})', () => {
   test('unset, empty and whitespace-only all resolve to the stock claude', () => {
     for (const v of [undefined, '', '   ']) {
       withBin(v, () => {
-        assert.deepEqual(resolveClaudeBin(), { command: 'claude', prefixArgs: [] },
+        assert.deepEqual(resolveClaudeBin(posixPlatform), { command: 'claude', prefixArgs: [] },
           `CLAUDE_BIN=${JSON.stringify(v)} must resolve to the stock claude`);
       });
     }
@@ -82,7 +83,7 @@ describe('resolveClaudeBin (CLAUDE_BIN → {command, prefixArgs})', () => {
   // launches through.
   test('the two-token test-injection spelling still splits into command + prefixArgs', () => {
     withBin('node /x/fake.mjs', () => {
-      assert.deepEqual(resolveClaudeBin(), { command: 'node', prefixArgs: ['/x/fake.mjs'] });
+      assert.deepEqual(resolveClaudeBin(posixPlatform), { command: 'node', prefixArgs: ['/x/fake.mjs'] });
     });
   });
 });
@@ -91,11 +92,11 @@ describe('resolveClaudeBin (CLAUDE_BIN → {command, prefixArgs})', () => {
 describe('resolveBackendLaunch (template-driven launch resolution)', () => {
   test('a blank template runs the resolved claude binary unchanged', () => {
     const claudeBin = { command: '/usr/bin/claude', prefixArgs: ['--extra'] };
-    const r = resolveBackendLaunch({ id: 'claude', template: '' }, 'claude-opus-4-7', claudeBin);
+    const r = resolveBackendLaunch({ id: 'claude', template: '' }, 'claude-opus-4-7', claudeBin, posixPlatform);
     assert.equal(r.command, '/usr/bin/claude');
     assert.deepEqual(r.prefixArgs, ['--extra']);
     // An absent template behaves identically (defensive: a hand-edited store).
-    const r2 = resolveBackendLaunch({ id: 'claude' }, 'claude-opus-4-7', claudeBin);
+    const r2 = resolveBackendLaunch({ id: 'claude' }, 'claude-opus-4-7', claudeBin, posixPlatform);
     assert.equal(r2.command, '/usr/bin/claude');
     assert.deepEqual(r2.prefixArgs, ['--extra']);
   });
@@ -103,7 +104,7 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
   test('a template becomes command + prefixArgs with {model} substituted', () => {
     const r = resolveBackendLaunch(
       { id: 'ollama', template: 'ollama launch claude --model {model} --yes --' },
-      'deepseek-v4-flash:cloud', CLAUDE_BIN,
+      'deepseek-v4-flash:cloud', CLAUDE_BIN, posixPlatform,
     );
     assert.equal(r.command, 'ollama');
     assert.deepEqual(r.prefixArgs, ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--']);
@@ -111,7 +112,7 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
 
   test('{model} substitutes INSIDE a token, so --model={model} works too', () => {
     const r = resolveBackendLaunch(
-      { id: 'p', template: 'wrap --model={model} --' }, 'glm-5.2:cloud', CLAUDE_BIN,
+      { id: 'p', template: 'wrap --model={model} --' }, 'glm-5.2:cloud', CLAUDE_BIN, posixPlatform,
     );
     assert.equal(r.command, 'wrap');
     assert.deepEqual(r.prefixArgs, ['--model=glm-5.2:cloud', '--']);
@@ -121,7 +122,7 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
   // claude args (including `--model`) untouched. It still REQUIRES a model, though:
   // see the next test.
   test('a template with NO {model} tokenizes normally', () => {
-    const r = resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, 'mine:v1', CLAUDE_BIN);
+    const r = resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, 'mine:v1', CLAUDE_BIN, posixPlatform);
     assert.equal(r.command, 'wrap');
     assert.deepEqual(r.prefixArgs, ['exec', 'claude', '--']);
   });
@@ -132,23 +133,23 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
   // never legal — including for a template that omits `{model}`.
   test('a substitution launch refuses without a model, whatever the template shape', () => {
     assert.throws(
-      () => resolveBackendLaunch({ id: 'ollama', template: 'ollama launch claude --model {model} --' }, null, CLAUDE_BIN),
+      () => resolveBackendLaunch({ id: 'ollama', template: 'ollama launch claude --model {model} --' }, null, CLAUDE_BIN, posixPlatform),
       /requires a model/,
     );
     assert.throws(
-      () => resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, null, CLAUDE_BIN),
+      () => resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, null, CLAUDE_BIN, posixPlatform),
       /requires a model/,
     );
     // The identity backend is exempt — a bare `claude` with no model is the
     // account-default spawn.
-    assert.doesNotThrow(() => resolveBackendLaunch({ id: 'claude', template: '' }, null, CLAUDE_BIN));
+    assert.doesNotThrow(() => resolveBackendLaunch({ id: 'claude', template: '' }, null, CLAUDE_BIN, posixPlatform));
   });
 
   test('the backend\'s env rides along on every resolution', () => {
     const backend = { id: 'p', template: 'wrap --', env: [{ key: 'OLLAMA_HOST', value: 'http://x:1' }, { key: 'A', value: '' }] };
-    assert.deepEqual(resolveBackendLaunch(backend, 'm', CLAUDE_BIN).env, { OLLAMA_HOST: 'http://x:1', A: '' });
+    assert.deepEqual(resolveBackendLaunch(backend, 'm', CLAUDE_BIN, posixPlatform).env, { OLLAMA_HOST: 'http://x:1', A: '' });
     // Also on the identity path, and {} when there is no env at all.
-    assert.deepEqual(resolveBackendLaunch({ id: 'claude', template: '' }, 'm', CLAUDE_BIN).env, {});
+    assert.deepEqual(resolveBackendLaunch({ id: 'claude', template: '' }, 'm', CLAUDE_BIN, posixPlatform).env, {});
     assert.deepEqual(backendEnv(undefined), {});
     assert.deepEqual(backendEnv({ env: [{ key: '', value: 'x' }] }), {}); // blank key dropped
   });
@@ -166,7 +167,7 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
         { key: '{model}', value: 'no' }, // key is NOT templated
       ],
     };
-    assert.deepEqual(resolveBackendLaunch(backend, 'glm-5.2:cloud', CLAUDE_BIN).env, {
+    assert.deepEqual(resolveBackendLaunch(backend, 'glm-5.2:cloud', CLAUDE_BIN, posixPlatform).env, {
       '{model}': 'no',
       SOME_MODEL_ID: 'glm-5.2:cloud',
       KEEP: 'x-glm-5.2:cloud-y',
@@ -192,9 +193,9 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
   // (empty env), so this is defensive; it pins the no-model no-substitution rule.
   test('a blank template leaves env unsubstituted when no model is given', () => {
     const backend = { id: 'x', template: '', env: [{ key: 'M', value: '{model}' }] };
-    assert.deepEqual(resolveBackendLaunch(backend, null, CLAUDE_BIN).env, { M: '{model}' });
+    assert.deepEqual(resolveBackendLaunch(backend, null, CLAUDE_BIN, posixPlatform).env, { M: '{model}' });
     // With a model, the blank-template path still substitutes (single point).
-    assert.deepEqual(resolveBackendLaunch(backend, 'glm-5.2:cloud', CLAUDE_BIN).env, { M: 'glm-5.2:cloud' });
+    assert.deepEqual(resolveBackendLaunch(backend, 'glm-5.2:cloud', CLAUDE_BIN, posixPlatform).env, { M: 'glm-5.2:cloud' });
   });
 });
 
@@ -250,7 +251,7 @@ describe('backend registry data model', () => {
 
   test('the MANAGED claude row keeps its blank template — identity comes from code', async () => {
     assert.equal(getBackend('claude').template, '');
-    assert.equal(resolveBackendLaunch(getBackend('claude'), 'm', CLAUDE_BIN).command, CLAUDE_BIN.command);
+    assert.equal(resolveBackendLaunch(getBackend('claude'), 'm', CLAUDE_BIN, posixPlatform).command, CLAUDE_BIN.command);
     // Env is read-only on a managed row (code-authoritative, empty) — editing it is
     // rejected, and the row never falls through to the user-row template requirement.
     await assert.rejects(() => updateBackend('claude', { env: [{ key: 'ANTHROPIC_LOG', value: 'debug' }] }), /built in/);
@@ -302,7 +303,7 @@ describe('backend registry data model', () => {
     // Managed rows: env is empty from code, NOT the seeded store override.
     assert.deepEqual(getBackend('ollama').env, []);
     assert.deepEqual(getBackend('claude').env, []);
-    assert.equal(resolveBackendLaunch(getBackend('ollama'), 'glm-5.2:cloud', CLAUDE_BIN).env.OLLAMA_HOST, undefined);
+    assert.equal(resolveBackendLaunch(getBackend('ollama'), 'glm-5.2:cloud', CLAUDE_BIN, posixPlatform).env.OLLAMA_HOST, undefined);
     // A user row alongside is still read from the store.
     assert.equal(isKnownBackend('my-proxy'), true);
     assert.equal(getBackend('my-proxy').template, 'proxy {model} --');

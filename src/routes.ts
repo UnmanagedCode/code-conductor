@@ -199,6 +199,14 @@ function errMessage(e: unknown): string {
   return 'internal error';
 }
 
+// A thrown error's `code` reaches the body only on a deliberate refusal — one that
+// carries a `statusCode` (httpError, systemRefusal); a raw fs/OS errno stays internal.
+export function errorBody(err: unknown): { error: string; code?: string } {
+  const e = err as { statusCode?: unknown; code?: unknown } | null;
+  const code = e && typeof e === 'object' && typeof e.statusCode === 'number' && typeof e.code === 'string' ? e.code : undefined;
+  return { error: errMessage(err), ...(code !== undefined ? { code } : {}) };
+}
+
 // Mounts the four parallel routes shared by the Settings → Transcribe and
 // Settings → TTS groups: GET the catalog state, POST to switch the active item
 // (allow-list + on-disk gate), POST to start an install, GET install status.
@@ -2393,8 +2401,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
 
   r.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = (err as { statusCode?: number } | null)?.statusCode ?? 500;
-    const code = (err as { code?: unknown } | null)?.code;
-    res.status(status).json({ error: errMessage(err), ...(typeof code === 'string' ? { code } : {}) });
+    res.status(status).json(errorBody(err));
   });
 
   return r;

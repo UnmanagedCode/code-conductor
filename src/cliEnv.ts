@@ -1,4 +1,4 @@
-import { hostPlatform, type Platform } from './platform/index.ts';
+import type { Platform } from './platform/index.ts';
 
 // THE BASE ENVIRONMENT EVERY `claude` SUBPROCESS cc STARTS FROM.
 //
@@ -31,7 +31,7 @@ const STRIPPED = [
   'CLAUDE_CODE_PROJECT_DIR_NAME',
 ] as const;
 
-export function cliEnvBase(platform: Platform = hostPlatform): NodeJS.ProcessEnv {
+export function cliEnvBase(platform: Platform): NodeJS.ProcessEnv {
   // The host's own variables go on top, so an explicit operator value wins.
   const env = { ...platform.cliEnv(), ...process.env };
   for (const k of STRIPPED) delete env[k];

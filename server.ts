@@ -28,6 +28,7 @@ import { setPluginConventionsProvider } from './src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
+import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -174,6 +175,7 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 }
 
 export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform }: { port?: number; host?: string; platform?: Platform } = {}) {
+  warnIfNodeUnsupported();
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
@@ -289,7 +291,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // we're listening — never gate port availability on a `claude --version`
   // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting
   // it here delays listen() past test poll deadlines under load.)
-  checkClaudeReadiness()
+  checkClaudeReadiness({ platform })
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
     .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));
   return { server, instances, wss, pluginHost, port: addr.port, host: addr.address };

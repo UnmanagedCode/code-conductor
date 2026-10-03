@@ -14,7 +14,7 @@ async function restartWith(platform) {
   const mgr = new InstanceManager({ platform });
   mgr._usageMonitor.stop();
   let ended = 0;
-  mgr.byId.set('a', { proc: { stdin: { end() { ended++; } } }, pid: process.pid, temp: false, _fuse: null });
+  mgr.byId.set('a', { proc: { stdin: { end() { ended++; } } }, pid: process.pid, temp: false, _fuse: null, interruptTurnForStop() {} });
 
   // The replacement is a real spawn of `node <argv[1]>`: point it at a no-op.
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-restart-'));

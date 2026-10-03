@@ -50,7 +50,7 @@ export interface ClaudeBin {
 // probe, summarize.ts's summary generation, claudeShellEnv.ts's bundle-gen —
 // can depend on just the launch-resolution primitives without pulling in the
 // whole Instance/InstanceManager module.
-export function resolveClaudeBin(platform: Platform = hostPlatform): ClaudeBin {
+export function resolveClaudeBin(platform: Platform): ClaudeBin {
   // CLAUDE_BIN may be "node /path/to/script.mjs" so callers can swap in the
   // fake CLI used by tests; split on whitespace.
   //
@@ -97,7 +97,7 @@ export function resolveBackendLaunch(
   backend: { id?: unknown; template?: unknown; env?: unknown } | null | undefined,
   model: string | null | undefined,
   claudeBin: ClaudeBin,
-  platform: Platform = hostPlatform,
+  platform: Platform,
 ): BackendLaunch {
   const template = typeof backend?.template === 'string' ? backend.template.trim() : '';
   const env = backendEnv(backend, model || null);

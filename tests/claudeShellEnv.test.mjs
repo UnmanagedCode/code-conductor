@@ -16,6 +16,7 @@ import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/cl
 import { orchStoreRoot } from '../src/projects.ts';
 import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.ts';
 import { resolveBackendLaunch } from '../src/claudeLauncher.ts';
+import { posixPlatform } from '../src/platform/index.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const execFileP = promisify(execFile);
@@ -428,7 +429,7 @@ const ot = OLLAMA_ENABLED ? test : test.skip.bind(test);
 ot('real ollama: `ollama launch claude ... --version` forwards claude\'s stdout/exit-code verbatim', async () => {
   const tag = process.env.REAL_OLLAMA_MODEL || 'deepseek-v4-flash:cloud';
   const direct = await execFileP('claude', ['--version']);
-  const { command, prefixArgs } = resolveBackendLaunch(getBackend('ollama'), tag, { command: 'claude', prefixArgs: [] });
+  const { command, prefixArgs } = resolveBackendLaunch(getBackend('ollama'), tag, { command: 'claude', prefixArgs: [] }, posixPlatform);
   const viaOllama = await execFileP(command, [...prefixArgs, '--version']);
   assert.equal(viaOllama.stdout, direct.stdout, 'ollama-launched claude --version must forward stdout verbatim, with no wrapper chatter');
   assert.equal(viaOllama.stderr, direct.stderr);

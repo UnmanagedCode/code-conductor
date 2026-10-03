@@ -69,3 +69,35 @@ test('no `/`-separated .claude / .code-conductor fragment in a literal', () => {
   }
   assert.deepEqual(hits, []);
 });
+
+// A holder (a class or `createX` factory, or createServer/start) defaults its
+// platform to `hostPlatform` once and forwards it to every helper it calls; a
+// helper takes `platform` as a required parameter, so a holder that forgets to
+// forward fails the typecheck. A `hostPlatform` default anywhere else is a helper
+// silently falling back to the host. File → count of defaults it may hold.
+const HOLDERS = {
+  'server.ts': 2,                  // createServer, start
+  'src/instances.ts': 2,           // Instance, InstanceManager
+  'src/claudeLauncher.ts': 1,      // RealClaudeLauncher
+  'src/systems/localSystem.ts': 1, // LocalSystem
+  'src/plugins/registry.ts': 1,    // createPluginHost
+  'src/plugins/supervisor.ts': 1,  // createSupervisor
+  'src/plugins/library.ts': 1,     // createPluginLibrary
+};
+
+test('a `hostPlatform` default appears only on a holder', () => {
+  const counts = {};
+  for (const f of files) {
+    const n = [...sources.get(f).matchAll(/(?<![=!<>])=\s*hostPlatform\b(?!\.)/g)].length;
+    if (n) counts[f] = n;
+  }
+  assert.deepEqual(counts, HOLDERS);
+});
+
+test('nothing assigns to a `hostPlatform` member', async () => {
+  const testFiles = (await fs.readdir(path.join(root, 'tests'))).filter(n => n.endsWith('.mjs')).map(n => `tests/${n}`);
+  const all = new Map(sources);
+  for (const f of testFiles) all.set(f, await fs.readFile(path.join(root, f), 'utf8'));
+  const hits = [...all].filter(([, src]) => /hostPlatform\.\w+\s*=(?!=)/.test(src)).map(([f]) => f);
+  assert.deepEqual(hits, []);
+});

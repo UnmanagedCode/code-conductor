@@ -24,7 +24,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { orchStoreRoot, writeFileAtomic } from './projects.ts';
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import { hostPlatform, type Platform } from './platform/index.ts';
+import { hostPlatform } from './platform/index.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { cliEnvBase } from './cliEnv.ts';
 
@@ -69,11 +69,11 @@ function shQuote(p: string): string {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
-async function getClaudeVersionKey(command: string, prefixArgs: string[], platform: Platform = hostPlatform): Promise<string> {
+async function getClaudeVersionKey(command: string, prefixArgs: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let proc;
     try {
-      proc = spawn(command, [...prefixArgs, '--version'], { ...platform.spawnOptions('child'), stdio: ['ignore', 'pipe', 'pipe'] });
+      proc = spawn(command, [...prefixArgs, '--version'], { ...hostPlatform.spawnOptions('child'), stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
       reject(new Error(`claudeShellEnv: failed to spawn claude --version: ${errMsg(err)}`));
       return;
@@ -82,7 +82,7 @@ async function getClaudeVersionKey(command: string, prefixArgs: string[], platfo
     let settled = false;
     const settle = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
     const timer = setTimeout(() => {
-      try { platform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
+      try { hostPlatform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
       settle(() => reject(new Error('claudeShellEnv: claude --version timed out')));
     }, VERSION_TIMEOUT_MS);
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -101,7 +101,7 @@ async function getClaudeVersionKey(command: string, prefixArgs: string[], platfo
   });
 }
 
-async function generateBundle(key: string, command: string, prefixArgs: string[], platform: Platform = hostPlatform): Promise<string> {
+async function generateBundle(key: string, command: string, prefixArgs: string[]): Promise<string> {
   const dir = shellEnvDir();
   const spawnDir = path.join(dir, 'spawn');
   await fs.mkdir(spawnDir, { recursive: true });
@@ -119,7 +119,7 @@ Then stop — do not summarize the output.`;
   const fastBackend = getTierBackend('fast');
 
   const { command: spawnCommand, prefixArgs: spawnPrefixArgs, env: backendEnvVars } =
-    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, { command, prefixArgs }, platform);
+    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, { command, prefixArgs }, hostPlatform);
 
   const args = [
     ...spawnPrefixArgs,
@@ -134,7 +134,7 @@ Then stop — do not summarize the output.`;
   await new Promise<void>((resolve, reject) => {
     let proc;
     try {
-      proc = spawn(spawnCommand, args, { ...platform.spawnOptions('child'), cwd: spawnDir, env: { ...cliEnvBase(platform), ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
+      proc = spawn(spawnCommand, args, { ...hostPlatform.spawnOptions('child'), cwd: spawnDir, env: { ...cliEnvBase(hostPlatform), ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
       reject(new Error(`claudeShellEnv: failed to spawn claude -p: ${errMsg(err)}`));
       return;
@@ -145,7 +145,7 @@ Then stop — do not summarize the output.`;
 
     const timeoutMs = genTimeoutMs();
     const timer = setTimeout(() => {
-      try { platform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
+      try { hostPlatform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
       reject(new Error(`claudeShellEnv: bundle generation timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
@@ -214,18 +214,18 @@ async function findCachedBundle(key: string): Promise<string | null> {
   return null;
 }
 
-async function resolveFresh(platform: Platform = hostPlatform): Promise<string> {
+async function resolveFresh(): Promise<string> {
   // The cache key is intentionally (claude version, shell) and
   // backend-independent: the captured shims/PATH/aliases come from the
   // `claude` CLI build itself, not from which backend
   // the fast tier happens to be bound to right now.
-  const { command, prefixArgs } = resolveClaudeBin(platform);
-  const key = await getClaudeVersionKey(command, prefixArgs, platform);
+  const { command, prefixArgs } = resolveClaudeBin(hostPlatform);
+  const key = await getClaudeVersionKey(command, prefixArgs);
 
   const cached = await findCachedBundle(key);
   if (cached) return cached;
 
-  return generateBundle(key, command, prefixArgs, platform);
+  return generateBundle(key, command, prefixArgs);
 }
 
 // Process-lifetime memo of the resolved bundle path. Holding the promise
