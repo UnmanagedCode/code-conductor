@@ -41,6 +41,13 @@ export function isHistoryGapNode(node) {
   return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
 }
 
+// Which user-bubble actions an instance in `status` takes — the argument to
+// Conversation.setUserActionsEnabled. The server refuses a rewind during a
+// running turn; a fork works mid-turn.
+export function userActionsForStatus(status) {
+  return { rewind: status === 'idle', fork: status === 'idle' || status === 'turn' };
+}
+
 // The picks a stamped answer locks its card with: none unless the text is
 // canonical, so the card never shows a pick the answer bubble renders raw.
 function answersToLock(questions, text) {
@@ -113,7 +120,8 @@ export class Conversation {
     // counter would anchor rewinds against the wrong jsonl line.
     // Sub-conversations (Agent sub-agents) don't get rewind/fork buttons —
     // those operations only make sense at the outer session level.
-    this._userActionsEnabled = !this.isSub;
+    this._rewindEnabled = !this.isSub;
+    this._forkEnabled = !this.isSub;
     // Resolver-style context passed to describeToolInput so a
     // TaskUpdate tool block (whose input only carries taskId) can
     // surface the task's actual subject + description.
@@ -212,14 +220,14 @@ export class Conversation {
   // frame arrives (the active session was just rewound server-side).
   reset() { this.clear(); }
 
-  // Enables/disables the rewind/fork buttons on every existing user bubble.
-  // Called from app.js when the active instance flips status — during a
-  // running turn the buttons should be inert (a rewind would 409 anyway).
-  setUserActionsEnabled(enabled) {
-    this._userActionsEnabled = !!enabled && !this.isSub;
-    for (const btn of this.root.querySelectorAll('.user-msg-action')) {
-      btn.disabled = !this._userActionsEnabled;
-    }
+  // Enables/disables the rewind and the fork buttons, each on its own, on
+  // every existing user bubble and on those rendered later. Called with
+  // userActionsForStatus(<the active instance's status>) whenever it flips.
+  setUserActionsEnabled({ rewind, fork }) {
+    this._rewindEnabled = !!rewind && !this.isSub;
+    this._forkEnabled = !!fork && !this.isSub;
+    for (const btn of this.root.querySelectorAll('.user-msg-rewind')) btn.disabled = !this._rewindEnabled;
+    for (const btn of this.root.querySelectorAll('.user-msg-fork')) btn.disabled = !this._forkEnabled;
   }
 
   // Shows/hides the per-call usage lines. Called from header.js with the active
@@ -771,7 +779,7 @@ export class Conversation {
           class: 'user-msg-action user-msg-rewind',
           title: 'Rewind to before this message (drops everything after, prefills the composer with this prompt)',
         }, '↶');
-        btn.disabled = !this._userActionsEnabled;
+        btn.disabled = !this._rewindEnabled;
         btn.addEventListener('click', () => this.onRewind && this.onRewind(userIndex, userText));
         actions.appendChild(btn);
       }
@@ -781,7 +789,7 @@ export class Conversation {
           class: 'user-msg-action user-msg-fork',
           title: 'Fork a new session at this point (original session is preserved, composer is prefilled with this prompt)',
         }, '⑂');
-        btn.disabled = !this._userActionsEnabled;
+        btn.disabled = !this._forkEnabled;
         btn.addEventListener('click', () => this.onFork && this.onFork(userIndex, userText));
         actions.appendChild(btn);
       }

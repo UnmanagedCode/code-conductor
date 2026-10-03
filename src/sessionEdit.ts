@@ -10,6 +10,11 @@
 // (Instance._fileOrdinalFor). Every edit also takes the bubble's text and refuses,
 // changing nothing, when the prompt at that index replays to different text.
 //
+// Fork never reads the file itself: its caller hands it one complete-line
+// snapshot (`completeLinesOf` over a single read), and the anchor, the text
+// check and the copy all come from that snapshot — so lines the CLI appends
+// after the read can never reach the copy (Instance.forkAtUserMessage).
+//
 // File rewrites are atomic: write a sibling tmp file, rename over
 // the target. The companion sub-agent directory (sibling to the jsonl,
 // at `<encoded-cwd>/<sid>/`) is left in place — sub-agent runs are
@@ -65,6 +70,17 @@ function extractUserPromptText(obj: PersistedLine | null | undefined): string {
 // is not the one the caller clicked.
 export const PROMPT_MISMATCH = 'prompt text does not match the transcript';
 
+// `code` on the 400 an edit refuses with when the text holds no prompt at the
+// index. A mid-turn fork branches on it: the prompt may not be written yet.
+export const PROMPT_OUT_OF_RANGE = 'PROMPT_OUT_OF_RANGE';
+
+// `text` cut after its last `\n`. Every jsonl writer terminates its lines, so an
+// unterminated tail is a write still in progress; `\n` is ASCII, so the cut
+// never splits a UTF-8 sequence.
+export function completeLinesOf(text: string): string {
+  return text.slice(0, text.lastIndexOf('\n') + 1);
+}
+
 // A CLI command wrapper — only `<command-name>`/`<command-message>`/
 // `<command-args>` tags and whitespace — as `<command-name> <command-args>`,
 // the text a live echo carries (the name verbatim: the CLI writes it with its
@@ -94,35 +110,28 @@ function replayedPromptText(obj: PersistedLine): string {
   return typeof echo?.text === 'string' ? echo.text : '';
 }
 
-// Read the jsonl, walk it line-by-line, and return:
+interface Split {
+  prefix: Array<{ raw: string; obj: PersistedLine | null }>;
+  dropped: Array<{ raw: string; obj: PersistedLine | null }>;
+  droppedText: string;
+  lastSurvivingUuid: string | null;
+}
+
+// Walk a jsonl text line-by-line, and return:
 //   - prefixLines: the raw lines (objects) that survive before the target
 //   - droppedLines: the lines from the target onward (including the user
 //     line itself)
 //   - droppedText: the prompt text of the target user message (a command
 //     wrapper in its command form, the command the composer can resend)
 //   - lastSurvivingUuid: uuid of the last prefix line, or null
-// Throws { statusCode: 400 } if the target index isn't found, and a
+// Throws a PROMPT_OUT_OF_RANGE 400 if the target index isn't found, and a
 // PROMPT_MISMATCH 409 if the target's replayed text is not `expectedText`.
 // A split landing right after a local-command caveat moves the caveat to the
 // dropped side: it belongs to the command line being dropped, and left behind
 // its "do not respond" text would precede the next prompt.
-async function readAndSplit({ place, sessionId, userMessageIndex, expectedText }: {
-  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string;
-}): Promise<{
-  prefix: Array<{ raw: string; obj: PersistedLine | null }>;
-  dropped: Array<{ raw: string; obj: PersistedLine | null }>;
-  droppedText: string;
-  lastSurvivingUuid: string | null;
-}> {
-  const file = sessionFilePath(place, sessionId);
-  let text: string;
-  try { text = await fs.readFile(file, 'utf8'); }
-  catch (e) {
-    if (errCode(e) === 'ENOENT') {
-      throw httpError(404, `session ${sessionId} not found`);
-    }
-    throw e;
-  }
+export function splitAtUserMessage(text: string, { userMessageIndex, expectedText }: {
+  userMessageIndex: number; expectedText: string;
+}): Split {
   // Split preserving line boundaries — the file may or may not end with a
   // trailing newline. We re-emit with `\n` per kept line on writeback.
   const rawLines = text.split('\n');
@@ -162,7 +171,8 @@ async function readAndSplit({ place, sessionId, userMessageIndex, expectedText }
   }
 
   if (!target) {
-    throw httpError(400, `userMessageIndex ${userMessageIndex} out of range (session has ${userCount} user prompts)`);
+    throw httpError(400, `userMessageIndex ${userMessageIndex} out of range (session has ${userCount} user prompts)`,
+      { code: PROMPT_OUT_OF_RANGE });
   }
   const found = replayedPromptText(target);
   if (normalizePromptText(found) !== normalizePromptText(expectedText)) {
@@ -182,6 +192,22 @@ async function readAndSplit({ place, sessionId, userMessageIndex, expectedText }
     droppedText: commandForm(promptText) ?? promptText,
     lastSurvivingUuid,
   };
+}
+
+// Read the session's jsonl and split it (splitAtUserMessage).
+async function readAndSplit({ place, sessionId, userMessageIndex, expectedText }: {
+  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string;
+}): Promise<Split> {
+  const file = sessionFilePath(place, sessionId);
+  let text: string;
+  try { text = await fs.readFile(file, 'utf8'); }
+  catch (e) {
+    if (errCode(e) === 'ENOENT') {
+      throw httpError(404, `session ${sessionId} not found`);
+    }
+    throw e;
+  }
+  return splitAtUserMessage(text, { userMessageIndex, expectedText });
 }
 
 function joinLines(entries: Array<{ raw: string }>): string {
@@ -237,23 +263,24 @@ export async function truncateSessionAtUserMessage({ place, sessionId, userMessa
   };
 }
 
-// Copy the prefix of <cwd>/<sessionId>.jsonl up to (excluding) the Nth user
-// prompt line into a new file <cwd>/<newSessionId>.jsonl. A prefix with no
+// Copy the prefix of `snapshot` — complete lines of <cwd>/<sessionId>.jsonl,
+// read once by the caller — up to (excluding) the Nth user prompt line into a
+// new file <cwd>/<newSessionId>.jsonl. A prefix with no
 // conversation record would be a session `--resume` cannot open, so that fork
 // is refused (400) before anything is written. The original
 // session jsonl is untouched. Rewrites the `sessionId` field inside each
 // copied line to the new id — purely cosmetic (the filename is what
 // `--resume` reads) but keeps the file self-consistent for any downstream
 // tooling. Returns { newSessionId, droppedText, lastSurvivingUuid }.
-export async function forkSessionAtUserMessage({ place, sessionId, userMessageIndex, expectedText, mode, newSessionId }: {
-  place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string; mode: string; newSessionId?: string;
+export async function forkSessionAtUserMessage({ place, sessionId, snapshot, userMessageIndex, expectedText, mode, newSessionId }: {
+  place: TranscriptPlacement; sessionId: string; snapshot: string; userMessageIndex: number; expectedText: string; mode: string; newSessionId?: string;
 }): Promise<{ newSessionId: string; droppedText: string; lastSurvivingUuid: string | null }> {
   if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, droppedText, lastSurvivingUuid } =
-    await readAndSplit({ place, sessionId, userMessageIndex, expectedText });
+    splitAtUserMessage(snapshot, { userMessageIndex, expectedText });
   if (!prefix.some(e => isResumableLine(e.obj))) {
     throw httpError(400, 'nothing before this prompt to fork from — rewind to it instead');
   }

@@ -383,24 +383,39 @@ export async function loadSubAgentTranscript(options: {
 // (`turn_end.usage`, see public/usage.js) is a stream-only `result` frame the
 // CLI never persists — there is no `type:"result"` line in a session jsonl,
 // so that value is structurally unreachable from here.
-export async function loadPersistedTranscript(options: {
-  place: TranscriptPlacement;
-  sessionId: string;
-  seqHint?: number;
-}): Promise<{
+export interface PersistedTranscript {
   lines: Array<{ events: UiEvent[] }>;
   replayedCount: number;
   lastLeafUuid: string | null;
   lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null;
   planFile: string | null;
-} | null> {
+}
+
+export async function loadPersistedTranscript(options: {
+  place: TranscriptPlacement;
+  sessionId: string;
+  seqHint?: number;
+}): Promise<PersistedTranscript | null> {
   const { place, sessionId, seqHint = 0 } = options;
   if (!place?.cwd || !sessionId) return null;
   const file = sessionFilePath(place, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
+  return replayPersistedText({ place, sessionId, text, seqHint });
+}
 
+// loadPersistedTranscript over a caller-supplied `text` of session
+// `sessionId`'s jsonl — for a caller that must derive several things from ONE
+// read (Instance.forkAtUserMessage). Sub-agent sibling files are still read
+// from disk: they feed only nested events, never the outer echo ordinals.
+export async function replayPersistedText(options: {
+  place: TranscriptPlacement;
+  sessionId: string;
+  text: string;
+  seqHint?: number;
+}): Promise<PersistedTranscript> {
+  const { place, sessionId, text, seqHint = 0 } = options;
   const lines: Array<{ events: UiEvent[] }> = [];
   let lastLeafUuid: string | null = null;
   let lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null = null;

@@ -261,7 +261,7 @@ test('controls survive segment retirement and stay enabled during a running turn
   assertNull(root.querySelector('.user-msg-actions'), 'rewind/fork removed on retirement');
   assert.ok(root.querySelector('.user-view-controls'), 'view controls survive retirement');
 
-  conv.setUserActionsEnabled(false);
+  conv.setUserActionsEnabled({ rewind: false, fork: false });
   // Found by structure, not by the .user-view-btn class: a control classed
   // `user-msg-action` would be disabled by setUserActionsEnabled and must not
   // vanish from this loop.

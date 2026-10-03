@@ -204,7 +204,7 @@ test('C6 rewind/fork follow provenance: only the current segment\'s bubbles offe
   assert.equal(conversationEl.querySelectorAll('.user-msg-actions').length, 2, 'precondition: two current bubbles');
   conversation.setCurrentSegment('E');
   assert.equal(conversationEl.querySelectorAll('.user-msg-actions').length, 0, 'a new current strips every older bubble, spliced ones included');
-  conversation.setUserActionsEnabled(true);
+  conversation.setUserActionsEnabled({ rewind: true, fork: true });
   assert.equal(conversationEl.querySelectorAll('.user-msg-actions').length, 0, 'and re-enabling restores none');
 });
 

@@ -65,8 +65,8 @@ test('a heartbeat inside a rotation gap does NOT retire — the wake is still ow
 for (const gap of [
   { name: '_relaunching (rewind / respawn)', enter: (inst) => { inst._relaunching = true; },
     leave: (inst) => { inst._relaunching = false; } },
-  { name: '_mutating (transcript rewrite)', enter: (inst) => { inst._mutating = true; },
-    leave: (inst) => { inst._mutating = false; } },
+  { name: '_mutating (transcript rewrite)', enter: (inst) => { inst._mutating = 'rewind'; },
+    leave: (inst) => { inst._mutating = null; } },
 ]) {
   test(`a heartbeat inside the ${gap.name} gap does NOT retire`, async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });

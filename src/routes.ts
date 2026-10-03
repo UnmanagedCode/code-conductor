@@ -1493,10 +1493,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     });
 
     // Fork the session of the named instance: copy the prefix of its
-    // jsonl up to (excluding) the Nth user prompt (same `userMessageIndex` +
-    // `text` contract as /rewind) into a new sessionId,
-    // leave the original session intact, and spawn a fresh instance
-    // resuming the forked jsonl. The composer prefill rides the new
+    // jsonl up to (excluding) the Nth user prompt (the bubble's
+    // `userMessageIndex` + `text`, as /rewind takes them) into a new sessionId,
+    // leave the original session intact — running, if it is mid-turn — and
+    // spawn a fresh instance resuming the forked jsonl. The composer prefill rides the new
     // instance's first `snapshot` frame as `droppedText` (stored via
     // create({prefill}); consumed once in wsHub) — the inline analogue of
     // rewind's `reset_snapshot`. Returns the new instance summary plus

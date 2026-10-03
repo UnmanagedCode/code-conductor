@@ -97,6 +97,9 @@ export interface CreateInstanceInput {
   prefill?: string;
 }
 
+// The destructive transcript rewrite holding an instance's `_mutating`.
+export type RewriteKind = 'rewind' | 'fork' | 'prune';
+
 export interface InstanceLike {
   readonly id: string;
   // The PERMANENT public id (what summary() emits and every surface reports).
@@ -235,12 +238,15 @@ export interface InstanceLike {
   // emits `turn_marks`, never `status`.
   setTurnMarks(m: TurnMarks): void;
   // Route surface (src/routes.ts): the three destructive session rewrites,
-  // debug mutation and the hook-callback envelope. `_mutating` is the guard
-  // fork/rewind/prune claim synchronously; it stays on the contract for the
-  // MCP-side interlock, which reads it directly (src/mcp/handlers.ts).
+  // debug mutation and the hook-callback envelope. `_mutating` names the rewrite
+  // fork/rewind/prune claim synchronously (any holder excludes the other two and
+  // a prune pre-check); `rewriteBlocksPrompts` is whether that holder makes
+  // prompt() refuse. Both stay on the contract for the MCP-side interlock,
+  // which reads them directly (src/mcp/handlers.ts).
   readonly debug: boolean;
   readonly debugDir: string | null;
-  _mutating: boolean;
+  _mutating: RewriteKind | null;
+  readonly rewriteBlocksPrompts: boolean;
   // `userMessageIndex` is the bubble's live ordinal, `expectedText` its text.
   rewindToUserMessage(userMessageIndex: number, expectedText: string): Promise<{ droppedText: string }>;
   // Fork at the Nth user prompt, leaving THIS session intact. Owns the whole

@@ -205,11 +205,12 @@ test('no ctx reading, no baseline: the analysis right after a prune has none', a
   } finally { await ctx.close(); }
 });
 
-test('a prompt landing mid-rewrite is refused instead of corrupting the transform', async () => {
+test('a prompt landing mid-rewrite is refused instead of corrupting the transform', async (t) => {
   // Between the caller's idle check and the kill completing, the subprocess is
   // still writable: a prompt landing there would have its partial tail persisted
   // by the CLI and folded into the rewritten file. `_mutating` closes that window
-  // for prune, rewind and fork alike.
+  // for prune and rewind. A fork holding it does not: it copies from one
+  // snapshot, so a concurrent prompt cannot reach the copy.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const sid = 'aaaaaaa3-2222-3333-4444-555555555555';
@@ -221,22 +222,35 @@ test('a prompt landing mid-rewrite is refused instead of corrupting the transfor
     await waitFor(() => ctx.instances.get(id).status === 'idle');
     const inst = ctx.instances.get(id);
 
-    inst._mutating = true;
-    try {
-      await assert.rejects(() => inst.prompt('sneaky'), /being rewritten/);
-    } finally { inst._mutating = false; }
+    for (const kind of ['rewind', 'prune']) {
+      await t.test(`a '${kind}' holder refuses the prompt`, async () => {
+        inst._mutating = kind;
+        try {
+          await assert.rejects(() => inst.prompt('sneaky'), /being rewritten/);
+        } finally { inst._mutating = null; }
+      });
+    }
 
-    // The guard lifts cleanly — no lingering refusal once the rewrite is done.
-    await inst.prompt('fine now');
-    await waitFor(() => inst.status === 'idle');
+    await t.test('the guard lifts cleanly once the rewrite is done', async () => {
+      await inst.prompt('fine now');
+      await waitFor(() => inst.status === 'idle');
+    });
+
+    await t.test("a 'fork' holder accepts the prompt", async () => {
+      inst._mutating = 'fork';
+      try {
+        await inst.prompt('during a fork');
+      } finally { inst._mutating = null; }
+    });
   } finally { await ctx.close(); }
 });
 
-test('fork guards its jsonl read with the same flag', async () => {
-  // Fork never kills the source subprocess, so `!this.proc` does not cover it —
-  // without `_mutating` a prompt lands on stdin mid-read and its persisted tail
-  // can be folded into the copied prefix. Observe the flag directly rather than
-  // trying to win a race: an accessor records every write the route makes.
+test('fork holds the flag as a \'fork\' — excluding other rewrites, never prompts', async () => {
+  // Fork claims `_mutating` so a rewind/prune cannot rewrite the file it reads,
+  // but tagged 'fork', which prompt() does not refuse: a steer or a conductor
+  // wake landing during the fork is accepted. Observe the flag directly rather
+  // than trying to win a race: an accessor records every write the route makes,
+  // and a prompt is sent from inside the fork's read.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const sid = 'aaaaaaa4-2222-3333-4444-555555555555';
@@ -249,24 +263,35 @@ test('fork guards its jsonl read with the same flag', async () => {
     const inst = ctx.instances.get(id);
 
     const writes = [];
-    let flag = false;
+    let flag = null;
     Object.defineProperty(inst, '_mutating', {
       configurable: true,
       get: () => flag,
       set: (v) => { flag = v; writes.push(v); },
     });
+    const read = inst._readForkSnapshot.bind(inst);
+    let heldDuringRead = null;
+    let promptDuringRead = null;
+    inst._readForkSnapshot = async (...args) => {
+      heldDuringRead = flag;
+      promptDuringRead = inst.prompt('steer during the fork').then(() => 'resolved', (e) => e);
+      await promptDuringRead;
+      return read(...args);
+    };
 
     const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
-    assert.deepEqual(writes, [true, false], 'fork must set and clear _mutating around its read');
-    assert.equal(inst._mutating, false, 'the flag is cleared even though fork leaves the source alive');
+    assert.deepEqual(writes, ['fork', null], 'fork must claim the flag as \'fork\' and release it to null');
+    assert.equal(heldDuringRead, 'fork', 'the flag is held while the fork reads');
+    assert.equal(await promptDuringRead, 'resolved', 'a prompt sent while the fork holds the flag is accepted');
+    assert.equal(inst._mutating, null, 'the flag is cleared even though fork leaves the source alive');
 
     // …and fork refuses to read a jsonl another rewrite is already rewriting.
-    inst._mutating = true;
+    inst._mutating = 'rewind';
     try {
       const clash = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
       assert.equal(clash.status, 409);
-    } finally { inst._mutating = false; }
+    } finally { inst._mutating = null; }
   } finally { await ctx.close(); }
 });
 
@@ -289,7 +314,7 @@ test('Instance.forkAtUserMessage claims _mutating with no await after the check'
   const method = src.slice(src.indexOf('async forkAtUserMessage('));
   assert.ok(method, 'Instance.forkAtUserMessage must exist — the guard sequence lives there');
   const check = method.indexOf('another rewind/fork/prune is in progress');
-  const claim = method.indexOf('this._mutating = true');
+  const claim = method.indexOf("this._mutating = 'fork'");
   assert.ok(check > 0 && claim > check, 'forkAtUserMessage must check _mutating before claiming it');
   assert.doesNotMatch(
     method.slice(check, claim), /\bawait\b/,
@@ -325,7 +350,7 @@ test('two concurrent forks cannot both claim the flag', async () => {
     assert.deepEqual(codes, [201, 409],
       `exactly one concurrent fork may proceed, got ${codes.join(' + ')}`);
     // The loser must not have left the flag stuck on the source instance.
-    assert.equal(ctx.instances.get(id)._mutating, false);
+    assert.equal(ctx.instances.get(id)._mutating, null);
   } finally { await ctx.close(); }
 });
 

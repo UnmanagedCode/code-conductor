@@ -34,7 +34,9 @@ export const WORKTREE = { worktreeName: 'feat', baseBranch: 'main' };
 // A session in `status` (displayStatus follows it), with overrides.
 export const session = (status, over = {}) => ({ ...SESSION, status, displayStatus: status, ...over });
 
-export async function setupHeader({ width = 1024 } = {}) {
+// `conversation(document)`, when given, builds the conversation the header
+// drives, once the window exists; the default is an inert stub.
+export async function setupHeader({ width = 1024, conversation = null } = {}) {
   const sent = [];
   installFakeSocket(sent);
   const html = await fs.readFile(path.join(PUB, 'index.html'), 'utf8');
@@ -80,7 +82,7 @@ export async function setupHeader({ width = 1024 } = {}) {
     getAccountUsage: () => null,
     getAccountUsageStale: () => false,
     composer: { disable() {}, set() {} },
-    conversation: { setUserActionsEnabled() {}, setCallUsageVisible() {} },
+    conversation: conversation ? conversation(document) : { setUserActionsEnabled() {}, setCallUsageVisible() {} },
     sessionActions: {
       syncWorktree: () => actions.push('sync'),
       respawnActive: () => actions.push('respawn'),

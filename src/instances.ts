@@ -72,7 +72,7 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd,
+  isConducted, markConducted, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
   type SessionBackendRecord, type TurnMarks,
 } from './sessionStore.ts';
 import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
@@ -101,20 +101,20 @@ import { PlanFileTracker } from './planFile.ts';
 import { cliEnvBase } from './cliEnv.ts';
 import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
-import { truncateSessionAtUserMessage, verifyUserPrompt } from './sessionEdit.ts';
+import { completeLinesOf, forkSessionAtUserMessage, truncateSessionAtUserMessage, verifyUserPrompt, PROMPT_OUT_OF_RANGE } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
 import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../public/planApproval.js';
 import { reconstructTasks } from './taskReconstruct.ts';
-import { buildArchive, currentSegmentScope, measureSegmentEchoOffset } from './eventArchive.ts';
+import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform, type Platform } from './platform/index.ts';
-import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RingSeam } from './instanceTypes.ts';
+import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RewriteKind, RingSeam } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -487,6 +487,15 @@ const RING_TRIM_SLACK = 256;
 // Matches the long-documented snapshot-tail figure, so sessions under that count
 // behave exactly as before. Override with ORCH_SNAPSHOT_TAIL.
 const DEFAULT_SNAPSHOT_TAIL = 500;
+// How long a fork waits for the clicked prompt's line to reach the transcript
+// (Instance.forkAtUserMessage), and how often it re-checks the file's size.
+// Sized against the CLI's enqueue → prompt-line gap for prompts received while
+// idle, measured over the `queue-operation` enqueue `timestamp` and the following
+// prompt line's `timestamp` in 1407 local session jsonls: p50 25 ms, p99 267 ms,
+// max 875 ms. A steer sent mid-turn is written only when the turn drains its
+// queue, so it usually exceeds this and gets PROMPT_NOT_PERSISTED.
+export const FORK_PERSIST_WAIT_MS = 2000;
+export const FORK_PERSIST_POLL_MS = 50;
 
 export class EventLog {
   cap: number;
@@ -607,6 +616,27 @@ export class EventLog {
 // cannot be placed in the rotated backing file (Instance._fileOrdinalFor).
 export const PROMPT_UNRESOLVED = 'prompt position unresolved';
 
+// What Instance.forkAtUserMessage copies from, pinned before its first read.
+interface ForkPin {
+  id: string;
+  place: TranscriptPlacement;
+  file: string;
+  startSeq: number;
+  proc: LaunchedProc | null;
+}
+
+function promptUnresolved(): never {
+  throw httpError(409, `${PROMPT_UNRESOLVED}: can't place this prompt in the current transcript yet — retry once the turn has finished`);
+}
+
+// `code` (and message prefix) of the 409 a fork refuses with when the clicked
+// prompt's echo was emitted but its line never reached the transcript within
+// FORK_PERSIST_WAIT_MS.
+export const PROMPT_NOT_PERSISTED = 'PROMPT_NOT_PERSISTED';
+// `code` (and message prefix) of the 409 a fork refuses with when the source's
+// backing file, segment or process changed while it was waiting.
+export const FORK_SOURCE_CHANGED = 'FORK_SOURCE_CHANGED';
+
 export class Instance extends EventEmitter implements InstanceLike {
   // All fields are assigned in the constructor below (with the three
   // post-construction additions _mutating/_skipUsageSeed/_spawnArgv/_overageGate
@@ -715,7 +745,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   //   deferring there, and if it did not, the reseed's turn_end could never
   //   deliver a waiting conductor's wake (D3).
   //   `_renewing` must stay set past that point, because between the turn_end and
-  //   the reseed landing, `_rotation` is null, `_mutating` is false and status is
+  //   the reseed landing, `_rotation` is null, `_mutating` is null and status is
   //   'idle' — every guard a prune or a rewind checks. A request landing in that
   //   window kills the proc, and the reseed then 409s in prompt(): context
   //   cleared, handoff summary lost, conductor hearing only heartbeats. Which is
@@ -815,7 +845,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   _turnEvicted: number;
   _prevTurnPrefix: number | null;
   _prefixBaselineInvalid: boolean;
-  _mutating: boolean;
+  _mutating: RewriteKind | null;
+  // FORK_PERSIST_WAIT_MS, per instance so a test can shrink it.
+  _forkPersistWaitMs: number;
   _skipUsageSeed: boolean;
   _spawnArgv: string[] | null;
   // The env the last launch actually used. Recorded for the same reason as
@@ -1209,7 +1241,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Post-construction fields the manager and later methods assign — declared
     // in the field block above, initialised here so they are definite from the
     // start (same falsy values the JS left as undefined).
-    this._mutating = false;   // claimed synchronously by rewind/fork/prune
+    this._mutating = null;    // claimed synchronously by rewind/fork/prune
+    this._forkPersistWaitMs = FORK_PERSIST_WAIT_MS;
     this._skipUsageSeed = false; // one-shot: suppress the pre-prune ctx seed on replay
     this._spawnArgv = null;   // full launch argv, remembered for enableDebug's meta.json
     this._spawnEnv = {};
@@ -3147,17 +3180,18 @@ export class Instance extends EventEmitter implements InstanceLike {
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
   async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string } = {}): Promise<void> {
-    // A rewind/fork/prune is rewriting this session's jsonl. The `!this.proc`
+    // A rewind/prune is rewriting this session's jsonl. The `!this.proc`
     // check below already rejects for most of that window (the subprocess is
     // killed first), but not for the sliver between the caller's idle check and
     // the kill completing — a prompt landing there is written to stdin, the CLI
     // persists a partial tail, and that tail gets folded into the rewritten file.
-    // Closing the window here rather than at each call site fixes rewind too.
+    // Closing the window here rather than at each call site fixes both.
     // Not a new failure class for callers: they already have to tolerate the
     // 'not running' throw from the same operation, a few hundred ms later.
-    if (this._mutating) {
+    // A fork does not block: see rewriteBlocksPrompts.
+    if (this.rewriteBlocksPrompts) {
       throw Object.assign(
-        new Error('session is being rewritten (rewind/fork/prune) — retry in a moment'),
+        new Error('session is being rewritten (rewind/prune) — retry in a moment'),
         { statusCode: 409 },
       );
     }
@@ -3331,6 +3365,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   // flight — see the `_relaunching` field comment. Read by isSessionLive and by
   // the idle-wake paths that must not treat the relaunch gap as death.
   get relaunching(): boolean { return this._relaunching; }
+
+  // Whether the rewrite holding `_mutating` makes prompt() (and so a renewal's
+  // reseed) refuse. A fork does not: it copies from one complete-line snapshot
+  // of the file, and a prompt's lines are appended after the clicked prompt's,
+  // so they can never reach the copy (forkAtUserMessage).
+  get rewriteBlocksPrompts(): boolean { return this._mutating === 'rewind' || this._mutating === 'prune'; }
 
   // Which mechanism holds the window, or null. The refusal sites need the reason,
   // not just the boolean: a renewal re-arming over its own window is idempotent,
@@ -3973,13 +4013,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.status === 'turn') {
       throw httpError(409, 'cannot rewind during a running turn — interrupt first');
     }
-    this._mutating = true;
+    this._mutating = 'rewind';
     try {
       // prompt() refuses while `_mutating` is set, so no prompt lands between
       // this check and the kill. setEffort does not check it: an `/effort`
       // sent in that window is persisted after the target and so falls in the
       // truncated tail — and truncate re-checks the target itself.
-      const fileIdx = await this._fileOrdinalFor(userMessageIndex);
+      const fileIdx = await this._fileOrdinalFor(userMessageIndex) ?? promptUnresolved();
       await verifyUserPrompt({ place: this.transcriptPlace, sessionId: backingId, userMessageIndex: fileIdx, expectedText });
       // Marks the kill→relaunch window for isSessionLive — see the
       // `_relaunching` field comment. Deliberately NOT beginRotation: this is
@@ -4025,7 +4065,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
       return { droppedText: result.droppedText };
     } finally {
-      this._mutating = false;
+      this._mutating = null;
       this._relaunching = false;
     }
   }
@@ -4041,20 +4081,17 @@ export class Instance extends EventEmitter implements InstanceLike {
     newSessionId: string; droppedText: string; createArgs: CreateInstanceInput;
   }> {
     // A rewind/prune on the SAME instance rewrites (or truncates) the very
-    // jsonl this fork is about to read. Refuse rather than read a file
-    // mid-rewrite — the mirror of the `_mutating` check those two already do.
+    // jsonl this fork is about to read, and a second fork would race this one's
+    // wait. Refuse — the mirror of the `_mutating` check those two already do.
     //
     // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
     // them, or two concurrent forks both pass the check, both set the flag,
     // and the first one's `finally` clears it while the second is still
-    // reading — reintroducing exactly the unprotected read this guards.
-    // Narrower exposure than rewind/prune — fork never kills the source and
-    // holds `_mutating` only for its READ — but a reseed landing inside that
-    // read still 409s in prompt() and loses the handoff summary, so it takes
-    // the same interlock. Via the SHARED method, not a local re-check of the
-    // same two flags: that method exists so these guards cannot drift, and a
-    // third condition added to it must reach fork too. Synchronous, and ahead
-    // of the claim below.
+    // reading — letting a rewind rewrite the file under that read. A rotation
+    // in flight refuses via the SHARED method, not a local re-check of the same
+    // two flags: that method exists so these guards cannot drift, and a third
+    // condition added to it must reach fork too. Synchronous, and ahead of the
+    // claim below.
     this._assertNoRotationInFlight();
     if (this._mutating) {
       throw httpError(409, 'another rewind/fork/prune is in progress');
@@ -4063,29 +4100,72 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (!backingId) {
       throw httpError(400, 'no sessionId — instance has not yet received a turn');
     }
-    this._mutating = true;
-    // Unlike rewind/prune, fork never kills the source subprocess, so
-    // `!this.proc` doesn't cover it: a prompt landing here would be written
-    // to stdin, the CLI would persist its tail, and that tail could be
-    // folded into the prefix being copied. `_mutating` makes prompt() refuse
-    // for the duration. Scoped to the READ only — once the copy is on disk,
-    // a prompt to the source can no longer affect the fork, so the create()
-    // the caller makes (which spawns a whole new instance) stays outside the window.
-    let forked: { newSessionId: string; droppedText: string };
+    // What this fork copies from, pinned before its first read — and built
+    // BEFORE the claim, since sessionFilePath can throw and a throw between the
+    // claim and the `try` would leave the flag held for good. While the flag is
+    // held the pinned file only ever GROWS: its writers append (the CLI,
+    // writeSessionMetadata), its only in-place rewriters (rewind, prune) refuse,
+    // and a rotation moves the CLI onto a new file and leaves this one intact.
+    // So any single read of it is a byte-prefix of its eventual contents.
+    const pin: ForkPin = {
+      id: backingId,
+      place: this.transcriptPlace,
+      file: sessionFilePath(this.transcriptPlace, backingId),
+      startSeq: currentSegmentScope(this).startSeq,
+      proc: this.proc,
+    };
+    const deadline = Date.now() + this._forkPersistWaitMs;
+    let forked: { newSessionId: string; droppedText: string } | null = null;
+    this._mutating = 'fork';
     try {
-      // Deferred import — keeps this module's eager import graph off
-      // sessionEdit for callers that never fork. Inside the try so the flag is
-      // released if it throws.
-      const { forkSessionAtUserMessage } = await import('./sessionEdit.ts');
-      forked = await forkSessionAtUserMessage({
-        place: this.transcriptPlace,
-        sessionId: backingId,
-        userMessageIndex: await this._fileOrdinalFor(userMessageIndex),
-        expectedText,
-        mode: this.mode,
-      });
+      while (!forked) {
+        // Synchronously, before the read: the source must still be the pinned
+        // one, and the in-memory values captured here only decide whether to
+        // wait or which refusal to give — never what gets copied. `ring` is the
+        // pinned segment's ring content, taken in the same tick as the check.
+        this._assertForkSourceUnchanged(pin);
+        const ring = pin.startSeq === 0 ? null : this.ringSnapshot().filter(e => e._seq >= pin.startSeq);
+        const echoCount = this._userEchoCount;
+        const running = this.status === 'turn';
+        // ONE read per attempt; the anchor, the live→file offset, the text check
+        // and the copy all come from it. The clicked prompt's line precedes every
+        // line of its own turn and of any later prompt, so nothing appended after
+        // it — open-turn output, a steer, a new turn — can reach the copy.
+        const snap = await this._readForkSnapshot(pin.file, pin.id);
+        // An unplaceable prompt refuses at once, as rewind does: its message
+        // already tells the user to retry once the turn has finished.
+        const fileIdx = await this._fileOrdinalFor(userMessageIndex, { sessionId: pin.id, place: pin.place, ring, text: snap.text })
+          ?? promptUnresolved();
+        let outOfRange: unknown;
+        try {
+          forked = await forkSessionAtUserMessage({
+            place: pin.place, sessionId: pin.id, snapshot: snap.text,
+            userMessageIndex: fileIdx, expectedText, mode: this.mode,
+          });
+          break;
+        } catch (e) {
+          if ((e as { code?: unknown }).code !== PROMPT_OUT_OF_RANGE) throw e;
+          outOfRange = e;
+        }
+        // Not in this snapshot. A line is owed only once the prompt's echo was
+        // emitted. A read begun with no turn running is the last: a prompt sent
+        // while idle opens a turn (prompt() sets `turn` as it sends) whose lines
+        // precede its `result`. Not guaranteed for a steer still in the CLI's own
+        // input queue when a turn ends — written only once the CLI picks it up —
+        // so a fork in that window refuses, writing nothing; a retry succeeds.
+        // A source that rotated or restarted during the read will never write
+        // the line to the pinned file.
+        if (userMessageIndex >= echoCount) throw outOfRange;
+        this._assertForkSourceUnchanged(pin);
+        if (!running || Date.now() >= deadline) {
+          throw httpError(409, `prompt ${userMessageIndex} hasn't been written to the session transcript yet — `
+            + 'a message sent during a running turn is written when the turn picks it up; retry in a moment',
+            { code: PROMPT_NOT_PERSISTED });
+        }
+        await this._awaitForkSourceGrowth(pin, snap.size, deadline);
+      }
     } finally {
-      this._mutating = false;
+      this._mutating = null;
     }
     // The fork starts titled after its source (forkTitle). Written before the
     // caller's create() so spawn's _hydrateTitle finds it on the new record.
@@ -4132,22 +4212,82 @@ export class Instance extends EventEmitter implements InstanceLike {
     };
   }
 
-  // A bubble's live ordinal → the backing file's prompt ordinal. Without a live
-  // rotation (the current segment's ring content starts at seq 0: single
-  // segment, or a ring refilled from this file by resume/rewind/prune) the two
-  // are the same. After one, the offset is measured from the current segment's
-  // ring content only — an earlier segment's echo must not calibrate it — and
-  // an unmeasurable offset refuses rather than guesses.
-  async _fileOrdinalFor(liveIndex: number): Promise<number> {
-    const scope = currentSegmentScope(this);
-    if (scope.startSeq === 0) return liveIndex;
-    const offset = await measureSegmentEchoOffset({
-      place: this.transcriptPlace, sessionId: this.backingSessionId as string,
-      ring: this.ringSnapshot().filter(e => e._seq >= scope.startSeq),
-    });
-    if (offset === null) {
-      throw httpError(409, `${PROMPT_UNRESOLVED}: can't place this prompt in the current transcript yet — retry once the turn has finished`);
+  // One read of a fork's pinned source file, cut to its complete lines (an
+  // unterminated tail is a write in progress). `size` is the raw byte length
+  // read — what the wait compares the file's size against; the text's length
+  // differs whenever the file holds multibyte characters or a partial line.
+  async _readForkSnapshot(file: string, sessionId: string): Promise<{ text: string; size: number }> {
+    let buf: Buffer;
+    try { buf = await fsp.readFile(file); }
+    catch (e) {
+      if (errCode(e) === 'ENOENT') throw httpError(404, `session ${sessionId} not found`);
+      throw e;
     }
+    return { text: completeLinesOf(buf.toString('utf8')), size: buf.length };
+  }
+
+  // A fork's pin no longer names this instance's live source: its backing id,
+  // current segment or process changed (a rotation, a crash or a respawn).
+  _forkSourceChanged(pin: ForkPin): boolean {
+    return this.backingSessionId !== pin.id || currentSegmentScope(this).startSeq !== pin.startSeq
+      || this.proc !== pin.proc;
+  }
+
+  _assertForkSourceUnchanged(pin: ForkPin): void {
+    if (!this._forkSourceChanged(pin)) return;
+    throw httpError(409, 'the session\'s transcript rotated or restarted while the fork was waiting — '
+      + 'nothing was written; fork again from the current transcript', { code: FORK_SOURCE_CHANGED });
+  }
+
+  // A fork's wait between reads: sleeps FORK_PERSIST_POLL_MS before every size
+  // probe, and returns once the pinned file's size differs from `size`, the
+  // deadline passes, the source changes or the file is gone.
+  async _awaitForkSourceGrowth(pin: ForkPin, size: number, deadline: number): Promise<void> {
+    for (;;) {
+      await new Promise(r => setTimeout(r, FORK_PERSIST_POLL_MS));
+      if (Date.now() >= deadline || this._forkSourceChanged(pin)) return;
+      const now = await this._forkSourceSize(pin.file);
+      if (now === null || now !== size) return;
+    }
+  }
+
+  // The pinned file's size in bytes, or null once it is gone. The test seam
+  // for the wait's poll rate.
+  async _forkSourceSize(file: string): Promise<number | null> {
+    try { return (await fsp.stat(file)).size; }
+    catch (e) {
+      if (errCode(e) === 'ENOENT') return null;
+      throw e;
+    }
+  }
+
+  // A bubble's live ordinal → the backing file's prompt ordinal, or null when it
+  // cannot be placed. Without a live rotation (the current segment's ring
+  // content starts at seq 0: single segment, or a ring refilled from this file
+  // by resume/rewind/prune) the two are the same. After one, the offset is
+  // measured from the current segment's ring content only — an earlier
+  // segment's echo must not calibrate it. `snapshot` (fork) supplies that ring
+  // content — null for a segment starting at seq 0 — and the file text from the
+  // read the copy comes from, so the offset is calibrated on those very bytes;
+  // without it (rewind) both are taken now.
+  async _fileOrdinalFor(liveIndex: number, snapshot?: {
+    sessionId: string; place: TranscriptPlacement; ring: SeqEvent[] | null; text: string;
+  }): Promise<number | null> {
+    let offset: number | null;
+    if (snapshot) {
+      if (!snapshot.ring) return liveIndex;
+      offset = await measureSegmentEchoOffset({
+        place: snapshot.place, sessionId: snapshot.sessionId, ring: snapshot.ring, text: snapshot.text,
+      });
+    } else {
+      const scope = currentSegmentScope(this);
+      if (scope.startSeq === 0) return liveIndex;
+      offset = await measureSegmentEchoOffset({
+        place: this.transcriptPlace, sessionId: this.backingSessionId as string,
+        ring: this.ringSnapshot().filter(e => e._seq >= scope.startSeq),
+      });
+    }
+    if (offset === null) return null;
     const fileIdx = liveIndex + offset;
     if (fileIdx < 0) throw httpError(400, `userMessageIndex ${liveIndex} out of range (it precedes the current transcript)`);
     return fileIdx;
@@ -4199,7 +4339,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         new Error(`inputMode must be one of ${[...INPUT_MODES].join('|')}`), { statusCode: 400 },
       );
     }
-    this._mutating = true;
+    this._mutating = 'prune';
     this.beginRotation('prune');
     let rotationOk = false;
     const oldSid = backingId;
@@ -4278,7 +4418,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
       throw e;
     } finally {
-      this._mutating = false;
+      this._mutating = null;
       // Prune comes up IDLE with no turn, so the completion event is the ONLY wake
       // point — including on the failure path, where the recovery relaunch also
       // lands idle and an owner must not be left hanging on heartbeats.
