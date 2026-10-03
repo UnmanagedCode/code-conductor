@@ -98,6 +98,10 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
       try { return d.realpathNative(d.realpathJs(p)); } catch { return p; }
     },
 
+    // Git for Windows' /etc/profile defaults MSYS2_PATH_TYPE to `inherit`
+    // (verified: `bash -lc` under a PATH of node, Git\cmd, claude's dir resolves
+    // node, npm and claude), so the login shell keeps the inherited PATH and no
+    // env.exe wrapper is needed.
     commandFor(spec) {
       if ('shell' in spec) return { command: gitBash(), args: ['-lc', spec.shell] };
       const [head, ...rest] = spec.argv;
