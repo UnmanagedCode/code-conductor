@@ -112,7 +112,11 @@ test('auth missing entirely flags not_authenticated', async () => {
     const r = await checkClaudeReadiness({ configDir: path.join(home, '.claude'), timeoutMs: 2000, platform: posixPlatform });
     assert.equal(r.authenticated.ok, false);
     assert.equal(r.authenticated.source, null);
-    assert.ok(r.issues.some(i => i.code === 'not_authenticated'));
+    const issue = r.issues.find(i => i.code === 'not_authenticated');
+    assert.ok(issue);
+    // The fix it names is the in-app one, and no restart: sessions read credentials per spawn.
+    assert.match(issue.hint, /Settings → Account/);
+    assert.doesNotMatch(issue.hint, /restart/);
   });
 });
 

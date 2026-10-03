@@ -16,6 +16,7 @@ import { installPluginManager } from './pluginManager.js';
 import { installConventionsPanel } from './conventionsPanel.js';
 import { installDefaultPlaybook } from './defaultPlaybook.js';
 import { installDefaultEnforcement } from './defaultEnforcement.js';
+import { installClaudeAuth } from './claudeAuth.js';
 import { CLAUDE_BACKEND, backendIdOf } from './models.js';
 import { archivedSessionUrl, restoreArchivedSession } from './archivedSessions.js';
 import { registerMainView, reconcileMainViews, mainViewClosed } from './mainViews.js';
@@ -138,6 +139,9 @@ export function installSettings({
     hasToggle: false, hasCoreRow: false, noun: 'project convention',
   });
 
+  // Account group's Claude login block — its own module; load() on every open.
+  const claudeAuth = installClaudeAuth();
+
   // Plugins group — feature logic lives in its own module; settings only owns
   // the group panel + calls load() on open. Enabling/disabling/installing a
   // plugin can change what the conventions panels above show, so refresh them
@@ -240,6 +244,7 @@ export function installSettings({
       if (!caps || caps.voice) { load(); loadTts(); }
       if (!caps || caps.remoteSystems) loadSystems();
     });
+    claudeAuth.load();
     loadArchived();
     conductorPanel.load();
     workspacePanel.load();

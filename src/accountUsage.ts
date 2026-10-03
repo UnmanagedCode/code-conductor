@@ -197,8 +197,10 @@ export async function getAccountUsage({
   }
 }
 
-// Exposed for tests so they can reset the cache and retry state between runs.
-export function _resetCache(): void {
+// Drops the cached payload and any backoff, so the next read fetches fresh.
+// Called after a Claude re-login (the cache would otherwise serve the previous
+// account's usage) and by tests between runs.
+export function invalidateAccountUsage(): void {
   _cache      = { data: null, fetchedAt: 0 };
   _retryState = { failureCount: 0, nextAllowedAt: 0 };
 }

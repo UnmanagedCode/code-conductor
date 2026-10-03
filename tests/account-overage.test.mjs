@@ -16,7 +16,7 @@ import { Window } from 'happy-dom';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // A models payload as GET /api/settings/models returns it — overage prefs ride
-// along here (there is no separate Account endpoint).
+// along here (there is no separate overage endpoint).
 function modelsPayload(over) {
   return {
     backends: [{ id: 'claude', label: 'Claude', template: '', env: [], managed: true },
@@ -298,5 +298,32 @@ test('account: a prefs save elsewhere (e.g. a tier toggle) does not clobber a st
   assert.equal(d.getElementById('sm-overage-threshold-enabled').checked, true, 'staged threshold-enabled preserved');
   assert.equal(d.getElementById('sm-overage-threshold').value, '60', 'staged threshold value preserved');
   assert.equal(d.getElementById('sm-overage-dirty').hidden, false, 'still dirty after the outside refresh');
+  window.happyDOM.abort();
+});
+
+test('account: opening Settings loads the Claude login state (public/claudeAuth.js)', async () => {
+  const { impl } = stubFetch(modelsPayload({ onOverage: 'none', overageThreshold: { enabled: false, value: 85 } }));
+  const authGets = [];
+  const withAuth = (u, opts = {}) => {
+    if (u === '/api/claude-auth/status') {
+      authGets.push(u);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ loggedIn: false, authMethod: 'none', configDirectory: null }) });
+    }
+    if (u === '/api/claude-auth/login') {
+      authGets.push(u);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ state: 'idle', url: null, error: null, startedAt: null, endedAt: null }) });
+    }
+    return impl(u, opts);
+  };
+  const { window, mod, account } = await setup(withAuth);
+  account.insertAdjacentHTML('afterbegin', '<div id="ca-status"></div><button id="ca-login" type="button">Log in</button>');
+  mod.installSettings({ requestClose: () => {} });
+
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+
+  assert.deepEqual(authGets.sort(), ['/api/claude-auth/login', '/api/claude-auth/status']);
+  assert.match(window.document.getElementById('ca-status').textContent, /^Not signed in/);
   window.happyDOM.abort();
 });

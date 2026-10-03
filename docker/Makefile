@@ -117,7 +117,8 @@ ifndef PROJECT
 endif
 	sudo python3 cc-mount.py "$(PROJECT)" $(ARGS)
 
-# Sign in to claude inside the running container — the primary auth flow.
+# Sign in to claude inside the running container. The web UI's
+# Settings → Account → Claude login runs the same command from the browser.
 # `claude auth login` (not the REPL) is the most direct form: it starts the
 # sign-in flow immediately; open the URL it prints on the host's browser.
 # Credentials persist across container recreation ($HOME is on the host

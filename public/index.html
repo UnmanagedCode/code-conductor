@@ -277,11 +277,32 @@
           </div>
           <div id="settings-account" class="settings-group" hidden>
             <p class="settings-desc">
-              Protect your Anthropic account from paid overage: choose what happens the moment a
-              session starts using overage credits, and optionally stop earlier once usage crosses a
-              threshold. Both are staged locally and committed together via <strong>Apply</strong>.
+              The Anthropic account cc's <code>claude</code> CLI is signed in to, and how to protect it
+              from paid overage. Overage settings are staged locally and committed together via
+              <strong>Apply</strong>.
             </p>
             <div class="sm-prefs">
+              <fieldset class="sm-group">
+                <legend>Claude login</legend>
+                <div id="ca-status" class="st-status" aria-live="polite">Loading…</div>
+                <div class="st-actions">
+                  <button id="ca-login" type="button" class="btn">Log in</button>
+                </div>
+                <div id="ca-flow" hidden>
+                  <div id="ca-await" hidden>
+                    <a id="ca-url" target="_blank" rel="noopener noreferrer">▶ Open the sign-in page</a>
+                    <input id="ca-url-text" class="ca-url-text" type="text" readonly aria-label="Sign-in URL" />
+                    <p class="settings-hint">Open the link on any device. After signing in, the page shows a code — paste it here.</p>
+                    <div class="ca-code-row">
+                      <input id="ca-code" type="text" autocomplete="off" spellcheck="false" placeholder="Paste the code" aria-label="Sign-in code" />
+                      <button id="ca-submit" type="button" class="btn">Submit</button>
+                    </div>
+                  </div>
+                  <div id="ca-flow-msg" class="st-status" aria-live="polite"></div>
+                  <button id="ca-cancel" type="button" class="btn">Cancel</button>
+                </div>
+                <p class="settings-hint">Signed in means credentials are present; the CLI does not check them. New sessions use the new login. Running sessions aren't restarted and may keep the previous login until they are.</p>
+              </fieldset>
               <fieldset class="sm-group">
                 <legend>Overage protection</legend>
                 <div class="sm-overage-label">Action on overage</div>

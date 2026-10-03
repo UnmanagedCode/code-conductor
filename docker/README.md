@@ -12,7 +12,7 @@ cp .env.example .env         # set CC_PROJECTS_DIR
 set -a; . ./.env; set +a     # put CC_PROJECTS_DIR in the shell (compose reads .env itself)
 mkdir -p "$CC_PROJECTS_DIR"  # OUTSIDE the cc repo, writable by CC_UID/CC_GID
 make up                      # = docker compose -f compose.yaml up -d --build
-make login                   # sign in inside the container: `claude auth login` (credentials persist)
+make login                   # sign in inside the container: `claude auth login` (credentials persist; or Settings → Account in the web UI)
 open http://127.0.0.1:8787   # logs: make logs · stop: make down
 ```
 
@@ -66,7 +66,7 @@ No named volumes in the default path — everything durable sits on the two host
 
 ## Auth
 
-**Sign in inside the container — the only auth path.** After `make up`, run `make login` (= `docker compose -f compose.yaml exec conductor claude auth login`): it starts the claude sign-in flow directly in the container — open the URL it prints in your host's browser, complete the sign-in, then exit. Other services sign in the same way, inside the container. Credentials land under `<CC_PROJECTS_DIR>/.cc-home/.claude` on the host projects-root bind, so they persist across container recreation (`down` + `up -d`); spawned claude sessions inherit the orchestrator's `$HOME`, so they see them.
+**Sign in inside the container.** After `make up`, either use **Settings → Account → Claude login** in the web UI (it runs the same `claude auth login` in the container; open the link it shows on any device and paste the code back), or run `make login` (= `docker compose -f compose.yaml exec conductor claude auth login`): it starts the claude sign-in flow directly in the container — open the URL it prints in your host's browser, complete the sign-in, then exit. Other services sign in the same way, inside the container. Credentials land under `<CC_PROJECTS_DIR>/.cc-home/.claude` on the host projects-root bind, so they persist across container recreation (`down` + `up -d`); spawned claude sessions inherit the orchestrator's `$HOME`, so they see them.
 
 Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container. `make login` signs in the stock `claude`; a `CLAUDE_BIN` binary manages its own auth.
 
