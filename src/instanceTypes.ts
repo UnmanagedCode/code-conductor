@@ -32,6 +32,16 @@ export interface RingSeam {
   startSeq: number;
 }
 
+// Why a session's CLI exited ON ITS OWN — any exit no kill was commanded for.
+// Recorded by Instance._handleExit; `stderrTail` is the end of that launch's
+// stderr (bounded — see EXIT_STDERR_TAIL_* in src/instances.ts), null when it
+// wrote none.
+export interface ExitCause {
+  code: number | null;
+  signal: string | null;
+  stderrTail: string | null;
+}
+
 export interface InstanceSummary {
   id: string;
   project: string;
@@ -307,6 +317,9 @@ export interface InstanceManagerLike {
   resolveResumeRef(input: string): Promise<{ handle: string; resume: string } | { ambiguous: string[]; tooShort: boolean } | null>;
   list(): Array<InstanceSummary & { awaitingWake: boolean }>;
   liveForSession(sessionId: string): InstanceLike | null;
+  // The last spontaneous exit of a session by its exact PUBLIC id, or null. In
+  // memory only; cleared by a commanded exit and by a successful resume.
+  exitCauseFor(sessionId: string): ExitCause | null;
   // THE liveness authority for a public sessionId — see src/instances.ts. Every
   // consumer of worker liveness (playbook policy, MCP read surfaces) reads this,
   // never a ledger-side mirror.

@@ -13,8 +13,8 @@
 // mcp add --transport http` client would use), and use the fake-claude
 // subprocess via bootServer() so no real LLM is needed.
 //
-// The cases live in the eight tests/idle-wake-*.test.mjs files, which each
-// import from here — one harness, eight consumers, so the transport and the
+// The cases live in the tests/idle-wake-*.test.mjs files, which each
+// import from here — one harness, many consumers, so the transport and the
 // lifecycle cannot drift between them:
 //
 //   idle-wake-ownership       the ownership edge (spawn OR dispatch), the arm
@@ -32,6 +32,8 @@
 //                             identity refusals
 //   idle-wake-retire-gaps     the three states _goneForGood must not mistake
 //                             for death
+//   idle-wake-exit            a worker whose CLI exits on its own: the EXITED
+//                             wake, at once, and its heartbeat gone with it
 //
 // Card 2026-0221 split them out of a single 1610-line file: the per-file
 // hang-guard deadline (FILE_KILL_MS, tests/hangGuardConfig.mjs) is charged one

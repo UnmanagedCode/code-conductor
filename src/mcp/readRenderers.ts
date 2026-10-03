@@ -377,11 +377,17 @@ export function renderSession(session: unknown): string {
   const live = s.live ? asRow(s.live) : null;
   const head = `SESSION ${dash(s.sessionId)}   ${live ? 'live' : 'retired'}`;
   if (live) return block(head, '', ...instanceRows([live]));
+  // A retired session whose CLI exited on its own carries the cause (the MCP
+  // handler's `exit`, from InstanceManager.exitCauseFor): code, signal, and the
+  // last line of the stderr tail.
+  const exit = s.exit ? asRow(s.exit) : null;
+  const lastStderr = typeof exit?.stderrTail === 'string' ? exit.stderrTail.split('\n').at(-1) : null;
   return block(
     head,
     indent([
       `project ${dash(s.project)}   worktree ${worktreeName(s.worktree)}`,
       `path ${dash(s.path)}`,
+      ...(exit ? [`exited code ${dash(exit.code)} signal ${dash(exit.signal)}${lastStderr ? ` — ${lastStderr}` : ''}`] : []),
     ], 4),
     '',
     s.retired ? inactiveRows([asRow(s.retired)]) : null,

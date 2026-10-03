@@ -16,8 +16,6 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend, settle } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
@@ -26,6 +24,7 @@ import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBacke
 import { getSessionBackend, setSessionBackend, sessionsFile } from '../src/sessionStore.ts';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
+import { ControllableLauncher } from './controllableLauncher.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -873,56 +872,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
 });
 
 // ── launch_failed crash signal ───────────────────────────────────────────────
-// A controllable launcher whose child stays alive until the test triggers a
-// spontaneous crash() (nonzero exit + stderr) or Instance.kill() (signalled
-// exit). Mirrors FakeChildProcess's drain-then-exit so stderr is fully read by
-// the parent readline before 'exit' fires.
-//
-// Note this launcher's healthy children emit ONLY 'exit', never 'close' — so
-// nothing in the terminal-latch design may REQUIRE a 'close', and nothing does.
-// `failNext` arms the opposite shape (card 2026-0286 §2): a spawn that never
-// started, which emits 'error' then 'close' and no 'exit' at all.
-class ControllableLauncher {
-  constructor() { this.children = []; this.failNext = null; }
-  launch() {
-    const child = new EventEmitter();
-    child.pid = null;
-    child.stdin = new PassThrough();
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    child._exited = false;
-    const finish = (code, signal) => {
-      if (child._exited) return; child._exited = true;
-      let pending = 2;
-      const done = () => { if (--pending === 0) setImmediate(() => child.emit('exit', code, signal)); };
-      child.stdout.once('end', done);
-      child.stderr.once('end', done);
-      child.stdout.end();
-      child.stderr.end();
-    };
-    child.crash = (msg) => { child.stderr.write(msg + '\n'); finish(1, null); };
-    child.kill = () => { finish(null, 'SIGTERM'); return true; };
-    // A spawn that NEVER STARTED, matching real child_process.spawn against a
-    // missing binary: 'error' then 'close(-2, null)', never 'exit', and no
-    // stderr — the process never ran, so the reason rides on the spawn_error
-    // event rather than launch_failed's stderr field.
-    child.failSpawn = (msg) => {
-      if (child._exited) return; child._exited = true;
-      child.stdout.end(); child.stderr.end();
-      child.emit('error', Object.assign(new Error(msg), { code: 'ENOENT' }));
-      child.emit('close', -2, null);
-    };
-    if (this.failNext) {
-      const msg = this.failNext;
-      this.failNext = null;
-      // Deferred a tick: Instance wires its listeners AFTER launch() returns.
-      setImmediate(() => child.failSpawn(msg));
-    }
-    this.children.push(child);
-    return child;
-  }
-  get last() { return this.children[this.children.length - 1]; }
-}
+// The launcher is shared — see tests/controllableLauncher.mjs.
 
 describe('launch_failed crash signal', () => {
   let cctx, cbase, cinst, chome, launcher, events;
