@@ -453,8 +453,9 @@ byte-identical `failedTests` sets per mutant**; 9 `KILLED` + 1 `SURVIVED`, exit 
 and byte-identical in-place `git status --porcelain` before/after; `reproducible` true in all 10.
 Per-mutant `durationMs` was flat across job levels, i.e. no measurable contention penalty. So
 code-mutant's worker-ordinal fix holds here and the documented
-false-`SURVIVED`/false-`IMPRECISE` history did not reproduce. **Caveat:** jobs=4 means 4 copies ×
-4-way internal file concurrency = 16 test files at once plus forked children and bound ports; this
+false-`SURVIVED`/false-`IMPRECISE` history did not reproduce. **Caveat:** jobs=4 meant 4 copies ×
+4-way internal file concurrency (the runner's at measurement time; the current count is
+`resolveConcurrency`'s in `tests/run.mjs`) = 16 test files at once plus forked children and bound ports; this
 was a 16-core / 30 GiB host and the result should not be extrapolated to a smaller one (Termux
 especially). One jobs=4 run spiked to 45 runnable threads and still finished correctly; nothing
 wedged, hung, or thrashed.
