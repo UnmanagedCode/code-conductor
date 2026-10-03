@@ -20,16 +20,17 @@ async function walk(dir) {
   return out;
 }
 
-// Files W3 gates off on Windows (remote providers and the FUSE union), so they
-// never run there. The built-in local System (localSystem.ts, system.ts, ...)
-// does run there and is NOT exempt.
+// Files that stay imported on every platform but run only behind a capability
+// (`Platform.capabilities`), so they never run where the host turns it off. The
+// built-in local System (localSystem.ts, system.ts, ...) does run everywhere and
+// is NOT exempt.
 const ALLOWED = [
-  'src/systems/referenceProvider.ts', // reference remote provider: no remote systems on Windows
-  'src/systems/providerSystem.ts',    // remote-provider System client: no remote systems on Windows
-  'src/systems/fuse/',                // FUSE-union chroot for remote workers: POSIX-only
-  'src/tts.ts',                       // voice: gated off on Windows
-  'src/transcribe.ts',                // voice: gated off on Windows
-  'src/installRunner.ts',             // voice installers: gated off on Windows
+  'src/systems/referenceProvider.ts', // never imported by src/; runs as a provider process
+  'src/systems/providerSystem.ts',    // built only for a registered non-local row (none can be added with remoteSystems off) or the CC_LOCAL_SYSTEM_PROVIDER test seam
+  'src/systems/fuse/',                // imported, but run only for a remote session (refused FUSE_UNAVAILABLE with fuseUnion off) or the boot sweep (skipped with it off)
+  'src/tts.ts',                       // run only behind routes refused VOICE_UNAVAILABLE with voice off
+  'src/transcribe.ts',                // run only behind routes refused VOICE_UNAVAILABLE with voice off
+  'src/installRunner.ts',             // run only behind the voice install routes, refused VOICE_UNAVAILABLE with voice off
 ];
 
 const files = [...await walk(path.join(root, 'src')), path.join(root, 'server.ts')]

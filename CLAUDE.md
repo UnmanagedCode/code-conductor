@@ -11,7 +11,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
 - **Project name → directory resolution** → `resolveProjectDir` in `src/projects.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/architecture.md` → `src/projects.ts`
 - **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`
-- **Host-OS differences (spawn options, shell, kill, command splitting, path keys)** → `Platform` in `src/platform/`; no `process.platform` elsewhere
+- **Host-OS differences (spawn options, shell, kill, command splitting, path keys, feature capabilities)** → `Platform` in `src/platform/`; no `process.platform` elsewhere
 - **Project-scoped I/O — git, files in a project tree, commands run in one** → take the project's `System` handle (`src/systems/`) rather than bare `node:fs`/`spawn`; `docs/architecture.md` → Conventions carries the rule and the list of sanctioned exceptions
 - **The System provider wire protocol — frames, capabilities, the `exec` lifecycle, the derivations, the error taxonomy, how to write or verify a provider** → `docs/systems-protocol.md`
 - **A remote worker's FUSE-union chroot — the tier table, the mount record, teardown, the boot sweep** → `src/systems/fuse/`; `docs/architecture.md` → "The FUSE-union chroot" and "FUSE teardown"

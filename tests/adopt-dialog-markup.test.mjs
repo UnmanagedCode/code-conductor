@@ -23,6 +23,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { withHealth } from './capabilitiesStub.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -156,7 +157,7 @@ test('the real markup drives the real module end to end', async () => {
   ];
   const requests = [];
   let postIdx = 0;
-  globalThis.fetch = async (url, opts) => {
+  globalThis.fetch = withHealth(async (url, opts) => {
     if (String(url).includes('/api/projects/suggestions')) return { ok: true, status: 200, json: async () => scan };
     // The registry is a GET the dialog makes on open; routing it into
     // `requests` would count it as one of the POSTs asserted below.
@@ -164,7 +165,7 @@ test('the real markup drives the real module end to end', async () => {
     requests.push({ url: String(url), body: JSON.parse(opts.body) });
     const next = posts[Math.min(postIdx++, posts.length - 1)];
     return { ok: next.status < 400, status: next.status, json: async () => next.body };
-  };
+  });
 
   let refreshed = 0;
   let overflowClosed = 0;
