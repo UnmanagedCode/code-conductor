@@ -54,7 +54,7 @@ export function joinDictation(before, text) {
 // null or `(text) => boolean` for that recording's transcript. Returning true
 // means the transcript was delivered elsewhere (the session it started in), so
 // the composer neither inserts it nor marks its own draft as dictated.
-export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize, onDraftChange, claimTranscriptTarget }) {
+export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize, onDraftChange, claimTranscriptTarget, voiceSupported = () => true }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
   // `let` because swapAttachments replaces the whole list; every other path
@@ -90,6 +90,8 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // probeMicAvailability below, and Settings' onAvailabilityChange). When
   // false, an empty composer just shows a disabled Send (no mic affordance).
   let micAvailable = false;
+  // False (including before the platform's capabilities have loaded) keeps an
+  // empty composer in Send mode: no mic affordance, no dictation prompt.
 
   // Recording state for the merged Send/mic button — declared up here because
   // setState calls updateButton before the dictation block below would
@@ -142,7 +144,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     if (recordingState === 'recording') mode = 'recording';
     else if (recordingState === 'transcribing') mode = 'transcribing';
     else if (hasContent) mode = 'send';
-    else if (canType) mode = 'mic';
+    else if (canType && voiceSupported()) mode = 'mic';
     else mode = 'send';
 
     // In send mode while overage-paused the button QUEUES rather than sends.
@@ -169,7 +171,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       sendBtn.disabled = !canSend || !hasContent;
       sendBtn.title = queueMode
         ? 'Queue message — delivered when the rate-limit window resets'
-        : (micAvailable ? 'Send message (hold to dictate)' : 'Send message');
+        : (micAvailable && voiceSupported() ? 'Send message (hold to dictate)' : 'Send message');
     }
   }
   // Alias so the existing call sites keep reading naturally.
@@ -457,7 +459,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       e.preventDefault();
       return;
     }
-    if (sendBtn.classList.contains('mode-send') && micAvailable) {
+    if (sendBtn.classList.contains('mode-send') && micAvailable && voiceSupported()) {
       // preventDefault keeps the textarea focused so the keyboard does not collapse
       // during the hold gesture — without it, blur+layout-shift moves the button
       // out from under the finger before the 500 ms threshold can fire on Android.

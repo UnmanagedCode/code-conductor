@@ -38,6 +38,7 @@
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
 
 import { apiFetch } from './http.js';
+import { loadCapabilities } from './capabilities.js';
 
 export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOverflow }) {
   const pluginOf = (slug, explicit) => explicit ?? (slug.includes('/') ? slug.split('/')[0] : null);
@@ -147,6 +148,14 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   async function buildSystems() {
     if (!dom.npSystem) return;
     dom.npSystem.innerHTML = '';
+    // A platform without remote Systems offers only this machine: no picker,
+    // no path or remote rows, no registry fetch.
+    if (!(await loadCapabilities()).remoteSystems) {
+      const row = dom.npSystem.closest('label');
+      if (row) row.hidden = true;
+      syncSystemPathRow();
+      return;
+    }
     let systems = [{ id: 'local', label: 'This machine', managed: true }];
     try {
       const r = await fetch('/api/settings/systems');

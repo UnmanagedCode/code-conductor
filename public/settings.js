@@ -11,6 +11,7 @@
 // view, and another view superseding Settings hides it without requestClose.
 
 import { formatAgo } from './sidebar.js';
+import { loadCapabilities } from './capabilities.js';
 import { installPluginManager } from './pluginManager.js';
 import { installConventionsPanel } from './conventionsPanel.js';
 import { installDefaultPlaybook } from './defaultPlaybook.js';
@@ -208,6 +209,19 @@ export function installSettings({
   // and the initial sync() — so repaint once it has.
   window.addEventListener('pageshow', renderGroup);
 
+  // Groups whose feature the platform lacks are dropped from the select, and the
+  // view falls back to the first remaining group if it was showing one.
+  const GROUP_CAPABILITY = { systems: 'remoteSystems', voice: 'voice' };
+  function applyCapabilities(caps) {
+    if (!groupSelect) return;
+    for (const [group, cap] of Object.entries(GROUP_CAPABILITY)) {
+      if (caps[cap]) continue;
+      groupSelect.querySelector(`option[value="${group}"]`)?.remove();
+      if (currentGroup === group) currentGroup = groupSelect.options[0]?.value;
+    }
+    renderGroup();
+  }
+
   function show() {
     if (isOpen) return;
     isOpen = true;
@@ -215,13 +229,15 @@ export function installSettings({
     view.hidden = false;
     renderGroup();
     reconcileMainViews();
-    load();
     clearOverageDirty(); // discard any un-applied edit from a prior open before refetching
     clearOverageStatus(); // discard any stale applied/failed message from a prior open
     loadModels();
-    loadSystems();
     loadDebugDefaultPref();
-    loadTts();
+    loadCapabilities().then((caps) => {
+      applyCapabilities(caps);
+      if (caps.voice) { load(); loadTts(); }
+      if (caps.remoteSystems) loadSystems();
+    });
     loadArchived();
     conductorPanel.load();
     workspacePanel.load();
