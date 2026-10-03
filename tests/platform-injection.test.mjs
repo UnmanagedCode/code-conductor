@@ -18,6 +18,7 @@ import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { cliEnvBase } from '../src/cliEnv.ts';
 import { projectsRoot } from '../src/projects.ts';
 import { checkClaudeReadiness } from '../src/health.ts';
+import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 
 function fakePlatform(overrides = {}) {
@@ -206,4 +207,27 @@ test('checkClaudeReadiness reports an unresolvable host shell', async () => {
   const issue = r.issues.find(i => i.code === 'shell_missing');
   assert.ok(issue);
   assert.match(issue.title, /bash\.exe not found/);
+});
+
+test('a spawned instance\'s launch env carries the injected platform\'s cliEnv, host env winning', async () => {
+  const seen = [];
+  class Spy extends InProcessClaudeLauncher {
+    launch(opts) { seen.push(opts.env); return super.launch(opts); }
+  }
+  const fake = fakePlatform({ cliEnv: () => ({ W2_PLATFORM_VAR: 'from-platform', W2_HOST_WINS: 'platform' }) });
+  const prev = process.env.W2_HOST_WINS;
+  process.env.W2_HOST_WINS = 'host';
+  const ctx = await bootServer({ platform: fake, claudeLauncher: new Spy() });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201);
+    await waitFor(() => seen.length > 0);
+    assert.equal(seen[0].W2_PLATFORM_VAR, 'from-platform');
+    assert.equal(seen[0].W2_HOST_WINS, 'host');
+    assert.ok(fake.calls.some(c => c[0] === 'cliEnv'));
+  } finally {
+    if (prev === undefined) delete process.env.W2_HOST_WINS; else process.env.W2_HOST_WINS = prev;
+    await ctx.close();
+  }
 });

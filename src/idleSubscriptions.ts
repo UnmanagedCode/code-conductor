@@ -264,7 +264,7 @@ export class IdleSubscriptionHub {
     // A commanded teardown's interrupted turn_end is not a turn finishing: a
     // killed busy worker emits none where SIGTERM stops it outright, so the
     // armed wake resolves through the exit path instead.
-    if (target._killing) return;
+    if (target._killing && this.manager.softSigterm === false) return;
     // A turn_end supersedes any pending idle-drain settle: either it consumes
     // the wake right here, or its defer keeps the turn_end path in
     // charge (and the settle's fire-time freeze check would drop it anyway —

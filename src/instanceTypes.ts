@@ -263,6 +263,8 @@ export interface InstanceLike {
 }
 
 export interface InstanceManagerLike {
+  // Platform.softSigterm of the host this manager runs on.
+  readonly softSigterm: boolean;
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
   // Both session lookups return null (not undefined) on a miss — the impl's

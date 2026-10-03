@@ -148,7 +148,8 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
     },
 
     pathKey(p) {
-      let n = w.normalize(p);
+      // `\\?\C:\x` is the same file as `C:\x`; UNC (`\\?\UNC\…`) keeps its prefix.
+      let n = w.normalize(p).replace(/^\\\\\?\\(?=[A-Za-z]:)/, '');
       if (n.length > 1 && n.endsWith('\\') && !/^[A-Za-z]:\\$/.test(n)) n = n.slice(0, -1);
       return n.toLowerCase();
     },

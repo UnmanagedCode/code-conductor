@@ -2417,7 +2417,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the backend's own env, the substitution-backend native window, the
     // .conduct override) are allowed to set them, and they must run after this
     // strip so their values win.
-    const spawnEnv = cliEnvBase();
+    const spawnEnv = cliEnvBase(this._platform);
     // A REMOTE-BACKED WORKER GETS ITS REMOTE'S OWN CLI CONFIG DIRECTORY, so the
     // transcript directory the CLI derives from its cwd is scoped by a root
     // that already differs per machine. Two projects at `/root/app3` on two
@@ -4431,6 +4431,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Live backing maps exposed for the subsystems' callers (tests reach for
   // `_idleSubscribers.clear()` / `_autoResumeTimers.has()/.size` directly, and
   // the maps must be the same objects the collaborators mutate).
+  get softSigterm(): boolean { return this._platform.softSigterm; }
   get _idleSubscribers() { return this._idleHub.subscribers; }
   get _autoResumeTimers() { return this._overageResume.timers; }
 
@@ -4496,7 +4497,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
   // reorder those registrations without revisiting this method.
   shouldSuppressTurnNotification(instanceId: string): boolean {
-    if (this.byId.get(instanceId)?._killing) return true;  // an interrupted turn of a commanded teardown
+    if (!this._platform.softSigterm && this.byId.get(instanceId)?._killing) return true;  // an interrupted turn of a commanded teardown
     if (this._idleHub.isCaller(instanceId)) return true;   // Condition 1
     if (this._idleHub.wasConsumed(instanceId)) return true; // Condition 2
     return false;

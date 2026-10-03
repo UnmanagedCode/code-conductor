@@ -65,6 +65,9 @@ test('pathKey: separators, trailing slash, drive root and case', () => {
   assert.equal(win32Platform.pathKey('C:/A/b/'), 'c:\\a\\b');
   assert.equal(win32Platform.pathKey('C:\\'), 'c:\\');
   assert.equal(win32Platform.pathKey('c:/'), 'c:\\');
+  assert.equal(win32Platform.pathKey('\\\\?\\C:\\'), 'c:\\', 'extended-length drive root');
+  assert.equal(win32Platform.pathKey('\\\\?\\C:\\Users\\X'), win32Platform.pathKey('c:/users/x/'));
+  assert.equal(win32Platform.pathKey('\\\\?\\UNC\\srv\\share'), '\\\\?\\unc\\srv\\share', 'UNC keeps its prefix');
 });
 
 test('samePath pins createProject\'s git-dir check: git\'s C:/…/.git equals path.join(real, ".git")', () => {

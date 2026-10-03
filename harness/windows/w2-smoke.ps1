@@ -242,8 +242,11 @@ try {
     Git $Repo @('fetch', '-q', 'origin') | Out-Null
     Git $Repo @('branch', '--set-upstream-to', "origin/$branch") | Out-Null
     $null = & git clone -q $origin $seed
+    # A package.json edit (depsChanged) is what makes the update run npm install.
     $pj = Join-Path $seed 'package.json'
-    [IO.File]::WriteAllText($pj, ((Get-Content $pj -Raw) -replace '"version": "([^"]+)"', '"version": "$1"' -replace '\{', "{`n  `"w2Marker`": true,", 1))
+    $pkg = Get-Content $pj -Raw | ConvertFrom-Json
+    $pkg | Add-Member -NotePropertyName w2Marker -NotePropertyValue $true -Force
+    [IO.File]::WriteAllText($pj, (($pkg | ConvertTo-Json -Depth 20) + "`n"))
     Git $seed @('commit', '-q', '-am', 'w2 update') | Out-Null
     Git $seed @('push', '-q', 'origin', "HEAD:$branch") | Out-Null
     $newHead = Git $seed @('rev-parse', 'HEAD')

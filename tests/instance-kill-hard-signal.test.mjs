@@ -108,14 +108,31 @@ test('a soft-SIGTERM host sends no interrupt on kill', async () => {
   }
 });
 
+const mkFake = (id, sessionId) => ({
+  id, sessionId, project: 'p', proc: { pid: 1 }, status: 'turn', acceptsMidTurnSteering: true,
+  steerPending: false, activeAgentTaskCount: 0, taskNotificationPending: false, rotationPending: false,
+  _killing: false, _emitUi() {}, ring: { trimmedBefore: 0 }, ringSnapshot() { return []; },
+  async prompt() {}, async interrupt() {},
+});
+
+test('on a soft-SIGTERM host a killing worker\'s turn_end is NOT suppressed (Linux unchanged)', async () => {
+  const instances = new InstanceManager({ platform: posixPlatform });
+  const worker = mkFake('w', 'ws'); const conductor = mkFake('c', 'cs');
+  instances.byId.set('w', worker); instances.byId.set('c', conductor);
+  instances.noteDispatch('cs', 'ws');
+  instances._idleHub.onTurnStart('w');
+  worker._killing = true;
+  instances.emit('event', { id: 'w', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  assert.equal(instances._idleHub.subscribers.get('w')?.size ?? 0, 0, 'the wake was consumed as before');
+  await Promise.resolve(); // past the hub's same-dispatch "consumed" marker
+  assert.equal(instances.shouldSuppressTurnNotification('w'), false, '_killing alone suppresses nothing here');
+  instances._idleHub.subscribers.clear();
+  await instances.shutdown().catch(() => {});
+});
+
 test('the interrupted turn_end of a killed worker neither wakes the conductor nor notifies', async () => {
-  const instances = new InstanceManager();
-  const mk = (id, sessionId) => ({
-    id, sessionId, project: 'p', proc: { pid: 1 }, status: 'turn', acceptsMidTurnSteering: true,
-    steerPending: false, activeAgentTaskCount: 0, taskNotificationPending: false, rotationPending: false,
-    _killing: false, _emitUi() {}, ring: { trimmedBefore: 0 }, ringSnapshot() { return []; },
-    async prompt() {}, async interrupt() {},
-  });
+  const instances = new InstanceManager({ platform: hard.p });
+  const mk = mkFake;
   const worker = mk('w', 'ws'); const conductor = mk('c', 'cs');
   instances.byId.set('w', worker); instances.byId.set('c', conductor);
   instances.noteDispatch('cs', 'ws');
