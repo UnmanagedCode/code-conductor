@@ -259,10 +259,10 @@ if ! is_mounted "$CC_FUSE_ROOT"; then
 	exit 78
 fi
 
-# ── 6. CAPTURE THE CONNECTION MINOR NOW, while the mount exists. Resolving it
-#       from mountinfo BY MOUNTPOINT is only possible here: the same lookup run
-#       during teardown — after the unmount — is a silent no-op, which makes an
-#       abort path that resolves it there do nothing at all.
+# ── 6. CAPTURE THE CONNECTION MINOR NOW, while the mount exists. Teardown
+#       aborts it only after checking the root is STILL attached on this
+#       recorded minor (session.ts step 3), which a minor re-resolved there
+#       from the root would make a tautology.
 MINOR=$(awk -v p="$CC_FUSE_ROOT" '$5 == p { print $3; exit }' /proc/self/mountinfo)
 MINOR=${MINOR#*:}
 [ -n "$MINOR" ] || die "could not capture the connection minor for $CC_FUSE_ROOT"

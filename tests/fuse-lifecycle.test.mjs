@@ -42,16 +42,25 @@ import { randomUUID } from 'node:crypto';
 // `umountFails` fails BOTH plain and lazy; `lazyOnly` fails plain and succeeds
 // lazily, which is the only way to reach the lazy-success branch — without it
 // that branch can be deleted and the whole suite stays green.
-function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, conns = [],
+// THE KERNEL MODEL behind fusectl, opt-in through `devs` (mountpoint → the
+// minor of the FUSE superblock mounted there). Unmounting the LAST mount of a
+// superblock destroys it: its connection leaves fusectl and its anon minor is
+// free for the next FUSE mount anywhere on the host — `onSuperblockGone` is
+// where a fixture hands it to another session. `conns` entries are
+// `{ minor, owner, aborted }`; a plain string is one of this session's own.
+function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, conns = [], devs = {},
+  onSuperblockGone = () => {},
   umountFails = new Set(), lazyOnly = new Set(), abortOk = true, undead = new Set(),
   nsMntId = NS, scanOk = true } = {}) {
   let clock = 0;
   const calls = [];
   const rec = (op, ...args) => calls.push([op, ...args]);
+  const connTable = conns.map(c => typeof c === 'string' ? { minor: c, owner: 'self', aborted: false } : c);
   const d = {
     calls,
     procs,
     mounts,
+    conns: connTable,
     async readMounts(pid) {
       if (mounts[pid]) return mounts[pid];                 // an explicit per-pid override
       if (pid === 1 || pid === process.pid) return hostMounts;
@@ -69,14 +78,34 @@ function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, c
       rec('umount', mp, lazy ? 'lazy' : 'plain');
       if (umountFails.has(mp)) return false;                 // neither works
       if (lazyOnly.has(mp) && !lazy) return false;            // plain fails, lazy will do
+      let removed = false;
       for (const list of [nsMounts, hostMounts, ...Object.values(mounts)]) {
         const i = list.indexOf(mp);
-        if (i >= 0) list.splice(i, 1);
+        if (i >= 0) { list.splice(i, 1); removed = true; }
+      }
+      if (removed && devs[mp] !== undefined) {
+        const minor = devs[mp];
+        delete devs[mp];
+        for (let i = connTable.length - 1; i >= 0; i--) if (connTable[i].minor === minor) connTable.splice(i, 1);
+        onSuperblockGone(minor, connTable);
       }
       return true;
     },
-    async abortMinor(nsPid, fusectl, minor) { rec('abort', minor); return abortOk; },
-    async listConnections() { return conns; },
+    // The ownership-checked abort: the write happens only while `root` is
+    // attached in the namespace's table on `minor`, and reaches whichever
+    // connection holds `minor` — a fusectl entry carries no owner. `abort` is
+    // recorded only for a write actually attempted.
+    async abortOwnConnection(nsPid, fusectl, minor, root) {
+      rec('abort-check', minor, root);
+      if (!((await d.readMounts(nsPid)) ?? []).includes(root) || devs[root] !== minor) return 'not-mounted';
+      const c = connTable.find(x => x.minor === minor);
+      if (!c) return 'no-entry';
+      rec('abort', minor);
+      if (!abortOk) return 'failed';
+      c.aborted = true;
+      return 'aborted';
+    },
+    async listConnections() { return connTable.map(c => c.minor); },
     // A signalled process dies, unless the fixture marks it `undead` — which
     // is how the wedged shapes (a `D`-state worker, a zombie leader with a live
     // sibling thread) are built.
@@ -148,6 +177,11 @@ function healthyMounts(record) {
   ];
 }
 
+// The union root attached on the recorded minor — the kernel state in which
+// that minor is provably this session's, and so the only one an abort is
+// issued in.
+const ownDev = (record) => ({ [record.root]: record.minor });
+
 // The three recorded processes of a healthy session, all alive.
 const liveBoth = () => ({
   [WORKER]: { starttime: WORKER_START, state: 'S' },
@@ -156,31 +190,37 @@ const liveBoth = () => ({
 });
 
 describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
-  // PINS: unmounts are issued deepest-first, and every one of them is issued
-  // BEFORE the abort. Both halves matter — a set assertion would pass on an
-  // ordering that makes the abort a no-op.
-  test('unmounts deepest-first, and all of them before the abort', async () => {
+  // PINS: unmounts are issued deepest-first; every one of them but the two held
+  // back is issued BEFORE the abort, and the union root RIGHT AFTER it. Each
+  // half matters — a set assertion would pass on an ordering that makes the
+  // abort a no-op (fusectl gone) or unprovable (the root gone, its minor free
+  // for another session to take).
+  test('unmounts deepest-first, every one but the union root before the abort, and the root right after it', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
-    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], devs: ownDev(record) });
     await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
 
-    const abortAt = driver.calls.findIndex(c => c[0] === 'abort');
+    const seq = driver.calls.filter(c => c[0] === 'umount' || c[0] === 'abort');
+    const abortAt = seq.findIndex(c => c[0] === 'abort');
     assert.ok(abortAt >= 0, 'the abort was issued');
     // Deepest-first: every unmount before the abort is at least as long as the
     // one after it.
-    const beforeAbort = driver.calls.slice(0, abortAt).filter(c => c[0] === 'umount').map(c => c[1]);
+    const beforeAbort = seq.slice(0, abortAt).map(c => c[1]);
     for (let i = 1; i < beforeAbort.length; i++) {
       assert.ok(beforeAbort[i].length <= beforeAbort[i - 1].length,
         `not deepest-first: ${beforeAbort[i]} came after ${beforeAbort[i - 1]}`);
     }
-    // Every mount under the run dir EXCEPT fusectl is unmounted before the
-    // abort; fusectl is held back because the abort is written through it.
+    // Every mount under the run dir EXCEPT fusectl and the root is unmounted
+    // before the abort; fusectl is held back because the abort is written
+    // through it, the root because it is the proof the minor is ours.
     for (const mp of healthyMounts(record)) {
-      if (mp === record.fusectl) continue;
+      if (mp === record.fusectl || mp === record.root) continue;
       assert.ok(beforeAbort.includes(mp), `${mp} was not unmounted before the abort`);
     }
     assert.ok(!beforeAbort.includes(record.fusectl), 'fusectl was unmounted before the abort, which makes the abort a no-op');
+    assert.ok(!beforeAbort.includes(record.root), 'the union root was unmounted before the abort, which frees the minor it proves ours');
+    assert.deepEqual(seq[abortAt + 1], ['umount', record.root, 'plain'], 'the union root was not the next unmount after the abort');
     // Nothing is unmounted after the daemon dies here, because the mount
     // namespace goes with its last process. The held-back fusectl mount IS
     // unmounted when something is still in the namespace — next test.
@@ -192,7 +232,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([DAEMON]) });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], devs: ownDev(record), undead: new Set([DAEMON]) });
     await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     const seq = driver.calls.filter(c => c[0] === 'umount' || c[0] === 'abort');
     const abortAt = seq.findIndex(c => c[0] === 'abort');
@@ -200,16 +240,80 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     assert.ok(fusectlAt > abortAt && abortAt >= 0, `fusectl at ${fusectlAt}, abort at ${abortAt}`);
   });
 
-  // PINS: the abort names the minor RECORDED AT MOUNT TIME. Re-resolving it
-  // from mountinfo during teardown is a silent no-op, because the mount is
-  // already gone by then.
+  // PINS: the abort names the minor RECORDED AT MOUNT TIME, not another
+  // connection fusectl happens to list.
   test('aborts the minor captured at mount time', async () => {
     const { rundir, record } = await seedRun({ minor: '91' });
-    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['91', '12'] });
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['91', '12'], devs: ownDev(record) });
     const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [['abort', '91']]);
     assert.equal(report.abort, 'aborted');
     assert.equal(report.minor, '91');
+  });
+
+  // T1 — PINS: a minor another session took over after our superblock died is
+  // never aborted. Unmounting the union root destroys the superblock and frees
+  // its anon minor, which the kernel hands out lowest-free — so the next FUSE
+  // mount on the host, typically another session's bootstrap, gets the same
+  // number, and fusectl (one global superblock) lists it. Listed is not owned.
+  test('a minor another session took over after our unmount is never aborted', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({
+      procs: liveBoth(), nsMounts: healthyMounts(record),
+      conns: ['77'], devs: { [record.root]: '77' },
+      onSuperblockGone: (minor, conns) => conns.push({ minor, owner: 'other-session', aborted: false }),
+    });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    const other = driver.conns.find(c => c.owner === 'other-session');
+    assert.ok(other, 'the reuse was never forced: the union root was never unmounted');
+    assert.equal(other.aborted, false, `teardown aborted connection ${other.minor}, which another session had taken over`);
+  });
+
+  // T2 — PINS the dev-equality half of the ownership check: the root is
+  // attached, but on a different minor, so the recorded one is not provably
+  // ours and is not aborted.
+  test('a root attached on a different minor is not-mounted, and the recorded minor is not aborted', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({
+      procs: liveBoth(), nsMounts: healthyMounts(record),
+      conns: ['12', { minor: '77', owner: 'other-session', aborted: false }], devs: { [record.root]: '12' },
+    });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(report.abort, 'not-mounted');
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), []);
+    assert.ok(report.notes.some(n => n.includes(`not mounted on connection 77`)), report.notes.join(' | '));
+  });
+
+  // T3 — PINS the attachment half: the root is no longer in the namespace's
+  // table at all, so the recorded minor — listed by fusectl, held by another
+  // session — is not aborted, and no unmount of the root is issued.
+  test('a root no longer attached is not-mounted, and the listed minor is not aborted', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({
+      procs: liveBoth(), nsMounts: healthyMounts(record).filter(mp => mp !== record.root),
+      conns: [{ minor: '77', owner: 'other-session', aborted: false }],
+    });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(report.abort, 'not-mounted');
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), []);
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'umount' && c[1] === record.root), []);
+  });
+
+  // T4 — PINS: a `root` that is not the path cc chose is a schema violation —
+  // a SCHEMA note, a wedge, and no abort is so much as attempted, because the
+  // ownership check would be taken against a path cc never mounted.
+  test('a schema-violating root is refused and reported, and no abort is attempted', async () => {
+    const { rundir } = await seedRun({ root: '/elsewhere/root' });
+    const realRoot = path.join(rundir, 'root');
+    const driver = fakeDriver({
+      procs: liveBoth(), nsMounts: healthyMounts({ root: realRoot, fusectl: path.join(rundir, 'fusectl'), mirror: path.join(rundir, 'mirror') }),
+      conns: ['77'], devs: { [realRoot]: '77' },
+    });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.ok(report.notes.some(n => n.startsWith('SCHEMA: root')), report.notes.join(' | '));
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'abort-check' || c[0] === 'abort'), []);
   });
 
   // PINS: a `D`-state worker that survives SIGKILL does not stop the machine —
@@ -218,7 +322,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     procs[WORKER].state = 'D';
-    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([WORKER]) });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], devs: ownDev(record), undead: new Set([WORKER]) });
     const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.workerStopped, false);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal' && c[1] === WORKER).map(c => c[2]), ['SIGTERM', 'SIGKILL']);
@@ -333,19 +437,19 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56', '59', '77'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56', '59', '77'], devs: ownDev(record) });
     const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.strayConnections, 2);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [['abort', '77']]);
   });
 
-  // PINS: the abort is not attempted when the connection is not listed — that
-  // is ABORT-UNAVAILABLE, a note, and the machine carries on.
+  // PINS: the abort is not attempted when fusectl has no entry for the
+  // connection — that is ABORT-UNAVAILABLE, a note, and the machine carries on.
   test('a minor with no fusectl entry is ABORT-UNAVAILABLE and does not stop teardown', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56'], devs: ownDev(record) });
     const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.abort, 'ABORT-UNAVAILABLE');
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), []);
@@ -2848,7 +2952,7 @@ describe('the clean verdict comes from namespace membership, not the recorded se
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], abortOk: false });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], devs: ownDev(record), abortOk: false });
     const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.abort, 'abort-failed');
     assert.ok(report.notes.some(n => n.includes('/abort failed')), report.notes.join(' | '));
