@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { createWin32Platform, resolveGitBash, taskkillArgv } from '../src/platform/win32.ts';
+import { createWin32Platform, resolveGitBash, taskkillArgv, gitRootOfBash } from '../src/platform/win32.ts';
 import { win32Platform } from '../src/platform/index.ts';
 
 const GIT = 'C:\\Program Files\\Git';
@@ -40,6 +40,19 @@ test('commandFor: shell is bash -lc; bash/sh/env map into Git; others pass throu
   assert.deepEqual(p.commandFor({ argv: ['env', 'A=1'] }), { command: `${GIT}\\usr\\bin\\env.exe`, args: ['A=1'] });
   assert.deepEqual(p.commandFor({ argv: ['env', 'A=1', 'B=2', 'bash', 'x'] }), { command: `${GIT}\\usr\\bin\\env.exe`, args: ['A=1', 'B=2', BASH, 'x'] });
   assert.deepEqual(p.commandFor({ argv: ['git', 'status'] }), { command: 'git', args: ['status'] });
+});
+
+test('gitRootOfBash: bin\\bash.exe and usr\\bin\\bash.exe both map to the Git root', () => {
+  assert.equal(gitRootOfBash(BASH), GIT);
+  assert.equal(gitRootOfBash(`${GIT}\\usr\\bin\\bash.exe`), GIT);
+  assert.equal(gitRootOfBash(`${GIT}\\USR\\BIN\\bash.exe`), GIT);
+});
+
+test('commandFor: a usr\\bin bash override still maps sh/env into the Git root', () => {
+  const usrBash = `${GIT}\\usr\\bin\\bash.exe`;
+  const p = plat({ env: { CLAUDE_CODE_GIT_BASH_PATH: usrBash }, files: [usrBash] });
+  assert.deepEqual(p.commandFor({ argv: ['env', 'A=1'] }), { command: `${GIT}\\usr\\bin\\env.exe`, args: ['A=1'] });
+  assert.deepEqual(p.commandFor({ argv: ['sh', '-c', 'x'] }), { command: `${GIT}\\bin\\sh.exe`, args: ['-c', 'x'] });
 });
 
 test('commandFor throws only when the mapping needs bash and it is unresolved; success is memoised, failure is not', () => {

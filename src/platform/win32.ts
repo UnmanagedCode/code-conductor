@@ -43,6 +43,13 @@ export function resolveGitBash(env: Win32Env, exists: (p: string) => boolean): s
   throw new Error(`Git for Windows' bash.exe not found — install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH (looked in: ${candidates.join(', ') || 'nowhere: no candidate locations'})`);
 }
 
+// Git's install root from its bash: `<root>\bin\bash.exe` or `<root>\usr\bin\bash.exe`.
+export function gitRootOfBash(bash: string): string {
+  const bin = w.dirname(bash);
+  const up = w.dirname(bin);
+  return w.basename(up).toLowerCase() === 'usr' ? w.dirname(up) : up;
+}
+
 export function taskkillArgv(pid: number, env: Win32Env = process.env): [string, string[]] {
   const root = env.SystemRoot || 'C:\\Windows';
   return [w.join(root, 'System32', 'taskkill.exe'), ['/T', '/F', '/PID', String(pid)]];
@@ -61,7 +68,7 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
   // Memoise success only: installing Git later takes effect without a restart.
   let bash: string | null = null;
   const gitBash = (): string => (bash ??= resolveGitBash(d.env, d.exists));
-  const gitRoot = (): string => w.dirname(w.dirname(gitBash()));
+  const gitRoot = (): string => gitRootOfBash(gitBash());
 
   const mapTool = (name: string): string => {
     if (name === 'bash') return gitBash();

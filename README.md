@@ -71,7 +71,7 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 
 ## Windows
 
-A per-user installer for Windows 11 (bundled Node, git checkout with in-app self-update, Start-menu launcher, uninstaller) is built with `npm run build:win-installer` — see [docs/windows.md](docs/windows.md). cc needs Git for Windows (Git Bash) there, and Systems, the FUSE union and Voice are off.
+cc runs on Windows 11 under Git for Windows (Git Bash); Systems, the FUSE union and Voice are off there. The per-user installer is the separate `code-conductor-windows` project — see [docs/windows.md](docs/windows.md).
 
 ## Systems
 
@@ -199,7 +199,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - [docs/protocol.md](docs/protocol.md) — subprocess protocol (CLI flags + hooks), WebSocket protocol, REST endpoints
 - [docs/architecture.md](docs/architecture.md) — stack, component layout, instance lifecycle, on-disk state, migrations, testing
 - [docs/frontend-testing.md](docs/frontend-testing.md) — testing `public/` under happy-dom (its UA-stylesheet and `hashchange` gaps, dialog reopen tests) and what the fake-CLI + headless-Chromium pass can and cannot reach
-- [docs/windows.md](docs/windows.md) — the per-user Windows installer: build, install layout, launcher, `PROJECTS_ROOT`, update, uninstall, limitations
+- [docs/windows.md](docs/windows.md) — Windows runtime, launcher and installer contract
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [docs/systems-protocol.md](docs/systems-protocol.md) — the System provider wire protocol: frames, capabilities, the `exec` lifecycle, the derivations, the error taxonomy, and how to write or verify a provider
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) into `.conduct/CONVENTIONS.md` before every Conduct session's spawn/resume, loaded via that dir's `CLAUDE.md` `@CONVENTIONS.md` import (configurable in Settings → Conventions → Conductor)

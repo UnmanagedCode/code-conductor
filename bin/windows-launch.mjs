@@ -1,14 +1,92 @@
-// The launcher the Start-menu stub (code-conductor.exe) runs:
-//   node launch.mjs            start (or reuse) the server and open the UI
-//   node launch.mjs --status   exit 0 running, 1 not running, 2 unidentified answer
-//   node launch.mjs --stop     kill the running server tree
+// The Windows Start-menu entry: the code-conductor-windows installer's stub
+// (code-conductor.exe) runs it with the bundled node. Its CLI, exit codes and
+// the install layout it assumes are the installer contract, documented in
+// docs/windows.md#installer-contract.
+//   node bin/windows-launch.mjs            start (or reuse) the server and open the UI
+//   node bin/windows-launch.mjs --status   exit 0 running, 1 not running, 2 unidentified answer
+//   node bin/windows-launch.mjs --stop     kill the running server tree
 // It lives in the checkout, so self-update updates it. Every side effect is
 // injectable (`deps`) so tests drive it without Windows.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { detectGit, detectClaude, launcherEnv, getEnv } from './toolchain.mjs';
+import { resolveGitBash, gitRootOfBash, taskkillArgv } from '../src/platform/win32.ts';
+
+const w = path.win32;
+
+// Windows env names are case-insensitive; an injected plain object is not.
+function envKey(env, name) {
+  const lower = name.toLowerCase();
+  return Object.keys(env).find((k) => k.toLowerCase() === lower);
+}
+function getEnv(env, name) {
+  const k = envKey(env, name);
+  return k === undefined ? undefined : env[k];
+}
+
+const splitPath = (value) => (value || '').split(';').filter(Boolean);
+
+// `name.exe` on PATH. Only `.exe` counts: an npm `.cmd` shim is not a binary
+// cc can spawn directly.
+export function findOnPath(name, env, exists = fs.existsSync) {
+  for (const dir of splitPath(getEnv(env, 'PATH'))) {
+    const candidate = w.join(dir.replace(/^"|"$/g, ''), `${name}.exe`);
+    if (exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+export function detectClaude(env, exists = fs.existsSync) {
+  const onPath = findOnPath('claude', env, exists);
+  if (onPath) return { claudeExe: onPath, dir: w.dirname(onPath) };
+  const home = getEnv(env, 'USERPROFILE');
+  if (home) {
+    const claudeExe = w.join(home, '.local', 'bin', 'claude.exe');
+    if (exists(claudeExe)) return { claudeExe, dir: w.dirname(claudeExe) };
+  }
+  return null;
+}
+
+function defaultProjectsRoot(env) {
+  return w.join(getEnv(env, 'USERPROFILE') || '', 'code-conductor');
+}
+
+// PATH entries deduplicated case-insensitively, first occurrence wins.
+function dedupePath(entries) {
+  const seen = new Set();
+  const out = [];
+  for (const e of entries) {
+    const key = e.toLowerCase().replace(/[\\/]+$/, '');
+    if (!e || seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+// The server's environment. Bundled node first (so `npm` is the bundled one),
+// then Git's `cmd`, then claude's dir. Deliberately sets no CLAUDE_BIN (it is
+// whitespace-split, so a path with spaces would break), HOST/PORT, or
+// CLAUDE_CODE_GIT_BASH_PATH.
+export function launcherEnv({ env, installDir, git, claude }) {
+  const out = { ...env };
+  const rootKey = envKey(env, 'PROJECTS_ROOT');
+  if (rootKey && rootKey !== 'PROJECTS_ROOT') delete out[rootKey];
+  const pathKey = envKey(env, 'PATH') || 'Path';
+  const head = [w.join(installDir, 'node')];
+  if (git) head.push(git.cmdDir);
+  if (claude) head.push(claude.dir);
+  out[pathKey] = dedupePath([...head, ...splitPath(getEnv(env, 'PATH'))]).join(';');
+  out.PROJECTS_ROOT = getEnv(env, 'PROJECTS_ROOT') || defaultProjectsRoot(env);
+  return out;
+}
+
+// Git's `cmd` dir and git.exe, from the Git Bash the server will use.
+function gitOfBash(bash) {
+  const cmdDir = w.join(gitRootOfBash(bash), 'cmd');
+  return { gitExe: w.join(cmdDir, 'git.exe'), cmdDir };
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -67,10 +145,13 @@ const defaults = {
   openUrl: (url) => {
     spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, windowsHide: true, stdio: 'ignore' }).unref();
   },
-  kill: (pid) => execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' }),
+  kill: (pid) => {
+    const [file, args] = taskkillArgv(pid);
+    execFileSync(file, args, { windowsHide: true, stdio: 'ignore' });
+  },
   readCommit: defaultCommit,
   mkdir: (dir) => fs.mkdirSync(dir, { recursive: true }),
-  detectGit,
+  gitBash: (env) => resolveGitBash(env, fs.existsSync),
   detectClaude,
 };
 
@@ -92,8 +173,12 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
     return { reused: true, pid: state.pid };
   }
 
-  const git = d.detectGit(env);
-  if (!git) throw new LaunchError('Git for Windows (with Git Bash) was not found; run the installer again');
+  let git;
+  try {
+    git = gitOfBash(d.gitBash(env));
+  } catch {
+    throw new LaunchError('Git for Windows (with Git Bash) was not found; run the installer again');
+  }
   const claude = d.detectClaude(env);
   const serverEnv = launcherEnv({ env, installDir, git, claude });
   const projectsRoot = getEnv(serverEnv, 'PROJECTS_ROOT');
@@ -178,8 +263,13 @@ export async function status(port, fetchFn = fetch, err = console.error) {
   return 1;
 }
 
+// <install>\app\bin\windows-launch.mjs -> <install>
+export function defaultInstallDir() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
 export async function main(argv, env = process.env) {
-  const installDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const installDir = defaultInstallDir();
   if (argv.includes('--status')) {
     return status(portOf(env));
   }
