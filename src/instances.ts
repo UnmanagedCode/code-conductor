@@ -4148,12 +4148,13 @@ export class Instance extends EventEmitter implements InstanceLike {
           outOfRange = e;
         }
         // Not in this snapshot. A line is owed only once the prompt's echo was
-        // emitted. Only a running turn can still write it: the CLI writes a
-        // turn's lines before its `result`, and prompt() flips the status to
-        // `turn` as it sends, so a read that began with no turn running already
-        // holds every line the source owes — it is the last one. A source that
-        // rotated or restarted during the read will never write the line to the
-        // pinned file.
+        // emitted. A read begun with no turn running is the last: a prompt sent
+        // while idle opens a turn (prompt() sets `turn` as it sends) whose lines
+        // precede its `result`. Not guaranteed for a steer still in the CLI's own
+        // input queue when a turn ends — written only once the CLI picks it up —
+        // so a fork in that window refuses, writing nothing; a retry succeeds.
+        // A source that rotated or restarted during the read will never write
+        // the line to the pinned file.
         if (userMessageIndex >= echoCount) throw outOfRange;
         this._assertForkSourceUnchanged(pin);
         if (!running || Date.now() >= deadline) {
