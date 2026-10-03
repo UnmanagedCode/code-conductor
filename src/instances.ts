@@ -4100,9 +4100,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (!backingId) {
       throw httpError(400, 'no sessionId — instance has not yet received a turn');
     }
-    this._mutating = 'fork';
-    // What this fork copies from, pinned before its first read. While the flag
-    // is held the pinned file only ever GROWS: its writers append (the CLI,
+    // What this fork copies from, pinned before its first read — and built
+    // BEFORE the claim, since sessionFilePath can throw and a throw between the
+    // claim and the `try` would leave the flag held for good. While the flag is
+    // held the pinned file only ever GROWS: its writers append (the CLI,
     // writeSessionMetadata), its only in-place rewriters (rewind, prune) refuse,
     // and a rotation moves the CLI onto a new file and leaves this one intact.
     // So any single read of it is a byte-prefix of its eventual contents.
@@ -4115,8 +4116,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     };
     const deadline = Date.now() + this._forkPersistWaitMs;
     let forked: { newSessionId: string; droppedText: string } | null = null;
+    this._mutating = 'fork';
     try {
-      let sawIdle = false;
       while (!forked) {
         // Synchronously, before the read: the source must still be the pinned
         // one, and the in-memory values captured here only decide whether to
@@ -4131,36 +4132,31 @@ export class Instance extends EventEmitter implements InstanceLike {
         // line of its own turn and of any later prompt, so nothing appended after
         // it — open-turn output, a steer, a new turn — can reach the copy.
         const snap = await this._readForkSnapshot(pin.file, pin.id);
-        const fileIdx = await this._fileOrdinalFor(userMessageIndex, { sessionId: pin.id, place: pin.place, ring, text: snap.text });
-        let outOfRange: unknown = null;
-        if (fileIdx !== null) {
-          try {
-            forked = await forkSessionAtUserMessage({
-              place: pin.place, sessionId: pin.id, snapshot: snap.text,
-              userMessageIndex: fileIdx, expectedText, mode: this.mode,
-            });
-            break;
-          } catch (e) {
-            if ((e as { code?: unknown }).code !== PROMPT_OUT_OF_RANGE) throw e;
-            outOfRange = e;
-          }
+        // An unplaceable prompt refuses at once, as rewind does: its message
+        // already tells the user to retry once the turn has finished.
+        const fileIdx = await this._fileOrdinalFor(userMessageIndex, { sessionId: pin.id, place: pin.place, ring, text: snap.text })
+          ?? promptUnresolved();
+        let outOfRange: unknown;
+        try {
+          forked = await forkSessionAtUserMessage({
+            place: pin.place, sessionId: pin.id, snapshot: snap.text,
+            userMessageIndex: fileIdx, expectedText, mode: this.mode,
+          });
+          break;
+        } catch (e) {
+          if ((e as { code?: unknown }).code !== PROMPT_OUT_OF_RANGE) throw e;
+          outOfRange = e;
         }
         // Not in this snapshot. A line is owed only once the prompt's echo was
-        // emitted, and only a live process can still write it. While a turn
-        // runs, wait. With none running — it ended (the CLI writes a turn's
-        // lines before its `result`) or has not opened yet — one more attempt
-        // follows the first that saw none. A source that rotated or restarted
-        // during the read will never write the line to the pinned file.
-        const owed = userMessageIndex < echoCount;
-        const mayWait = running || !sawIdle;
-        if (!running) sawIdle = true;
-        if (!owed) {
-          if (fileIdx === null) promptUnresolved();
-          throw outOfRange;
-        }
+        // emitted. Only a running turn can still write it: the CLI writes a
+        // turn's lines before its `result`, and prompt() flips the status to
+        // `turn` as it sends, so a read that began with no turn running already
+        // holds every line the source owes — it is the last one. A source that
+        // rotated or restarted during the read will never write the line to the
+        // pinned file.
+        if (userMessageIndex >= echoCount) throw outOfRange;
         this._assertForkSourceUnchanged(pin);
-        if (pin.proc === null || Date.now() >= deadline || !mayWait) {
-          if (fileIdx === null) promptUnresolved();
+        if (!running || Date.now() >= deadline) {
           throw httpError(409, `prompt ${userMessageIndex} hasn't been written to the session transcript yet — `
             + 'a message sent during a running turn is written when the turn picks it up; retry in a moment',
             { code: PROMPT_NOT_PERSISTED });
@@ -4243,19 +4239,24 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // A fork's wait between reads: sleeps FORK_PERSIST_POLL_MS before every size
-  // check, and returns once the pinned file's size differs from `size`, the
+  // probe, and returns once the pinned file's size differs from `size`, the
   // deadline passes, the source changes or the file is gone.
   async _awaitForkSourceGrowth(pin: ForkPin, size: number, deadline: number): Promise<void> {
     for (;;) {
       await new Promise(r => setTimeout(r, FORK_PERSIST_POLL_MS));
       if (Date.now() >= deadline || this._forkSourceChanged(pin)) return;
-      let now: number;
-      try { now = (await fsp.stat(pin.file)).size; }
-      catch (e) {
-        if (errCode(e) === 'ENOENT') return;
-        throw e;
-      }
-      if (now !== size) return;
+      const now = await this._forkSourceSize(pin.file);
+      if (now === null || now !== size) return;
+    }
+  }
+
+  // The pinned file's size in bytes, or null once it is gone. The test seam
+  // for the wait's poll rate.
+  async _forkSourceSize(file: string): Promise<number | null> {
+    try { return (await fsp.stat(file)).size; }
+    catch (e) {
+      if (errCode(e) === 'ENOENT') return null;
+      throw e;
     }
   }
 

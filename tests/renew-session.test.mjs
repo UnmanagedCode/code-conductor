@@ -1330,6 +1330,39 @@ async function pair(srv) {
 const echoWith = (inst, needle) => inst.ringSnapshot().find(
   (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes(needle));
 
+test('a targeted renew_session refuses a worker under a prompt-blocking rewrite and asks one under a fork', async (t) => {
+  // The TARGET-side interlock: the request is a prompt() to the worker, which a
+  // rewind/prune holder refuses; a fork holder does not.
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, worker } = await pair(srv);
+    for (const kind of ['rewind', 'prune']) {
+      await t.test(`a '${kind}' holder on the worker refuses SESSION_ROTATING`, async () => {
+        worker._mutating = kind;
+        try {
+          const refused = await callTool(srv.baseUrl, 'renew_session',
+            { sessionId: wSid, directive: `${DIRECTIVE}: roster` }, { caller: condSid });
+          assert.equal(refused.ok, false, JSON.stringify(refused));
+          assert.equal(refused.code, 'SESSION_ROTATING');
+          assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
+        } finally { worker._mutating = null; }
+      });
+    }
+    await t.test("a 'fork' holder on the worker lets the request through", async () => {
+      worker._mutating = 'fork';
+      try {
+        const req = await callTool(srv.baseUrl, 'renew_session',
+          { sessionId: wSid, directive: `${DIRECTIVE}: roster` }, { caller: condSid });
+        assert.equal(req.requested, true, JSON.stringify(req));
+        assert.equal(srv.instances._sessionRenew.pending.has(worker.id), true, 'the request is registered');
+      } finally { worker._mutating = null; }
+    });
+  } finally {
+    await srv.close();
+  }
+});
+
 test('a requested renewal: the worker authors the summary, and the followUp lands under its own fence', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
   mgr = srv.instances;

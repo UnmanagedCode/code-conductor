@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { PROMPT_NOT_PERSISTED, FORK_SOURCE_CHANGED } from '../src/instances.ts';
+import { PROMPT_NOT_PERSISTED, FORK_SOURCE_CHANGED, FORK_PERSIST_WAIT_MS, FORK_PERSIST_POLL_MS } from '../src/instances.ts';
 import { PROMPT_OUT_OF_RANGE, PROMPT_MISMATCH } from '../src/sessionEdit.ts';
 import { rotate } from './segmentChain.mjs';
 
@@ -68,6 +68,14 @@ async function bootMidTurn() {
     api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { userMessageIndex, text });
   const sessionFiles = async () => (await fs.readdir(sessionDir)).filter(f => f.endsWith('.jsonl')).sort();
   return { ctx, inst, sid, file, sessionDir, fork, sessionFiles, append: (records) => fs.appendFile(file, jsonl(records)) };
+}
+
+// End the source's open turn the way the CLI does: its `result` frame.
+function endTurn(inst) {
+  inst._handleStdoutLine(JSON.stringify({
+    type: 'result', subtype: 'success', stop_reason: 'end_turn', duration_ms: 1, total_cost_usd: 0, is_error: false,
+  }));
+  assert.equal(inst.status, 'idle', 'precondition: the turn ended');
 }
 
 // Wrap the instance's snapshot read: records every snapshot and runs
@@ -202,13 +210,20 @@ test('an unchanged file size is polled, not re-read: reads stay bounded during t
       const { ctx, inst, file, fork } = await bootMidTurn();
       try {
         if (tail) await fs.appendFile(file, tail);
-        inst._forkPersistWaitMs = 400;
+        const wait = 400;
+        inst._forkPersistWaitMs = wait;
         const snaps = traceReads(inst);
+        const probe = inst._forkSourceSize.bind(inst);
+        let probes = 0;
+        inst._forkSourceSize = (...args) => { probes++; return probe(...args); };
         const fk = await fork(2, 'third');
         assert.equal(fk.status, 409, JSON.stringify(fk.body));
         assert.equal(fk.body.code, PROMPT_NOT_PERSISTED);
         assert.notEqual(snaps[0].text.length, snaps[0].size, 'precondition: the decoded snapshot\'s length is not the file size');
         assert.equal(snaps.length, 2, 'one read, then one more at the deadline');
+        assert.ok(probes >= 1, 'the wait probed the size');
+        assert.ok(probes <= wait / FORK_PERSIST_POLL_MS + 1,
+          `the size is probed once per poll interval, not in a busy loop: ${probes} probes in ${wait} ms`);
       } finally { await ctx.close(); }
     });
   }
@@ -300,4 +315,100 @@ test('wrong anchors mid-turn are refused promptly, nothing written', async (t) =
       assert.deepEqual(await sessionFiles(), before);
     } finally { await ctx.close(); }
   });
+});
+
+test('a throw while building the fork\'s pin leaves the flag released', async () => {
+  const { ctx, inst, sid, fork } = await bootMidTurn();
+  try {
+    // A public-id-shaped backing id: sessionFilePath → assertBackingId throws.
+    inst.backingSessionId = sid.slice(0, 8);
+    const bad = await fork(1, 'second');
+    assert.equal(bad.status, 500, JSON.stringify(bad.body));
+    assert.match(bad.body.error, /not a backing id/);
+    assert.equal(inst._mutating, null, 'the flag is not left held');
+    inst.backingSessionId = sid;
+    const ok = await fork(1, 'second');
+    assert.equal(ok.status, 201, `a later fork is not locked out: ${JSON.stringify(ok.body)}`);
+  } finally { await ctx.close(); }
+});
+
+test('with no turn running, the first read is the last: an owed line refuses at once', async (t) => {
+  await t.test('a source idle when the fork starts: one read, no wait', async () => {
+    const { ctx, inst, fork } = await bootMidTurn();
+    try {
+      endTurn(inst);
+      const snaps = traceReads(inst);
+      const t0 = Date.now();
+      const fk = await fork(2, 'third');
+      const took = Date.now() - t0;
+      assert.equal(fk.status, 409, JSON.stringify(fk.body));
+      assert.equal(fk.body.code, PROMPT_NOT_PERSISTED);
+      assert.equal(snaps.length, 1, 'exactly one read');
+      assert.ok(took < FORK_PERSIST_WAIT_MS / 2, `no wait to the deadline: took ${took} ms`);
+    } finally { await ctx.close(); }
+  });
+
+  await t.test('a turn ending during the wait: exactly one read after it, then an immediate refusal', async () => {
+    const { ctx, inst, fork, append } = await bootMidTurn();
+    try {
+      const snaps = traceReads(inst, async (n) => {
+        if (n !== 1) return;
+        // The turn ends without the clicked prompt's line; its other lines
+        // change the file's size, so the wait returns.
+        endTurn(inst);
+        await append([OPEN_TURN[0]]);
+      });
+      const t0 = Date.now();
+      const fk = await fork(2, 'third');
+      const took = Date.now() - t0;
+      assert.equal(fk.status, 409, JSON.stringify(fk.body));
+      assert.equal(fk.body.code, PROMPT_NOT_PERSISTED);
+      assert.equal(snaps.length, 2, 'the read during the turn, then exactly one after it ended');
+      assert.ok(took < FORK_PERSIST_WAIT_MS / 2, `no second wait to the deadline: took ${took} ms`);
+    } finally { await ctx.close(); }
+  });
+});
+
+test('a respawn onto the same file during the wait refuses FORK_SOURCE_CHANGED, copying nothing it wrote', async () => {
+  // The source changes INSIDE the wait while the pinned file grows: the new
+  // process's run puts the clicked prompt's line in the file, so a fork that
+  // read again instead of re-checking its pin would copy from it.
+  const { ctx, inst, sid, fork, append, sessionFiles } = await bootMidTurn();
+  try {
+    const snaps = traceReads(inst);
+    const realWait = inst._awaitForkSourceGrowth.bind(inst);
+    let respawned = false;
+    inst._awaitForkSourceGrowth = async (...args) => {
+      if (!respawned) {
+        respawned = true;
+        await inst.kill({ graceMs: 50 });
+        await append([...QUEUE, THIRD]);
+        await ctx.instances.respawn(inst.id);
+      }
+      return realWait(...args);
+    };
+    const before = await sessionFiles();
+    const fk = await fork(2, 'third');
+    assert.ok(respawned, 'precondition: the fork waited');
+    assert.equal(inst.backingSessionId, sid, 'precondition: the respawn resumed the same backing file');
+    assert.equal(fk.status, 409, JSON.stringify(fk.body));
+    assert.equal(fk.body.code, FORK_SOURCE_CHANGED);
+    assert.equal(snaps.length, 1, 'no read after the source changed');
+    assert.deepEqual(await sessionFiles(), before, 'no fork file was written');
+    assert.equal(inst._mutating, null);
+  } finally { await ctx.close(); }
+});
+
+test('an ordinal equal to the echo count is not owed: an immediate 400, no wait', async () => {
+  const { ctx, inst, fork } = await bootMidTurn();
+  try {
+    const snaps = traceReads(inst);
+    const t0 = Date.now();
+    const fk = await fork(inst._userEchoCount, 'fourth');
+    const took = Date.now() - t0;
+    assert.equal(fk.status, 400, JSON.stringify(fk.body));
+    assert.equal(fk.body.code, PROMPT_OUT_OF_RANGE);
+    assert.equal(snaps.length, 1);
+    assert.ok(took < FORK_PERSIST_WAIT_MS / 2, `no wait: took ${took} ms`);
+  } finally { await ctx.close(); }
 });
