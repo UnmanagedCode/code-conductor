@@ -725,6 +725,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // is how a caller waits for it and learns whether it landed.
   _lineageWrite: Promise<void>;
   _lineageError: Error | null;
+  // The exit archive _handleExit fires for a temp instance; never rejects.
+  // InstanceManager.shutdown() awaits it: its retireSegment is issued only after
+  // an fs.rm, so no store-side tracking sees it when kill() resolves.
+  _exitArchive: Promise<void>;
   // Non-null while a context rotation is IN FLIGHT on this instance — a managed
   // `/clear` renewal or a prune. ONE field answers "is a rotation happening here",
   // for both mechanisms and both readers: IdleSubscriptionHub defers its armed wake
@@ -942,6 +946,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._segments = [];
     this._lineageWrite = Promise.resolve();
     this._lineageError = null;
+    this._exitArchive = Promise.resolve();
     this._rotation = null;
     this._renewing = false;
     this._relaunching = false;
@@ -3129,7 +3134,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // PRESERVE their jsonl so the next boot can `--resume` them. Without the
     // guard, this exit handler would archive the transcript we're carrying,
     // which is fine for the data but still wrong — it would not be resumable.
-    if (this.temp && !this._suppressTempDelete) this._archiveTempSession().catch(() => {});
+    if (this.temp && !this._suppressTempDelete) this._exitArchive = this._archiveTempSession().catch(() => {});
   }
 
   // Archive a killed temp session: retain the .jsonl (stays resumable) but
@@ -6448,6 +6453,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
+    // kill() resolves on the terminal latch, which runs _handleExit
+    // synchronously, so every exit archive is already assigned here.
+    await Promise.all(all.map(i => i._exitArchive));
     // Every shell of every session on a remote system — per session that is the
     // main agent's plus one per subagent — for the same reason remove() does it:
     // the processes are on another machine and nothing else will reap them.
@@ -6475,9 +6483,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
   // Synchronously kill every live temp subprocess and archive it: keep its
   // persisted jsonl, delete its sub-agent dir. The async `shutdown()` above
-  // relies on subprocess `exit` events to fire `_archiveTempSession()`, which
-  // races process.exit() during the restart path — so the restart path calls
-  // this first to guarantee on-disk cleanup before we exit.
+  // archives through each subprocess's exit (`_archiveTempSession()`) and
+  // resolves only once those archives land, but the restart path calls it
+  // fire-and-forget and exits ~50 ms later without awaiting it — so the
+  // restart path calls this first to guarantee on-disk cleanup before we exit.
   //
   // SIGKILL (not SIGTERM) because claude's SIGTERM handler can flush one
   // last line to the jsonl, and the CLI opens it `O_APPEND|O_CREAT`, so a

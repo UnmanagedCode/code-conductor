@@ -95,6 +95,10 @@
 // and deliberately untracked; a read racing a fresh spawn just misses the new
 // record, which is the base case.
 //
+// TEARDOWN DRAIN: settleSessionWrites waits out both the serialize chain and
+// the barrier set, looping until neither moves. Test teardown only, after
+// shutdown; it is the barrier's one exception to the one-snapshot rule.
+//
 // SYNC READ: loadSessionsSync, for the restart path, which stays synchronous up
 // to process.exit(). It never consults the cache or the barrier.
 //
@@ -493,6 +497,22 @@ function serialize<R>(fn: () => Promise<R>): Promise<R> {
   const next = writeChain.then(fn, fn);
   writeChain = next.catch(() => {});
   return next;
+}
+
+// TEARDOWN DRAIN: resolves once every write already issued — serialized or
+// still parked on the read barrier — has landed. The store resolves its file
+// when a write RUNS, so a caller about to retarget PROJECTS_ROOT drains first
+// or its writes land in the next root. Loops (unlike awaitKickedWrites)
+// because a landed write's continuation may issue the next one; that is safe
+// only once nothing kicks new writes, i.e. after shutdown. Never reachable
+// from a kicked write — it would wait on itself.
+export async function settleSessionWrites(): Promise<void> {
+  for (;;) {
+    const tail = writeChain;
+    await Promise.all([tail, ...inFlightWrites]);
+    await new Promise<void>(r => setImmediate(r));
+    if (writeChain === tail && inFlightWrites.size === 0) return;
+  }
 }
 
 export type Apply<R> = (doc: SessionsDoc) => { changed: boolean; value: R };
