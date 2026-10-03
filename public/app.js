@@ -670,6 +670,8 @@ installNewProjectDialog({
     npForm: dom.npForm,
     npConfirm: dom.npConfirm,
     npScaffoldText: dom.npScaffoldText,
+    npScaffoldBlock: dom.npScaffoldBlock,
+    npGitSkipped: dom.npGitSkipped,
   },
   refreshProjects,
   closeSidebarOverflow,
