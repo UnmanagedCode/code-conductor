@@ -111,7 +111,8 @@ import { IdleSubscriptionHub } from './idleSubscriptions.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
-import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
+import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
+import { hostPlatform, type Platform } from './platform/index.ts';
 import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RingSeam } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
@@ -223,6 +224,7 @@ interface InstanceConstructorInput {
   debug?: boolean;
   claudePluginDirs?: string[];
   launcher?: LauncherLike;
+  platform?: Platform;
 }
 
 // The mode vocabulary and both defaults live in sessionModes.ts, next to the
@@ -601,6 +603,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // declared here too, since the manager and later methods assign them).
   id: string;
   _launcher: LauncherLike;
+  _platform: Platform;
   project: string;
   cwd: string;
   // WHERE THIS SESSION'S TRANSCRIPT LIVES. `cwd` alone cannot name a directory:
@@ -808,9 +811,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
+    this._platform = platform;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
     // launcher (child_process.spawn); tests inject an in-process one.
     this._launcher = launcher;
@@ -2259,7 +2263,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         );
       }
       ({ command, prefixArgs: launchPrefix, env: backendEnvVars } =
-        resolveBackendLaunch(backendRecord, this.model, resolveClaudeBin()));
+        resolveBackendLaunch(backendRecord, this.model, resolveClaudeBin(this._platform), this._platform));
     } catch (err) {
       // Instance-specific side effect on the shared helper's invariant
       // failure — resolver + resume-guard are supposed to prevent this ever
@@ -3892,10 +3896,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // registered here would never fire.
     const ended = this._procEnded;
     const t1 = setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      try { this._platform.killProcess(proc, 'SIGTERM'); } catch { /* ignore */ }
     }, graceMs);
     const t2 = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+      try { this._platform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
     }, graceMs + 3000);
     // UNDER THE FUSE WRAP `proc` IS SUDO, NOT THE CLI. sudo forks and waits, and
     // cannot forward SIGKILL, so the ladder above reaps the wrapper while the
@@ -4310,6 +4314,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
   _claudeLauncher: LauncherLike;
+  _platform: Platform;
   _resuming: Map<string, Promise<Instance>>;
   // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
   // whatever string the caller passed, and normalizing it to the public id means an
@@ -4340,8 +4345,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _overageClearTimer: NodeJS.Timeout | null;
   _overageResumeMode: boolean;
 
-  constructor({ claudeLauncher = defaultClaudeLauncher }: { claudeLauncher?: LauncherLike } = {}) {
+  // Keep the shared singleton for the host platform; any other platform gets its own launcher so spawn options follow it.
+  constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
     super();
+    this._platform = platform;
     this.byId = new Map<string, Instance>();
     // Injected launcher, passed to every Instance so it spawns through the
     // seam rather than child_process.spawn directly. Production default is the
@@ -5155,9 +5162,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // The exemption is the same structural one `attachFuse` uses: an
       // in-process launcher runs the CLI inside cc's own process, so there is
       // no chroot and no marking event to arm.
-      claudeCommand = resolveOnPath(resolveClaudeBin().command);
+      claudeCommand = resolveOnPath(resolveClaudeBin(this._platform).command);
       if (!claudeCommand && !this._claudeLauncher.inProcess) {
-        const spelling = resolveClaudeBin().command;
+        const spelling = resolveClaudeBin(this._platform).command;
         const raw = process.env.CLAUDE_BIN === undefined
           ? 'unset'
           : JSON.stringify(process.env.CLAUDE_BIN);
@@ -5264,7 +5271,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // special case for it.
     if (remote && !this._claudeLauncher.inProcess) {
       const backendRec = getBackend(backend);
-      const launch = resolveBackendLaunch(backendRec, finalModel, resolveClaudeBin());
+      const launch = resolveBackendLaunch(backendRec, finalModel, resolveClaudeBin(this._platform), this._platform);
       if (!resolveOnPath(launch.command)) {
         throw Object.assign(
           new Error(`FUSE_BACKEND_UNRESOLVED: cannot spawn a worker for project '${project}' on `
@@ -5353,6 +5360,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       debug: !!(debug ?? getDebugByDefault()),
       claudePluginDirs,
       launcher: this._claudeLauncher,
+      platform: this._platform,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
     // Attached BEFORE launch(): spawn() reads it to widen the injected hook
@@ -6305,7 +6313,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // server.ts — is what covers both.
       const victim = killablePid(inst);
       if (inst.proc && victim) {
-        try { process.kill(victim, 'SIGKILL'); } catch { /* gone */ }
+        try { this._platform.killProcess(victim, 'SIGKILL'); } catch { /* gone */ }
       }
     }
 

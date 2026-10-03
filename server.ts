@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
+import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
@@ -38,15 +39,15 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform } = {}) {
   const app = express();
-  const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
+  const instances = withInstances ? new InstanceManager({ claudeLauncher, platform }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
   // than delete a backend out from under a running/respawnable instance, whose next
   // relaunch would otherwise fall through to the real `claude`.
   setLiveBackendsProvider(instances ? () => instances.liveBackendUsage() : null);
-  const pluginHost = withInstances ? createPluginHost({ instances }) : null;
-  const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
+  const pluginHost = withInstances ? createPluginHost({ instances, platform }) : null;
+  const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost, platform }) : null;
   // ── The provider wiring block ───────────────────────────────────────────
   //
   // The module-global provider setters converge here, and this is the only src

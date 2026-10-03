@@ -7,6 +7,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { runGroupedCommand } from '../groupedCommand.ts';
+import { hostPlatform, type Platform } from '../platform/index.ts';
 import type { MirrorAdvertisement } from './mirror.ts';
 import { msFromNanos, requireAbsolute, typeBitsFor } from './system.ts';
 import type {
@@ -66,12 +67,15 @@ export class LocalSystem implements System {
   // pin is here rather than in every reader.
   readonly remoteId = null;
 
+  private readonly platform: Platform;
+  constructor(platform: Platform = hostPlatform) { this.platform = platform; }
+
   // `async` on these three so a guard violation REJECTS rather than throwing
   // synchronously: ProviderSystem's are async, and the two implementations of
   // one primitive cannot differ on whether a caller's `.catch()` sees it.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
     requireAbsolute('exec', 'cwd', opts.cwd);
-    return runGroupedCommand(spec, opts);
+    return runGroupedCommand(spec, opts, this.platform);
   }
 
   async readFile(filePath: string): Promise<string> {

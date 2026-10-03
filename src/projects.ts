@@ -15,6 +15,7 @@ import {
 } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
 import type { System } from './systems/system.ts';
+import { samePath } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 
 // Re-exported from its implementation on the local system: the store is always
@@ -542,7 +543,7 @@ export async function findSelfProject(selfDir: string = SELF_PROJECT_DIR): Promi
     if (!system || !p.path) continue;
     let real: string;
     try { real = await system.realpath(p.path); } catch { continue; }
-    if (real === selfReal) return p;
+    if (samePath(real, selfReal)) return p;
   }
   return null;
 }
@@ -1051,7 +1052,7 @@ async function commitScaffold(
     const real = await system.realpath(full);
     const where = await runGit(system, full, ['rev-parse', '--absolute-git-dir', '--show-toplevel']);
     const [gitDir, topLevel] = where.stdout.trim().split('\n');
-    if (where.code !== 0 || gitDir !== path.join(real, '.git') || topLevel !== real) {
+    if (where.code !== 0 || !samePath(gitDir, path.join(real, '.git')) || !samePath(topLevel, real)) {
       console.warn(`createProject: refusing the initial commit in ${full} — git resolves that `
         + `directory to a different repository (git dir '${gitDir ?? ''}', work tree `
         + `'${topLevel ?? ''}'), and committing there would write into history that is not this `
@@ -1507,7 +1508,7 @@ export async function adoptProject(
   const wantSystem = placement?.system ?? LOCAL_SYSTEM_ID;
   const wantRemote = placement?.remoteId ?? null;
   for (const p of await listProjects()) {
-    if (p.system === wantSystem && p.remoteId === wantRemote && p.path === real) {
+    if (p.system === wantSystem && p.remoteId === wantRemote && samePath(p.path, real)) {
       return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'${placement ? ` on ${describePlacement(placement)}` : ''}.` };
     }
   }
@@ -1553,7 +1554,7 @@ export async function adoptProject(
   if (top.code === 0) {
     let topReal = top.stdout.trim();
     try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
-    if (topReal !== real) {
+    if (!samePath(topReal, real)) {
       return {
         ok: false, code: 'TARGET_INSIDE_REPO',
         reason: `'${real}' is inside the git repository whose toplevel is '${topReal}' — adopt that instead.`,
