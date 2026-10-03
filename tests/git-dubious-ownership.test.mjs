@@ -140,7 +140,8 @@ test('hasUnbornHead on a committed foreign-owned repo rejects rather than answer
     (e) => e.code === GIT_DUBIOUS_OWNERSHIP));
 });
 
-// PINS: the discriminator is locale-independent and gated on exit 128. The
+// PINS: the discriminator is locale-independent and gated on exit 128, and the
+// message names git's hint path exactly — not the cwd it was run in. The
 // stderr is git's German catalog entry (de/LC_MESSAGES/git.mo) with its `%s`
 // filled, not an invented string: only the hint command survives translation.
 test('runGit classifies the refusal by its hint line in any locale, and only on exit 128', async () => {
@@ -155,7 +156,10 @@ test('runGit classifies the refusal by its hint line in any locale, and only on 
   });
   await assert.rejects(() => runGit(stub(128), '/srv/fremd/sub', ['status']), (e) => {
     assert.equal(e.code, GIT_DUBIOUS_OWNERSHIP);
-    assert.ok(e.message.includes(fixLine(at)), `names git's path, not the cwd: ${e.message}`);
+    // Boundary-exact: git's path is a prefix of the cwd here, so `includes`
+    // would also accept a message naming the cwd.
+    assert.ok(e.message.endsWith(fixLine(at)), `names git's path, not the cwd: ${e.message}`);
+    assert.ok(!e.message.includes('/srv/fremd/sub'), `the cwd is not the path to trust: ${e.message}`);
     assert.ok(e.message.includes("system 'stub'"), e.message);
     return true;
   });

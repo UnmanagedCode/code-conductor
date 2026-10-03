@@ -240,8 +240,9 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
   // reworded across git versions, but that command is printed verbatim in every
   // locale and every version that has the check, so no `LC_ALL=C` is needed.
   // Gated on 128 so a hook merely printing that text on a non-fatal exit does
-  // not match. The captured path is git's (the repo toplevel, or a linked
-  // worktree's gitdir) — the one the fix needs, which may differ from `cwd`.
+  // not match. The captured path is git's (the work tree's toplevel — a linked
+  // worktree's own path for one) — the one the fix needs, which may differ
+  // from `cwd`.
   //
   // Tagged a system refusal: like a timeout, git did not answer about the tree,
   // so every path that already degrades "could not measure" handles it as-is.

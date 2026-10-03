@@ -187,9 +187,9 @@ test('a system coming back restores the row in place', async () => {
 
 // PINS: a repo git refuses on ownership shows THAT cause — not the look of a
 // non-git project and not the look of an unreachable system. The system is
-// reachable and sessions still work, so the `+` button and the system pill's
-// healthy state are unchanged; only git facts are missing, so the log is a
-// spacer.
+// reachable and sessions still work, so the `+` button stays and a local row
+// gets no system pill at all (so none reading unreachable either); only git
+// facts are missing, so the log is a spacer.
 test('a git ownership refusal renders its own pill carrying the fix, and nothing unreachable', async () => {
   const refusal = "git on system 'local' refused the repository at '/p/demo': detected dubious ownership"
     + ' — … git config --global --add safe.directory /p/demo';
@@ -200,8 +200,8 @@ test('a git ownership refusal renders its own pill carrying the fix, and nothing
   assert.equal(root.querySelectorAll('.add-instance').length, 1, 'a session still starts');
   assert.equal(root.querySelectorAll('.commit-log').length, 0);
   assert.equal(root.querySelectorAll('.commit-log-spacer').length, 1, 'the log is a spacer');
-  assert.equal(root.querySelectorAll('.system-pill-unreachable').length, 0,
-    'the system answered — it is git that refused');
+  assert.equal(root.querySelectorAll('.system-pill').length, 0,
+    'a local project has no system pill — the refusal does not conjure one');
   sidebar.setProjects([baseProject({ gitRefusal: null })]);
   await new Promise(r => setTimeout(r, 0));
   assert.equal(root.querySelectorAll('.git-refused-pill').length, 0, 'a trusted repo has no pill');
