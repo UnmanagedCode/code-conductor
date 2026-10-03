@@ -429,6 +429,19 @@ describe('a system that dies mid-operation', () => {
     });
   });
 
+  // PINS: project_status relabels ONLY git's ownership refusal. A system that
+  // died under the repo probe is still a failed call naming the system — never
+  // swallowed into a rendered status, and never printed as `! git refused`.
+  test('project_status does not relabel a dead system as a git ownership refusal', async () => {
+    await dieOnEveryGitCall();
+    const r = await callTool(baseUrl, 'project_status', { project: 'app' });
+    assert.equal(r.isError, true, `a dead system must fail the call, not render a status: ${r.text}`);
+    assert.ok(!r.text.includes('! git refused'), r.text);
+    assert.ok(!/^FILES /m.test(r.text), `no status was rendered: ${r.text}`);
+    assert.match(r.text, /GIT_DID_NOT_RUN/, `the repo probe's own refusal propagates: ${r.text}`);
+    assert.match(r.text, new RegExp(remote.id), r.text);
+  });
+
   // PINS: syncWorktree names the system instead of blaming the base branch. A
   // dead `rev-list` nulled ahead/behind, which reads as "base branch may have
   // been deleted or renamed" — a repair aimed at the wrong thing entirely.

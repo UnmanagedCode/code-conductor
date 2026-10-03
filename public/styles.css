@@ -406,7 +406,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   color: var(--red);
 }
 
-.wt-unmerged, .no-commits-pill {
+.wt-unmerged, .no-commits-pill, .git-refused-pill {
   font-family: ui-monospace, monospace;
   font-size: 10px;
   color: var(--amber);
@@ -416,6 +416,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 0 0 auto;
   line-height: 1.4;
 }
+/* Git refused the repo on ownership — a warning, not the unreachable red. */
+.git-refused-pill { border-style: dashed; }
 .wt-locked { font-size: 11px; flex: 0 0 auto; line-height: 1.4; }
 
 /* Sessions subnode: parallel structure to .worktree-group. */
