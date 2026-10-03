@@ -342,15 +342,17 @@ marked otherwise.
   `instances` 3.48 s, `overage-action` 4.53 s. Same shape as the original claim (sub-second to
   ~4–5 s across the suite); do not re-cite these five numbers either without re-measuring — this
   section's whole point is that the bench-branch figures cannot be trusted without their source.
-- Runtimes scale with core count: `tests/run.mjs` runs files at `min(4, cores/2)` concurrency
-  (`TEST_CONCURRENCY` overrides), and `tests/run.mjs` sets a 60 s per-file ceiling. Note the
-  consequence for reading the jobs numbers: a single run is **already 4-way concurrent** on 16 cores,
-  so `--jobs 4` means up to 16 concurrent test files plus their forked children and bound ports.
+- Runtimes scale with core count: `tests/run.mjs` runs several files at once, the count set by its
+  `resolveConcurrency` (`TEST_CONCURRENCY` overrides). `tests/run.mjs` passes node a 60 s
+  **per-test** timeout (`timeout: 60_000` to `run()`); the per-file bound is the hang guard's SIGKILL
+  at `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`). Note the consequence for reading the jobs
+  numbers: a single run is **already multi-file concurrent**, so `--jobs N` means N times
+  `resolveConcurrency`'s count of concurrent test files, plus their forked children and bound ports.
 
 ### §7 `config.json`, field by field
 
-`harness/mutation/config.json` is six field lines of strict JSON with no comment syntax — which is
-the structural reason this section exists rather than living beside the values.
+`harness/mutation/config.json` is strict JSON with no comment syntax — which is the structural
+reason this section exists rather than living beside the values.
 
 | Field | Value | Why |
 |---|---|---|
@@ -358,7 +360,8 @@ the structural reason this section exists rather than living beside the values.
 | `testCommand` | `npm test -- {tests}` | `npm test -- <files>` forwards positionals to `tests/run.mjs`, which accepts a list of file paths. The adapter substitutes space-joined single-quoted repo-relative paths. |
 | `runner` | `node-test` | `tests/run.mjs` is bespoke but pipes through `new spec()` from `node:test/reporters` — the same reporter the adapter is pinned to. Counters (`ℹ tests/pass/fail/skipped`) land on stdout; the `✖ failing tests:` block carries `test at <repo-relative path>`, because the spec reporter emits `relative(process.cwd(), file)` and the runner resolves its args against the same cwd. A full green run trips none of the adapter's `compileError` probes. Proven here by the `baseline` canary gate. |
 | `isolation` | `in-place` | Full reasoning in §2 above. The conclusion is decided-and-deferred, not infeasible: copy mode *works* here with one `setup` hook and costs ~5% of wall clock at best (§6) — it is rejected on honesty (§2.2's three green-for-the-wrong-reason assertions) and on the ≤8% ceiling (§6), not on feasibility. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
-| `timeoutMs` | `300000` | Sized for the slow case, not the ~57 s (§1) full-suite baseline this host measures — a low-core/Termux host is a multiple of that, and applies to **every** measured command including the full-suite baseline itself. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. `tests/run.mjs` has its own 60 s per-file ceiling (§6), so a hung mutant surfaces well inside the 300 s cap. |
+| `timeoutMs` | `300000` | Sized for the slow case, not the ~57 s (§1) full-suite baseline this host measures — a low-core/Termux host is a multiple of that. It is the deadline only for commands with no unmutated reference — the full-suite baseline, each narrow baseline, the `setup`/`teardown` hooks. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. A mutant run gets the derived `hang` deadline instead (next row), which this value only caps. The suite's own per-file bound is `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`); the 60 s in `tests/run.mjs` is node's **per-test** timeout (§6). |
+| `hang` | `{factor: 10, floorMs: 50000}` | The mutant-run deadline, derived from that scope's narrow baseline. `factor` restates the runner default so the whole derivation is visible here; `floorMs` is raised so a mutant that breaks an awaited event fails as `KILLED` rather than `TIMEOUT`, while staying under node's per-test timeout so a real hang still reads `TIMEOUT`. Bounds, measurements and residue in §7.1. |
 | `baseBranch` | `main` | The real integration branch. Unset, `run`'s empty-diff-vs-base gate reports `not-established` and checks nothing — a branch with no committed work would read as a clean sweep. |
 
 Defaults left alone: `preserve` (in-place copies nothing, and `node_modules` is already a symlink to
@@ -367,6 +370,78 @@ pay even if it weren't), `setup`/`teardown` (nothing to build or reset in-place)
 
 There is no `parse.mjs`: the shipped `node-test` adapter parses this suite's output correctly, and a
 custom parser would have to reimplement its canary injection for no parsing gain.
+
+### §7.1 The hang floor
+
+**The rule.** Each mutant run's deadline is
+`min(timeoutMs, max(floorMs, factor × referenceMs))`, where `referenceMs` is that scope's unmutated
+narrow-baseline duration, measured moments before. Owner: `deadlineFor` in code-mutant's
+`lib/measure.mjs`. A run that outlives it reads `TIMEOUT` with `hang.blame: mutation`. The floor
+decides every scope whose reference is under `floorMs / factor`; above that, `factor × referenceMs`
+does, and the floor is inert.
+
+**Lower bound — failure paths add up.** A mutant that suppresses an awaited event makes each
+affected test ride its own `waitFor` to expiry (`waitFor` in `tests/helpers.mjs` carries the
+default; some tests pass a longer one). node:test runs a file's tests in sequence, so one file's
+waits sum. A floor under that sum kills a correctly-failing mutant before its file reports, and it
+reads `TIMEOUT` instead of `KILLED`.
+
+Measured: each `idle-wake-*` file run alone through the narrow command under the env-only failure
+recipe, 16 cores, load average 25–41:
+
+```bash
+ORCH_SUBSCRIBE_TIMEOUT_MS=999 npm test -- tests/idle-wake-<file>.test.mjs
+```
+
+`ORCH_SUBSCRIBE_TIMEOUT_MS=999` collapses `DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS`
+(`src/idleSubscriptions.ts`) to 0, so every second-precision window is refused and the affected tests
+ride `waitFor` to expiry — no source edit. `tests/hangGuardConfig.mjs` records the same recipe
+against `FILE_KILL_MS`.
+
+| file | wall | failing tests |
+|---|---|---|
+| `idle-wake-abort-qualifier` | 13.6 s | 3/6 |
+| `idle-wake-window` | 17.1 s | 5/6 |
+| `idle-wake-interrupt` | 25.4 s | 2/5 |
+| `idle-wake-ownership` | 26.5 s | 1/12 |
+| `idle-wake-retire-gaps` | 36.1 s | 3/3 |
+| `idle-wake-heartbeat` | 37.4 s | 3/3 |
+| `idle-wake-interval` | 37.9 s | 4/4 |
+| `idle-wake-defer`, `idle-wake-exit` | green under the recipe | — |
+
+For scale, `idle-wake-exit`'s green narrow command took 1.7 s quiet and 6.2 s loaded. At
+`factor: 10` that is 17 s quiet, where the floor binds (50 s), and 62 s loaded, where the floor is
+inert: the deadline in force follows the load at the moment the narrow baseline ran.
+
+**Upper bound — a hang must stay `TIMEOUT`.** `tests/run.mjs` passes node a per-test timeout
+(`timeout: 60_000` to `run()`). A test whose await never settles is reported by node as a named
+failure, no earlier than 60 s after the command starts. A floor at or above that lets a genuine hang
+finish as a failure and grade `KILLED`. Keep `floorMs` under it. That protects a hang only while
+the deadline in force stays under 60 s: a reference above 60 s / `factor` puts `factor × referenceMs` past the per-test timeout, and
+there a never-settling await reports as a named failure before the deadline. A wedged event loop is
+SIGKILLed later still, at `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`).
+
+**The margin.** `50000` covers the recipe's measured worst (37.9 s) by 12 s and sits 10 s under the
+per-test timeout. The tightest measured margin is a real mutant's: a mutant failing four
+`idle-wake-exit` tests, run as `probe --learn` against that file, took 43.4 s at load average 22–34
+on 16 cores — 6.6 s under the floor.
+
+**Residue no floor under 60 s fixes:**
+- **A five-wait chain** — e.g. a mutant that fails every `idle-wake-exit` test — runs ~52 s quiet,
+  ~56 s loaded. It reads `TIMEOUT` whenever the deadline in force is shorter than that: always
+  while the floor binds, and above the floor while `factor × referenceMs` stays under the chain's
+  duration. A loaded narrow baseline (6.2 s → 62 s above) lets it finish, so the verdict depends on
+  load at both measurements. Re-measure it at whole-suite scope
+  (`narrowCommand: "npm test"`), whose reference lifts the deadline to the `timeoutMs` cap.
+- **A spinning mutant** (a busy loop) is a real hang; `TIMEOUT` is correct. Rewrite the mutant.
+- **A mutant that leaves a child process alive** is ended by the suite's Layer-B leak guard
+  (`LEAK_GRACE_MS`, `tests/hangGuardConfig.mjs`), and reads `ERROR`/`IMPRECISE`, not `KILLED`.
+
+**The cost.** A real hang in a scope whose reference is under `floorMs / factor` (5 s) now waits the
+full floor. Scopes above that are unaffected.
+
+**Re-measure when** a file's failure path under the recipe nears `floorMs`, or the per-test timeout
+in `tests/run.mjs` changes — the floor's ceiling moves with it.
 
 ### §8 Safety: what 10 runs showed about parallelism
 
@@ -378,8 +453,9 @@ byte-identical `failedTests` sets per mutant**; 9 `KILLED` + 1 `SURVIVED`, exit 
 and byte-identical in-place `git status --porcelain` before/after; `reproducible` true in all 10.
 Per-mutant `durationMs` was flat across job levels, i.e. no measurable contention penalty. So
 code-mutant's worker-ordinal fix holds here and the documented
-false-`SURVIVED`/false-`IMPRECISE` history did not reproduce. **Caveat:** jobs=4 means 4 copies ×
-4-way internal file concurrency = 16 test files at once plus forked children and bound ports; this
+false-`SURVIVED`/false-`IMPRECISE` history did not reproduce. **Caveat:** jobs=4 meant 4 copies ×
+4-way internal file concurrency (the runner's at measurement time; the current count is
+`resolveConcurrency`'s in `tests/run.mjs`) = 16 test files at once plus forked children and bound ports; this
 was a 16-core / 30 GiB host and the result should not be extrapolated to a smaller one (Termux
 especially). One jobs=4 run spiked to 45 runnable threads and still finished correctly; nothing
 wedged, hung, or thrashed.

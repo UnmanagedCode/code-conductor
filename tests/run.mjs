@@ -397,8 +397,8 @@ for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
 procSampler.unref?.();
 
 const concurrency = resolveConcurrency();
-// 60s per-file ceiling: proportionate headroom for heavy subprocess files that
-// chain several 10s `waitFor`s (see helpers.mjs) when co-scheduled under
+// 60s per-test timeout (the per-file kill is FILE_KILL_MS): proportionate
+// headroom for heavy subprocess tests that chain several 10s `waitFor`s (see helpers.mjs) when co-scheduled under
 // concurrency on a slow Termux box — only fires on a genuine hang.
 // Preload the DOM-vs-null tripwire into every per-file child: a node compared
 // against null/undefined by an equal-family assertion throws a short
