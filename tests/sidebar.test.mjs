@@ -418,9 +418,9 @@ test('a session row pills its turn-mark difference; viewing clears it; live mark
 });
 
 // Invariant: a Projects-lens session row whose live instance is overage-paused
-// carries the auto-resume badge ("resumes at <time> · N queued"), and loses it
-// when the armed resume clears.
-test('a paused live session row shows the auto-resume badge with its queued count and drops it on clear', async () => {
+// carries the compact auto-resume badge ("⏸ <time> · N") with the full wording
+// in its tooltip, and loses it when the armed resume clears.
+test('a paused live session row shows the compact auto-resume badge with its queued count and drops it on clear', async () => {
   const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
   const T = 1_900_000_000;
   const { root, sidebar } = await setupSidebar({
@@ -435,8 +435,8 @@ test('a paused live session row shows the auto-resume badge with its queued coun
 
   sidebar.setInstances(live({ autoResumeAt: T, queuedCount: 1 }));
   await new Promise(r => setTimeout(r, 0));
-  assert.equal(badgeOf()?.textContent, `${formatAutoResumeTime(T)} · 1 queued`);
-  assert.equal(badgeOf().title, 'auto-stopped on overage — 1 message queued; will resume when the window resets');
+  assert.equal(badgeOf()?.textContent, `⏸ ${formatAutoResumeTime(T).replace('resumes at ', '')} · 1`);
+  assert.equal(badgeOf().title, `${formatAutoResumeTime(T)} · 1 queued\nauto-stopped on overage — 1 message queued; will resume when the window resets`);
 
   sidebar.setInstances(live({ autoResumeAt: null, queuedCount: 0 }));
   await new Promise(r => setTimeout(r, 0));

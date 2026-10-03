@@ -418,7 +418,7 @@ export class Sidebar {
     this._applyOwner(row, owner);
     row.title = tooltipParts.join('\n');
 
-    const resumeBadge = autoResumeBadge(session);
+    const resumeBadge = autoResumeBadge(session, { compact: true });
     const showPromote = session.instanceTemp && isLive && isLiveStatus(status);
     const stage = showStage ? stageText(session) : null;
     const keys = ['dot', 'ago', showStage ? 'labelcol' : 'preview'];
@@ -1371,7 +1371,7 @@ export class Sidebar {
   }
 
   // The overage auto-resume pill of a session or conductor row, from
-  // autoResumeBadge's text and tooltip.
+  // autoResumeBadge's compact text and tooltip.
   _resumeBadge(existing, badge) {
     const b = existing ?? el('span', { class: 'session-resume-badge' });
     b.textContent = badge.text;
@@ -1463,7 +1463,7 @@ export class Sidebar {
     const c = holder.conductor;
     const { text, untitled } = conductorTitle(c);
     const unread = this.unreadBySessionId.get(c.sessionId) ?? 0;
-    const resumeBadge = autoResumeBadge(c);
+    const resumeBadge = autoResumeBadge(c, { compact: true });
     row.className = 'conductor-row' + (c.instanceId && c.instanceId === this.activeInstanceId ? ' active' : '');
     row.title = c.sessionId;
     row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');

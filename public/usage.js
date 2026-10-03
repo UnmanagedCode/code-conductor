@@ -232,23 +232,34 @@ export function formatResetTime(unixSecs) {
   return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// An overage auto-resume time's clock, e.g. "6:40pm".
+function formatAutoResumeClock(unixSecs) {
+  if (!unixSecs || !Number.isFinite(unixSecs)) return null;
+  return new Date(unixSecs * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 // Format an overage auto-resume time, e.g. "resumes at 6:40pm".
 export function formatAutoResumeTime(unixSecs) {
-  if (!unixSecs || !Number.isFinite(unixSecs)) return null;
-  const d = new Date(unixSecs * 1000);
-  return 'resumes at ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const clock = formatAutoResumeClock(unixSecs);
+  return clock && 'resumes at ' + clock;
 }
 
 // The armed overage auto-resume badge's text and tooltip, shared by the header
 // chip and the sidebar's session and conductor rows. Null when nothing is armed.
-export function autoResumeBadge({ autoResumeAt, queuedCount }) {
+// `compact` is the sidebar-row form, "⏸ 6:40pm · 2", sized to leave a 280px
+// row its title and buttons; its tooltip leads with the full wording the
+// header chip shows.
+export function autoResumeBadge({ autoResumeAt, queuedCount }, { compact = false } = {}) {
   if (!autoResumeAt) return null;
   const n = queuedCount || 0;
+  const text = formatAutoResumeTime(autoResumeAt) + (n > 0 ? ` · ${n} queued` : '');
+  const title = n > 0
+    ? `auto-stopped on overage — ${n} message${n === 1 ? '' : 's'} queued; will resume when the window resets`
+    : 'auto-stopped on overage — will resume when the rate-limit window resets';
+  if (!compact) return { text, title };
   return {
-    text: formatAutoResumeTime(autoResumeAt) + (n > 0 ? ` · ${n} queued` : ''),
-    title: n > 0
-      ? `auto-stopped on overage — ${n} message${n === 1 ? '' : 's'} queued; will resume when the window resets`
-      : 'auto-stopped on overage — will resume when the rate-limit window resets',
+    text: `⏸ ${formatAutoResumeClock(autoResumeAt)}` + (n > 0 ? ` · ${n}` : ''),
+    title: `${text}\n${title}`,
   };
 }
 

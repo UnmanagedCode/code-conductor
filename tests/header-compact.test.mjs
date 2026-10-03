@@ -14,7 +14,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { setupHeader, session, WORKTREE, lineClasses, PUB } from './headerCompactHarness.mjs';
+import { setupHeader, session, WORKTREE, lineClasses, PUB, SESSION } from './headerCompactHarness.mjs';
+
+const SESSION_SID = SESSION.sessionId;
 import { assertNull } from './dom-assert.mjs';
 
 const hasOpen = (t) => !t.dom.overflowPanel.hidden;
@@ -241,6 +243,30 @@ test('an armed session shows the auto-resume chip with its queued count; clearin
   assert.equal(chipOf().title, 'auto-stopped on overage — will resume when the rate-limit window resets');
   t.show(session('idle', { autoResumeAt: null, queuedCount: 0, overageActive: false }));
   assertNull(chipOf());
+});
+
+// Invariant: one paused conductor reads in full in its own header chip
+// ("resumes at <time> · N queued") and in the compact form on its sidebar row
+// ("⏸ <time> · N"), the row's tooltip leading with the header's wording.
+test('the header chip keeps the full auto-resume wording while the conductor row shows the compact form', async () => {
+  const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
+  const T = 1_900_000_000;
+  const paused = { project: '.conduct', autoResumeAt: T, queuedCount: 2 };
+  const full = `${formatAutoResumeTime(T)} · 2 queued`;
+
+  const t = await setupHeader();
+  t.show(session('idle', paused));
+  const chip = t.dom.instanceTitle.querySelector('.ih-auto-resume');
+  assert.equal(chip?.textContent, full, 'header: the full wording');
+
+  const { setupSidebar, conductor, tick } = await import('./sidebar-fixture.mjs');
+  const { conductorList, sidebar } = await setupSidebar();
+  sidebar.setInstances([conductor(SESSION_SID, paused)]);
+  await tick();
+  const badge = conductorList.querySelector(`[data-key="conductor:${SESSION_SID}"] .conductor-row .session-resume-badge`);
+  assert.equal(badge?.textContent, `⏸ ${formatAutoResumeTime(T).replace('resumes at ', '')} · 2`, 'row: the compact form');
+  assert.ok(badge.title.startsWith(`${full}\n`), `row tooltip leads with the header's wording (got ${JSON.stringify(badge.title)})`);
+  assert.notEqual(badge.textContent, chip.textContent, 'sanity: the two surfaces differ');
 });
 
 // Invariant: width changes only where the controls sit — the title DOM is
