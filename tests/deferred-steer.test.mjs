@@ -238,7 +238,7 @@ test('a steer whose delivery FAILS is annotated, rejects its caller, and settles
   const unhandled = captureUnhandled();
   const call = inst.queueSteerAfterStop('DOOMED');
   await waitFor(() => inst.steerPending, { timeout: 2_000 });
-  inst._mutating = true;
+  inst._mutating = 'rewind';
   inject(inst, turnEnd());                       // natural end → flush → prompt() refuses
 
   await assert.rejects(() => call, /being rewritten/);
@@ -248,7 +248,7 @@ test('a steer whose delivery FAILS is annotated, rejects its caller, and settles
   assert.ok(evs.some(e => e.kind === 'system' && e.subtype === 'steer_settled'));
   await settleUnhandled();
   assert.deepEqual(unhandled.map(e => e.message), []);
-  inst._mutating = false;
+  inst._mutating = null;
 });
 
 // ── the replay invariant the note must not break ────────────────────────────

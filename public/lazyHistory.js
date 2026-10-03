@@ -8,7 +8,7 @@
 // the batch instance is discarded after its nodes are transplanted; button
 // click handlers keep working because they close over app.js callbacks.
 
-import { Conversation, isHistoryGapNode } from './conversation.js';
+import { Conversation, isHistoryGapNode, userActionsForStatus } from './conversation.js';
 import { isActionGroupNode, mergeActionGroupInto } from './blocks.js';
 import { syncAssistantBubble } from './assistantBubble.js';
 import { apiFetch } from './http.js';
@@ -326,7 +326,7 @@ export function installLazyHistoryController({
         // Freshly-created rewind/fork buttons default to enabled; re-sync
         // them with the instance's current status.
         const inst = getInstances().find(i => i.id === id);
-        conversation.setUserActionsEnabled(inst?.status === 'idle');
+        conversation.setUserActionsEnabled(userActionsForStatus(inst?.status));
       }
       const segment = page.segment ?? null;
       // The cursor must make progress: strictly lower within a segment, or a

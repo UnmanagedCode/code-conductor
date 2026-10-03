@@ -52,6 +52,7 @@ import { send } from './ws.js';
 import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getEffortLevels, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted, muteSession } from './notifications.js';
 import { MOBILE_LAYOUT_QUERY } from './layout.js';
+import { userActionsForStatus } from './conversation.js';
 
 // The reserved project every conductor session lives in — mirrors
 // CONDUCT_PROJECT_NAME (src/conduct.ts), which is the source of truth. Named
@@ -903,10 +904,9 @@ export function installHeader({
       overagePaused: !!(inst.overageActive || inst.autoResumeAt),
       overageUnarmed: !!inst.overageStoppedUnarmed,
       resumeAt: inst.autoResumeAt ?? inst.overageResetsAt ?? null });
-    // Rewind/fork buttons are only safe between turns — the server refuses
-    // a rewind during `turn` status anyway, but disabling them here keeps
-    // the UX honest (no clickable button that just throws a 409).
-    conversation.setUserActionsEnabled(inst.status === 'idle');
+    // No clickable button that just throws a 409: rewind only between turns,
+    // fork mid-turn too.
+    conversation.setUserActionsEnabled(userActionsForStatus(inst.status));
     dom.composerInput.placeholder = inst.status === 'turn'
       ? 'turn running — type to steer the running turn'
       : inst.status === 'spawning'

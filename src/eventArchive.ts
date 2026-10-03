@@ -56,7 +56,7 @@
 // back (Instance._fileOrdinalFor → measureSegmentEchoOffset).
 
 import type { TranscriptPlacement } from './projects.ts';
-import { loadPersistedTranscript } from './transcript.ts';
+import { loadPersistedTranscript, replayPersistedText } from './transcript.ts';
 import { hasHeadlessChildIn, isOuterUserEcho, lastQuiescentAtOrBefore, snapStartToQuiescent, type UiEvent } from './parser.ts';
 import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
 import type { InstanceLike, RingSeam } from './instanceTypes.ts';
@@ -257,14 +257,17 @@ function calibrateEchoOffset(ring: SeqEvent[], flat: SeqEvent[], flatIndex: Map<
   return null;
 }
 
-// calibrateEchoOffset over `sessionId`'s file: file ordinal = live ordinal +
+// calibrateEchoOffset over `sessionId`'s file — or over `text`, that file's
+// contents as one read the caller already holds: file ordinal = live ordinal +
 // the result. null when the file is missing or no ring turn correlates into it.
 // `ring` must hold only that segment's ring events, or an earlier segment's echo
 // can become the calibration echo.
-export async function measureSegmentEchoOffset({ place, sessionId, ring }: {
-  place: TranscriptPlacement; sessionId: string; ring: SeqEvent[];
+export async function measureSegmentEchoOffset({ place, sessionId, ring, text }: {
+  place: TranscriptPlacement; sessionId: string; ring: SeqEvent[]; text?: string;
 }): Promise<number | null> {
-  const flat = await loadStampedTranscript({ place, sessionId });
+  const flat = text === undefined
+    ? await loadStampedTranscript({ place, sessionId })
+    : stampArchiveEvents((await replayPersistedText({ place, sessionId, text, seqHint: 0 })).lines);
   if (!flat) return null;
   return calibrateEchoOffset(ring, flat, buildFlatIndex(flat));
 }

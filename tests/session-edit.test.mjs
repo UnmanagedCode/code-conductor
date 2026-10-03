@@ -6,12 +6,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { encodeCwd, localPlace} from '../src/projects.ts';
+import { encodeCwd, localPlace, sessionFilePath } from '../src/projects.ts';
 import { isPureUserPromptLine } from '../src/transcript.ts';
 import {
-  truncateSessionAtUserMessage, forkSessionAtUserMessage,
+  truncateSessionAtUserMessage, forkSessionAtUserMessage as forkFromSnapshot,
 } from '../src/sessionEdit.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
+
+// Fork takes its caller's snapshot of the file; these tests fork the whole file
+// as it is on disk.
+async function forkSessionAtUserMessage(args) {
+  const snapshot = await fs.readFile(sessionFilePath(args.place, args.sessionId), 'utf8');
+  return forkFromSnapshot({ ...args, snapshot });
+}
 
 async function makeFixture(lines) {
   const tmpHome = await mkdtemp('orch-edit-');

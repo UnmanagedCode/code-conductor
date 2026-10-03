@@ -473,7 +473,7 @@ test('fork refuses 409 while another rewrite holds the _mutating flag', async ()
     await waitFor(() => ctx.instances.get(id).status === 'idle' && ctx.instances.get(id).backingSessionId);
 
     // Stand in for a rewind/prune mid-flight on the same instance.
-    ctx.instances.get(id)._mutating = true;
+    ctx.instances.get(id)._mutating = 'rewind';
     const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0, text: 'first' });
     assert.equal(fk.status, 409);
     assert.match(fk.body.error, /another rewind\/fork\/prune is in progress/);
@@ -505,7 +505,7 @@ test('a successful fork releases the _mutating flag', async () => {
 
     const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1, text: 'second' });
     assert.equal(fk.status, 201);
-    assert.equal(ctx.instances.get(id)._mutating, false,
+    assert.equal(ctx.instances.get(id)._mutating, null,
       'the finally released the flag, so a second fork is not locked out');
 
     // Proof the release is real and not just observably-false: fork again.

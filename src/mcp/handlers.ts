@@ -1407,12 +1407,14 @@ export async function renewSession(
     }
     const r = await getInst(instances, callerId);
     if ('soft' in r) return r.soft;
-    // THE interlock (decision D6), MCP side. A prune sets `_mutating`, which makes
-    // prompt() 409 — and this renewal's reseed IS a prompt(), so arming now would
-    // clear the context and then lose the summary. MCP surfaces soft-refuse rather
-    // than throw. Re-arming a RENEWAL is deliberately still allowed: same instance,
-    // same mechanism, so arm() is idempotent and it is not an interleaving.
-    if (r.inst.rotationInFlight === 'prune' || r.inst._mutating) {
+    // THE interlock (decision D6), MCP side. A prune (or rewind) makes prompt()
+    // 409 — and this renewal's reseed IS a prompt(), so arming now would clear the
+    // context and then lose the summary. A fork does not block prompts
+    // (`rewriteBlocksPrompts`), so it does not refuse a renewal either. MCP
+    // surfaces soft-refuse rather than throw. Re-arming a RENEWAL is deliberately
+    // still allowed: same instance, same mechanism, so arm() is idempotent and it
+    // is not an interleaving.
+    if (r.inst.rotationInFlight === 'prune' || r.inst.rewriteBlocksPrompts) {
       return { ok: false, code: 'SESSION_ROTATING', sessionId: callerId,
         reason: 'a context prune is in progress on this session — retry once it completes, '
           + 'then call renew_session again.' };
@@ -1441,7 +1443,7 @@ export async function renewSession(
   }
   // The same interlock, widened to the TARGET. `renewalPending` is what makes "the
   // worker already has a renewal armed" refuse rather than clobber it.
-  if (inst.rotationInFlight === 'prune' || inst.renewalPending || inst._mutating) {
+  if (inst.rotationInFlight === 'prune' || inst.renewalPending || inst.rewriteBlocksPrompts) {
     return { ok: false, code: 'SESSION_ROTATING', sessionId: inst.sessionId,
       reason: 'a context rotation is already in progress on that worker — retry once it completes.' };
   }

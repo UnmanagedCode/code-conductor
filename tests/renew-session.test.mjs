@@ -892,10 +892,49 @@ test('rotation interlock: renew and prune refuse to interleave (SESSION_ROTATING
   }
 });
 
+test('a bare renew_session refuses under a prompt-blocking rewrite and arms under a fork', async (t) => {
+  // The refusal exists because the renewal's reseed is a prompt(), which a
+  // rewind/prune holder refuses. A fork holder does not refuse prompts, so it
+  // must not refuse the renewal either — a model calling renew_session while
+  // its own session is being forked would otherwise get a soft refusal for up
+  // to the fork's whole wait.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+
+    for (const kind of ['prune', 'rewind']) {
+      await t.test(`a '${kind}' holder refuses SESSION_ROTATING`, async () => {
+        inst._mutating = kind;
+        try {
+          const refused = await callTool(srv.baseUrl, 'renew_session', { summary: 'held' }, { caller: sid1 });
+          assert.equal(refused.ok, false, JSON.stringify(refused));
+          assert.equal(refused.code, 'SESSION_ROTATING');
+          assert.equal(inst.renewalPending, false, 'nothing was armed');
+        } finally { inst._mutating = null; }
+      });
+    }
+    await t.test("a 'fork' holder lets the renewal arm", async () => {
+      inst._mutating = 'fork';
+      try {
+        const armed = await callTool(srv.baseUrl, 'renew_session', { summary: 'during a fork' }, { caller: sid1 });
+        assert.equal(armed.ok, true, JSON.stringify(armed));
+        assert.equal(inst.rotationInFlight, 'renew', 'the renewal is armed');
+      } finally { inst._mutating = null; }
+    });
+  } finally {
+    await srv.close();
+  }
+});
+
 test('the interlock covers the RESEED window, not just arming', async () => {
   // The gap review round 1 found. `_rotation` is closed at the /clear's own
   // turn_end — it has to be, or the idle hub would never deliver at the reseed's
-  // turn_end — which leaves a window where _rotation is null, _mutating is false
+  // turn_end — which leaves a window where _rotation is null, _mutating is null
   // and status is 'idle': every guard a prune or a rewind checks. A request landing
   // there kills the proc, and the reseed then 409s in prompt(): context cleared,
   // handoff summary LOST, conductor silent until the watchdog. The second flag
@@ -923,7 +962,7 @@ test('the interlock covers the RESEED window, not just arming', async () => {
     // reseed's turn_end), but the renewal is not finished.
     await waitFor(() => inst.backingSessionId === NEW_SID && inst.rotationPending === false);
     assert.equal(inst.status, 'idle', 'precondition: idle, so the status guard would not refuse');
-    assert.equal(inst._mutating, false, 'precondition: _mutating is clear too');
+    assert.equal(inst._mutating, null, 'precondition: _mutating is clear too');
     assert.equal(inst.renewalPending, true, 'the renewal window is still open — this is the fix');
 
     // All three destructive rewrites must refuse in this window.

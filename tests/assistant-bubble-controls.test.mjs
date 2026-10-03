@@ -369,7 +369,7 @@ test('assistant controls survive segment retirement and stay enabled during a ru
   assert.ok(btn(wrap, 'toggle'));
 
   conv.setCurrentSegment('B'); // retires segment A
-  conv.setUserActionsEnabled(false);
+  conv.setUserActionsEnabled({ rewind: false, fork: false });
   assert.ok(btn(wrap, 'toggle') && btn(wrap, 'copy'), 'controls survive retirement');
   // Found by structure, not by the .user-view-btn class: a control classed
   // `user-msg-action` would be disabled by setUserActionsEnabled and must not
