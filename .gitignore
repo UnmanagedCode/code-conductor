@@ -6,4 +6,3 @@ server.log
 harness/playwright/screenshots/
 __pycache__/
 .compile-cache/
-build/
