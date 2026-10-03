@@ -133,7 +133,8 @@ export async function launch({ installDir, env = process.env, ...overrides }) {
       throw new LaunchError(`code-conductor server ${exited}. See ${logFile}`, tail(logFile));
     }
     if (d.now() > deadline) {
-      log('start: gave up waiting for health');
+      log('start: gave up waiting for health; killing the server');
+      try { d.kill(child.pid); } catch { /* already gone */ }
       throw new LaunchError(`code-conductor did not become healthy in time. See ${logFile}`, tail(logFile));
     }
     await d.sleep(d.pollMs);

@@ -170,3 +170,22 @@ test('stop: nothing running is not an error; a survivor is', async () => {
       /still running/);
   } finally { await s.close(); }
 });
+
+test('launch: a server that never becomes healthy is killed and reported', async () => {
+  const fx = fixture();
+  const s = await healthServer(CC());
+  const port = s.port;
+  await s.close();
+  try {
+    let now = 0;
+    const killed = [];
+    await assert.rejects(launch({
+      installDir: fx.installDir, env: { ...fx.env, PORT: String(port) }, ...detect, readCommit: () => 'x',
+      sleep: async () => { now += 20_000; }, now: () => now,
+      spawn: () => Object.assign(fakeChild(), { pid: 321 }),
+      kill: (pid) => killed.push(pid),
+      openUrl: () => assert.fail('must not open'),
+    }), /did not become healthy/);
+    assert.deepEqual(killed, [321]);
+  } finally { fx.cleanup(); }
+});
