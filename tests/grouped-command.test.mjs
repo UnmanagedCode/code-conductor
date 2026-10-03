@@ -18,6 +18,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../src/groupedCommand.ts';
+import { posixPlatform } from '../src/platform/index.ts';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -26,7 +27,7 @@ function alive(pid) {
 }
 
 test('a normal command resolves with its exit code and merged output', async () => {
-  const r = await runGroupedCommand({ shell: 'echo out; echo err 1>&2; exit 3' }, { cwd: os.tmpdir() });
+  const r = await runGroupedCommand({ shell: 'echo out; echo err 1>&2; exit 3' }, { cwd: os.tmpdir() }, posixPlatform);
   assert.equal(r.code, 3);
   assert.equal(r.timedOut, false);
   assert.equal(r.spawnError, null);
@@ -38,7 +39,7 @@ test('a normal command resolves with its exit code and merged output', async () 
 
 test('argv form runs the binary directly, without a shell', async () => {
   // `$HOME` stays literal because there is no shell to expand it.
-  const r = await runGroupedCommand({ argv: ['echo', '$HOME'] }, { cwd: os.tmpdir() });
+  const r = await runGroupedCommand({ argv: ['echo', '$HOME'] }, { cwd: os.tmpdir() }, posixPlatform);
   assert.equal(r.code, 0);
   assert.equal(r.stdout.trim(), '$HOME');
 });
@@ -73,7 +74,7 @@ test('a timeout yields code 124 AND kills the whole process group', async (t) =>
   const started = Date.now();
   const run = runGroupedCommand(
     { shell: `${grandchild} & echo $! > ${JSON.stringify(pidFile)}; sleep ${GRANDCHILD_SLEEP_S}` },
-    { cwd: dir, timeoutMs: 300, killGraceMs: 50 },
+    { cwd: dir, timeoutMs: 300, killGraceMs: 50 }, posixPlatform,
   );
 
   const TIMED_OUT = Symbol('budget');
@@ -99,7 +100,7 @@ test('output is tail-clipped at `cap` and reports truncated', async () => {
   const cap = 256;
   // Emit well past the cap.
   const r = await runGroupedCommand({ shell: `for i in $(seq 1 400); do echo "line-$i"; done` },
-    { cwd: os.tmpdir(), cap });
+    { cwd: os.tmpdir(), cap }, posixPlatform);
   assert.equal(r.code, 0);
   assert.equal(r.truncated, true, 'cap was exceeded, so truncated must be set');
   assert.ok(r.output.length <= cap, `output ${r.output.length} exceeded cap ${cap}`);
@@ -110,14 +111,14 @@ test('output is tail-clipped at `cap` and reports truncated', async () => {
 
 test('no cap means no clipping', async () => {
   const r = await runGroupedCommand({ shell: `for i in $(seq 1 400); do echo "line-$i"; done` },
-    { cwd: os.tmpdir() });
+    { cwd: os.tmpdir() }, posixPlatform);
   assert.equal(r.truncated, false);
   assert.match(r.output, /line-1\n/);
   assert.match(r.output, /line-400/);
 });
 
 test('a spawn failure resolves rather than rejecting, and is distinguishable', async () => {
-  const r = await runGroupedCommand({ argv: ['/nonexistent/definitely-not-a-binary'] }, { cwd: os.tmpdir() });
+  const r = await runGroupedCommand({ argv: ['/nonexistent/definitely-not-a-binary'] }, { cwd: os.tmpdir() }, posixPlatform);
   assert.equal(r.code, 1);
   assert.equal(r.timedOut, false);
   assert.ok(r.spawnError, 'spawnError distinguishes "never launched" from "ran and exited 1"');
@@ -127,7 +128,7 @@ test('a spawn failure resolves rather than rejecting, and is distinguishable', a
 test('onChunk streams output as it arrives', async () => {
   const seen = [];
   const r = await runGroupedCommand({ shell: 'echo a; echo b' },
-    { cwd: os.tmpdir(), onChunk: (s) => seen.push(s) });
+    { cwd: os.tmpdir(), onChunk: (s) => seen.push(s) }, posixPlatform);
   assert.equal(r.code, 0);
   assert.match(seen.join(''), /a[\s\S]*b/);
 });
@@ -138,7 +139,7 @@ test('onChunk streams output as it arrives', async () => {
 test('onChunk names the stream each chunk came from', async () => {
   const seen = [];
   await runGroupedCommand({ shell: 'printf O; printf E >&2; printf O2' },
-    { cwd: os.tmpdir(), onChunk: (s, which) => seen.push([which, s]) });
+    { cwd: os.tmpdir(), onChunk: (s, which) => seen.push([which, s]) }, posixPlatform);
   const of = (w) => seen.filter(x => x[0] === w).map(x => x[1]).join('');
   assert.equal(of('out'), 'OO2');
   assert.equal(of('err'), 'E');
@@ -151,7 +152,7 @@ test('onChunk names the stream each chunk came from', async () => {
 test('onChunk never emits past headCapBytes', async () => {
   const seen = [];
   const r = await runGroupedCommand({ shell: 'for i in $(seq 1 200); do printf "0123456789"; done' },
-    { cwd: os.tmpdir(), headCapBytes: 64, onChunk: (s) => seen.push(s) });
+    { cwd: os.tmpdir(), headCapBytes: 64, onChunk: (s) => seen.push(s) }, posixPlatform);
   assert.equal(r.truncated, true, 'the cap really was hit');
   assert.equal(seen.join(''), r.stdout, 'the stream carried exactly what was retained');
 });
@@ -162,7 +163,7 @@ test('onChunk never emits past headCapBytes', async () => {
 test('onChunk stops at the maxBufferBytes fence, and the fence is still a failure', async () => {
   const seen = [];
   const r = await runGroupedCommand({ shell: 'for i in $(seq 1 500); do printf "0123456789"; done; sleep 0.2' },
-    { cwd: os.tmpdir(), maxBufferBytes: 64, onChunk: (s) => seen.push(s) });
+    { cwd: os.tmpdir(), maxBufferBytes: 64, onChunk: (s) => seen.push(s) }, posixPlatform);
   assert.equal(r.code, 1, 'an overflow is a failure, not a truncated success');
   assert.match(r.stderr, /exceeded the 64-byte limit/);
   assert.ok(seen.join('').length <= 64, 'and nothing past the fence was streamed');

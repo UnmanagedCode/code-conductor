@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { LaunchWrap } from './systems/fuse/wrap.ts';
+import { hostPlatform, type Platform } from './platform/index.ts';
 
 // The single seam through which an Instance launches its `claude` subprocess.
 // `launch({command,args,cwd,env})` returns a ChildProcess-like handle:
@@ -15,6 +16,9 @@ export class RealClaudeLauncher {
   // remote-backed session gets a union — see `inProcess` on LauncherLike.
   readonly inProcess = false;
 
+  private readonly platform: Platform;
+  constructor(platform: Platform = hostPlatform) { this.platform = platform; }
+
   // `wrap` is THE documented seam for launching the CLI somewhere other than
   // this machine's root filesystem: a transform of {command,args,cwd,env}
   // applied immediately before spawn (src/systems/fuse/wrap.ts wraps the launch
@@ -29,7 +33,7 @@ export class RealClaudeLauncher {
   // a wrapped chain has to exec rather than supervise.
   launch({ command, args, cwd, env, wrap }: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; wrap?: LaunchWrap }): ReturnType<typeof spawn> {
     const s = wrap ? wrap({ command, args, cwd, env }) : { command, args, cwd, env };
-    return spawn(s.command, s.args, { cwd: s.cwd, env: s.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    return spawn(s.command, s.args, { ...this.platform.spawnOptions('child'), cwd: s.cwd, env: s.env, stdio: ['pipe', 'pipe', 'pipe'] });
   }
 }
 
@@ -46,7 +50,7 @@ export interface ClaudeBin {
 // probe, summarize.ts's summary generation, claudeShellEnv.ts's bundle-gen —
 // can depend on just the launch-resolution primitives without pulling in the
 // whole Instance/InstanceManager module.
-export function resolveClaudeBin(): ClaudeBin {
+export function resolveClaudeBin(platform: Platform): ClaudeBin {
   // CLAUDE_BIN may be "node /path/to/script.mjs" so callers can swap in the
   // fake CLI used by tests; split on whitespace.
   //
@@ -56,7 +60,7 @@ export function resolveClaudeBin(): ClaudeBin {
   // spawn and the boot probe got `command: ''` and an ENOENT with nothing named
   // in it. `|| 'claude'` AFTER the trim so whitespace-only defaults too.
   const raw = (process.env.CLAUDE_BIN ?? '').trim() || 'claude';
-  const parts = raw.split(/\s+/);
+  const parts = platform.splitCommand(raw);
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
@@ -93,6 +97,7 @@ export function resolveBackendLaunch(
   backend: { id?: unknown; template?: unknown; env?: unknown } | null | undefined,
   model: string | null | undefined,
   claudeBin: ClaudeBin,
+  platform: Platform,
 ): BackendLaunch {
   const template = typeof backend?.template === 'string' ? backend.template.trim() : '';
   const env = backendEnv(backend, model || null);
@@ -111,7 +116,7 @@ export function resolveBackendLaunch(
   }
   // Substitute inside each token (not only whole tokens) so `--model={model}`
   // works as well as `--model {model}`.
-  const tokens = template.split(/\s+/).filter(Boolean).map(t => t.replaceAll('{model}', model));
+  const tokens = platform.splitCommand(template).map(t => t.replaceAll('{model}', model));
   return { command: tokens[0], prefixArgs: tokens.slice(1), env };
 }
 

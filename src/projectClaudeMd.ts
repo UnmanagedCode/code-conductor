@@ -32,6 +32,7 @@ import { listProjects, resolveProjectDir } from './projects.ts';
 import { composeProjectConventionsBlockWithMeta, getCatalog } from './projectConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
+import { eolOf, firstLine, withEol } from './lineEndings.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
@@ -138,7 +139,7 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 // regenerates with — its line-1 marker's slugs, else none. Also how
 // src/conventionsCheckout.ts derives the marker cc would write from HEAD's copy.
 export function selectionOf(existing: string | null): string[] {
-  return (existing === null ? null : parseMarker(existing.split('\n', 1)[0])) ?? [];
+  return (existing === null ? null : parseMarker(firstLine(existing))) ?? [];
 }
 
 // Full CONVENTIONS.md document for a project selection: marker, the composed
@@ -260,7 +261,7 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
     // placement for a local one — so a local project's document is unchanged.
     system: system.id === LOCAL_SYSTEM_ID ? null : { id: system.id, path: projPath },
   });
-  await system.writeFile(target, content);
+  await system.writeFile(target, withEol(content, eolOf(existing)));
   if (log?.log) {
     log.log(missing.length
       ? `CONVENTIONS.md regenerated without unresolvable ${missing.join(', ')}: ${target}`

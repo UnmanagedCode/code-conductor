@@ -111,7 +111,8 @@ import { IdleSubscriptionHub } from './idleSubscriptions.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
-import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
+import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
+import { hostPlatform, type Platform } from './platform/index.ts';
 import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RingSeam } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
@@ -119,6 +120,7 @@ import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
 import type { WriteStream } from 'node:fs';
 import { httpError } from './httpError.ts';
+import { capabilityRefusal } from './capabilities.ts';
 import { isKnownEffort } from './effortLevels.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
@@ -223,6 +225,7 @@ interface InstanceConstructorInput {
   debug?: boolean;
   claudePluginDirs?: string[];
   launcher?: LauncherLike;
+  platform?: Platform;
 }
 
 // The mode vocabulary and both defaults live in sessionModes.ts, next to the
@@ -313,6 +316,14 @@ function answersTo(i: Instance, id: string): boolean {
 // if spurious turns are observed arriving later; decrease if the window blocks
 // intentional follow-up prompts that come in very quickly after an abort.
 const POST_ABORT_DRAIN_WINDOW_MS = 3000;
+
+// How long a stop on a host without a soft SIGTERM (`Platform.softSigterm` false)
+// waits, after the interrupt and stdin EOF, for the CLI to exit on its own before
+// a tree kill. It must exceed that exit time for a busy turn. To re-measure, on
+// such a host kill an instance mid-turn (`Instance.kill`) and time from the
+// interrupt write to the process `exit`; raise the constant if the measured time
+// comes near it.
+export const CLEAN_STOP_GRACE_MS = 5000;
 // Safety cap: max spurious turns killed per window. Guards against a
 // misbehaving subprocess that emits system/init in a tight loop.
 const POST_ABORT_DRAIN_MAX = 20;
@@ -601,6 +612,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // declared here too, since the manager and later methods assign them).
   id: string;
   _launcher: LauncherLike;
+  _platform: Platform;
   project: string;
   cwd: string;
   // WHERE THIS SESSION'S TRANSCRIPT LIVES. `cwd` alone cannot name a directory:
@@ -775,6 +787,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   _drainListener: ((ev: UiEvent) => void) | null;
   _suppressTempDelete: boolean;
   _killing: boolean;
+  // Set when a commanded stop interrupted a busy turn: that turn's turn_end is
+  // not a turn finishing. Reset on every spawn().
+  _stopInterruptedTurn: boolean;
   autoStoppedForOverage: boolean;
   autoResumeAt: number | null;
   _overageResetsAt: number | null;
@@ -808,9 +823,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
+    this._platform = platform;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
     // launcher (child_process.spawn); tests inject an in-process one.
     this._launcher = launcher;
@@ -1051,6 +1067,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // through kill()) from a spontaneous crash, and not mislabel the former
     // as a substitution-backend launch failure. Reset to false on every spawn().
     this._killing = false;
+    this._stopInterruptedTurn = false;
     // Auto-stop / auto-resume on overage state. `autoStoppedForOverage` is
     // set true when an `onOverage: 'stop-resume'` overage event soft-interrupts
     // the turn; the manager arms a per-session resume timer on the next idle
@@ -2199,6 +2216,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A reused instance object (respawn) may carry _killing from its prior
     // teardown — clear it so this fresh launch's exit is judged on its own.
     this._killing = false;
+    this._stopInterruptedTurn = false;
     // Same for the stderr a launch's exit cause is cut from, and the cause itself.
     this._stderr = '';
     this.lastExit = null;
@@ -2259,7 +2277,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         );
       }
       ({ command, prefixArgs: launchPrefix, env: backendEnvVars } =
-        resolveBackendLaunch(backendRecord, this.model, resolveClaudeBin()));
+        resolveBackendLaunch(backendRecord, this.model, resolveClaudeBin(this._platform), this._platform));
     } catch (err) {
       // Instance-specific side effect on the shared helper's invariant
       // failure — resolver + resume-guard are supposed to prevent this ever
@@ -2407,7 +2425,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the backend's own env, the substitution-backend native window, the
     // .conduct override) are allowed to set them, and they must run after this
     // strip so their values win.
-    const spawnEnv = cliEnvBase();
+    const spawnEnv = cliEnvBase(this._platform);
     // A REMOTE-BACKED WORKER GETS ITS REMOTE'S OWN CLI CONFIG DIRECTORY, so the
     // transcript directory the CLI derives from its cwd is scoped by a root
     // that already differs per machine. Two projects at `/root/app3` on two
@@ -3870,6 +3888,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._drainListener) { this.off('event', this._drainListener); this._drainListener = null; }
   }
 
+  // A stop where SIGTERM is not soft must not cut a busy turn off: interrupt it so
+  // the CLI records the interrupted turn. Callers end stdin next; the pipe orders
+  // the two writes. That turn's turn_end is not a turn finishing — see _stopInterruptedTurn.
+  interruptTurnForStop(): void {
+    if (this.status !== 'turn') return;
+    this._stopInterruptedTurn = true;
+    this._controlRequest({ subtype: 'interrupt' }, { timeout: CLEAN_STOP_GRACE_MS }).catch(() => {});
+  }
+
   async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
     if (!this.proc) {
       // A SESSION CAN HOLD A PREPARED FuseSession WITH NO PROCESS. launch()
@@ -3884,6 +3911,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
     // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
+    if (!this._platform.softSigterm) {
+      // A hard signal here would orphan the CLI's children and lose the
+      // in-flight message: interrupt a busy turn, then let EOF end the process.
+      // The signal ladder is only a backstop.
+      this.interruptTurnForStop();
+      graceMs = Math.max(graceMs, CLEAN_STOP_GRACE_MS);
+    }
     try { this.proc.stdin?.end(); } catch { /* ignore */ }
     const proc = this.proc;
     // The launch's terminal latch, NOT a fresh proc.once('exit'): a child whose
@@ -3892,10 +3926,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // registered here would never fire.
     const ended = this._procEnded;
     const t1 = setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      try { this._platform.killProcess(proc, 'SIGTERM'); } catch { /* ignore */ }
     }, graceMs);
     const t2 = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+      try { this._platform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
     }, graceMs + 3000);
     // UNDER THE FUSE WRAP `proc` IS SUDO, NOT THE CLI. sudo forks and waits, and
     // cannot forward SIGKILL, so the ladder above reaps the wrapper while the
@@ -4310,6 +4344,9 @@ export class Instance extends EventEmitter implements InstanceLike {
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
   _claudeLauncher: LauncherLike;
+  _platform: Platform;
+  // How the synchronous stops (shutdownForResumeSync, stopLiveSync) treat live CLIs.
+  _syncStop: { graceMs: number; killSurvivors: boolean };
   _resuming: Map<string, Promise<Instance>>;
   // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
   // whatever string the caller passed, and normalizing it to the public id means an
@@ -4340,8 +4377,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _overageClearTimer: NodeJS.Timeout | null;
   _overageResumeMode: boolean;
 
-  constructor({ claudeLauncher = defaultClaudeLauncher }: { claudeLauncher?: LauncherLike } = {}) {
+  // Keep the shared singleton for the host platform; any other platform gets its own launcher so spawn options follow it.
+  constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
     super();
+    this._platform = platform;
+    // Where SIGTERM is soft a CLI's children exit on EOF once cc is gone, so
+    // survivors are left alone; where it is not, they are tree-killed at the deadline.
+    this._syncStop = platform.softSigterm
+      ? { graceMs: 2000, killSurvivors: false }
+      : { graceMs: CLEAN_STOP_GRACE_MS, killSurvivors: true };
     this.byId = new Map<string, Instance>();
     // Injected launcher, passed to every Instance so it spawns through the
     // seam rather than child_process.spawn directly. Production default is the
@@ -4476,6 +4520,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
   // reorder those registrations without revisiting this method.
   shouldSuppressTurnNotification(instanceId: string): boolean {
+    if (this.byId.get(instanceId)?._stopInterruptedTurn) return true;  // a turn a commanded stop interrupted
     if (this._idleHub.isCaller(instanceId)) return true;   // Condition 1
     if (this._idleHub.wasConsumed(instanceId)) return true; // Condition 2
     return false;
@@ -4913,6 +4958,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // every non-local system is reached over the provider protocol, so this
     // refuses rather than silently degrading to a session with no Bash.
     const remote = proj.system.id !== LOCAL_SYSTEM_ID;
+    if (remote && !this._platform.capabilities.fuseUnion) throw capabilityRefusal('fuseUnion');
     if (remote && !isRedirectable(proj.system)) {
       throw httpError(
         501,
@@ -5155,9 +5201,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // The exemption is the same structural one `attachFuse` uses: an
       // in-process launcher runs the CLI inside cc's own process, so there is
       // no chroot and no marking event to arm.
-      claudeCommand = resolveOnPath(resolveClaudeBin().command);
+      claudeCommand = resolveOnPath(resolveClaudeBin(this._platform).command);
       if (!claudeCommand && !this._claudeLauncher.inProcess) {
-        const spelling = resolveClaudeBin().command;
+        const spelling = resolveClaudeBin(this._platform).command;
         const raw = process.env.CLAUDE_BIN === undefined
           ? 'unset'
           : JSON.stringify(process.env.CLAUDE_BIN);
@@ -5264,7 +5310,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // special case for it.
     if (remote && !this._claudeLauncher.inProcess) {
       const backendRec = getBackend(backend);
-      const launch = resolveBackendLaunch(backendRec, finalModel, resolveClaudeBin());
+      const launch = resolveBackendLaunch(backendRec, finalModel, resolveClaudeBin(this._platform), this._platform);
       if (!resolveOnPath(launch.command)) {
         throw Object.assign(
           new Error(`FUSE_BACKEND_UNRESOLVED: cannot spawn a worker for project '${project}' on `
@@ -5353,6 +5399,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       debug: !!(debug ?? getDebugByDefault()),
       claudePluginDirs,
       launcher: this._claudeLauncher,
+      platform: this._platform,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
     // Attached BEFORE launch(): spawn() reads it to widen the injected hook
@@ -6305,7 +6352,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // server.ts — is what covers both.
       const victim = killablePid(inst);
       if (inst.proc && victim) {
-        try { process.kill(victim, 'SIGKILL'); } catch { /* gone */ }
+        try { this._platform.killProcess(victim, 'SIGKILL'); } catch { /* gone */ }
       }
     }
 
@@ -6364,25 +6411,51 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // waits for all-idle), so the session JSONL is fully flushed.
       try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
-    // Bounded sync wait for processes to exit after stdin close. As in
-    // shutdownTempSync, the pid polled is the recorded inner one under the FUSE
-    // wrap, and this path CANNOT run the mount teardown — it is async and
+    // As in shutdownTempSync, the pid polled is the recorded inner one under the
+    // FUSE wrap, and this path CANNOT run the mount teardown — it is async and
     // process.exit follows immediately. sweepFuseSessions() at the next boot is
     // what unmounts and reaps the daemon.
-    // 2 s gives the CLI enough time to handle the EOF and exit cleanly.
-    // Atomics.wait is Node's only non-spinning sync sleep primitive.
+    this._stopAllSync(live, this._syncStop);
+  }
+
+  // Plain-restart counterpart for a sync-stop policy that kills survivors: the
+  // CLI's children (bash, conhost) do not die with it, and `scheduleRestart`
+  // exits right after. Interrupt every busy turn and EOF every live non-temp
+  // instance, wait, then tree-kill any survivor. A no-op under a policy that
+  // leaves survivors: the children exit on EOF once cc is gone. (Temps are
+  // handled by shutdownTempSync.)
+  stopLiveSync(): void {
+    if (!this._syncStop.killSurvivors) return;
+    const live: Instance[] = [];
+    for (const inst of this.byId.values()) {
+      if (!inst.proc || inst.temp) continue;
+      live.push(inst);
+      inst.interruptTurnForStop();
+      try { inst.proc.stdin?.end(); } catch { /* gone */ }
+    }
+    this._stopAllSync(live, this._syncStop);
+  }
+
+  // Bounded sync wait for every instance's process to exit (they were already
+  // sent EOF), polled together so the worst case is `graceMs` in total, then
+  // optionally a SIGKILL — a tree kill where the platform has no soft signal —
+  // for any pid still alive. Atomics.wait is Node's only non-spinning sync sleep.
+  private _stopAllSync(live: Instance[], { graceMs, killSurvivors }: { graceMs: number; killSurvivors: boolean }): void {
     const sab = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      let allDead = true;
+    const deadline = Date.now() + graceMs;
+    const survivors = (): number[] => {
+      const out: number[] = [];
       for (const inst of live) {
         const victim = killablePid(inst);
-        if (!victim) continue;
         // ESRCH only — see pidIsAlive. EPERM is not death.
-        if (pidIsAlive(victim)) { allDead = false; break; }
+        if (victim && pidIsAlive(victim)) out.push(victim);
       }
-      if (allDead) break;
-      Atomics.wait(sab, 0, 0, 20);
+      return out;
+    };
+    while (Date.now() < deadline && survivors().length) Atomics.wait(sab, 0, 0, 20);
+    if (!killSurvivors) return;
+    for (const victim of survivors()) {
+      try { this._platform.killProcess(victim, 'SIGKILL'); } catch { /* gone */ }
     }
   }
 

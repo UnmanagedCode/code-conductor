@@ -248,8 +248,6 @@ describe('substitution-backend spawn command/args', () => {
     await setTierBackend('fast', { backend: 'ollama', model: 'gemma4:cloud' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backend: 'claude' });
-    // The express error handler emits `{error}` only — `code` is internal, so the
-    // 422 + the message text are the whole observable REST contract here.
     assert.equal(r.status, 422, JSON.stringify(r.body));
     // Provenance: this must be the ROUTE's refusal, naming the row's backend, not
     // _doCreate's (`session on backend '…' has no resolvable model`) — whose guard is

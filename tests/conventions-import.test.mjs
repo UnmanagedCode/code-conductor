@@ -18,3 +18,8 @@ test('withConventionsImport(): the writer\'s content per CLAUDE.md state', async
     await t.test(title, () => assert.equal(withConventionsImport(input), expected));
   }
 });
+
+test('withConventionsImport(): CRLF input gets a CRLF import line; an existing CRLF import is no write', () => {
+  assert.equal(withConventionsImport('# Notes\r\nbody\r\n'), '@CONVENTIONS.md\r\n# Notes\r\nbody\r\n');
+  assert.equal(withConventionsImport('# Notes\r\n@CONVENTIONS.md\r\n'), null);
+});

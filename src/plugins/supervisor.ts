@@ -3,6 +3,7 @@ import http from 'node:http';
 import { allocatePort, tcpOpen } from './ports.ts';
 import { killProcessGroup, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import type { PluginBackend } from './manifest.ts';
+import { hostPlatform, type Platform } from '../platform/index.ts';
 
 // Plugin child-process supervisor — a port of code-hub's src/runner.js.
 // Each child is the manifest's blocking `backend.start` command spawned in
@@ -60,12 +61,14 @@ export function createSupervisor({
   _readyTimeoutMs = READY_TIMEOUT_MS,
   _settleMs = SPAWN_SETTLE_MS,
   _spawn = spawn,
+  platform = hostPlatform,
 }: {
   onExit?: (id: string, runtime: ChildRuntime) => void;
   _allocatePort?: () => Promise<number>;
   _readyTimeoutMs?: number;
   _settleMs?: number;
   _spawn?: typeof spawn;
+  platform?: Platform;
 } = {}) {
   // id → { proc, pgid, status, error, output }. Children adopted after a
   // conductor restart have no entry here (their stdout can't be recaptured);
@@ -90,10 +93,11 @@ export function createSupervisor({
   }
 
   function spawnChild({ id, manifest, cwd, env }: SupervisorStartInput, port: number): ChildRecord {
-    const proc = _spawn('bash', ['-lc', manifest.backend.start], {
+    const { command, args } = platform.commandFor({ shell: manifest.backend.start });
+    const proc = _spawn(command, args, {
+      ...platform.spawnOptions('daemon'),
       cwd,
       env: { ...process.env, ...env, PORT: String(port), CONDUCTOR_PLUGIN_ID: id },
-      detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const c: ChildRecord = { proc, pgid: proc.pid ?? 0, status: 'starting', error: null, output: '' };
@@ -159,7 +163,7 @@ export function createSupervisor({
           (e) => settle(c, 'crashed', `${(e as Error).message}\n${c.output.slice(-2000)}`),
         );
       }
-      const gitHead = await headSha(cwd);
+      const gitHead = await headSha(cwd, platform);
       return { pid: c.proc.pid ?? 0, pgid: c.proc.pid ?? 0, port, startedAt: new Date().toISOString(), gitHead };
     }
   }
@@ -202,7 +206,7 @@ export function createSupervisor({
   // is an HTTP server that deserves time to drain, not a script to cut off.
   function stop({ id, pgid }: { id: string; pgid: number }): void {
     children.delete(id);
-    killProcessGroup(pgid, { graceMs: GRACE_MS });
+    killProcessGroup(pgid, { graceMs: GRACE_MS, platform });
   }
 
   return { start, stop, runtime };
@@ -222,9 +226,9 @@ export function httpOk(port: number, path: string): Promise<boolean> {
 
 // HEAD sha of the checkout the child was started from (staleness display).
 // Null on any failure — a plugin dir need not be a git repo.
-export function headSha(cwd: string): Promise<string | null> {
+export function headSha(cwd: string, platform: Platform): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('git', ['-C', cwd, 'rev-parse', 'HEAD'], (err, stdout) => {
+    execFile('git', ['-C', cwd, 'rev-parse', 'HEAD'], { ...platform.spawnOptions('child') }, (err, stdout) => {
       resolve(err ? null : stdout.trim());
     });
   });

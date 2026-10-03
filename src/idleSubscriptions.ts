@@ -261,6 +261,9 @@ export class IdleSubscriptionHub {
     // The event payload carries the instanceId — the graph's key directly.
     const target = this.manager.byId.get(targetInstanceId);
     if (!target) return;
+    // A turn a commanded stop interrupted is not a turn finishing: the armed
+    // wake resolves through the exit path instead.
+    if (target._stopInterruptedTurn) return;
     // A turn_end supersedes any pending idle-drain settle: either it consumes
     // the wake right here, or its defer keeps the turn_end path in
     // charge (and the settle's fire-time freeze check would drop it anyway —

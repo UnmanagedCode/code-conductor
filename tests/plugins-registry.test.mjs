@@ -1293,3 +1293,23 @@ test('setActiveVersion names a worktree by its one registered spelling', async (
     await env.restore();
   }
 });
+
+test('a throwing platform.commandFor is that plugin\'s 502 start failure, not a stuck "starting"', async () => {
+  const env = await makePluginRoot();
+  const { posixPlatform } = await import('../src/platform/posix.ts');
+  const platform = { ...posixPlatform, commandFor: () => { throw new Error('bash.exe not found'); } };
+  const host = createPluginHost({ platform });
+  try {
+    await env.addPluginProject('aplug');
+    await host.enable('fake-plugin');
+    const e = await rejectsWithStatus(host.ensureStarted('fake-plugin'), 502);
+    assert.match(e.message, /failed to start/);
+    assert.match(String(e.tail ?? e.details?.tail ?? ''), /bash\.exe not found/);
+    const row = await host.status('fake-plugin');
+    assert.notEqual(row.state, 'starting');
+    assert.equal(row.state, 'crashed');
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});

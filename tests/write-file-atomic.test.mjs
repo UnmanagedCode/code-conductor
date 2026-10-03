@@ -131,3 +131,45 @@ test('a vanished parent directory is recreated, not an error', async () => {
   const content = await fsp.readFile(target, 'utf8');
   assert.equal(content, '{"ok":true}');
 });
+
+// ── rename retry (Windows holds a target open briefly) ───────────────────────
+
+test('writeFileAtomic retries a rename refused with EPERM, then succeeds', async () => {
+  const dir = await mkdtemp('cc-wfa-retry-');
+  const target = path.join(dir, 'a.json');
+  const orig = fsp.rename;
+  let calls = 0;
+  fsp.rename = async function (...a) {
+    if (++calls <= 2) throw Object.assign(new Error('busy'), { code: 'EPERM' });
+    return orig.apply(this, a);
+  };
+  try {
+    await writeFileAtomic(target, 'ok');
+    assert.equal(calls, 3);
+    assert.equal(await fsp.readFile(target, 'utf8'), 'ok');
+  } finally { fsp.rename = orig; }
+});
+
+test('writeFileAtomic gives up after 5 refused renames and leaves no tmp file', async () => {
+  const dir = await mkdtemp('cc-wfa-giveup-');
+  const target = path.join(dir, 'a.json');
+  const orig = fsp.rename;
+  let calls = 0;
+  fsp.rename = async () => { calls++; throw Object.assign(new Error('busy'), { code: 'EBUSY' }); };
+  try {
+    await assert.rejects(writeFileAtomic(target, 'x'), (e) => e.code === 'EBUSY');
+    assert.equal(calls, 5);
+    assert.deepEqual(await fsp.readdir(dir), []);
+  } finally { fsp.rename = orig; }
+});
+
+test('writeFileAtomic does not retry an unrelated rename error', async () => {
+  const dir = await mkdtemp('cc-wfa-enoent-');
+  const orig = fsp.rename;
+  let calls = 0;
+  fsp.rename = async () => { calls++; throw Object.assign(new Error('nope'), { code: 'ENOSPC' }); };
+  try {
+    await assert.rejects(writeFileAtomic(path.join(dir, 'a.json'), 'x'), (e) => e.code === 'ENOSPC');
+    assert.equal(calls, 1);
+  } finally { fsp.rename = orig; }
+});

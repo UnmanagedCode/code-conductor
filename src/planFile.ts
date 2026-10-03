@@ -5,14 +5,14 @@
 import { readFileSync } from 'node:fs';
 import type { UiEvent } from './parser.ts';
 
-const PLAN_DIR_FRAGMENT = '/.claude/plans/';
+const PLAN_DIR_RE = /[\\/]\.claude[\\/]plans[\\/]/;
 
 // The path a tool_use wrote a plan file to, or null.
 export function planFileFromToolUse(name: unknown, input: unknown): string | null {
   if (name !== 'Write') return null;
   const fp = (input as { file_path?: unknown } | null | undefined)?.file_path;
   if (typeof fp !== 'string') return null;
-  if (!fp.includes(PLAN_DIR_FRAGMENT) || !fp.endsWith('.md')) return null;
+  if (!PLAN_DIR_RE.test(fp) || !fp.endsWith('.md')) return null;
   return fp;
 }
 

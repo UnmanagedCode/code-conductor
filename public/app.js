@@ -5,6 +5,7 @@ import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
 import { attachComposer, probeMicAvailability } from './composer.js';
+import { loadCapabilities, capabilities } from './capabilities.js';
 import { installPromptFocus } from './promptFocus.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
@@ -433,6 +434,7 @@ const composer = attachComposer({
   // Lazy arrow: first fires on user input, after composerDrafts is initialised.
   onDraftChange: (d) => composerDrafts.noteChange(d),
   claimTranscriptTarget: () => composerDrafts.claimTranscriptTarget(),
+  voiceSupported: () => !!capabilities()?.voice,
 });
 const promptFocus = installPromptFocus({ textarea: dom.composerInput });
 // Per-session composer drafts (public/drafts.js): selectInstance calls
@@ -508,8 +510,19 @@ headerHandle = installHeader({
 function setMicAvailable(available) {
   composer.setMicAvailable(available);
 }
-probeMicAvailability(setMicAvailable);
-probeTtsStatus();
+// Voice is probed only where the platform has it; until the capabilities load
+// (one local round trip) an empty composer shows Send rather than the mic.
+const VOICE_PROBE_RETRY_MS = 5000;
+function probeVoice() {
+  loadCapabilities().then((caps) => {
+    if (!caps) { setTimeout(probeVoice, VOICE_PROBE_RETRY_MS); return; }
+    if (!caps.voice) return;
+    setMicAvailable(false);
+    probeMicAvailability(setMicAvailable);
+    probeTtsStatus();
+  });
+}
+probeVoice();
 
 // Settings page (full-page view at #settings). The burger-menu button routes
 // here; closing restores the previously-active session anchor.

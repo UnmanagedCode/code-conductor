@@ -15,6 +15,7 @@ import { SESSION_PREFIX_MIN } from '../instances.ts';
 import { validateProjectRef } from '../projects.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
+import { hostPlatform, type PlatformCapabilities } from '../platform/index.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -40,6 +41,7 @@ interface McpCtx {
   coreTools: ReadonlySet<McpTool>;
   callerId: string | null;
   playbookGate: PlaybookGate;
+  capabilities: PlatformCapabilities;
 }
 
 // The tool shape the transport itself needs — deliberately broader than the
@@ -487,13 +489,13 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
 }
 
 export function buildMcpRouter(
-  { instances, pluginHost, playbookGate }:
-  { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate },
+  { instances, pluginHost, playbookGate, capabilities = hostPlatform.capabilities }:
+  { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate; capabilities?: PlatformCapabilities },
 ): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '8mb' }));
 
-  const coreTools = buildTools();
+  const coreTools = buildTools().filter(t => !t.requires || capabilities[t.requires]);
   const coreToolSet: ReadonlySet<McpTool> = new Set<McpTool>(coreTools);
 
   r.post('/', async (req, res) => {
@@ -521,7 +523,7 @@ export function buildMcpRouter(
         console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
       }
     }
-    const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate };
+    const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate, capabilities };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {

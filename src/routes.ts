@@ -109,6 +109,8 @@ import {
 // catalog — card 2026-0282). Note `createProject` here is the HANDLER, not
 // `src/projects.ts`'s filesystem-level one it wraps.
 import { listPlaybooks, createProject } from './mcp/handlers.ts';
+import { requireCapability, remotePlacementRefused, capabilitySoftRefusal } from './capabilities.ts';
+import { hostPlatform, type PlatformCapabilities } from './platform/index.ts';
 import {
   CORE_META as WORKSPACE_CORE_META,
   getCatalog as getWorkspaceConventionsCatalog,
@@ -195,6 +197,14 @@ function errMessage(e: unknown): string {
     if (typeof m === 'string') return m;
   }
   return 'internal error';
+}
+
+// A thrown error's `code` reaches the body only on a deliberate refusal — one that
+// carries a `statusCode` (httpError, systemRefusal); a raw fs/OS errno stays internal.
+export function errorBody(err: unknown): { error: string; code?: string } {
+  const e = err as { statusCode?: unknown; code?: unknown } | null;
+  const code = e && typeof e === 'object' && typeof e.statusCode === 'number' && typeof e.code === 'string' ? e.code : undefined;
+  return { error: errMessage(err), ...(code !== undefined ? { code } : {}) };
 }
 
 // Mounts the four parallel routes shared by the Settings → Transcribe and
@@ -294,16 +304,20 @@ interface RoleBackendPatch { role: string; backend?: unknown }
 interface TierEffortPatch { tier: TierName; effort?: unknown }
 interface RoleEffortPatch { role: string; effort?: unknown }
 
-export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate }:
+export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities }:
   {
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
     pluginHost?: PluginHostApiLike | null;
     pluginLibrary?: PluginLibraryApiLike | null;
     playbookGate?: PlaybookGate | null;
+    capabilities?: PlatformCapabilities;
   } = {}): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
+  // Features the host platform turns off are refused here, before their handlers.
+  r.use(['/settings/systems', '/projects/:name/remote'], requireCapability(capabilities, 'remoteSystems'));
+  r.use(['/transcribe', '/tts', '/settings/transcribe', '/settings/tts'], requireCapability(capabilities, 'voice'));
   // Plugin management API (GET /, rescan, enable/disable/start/stop/status/
   // version, library list/install) — delegates to the registry/library,
   // errors bubble to the middleware at the bottom of this router.
@@ -335,7 +349,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // this for a CHANGED bootId to confirm it's talking to the replacement
   // process, not the old one still up during a resume drain (see bootId.ts).
   r.get('/health', (req, res) => {
-    res.json({ ok: true, bootId: BOOT_ID });
+    res.json({ ok: true, app: 'code-conductor', pid: process.pid, bootId: BOOT_ID, capabilities });
   });
 
   r.post('/admin/restart', (req, res) => {
@@ -534,7 +548,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       // into the first worker brief. See conventions/conductor/core.md.
       const created = await createProject({
         name: validName, conventions: slugs, system, remoteId, systemPath,
-      });
+      }, { capabilities });
       res.status(201).json(created);
     } catch (e) { next(e); }
   });
@@ -562,6 +576,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   r.post('/projects/external', async (req, res, next) => {
     try {
       const { name, path: targetPath, system, remoteId, onStaleRecord } = jsonBody(req);
+      if (remotePlacementRefused(capabilities, system)) return void res.json(capabilitySoftRefusal('remoteSystems'));
       const result = await adoptProject(name, targetPath, { system, remoteId, onStaleRecord });
       res.status(result.ok ? 201 : 200).json(result);
     } catch (e) { next(e); }
@@ -2386,7 +2401,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
 
   r.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = (err as { statusCode?: number } | null)?.statusCode ?? 500;
-    res.status(status).json({ error: errMessage(err) });
+    res.status(status).json(errorBody(err));
   });
 
   return r;

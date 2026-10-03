@@ -1,9 +1,10 @@
 import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
+import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
@@ -27,6 +28,7 @@ import { setPluginConventionsProvider } from './src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
+import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,15 +40,15 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform } = {}) {
   const app = express();
-  const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
+  const instances = withInstances ? new InstanceManager({ claudeLauncher, platform }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
   // than delete a backend out from under a running/respawnable instance, whose next
   // relaunch would otherwise fall through to the real `claude`.
   setLiveBackendsProvider(instances ? () => instances.liveBackendUsage() : null);
-  const pluginHost = withInstances ? createPluginHost({ instances }) : null;
-  const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
+  const pluginHost = withInstances ? createPluginHost({ instances, platform }) : null;
+  const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost, platform }) : null;
   // ── The provider wiring block ───────────────────────────────────────────
   //
   // The module-global provider setters converge here, and this is the only src
@@ -108,8 +110,8 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   // retire/enforcement-toggle events, so a second instance would double-append
   // those and read a projection the other router's writes never reach.
   const playbookGate = createPlaybookGate({ instances });
-  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate }));
-  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate }));
+  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   app.use(express.static(path.join(__dirname, 'public')));
@@ -163,7 +165,17 @@ async function listenWithRetry(server: http.Server, port: number, host: string, 
   }
 }
 
-export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
+// The boot sweep of FUSE-union mounts a previous process left behind; skipped
+// where the host cannot run the union. `sweep` is a parameter so a test can
+// observe the call.
+export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promise<unknown> = sweepFuseSessions): Promise<void> {
+  if (!platform.capabilities.fuseUnion) return;
+  try { await sweep(); }
+  catch (e) { console.warn('fuse sweep failed:', e); }
+}
+
+export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform }: { port?: number; host?: string; platform?: Platform } = {}) {
+  warnIfNodeUnsupported();
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
@@ -195,8 +207,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // exits ~50 ms after firing shutdown(), and neither synchronous shutdown path
   // can run the (async) mount teardown at all, so a mount and a root-owned
   // daemon would otherwise survive the orchestrator that created them.
-  try { await sweepFuseSessions(); }
-  catch (e) { console.warn('fuse sweep failed:', e); }
+  await sweepFuseLeftovers(platform);
   // Drop session records with no transcript left anywhere in their lineage
   // (pre-image: <store>/sessions.json.startup.bak). ORDER IS LOAD-BEARING: after
   // migrations and the temp sweep (whose store write it queues behind), before
@@ -204,7 +215,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // unlinks pending-resume.json, which names the sessions it must keep.
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer();
+  const { server, instances, wss, pluginHost } = createServer({ platform });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)
@@ -280,13 +291,13 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // we're listening — never gate port availability on a `claude --version`
   // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting
   // it here delays listen() past test poll deadlines under load.)
-  checkClaudeReadiness()
+  checkClaudeReadiness({ platform })
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
     .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));
   return { server, instances, wss, pluginHost, port: addr.port, host: addr.address };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.title = 'code-conductor';
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? '127.0.0.1';

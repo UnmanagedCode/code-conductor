@@ -15,6 +15,7 @@ import {
 } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
 import type { System } from './systems/system.ts';
+import { hostPlatform, samePath, type Platform } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 
 // Re-exported from its implementation on the local system: the store is always
@@ -68,8 +69,28 @@ const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 // Project + worktree directories themselves stay clean.
 export const ORCH_STORE_DIRNAME = '.code-conductor';
 
+// Memoised per raw value: called per request, and tests swap PROJECTS_ROOT. A root
+// the platform cannot resolve yet is returned raw and NOT memoised, so its spelling
+// is fixed only once the directory exists.
+export function canonicalRootMemo(platform: Platform): (raw: string) => string {
+  const canonicalRoots = new Map<string, string>();
+  return (raw) => {
+    let canon = canonicalRoots.get(raw);
+    if (canon === undefined) {
+      const resolved = platform.canonicalPath(raw);
+      if (resolved === null) return raw;
+      canon = resolved;
+      canonicalRoots.set(raw, canon);
+    }
+    return canon;
+  };
+}
+const canonicalRoot = canonicalRootMemo(hostPlatform);
+
+// The root spelled as the claude CLI's `getcwd()` reports it, so every cwd
+// derived from it names the transcript dir the CLI will use.
 export function projectsRoot(): string {
-  return process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
+  return canonicalRoot(process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT);
 }
 
 // The conductor's own running checkout dir (the dir holding server.ts /
@@ -182,8 +203,8 @@ export function remoteConfigDirName(system: string, remoteId: string | null): st
 //
 // ITS LAST COMPONENT IS `.claude`, and that is load-bearing rather than
 // decorative: the CLI resolves its plans directory as `<configDir>/plans`, and
-// `planFileFromToolUse` (src/planFile.ts) recognises a plan file by the
-// `/.claude/plans/` fragment — home-agnostically, so it holds for a worker
+// `planFileFromToolUse` (src/planFile.ts) recognises a plan file by a
+// `.claude` / `plans` segment pair (either separator) — home-agnostically, so it holds for a worker
 // whatever machine spelling its config dir has. Renaming this component breaks
 // plan-file detection for every remote-backed session.
 export function remoteConfigDir(p: { system: string; remoteId: string | null }): string {
@@ -542,7 +563,7 @@ export async function findSelfProject(selfDir: string = SELF_PROJECT_DIR): Promi
     if (!system || !p.path) continue;
     let real: string;
     try { real = await system.realpath(p.path); } catch { continue; }
-    if (real === selfReal) return p;
+    if (samePath(real, selfReal)) return p;
   }
   return null;
 }
@@ -1051,7 +1072,7 @@ async function commitScaffold(
     const real = await system.realpath(full);
     const where = await runGit(system, full, ['rev-parse', '--absolute-git-dir', '--show-toplevel']);
     const [gitDir, topLevel] = where.stdout.trim().split('\n');
-    if (where.code !== 0 || gitDir !== path.join(real, '.git') || topLevel !== real) {
+    if (where.code !== 0 || !samePath(gitDir, path.join(real, '.git')) || !samePath(topLevel, real)) {
       console.warn(`createProject: refusing the initial commit in ${full} — git resolves that `
         + `directory to a different repository (git dir '${gitDir ?? ''}', work tree `
         + `'${topLevel ?? ''}'), and committing there would write into history that is not this `
@@ -1507,7 +1528,7 @@ export async function adoptProject(
   const wantSystem = placement?.system ?? LOCAL_SYSTEM_ID;
   const wantRemote = placement?.remoteId ?? null;
   for (const p of await listProjects()) {
-    if (p.system === wantSystem && p.remoteId === wantRemote && p.path === real) {
+    if (p.system === wantSystem && p.remoteId === wantRemote && samePath(p.path, real)) {
       return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'${placement ? ` on ${describePlacement(placement)}` : ''}.` };
     }
   }
@@ -1553,7 +1574,7 @@ export async function adoptProject(
   if (top.code === 0) {
     let topReal = top.stdout.trim();
     try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
-    if (topReal !== real) {
+    if (!samePath(topReal, real)) {
       return {
         ok: false, code: 'TARGET_INSIDE_REPO',
         reason: `'${real}' is inside the git repository whose toplevel is '${topReal}' — adopt that instead.`,

@@ -84,3 +84,22 @@ test('a seeded path does not bind an inline plan (branch 1)', () => {
     assert.equal(ev.plan, 'x');
   } finally { a.cleanup(); }
 });
+
+test('planFileFromToolUse accepts a Windows or mixed-separator plans path unchanged', () => {
+  const win = 'C:\\Users\\u\\.claude\\plans\\p.md';
+  const mixed = 'C:/Users/u/.claude\\plans\\p.md';
+  assert.equal(planFileFromToolUse('Write', { file_path: win }), win);
+  assert.equal(planFileFromToolUse('Write', { file_path: mixed }), mixed);
+  assert.equal(planFileFromToolUse('Write', { file_path: 'C:\\Users\\u\\notes\\p.md' }), null);
+  assert.equal(planFileFromToolUse('Write', { file_path: 'C:\\Users\\u\\.claude\\plans\\p.txt' }), null);
+  assert.equal(planFileFromToolUse('Edit', { file_path: win }), null);
+});
+
+test('a Windows-style Write latches, then an empty-input plan_request gets planPath (branch 3)', () => {
+  const win = 'C:\\Users\\u\\.claude\\plans\\absent.md';
+  const t = new PlanFileTracker();
+  t.noteToolUse('Write', { file_path: win });
+  const ev = emptyPlanRequest();
+  t.enrich(ev);
+  assert.equal(ev.planPath, win);
+});

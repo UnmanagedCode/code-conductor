@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { withHealth } from './capabilitiesStub.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -49,8 +50,8 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
     }
     return { ok: false, status: 503, json: async () => ({}), text: async () => '{}' };
   };
-  window.fetch = impl;
-  globalThis.fetch = impl;
+  window.fetch = withHealth(impl);
+  globalThis.fetch = window.fetch;
 
   document.body.innerHTML = `
     <button id="np-btn"></button>

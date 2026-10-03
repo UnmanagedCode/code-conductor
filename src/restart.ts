@@ -17,6 +17,7 @@
 //   5. Exit this process after a small delay so the 202 response can
 //      flush over the wire.
 import { spawn } from 'node:child_process';
+import { hostPlatform } from './platform/index.ts';
 import type { Server } from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { writePendingTempCleanup } from './tempCleanup.ts';
@@ -31,6 +32,7 @@ interface RestartManagerLike {
   shutdownTempSync?(): void;
   tempCleanupSnapshot?(): Array<{ sessionId: string }>;
   shutdown?(): Promise<unknown> | void;
+  stopLiveSync?(): void;
 }
 
 interface RestartLog {
@@ -100,6 +102,9 @@ export function scheduleRestart({ server, wss, instances, log = console }: {
       try { server.close(); } catch { /* ignore */ }
     }
     runTempCleanup({ instances, log });
+    // Where SIGTERM is not soft, the CLI's children would outlive the exit below.
+    try { instances?.stopLiveSync?.(); }
+    catch (e) { log.warn?.('restart: live stop error', e); }
     if (instances && typeof instances.shutdown === 'function') {
       // Fire-and-forget — instance subprocesses outlive us. Captured before
       // the closure so the narrowed function isn't lost (TS re-widens
@@ -123,7 +128,7 @@ export function spawnReplacementAndExit({ log = console }: { log?: RestartLog } 
   const args = [process.argv[1], ...process.argv.slice(2)];
   try {
     const child = spawn(process.execPath, args, {
-      detached: true,
+      ...hostPlatform.spawnOptions('daemon'),
       stdio: 'inherit',
       cwd: process.cwd(),
       env: process.env,

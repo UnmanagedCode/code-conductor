@@ -306,3 +306,17 @@ test('GET /api/instances/:id/attachments/:filename serves saved bytes; rejects t
     assert.equal(noinst.status, 404);
   } finally { await close(); }
 });
+
+test('extractAttachedMarkers: a Windows marker path yields the bare filename', async () => {
+  const { extractAttachedMarkers } = await import('../src/parser.ts');
+  const name = '2026-01-01T00-00-00-000Z-a.png';
+  const r = extractAttachedMarkers(`hi\nAttached file: \`C:\\Users\\u\\code-conductor\\.code-conductor\\projects\\p\\attachments\\${name}\``);
+  assert.equal(r.text, 'hi');
+  assert.equal(r.attachments.length, 1);
+  assert.equal(r.attachments[0].filename, name);
+  assert.equal(r.attachments[0].kind, 'image');
+  const posix = extractAttachedMarkers(`Attached file: \`/s/.code-conductor/projects/p/attachments/${name}\``);
+  assert.equal(posix.attachments[0].filename, name);
+  const prose = extractAttachedMarkers('Attached file: `C:\\Users\\u\\notes\\a.png`');
+  assert.equal(prose.attachments.length, 0);
+});

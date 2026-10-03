@@ -254,7 +254,7 @@ function validateClaudePlugin(value: unknown, errors: string[]): string | undefi
   const trimmed = value.trim();
   // Segment-level `..` check so a legitimate component like `data..v2` is fine —
   // only a real `..` path segment is a traversal.
-  if (trimmed.startsWith('/') || path.isAbsolute(trimmed) || trimmed.split('/').includes('..')) {
+  if (trimmed.startsWith('/') || path.isAbsolute(trimmed) || trimmed.split(/[\\/]/).includes('..')) {
     errors.push("'claudePlugin' must be a relative path with no '..' segment");
     return undefined;
   }

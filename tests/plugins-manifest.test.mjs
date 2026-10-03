@@ -428,3 +428,11 @@ test('readManifest: a missing playbook file → invalid naming slug + file; a pr
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test('claudePlugin: a backslash `..` segment is refused, `data..v2` still accepted', () => {
+  for (const v of ['..\\x', 'a\\..\\..\\b']) {
+    const r = validateManifest(base({ claudePlugin: v }));
+    assert.ok(r.errors, `claudePlugin=${v} should be refused`);
+  }
+  assert.equal(validateManifest(base({ claudePlugin: 'data..v2' })).errors, undefined);
+});

@@ -2,7 +2,7 @@
 
 Local webapp for orchestrating multiple Claude Code CLI instances across projects in the parent directory of this repo (override with the `PROJECTS_ROOT` env var). Spawn, watch, and interact with several `claude` subprocesses in parallel from one browser tab.
 
-Runs on Termux (localhost-only, single user) or any host with Node 24+ and the `claude` CLI on `$PATH`. Server-side `src/*.ts` runs directly via Node 24's native type stripping (no build step) and is type-checked by an enforced `tsc --noEmit` gate — see `npm run typecheck` below.
+Runs on Termux (localhost-only, single user) or any host with Node 24+ and the `claude` CLI on `$PATH`. Windows 11: see [Windows](#windows). Server-side `src/*.ts` runs directly via Node 24's native type stripping (no build step) and is type-checked by an enforced `tsc --noEmit` gate — see `npm run typecheck` below.
 
 ```
         browser tab               HTTP + WS (:8787)
@@ -68,6 +68,10 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 - **Plugins** — projects with a `conductor.plugin.json` run as embedded extensions: a conductor-supervised backend, a same-origin iframe frontend (reverse proxy + app-switcher), forwarded MCP tools (`<plugin-id>__<tool>`), **project / conductor conventions** (CLAUDE.md fragments + optional scaffold directives), **roles** (named model-bindings, user-rebindable in Settings → Models → Roles), **playbooks** (stage graphs, namespaced `<plugin-id>/<slug>`), and/or **Claude Code skills** (a `claudePlugin` root added per enabled plugin via session-local `--plugin-dir` at every claude launch). A contributions-only plugin needs no backend. Managed in **⚙ Settings → Plugins** + **Plugin Library** (one-click clone-to-install). Trusted own code — no sandboxing. Schema + wire contracts: [docs/plugins.md](docs/plugins.md); UI + library: [docs/features.md](docs/features.md#plugins).
 
 See [docs/features.md](docs/features.md) for the exhaustive feature and UI-element catalog.
+
+## Windows
+
+cc runs on Windows 11 under Git for Windows (Git Bash); Systems, the FUSE union and Voice are off there. The per-user installer is the separate `code-conductor-windows` project — see [docs/windows.md](docs/windows.md).
 
 ## Systems
 
@@ -181,6 +185,8 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
   - **`Glob` and `Grep` are unavailable in a session on a system.** A search result can be annotated but never substituted, so both are removed and refused by name; `find` and `grep` through `Bash` answer about the right machine.
   - **Two places cannot share one CLI transcript directory.** Registering a project or worktree whose transcript directory is already held is refused **409 `TRANSCRIPT_DIR_COLLISION`**. That is now only reachable for two places on one target, or two local places whose cwds encode alike (`_` and `.` both become `-`).
   - **Upgrading strands existing remote transcripts.** Sessions already on disk for a project on a non-local system stay at `~/.claude/projects/<encodeCwd(systemPath)>/`, which cc no longer reads: they stop listing, locating, reading and resuming. Nothing is deleted — the jsonls remain, and the CLI prunes its own `projects/` after ~30 days. There is deliberately no migration.
+- **Remote Systems, the FUSE-union chroot and Voice are per-platform capabilities** (`Platform.capabilities`) — hidden in the UI and refused with a stable code on a platform that turns them off; table in [docs/architecture.md](docs/architecture.md) → `src/platform/`.
+- **Windows: a kill takes up to ~5 s** (an interrupted turn is given time to exit cleanly).
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
 - **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — you are woken when the worker's turn ends.
@@ -193,6 +199,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - [docs/protocol.md](docs/protocol.md) — subprocess protocol (CLI flags + hooks), WebSocket protocol, REST endpoints
 - [docs/architecture.md](docs/architecture.md) — stack, component layout, instance lifecycle, on-disk state, migrations, testing
 - [docs/frontend-testing.md](docs/frontend-testing.md) — testing `public/` under happy-dom (its UA-stylesheet and `hashchange` gaps, dialog reopen tests) and what the fake-CLI + headless-Chromium pass can and cannot reach
+- [docs/windows.md](docs/windows.md) — Windows runtime, launcher and installer contract
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [docs/systems-protocol.md](docs/systems-protocol.md) — the System provider wire protocol: frames, capabilities, the `exec` lifecycle, the derivations, the error taxonomy, and how to write or verify a provider
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) into `.conduct/CONVENTIONS.md` before every Conduct session's spawn/resume, loaded via that dir's `CLAUDE.md` `@CONVENTIONS.md` import (configurable in Settings → Conventions → Conductor)

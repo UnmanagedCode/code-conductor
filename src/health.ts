@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { resolveClaudeBin } from './claudeLauncher.ts';
+import type { Platform } from './platform/index.ts';
 import { claudeConfigDir } from './projects.ts';
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -22,12 +23,13 @@ export interface ClaudeBinProbe {
   stderr?: string;
 }
 
-async function probeBin({ timeoutMs }: { timeoutMs: number }): Promise<ClaudeBinProbe> {
-  const { command, prefixArgs } = resolveClaudeBin();
+async function probeBin({ timeoutMs, platform }: { timeoutMs: number; platform: Platform }): Promise<ClaudeBinProbe> {
+  const { command, prefixArgs } = resolveClaudeBin(platform);
   return new Promise((resolve) => {
     let proc;
     try {
       proc = spawn(command, [...prefixArgs, '--version'], {
+        ...platform.spawnOptions('child'),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -39,7 +41,7 @@ async function probeBin({ timeoutMs }: { timeoutMs: number }): Promise<ClaudeBin
     let settled = false;
     const settle = (v: ClaudeBinProbe) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
     const timer = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+      try { platform.killProcess(proc, 'SIGKILL'); } catch { /* ignore */ }
       settle({ found: false, command, error: 'timeout' });
     }, timeoutMs);
     proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
@@ -99,9 +101,9 @@ export interface ReadinessResult {
 // `configDir` is the CLI's CONFIG DIRECTORY, not a home: the CLI honours
 // CLAUDE_CONFIG_DIR, so probing `<home>/.claude` would report on a directory it
 // is not reading. Injectable for tests; production takes the derivation.
-export async function checkClaudeReadiness({ configDir = claudeConfigDir(), timeoutMs = DEFAULT_TIMEOUT_MS }: { configDir?: string; timeoutMs?: number } = {}): Promise<ReadinessResult> {
+export async function checkClaudeReadiness({ configDir = claudeConfigDir(), timeoutMs = DEFAULT_TIMEOUT_MS, platform }: { configDir?: string; timeoutMs?: number; platform: Platform }): Promise<ReadinessResult> {
   const [claudeBin, claudeDir, authenticated] = await Promise.all([
-    probeBin({ timeoutMs }),
+    probeBin({ timeoutMs, platform }),
     probeDir(configDir),
     probeAuth(configDir),
   ]);
@@ -125,6 +127,16 @@ export async function checkClaudeReadiness({ configDir = claudeConfigDir(), time
       code: 'not_authenticated',
       title: 'Claude is not signed in',
       hint: 'Run `claude` in a terminal and complete sign-in, then restart this server. (Or set `ANTHROPIC_API_KEY`.)',
+    });
+  }
+  // The host shell cc runs its own commands through (and the claude CLI's Bash
+  // tool) — when it cannot be resolved, both fail.
+  try { platform.commandFor({ shell: 'true' }); }
+  catch (e) {
+    issues.push({
+      code: 'shell_missing',
+      title: e instanceof Error ? e.message : String(e),
+      hint: 'Without it claude falls back to PowerShell only and cc\'s own shell commands fail.',
     });
   }
   return {
