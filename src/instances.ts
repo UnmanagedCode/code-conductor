@@ -324,7 +324,11 @@ const POST_ABORT_DRAIN_MAX = 20;
 export const EXIT_STDERR_TAIL_LINES = 20;
 export const EXIT_STDERR_TAIL_CHARS = 2000;
 // How many sessions' exit causes InstanceManager keeps, oldest dropped first.
-const EXIT_CAUSE_CAP = 256;
+export const EXIT_CAUSE_CAP = 256;
+// How long an exit cause waits for its launch's stderr to reach EOF before the
+// tail is taken as final. A real child can deliver 'exit' before its last stderr
+// line has been read; a grandchild still holding the pipe means EOF may never come.
+const EXIT_STDERR_SETTLE_MS = 1000;
 
 function stderrTail(stderr: string): string | null {
   const lines = stderr.trim().split('\n').slice(-EXIT_STDERR_TAIL_LINES).join('\n');
@@ -2541,10 +2545,25 @@ export class Instance extends EventEmitter implements InstanceLike {
     });
 
     const errRl = readline.createInterface({ input: this.proc.stderr as NodeJS.ReadableStream, crlfDelay: Infinity });
+    // This launch's own stderr — `_stderr` is reset by the next spawn(), which can
+    // land before this launch's exit cause has settled (see EXIT_STDERR_SETTLE_MS).
+    let launchStderr = '';
     errRl.on('line', (line) => {
       this._debugLog('stderr', line);
       this._stderr += line + '\n';
+      launchStderr += line + '\n';
       this._emitUi({ kind: 'system', subtype: 'stderr', data: { line } });
+    });
+    // Resolves at stderr EOF: readline has delivered every line by its 'close', and
+    // a destroyed stream emits 'close' without 'end'.
+    const stderrEof = new Promise<void>((r) => {
+      errRl.once('close', r);
+      (this.proc!.stderr as NodeJS.ReadableStream | null)?.once?.('close', r);
+    });
+    const settledStderr = (): Promise<string> => new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(launchStderr), EXIT_STDERR_SETTLE_MS);
+      timer.unref?.();
+      void stderrEof.then(() => { clearTimeout(timer); resolve(launchStderr); });
     });
 
     // ONE terminal path per launch, latched on 'exit' OR 'close'. A failed spawn
@@ -2562,7 +2581,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (ended) return;
       ended = true;
       resolveEnded();
-      this._handleExit(code, signal);
+      this._handleExit(code, signal, settledStderr());
     };
     launched.on('exit', (code, signal) => finish(code as number | null, signal as NodeJS.Signals | null));
     launched.on('close', (code, signal) => finish(code as number | null, signal as NodeJS.Signals | null));
@@ -2995,7 +3014,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     } catch { /* best effort */ }
   }
 
-  _handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+  _handleExit(code: number | null, signal: NodeJS.Signals | null, settledStderr: Promise<string>): void {
     this.pid = null;
     this.proc = null;
     this._closeDrainWindow();
@@ -3015,18 +3034,28 @@ export class Instance extends EventEmitter implements InstanceLike {
         data: { code, signal, stderr: this._stderr.trim() || null },
       });
     }
-    // Any backend's CLI exiting on its own leaves its cause behind: one server-log
-    // line, and `lastExit`, which the manager's status listener records against the
-    // session — set BEFORE _setStatus, which is what that listener runs on. A temp
-    // worker leaves byId on this very transition, taking its ring with it, so
-    // without this the cause would exist nowhere.
-    if (crashed && !this._killing && !this._suppressTempDelete) {
-      const tail = stderrTail(this._stderr);
-      this.lastExit = { code, signal, stderrTail: tail, at: Date.now() };
+    // Any backend's CLI exiting with no kill commanded — clean exits included, since
+    // the CLI only ends on its own when something went wrong — leaves its cause
+    // behind as `lastExit`, announced by `exit_cause` (null for a commanded exit).
+    // Emitted HERE, not on the status transition: a spawn that never started was
+    // already marked crashed by the 'error' handler, so no transition follows. And
+    // BEFORE _setStatus, so the manager records it and wakes the owners before a
+    // temp worker's drop takes its armed wakes with it.
+    // The tail is provisional until this launch's stderr reaches EOF (bounded by
+    // EXIT_STDERR_SETTLE_MS); it is then recut in place — the recorded entry is
+    // this same object — and the server-log line written.
+    if (!this._killing && !this._suppressTempDelete) {
+      const cause: ExitCause = { code, signal, stderrTail: stderrTail(this._stderr) };
+      this.lastExit = cause;
       const where = this.worktree ? `${this.project}/${this.worktree.worktreeName}` : this.project;
-      console.warn(`instances: session ${this.sessionId} (${where}) exited on its own: `
-        + `code=${code} signal=${signal} — stderr: ${tail ? tail.replace(/\n/g, ' ⏎ ') : 'none'}`);
+      const sessionId = this.sessionId;
+      void settledStderr.then((text) => {
+        cause.stderrTail = stderrTail(text);
+        console.warn(`instances: session ${sessionId} (${where}) exited on its own: `
+          + `code=${code} signal=${signal} — stderr: ${cause.stderrTail ? cause.stderrTail.replace(/\n/g, ' ⏎ ') : 'none'}`);
+      });
     }
+    this.emit('exit_cause', this.lastExit);
     this._setStatus(crashed ? 'crashed' : 'exited');
     for (const p of this._pending.values()) {
       clearTimeout(p.timer);
@@ -5552,21 +5581,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           !this._autoResumeTimers.has(inst.id)) {
         this._armAutoResume(inst);
       }
-      // Record, or clear, the session's exit cause on every exit — BEFORE the temp
-      // drop below, which is the point: the cause has to outlive the instance. An
-      // exit with no cause (a commanded kill, a clean exit) clears it, so an
-      // earlier crash's cause can never describe a later death.
-      if ((summary.status === 'exited' || summary.status === 'crashed') && inst.sessionId) {
-        this._noteExitCause(inst.sessionId, inst.lastExit);
-      }
-      // …and wake every owner waiting on it, here for the same reason: the temp
-      // drop's purge clears the armed entries, which would wake nobody. Not inside
-      // a relaunch, whose own turn or rotation still owes the wake.
-      if ((summary.status === 'exited' || summary.status === 'crashed') && inst.lastExit && !inst.relaunching) {
-        this._idleHub.onTargetExit(inst.id, {
-          sessionId: inst.sessionId, code: inst.lastExit.code, signal: inst.lastExit.signal,
-        });
-      }
       // Temp sessions are disposable: once the subprocess is gone the
       // session is archived by _archiveTempSession() (the jsonl is retained
       // and stays resumable, just moved into the — archived — section), so
@@ -5590,6 +5604,18 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         this.byId.delete(id);
         this._purgeIdleFor(id);
         this.emit('list_changed');
+      }
+    });
+    // Every exit of this instance's process, from Instance._handleExit BEFORE its
+    // status transition — and so before the temp drop above, which is the point:
+    // the cause has to outlive the instance, and the purge would clear the armed
+    // wakes without waking anyone. A null cause (a commanded exit) clears the
+    // entry, so an earlier crash's cause can never describe a later death. No
+    // wake inside a relaunch, whose own turn or rotation still owes it.
+    inst.on('exit_cause', (cause: ExitCause | null) => {
+      if (inst.sessionId) this._noteExitCause(inst.sessionId, cause);
+      if (cause && !inst.relaunching) {
+        this._idleHub.onTargetExit(inst.id, { sessionId: inst.sessionId, code: cause.code, signal: cause.signal });
       }
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));

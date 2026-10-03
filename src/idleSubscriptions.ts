@@ -433,8 +433,8 @@ export class IdleSubscriptionHub {
     }
   }
 
-  // The target's CLI exited ON ITS OWN (the manager's status listener, from
-  // Instance.lastExit) — no turn_end will ever arrive, so every armed owner is
+  // The target's CLI exited ON ITS OWN, whatever the code (the manager's
+  // `exit_cause` listener) — no turn_end will ever arrive, so every armed owner is
   // woken now with the EXITED stub, and each entry's heartbeat goes with it.
   // Called BEFORE a temp target's purge, which would otherwise clear the entries
   // and wake nobody.

@@ -115,3 +115,45 @@ test('an EXITED wake held for a mid-turn recipient still names the sessionId aft
     instances._purgeIdleFor(cond.id);
   }
 });
+
+// The CLI closes cleanly (code 0) with nobody having asked it to — the in-process
+// child's SIGTERM closes its reader and it exits 0, bypassing Instance.kill. No
+// turn_end is coming, so the owner is still owed a wake.
+test('an uncommanded CLEAN exit mid-turn still wakes the owner of a temp worker with EXITED', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);
+  const caller = instForSession(instances, callerId);
+  const worker = instForSession(instances, workerSid);
+  await armedMidTurn(callerId, worker);
+
+  worker.proc.kill('SIGTERM');
+  await waitFor(() => !worker.proc);
+  assert.equal(worker.status, 'exited', 'precondition: a clean exit, not a crash');
+  await waitFor(() => exitedStubs(caller, workerSid).length >= 1);
+  await settle();
+  const stubs = exitedStubs(caller, workerSid);
+  assert.equal(stubs.length, 1);
+  assert.match(stubs[0].text, /exit code 0/);
+  assert.equal(instances.hasArmedWake(worker.id), false);
+});
+
+test('every armed owner of a worker that exits on its own gets exactly one EXITED stub', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const aId = await spawnReady('p');
+  const bId = await spawnReady('p');
+  const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);
+  const a = instForSession(instances, aId);
+  const b = instForSession(instances, bId);
+  const worker = instForSession(instances, workerSid);
+  await armedMidTurn(aId, worker);
+  instances.noteDispatch(bId, workerSid); // mid-turn: arms b at once
+  assert.deepEqual(Object.values(instances._idleSubscriberSnapshot()).flat().sort(), [aId, bId].sort(),
+    'precondition: both owners armed');
+
+  await crashMidFlight(worker, 'fatal: EIO');
+  await waitFor(() => exitedStubs(a, workerSid).length >= 1 && exitedStubs(b, workerSid).length >= 1);
+  await settle();
+  assert.equal(exitedStubs(a, workerSid).length, 1);
+  assert.equal(exitedStubs(b, workerSid).length, 1);
+});

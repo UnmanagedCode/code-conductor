@@ -18,7 +18,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession, seedSessionJsonl } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession, seedSessionJsonl, settle } from './helpers.mjs';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ControllableLauncher } from './controllableLauncher.mjs';
 import { localPlace } from '../src/projects.ts';
@@ -29,12 +29,12 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 // A turn that never ends on its own — the worker is mid-turn when it dies.
 const SCENARIO_OPEN = path.join(__dirname, 'fixtures', 'scenario-open-turn.json');
 
-// The in-process fake CLI for every launch, except one armed with crashNext.
+// The in-process fake CLI for every launch, except one armed with crashNext / failNext.
 const controllable = new ControllableLauncher();
 const inProcess = new InProcessClaudeLauncher();
 const launcher = {
   inProcess: true,
-  launch: (opts) => (controllable.crashArmed ? controllable.launch(opts) : inProcess.launch(opts)),
+  launch: (opts) => (controllable.armed ? controllable.launch(opts) : inProcess.launch(opts)),
 };
 
 let ctx, baseUrl, instances, home, projectsRoot;
@@ -240,4 +240,51 @@ test('an oversized stderr is cut to its tail, within both bounds', async () => {
   assert.ok(tail.split('\n').length <= EXIT_STDERR_TAIL_LINES, `${tail.split('\n').length} lines`);
   assert.ok(tail.endsWith(lines.at(-1)), 'the last line survives');
   assert.doesNotMatch(tail, /line-0000 /, 'the head is dropped');
+});
+
+// A real child process may deliver 'exit' before its stderr has been read to EOF,
+// so a cut taken at the latch can miss the very line that says why it died.
+test('a stderr line delivered after the exit event is still in the tail, the refusal and the log line', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const LATE = 'FATAL: written after the exit event';
+  let sid;
+  const lines = await capturingWarn(async () => {
+    controllable.crashNext(LATE, 1, { exitFirst: true });
+    sid = (await json('spawn_instance', { project: 'p', mode: 'bypassPermissions' })).sessionId;
+    // 'close' follows the late line.
+    await controllable.last.closed;
+    await settle();
+  });
+  assert.equal(exitLines(lines, sid).length, 1, lines.join('\n'));
+  assert.match(exitLines(lines, sid)[0], /FATAL: written after the exit event/);
+  const r = await json('send_prompt', { sessionId: sid, text: 'x' });
+  assert.equal(r.code, 'SESSION_NOT_LIVE', JSON.stringify(r));
+  assert.match(r.exit?.stderrTail ?? '', /FATAL: written after the exit event/);
+});
+
+// The 'error' handler marks the instance crashed BEFORE the terminal latch runs
+// the exit path, so a cause keyed on that status transition would be missed.
+test('a spawn that never started records its cause: SESSION_NOT_LIVE with exit and re-spawn advice', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  controllable.failNext = 'spawn claude ENOENT';
+  const sid = (await json('spawn_instance', { project: 'p', mode: 'bypassPermissions' })).sessionId;
+  await waitFor(() => !instForSession(instances, sid)?.proc);
+
+  const r = await json('send_prompt', { sessionId: sid, text: 'x' });
+  assert.equal(r.code, 'SESSION_NOT_LIVE', JSON.stringify(r));
+  assert.equal(r.exit?.code, -2);
+  assert.equal(r.exit?.stderrTail, null);
+  assert.match(r.reason, /spawn a fresh worker/);
+});
+
+test('the exit-cause map is capped at EXIT_CAUSE_CAP, evicting the oldest entry', () => {
+  const { EXIT_CAUSE_CAP } = instancesModule;
+  assert.equal(typeof EXIT_CAUSE_CAP, 'number');
+  const cause = { code: 1, signal: null, stderrTail: null };
+  for (let i = 0; i <= EXIT_CAUSE_CAP; i++) instances._noteExitCause(`cap-${i}`, cause);
+  assert.equal(instances._exitCauses.size, EXIT_CAUSE_CAP);
+  assert.equal(instances.exitCauseFor('cap-0'), null, 'the oldest is evicted');
+  assert.notEqual(instances.exitCauseFor('cap-1'), null);
+  assert.notEqual(instances.exitCauseFor(`cap-${EXIT_CAUSE_CAP}`), null);
+  instances._exitCauses.clear();
 });
