@@ -6,8 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { assertNull } from './dom-assert.mjs';
 import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf, wtHead } from './sidebar-fixture.mjs';
+
+const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
 
 const conductorOf = (list, sid) => list.querySelector(`[data-key="conductor:${sid}"]`);
 const conductorRowOf = (list, sid) => conductorOf(list, sid).querySelector('.conductor-row');
@@ -1166,4 +1169,45 @@ test('a conductor row pills its turn-mark difference from a live instance or a .
   assert.equal(pill('D')?.textContent, '3', 'inactive conductor, from its disk row');
   assertNull(pill('B'), 'a read live conductor has no pill');
   assertNull(pill('R'), 'a read disk conductor has no pill');
+});
+
+// Invariant: an overage-paused conductor's row carries the auto-resume badge —
+// "resumes at <time>", plus "· N queued" while messages wait — updated in place
+// as the count changes and removed when the armed resume clears.
+test('a paused conductor row shows the auto-resume badge with its queued count, updated in place and dropped on clear', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  const badgeOf = () => conductorRowOf(conductorList, 'A').querySelectorAll(':scope > .session-resume-badge');
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: T, queuedCount: 2 })] });
+  const row = conductorRowOf(conductorList, 'A');
+  assert.equal(badgeOf().length, 1, 'one badge on the row');
+  const badge = badgeOf()[0];
+  assert.equal(badge.textContent, `${formatAutoResumeTime(T)} · 2 queued`);
+  assert.equal(badge.title, 'auto-stopped on overage — 2 messages queued; will resume when the window resets');
+
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: T, queuedCount: 0 })] });
+  assert.ok(badgeOf()[0] === badge, 'the badge is updated in place');
+  assert.equal(badge.textContent, formatAutoResumeTime(T), 'no suffix with nothing queued');
+  assert.equal(badge.title, 'auto-stopped on overage — will resume when the rate-limit window resets');
+
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: null, queuedCount: 0 })] });
+  assertNull(conductorRowOf(conductorList, 'A').querySelector('.session-resume-badge'), 'the badge goes with the armed resume');
+  assert.ok(conductorRowOf(conductorList, 'A') === row, 'the row itself is kept');
+});
+
+// Invariant: a paused worker in an expanded conductor's tree carries the same
+// badge on its session row, and loses it when the armed resume clears.
+test('a paused worker row in the conductor tree shows the auto-resume badge and drops it on clear', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  const base = { projects: [project('p')] };
+  await render(sidebar, { ...base, instances: [conductor('A'), worker('w', 'A', 'p', null, { autoResumeAt: T, queuedCount: 1 })] });
+  const tree = await expand(conductorList, 'A');
+  const badge = rowOf(tree, 'w').querySelector('.session-resume-badge');
+  assert.equal(badge?.textContent, `${formatAutoResumeTime(T)} · 1 queued`);
+  assert.equal(badge.title, 'auto-stopped on overage — 1 message queued; will resume when the window resets');
+  assertNull(conductorRowOf(conductorList, 'A').querySelector('.session-resume-badge'), 'the unpaused conductor has none');
+
+  await render(sidebar, { ...base, instances: [conductor('A'), worker('w', 'A', 'p', null, { autoResumeAt: null, queuedCount: 0 })] });
+  assertNull(rowOf(treeOf(conductorList, 'A'), 'w').querySelector('.session-resume-badge'));
 });

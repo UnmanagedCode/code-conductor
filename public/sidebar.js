@@ -1,5 +1,5 @@
 import { el } from './dom.js';
-import { formatAutoResumeTime } from './usage.js';
+import { autoResumeBadge } from './usage.js';
 import { conductorColor } from './conductorColor.js';
 import {
   sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorChips,
@@ -418,12 +418,12 @@ export class Sidebar {
     this._applyOwner(row, owner);
     row.title = tooltipParts.join('\n');
 
-    const resumeLabel = session.autoResumeAt ? formatAutoResumeTime(session.autoResumeAt) : null;
+    const resumeBadge = autoResumeBadge(session);
     const showPromote = session.instanceTemp && isLive && isLiveStatus(status);
     const stage = showStage ? stageText(session) : null;
     const keys = ['dot', 'ago', showStage ? 'labelcol' : 'preview'];
     if (unread > 0) keys.push('unread');
-    if (resumeLabel) keys.push('resume');
+    if (resumeBadge) keys.push('resume');
     if (showPromote) keys.push('promote');
     if (showDelete) keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
@@ -461,15 +461,7 @@ export class Sidebar {
         b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
         return b;
       }
-      if (k === 'resume') {
-        const n = session.queuedCount || 0;
-        const b = ex ?? el('span', { class: 'session-resume-badge' });
-        b.textContent = resumeLabel + (n > 0 ? ` · ${n} queued` : '');
-        b.title = n > 0
-          ? `auto-stopped on overage — ${n} queued; will resume when the window resets`
-          : 'auto-stopped on overage — will resume when the rate-limit window resets';
-        return b;
-      }
+      if (k === 'resume') return this._resumeBadge(ex, resumeBadge);
       if (k === 'promote') {
         // Live temp instance → promote button trailing the row, left of ×
         // where the row has one. Always visible (no opacity:0 hover) so
@@ -1378,6 +1370,15 @@ export class Sidebar {
     }, '↑');
   }
 
+  // The overage auto-resume pill of a session or conductor row, from
+  // autoResumeBadge's text and tooltip.
+  _resumeBadge(existing, badge) {
+    const b = existing ?? el('span', { class: 'session-resume-badge' });
+    b.textContent = badge.text;
+    b.title = badge.title;
+    return b;
+  }
+
   // The × of a row or strip entry. Built once; `getArgs` runs at click time so
   // a reused button reads its owner's freshest holder. Title and aria-label are
   // patched every render from the action the current state maps to.
@@ -1462,11 +1463,13 @@ export class Sidebar {
     const c = holder.conductor;
     const { text, untitled } = conductorTitle(c);
     const unread = this.unreadBySessionId.get(c.sessionId) ?? 0;
+    const resumeBadge = autoResumeBadge(c);
     row.className = 'conductor-row' + (c.instanceId && c.instanceId === this.activeInstanceId ? ' active' : '');
     row.title = c.sessionId;
     row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');
     const keys = ['caret', 'dot', 'title', 'ago'];
     if (unread > 0) keys.push('unread');
+    if (resumeBadge) keys.push('resume');
     if (c.live && c.instanceTemp) keys.push('promote');
     // A live conductor closes from the needs-you strip; only an inactive one has
     // no strip entry, so only it carries a ×.
@@ -1499,6 +1502,7 @@ export class Sidebar {
         b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
         return b;
       }
+      if (k === 'resume') return this._resumeBadge(ex, resumeBadge);
       if (k === 'promote') {
         return ex ?? this._promoteButton(() => {
           const c = holder.conductor;

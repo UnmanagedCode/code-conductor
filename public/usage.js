@@ -239,6 +239,19 @@ export function formatAutoResumeTime(unixSecs) {
   return 'resumes at ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// The armed overage auto-resume badge's text and tooltip, shared by the header
+// chip and the sidebar's session and conductor rows. Null when nothing is armed.
+export function autoResumeBadge({ autoResumeAt, queuedCount }) {
+  if (!autoResumeAt) return null;
+  const n = queuedCount || 0;
+  return {
+    text: formatAutoResumeTime(autoResumeAt) + (n > 0 ? ` · ${n} queued` : ''),
+    title: n > 0
+      ? `auto-stopped on overage — ${n} message${n === 1 ? '' : 's'} queued; will resume when the window resets`
+      : 'auto-stopped on overage — will resume when the rate-limit window resets',
+  };
+}
+
 // The rate-limit bucket keys, ordered tightest-window-first. That order serves
 // both uses: picking the single most immediate bucket for the chip
 // (rlChipSegment, and accountUsage.js's fetch merge) and the row order of the header

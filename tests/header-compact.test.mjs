@@ -12,7 +12,9 @@
 // to a wide one fires nothing. Tests that need the change begin wide.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setupHeader, session, WORKTREE, lineClasses } from './headerCompactHarness.mjs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { setupHeader, session, WORKTREE, lineClasses, PUB } from './headerCompactHarness.mjs';
 import { assertNull } from './dom-assert.mjs';
 
 const hasOpen = (t) => !t.dom.overflowPanel.hidden;
@@ -221,6 +223,24 @@ test('title line leads with the custom title (or the project) and its status chi
       'ih-chip ih-title', 'ih-chip ih-status ih-status-interrupting', 'ih-chip ih-status ih-auto-resume',
     ]);
   });
+});
+
+// Invariant: an armed session's header chip reads "resumes at <time>", plus
+// "· N queued" while messages wait, titled with the count; it is gone once the
+// resume clears and the window is no longer active.
+test('an armed session shows the auto-resume chip with its queued count; clearing the resume removes it', async () => {
+  const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
+  const T = 1_900_000_000;
+  const t = await setupHeader();
+  const chipOf = () => t.dom.instanceTitle.querySelector('.ih-auto-resume');
+  t.show(session('idle', { autoResumeAt: T, queuedCount: 3 }));
+  assert.equal(chipOf()?.textContent, `${formatAutoResumeTime(T)} · 3 queued`);
+  assert.equal(chipOf().title, 'auto-stopped on overage — 3 messages queued; will resume when the window resets');
+  t.show(session('idle', { autoResumeAt: T, queuedCount: 0 }));
+  assert.equal(chipOf()?.textContent, formatAutoResumeTime(T));
+  assert.equal(chipOf().title, 'auto-stopped on overage — will resume when the rate-limit window resets');
+  t.show(session('idle', { autoResumeAt: null, queuedCount: 0, overageActive: false }));
+  assertNull(chipOf());
 });
 
 // Invariant: width changes only where the controls sit — the title DOM is
