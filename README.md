@@ -69,6 +69,10 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 
 See [docs/features.md](docs/features.md) for the exhaustive feature and UI-element catalog.
 
+## Windows
+
+A per-user installer for Windows 11 (bundled Node, git checkout with in-app self-update, Start-menu launcher, uninstaller) is built with `npm run build:win-installer` — see [docs/windows.md](docs/windows.md).
+
 ## Systems
 
 A **System** is a third placement for a project: its tree, git repo and shell commands live on another machine, chosen per project. It is an **execution environment, not a remote filesystem** — the `claude` CLI, cc's central store and everything under `~/.claude/` stay on the host cc runs on. cc ships **no transport**: it defines a provider contract and launches a command you supply; it does not implement SSH or docker itself.
@@ -194,6 +198,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - [docs/protocol.md](docs/protocol.md) — subprocess protocol (CLI flags + hooks), WebSocket protocol, REST endpoints
 - [docs/architecture.md](docs/architecture.md) — stack, component layout, instance lifecycle, on-disk state, migrations, testing
 - [docs/frontend-testing.md](docs/frontend-testing.md) — testing `public/` under happy-dom (its UA-stylesheet and `hashchange` gaps, dialog reopen tests) and what the fake-CLI + headless-Chromium pass can and cannot reach
+- [docs/windows.md](docs/windows.md) — the per-user Windows installer: build, install layout, launcher, `PROJECTS_ROOT`, update, uninstall, limitations
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [docs/systems-protocol.md](docs/systems-protocol.md) — the System provider wire protocol: frames, capabilities, the `exec` lifecycle, the derivations, the error taxonomy, and how to write or verify a provider
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) into `.conduct/CONVENTIONS.md` before every Conduct session's spawn/resume, loaded via that dir's `CLAUDE.md` `@CONVENTIONS.md` import (configurable in Settings → Conventions → Conductor)
