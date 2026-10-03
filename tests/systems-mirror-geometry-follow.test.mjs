@@ -24,7 +24,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, waitFor, waitForIdleOrExit } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject } from '../src/projects.ts';
@@ -87,7 +87,7 @@ describe('a mirror advertisement that moves under a live session', () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
-    await waitFor(() => inst.status === 'idle');
+    await waitForIdleOrExit(inst);
     return { id, project, box, projPath, mirrorFile, pidFile, inst };
   }
 
