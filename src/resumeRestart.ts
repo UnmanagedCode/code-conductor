@@ -138,7 +138,9 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // side — the same fact list()/the sidebar surface as `awaitingWake`: true while
   // an armed wake is PENDING, which is wider than "its worker is mid-turn" and
   // deliberately covers the held states, a deferred turn_end and a dropped
-  // idle-drain settle, where the target is already idle). Such a conductor has
+  // idle-drain settle, where the target is already idle), and a wake already
+  // consumed but not yet sent, or held for a mid-turn recipient (`_inFlight` /
+  // `_deferredWakes` in the idle hub). Such a conductor has
   // durable re-conduct work (re-spawn workers, re-drive them) even
   // though it's idle, so it must still receive its restart prompt.
   const busyAtDrain = new Set(

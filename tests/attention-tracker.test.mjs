@@ -160,3 +160,50 @@ test('a conductor wake cycle (armed → worker done, wake pending → wake turn 
   assert.deepEqual(t.observe([cond('C', { status: 'turn', awaitingWake: false, liveTurnEnds: 1 })]), [], 'wake turn started');
   assert.deepEqual(kinds(t.observe([cond('C', { status: 'idle', awaitingWake: false, liveTurnEnds: 2 })])), ['finished:C']);
 });
+
+// Invariant: liveTurnEnds falling below its baseline, with liveAsks unchanged,
+// re-baselines silently and later turn ends still fire finished.
+test('a lower turn-end counter alone re-baselines, and a later turn end still fires finished', () => {
+  const t = seen([hand('A', { status: 'turn', liveTurnEnds: 5, liveAsks: 2 })]);
+  assert.deepEqual(t.observe([hand('A', { liveTurnEnds: 1, liveAsks: 2 })]), []);
+  assert.deepEqual(kinds(t.observe([hand('A', { liveTurnEnds: 2, liveAsks: 2 })])), ['finished:A']);
+});
+
+// Invariant: a session first seen idle but held in Running notifies exactly once
+// when it next enters Finished, with no new turn end in between.
+test('first seen idle with subagents live: the drain into Finished notifies once', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([hand('A', { displayStatus: 'running', liveTurnEnds: 3 })]), [], 'first sight');
+  assert.deepEqual(kinds(t.observe([hand('A', { displayStatus: 'idle', liveTurnEnds: 3 })])), ['finished:A']);
+  assert.deepEqual(t.observe([hand('A', { displayStatus: 'idle', liveTurnEnds: 3 })]), [], 'only once');
+});
+
+test('first seen as a conductor on a worker: the wake clearing with no turn end notifies once', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 2 })]), []);
+  assert.deepEqual(kinds(t.observe([cond('C', { awaitingWake: false, liveTurnEnds: 2 })])), ['finished:C']);
+});
+
+// Invariant: the owed notification is not doubled by a turn that ends normally.
+test('first seen held in Running, then a wake turn ends and settles: exactly one finished', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 2 })]), []);
+  assert.deepEqual(t.observe([cond('C', { status: 'turn', liveTurnEnds: 2 })]), [], 'wake turn running');
+  assert.deepEqual(kinds(t.observe([cond('C', { liveTurnEnds: 3 })])), ['finished:C']);
+  assert.deepEqual(t.observe([cond('C', { liveTurnEnds: 3 })]), []);
+});
+
+// Invariant: first sight in Waiting or Finished, or mid-turn / spawning, owes nothing.
+test('first sight in Finished, Waiting or a fresh spawn never owes a notification', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([
+    hand('F', { liveTurnEnds: 1 }),
+    hand('W', { liveAsks: 1, awaitingUser: 'question', awaitingUserSource: 'tool' }),
+    hand('S', { status: 'spawning' }),
+  ]), []);
+  assert.deepEqual(t.observe([
+    hand('F', { liveTurnEnds: 1 }),
+    hand('W', { liveAsks: 1, liveTurnEnds: 0 }),
+    hand('S', { status: 'idle' }),
+  ]), [], 'W cleared its ask and S finished spawning: nothing owed');
+});

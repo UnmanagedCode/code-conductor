@@ -13,7 +13,9 @@ import { topLevelEntries, stripGroupOf } from './needsYou.js';
 import { deriveConductors } from './conductors.js';
 
 export function createAttentionTracker() {
-  // instanceId → { asks, turnEnds }
+  // instanceId → { asks, turnEnds, pending }. `pending`: first seen already past
+  // its turn end but held in Running (idle with subagents live or a wake armed),
+  // so its settle into Finished is owed a notification with no new turn end.
   const baselines = new Map();
 
   // Returns the transitions this list produced: { kind: 'waiting' | 'finished',
@@ -30,13 +32,13 @@ export function createAttentionTracker() {
       const asks = inst.liveAsks ?? 0;
       const turnEnds = inst.liveTurnEnds ?? 0;
       const base = baselines.get(entry.instanceId);
+      const group = stripGroupOf(entry);
       // First sight, or a counter that went backwards (the id now fronts a fresh
       // Instance object): re-baseline silently.
       if (!base || asks < base.asks || turnEnds < base.turnEnds) {
-        baselines.set(entry.instanceId, { asks, turnEnds });
+        baselines.set(entry.instanceId, { asks, turnEnds, pending: group === 'running' && inst.status === 'idle' });
         continue;
       }
-      const group = stripGroupOf(entry);
       if (group === 'waiting' && asks > base.asks) {
         out.push({
           kind: 'waiting', sessionId: entry.sessionId, instanceId: entry.instanceId, entry,
@@ -44,15 +46,17 @@ export function createAttentionTracker() {
         });
       }
       base.asks = asks;
-      if (group === 'finished' && turnEnds > base.turnEnds) {
+      if (group === 'finished' && (turnEnds > base.turnEnds || base.pending)) {
         out.push({
           kind: 'finished', sessionId: entry.sessionId, instanceId: entry.instanceId, entry,
           isError: !!inst.lastTurnError,
         });
         base.turnEnds = turnEnds;
+        base.pending = false;
       } else if (group === 'waiting') {
         // The turn that asked is announced as Waiting, never again as Finished.
         base.turnEnds = turnEnds;
+        base.pending = false;
       }
     }
     for (const id of [...baselines.keys()]) if (!present.has(id)) baselines.delete(id);
