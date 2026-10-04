@@ -390,6 +390,27 @@ for (const config of CAPABILITY_CONFIGS) {
     });
   });
 
+  // `stat` is a DERIVED op (stderr → classifyStderr) and `readFile` a FRAME op
+  // (the provider's own code), so one path proves neither the other's row nor
+  // its place in the closed taxonomy.
+  test(`${tag} a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      // One component past NAME_MAX, and still far short of the argv limit.
+      const long = path.join(root, 'x'.repeat(300));
+      const loopA = path.join(root, 'loopA');
+      await fs.symlink('loopB', loopA);
+      await fs.symlink('loopA', path.join(root, 'loopB'));
+      await assert.rejects(() => sys.stat(long),
+        (e) => expectCode(e, 'ENAMETOOLONG', 'stat of an over-long name'));
+      await assert.rejects(() => sys.readFile(long),
+        (e) => expectCode(e, 'ENAMETOOLONG', 'readFile of an over-long name'));
+      await assert.rejects(() => sys.stat(loopA),
+        (e) => expectCode(e, 'ELOOP', 'stat through a symlink loop'));
+      await assert.rejects(() => sys.readFile(loopA),
+        (e) => expectCode(e, 'ELOOP', 'readFile through a symlink loop'));
+    });
+  });
+
   test(`${tag} a read above the protocol's per-file cap is refused, not streamed`, async () => {
     await withSystem(config.flags, async (sys, root) => {
       const p = path.join(root, 'small');

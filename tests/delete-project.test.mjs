@@ -190,10 +190,12 @@ test('a worktree that is merely AHEAD does not refuse', async () => {
 // having measured nothing. That became reachable the moment this cascade
 // stopped passing `force: true`.
 //
-// The unspawnable argv is built out of the STORE's own `parentPath`, which is
-// what the probe feeds to `git -C` and nowhere else — the kernel really
-// refuses the spawn (E2BIG), `classifySpawnError` reads it as `EUNKNOWN`, and
-// `runGit` raises `GIT_DID_NOT_RUN`. No source is perturbed.
+// The unspawnable command is built out of the STORE's own `parentPath`, which
+// the probe feeds to git as both its cwd and `-C`. Locally the spawn really
+// fails on the cwd (`spawn ENAMETOOLONG`, before any argv limit is reached);
+// over a provider the frame-size limit refuses the request first. Either way
+// `runGit` treats it as a command that did not run and raises
+// `GIT_DID_NOT_RUN`. No source is perturbed.
 test('a worktree whose parent could not be ASKED refuses, rather than being dropped', async () => {
   await makeProject('demo');
   const wt = await createWorktree('demo');

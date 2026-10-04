@@ -32,7 +32,7 @@ import {
   getProjectCommits, registeredWorktreeNames,
 } from '../src/worktrees.ts';
 import { updateSystem } from '../src/appSettings.ts';
-import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { disposeSystemHandles, localSystem, systemById } from '../src/systems/registry.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { liveSystemProto } from './systemHandle.mjs';
 
@@ -268,6 +268,36 @@ describe('a system that dies mid-operation', () => {
     const r = await runGit(await systemById(remote.id, null, 'test'), gone, ['status', '--porcelain']);
     assert.equal(r.code, 1, 'a live system answering "I could not start that" is not a refusal');
     assert.match(r.stderr, /ENOENT/);
+  });
+
+  // PINS: a cwd the kernel will not RESOLVE is not the same kind of answer as a
+  // missing one. A missing cwd is evidence the directory is absent; an
+  // over-long path or a symlink loop is no evidence either way, so a returned
+  // code would let a caller read git's "answer" about a directory it never
+  // reached. On the remote system and on `local` alike — one subtest per row
+  // and cause, so each red is its own.
+  test('a cwd the kernel will not resolve is GIT_DID_NOT_RUN, not a git answer', async (t) => {
+    // Past PATH_MAX, so `spawn` itself refuses the cwd with ENAMETOOLONG.
+    const long = path.join(remote.root, 'x/'.repeat(3000));
+    // THROUGH an a → b → a cycle, so resolving it is ELOOP rather than ENOENT.
+    await fs.symlink('b', path.join(remote.root, 'a'));
+    await fs.symlink('a', path.join(remote.root, 'b'));
+    const loop = path.join(remote.root, 'a', 'x');
+    const rows = { remote: () => systemById(remote.id, null, 'test'), local: () => localSystem() };
+    const causes = { 'over-long': [long, /ENAMETOOLONG/], 'symlink loop': [loop, /ELOOP/] };
+    for (const [name, sys] of Object.entries(rows)) {
+      for (const [cause, [cwd, errno]] of Object.entries(causes)) {
+        await t.test(`${name}, ${cause}`, async () => {
+          const s = await sys();
+          await assert.rejects(() => runGit(s, cwd, ['status', '--porcelain']), (e) => {
+            assert.equal(e.statusCode, 502, e.message);
+            assert.equal(e.code, 'GIT_DID_NOT_RUN', e.message);
+            assert.match(e.message, errno);
+            return true;
+          });
+        });
+      }
+    }
   });
 
   // PINS: the DERIVED ops obey the same rule as runGit. `#derive` — the layer
