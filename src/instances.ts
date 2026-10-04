@@ -114,7 +114,7 @@ import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform, type Platform } from './platform/index.ts';
-import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RewriteKind, RingSeam } from './instanceTypes.ts';
+import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -4669,6 +4669,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
   _idleSubscriberSnapshot(): Record<string, string[]> { return this._idleHub.snapshot(); }
   _purgeIdleFor(instanceId: string): void { return this._idleHub.purge(instanceId); }
+  // Stop every wake delivery for the rest of this process — the resume-restart
+  // drain's, so no session it winds down starts another turn on the way out.
+  suspendWakes(): void { this._idleHub.suspend(); }
   // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
   // — which targets THIS instanceId OWNS, i.e. whose next turn will wake it.
   // Used by the renewal state block (src/sessionRenew.ts) to enumerate the
@@ -6637,20 +6640,30 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  // Enumerate the workers a conductor spawned via MCP, for the resume manifest's
-  // injected worker list. Returns [{project, sessionId, worktreeName}] for every
-  // live instance whose callerInstanceId matches and that has a sessionId —
-  // `project` is required so the conductor can deterministically re-spawn each
-  // worker via spawn_instance without reconstructing it from its transcript.
-  conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }> {
-    const out: Array<{ project: string; sessionId: string; worktreeName: string | null }> = [];
-    for (const inst of this.byId.values()) {
-      if (inst.callerInstanceId !== conductorId || !inst.sessionId) continue;
-      out.push({
-        project: inst.project,
-        sessionId: inst.sessionId,
-        worktreeName: inst.worktree?.worktreeName ?? null,
-      });
+  // Enumerate every session spawned under rootId via MCP — its workers, their
+  // workers, and so on — for the resume manifest's injected worker list. One row
+  // per instance with a sessionId, breadth-first. `project` is required so each
+  // session can be deterministically re-spawned via spawn_instance without
+  // reconstructing it from a transcript; `parentSessionId` is the spawner's
+  // CURRENT sessionId (a rotated parent resolves), so whoever resumes a row knows
+  // which session re-spawns it. The spawn graph needs no visited set: a caller
+  // exists before its child, so it is acyclic.
+  conductedSubtreeOf(rootId: string): SubtreeRow[] {
+    const out: SubtreeRow[] = [];
+    const queue = [rootId];
+    for (let parentId = queue.shift(); parentId !== undefined; parentId = queue.shift()) {
+      const parentSessionId = this.byId.get(parentId)?.sessionId ?? null;
+      for (const inst of this.byId.values()) {
+        if (inst.callerInstanceId !== parentId) continue;
+        queue.push(inst.id);
+        if (!inst.sessionId) continue;
+        out.push({
+          project: inst.project,
+          sessionId: inst.sessionId,
+          worktreeName: inst.worktree?.worktreeName ?? null,
+          parentSessionId,
+        });
+      }
     }
     return out;
   }
@@ -6658,7 +6671,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Live (proc-attached) instances spawned by conductorId, for the renewal
   // state block (src/sessionRenew.ts) — a safety net so a worker missing from
   // a degraded self-authored summary is never orphaned. Distinct from
-  // conductedWorkersOf: this filters to LIVE only and carries `status`, since
+  // conductedSubtreeOf: this filters to LIVE only and carries `status`, since
   // the resume manifest's use case (any-with-sessionId, no status) differs.
   liveOwnedBy(conductorId: string): Array<{ sessionId: string | null; project: string; worktree: string | null; status: string }> {
     const out: Array<{ sessionId: string | null; project: string; worktree: string | null; status: string }> = [];

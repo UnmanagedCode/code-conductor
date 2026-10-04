@@ -5,6 +5,8 @@
 // both arrive via the existing `instances` hint → refreshInstances() (the hint
 // also fires on a ledger spawn/transition, not just a status flip).
 
+import { runLabel } from './needsYou.js';
+
 export class SubagentPanel {
   constructor(host) {
     this.host = host;
@@ -35,11 +37,14 @@ export class SubagentPanel {
 
     for (const w of workers) {
       const li = document.createElement('li');
-      li.className = `task-row ${this._rowClass(w.displayStatus)}`;
+      li.className = `task-row ${this._rowClass(w)}`;
+      // An idle worker still waiting on workers of its own is busy for its
+      // parent's purposes (the parent's wake is held), so it reads as running.
+      if (this._awaiting(w)) li.title = runLabel(w.displayStatus, true);
 
       const marker = document.createElement('span');
       marker.className = 'task-marker';
-      marker.textContent = this._marker(w.displayStatus);
+      marker.textContent = this._marker(w);
 
       const text = document.createElement('span');
       text.className = 'task-text';
@@ -76,8 +81,13 @@ export class SubagentPanel {
     return `${inst.project} · ${inst.id.slice(0, 8)}`;
   }
 
-  _rowClass(status) {
-    switch (status) {
+  _awaiting(w) {
+    return w.displayStatus === 'idle' && !!w.awaitingWake;
+  }
+
+  _rowClass(w) {
+    if (this._awaiting(w)) return 'task-in_progress subagent-awaiting';
+    switch (w.displayStatus) {
       case 'turn':     return 'task-in_progress';
       case 'running':  return 'task-in_progress'; // idle but a background subagent is still working
       case 'idle':     return 'task-in_progress subagent-idle';
@@ -87,8 +97,9 @@ export class SubagentPanel {
     }
   }
 
-  _marker(status) {
-    switch (status) {
+  _marker(w) {
+    if (this._awaiting(w)) return '▶';
+    switch (w.displayStatus) {
       case 'turn':    return '▶';
       case 'running': return '▶'; // idle but a background subagent is still working
       case 'idle':    return '●';

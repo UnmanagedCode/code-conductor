@@ -104,3 +104,45 @@ test('clicking the playbook label still navigates to the worker — it does not 
   host.querySelector('.subagent-playbook').click();
   assert.equal(navigated, 'w4');
 });
+
+// Invariant: an idle worker still waiting on workers of its own reads as running
+// in its parent's strip — the running marker, the awaiting class, and the
+// sidebar's "on a worker" label.
+test('an idle worker awaiting a wake renders as running, marked subagent-awaiting', async () => {
+  const { host, SubagentPanel } = await setupDOM();
+  new SubagentPanel(host).setInstances([worker({ displayStatus: 'idle', awaitingWake: true })], CONDUCTOR_ID);
+  const li = host.querySelector('li.task-row');
+  assert.equal(li.querySelector('.task-marker').textContent, '▶');
+  assert.ok(li.classList.contains('subagent-awaiting'));
+  assert.ok(li.classList.contains('task-in_progress'));
+  assert.equal(li.title, 'on a worker');
+});
+
+// Invariant: the awaiting treatment needs BOTH idle and awaitingWake — a plain
+// idle worker and a mid-turn one keep their own rows.
+test('only an idle awaiting worker gets the awaiting treatment', async (t) => {
+  const cases = [
+    ['idle, not awaiting', { displayStatus: 'idle', awaitingWake: false }, '●'],
+    ['mid-turn and awaiting', { displayStatus: 'turn', awaitingWake: true }, '▶'],
+  ];
+  for (const [name, over, marker] of cases) {
+    await t.test(name, async () => {
+      const { host, SubagentPanel } = await setupDOM();
+      new SubagentPanel(host).setInstances([worker(over)], CONDUCTOR_ID);
+      const li = host.querySelector('li.task-row');
+      assert.equal(li.querySelector('.task-marker').textContent, marker);
+      assert.equal(li.classList.contains('subagent-awaiting'), false);
+      assert.equal(li.title, '');
+    });
+  }
+});
+
+// Invariant: the awaiting marker is the accent colour and pulses.
+test('the subagent-awaiting marker is styled accent and pulsing', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(path.join(PUB, 'styles.css'), 'utf8');
+  const rule = css.match(/\.task-row\.subagent-awaiting \.task-marker\s*\{([^}]*)\}/);
+  assert.ok(rule, 'the rule exists');
+  assert.match(rule[1], /color:\s*var\(--accent\)/);
+  assert.match(rule[1], /animation:\s*pulse\b/);
+});

@@ -13,7 +13,7 @@ export const RENEW_REQUEST_LEAD =
   'Your conductor is asking you to renew your context now (renew_session).';
 
 // The shared trunk of both restart notices: RESUME_TEXT continues it with
-// ` — pick up…`, buildConductorResumeText with `, and you should resume…`.
+// ` — pick up…`, buildWorkersResumeText with `, and you should resume…`.
 export const RESTART_NOTICE_TRUNK =
   '✅ CodeConductor has restarted successfully. You may resume activity now';
 

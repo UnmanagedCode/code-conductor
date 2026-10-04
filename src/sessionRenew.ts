@@ -142,7 +142,7 @@ export function renewalDeferredBy(inst: InstanceLike): 'overage-queue' | 'subage
 // The server-generated mechanical state block — a safety net for a degraded or
 // incomplete self-authored summary. Enumerates, from live manager state, every
 // instance the caller spawned (Instance.callerInstanceId, the same tracking
-// `conductedWorkersOf`/the sub-agent panel use) that is still live, plus the
+// `conductedSubtreeOf`/the sub-agent panel use) that is still live, plus the
 // caller's own owned wake targets. If the summary's roster and this
 // block disagree, this block wins for EXISTENCE (a worker it lists is really
 // still live) while the summary wins for INTENT (task, state, next action) —

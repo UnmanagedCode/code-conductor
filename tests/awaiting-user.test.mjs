@@ -19,7 +19,7 @@ import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 import { buildRenewSeed } from '../public/renewSeed.js';
 import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
-import { RESUME_TEXT, buildConductorResumeText } from '../src/resumeRestart.ts';
+import { RESUME_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';
 import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.js';
 import { buildApprovePrompt, buildRejectPrompt } from '../public/planApproval.js';
@@ -69,7 +69,7 @@ test('classifyUserTurn: the output of every injected-turn builder classifies inj
     'renew request with a directive': buildRenewRequest({ directive: 'keep the roster short' }),
     'renew reseed': buildRenewSeed({ summary: '## Live work roster\n- none', stateBlock: 'state' }),
     'restart notice (RESUME_TEXT)': RESUME_TEXT,
-    'conductor restart notice': buildConductorResumeText([{ project: 'p', sessionId: 's1', worktreeName: 'w' }]),
+    'restart notice with workers': buildWorkersResumeText('root', [{ project: 'p', sessionId: 's1', worktreeName: 'w', parentSessionId: 'root' }]),
     'overage resume, stopped': buildCombinedResumeText([], 'stopped'),
     'overage resume, idle-parked': buildCombinedResumeText([], 'idle-parked'),
     'overage resume, stopped + conductor clauses':

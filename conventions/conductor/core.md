@@ -34,10 +34,10 @@ approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_
 ```
 
 - **A wake implies the worker's subagents finished too** — the orchestrator defers it until backgrounded `Agent` tasks complete (a stuck one shows up as a heartbeat instead).
-- **You are woken automatically.** A session you spawned or have ever prompted is yours: whenever it enters a turn, you are woken when that turn ends. Nothing to arm, nothing to re-arm, no way to opt out — including turns it starts on its own (an auto-approved plan rolling into implementation). Abandon a worker with `kill_instance`.
+- **You are woken automatically.** A session you spawned or have ever prompted is yours: whenever it enters a turn, you are woken when that turn ends — unless it ends still waiting on its own workers with no question or plan for you; then your wake is held until it ends a turn that isn't, or its wait clears. Nothing to arm, nothing to re-arm, no way to opt out — including turns it starts on its own (an auto-approved plan rolling into implementation). Abandon a worker with `kill_instance`.
 - **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel — a turn ending is not the work being done.
 - **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `sync_worktree`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need you to end your turn.
-- **Heartbeat, never timers.** While one of your sessions is mid-turn it pings you every `ORCH_SUBSCRIBE_TIMEOUT_MS` with a stub labelled "did NOT finish" — that means still running, not finished, and it repeats until the turn ends. A heartbeat never consumes your turn-end wake; that still arrives. On one, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
+- **Heartbeat, never timers.** While one of your sessions is mid-turn or holding your wake it pings you every `ORCH_SUBSCRIBE_TIMEOUT_MS` with a stub labelled "did NOT finish" — that means still running, not finished, and it repeats until your wake arrives. A heartbeat never consumes that wake; it still arrives. On one, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
 
 ## Your own plan mode
 

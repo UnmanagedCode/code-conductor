@@ -13,7 +13,7 @@ import { localPlace } from '../src/projects.ts';
 import { sendPrompt } from '../src/mcp/handlers.ts';
 import { markPlainStub } from '../public/wakeCallback.js';
 import { buildRenewSeed } from '../public/renewSeed.js';
-import { RESUME_TEXT, buildConductorResumeText } from '../src/resumeRestart.ts';
+import { RESUME_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
 import { mintPublicId, recordRotation } from '../src/sessionLineage.ts';
 
@@ -183,7 +183,7 @@ test('does NOT clear: every server-injected turn delivered to the session', asyn
     'renew reseed': (inst) => inst.prompt(buildRenewSeed({ summary: '## Live work roster\n- none', stateBlock: 'state' }), [], { internal: true }),
     'renew request': (inst) => inst.prompt(buildRenewRequest()),
     'restart notice': (inst) => inst.prompt(RESUME_TEXT),
-    'conductor restart notice': (inst) => inst.prompt(buildConductorResumeText([])),
+    'restart notice with workers': (inst) => inst.prompt(buildWorkersResumeText('root', [{ project: 'p', sessionId: 's1', worktreeName: null, parentSessionId: 'root' }])),
     'forwarded output (send_prompt forward)': async (inst, driver) => {
       const r = await sendPrompt({ sessionId: inst.sessionId, text: 'review it', forward: { sessionId: driver.sessionId } },
         { instances: ctx.instances, callerId: driver.sessionId });
