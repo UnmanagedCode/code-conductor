@@ -100,6 +100,9 @@ test('settleSessionWrites waits for a serialized write in flight', async () => {
 // The archive is fired from _handleExit and its retireSegment is called only
 // after an fs.rm, so neither the serialize chain nor the read barrier sees it
 // when kill() resolves — shutdown() has to await it itself.
+// INVARIANT (also): once an exit archive has settled, the manager's
+// `_exitArchives` no longer holds it — the set is only what is in flight, so a
+// long-running orchestrator does not keep one settled promise per temp worker.
 test('shutdown resolves only after a temp worker\'s exit archive has landed', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   try {
@@ -114,6 +117,7 @@ test('shutdown resolves only after a temp worker\'s exit archive has landed', as
     // shutdown() that returned early.
     assert.equal(await isArchived(backing), true, 'the exit archive retired the segment before shutdown() resolved');
     assert.equal(await isTemp(backing), false, 'and cleared its temp flag');
+    assert.equal(srv.instances._exitArchives.size, 0, 'a settled exit archive leaves the manager\'s set');
   } finally {
     await srv.close();
   }
@@ -126,6 +130,8 @@ test('shutdown resolves only after a temp worker\'s exit archive has landed', as
 // instance's lineage chain. The test holds that chain itself (assigned
 // directly, so the read barrier never sees it and reads stay unblocked), which
 // keeps the archive pending for as long as the test needs.
+// INVARIANT (also): the archive is in `_exitArchives` while it is pending and
+// gone from it once settled, for a removed instance as for a live one.
 test('shutdown waits for the exit archive of a temp worker already removed by kill_instance', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   let release = () => {};
@@ -144,11 +150,13 @@ test('shutdown waits for the exit archive of a temp worker already removed by ki
     const shutdown = srv.instances.shutdown().then(() => { shutDown = true; });
     await settle();
     assert.equal(shutDown, false, 'shutdown() waits while a removed worker\'s exit archive is pending');
+    assert.equal(srv.instances._exitArchives.size, 1, 'precondition: the pending archive is tracked');
 
     release();
     await shutdown;
     assert.equal(await isArchived(backing), true, 'the archive retired the segment before shutdown() resolved');
     assert.equal(await isTemp(backing), false, 'and cleared its temp flag');
+    assert.equal(srv.instances._exitArchives.size, 0, 'a settled exit archive leaves the manager\'s set');
   } finally {
     release();
     await srv.close();
