@@ -91,7 +91,7 @@ function baseDeps({ instances = [], resumeSpy }) {
     getTracker: () => ({ reset: noop, seedActive: noop, apply: noop, completedBatches: [] }),
     getUsage: () => ({ reset: noop, apply: noop }),
     globalRLTracker: { apply: noop },
-    conversation: { clear: noop, apply: noop },
+    conversation: { clear: noop, apply: noop, batchScroll: (fn) => fn() },
     headerHandle: { update: noop },
     lazyController: { init: noop },
     sessionActions: { resumeSession: resumeSpy },

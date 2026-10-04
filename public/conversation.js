@@ -95,8 +95,16 @@ export class Conversation {
     // in the live conversation's map, so a stamped answer that arrives live
     // finds a card that was rendered on a page.
     userQuestionBlocks = null,
+    // The top-level Conversation whose batchScroll hold this sub-conversation
+    // defers to (set by _routeChildEvent; every other Conversation owns its own).
+    scrollOwner = null,
   } = {}) {
     this.root = rootEl;
+    // Stick-to-bottom snaps requested while a batchScroll hold is open; empty
+    // outside one.
+    this._scrollOwner = scrollOwner ?? this;
+    this._scrollHold = 0;
+    this._pendingScrolls = new Set();
     this.isSub = isSub;
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
@@ -349,6 +357,7 @@ export class Conversation {
         onPlanDecision: this.onPlanDecision,
         describeToolCtx: this.describeToolCtx,
         resolveAttachmentUrl: this.resolveAttachmentUrl,
+        scrollOwner: this._scrollOwner,
       });
       this.subConvs.set(ev.parentToolUseId, sub);
     }
@@ -381,13 +390,30 @@ export class Conversation {
     // The adopted block may turn out not to be a genuine sub-agent host (its
     // real name isn't 'Agent') — render those parked events as ordinary
     // top-level content instead of silently dropping them.
-    for (const ev of parked) {
-      if (!this._routeChildEvent(ev)) this._renderEvent(ev);
-    }
+    this.batchScroll(() => {
+      for (const ev of parked) {
+        if (!this._routeChildEvent(ev)) this._renderEvent(ev);
+      }
+    });
   }
 
   applyEvents(events) {
-    for (const ev of events) this.apply(ev);
+    this.batchScroll(() => { for (const ev of events) this.apply(ev); });
+  }
+
+  // Run fn with the stick-to-bottom snap deferred to its synchronous end: one
+  // scrollHeight read (one forced layout) per scroll container instead of one
+  // per event. Re-entrant; the hold is released even when fn throws.
+  batchScroll(fn) {
+    this._scrollHold++;
+    try { return fn(); }
+    finally {
+      if (--this._scrollHold === 0) {
+        const pending = [...this._pendingScrolls];
+        this._pendingScrolls.clear();
+        for (const c of pending) c._scrollToBottomIfSticky();
+      }
+    }
   }
 
   apply(ev) {
@@ -1045,6 +1071,12 @@ export class Conversation {
   }
 
   _maybeScroll() {
+    const owner = this._scrollOwner;
+    if (owner._scrollHold > 0) { owner._pendingScrolls.add(this); return; }
+    this._scrollToBottomIfSticky();
+  }
+
+  _scrollToBottomIfSticky() {
     if (this.stickyBottom) this.root.scrollTop = this.root.scrollHeight;
   }
 }

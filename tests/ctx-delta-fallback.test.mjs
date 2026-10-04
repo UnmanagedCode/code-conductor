@@ -268,7 +268,7 @@ test('T14: a live context_usage frame refreshes the header chip', () => {
     getTracker: () => ({ completedBatches: [], reset: noop, seedActive: noop, apply: noop }),
     getUsage: () => ({ reset: noop, apply: noop }),
     globalRLTracker: new RateLimitTracker(),
-    conversation: { clear: noop, reset: noop, apply: noop },
+    conversation: { clear: noop, reset: noop, apply: noop, batchScroll: (fn) => fn() },
     headerHandle: { update: () => { updates += 1; } },
     lazyController: { init: noop, reset: noop },
     sessionActions: { resumeSession: async () => {} },

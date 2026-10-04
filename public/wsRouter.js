@@ -82,18 +82,21 @@ export function installWsRouter({
       conversation.setCurrentSegment(m.currentSegmentId ?? null);
       conversation.segmentId = m.tailSegmentId ?? null;
     }
-    for (const ev of m.events ?? []) {
-      const prevCount = tracker.completedBatches.length;
-      tracker.apply(ev);
-      usage.apply(ev);
-      if (isActive) {
-        conversation.apply(ev);
-        if (tracker.completedBatches.length > prevCount) {
-          conversation.apply({ kind: 'task_completion',
-            tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+    // One stick-to-bottom layout read for the whole replay, not one per event.
+    conversation.batchScroll(() => {
+      for (const ev of m.events ?? []) {
+        const prevCount = tracker.completedBatches.length;
+        tracker.apply(ev);
+        usage.apply(ev);
+        if (isActive) {
+          conversation.apply(ev);
+          if (tracker.completedBatches.length > prevCount) {
+            conversation.apply({ kind: 'task_completion',
+              tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+          }
         }
       }
-    }
+    });
     // Mirror the server's auto-approve-plan flag and playbook-enforcement level
     // into our local instance entry so the header controls reflect them the
     // moment a tab subscribes (or re-subscribes after a session switch).
@@ -134,18 +137,21 @@ export function installWsRouter({
     // periodic /api/usage fetch.
     const isActive = m.id === state.activeId;
     if (isActive) { conversation.reset(); lazyController.reset(); }
-    for (const ev of m.events ?? []) {
-      const prevCount = tracker.completedBatches.length;
-      tracker.apply(ev);
-      usage.apply(ev);
-      if (isActive) {
-        conversation.apply(ev);
-        if (tracker.completedBatches.length > prevCount) {
-          conversation.apply({ kind: 'task_completion',
-            tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+    // One stick-to-bottom layout read for the whole replay, not one per event.
+    conversation.batchScroll(() => {
+      for (const ev of m.events ?? []) {
+        const prevCount = tracker.completedBatches.length;
+        tracker.apply(ev);
+        usage.apply(ev);
+        if (isActive) {
+          conversation.apply(ev);
+          if (tracker.completedBatches.length > prevCount) {
+            conversation.apply({ kind: 'task_completion',
+              tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+          }
         }
       }
-    }
+    });
     if (!isActive) return;
     headerHandle.update();
     // Rewind carries the dropped prompt directly on the frame so the
