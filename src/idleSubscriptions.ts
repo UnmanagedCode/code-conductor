@@ -357,8 +357,9 @@ export class IdleSubscriptionHub {
   // (in flight, or deferred until x's own boundary), or when x is armed on a live
   // target that is busy, carries a target-side defer, still owes x a wake that is
   // NOT being held (a settle pending, or one that dropped or was refused on a
-  // dirty idle window — that target's re-invocation turn, or its owner's
-  // heartbeat, is what ends it), or is held and itself waiting on work. The last
+  // dirty idle window — which the target's next turn end, or, once the target is
+  // gone for good, the heartbeat's retirement, ends), or is held and itself
+  // waiting on work. The last
   // clause recurses, and `seen` is what ends it: ownership is spawn OR dispatch,
   // so two sessions can own each other, and a held target that is only waiting
   // back on x must not count — each would otherwise hold the other's wake
@@ -868,7 +869,11 @@ export class IdleSubscriptionHub {
         }
       }
     }
-    if (release) for (const caller of waiters) if (!removing?.has(caller)) this._releaseHeld(caller);
+    for (const caller of waiters) {
+      if (removing?.has(caller)) continue;
+      if (release) this._releaseHeld(caller);
+      else this._redecideHold(caller);
+    }
   }
 
   // Sever every wake edge touching a session the overage stop is stopping, and
@@ -1024,6 +1029,16 @@ export class IdleSubscriptionHub {
     else this._inFlight.delete(callerInstanceId);
     if (!this.isCaller(callerInstanceId)) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     this._releaseHeld(callerInstanceId);
+  }
+
+  // Re-decide whether x is still holding, delivering nothing either way — for a
+  // wait that ended where no release may be sent (the overage sever). A marker
+  // left on an x with no waits would read as "held, nothing outstanding" to
+  // x's owner's decision, though x still owes that owner its armed wake.
+  _redecideHold(x: string): void {
+    if (!this._holding.has(x)) return;
+    const ti = this.manager.byId.get(x);
+    if (!ti || !this._holds(ti)) this._holding.delete(x);
   }
 
   // The plain pointer stub — text for the heartbeat path and the live

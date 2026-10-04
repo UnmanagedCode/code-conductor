@@ -599,6 +599,56 @@ test('an overage sever of the worker does not release the held wake', async () =
   await r.teardown();
 });
 
+// Invariant: an overage sever that clears a held child's last wait delivers
+// nothing, yet leaves the child owing its owner a wake rather than "held with
+// nothing outstanding" — so the owner's own owner is not woken until the child
+// has actually reported, and then exactly once.
+test('an overage sever re-decides the severed child\'s hold without delivering', async () => {
+  const r = rig();
+  const R = r.mk('R');
+  const { P, C, G } = chain(r);
+  r.own(R, P); r.start(P); // R owns P, P owns C, C owns G
+  r.end(C); // held on G
+  r.end(P); // held on C
+  r.hub.severForOverageStop('G');
+  await tick();
+  assert.deepEqual([R.calls.length, P.calls.length], [0, 0], 'the sever delivers nothing');
+  r.start(P); r.end(P); // P ends another turn while C still owes it
+  await tick();
+  assert.equal(R.calls.length, 0, 'P is still held on C');
+  r.start(C); r.end(C); // C finally reports to P
+  await tick();
+  assert.equal(P.calls.length, 1);
+  r.end(P);
+  await tick();
+  assert.equal(R.calls.length, 1, 'R woken once, after C reported');
+  await r.teardown();
+});
+
+// Invariant: a turn start clears the child's hold marker, so a later turn end
+// that defers target-side (and never re-decides the hold) leaves the child
+// owing, not held: clearing its last wait does not release the owner.
+test('a child\'s new turn clears its hold, so a deferred turn end is not released', async (t) => {
+  for (const [name, newTurn, wakes] of [['held turn end', false, 1], ['new turn deferred, then drained', true, 0]]) {
+    await t.test(name, async () => {
+      const r = rig();
+      const { P, C } = chain(r);
+      r.end(C); // held on G
+      if (newTurn) {
+        r.start(C);
+        C.activeAgentTaskCount = 1;
+        r.end(C); // defers before the hold is decided
+        C.activeAgentTaskCount = 0; // drained with no settle delivering
+      }
+      r.instances.byId.delete('G');
+      r.instances._purgeIdleFor('G');
+      await tick();
+      assert.equal(P.calls.length, wakes);
+      await r.teardown();
+    });
+  }
+});
+
 // Invariant: once wakes are suspended, no path delivers anything — a heartbeat,
 // a turn end, or a release — and a release consumes nothing either.
 test('suspended wakes deliver nothing on any path', async () => {
