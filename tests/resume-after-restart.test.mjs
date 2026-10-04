@@ -269,9 +269,10 @@ test('conductedSubtreeOf lists the whole subtree with each row\'s parent session
 
 // --- 5+6. boot restore: three-group split + conductor worker injection -----
 
-// Invariant: only top-level entries are resumed; a root with a subtree is told
-// every row with its spawner, and a top-level session with none — a conductor
-// included — gets the plain RESUME_TEXT.
+// Invariant: only top-level entries are resumed; a root with a subtree — a
+// conductor or a plain session alike — is told every row with its spawner, and a
+// top-level session with none — a conductor included — gets the plain
+// RESUME_TEXT.
 test('restoreFromResumeManifest resumes top-level sessions only and tells each root its subtree', async () => {
   const transcript = path.join(os.tmpdir(), `cc-restore-${randomUUID()}.log`);
   const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
@@ -282,13 +283,16 @@ test('restoreFromResumeManifest resumes top-level sessions only and tells each r
     const conductorSid = randomUUID();
     const bareConductorSid = randomUUID();
     const otherSid = randomUUID();
+    const otherRootSid = randomUUID();
+    const otherChildSid = randomUUID();
+    const otherGrandSid = randomUUID();
     const workerSid = randomUUID();
     const grandSid = randomUUID();
     const conductCwd = path.join(projectsRoot, '.conduct');
     const otherCwd = path.join(projectsRoot, 'realproj');
 
     // Materialize resumable jsonls at the cwd-encoded paths loadHistory reads.
-    for (const [cwd, sid] of [[conductCwd, conductorSid], [conductCwd, bareConductorSid], [otherCwd, otherSid]]) {
+    for (const [cwd, sid] of [[conductCwd, conductorSid], [conductCwd, bareConductorSid], [otherCwd, otherSid], [otherCwd, otherRootSid]]) {
       const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
@@ -330,10 +334,20 @@ test('restoreFromResumeManifest resumes top-level sessions only and tells each r
         worktreeName: null, temp: false, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'other',
       },
+      {
+        project: 'realproj', sessionId: otherRootSid, cwd: otherCwd,
+        mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
+        worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+        autoApprovePlan: false, group: 'other',
+        workers: [
+          { project: 'realproj', sessionId: otherChildSid, worktreeName: null, parentSessionId: otherRootSid },
+          { project: 'realproj', sessionId: otherGrandSid, worktreeName: null, parentSessionId: otherChildSid },
+        ],
+      },
     ]);
 
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
-    assert.equal(restored, 3, 'both conductors + other resumed, workers skipped');
+    assert.equal(restored, 4, 'both conductors + both others resumed, workers skipped');
 
     const sids = [...instances.byId.values()].map(i => i.sessionId);
     assert.ok(sids.includes(conductorSid), 'conductor resumed');
@@ -348,7 +362,7 @@ test('restoreFromResumeManifest resumes top-level sessions only and tells each r
     const echoes = (sid) => instances.liveForSession(sid).ring.toArray()
       .filter(e => e.kind === 'user_echo').map(e => String(e.text ?? ''))
       .filter(t => t.startsWith(RESUME_TEXT.slice(0, 40)));
-    await waitFor(() => [conductorSid, bareConductorSid, otherSid].every(sid => echoes(sid).length === 1));
+    await waitFor(() => [conductorSid, bareConductorSid, otherSid, otherRootSid].every(sid => echoes(sid).length === 1));
     const [rootText] = echoes(conductorSid);
     assert.ok(rootText.includes(`sessionId \`${workerSid}\`, worktree \`realproj_worktree_zz\`, spawned by you`),
       'the direct worker, spawned by the root');
@@ -357,6 +371,12 @@ test('restoreFromResumeManifest resumes top-level sessions only and tells each r
     assert.ok(rootText.includes('project `realproj`'), 'each row carries its project');
     assert.deepEqual(echoes(bareConductorSid), [RESUME_TEXT], 'a conductor with no workers gets RESUME_TEXT');
     assert.deepEqual(echoes(otherSid), [RESUME_TEXT], 'a session with no workers gets RESUME_TEXT');
+    const [otherRootText] = echoes(otherRootSid);
+    assert.notEqual(otherRootText, RESUME_TEXT, 'a plain session with workers does not get RESUME_TEXT');
+    assert.ok(otherRootText.includes(`sessionId \`${otherChildSid}\`, (no worktree), spawned by you`),
+      'a plain root is told its direct worker');
+    assert.ok(otherRootText.includes(`sessionId \`${otherGrandSid}\`, (no worktree), spawned by \`${otherChildSid}\``),
+      'and its grandchild, naming the spawner');
   } finally {
     if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
