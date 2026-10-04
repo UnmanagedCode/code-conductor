@@ -725,10 +725,6 @@ export class Instance extends EventEmitter implements InstanceLike {
   // is how a caller waits for it and learns whether it landed.
   _lineageWrite: Promise<void>;
   _lineageError: Error | null;
-  // The exit archive _handleExit fires for a temp instance; never rejects.
-  // InstanceManager.shutdown() awaits it: its retireSegment is issued only after
-  // an fs.rm, so no store-side tracking sees it when kill() resolves.
-  _exitArchive: Promise<void>;
   // Non-null while a context rotation is IN FLIGHT on this instance — a managed
   // `/clear` renewal or a prune. ONE field answers "is a rotation happening here",
   // for both mechanisms and both readers: IdleSubscriptionHub defers its armed wake
@@ -946,7 +942,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._segments = [];
     this._lineageWrite = Promise.resolve();
     this._lineageError = null;
-    this._exitArchive = Promise.resolve();
     this._rotation = null;
     this._renewing = false;
     this._relaunching = false;
@@ -3134,7 +3129,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // PRESERVE their jsonl so the next boot can `--resume` them. Without the
     // guard, this exit handler would archive the transcript we're carrying,
     // which is fine for the data but still wrong — it would not be resumable.
-    if (this.temp && !this._suppressTempDelete) this._exitArchive = this._archiveTempSession().catch(() => {});
+    // Announced as `exit_archive` (never rejects) so the manager can await it in
+    // shutdown() even after this instance has left byId.
+    if (this.temp && !this._suppressTempDelete) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
   }
 
   // Archive a killed temp session: retain the .jsonl (stays resumable) but
@@ -4527,6 +4524,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _overageResetsAt: number | null;
   _overageClearTimer: NodeJS.Timeout | null;
   _overageResumeMode: boolean;
+  // Every temp instance's exit archive still in flight, including those of
+  // instances already removed from byId. shutdown() awaits them: the archive's
+  // retireSegment is issued only after an fs.rm and the instance's lineage
+  // chain, so neither the store's serialize chain nor its read barrier sees it
+  // until then — and it must not join the barrier, or reads would wait on it.
+  _exitArchives: Set<Promise<void>>;
 
   // Keep the shared singleton for the host platform; any other platform gets its own launcher so spawn options follow it.
   constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
@@ -4597,6 +4600,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._overageActive = false;
     this._overageResetsAt = null;
     this._overageClearTimer = null;
+    this._exitArchives = new Set();
     // True while the active window's action is `stop-resume` (has a flush path).
     // GLOBAL queueing engages only in this mode — plain `stop` never queues.
     // Set in _handleOverageTrip, cleared in _clearOverage.
@@ -5804,6 +5808,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         this.emit('list_changed');
       }
     });
+    inst.on('exit_archive', (archive: Promise<void>) => {
+      this._exitArchives.add(archive);
+      void archive.then(() => { this._exitArchives.delete(archive); });
+    });
     // Every exit of this instance's process, from Instance._handleExit BEFORE its
     // status transition — and so before the temp drop above, which is the point:
     // the cause has to outlive the instance, and the purge would clear the armed
@@ -6454,8 +6462,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
     // kill() resolves on the terminal latch, which runs _handleExit
-    // synchronously, so every exit archive is already assigned here.
-    await Promise.all(all.map(i => i._exitArchive));
+    // synchronously, so every exit archive is already registered here — the
+    // ones just killed and any from an instance removed earlier.
+    await Promise.all([...this._exitArchives]);
     // Every shell of every session on a remote system — per session that is the
     // main agent's plus one per subagent — for the same reason remove() does it:
     // the processes are on another machine and nothing else will reap them.

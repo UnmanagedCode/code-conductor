@@ -141,8 +141,10 @@ export const instForSession = (instances, sid) =>
 // appSettings cache keys by settingsPath(), so swapping the root here gives
 // each test fresh on-disk + cached state without rebooting the server. Pair
 // with `await instances.shutdown()` (clears the in-memory byId map, the only
-// non-root-keyed state), `await settleSessionWrites()` (lands queued store
-// writes in this root, not the next) and `await rmrf(home)` in afterEach.
+// non-root-keyed state) and `await rmrf(home)` in afterEach. No file that does
+// this drains between tests, so a store write still queued at teardown lands
+// in the next test's root; if a file flakes on that, add
+// `await settleSessionWrites()` between the shutdown and the rmrf.
 export async function freshProjectsRoot() {
   resetProjectsCache(0);
   const home = await makeTmpHome();

@@ -35,13 +35,24 @@ async function callTool(baseUrl, name, args) {
   return JSON.parse(body.result.content[0].text);
 }
 
+// Save the store env vars; the returned function restores them exactly — an
+// originally unset var is deleted, not set to the string "undefined".
+function saveStoreEnv() {
+  const saved = { PROJECTS_ROOT: process.env.PROJECTS_ROOT, CLAUDE_PROJECTS_ROOT: process.env.CLAUDE_PROJECTS_ROOT };
+  return () => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v !== undefined) process.env[k] = v; else delete process.env[k];
+    }
+  };
+}
+
 // A fresh store root per test, drained and removed afterwards.
 async function withFreshRoot(fn) {
-  const saved = { PROJECTS_ROOT: process.env.PROJECTS_ROOT, CLAUDE_PROJECTS_ROOT: process.env.CLAUDE_PROJECTS_ROOT };
+  const restoreEnv = saveStoreEnv();
   const root = await freshProjectsRoot();
   try { await fn(); } finally {
     await settleSessionWrites();
-    Object.assign(process.env, saved);
+    restoreEnv();
     await rmrf(root.home);
   }
 }
@@ -108,6 +119,42 @@ test('shutdown resolves only after a temp worker\'s exit archive has landed', as
   }
 });
 
+// INVARIANT: shutdown() also waits for the exit archive of a temp instance
+// that has ALREADY LEFT byId — killed by kill_instance (remove()) before
+// shutdown. Its archive is still pending, and nothing store-side tracks it:
+// the retireSegment is issued only after an fs.rm and an await on the
+// instance's lineage chain. The test holds that chain itself (assigned
+// directly, so the read barrier never sees it and reads stay unblocked), which
+// keeps the archive pending for as long as the test needs.
+test('shutdown waits for the exit archive of a temp worker already removed by kill_instance', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  let release = () => {};
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
+    await waitFor(() => instForSession(srv.instances, spawn.sessionId)?.status === 'idle');
+    const inst = instForSession(srv.instances, spawn.sessionId);
+    const backing = inst.backingSessionId;
+    await waitFor(() => isTemp(backing));
+    inst._lineageWrite = new Promise((r) => { release = r; });
+
+    await callTool(srv.baseUrl, 'kill_instance', { sessionId: spawn.sessionId });
+    assert.equal(srv.instances.byId.has(inst.id), false, 'precondition: kill_instance removed the worker from byId');
+    let shutDown = false;
+    const shutdown = srv.instances.shutdown().then(() => { shutDown = true; });
+    await settle();
+    assert.equal(shutDown, false, 'shutdown() waits while a removed worker\'s exit archive is pending');
+
+    release();
+    await shutdown;
+    assert.equal(await isArchived(backing), true, 'the archive retired the segment before shutdown() resolved');
+    assert.equal(await isTemp(backing), false, 'and cleared its temp flag');
+  } finally {
+    release();
+    await srv.close();
+  }
+});
+
 // INVARIANT: bootServer().close() drains the session store before it retargets
 // PROJECTS_ROOT, so a write the server issued lands in the server's own home —
 // never in the root close() restores.
@@ -120,7 +167,7 @@ test('shutdown resolves only after a temp worker\'s exit archive has landed', as
 // reads green without the drain. If close() is ever reordered so the server is
 // no longer closed immediately before the env restore, revisit this hook.
 test('close() does not retarget the store while a store write is pending', async () => {
-  const saved = { PROJECTS_ROOT: process.env.PROJECTS_ROOT, CLAUDE_PROJECTS_ROOT: process.env.CLAUDE_PROJECTS_ROOT };
+  const restoreEnv = saveStoreEnv();
   // The root close() restores to: this test's own, so it can be inspected.
   const next = await freshProjectsRoot();
   const srv = await bootServer();
@@ -139,7 +186,7 @@ test('close() does not retarget the store while a store write is pending', async
     assert.equal(await isTemp(id), false, 'the write did not land in the root close() restored');
   } finally {
     release();
-    Object.assign(process.env, saved);
+    restoreEnv();
     await rmrf(next.home);
   }
 });
