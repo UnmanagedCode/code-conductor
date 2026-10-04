@@ -195,17 +195,24 @@ export function autoSpeakBlock(block) {
   maybeAutoSpeak(block.buffer, { onStart });
 }
 
-// Maps a tool's name to the identity used for choosing its render path —
-// e.g. the project_bash MCP tool shares Bash's command-box bubble even
-// though its label keeps showing the full MCP name.
+// The tools whose input is one shell command ({command, description?}) and so
+// share Bash's command-box bubble: the CLI's shell tool on each host (Bash;
+// PowerShell on Windows) and cc's project_bash / system_bash. Each keeps its
+// own name as the bubble's label.
+const SHELL_TOOLS = new Set([
+  'Bash',
+  'PowerShell',
+  'mcp__code-conductor__project_bash',
+  'mcp__code-conductor__system_bash',
+]);
+
+// Maps a tool's name to the identity used for choosing its render path.
 function renderKindFor(name) {
-  if (name === 'mcp__code-conductor__project_bash') return 'Bash';
-  if (name === 'mcp__code-conductor__system_bash') return 'Bash';
-  return name;
+  return SHELL_TOOLS.has(name) ? 'Bash' : name;
 }
 
 // The Bash bubble's one-line subject: the caller's description when there is one,
-// else the command itself. Shared by Bash, project_bash and system_bash — the
+// else the command itself. Shared by the SHELL_TOOLS — the
 // two MCP tools' summaries add a scope prefix in front of it ([project/worktree]
 // and [system/remoteId] respectively).
 function bashSubject(input) {
