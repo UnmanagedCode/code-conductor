@@ -13,8 +13,12 @@
 // only after the fixtures are built (see `withForeignOwner`), and nothing here
 // sets `safe.directory`: the run-scoped GIT_CONFIG_GLOBAL (`pinGitConfig`,
 // tests/safeStoreRoot.mjs) carries none, so nothing masks the refusal.
-// The local System's exec inherits `process.env` live (`runGroupedCommand`), so
-// the in-process server sees the knob too.
+// `LocalSystem`'s exec inherits `process.env` live (`runGroupedCommand`), so
+// the in-process server sees the knob too. Under `gate:systems` the System is a
+// `ProviderSystem`, whose provider keeps the env it was spawned with and
+// receives none on a frame, so `withForeignOwner` respawns the provider on both
+// edges and asserts through the System's own git that the knob arrived and,
+// after the test, that it left.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,9 +26,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { adoptProject, readProjectRecord } from '../src/projects.ts';
 import { isSystemRefusal, localSystem } from '../src/systems/registry.ts';
+import { ProviderSystem } from '../src/systems/providerSystem.ts';
 import { isGitRepo, hasUnbornHead, runGit, createWorktree } from '../src/worktrees.ts';
 import { invalidateAll } from '../src/projectsCache.ts';
 import { listProjects as mcpListProjects, projectStatus } from '../src/mcp/handlers.ts';
@@ -48,12 +53,53 @@ const git = async (cwd, ...args) => {
   return r;
 };
 
+// A provider's env is the one it was spawned with and no exec frame carries
+// one, so a `process.env` change reaches its git only through a respawn: kill
+// it from the far side (an exec is the reference provider's direct child, so
+// `$PPID` is the provider) and the next operation spawns it with the current
+// `process.env`. The exec's own result is the transport failure and is not
+// asserted on; the wait is on cc observing the death, never on the pid.
+async function respawnProvider() {
+  const sys = localSystem();
+  if (!(sys instanceof ProviderSystem)) return;   // LocalSystem's exec reads process.env live
+  await sys.exec({ argv: ['sh', '-c', 'kill -9 $PPID'] }, { cwd: projectsRoot, stdin: 'ignore' });
+  await waitFor(() => sys.handshake === null);
+}
+
+// A raw exec, not `runGit`, so the reach-check never passes through the
+// classifier under test.
+const systemGit = (dir) =>
+  localSystem().exec({ argv: ['git', '-C', dir, 'rev-parse', '--git-dir'] }, { cwd: dir });
+// A transport failure is no answer from git at all, so it must not read as
+// one: name it instead of the verdict `what` would pin on git's answer.
+const gitVerdict = (r, what) => r.transportFailure
+  ? `the System never reached git (transport failure: ${r.spawnError})`
+  : `${what}: ${r.stderr}`;
+
 async function withForeignOwner(fn) {
   const prev = process.env[KNOB];
   process.env[KNOB] = '1';
-  try { return await fn(); }
-  finally {
+  let bodyFailed = false, bodyErr;
+  try {
+    await respawnProvider();
+    const r = await systemGit(repo);
+    assert.equal(r.code, 128, gitVerdict(r, 'the knob must reach the git the System runs'));
+    assert.ok(r.stderr.split('\n').some(l => l.trim() === fixLine(repo)), r.stderr);
+    return await fn();
+  } catch (e) {
+    bodyFailed = true;
+    bodyErr = e;
+    throw e;
+  } finally {
     if (prev === undefined) delete process.env[KNOB]; else process.env[KNOB] = prev;
+    // The body's failure stays the reported one, with a failed respawn riding
+    // along as its cause; the respawn's error is thrown itself only when the
+    // body passed.
+    try { await respawnProvider(); }
+    catch (respawnErr) {
+      if (!bodyFailed) throw respawnErr;
+      if (bodyErr instanceof Error && bodyErr.cause === undefined) bodyErr.cause = respawnErr;
+    }
   }
 }
 
@@ -98,6 +144,8 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   assert.equal(process.env[KNOB], undefined, 'the ownership knob leaked past its test');
+  const r = await systemGit(repo);
+  assert.equal(r.code, 0, gitVerdict(r, "the ownership knob leaked into the System's git past its test"));
   await instances.shutdown();
   instances._idleSubscribers?.clear();
   await rmrf(home);
