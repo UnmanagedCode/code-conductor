@@ -521,6 +521,71 @@ test('ToolUseBlock: system_bash expanded body shows the command, summary shows t
   assert.equal(pre.textContent, 'git --version');
 });
 
+// PowerShell is the Windows CLI's shell tool. No live capture exists; the
+// fixtures follow the input schema Claude CLI 2.1.286 declares for it
+// (command / description / timeout / run_in_background / dangerouslyDisableSandbox),
+// which reuses Bash's field names.
+test('describeToolInput: PowerShell summarises exactly like Bash', async (t) => {
+  const cases = [
+    ['description preferred', { command: 'Get-ChildItem', description: 'List files' }, 'List files'],
+    ['blank description falls back to command', { command: 'Get-ChildItem', description: '   ' }, 'Get-ChildItem'],
+    ['no description falls back to command', { command: 'Get-ChildItem' }, 'Get-ChildItem'],
+    ['empty input', {}, ''],
+  ];
+  for (const [title, input, expected] of cases) {
+    await t.test(title, () => {
+      assert.equal(describeToolInput('PowerShell', input), expected);
+      assert.equal(describeToolInput('PowerShell', input), describeToolInput('Bash', input));
+    });
+  }
+  await t.test('long multi-line command collapsed and truncated', () => {
+    const input = { command: `Write-Host\n\n   ${'a'.repeat(300)}` };
+    const s = describeToolInput('PowerShell', input);
+    assert.ok(s.length <= 121 && s.endsWith('…'), `got ${s.length} chars`);
+    assert.equal(s, describeToolInput('Bash', input));
+  });
+});
+
+test('ToolUseBlock: PowerShell renders the Bash command box', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'PowerShell', toolUseId: 'tu_ps' });
+  block.finalizeInput({ command: 'Get-ChildItem -Force', description: 'List files' });
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  assert.ok(details.hasAttribute('open'), 'details should be open');
+  assert.equal(details.querySelector('pre.bash-cmd')?.textContent, 'Get-ChildItem -Force');
+  assert.ok(details.querySelector('.bash-cmd-copy'), 'expected a Copy button');
+  assertNull(details.querySelector('.bash-cmd-desc'), 'description must not repeat in the body');
+  assert.equal(block.summary.querySelector('.tool-arg')?.textContent, 'List files');
+  assert.equal(block.summary.textContent.includes('Get-ChildItem'), false);
+  const nameEl = block.summary.querySelector('.tool-name');
+  assert.equal(nameEl.textContent, 'PowerShell');
+  assertNull(nameEl.querySelector('.tool-chip'), 'no chip');
+  assert.equal(nameEl.hasAttribute('title'), false, 'no title');
+});
+
+test('ToolUseBlock: PowerShell and Bash bodies are identical for the same input', () => {
+  setupDOM();
+  const input = { command: 'Get-Process | Select -First 3', description: 'Top processes' };
+  const ps = new ToolUseBlock({ name: 'PowerShell', toolUseId: 'tu_ps2' });
+  const bash = new ToolUseBlock({ name: 'Bash', toolUseId: 'tu_bash2' });
+  ps.finalizeInput(input);
+  bash.finalizeInput(input);
+  assert.equal(ps.body.innerHTML, bash.body.innerHTML);
+  assert.equal(ps.summary.querySelector('.tool-arg').textContent, bash.summary.querySelector('.tool-arg').textContent);
+});
+
+test('ToolUseBlock: PowerShell with a non-string command falls back to the JSON dump', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'PowerShell', toolUseId: 'tu_ps3' });
+  block.finalizeInput({ command: 42 });
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  assert.ok(!details.hasAttribute('open'), 'details should be collapsed');
+  assertNull(details.querySelector('pre.bash-cmd'));
+  assert.ok(details.querySelector('pre').textContent.includes('"command"'), 'should contain JSON');
+});
+
 test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with JSON', () => {
   setupDOM();
   const block = new ToolUseBlock({ name: 'SomeFutureTool', toolUseId: 'tu_2' });
