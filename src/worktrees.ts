@@ -181,7 +181,10 @@ export const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 // every caller reads a returned code as git's answer about it (a registration
 // dropped, a tree adopted as a plain directory). A code belongs here when it is
 // a refusal to resolve rather than evidence of absence; ENOENT and ENOTDIR are
-// evidence, and stay out.
+// evidence, and stay out. EACCES fits the wording and is left out on purpose:
+// a spawn EACCES is ambiguous — a locked cwd parent, or a non-executable git
+// binary — and the non-executable-git route below depends on its being
+// returned.
 const SPAWN_CODES_SILENT_ON_CWD: ReadonlySet<FsErrorCode> = new Set(['ENAMETOOLONG', 'ELOOP']);
 
 export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
