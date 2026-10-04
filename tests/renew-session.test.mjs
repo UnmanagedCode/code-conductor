@@ -374,6 +374,7 @@ async function assertResumedCurrentSegment({ inst2, settledBeforeRelease }, firs
 test('a resume waits for a PENDING rotation write instead of reading the pre-rotation row (killed)', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
+  let releaseWrite;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -384,7 +385,6 @@ test('a resume waits for a PENDING rotation write instead of reading the pre-rot
 
     // Park the durable-write chain: everything kicked from here on — the rotation
     // included — queues behind `held`.
-    let releaseWrite;
     const held = new Promise((r) => { releaseWrite = r; });
     inst._kickLineageWrite(() => held);
 
@@ -400,6 +400,8 @@ test('a resume waits for a PENDING rotation write instead of reading the pre-rot
     await assertResumedCurrentSegment(
       await resumeAcrossRelease(srv, publicId, releaseWrite), firstBacking);
   } finally {
+    // close() drains the store, which waits on the parked chain.
+    releaseWrite?.();
     await srv.close();
   }
 });
@@ -407,6 +409,7 @@ test('a resume waits for a PENDING rotation write instead of reading the pre-rot
 test('…and on the SPONTANEOUS-EXIT variant, where the instance never left byId', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
+  let releaseWrite;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -415,7 +418,6 @@ test('…and on the SPONTANEOUS-EXIT variant, where the instance never left byId
     const inst = instForSession(srv.instances, publicId);
     const firstBacking = inst.backingSessionId;
 
-    let releaseWrite;
     const held = new Promise((r) => { releaseWrite = r; });
     inst._kickLineageWrite(() => held);
 
@@ -436,6 +438,8 @@ test('…and on the SPONTANEOUS-EXIT variant, where the instance never left byId
     await assertResumedCurrentSegment(
       await resumeAcrossRelease(srv, publicId, releaseWrite), firstBacking);
   } finally {
+    // close() drains the store, which waits on the parked chain.
+    releaseWrite?.();
     await srv.close();
   }
 });

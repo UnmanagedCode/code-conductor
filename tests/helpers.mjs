@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.ts';
 import { encodeCwd, transcriptRoot, localPlace } from '../src/projects.ts';
-import { getSessionBackend } from '../src/sessionStore.ts';
+import { getSessionBackend, settleSessionWrites } from '../src/sessionStore.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { EXIT_STDERR_SETTLE_MS } from '../src/instances.ts';
@@ -106,6 +106,12 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
     // unconditional and no future test can reintroduce that class.
     server.closeAllConnections?.();
     await new Promise(r => server.close(r));
+    // Every store write resolves its file from PROJECTS_ROOT when it RUNS, so a
+    // write still queued here would land in whatever store is current next —
+    // the next test's. Drain them into this server's own home before
+    // retargeting. A test that parks the lineage chain must release it in a
+    // `finally`, or this waits on it until the hang-guard.
+    await settleSessionWrites();
     for (const [k, v] of Object.entries(prev)) {
       if (v !== undefined) { process.env[k] = v; continue; }
       // Never restore PROJECTS_ROOT/CLAUDE_PROJECTS_ROOT to unset — that would
@@ -135,7 +141,10 @@ export const instForSession = (instances, sid) =>
 // appSettings cache keys by settingsPath(), so swapping the root here gives
 // each test fresh on-disk + cached state without rebooting the server. Pair
 // with `await instances.shutdown()` (clears the in-memory byId map, the only
-// non-root-keyed state) and `await rmrf(home)` in afterEach.
+// non-root-keyed state) and `await rmrf(home)` in afterEach. No file that does
+// this drains between tests, so a store write still queued at teardown lands
+// in the next test's root; if a file flakes on that, add
+// `await settleSessionWrites()` between the shutdown and the rmrf.
 export async function freshProjectsRoot() {
   resetProjectsCache(0);
   const home = await makeTmpHome();

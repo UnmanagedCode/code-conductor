@@ -3129,7 +3129,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // PRESERVE their jsonl so the next boot can `--resume` them. Without the
     // guard, this exit handler would archive the transcript we're carrying,
     // which is fine for the data but still wrong — it would not be resumable.
-    if (this.temp && !this._suppressTempDelete) this._archiveTempSession().catch(() => {});
+    // Announced as `exit_archive` (never rejects) so the manager can await it in
+    // shutdown() even after this instance has left byId.
+    if (this.temp && !this._suppressTempDelete) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
   }
 
   // Archive a killed temp session: retain the .jsonl (stays resumable) but
@@ -4522,6 +4524,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _overageResetsAt: number | null;
   _overageClearTimer: NodeJS.Timeout | null;
   _overageResumeMode: boolean;
+  // Every temp instance's exit archive still in flight, including those of
+  // instances already removed from byId. shutdown() awaits them: the archive's
+  // retireSegment is issued only after an fs.rm and the instance's lineage
+  // chain, so neither the store's serialize chain nor its read barrier sees it
+  // until then — and it must not join the barrier, or reads would wait on it.
+  _exitArchives: Set<Promise<void>>;
 
   // Keep the shared singleton for the host platform; any other platform gets its own launcher so spawn options follow it.
   constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
@@ -4592,6 +4600,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._overageActive = false;
     this._overageResetsAt = null;
     this._overageClearTimer = null;
+    this._exitArchives = new Set();
     // True while the active window's action is `stop-resume` (has a flush path).
     // GLOBAL queueing engages only in this mode — plain `stop` never queues.
     // Set in _handleOverageTrip, cleared in _clearOverage.
@@ -5799,6 +5808,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         this.emit('list_changed');
       }
     });
+    inst.on('exit_archive', (archive: Promise<void>) => {
+      this._exitArchives.add(archive);
+      void archive.then(() => { this._exitArchives.delete(archive); });
+    });
     // Every exit of this instance's process, from Instance._handleExit BEFORE its
     // status transition — and so before the temp drop above, which is the point:
     // the cause has to outlive the instance, and the purge would clear the armed
@@ -6448,6 +6461,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
+    // kill() resolves on the terminal latch, which runs _handleExit
+    // synchronously, so every exit archive is already registered here — the
+    // ones just killed and any from an instance removed earlier.
+    await Promise.all([...this._exitArchives]);
     // Every shell of every session on a remote system — per session that is the
     // main agent's plus one per subagent — for the same reason remove() does it:
     // the processes are on another machine and nothing else will reap them.
@@ -6475,9 +6492,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
   // Synchronously kill every live temp subprocess and archive it: keep its
   // persisted jsonl, delete its sub-agent dir. The async `shutdown()` above
-  // relies on subprocess `exit` events to fire `_archiveTempSession()`, which
-  // races process.exit() during the restart path — so the restart path calls
-  // this first to guarantee on-disk cleanup before we exit.
+  // archives through each subprocess's exit (`_archiveTempSession()`) and
+  // resolves only once those archives land, but the restart path calls it
+  // fire-and-forget and exits ~50 ms later without awaiting it — so the
+  // restart path calls this first to guarantee on-disk cleanup before we exit.
   //
   // SIGKILL (not SIGTERM) because claude's SIGTERM handler can flush one
   // last line to the jsonl, and the CLI opens it `O_APPEND|O_CREAT`, so a
