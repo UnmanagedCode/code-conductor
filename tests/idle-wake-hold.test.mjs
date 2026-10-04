@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 process.env.ORCH_IDLE_DRAIN_SETTLE_MS = '40';
 const SETTLE_MS = 40;
 
-const { InstanceManager } = await import('../src/instances.ts');
+const { InstanceManager, Instance } = await import('../src/instances.ts');
 const { posixPlatform } = await import('../src/platform/posix.ts');
 const { WAKE_BODY_SEP } = await import('../public/wakeCallback.js');
 
@@ -292,6 +292,93 @@ test('a worker with an idle-drain settle pending keeps the owner held until the 
   assert.equal(P.calls.length, 1, 'one wake, after C\'s real turn end');
   assert.ok(folded(P.calls[0]));
   await r.teardown();
+});
+
+// Invariant: a worker whose settle dropped because the CLI announced a
+// re-invocation (`turnOpening`) still owes the child its wake, so a sibling purge
+// does not release the owner, which is woken once after the child's real turn
+// end. A dropped settle with no turn opening (a stray idle-time line) is not
+// work, so the purge releases — the hold is bounded by a signal a turn_end clears.
+test('a worker whose settle dropped for an opening re-invocation keeps the owner held', async (t) => {
+  for (const [name, opening] of [['re-invocation opening', true], ['stray idle line, no turn opening', false]]) {
+    await t.test(name, async () => {
+      const r = rig();
+      const { P, C, G } = chain(r);
+      const H = r.mk('H');
+      r.own(C, H); r.start(H);
+      G.activeAgentTaskCount = 1;
+      r.end(G);
+      r.end(C);
+      G.activeAgentTaskCount = 0;
+      r.emit(G, { kind: 'system', subtype: 'task_notification', data: { task_id: 't' } });
+      assert.ok(r.hub._pendingSettles.has('G'), 'premise: settle armed');
+      // An idle-time line after the arm: the settle's freeze check drops it.
+      G.idleWindowDirty = true;
+      G.ring.nextSeq += 1;
+      G.turnOpening = opening;
+      await until(() => !r.hub._pendingSettles.has('G'), SETTLE_MS + 5000);
+      assert.equal(r.hub.subscribers.get('G')?.has('C'), true, 'premise: the settle dropped, C still armed on G');
+      r.instances.byId.delete('H');
+      r.instances._purgeIdleFor('H');
+      await tick();
+      if (!opening) {
+        assert.equal(P.calls.length, 1, 'nothing announced a turn: the purge releases');
+        await r.teardown();
+        return;
+      }
+      assert.equal(P.calls.length, 0, 'not released while G\'s re-invocation is opening');
+      r.start(G);
+      G.turnOpening = false;
+      r.end(G);
+      await tick();
+      assert.equal(C.calls.length, 1, 'G\'s re-invocation turn end woke C');
+      assert.equal(P.calls.length, 0);
+      r.end(C);
+      await tick();
+      assert.equal(P.calls.length, 1, 'one wake, after C\'s real turn end');
+      assert.ok(folded(P.calls[0]));
+      await r.teardown();
+    });
+  }
+});
+
+// Invariant: an Instance reports `turnOpening` from a `system/init` that arrives
+// while idle until the next turn_end; an init inside a turn, or any other
+// idle-time line, does not set it.
+test('turnOpening tracks an idle-time system/init until the turn ends', async (t) => {
+  const line = (o) => JSON.stringify(o);
+  const INIT = line({ type: 'system', subtype: 'init', session_id: 'sid-x', model: 'm', tools: [] });
+  const STATUS = line({ type: 'system', subtype: 'status', status: null });
+  const MESSAGE_START = line({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_1', role: 'assistant', model: 'm', usage: { input_tokens: 1, output_tokens: 0 } } } });
+  const TURN_END = line({ type: 'result', subtype: 'success', stop_reason: 'end_turn', duration_ms: 1, total_cost_usd: 0, is_error: false });
+  const idleInstance = () => {
+    const inst = new Instance({ id: 'i-open', project: 'p', cwd: '/nonexistent-cwd', mode: 'plan', effort: 'high', thinking: 'adaptive', model: null });
+    inst._handleStdoutLine(MESSAGE_START);
+    inst._handleStdoutLine(TURN_END);
+    assert.equal(inst.status, 'idle', 'premise: idle after a turn');
+    return inst;
+  };
+  await t.test('idle init sets it; the turn end clears it', () => {
+    const inst = idleInstance();
+    inst._handleStdoutLine(INIT);
+    assert.equal(inst.turnOpening, true);
+    inst._handleStdoutLine(MESSAGE_START);
+    assert.equal(inst.turnOpening, true, 'still set through the turn');
+    inst._handleStdoutLine(TURN_END);
+    assert.equal(inst.turnOpening, false);
+  });
+  await t.test('another idle-time line does not set it', () => {
+    const inst = idleInstance();
+    inst._handleStdoutLine(STATUS);
+    assert.equal(inst.idleWindowDirty, true, 'premise: the window is dirty');
+    assert.equal(inst.turnOpening, false);
+  });
+  await t.test('an init inside a turn does not set it', () => {
+    const inst = idleInstance();
+    inst._handleStdoutLine(MESSAGE_START);
+    inst._handleStdoutLine(INIT);
+    assert.equal(inst.turnOpening, false);
+  });
 });
 
 // Invariant: a project removal that deletes both a child and its worker never

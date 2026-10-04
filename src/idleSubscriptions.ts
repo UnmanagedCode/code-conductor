@@ -348,9 +348,10 @@ export class IdleSubscriptionHub {
   // Is `x` still waiting on work — will something still open a turn on it, or is
   // something it waits on still working? True when a wake is on its way to x
   // (in flight, or deferred until x's own boundary), or when x is armed on a live
-  // target that is busy, carries a target-side defer, has an idle-drain settle
-  // pending (its wake to x is decided but not yet delivered), or is itself
-  // waiting on work. The last clause recurses, and `seen` is what ends it: ownership is spawn
+  // target that is busy, carries a target-side defer, still owes x a wake from
+  // its idle window — an idle-drain settle pending, or a turn opening (a settle
+  // that dropped because the CLI started a re-invocation, whose turn_end will
+  // deliver) — or is itself waiting on work. The last clause recurses, and `seen` is what ends it: ownership is spawn
   // OR dispatch, so two sessions can own each other, and a target that is only
   // waiting back on x must not count — each would otherwise hold the other's wake
   // forever. Callers seed `seen` with the session being decided.
@@ -360,7 +361,8 @@ export class IdleSubscriptionHub {
       if (seen.has(t) || !callers.has(x)) continue;
       const ti = this.manager.byId.get(t);
       if (!ti || this._goneForGood(t)) continue;
-      if (ti.status !== 'idle' || this._targetDefers(ti) || this._pendingSettles.has(t)) return true;
+      if (ti.status !== 'idle' || this._targetDefers(ti)
+          || this._pendingSettles.has(t) || ti.turnOpening) return true;
       seen.add(t);
       if (this._waitsOnWork(t, seen)) return true;
     }

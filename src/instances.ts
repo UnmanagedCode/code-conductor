@@ -844,6 +844,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _activeAgentTasks: Map<string, string | null>;
   _taskNotificationPending: boolean;
   _idleWindowDirty: boolean;
+  _turnOpening: boolean;
   _turnFirstReqCacheRead: number | null;
   _turnFirstReqCacheCreation: number | null;
   _turnMissDetected: boolean;
@@ -1210,6 +1211,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // clean) and on (re)spawn. Replayed history (loadHistory) bypasses
     // _handleStdoutLine entirely, so replay can never corrupt it.
     this._idleWindowDirty = false;
+    // The narrower signal inside that window: a `system/init` arrived while
+    // idle, i.e. the CLI has started a query of its own (an unprompted
+    // re-invocation) whose message_start has not yet flipped status. Every query
+    // the CLI starts ends in a `result`, so the next turn_end clears it — unlike
+    // _idleWindowDirty, which any stray idle-time line sets for the rest of the
+    // window. Read by IdleSubscriptionHub: such a target still owes its owner a
+    // wake. Same clears as _idleWindowDirty.
+    this._turnOpening = false;
     // Cache-miss detection — a CROSS-TURN rule that catches partial (minority)
     // evictions the old stateless `creation>read` rule missed. Each turn is one
     // or more API requests; `message_start` carries that request's cumulative
@@ -1274,6 +1283,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // (see the _idleWindowDirty comment). Read by IdleSubscriptionHub to refuse
   // arming an idle task-drain settle.
   get idleWindowDirty(): boolean { return this._idleWindowDirty; }
+
+  // See the _turnOpening comment.
+  get turnOpening(): boolean { return this._turnOpening; }
 
   summary(): InstanceSummary {
     // Live global-overage gate (injected by the manager at create). Surfaces the
@@ -2307,6 +2319,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._turnForceAborted = false;
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
+    this._turnOpening = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
     // state (_prevTurnPrefix, _prefixBaselineInvalid) is NOT reset here: a
     // respawn goes through _wipeForResume, which sets _prefixBaselineInvalid so
@@ -2726,6 +2739,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (this.status === 'idle'
           && !(ev.kind === 'system' && typeof ev.subtype === 'string' && TASK_LIFECYCLE_SUBTYPES.has(ev.subtype))) {
         this._idleWindowDirty = true;
+        if (ev.kind === 'system' && ev.subtype === 'init') this._turnOpening = true;
       }
       if (ev.kind === 'system' && ev.subtype === 'init') {
         const data = evData(ev);
@@ -2926,6 +2940,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         }
         this._setStatus('idle');
         this._idleWindowDirty = false; // fresh idle window starts clean
+        this._turnOpening = false;
         // This turn's plan-file writes stop corroborating the next turn's
         // inline plans. plan_request and turn_end are distinct events in this
         // same loop and plan_request arrives first, so a same-turn write is
