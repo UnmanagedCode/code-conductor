@@ -754,9 +754,9 @@ as "no such file" turns one fixable fault into a fleet of misses.
   `EROFS`, `EXDEV`, `EBUSY`, `EMLINK`, `ETXTBSY`, `EDQUOT`, `EIO`, `EMFILE`,
   `ENFILE` — arrive as `EUNKNOWN`, with the raw stderr and exit code.
 - **Resource errnos stay out on purpose.** `runGit` (`src/worktrees.ts`) reads a
-  spawn error `classifySpawnError` names as git's own answer — except
-  `ENAMETOOLONG`, which says nothing about whether the cwd exists — and anything
-  else as `GIT_DID_NOT_RUN`; naming `EMFILE` or `E2BIG` would turn fd pressure
+  spawn error `classifySpawnError` names as git's own answer — except a code in
+  `SPAWN_CODES_SILENT_ON_CWD`, a refusal to resolve the path that says nothing
+  about whether the cwd exists — and anything else as `GIT_DID_NOT_RUN`; naming `EMFILE` or `E2BIG` would turn fd pressure
   or an over-long argv into a fact about a repository.
 
 ## 9. Failure and restart

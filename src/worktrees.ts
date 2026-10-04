@@ -22,7 +22,7 @@ import { getSystem } from './appSettings.ts';
 import {
   transcriptCollisionReason, transcriptCwdCollision,
 } from './systems/transcriptKey.ts';
-import { classifySpawnError } from './systems/protocol.ts';
+import { classifySpawnError, type FsErrorCode } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 import { REBASE_PROMPT_LEAD } from '../public/injectedTurns.js';
 
@@ -175,6 +175,15 @@ export const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 //
 // This covers the local system too. `system 'local'` in the message is honest —
 // a git binary that could not be started is not git saying no there either.
+//
+// A NAMED SPAWN CODE THAT SAYS NOTHING ABOUT WHETHER THE CWD EXISTS. The kernel
+// refused to resolve the path, so the directory may or may not be there — and
+// every caller reads a returned code as git's answer about it (a registration
+// dropped, a tree adopted as a plain directory). A code belongs here when it is
+// a refusal to resolve rather than evidence of absence; ENOENT and ENOTDIR are
+// evidence, and stay out.
+const SPAWN_CODES_SILENT_ON_CWD: ReadonlySet<FsErrorCode> = new Set(['ENAMETOOLONG', 'ELOOP']);
+
 export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
   const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd, maxBufferBytes: GIT_OUTPUT_LIMIT_BYTES });
   // THE SUBCOMMAND, NOT `args[0]`, and shared by BOTH throws below so they
@@ -218,16 +227,14 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     // an unclassifiable spawn error therefore throws on `local` as well. The
     // mechanism, not a list: classifySpawnError names the errnos
     // FS_ERROR_CODES tables and answers EUNKNOWN for anything else, and
-    // EUNKNOWN fails the second conjunct below; ENAMETOOLONG, though named,
-    // fails the third. Measured on `local`, each reaching the 502: `spawn git
-    // EMFILE` under fd pressure, `spawn ENAMETOOLONG` from an over-long cwd,
-    // `spawn E2BIG` from an over-long argv. What is unchanged locally is the
-    // CLASSIFIED case — a missing cwd or a non-executable git still returns
-    // here, diagnostic in `stderr`.
+    // EUNKNOWN fails the second conjunct below; a named code in
+    // SPAWN_CODES_SILENT_ON_CWD fails the third. Measured on `local`, each
+    // reaching the 502: `spawn git EMFILE` under fd pressure, `spawn E2BIG`
+    // from an over-long argv, and every member of that set. What is unchanged
+    // locally is the CLASSIFIED case — a missing cwd or a non-executable git
+    // still returns here, diagnostic in `stderr`.
     const spawnCode = classifySpawnError(r.spawnError);
-    // An over-long path says nothing about whether the cwd exists, and callers
-    // read a returned code as git's answer about it.
-    if (!r.transportFailure && spawnCode !== 'EUNKNOWN' && spawnCode !== 'ENAMETOOLONG') {
+    if (!r.transportFailure && spawnCode !== 'EUNKNOWN' && !SPAWN_CODES_SILENT_ON_CWD.has(spawnCode)) {
       return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
     }
     throw httpError(502, `git ${sub} could not be run on system '${system.id}' in ${cwd}: ${r.spawnError}`,
