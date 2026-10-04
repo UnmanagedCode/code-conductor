@@ -468,6 +468,10 @@ test('a failed prune reverts the recorded rotation — no segment the process ne
     const inst = ctx.instances.get(id);
     const { segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
     const chain = async () => (await segmentsFor(sid)).map(g => [g.id, g.reason]);
+    // The base-case record is created as a side effect of spawn's
+    // fire-and-forget mode write, which nothing on the resume path awaits.
+    // Idle is no barrier.
+    await waitFor(async () => (await segmentsFor(sid)).length > 0);
     assert.deepEqual(await chain(), [[sid, 'initial']],
       'precondition: the base case — a single `initial` segment named by the public id');
 
