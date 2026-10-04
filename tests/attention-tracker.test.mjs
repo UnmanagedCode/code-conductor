@@ -207,3 +207,37 @@ test('first sight in Finished, Waiting or a fresh spawn never owes a notificatio
     hand('S', { status: 'idle' }),
   ]), [], 'W cleared its ask and S finished spawning: nothing owed');
 });
+
+// Invariant: once an entry is observed actively working (raw status other than
+// idle), it owes no settle notification beyond what a counted turn end gives it.
+test('held → turn → stop-interrupted idle (no counted end) emits nothing', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 2 })]), []);
+  assert.deepEqual(t.observe([cond('C', { status: 'turn', liveTurnEnds: 2 })]), []);
+  assert.deepEqual(t.observe([cond('C', { liveTurnEnds: 2 })]), []);
+});
+
+test('held → turn → counted end still emits exactly one finished', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 2 })]), []);
+  assert.deepEqual(t.observe([cond('C', { status: 'turn', liveTurnEnds: 2 })]), []);
+  assert.deepEqual(kinds(t.observe([cond('C', { liveTurnEnds: 3 })])), ['finished:C']);
+});
+
+// Invariant: a counter-regress re-baseline while held in Running sets pending.
+test('a counter regress while held in Running owes the settle: one finished with counters unchanged', () => {
+  const t = seen([hand('A', { status: 'turn', liveTurnEnds: 5, liveAsks: 5 })]);
+  assert.deepEqual(t.observe([hand('A', { displayStatus: 'running', liveTurnEnds: 1, liveAsks: 0 })]), []);
+  assert.deepEqual(kinds(t.observe([hand('A', { displayStatus: 'idle', liveTurnEnds: 1, liveAsks: 0 })])), ['finished:A']);
+  assert.deepEqual(t.observe([hand('A', { liveTurnEnds: 1, liveAsks: 0 })]), []);
+});
+
+// Invariant: pending clears on entering Waiting, so the asking settle is never
+// announced as Finished.
+test('held → Waiting → ask cleared emits one waiting and no finished', () => {
+  const t = createAttentionTracker();
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 2 })]), []);
+  const ask = { awaitingWake: true, liveTurnEnds: 2, liveAsks: 1, awaitingUser: 'question', awaitingUserSource: 'tool' };
+  assert.deepEqual(kinds(t.observe([cond('C', ask)])), ['waiting:C']);
+  assert.deepEqual(t.observe([cond('C', { liveTurnEnds: 2, liveAsks: 1 })]), []);
+});

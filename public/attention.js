@@ -39,6 +39,9 @@ export function createAttentionTracker() {
         baselines.set(entry.instanceId, { asks, turnEnds, pending: group === 'running' && inst.status === 'idle' });
         continue;
       }
+      // Observed actively working: it owes nothing beyond what a counted turn end
+      // gives it (a stop-interrupted turn ends without counting).
+      if (inst.status !== 'idle') base.pending = false;
       if (group === 'waiting' && asks > base.asks) {
         out.push({
           kind: 'waiting', sessionId: entry.sessionId, instanceId: entry.instanceId, entry,
