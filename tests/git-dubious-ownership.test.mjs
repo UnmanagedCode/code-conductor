@@ -70,19 +70,36 @@ async function respawnProvider() {
 // classifier under test.
 const systemGit = (dir) =>
   localSystem().exec({ argv: ['git', '-C', dir, 'rev-parse', '--git-dir'] }, { cwd: dir });
+// A transport failure is no answer from git at all, so it must not read as
+// one: name it instead of the verdict `what` would pin on git's answer.
+const gitVerdict = (r, what) => r.transportFailure
+  ? `the System never reached git (transport failure: ${r.spawnError})`
+  : `${what}: ${r.stderr}`;
 
 async function withForeignOwner(fn) {
   const prev = process.env[KNOB];
   process.env[KNOB] = '1';
+  let bodyFailed = false, bodyErr;
   try {
     await respawnProvider();
     const r = await systemGit(repo);
-    assert.equal(r.code, 128, `the knob must reach the git the System runs: ${r.stderr}`);
+    assert.equal(r.code, 128, gitVerdict(r, 'the knob must reach the git the System runs'));
     assert.ok(r.stderr.split('\n').some(l => l.trim() === fixLine(repo)), r.stderr);
     return await fn();
+  } catch (e) {
+    bodyFailed = true;
+    bodyErr = e;
+    throw e;
   } finally {
     if (prev === undefined) delete process.env[KNOB]; else process.env[KNOB] = prev;
-    await respawnProvider();
+    // The body's failure stays the reported one, with a failed respawn riding
+    // along as its cause; the respawn's error is thrown itself only when the
+    // body passed.
+    try { await respawnProvider(); }
+    catch (respawnErr) {
+      if (!bodyFailed) throw respawnErr;
+      if (bodyErr instanceof Error && bodyErr.cause === undefined) bodyErr.cause = respawnErr;
+    }
   }
 }
 
@@ -128,7 +145,7 @@ beforeEach(async () => {
 afterEach(async () => {
   assert.equal(process.env[KNOB], undefined, 'the ownership knob leaked past its test');
   const r = await systemGit(repo);
-  assert.equal(r.code, 0, `the ownership knob leaked into the System's git past its test: ${r.stderr}`);
+  assert.equal(r.code, 0, gitVerdict(r, "the ownership knob leaked into the System's git past its test"));
   await instances.shutdown();
   instances._idleSubscribers?.clear();
   await rmrf(home);
