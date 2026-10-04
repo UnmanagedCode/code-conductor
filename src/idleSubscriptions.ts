@@ -184,6 +184,12 @@ export class IdleSubscriptionHub {
   // and carried, because it belongs to the wake that was deferred, not to
   // whatever else that pair does in between.
   _deferredWakes: Map<string, Array<{ targetInstanceId: string; opts?: DeliverOpts; note: string | null }>>;
+  // Wakes consumed but not yet SENT, keyed by callerInstanceId → count. deliver()
+  // sends on a microtask after (for a folded stub) an async transcript read, so
+  // between the consume and the send the conductor is idle with no armed wake —
+  // a state indistinguishable from "finished". isCaller() counts these, so
+  // `awaitingWake` holds until prompt() has run (status has left idle) or failed.
+  _inFlight: Map<string, number>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
@@ -193,6 +199,7 @@ export class IdleSubscriptionHub {
     this._pendingSettles = new Map();
     this._pendingDeclines = new Map();
     this._deferredWakes = new Map();
+    this._inFlight = new Map();
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands
@@ -719,6 +726,7 @@ export class IdleSubscriptionHub {
     // deferred wake's TARGET it needs no cleanup — deliver() resolves a missing
     // target to its raw id and still reports honestly.)
     this._deferredWakes.delete(instanceId);
+    this._inFlight.delete(instanceId);
     this._pendingDeclines.delete(instanceId); // …and every note about it
     // As CALLER: a note filed for this instance under some other target can no
     // longer reach anyone either.
@@ -846,6 +854,7 @@ export class IdleSubscriptionHub {
     // …and so does an EXITED one: there is no finished result to fold.
     const fold = !opts?.timedOut && !opts?.stale && !opts?.interrupted && !opts?.exited
       && caller.status !== 'turn';
+    this._inFlight.set(callerInstanceId, (this._inFlight.get(callerInstanceId) ?? 0) + 1);
     const deliver = async (): Promise<void> => {
       // Read-and-delete BEFORE any await: the expiry that recorded this note ran
       // synchronously in the dispatch that queued this microtask, and the note
@@ -871,11 +880,23 @@ export class IdleSubscriptionHub {
           kind: 'system', subtype: 'stderr',
           data: { line: `idle-callback delivery failed: ${(err as Error).message}` },
         });
+      } finally {
+        this._endInFlight(callerInstanceId, targetInstanceId);
       }
     };
     // A mid-turn caller receives the wake live (steering); an idle caller gets
     // it folded. Either way it goes out on the next microtask.
     queueMicrotask(deliver);
+  }
+
+  // One delivery finished (sent, refused, or abandoned). When that leaves the
+  // caller with nothing armed, nothing deferred and nothing in flight, announce
+  // the change: a refused send leaves it idle, and nothing else would say so.
+  _endInFlight(callerInstanceId: string, targetInstanceId: string): void {
+    const n = (this._inFlight.get(callerInstanceId) ?? 0) - 1;
+    if (n > 0) this._inFlight.set(callerInstanceId, n);
+    else this._inFlight.delete(callerInstanceId);
+    if (!this.isCaller(callerInstanceId)) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
 
   // The plain pointer stub — text for the heartbeat path and the live
@@ -960,8 +981,12 @@ export class IdleSubscriptionHub {
   // i.e. one of its sessions is mid-turn right now and it is due a report when
   // that turn ends. This is what the sidebar's accent idle dot reads (surfaced as
   // `awaitingWake`), and it stays true across a heartbeat, because a heartbeat
-  // reports without consuming.
+  // reports without consuming. It also stays true from a wake's
+  // consume until its send has run (`_inFlight`), and while a wake is held for a
+  // mid-turn recipient (`_deferredWakes`): the conductor is idle with nothing armed
+  // in that gap, which must not read as finished.
   isCaller(instanceId: string): boolean {
+    if (this._inFlight.has(instanceId) || this._deferredWakes.get(instanceId)?.length) return true;
     for (const callers of this.subscribers.values()) {
       if (callers.has(instanceId)) return true;
     }

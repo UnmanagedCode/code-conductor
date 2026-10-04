@@ -150,3 +150,13 @@ test('a lower ask counter alone also re-baselines', () => {
   const t = seen([hand('A', { status: 'turn', liveTurnEnds: 0, liveAsks: 3 })]);
   assert.deepEqual(t.observe([hand('A', { liveTurnEnds: 1, liveAsks: 0 })]), []);
 });
+
+// Invariant: with the server holding awaitingWake across the consume → wake-turn
+// gap, a conductor's hand-back cycle yields exactly one finished, at the end.
+test('a conductor wake cycle (armed → worker done, wake pending → wake turn → end) fires one finished, at the end', () => {
+  const t = seen([cond('C', { status: 'turn' })]);
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 1 })]), [], 'turn ended with a wake armed');
+  assert.deepEqual(t.observe([cond('C', { awaitingWake: true, liveTurnEnds: 1 })]), [], 'worker done, wake still pending');
+  assert.deepEqual(t.observe([cond('C', { status: 'turn', awaitingWake: false, liveTurnEnds: 1 })]), [], 'wake turn started');
+  assert.deepEqual(kinds(t.observe([cond('C', { status: 'idle', awaitingWake: false, liveTurnEnds: 2 })])), ['finished:C']);
+});
