@@ -24,6 +24,8 @@ import { adoptProject } from '../src/projects.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById, systemHandleGeneration } from '../src/systems/registry.ts';
 
+const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDER = path.join(__dirname, 'fixtures', 'recordingProvider.mjs');
 
@@ -172,7 +174,7 @@ describe('a live session across an argv swap', () => {
   const gen2Launch = () => ['node', RECORDER, '--record', recB, '--remote', `a=${rootB}`, '--name', 'gen2'];
 
   before(async () => {
-    ctx = await bootServer();
+    ctx = await bootServer({ scenarioPath: SCENARIO });
     ({ baseUrl, instances } = ctx);
   });
 

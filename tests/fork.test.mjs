@@ -234,9 +234,9 @@ test('fork prefill rides the new instance\'s first snapshot frame, consumed once
 // archive touches only the sub-agent dir and the source's own segment, both keyed on
 // the SOURCE id. `_archiveTempSession` itself deletes no jsonl.
 
-// The temp flag lands via a fire-and-forget `setSegmentTemp()` in spawn(), so a
-// NEGATIVE assertion ("this id is not temp") has to be ordered after any write
-// the store already has queued. Every mutation runs on one per-process write
+// The temp flag is written by `setSegmentTemp()` in spawn(), which launch()
+// awaits; a NEGATIVE assertion ("this id is not temp") still has to be ordered
+// after any other write the store already has queued. Every mutation runs on one per-process write
 // chain, so awaiting a mutation enqueued now resolves only once the ones ahead
 // of it have written. A positive assertion can just waitFor the flag.
 const FLUSH_SENTINEL = 'f1u5hf1u-5hf1-u5hf-1u5h-f1u5hf1u5hf1';

@@ -31,6 +31,8 @@ import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 
+const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
+
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args) {
   const res = await fetch(baseUrl + '/mcp', {
@@ -53,7 +55,7 @@ async function exists(p) {
 
 describe('a remote project refuses what it cannot do, by name', () => {
   let ctx, baseUrl, instances, home, remote;
-  before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
+  before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
   after(async () => { await ctx.close(); });
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());

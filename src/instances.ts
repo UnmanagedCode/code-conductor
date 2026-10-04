@@ -2039,6 +2039,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // can ever observe a session without its permanent public id. launch() is
     // the sole caller of spawn(), so this covers every fresh-spawn entry point.
     //
+    // The contract at the other end: launch() resolves only after the spawn-time
+    // facts (temp, backend, conducted, mode) are durable or have failed and been
+    // logged by the store — never rejecting for them — so every awaited caller
+    // (create, rewind, respawn, prune, restart-resume) can read them back.
+    //
     // Distinguished STRUCTURALLY, never by id length: a fresh spawn is the one
     // with neither a resume target nor an id already in hand. The
     // `!this.backingSessionId` half is what preserves rewind's empty-prefix
@@ -2116,8 +2121,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._fuse.unionBinary = await ensureUnionBinary();
       await this._fuse.prepare();
     }
-    this.spawn({ resume });
+    const facts = this.spawn({ resume });
     if (this._fuse) await this._awaitFuseMount();
+    await facts;
   }
 
   // THE TWO WAYS A UNION SPAWN IS DOOMED BEFORE IT STARTS, and they are two
@@ -2245,7 +2251,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     };
   }
 
-  spawn({ resume }: { resume?: string } = {}): void {
+  // The process starts synchronously. The returned promise settles once the
+  // spawn-time store facts (temp, backend, conducted, mode) are durable or have
+  // failed — it never rejects, a failed write being logged by the store and
+  // re-asserted at the next turn end. launch() awaits it.
+  spawn({ resume }: { resume?: string } = {}): Promise<void> {
     if (this.proc) throw new Error('already running');
     // A reused instance object (respawn) may carry _killing from its prior
     // teardown — clear it so this fresh launch's exit is judged on its own.
@@ -2345,36 +2355,41 @@ export class Instance extends EventEmitter implements InstanceLike {
     // `{ backingId, 0 }` — including over diagnostics the create path emitted
     // before launch() — and precedes the loadHistory replay below.
     this.ring.markSeam(backingId);
+    // The spawn-time facts, all kicked here and now (the process must not wait
+    // on them) and collected so launch() can await their durability. Order is
+    // load-bearing: they share the store's FIFO write chain, so the mode write —
+    // always present, enqueued last of the session-level writes — landing implies
+    // the backend and conducted writes ahead of it have landed.
+    const writes: Array<Promise<unknown>> = [];
     // Persist the temp flag on this transcript's segment at spawn time so it
     // survives a SIGKILL that happens before the first turn_end (where
-    // _writeSessionMetadata also sets it). Fire-and-forget — spawn() must stay
-    // synchronous.
-    if (this.temp) setSegmentTemp(backingId, true, { owner: this.sessionId }).catch(() => {});
+    // _writeSessionMetadata also sets it).
+    if (this.temp) writes.push(setSegmentTemp(backingId, true, { owner: this.sessionId }));
     // Persist the backend id + exact model durably (the things jsonl can't carry
     // — which backend ran it, and the full model id the inner CLI reports
     // lossily) so every resume path re-acquires them. The capacity rides along
     // as a last-known fallback for a resume after the custom-model row is
     // deleted. Runs on every spawn/resume, so a model-unknown record self-heals
-    // once this.model holds a real id. Fire-and-forget for the same reason as
-    // the temp flag above — spawn() is synchronous and nothing downstream of
-    // this call reads the write (the only reader is _doCreate's resume branch,
-    // `catch { best-effort }`), so a post-spawn TEST must wait for the write
-    // (settledSessionBackend in helpers.mjs), not sample it.
+    // once this.model holds a real id.
     if (this.backend !== CLAUDE_BACKEND_ID) {
-      setSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
+      writes.push(setSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens));
     }
     // A conducted worker's spawn-time facts: who spawned it and where it runs.
     // Here, not at the first turn_end, so a worker killed mid-first-turn is
     // still recorded as conducted.
     if (this.conducted) {
-      markConducted(this.sessionId, {
+      writes.push(markConducted(this.sessionId, {
         parent: this.parentSessionId, project: this.project, worktree: this.worktree?.worktreeName ?? null,
-      }).catch(() => {});
+      }));
     }
     // Same reason as the temp flag: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
-    // exists). Every later mode change goes through _recordMode.
-    this._recordMode(this.mode);
+    // exists). Every later mode change goes through _recordMode, which stays
+    // fire-and-forget; here the promise is collected.
+    if (this.sessionId) writes.push(setSessionMode(this.sessionId, this.mode));
+    // Built before anything below that can throw, so every write's rejection is
+    // handled from the moment it is kicked.
+    const facts = Promise.allSettled(writes).then(() => {});
     this._hydrateTitle().catch(() => {});
     this._hydrateTurnMarks().catch((e) => {
       console.error(`instances: turn-mark hydrate for ${this.sessionId} failed: ${(e as Error).message}`);
@@ -2661,6 +2676,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         this._setStatus('idle');
       }
     })();
+    return facts;
   }
 
   _handleStdoutLine(line: string): void {
@@ -3477,10 +3493,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Persist the mode a resume should come back up in. Best-effort and
-  // fire-and-forget, like the temp/conducted/backend facts beside it: a failed
-  // write is logged by the store and retried by the next call (the store's
-  // precheck still sees the old value). Every `this.mode` assignment after the
-  // sessionId exists routes here.
+  // fire-and-forget: a failed write is logged by the store and retried by the
+  // next call (the store's precheck still sees the old value). Every `this.mode`
+  // assignment after the sessionId exists routes here; spawn() alone collects
+  // its own mode write (see its `facts`).
   _recordMode(mode: string): void {
     if (!this.sessionId) return;
     setSessionMode(this.sessionId, mode).catch(() => {});

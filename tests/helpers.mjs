@@ -253,12 +253,11 @@ export async function settle(turns = 3) {
   for (let i = 0; i < turns; i++) await new Promise(r => setImmediate(r));
 }
 
-// A session's backend record, once spawn()'s write has landed. `sessionId` is
-// the PUBLIC id (or any of its segments). spawn() is synchronous and fires
-// setSessionBackend without awaiting it (see src/instances.ts spawn()), so a
-// 201 / `idle` / argv-dump wait can beat the write by a handful of filesystem
-// ops. Every post-spawn read of this fact waits here rather than sampling;
-// returns the record.
+// A session's backend record, polled until present. `sessionId` is the PUBLIC
+// id (or any of its segments). launch() awaits spawn()'s setSessionBackend, so
+// after an awaited create / 201 this returns on its first read; it still
+// tolerates a caller that reads before the launch it is racing has resolved.
+// Returns the record.
 export function settledSessionBackend(sessionId, opts) {
   return waitFor(async () => await getSessionBackend(sessionId), opts);
 }

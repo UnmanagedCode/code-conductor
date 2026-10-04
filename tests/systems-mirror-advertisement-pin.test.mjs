@@ -31,6 +31,8 @@ import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 
+const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'mirrorFixtureProvider.mjs');
 
@@ -41,7 +43,7 @@ describe('criterion 5 — a re-advertised geometry is session-fatal, without mou
   before(async () => {
     // NO `realProcess`, and that is the whole point of this file: the
     // in-process launcher means `attachFuse` never runs.
-    ctx = await bootServer();
+    ctx = await bootServer({ scenarioPath: SCENARIO });
     ({ baseUrl, instances } = ctx);
     ({ home } = await freshProjectsRoot());
   });

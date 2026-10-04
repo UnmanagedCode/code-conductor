@@ -21,7 +21,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBacken
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
-import { getSessionBackend, setSessionBackend, sessionsFile } from '../src/sessionStore.ts';
+import { getSessionBackend, setSessionBackend, sessionsFile, isTemp, isConducted, getSessionMode } from '../src/sessionStore.ts';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import { ControllableLauncher } from './controllableLauncher.mjs';
@@ -295,21 +295,24 @@ describe('substitution-backend spawn command/args', () => {
   });
 });
 
-// The backend write in Instance.spawn() is fire-and-forget, so the 201 + idle can
-// beat it by a handful of filesystem ops. Forced deterministically here by
-// holding the store's own advisory lock across the spawn: storeLock.ts reclaims a
-// held lock ONLY when the owner PID is dead, so while this test's live PID owns
-// it, withLock inside setSessionBackend cannot enter and the write CANNOT have
-// landed. That is a hard mutual-exclusion barrier, not a delay — no sleeps, no
-// wall-clock thresholds, and the guarantee does not weaken under host load.
-// Driven through a RESUME with an explicit backend + model: a fresh spawn awaits
-// mintPublicId under the same lock before spawn(), so holding it would stall the
-// launch itself rather than just the backend write.
-describe('a session-backend write that lands after the spawn response', () => {
-  test('is waited for, not sampled', async () => {
+// launch() awaits the spawn-time store facts (temp, backend, conducted, mode), so
+// an awaited create() resolves only once they are durable. Forced
+// deterministically by holding the store's own advisory lock across the spawn:
+// storeLock.ts reclaims a held lock ONLY when the owner PID is dead, so while
+// this test's live PID owns it, withLock inside each write cannot enter and no
+// fact CAN have landed. That is a hard mutual-exclusion barrier, not a delay —
+// no sleeps, no wall-clock thresholds, and the guarantee does not weaken under
+// host load. The forcing assertion is that create() is still pending once the
+// child is idle (a child-process round trip, so a create that did not wait would
+// long since have resolved). Driven through a RESUME: a fresh spawn awaits
+// mintPublicId under the same lock before spawn(), which would stall the launch
+// before the facts are even kicked.
+describe('the spawn response waits for the spawn-time store facts', () => {
+  // Seed a resumable session, hold the lock, start create(opts), wait for idle,
+  // assert create() is still pending, release, and return the settled instance.
+  async function createUnderHeldLock(sid, opts) {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const cwd = path.join(projectsRoot, 'p');
-    const sid = 'abababab-0000-0000-0000-000000000000';
     const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
@@ -319,34 +322,43 @@ describe('a session-backend write that lands after the spawn response', () => {
     await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
     let released = false;
     try {
-      const inst = await instances.create({
-        project: 'p', resume: sid, mode: 'bypassPermissions', backend: 'ollama', model: 'gemma4:cloud',
-      });
+      let settled = false;
+      const created = instances.create({ project: 'p', resume: sid, ...opts });
+      created.then(() => { settled = true; }, () => { settled = true; });
+      await waitFor(() => instances.idsForSession(sid).length > 0);
+      const inst = instances.get(instances.idsForSession(sid)[0]);
       await waitFor(() => inst.status === 'idle');
       assert.equal(inst.sessionId, sid, 'premise: an unrotated session resumes under its own id');
-      // THE FORCING ASSERTION. With the lock held the write cannot have landed, so
-      // an un-waited read must miss. If this ever passes, the forcing silently
-      // stopped working (store path/filename moved, or the write stopped being
-      // lock-guarded) and everything below it would prove nothing.
-      assert.equal(await getSessionBackend(sid), null,
-        'forcing engaged: the session-backend write is blocked on the held lock');
+      // THE FORCING ASSERTION. If this ever fails the forcing silently stopped
+      // working (store path/filename moved, or the writes stopped being
+      // lock-guarded) or create() stopped waiting for its facts.
+      assert.equal(settled, false, 'create() must not resolve while its spawn-time facts are blocked on the store lock');
       await fs.unlink(lockPath); released = true;
-      // NEGATIVE CONTROL — to re-verify this test still bites, change
-      // `settledSessionBackend(sid)` below to `getSessionBackend(sid)` and re-run
-      // this file alone: it should fail with `AssertionError: null !== { … }` on
-      // the overwhelming majority of runs. This is NOT fully deterministic like
-      // the forcing assertion above: once the lock is unlinked, the pending
-      // `setSessionBackend` write is still racing its own retry backoff timer
-      // (storeLock.ts) against this immediate read, with nothing synchronizing
-      // the two — on rare adverse scheduling the retry could win and the swap
-      // would pass. A pass on this recipe means "re-run it", not "this test no
-      // longer detects the bug" — the committed assertion below waits
-      // deterministically and is unaffected either way.
-      assert.deepEqual(await settledSessionBackend(sid),
-        { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
+      await created;
     } finally {
       if (!released) await fs.unlink(lockPath).catch(() => {});
     }
+  }
+
+  test('every spawn-time fact is durable when create resolves', async () => {
+    const sid = 'abababab-0000-0000-0000-000000000000';
+    await createUnderHeldLock(sid, {
+      mode: 'plan', temp: true, conducted: true, backend: 'ollama', model: 'gemma4:cloud',
+    });
+    // Each fact read ONCE, no waitFor. temp first: it is the last-enqueued write.
+    assert.equal(await isTemp(sid), true, 'temp is durable');
+    assert.equal(await isConducted(sid), true, 'conducted is durable');
+    const rec = JSON.parse(await fs.readFile(sessionsFile(), 'utf8')).sessions[sid];
+    assert.equal(rec.project, 'p', 'the conducted spawn-time project is durable');
+    assert.equal(await getSessionMode(sid), 'plan', 'mode is durable');
+    assert.deepEqual(await getSessionBackend(sid),
+      { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
+  });
+
+  test('a mode-only spawn\'s create waits for the mode write', async () => {
+    const sid = 'bcbcbcbc-0000-0000-0000-000000000000';
+    await createUnderHeldLock(sid, { mode: 'plan' });
+    assert.equal(await getSessionMode(sid), 'plan', 'mode is durable');
   });
 });
 
@@ -1055,7 +1067,7 @@ describe('MCP resume restores the recorded backend', () => {
       // is keyed by the public handle.
       const inst0 = instances.get(instances.idsForSession(sid)[0]);
       const backing = inst0.backingSessionId;
-      const rec = await settledSessionBackend(sid); // spawn()'s write is fire-and-forget
+      const rec = await settledSessionBackend(sid); // durable once the awaited spawn has resolved
 
       // The fake engine writes no transcript, so seed the resumable jsonl by
       // hand (hasResumableConversation gates the resume at _doCreateResolved);
