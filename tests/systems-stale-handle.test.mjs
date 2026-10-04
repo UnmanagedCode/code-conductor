@@ -207,9 +207,10 @@ describe('a live session across an argv swap', () => {
     inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle');
     assert.ok(inst._redirect, 'the session really got a redirect (it is on a non-local system)');
-    // The fake CLI exits at spawn, and that calls `_redirect.close()`, which
-    // aborts the in-flight commands and RE-ARMS. Wait that teardown out so the
-    // measurement is not racing it.
+    // The scenario keeps the fake CLI alive, so the session's redirect stays up.
+    // Run one command through it before any test body: that launches the gen1
+    // provider, which T4/T5 need on record (`hellos(recA) > 0`) as the baseline
+    // their "never launched again" assertions compare against.
     await waitFor(async () => (await inst._redirect.runForwarded('true')).code === 0);
   });
 

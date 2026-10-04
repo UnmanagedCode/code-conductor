@@ -96,7 +96,9 @@
 // record, which is the base case. The spawn-time facts (temp, backend,
 // conducted, mode) are likewise untracked: launch() awaits them, so a read
 // ordered after an awaited launch() caller sees them, and a read racing an
-// in-flight launch may miss them.
+// in-flight launch may miss them. Each such write takes the store lock on its
+// own and spends its own LOCK_RETRY_MAX budget, so a lock held by another
+// process delays launch() by up to the sum over the writes the spawn issued.
 //
 // TEARDOWN DRAIN: settleSessionWrites waits out both the serialize chain and
 // the barrier set, looping until neither moves. Only once the writers have

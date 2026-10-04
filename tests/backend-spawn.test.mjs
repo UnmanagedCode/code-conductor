@@ -301,8 +301,11 @@ describe('substitution-backend spawn command/args', () => {
 // storeLock.ts reclaims a held lock ONLY when the owner PID is dead, so while
 // this test's live PID owns it, withLock inside each write cannot enter and no
 // fact CAN have landed. That is a hard mutual-exclusion barrier, not a delay —
-// no sleeps, no wall-clock thresholds, and the guarantee does not weaken under
-// host load. The forcing assertion is that create() is still pending once the
+// no sleeps. One wall-clock bound remains: a write gives up after storeLock.ts's
+// LOCK_RETRY_MAX retries, and create() then resolves, so the `settled === false`
+// assertion is only sound while spawn→idle fits inside that budget. On a host
+// starved enough to outlive it, that assertion goes false-red rather than
+// the write ever landing early. The forcing assertion is that create() is still pending once the
 // child is idle (a child-process round trip, so a create that did not wait would
 // long since have resolved). Driven through a RESUME: a fresh spawn awaits
 // mintPublicId under the same lock before spawn(), which would stall the launch

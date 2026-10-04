@@ -2042,7 +2042,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The contract at the other end: launch() resolves only after the spawn-time
     // facts (temp, backend, conducted, mode) are durable or have failed and been
     // logged by the store — never rejecting for them — so every awaited caller
-    // (create, rewind, respawn, prune, restart-resume) can read them back.
+    // (create, rewind, respawn, prune, restart-resume) can read them back. Each
+    // write spawn() kicks (up to four) reaches the store lock independently and
+    // spends its own LOCK_RETRY_MAX budget, so a lock held by another process
+    // delays launch() by up to the SUM of those budgets, not one.
     //
     // Distinguished STRUCTURALLY, never by id length: a fresh spawn is the one
     // with neither a resume target nor an id already in hand. The
