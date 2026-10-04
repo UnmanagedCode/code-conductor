@@ -708,7 +708,7 @@ provider's choice — it follows from what failed:
 
 | The provider is answering… | with |
 |---|---|
-| `readFile` / `writeFile` that the filesystem refused | **the FS code the local filesystem would have raised**: `ENOENT`, `EACCES`, `EEXIST` (an `exclusive` write over an existing file), `EISDIR` (a read of a directory), `ENOTDIR`, `ENOSPC` |
+| `readFile` / `writeFile` that the filesystem refused | **the FS code the local filesystem would have raised**, from `FS_ERROR_CODES` (`src/systems/protocol.ts`) — e.g. `EEXIST` (an `exclusive` write over an existing file), `EISDIR` (a read of a directory) |
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
 | a request naming a `remoteId` it does not serve, or naming none while it advertises `remotes` | `ENOREMOTE`, **id-addressed** |
@@ -731,8 +731,8 @@ cannot read.
 
 A derived command that **ran and failed** is classified by matching its stderr
 against a small table of well-known `strerror()` strings (substring, under
-`LC_ALL=C`): `ENOENT`, `EACCES`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOSPC`,
-`ENOTEMPTY`, `EINVAL`.
+`LC_ALL=C`): `STDERR_TABLE` in `src/systems/protocol.ts`, one row per
+non-catch-all code in `FS_ERROR_CODES`.
 
 **An unmatched failure is `EUNKNOWN`, carrying the exit code and the raw stderr
 verbatim, and it is surfaced to the user.** cc never guesses silently at a
@@ -742,6 +742,22 @@ message it does not know.
 line resolves to `null`, matching cc's own ENOENT→null contract for project
 resolution. Every *other* failure throws, because reading a broken installation
 as "no such file" turns one fixable fault into a fleet of misses.
+
+### Named, and the known remainder
+
+- **Every path-resolution errno is named.** path_resolution(7) lists the
+  errnos any path argument can produce — `ENOENT`, `ENOTDIR`, `EACCES`,
+  `ENAMETOOLONG`, `ELOOP` — and each is in `FS_ERROR_CODES`, so a path a caller
+  passes always gets its real code, on the derived path and in an `error` frame
+  alike.
+- **The op/environment errnos `FS_ERROR_CODES` does not name** — `EPERM`,
+  `EROFS`, `EXDEV`, `EBUSY`, `EMLINK`, `ETXTBSY`, `EDQUOT`, `EIO`, `EMFILE`,
+  `ENFILE` — arrive as `EUNKNOWN`, with the raw stderr and exit code.
+- **Resource errnos stay out on purpose.** `runGit` (`src/worktrees.ts`) reads a
+  spawn error `classifySpawnError` names as git's own answer — except
+  `ENAMETOOLONG`, which says nothing about whether the cwd exists — and anything
+  else as `GIT_DID_NOT_RUN`; naming `EMFILE` or `E2BIG` would turn fd pressure
+  or an over-long argv into a fact about a repository.
 
 ## 9. Failure and restart
 

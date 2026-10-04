@@ -138,6 +138,8 @@ test('a spawn failure names its errno as a TOKEN, not as strerror text', () => {
   assert.equal(classifySpawnError('spawn /bin/sh ENOENT'), 'ENOENT');
   assert.equal(classifySpawnError('spawn EACCES'), 'EACCES');
   assert.equal(classifySpawnError('Error: spawn ENOTDIR'), 'ENOTDIR');
+  // An over-long cwd: what `spawn` reports for a path past PATH_MAX.
+  assert.equal(classifySpawnError('spawn ENAMETOOLONG'), 'ENAMETOOLONG');
   assert.equal(classifySpawnError('something nobody has seen before'), 'EUNKNOWN');
   // THE BOUNDARY RULE, which only a message carrying an unknown code that
   // CONTAINS a known one can show: a plain substring search would answer EACCES
@@ -170,6 +172,8 @@ test('classifyStderr maps every well-known message, and nothing else', () => {
   assert.equal(classifyStderr("cp: error writing 'x': No space left on device"), 'ENOSPC');
   assert.equal(classifyStderr("rm: cannot remove '/d': Directory not empty"), 'ENOTEMPTY');
   assert.equal(classifyStderr('readlink: /tmp/plain: Invalid argument'), 'EINVAL');
+  assert.equal(classifyStderr("stat: cannot statx '/x': File name too long"), 'ENAMETOOLONG');
+  assert.equal(classifyStderr("stat: cannot statx '/l': Too many levels of symbolic links"), 'ELOOP');
   assert.equal(classifyStderr('something nobody has seen before'), 'EUNKNOWN',
     'an unmatched failure is EUNKNOWN — cc never guesses at a message it does not know');
   assert.equal(classifyStderr(''), 'EUNKNOWN');
@@ -199,6 +203,8 @@ const SAMPLE_STDERR = {
   ENOSPC: "cp: error writing 'x': No space left on device",
   ENOTEMPTY: "rm: cannot remove '/d': Directory not empty",
   EINVAL: 'readlink: /tmp/plain: Invalid argument',
+  ENAMETOOLONG: "stat: cannot statx '/x': File name too long",
+  ELOOP: "stat: cannot statx '/l': Too many levels of symbolic links",
 };
 
 test('an unmatched failure carries its exit code and its RAW stderr, verbatim', () => {

@@ -218,12 +218,16 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     // an unclassifiable spawn error therefore throws on `local` as well. The
     // mechanism, not a list: classifySpawnError names the errnos
     // FS_ERROR_CODES tables and answers EUNKNOWN for anything else, and
-    // EUNKNOWN fails the second conjunct below. Measured on `local`, each
-    // reaching the 502: `spawn git EMFILE` under fd pressure, `spawn
-    // ENAMETOOLONG` from an over-long cwd, `spawn E2BIG` from an over-long
-    // argv. What is unchanged locally is the CLASSIFIED case — a missing cwd
-    // or a non-executable git still returns here, diagnostic in `stderr`.
-    if (!r.transportFailure && classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
+    // EUNKNOWN fails the second conjunct below; ENAMETOOLONG, though named,
+    // fails the third. Measured on `local`, each reaching the 502: `spawn git
+    // EMFILE` under fd pressure, `spawn ENAMETOOLONG` from an over-long cwd,
+    // `spawn E2BIG` from an over-long argv. What is unchanged locally is the
+    // CLASSIFIED case — a missing cwd or a non-executable git still returns
+    // here, diagnostic in `stderr`.
+    const spawnCode = classifySpawnError(r.spawnError);
+    // An over-long path says nothing about whether the cwd exists, and callers
+    // read a returned code as git's answer about it.
+    if (!r.transportFailure && spawnCode !== 'EUNKNOWN' && spawnCode !== 'ENAMETOOLONG') {
       return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
     }
     throw httpError(502, `git ${sub} could not be run on system '${system.id}' in ${cwd}: ${r.spawnError}`,

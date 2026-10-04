@@ -32,7 +32,7 @@ import {
   getProjectCommits, registeredWorktreeNames,
 } from '../src/worktrees.ts';
 import { updateSystem } from '../src/appSettings.ts';
-import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { disposeSystemHandles, localSystem, systemById } from '../src/systems/registry.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { liveSystemProto } from './systemHandle.mjs';
 
@@ -268,6 +268,28 @@ describe('a system that dies mid-operation', () => {
     const r = await runGit(await systemById(remote.id, null, 'test'), gone, ['status', '--porcelain']);
     assert.equal(r.code, 1, 'a live system answering "I could not start that" is not a refusal');
     assert.match(r.stderr, /ENOENT/);
+  });
+
+  // PINS: an over-long cwd is NOT the same kind of answer as a missing one. A
+  // missing cwd is evidence the directory is absent; an over-long path is no
+  // evidence either way, so a returned code would let a caller read git's
+  // "answer" about a directory it never reached. On the remote system and on
+  // `local` alike — one row per subtest, so each row's red is its own.
+  test('an over-long cwd on a live system is GIT_DID_NOT_RUN, not a git answer', async (t) => {
+    // Past PATH_MAX, so `spawn` itself refuses the cwd with ENAMETOOLONG.
+    const long = path.join(remote.root, 'x/'.repeat(3000));
+    const rows = { remote: () => systemById(remote.id, null, 'test'), local: () => localSystem() };
+    for (const [name, sys] of Object.entries(rows)) {
+      await t.test(name, async () => {
+        const s = await sys();
+        await assert.rejects(() => runGit(s, long, ['status', '--porcelain']), (e) => {
+          assert.equal(e.statusCode, 502, e.message);
+          assert.equal(e.code, 'GIT_DID_NOT_RUN', e.message);
+          assert.match(e.message, /ENAMETOOLONG/);
+          return true;
+        });
+      });
+    }
   });
 
   // PINS: the DERIVED ops obey the same rule as runGit. `#derive` — the layer

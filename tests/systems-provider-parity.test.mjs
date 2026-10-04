@@ -421,9 +421,9 @@ test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBy
 // to locally.
 //
 // THE CLOSED-TAXONOMY ARGUMENT FOR KEEPING IT RAN BACKWARDS: the taxonomy is
-// closed SO THAT every error a real call can produce is named, so an errno a
-// genuine call produces and cc cannot name is exactly what the closure exists
-// to prevent — a caller cannot tell "that is not a symlink" from "the box
+// closed SO THAT every error a caller acts on is named, so an errno a genuine
+// call produces, that a caller acts on, and that cc cannot name is exactly what
+// the closure exists to prevent — a caller cannot tell "that is not a symlink" from "the box
 // hiccuped". One `FS_ERROR_CODES` entry and one classifier row, and the
 // conformance suite's "every code is produced by a real failure" case is
 // satisfied by the very call below. A permanent case titled "the one code the
@@ -444,6 +444,37 @@ test('readlink of a non-symlink is EINVAL on both, not EUNKNOWN on one', async (
   assert.equal(a.missing.code, 'ENOENT');
 });
 
+// The path-resolution errnos: LocalSystem surfaces node's real code, so a
+// provider that answered EUNKNOWN for either would make the two disagree on a
+// path the caller passed.
+test('a path that cannot resolve is ENAMETOOLONG or ELOOP on both, not EUNKNOWN on one', async () => {
+  const [a, b] = await both(
+    async (root) => {
+      await fs.symlink('loopB', path.join(root, 'loopA'));
+      await fs.symlink('loopA', path.join(root, 'loopB'));
+    },
+    async (sys, root) => {
+      const long = path.join(root, 'x'.repeat(300));
+      const loop = path.join(root, 'loopA');
+      return {
+        statLong: await codeOf(() => sys.stat(long)),
+        readFileLong: await codeOf(() => sys.readFile(long)),
+        statLoop: await codeOf(() => sys.stat(loop)),
+        readFileLoop: await codeOf(() => sys.readFile(loop)),
+        // The control: absence is still `null`, so the new codes have not
+        // swallowed ENOENT.
+        statMissing: await sys.stat(path.join(root, 'nope')),
+      };
+    },
+  );
+  assert.deepEqual(a, b);
+  assert.equal(a.statLong.code, 'ENAMETOOLONG');
+  assert.equal(a.readFileLong.code, 'ENAMETOOLONG');
+  assert.equal(a.statLoop.code, 'ELOOP');
+  assert.equal(a.readFileLoop.code, 'ELOOP');
+  assert.equal(a.statMissing, null);
+});
+
 // DERIVED FROM THE PROTOTYPE, NOT TRANSCRIBED. A member added to `System`
 // without a parity case fails HERE rather than shipping uncovered — which is
 // the failure mode a hand-maintained list of members has by construction.
@@ -458,6 +489,7 @@ const PARITY_CASES = {
   writeFile: 'writeFile agrees on plain, atomic and exclusive, and on what lands on disk',
   writeFileBytes: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   stat: 'the file operations agree on results AND on error codes',
+  // (also 'a path that cannot resolve is ENAMETOOLONG or ELOOP on both, not EUNKNOWN on one')
   lstat: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   readDir: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   readlink: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',

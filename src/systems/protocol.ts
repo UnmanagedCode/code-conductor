@@ -63,6 +63,7 @@ export const PROTOCOL_ERROR_CODES = [
 
 export const FS_ERROR_CODES = [
   'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY', 'EINVAL',
+  'ENAMETOOLONG', 'ELOOP',
   // The catch-all. It carries the exit code and the RAW stderr verbatim and is
   // surfaced to the user: cc never guesses silently at a message it does not
   // know.
@@ -120,12 +121,15 @@ const STDERR_TABLE: ReadonlyArray<readonly [string, FsErrorCode]> = [
   // directory whose source copy still holds children the worker never
   // enumerated must fail the op instead of taking them with it.
   ['Directory not empty', 'ENOTEMPTY'],
-  // `readlink` of a path that is not a symlink — the one errno a derived
-  // command produces that had no name here. THE TAXONOMY IS CLOSED SO THAT
-  // EVERY ERROR A REAL CALL CAN PRODUCE IS NAMED, so an errno cc answered
-  // `EUNKNOWN` to is precisely what the closure exists to prevent: a caller
-  // could not tell "that is not a symlink" from "the box hiccuped".
+  // `readlink` of a path that is not a symlink. Named because a caller acts on
+  // it: answered `EUNKNOWN`, it could not tell "that is not a symlink" from
+  // "the box hiccuped". The errnos deliberately left unnamed are listed in
+  // docs/systems-protocol.md §8, "Named, and the known remainder".
   ['Invalid argument', 'EINVAL'],
+  // The two path-resolution errnos (path_resolution(7)) the rows above do not
+  // already name, so every path a caller passes gets its real code.
+  ['File name too long', 'ENAMETOOLONG'],
+  ['Too many levels of symbolic links', 'ELOOP'],
 ];
 
 export function classifyStderr(stderr: string): FsErrorCode {
