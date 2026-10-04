@@ -173,8 +173,8 @@ test('temp marker is written at spawn time, before any turn_end', async () => {
   // A SIGKILL before the first turn completes must not leave the segment
   // without its `temp` flag in sessions.json, or the orphaned .jsonl is
   // re-adopted as a persistent session on the next boot. The flag is written
-  // at spawn time (fire-and-forget), so it is durable from the moment the
-  // subprocess starts.
+  // at spawn time and awaited by launch(), so it is durable once the awaited
+  // create resolves.
   await api(baseUrl, 'POST', '/api/projects', { name: 'spawnmarker' });
   const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'spawnmarker', temp: true });
   assert.equal(tempRes.status, 201);
@@ -185,8 +185,8 @@ test('temp marker is written at spawn time, before any turn_end', async () => {
   await waitFor(() => !!tempInst.sessionId);
   const sid = tempInst.backingSessionId;
 
-  // The fire-and-forget temp write should land almost immediately
-  // (local file write). Poll until it does — no artificial sleep needed.
+  // The temp write has landed by the time the 201 returns; the poll just
+  // reads it back — no artificial sleep needed.
   await waitFor(async () => isTemp(sid), { timeout: 3000 });
 
   assert.equal(await isTemp(sid), true,

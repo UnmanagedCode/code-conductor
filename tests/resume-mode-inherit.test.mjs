@@ -139,7 +139,8 @@ test('the CLI-reported mode at system/init is recorded, not just the launched on
     assert.equal(res.status, 201);
     const inst = srv.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    // The spawn-time record is written fire-and-forget, so wait for it.
+    // The spawn-time record is durable once the awaited spawn resolves; the poll
+    // just reads it back.
     await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'bypassPermissions');
 
     inst.prompt('go');

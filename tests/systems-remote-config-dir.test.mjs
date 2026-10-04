@@ -27,6 +27,8 @@ import {
 } from '../src/projects.ts';
 import { ensureRemoteConfigDir } from '../src/claudeConfigFarm.ts';
 
+const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
+
 describe('the per-remote CLI config directory', () => {
   let home;
   beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
@@ -490,7 +492,7 @@ describe('T2: the spawn env', () => {
     savedName = process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
     process.env.CLAUDE_CODE_PROJECT_DIR_NAME = 'host_planted_key';
     ({ home } = await freshProjectsRoot());
-    ({ baseUrl, instances, close } = await bootServer());
+    ({ baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO }));
     remote = await bindRemoteSystem();
     tree = await seedRepo(path.join(remote.root, 'app'));
     assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
@@ -610,7 +612,7 @@ describe('T1: two remotes at one absolute path', () => {
 
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());
-    ({ baseUrl, instances, close } = await bootServer());
+    ({ baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO }));
     boxA = await bindRemoteSystem({ id: 'boxa' });
     boxB = await bindRemoteSystem({ id: 'boxb' });
     // The reference provider IS this machine, so ONE path string is reachable
@@ -767,7 +769,7 @@ describe('F2: the orphan scan sweeps remote transcript roots', () => {
 
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());
-    ({ baseUrl, instances, close } = await bootServer());
+    ({ baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO }));
     remote = await bindRemoteSystem();
     tree = await seedRepo(path.join(remote.root, 'orph'));
   });

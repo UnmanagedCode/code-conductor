@@ -28,6 +28,8 @@ import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 
+const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
+
 const exists = (p) => fs.access(p).then(() => true, () => false);
 
 // Run a command string the way the CLI's Bash tool runs one: through a shell,
@@ -64,7 +66,7 @@ function runAsTheCliWouldStreaming(command, cwd) {
 describe('a worker session on a remote system', () => {
   let ctx, baseUrl, instances, home, remote, tree, instId, root, r0;
 
-  before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
+  before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
   after(async () => { await ctx.close(); });
 
   beforeEach(async () => {
@@ -705,7 +707,7 @@ describe('a worker session on a remote system', () => {
 describe('a worker session on a system serving many targets', () => {
   let ctx, baseUrl, instances, home, sandbox, remote, tree, instId, root;
 
-  before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
+  before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
   after(async () => { await ctx.close(); });
 
   beforeEach(async () => {
@@ -892,7 +894,7 @@ describe('a union-bound spawn whose launcher does not resolve', () => {
   // on an IN-PROCESS launcher spawns, because nothing is exec'd in a chroot.
   test('…and the same unresolvable template on an in-process launcher still spawns', async () => {
     const launcher = new InProcessClaudeLauncher();
-    const ctx2 = await bootServer({ claudeLauncher: launcher });
+    const ctx2 = await bootServer({ scenarioPath: SCENARIO, claudeLauncher: launcher });
     try {
       const remote2 = await bindRemoteSystem();
       const tree2 = await seedRepo(path.join(remote2.root, 'app2'));
@@ -946,7 +948,7 @@ describe('a RESUME whose launcher does not resolve', () => {
 
   before(async () => {
     launcher = new InProcessClaudeLauncher();
-    ctx = await bootServer({ claudeLauncher: launcher });
+    ctx = await bootServer({ scenarioPath: SCENARIO, claudeLauncher: launcher });
     ({ baseUrl, instances } = ctx);
   });
   after(async () => { await ctx.close(); });

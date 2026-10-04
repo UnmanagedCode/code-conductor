@@ -167,7 +167,10 @@ describe('a session on a project on a system', () => {
     const mcp = await callTool('spawn_instance', { resume: b.sessionId });
     assert.ok(mcp.result && !mcp.error, `spawn_instance({resume}) refused: ${JSON.stringify(mcp)}`);
     assert.equal(unwrap(mcp).sessionId, b.sessionId);
-    assert.equal(instances.liveForSession(b.sessionId).cwd, imageRoot);
+    // By id, not liveForSession: this harness spawns no scenario, so the fake CLI
+    // has exited by the time spawn_instance returns. The claim is where the
+    // session resolved to, which the retained instance still carries.
+    assert.equal(instances.get(instances.idsForSession(b.sessionId)[0]).cwd, imageRoot);
   });
 
   // ── T2 ──────────────────────────────────────────────────────────────
@@ -480,7 +483,12 @@ describe('a session on a project on a system', () => {
     assert.equal(r3.status, 201, JSON.stringify(r3.body));
     // The resume resolved to the project's own path on the dead box — the
     // resolution never needed the box, which is why it still answers.
-    assert.equal(instances.get(r3.body.id).cwd, deadTree);
+    const resumed = instances.get(r3.body.id);
+    assert.equal(resumed.cwd, deadTree);
+    // The read below is the DISK read of a session with no live instance. This
+    // harness spawns no scenario, so the fake CLI exits at once — waited for
+    // here, not raced: create() no longer resolves a few ms ahead of that death.
+    await waitFor(() => resumed.status === 'exited' || resumed.status === 'crashed');
     const t3 = unwrap(await callTool('get_transcript', { sessionId: g.sessionId }));
     assert.equal(t3.source, 'disk', JSON.stringify(t3));
     assert.ok(t3.events.length >= 1, `expected >= 1 event, got ${t3.events.length}`);

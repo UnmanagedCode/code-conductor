@@ -10,6 +10,8 @@ import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 
+const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
+
 const OFF = { remoteSystems: false, fuseUnion: false, voice: false };
 const platformWith = (capabilities) => ({ ...posixPlatform, capabilities });
 
@@ -26,7 +28,7 @@ describe('every capability off', () => {
   let ctx, baseUrl, home;
   let rpcId = 0;
   before(async () => {
-    ctx = await bootServer({ platform: platformWith(OFF) });
+    ctx = await bootServer({ scenarioPath: SCENARIO, platform: platformWith(OFF) });
     baseUrl = ctx.baseUrl;
     ({ home } = await freshProjectsRoot());
   });
