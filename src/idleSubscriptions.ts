@@ -212,6 +212,12 @@ export class IdleSubscriptionHub {
   // Set once by suspend() for the resume-restart drain: from then on nothing is
   // delivered, so no session in the draining process starts a turn.
   _suspended: boolean;
+  // Targets whose owners' wakes a hold decision is holding (_holds returned
+  // true at their last decision point). Cleared when those wakes are consumed,
+  // dropped or purged, and when the target starts a turn. It is what tells
+  // _waitsOnWork a held target (recurse into its own waits) from an idle target
+  // whose armed wake is still owed for any other reason (owed work).
+  _holding: Set<string>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
@@ -224,6 +230,7 @@ export class IdleSubscriptionHub {
     this._inFlight = new Map();
     this._asked = new Set();
     this._suspended = false;
+    this._holding = new Set();
   }
 
   // Stop every delivery for the rest of this process's life. Called by the
@@ -348,12 +355,13 @@ export class IdleSubscriptionHub {
   // Is `x` still waiting on work — will something still open a turn on it, or is
   // something it waits on still working? True when a wake is on its way to x
   // (in flight, or deferred until x's own boundary), or when x is armed on a live
-  // target that is busy, carries a target-side defer, still owes x a wake from
-  // its idle window — an idle-drain settle pending, or a turn opening (a settle
-  // that dropped because the CLI started a re-invocation, whose turn_end will
-  // deliver) — or is itself waiting on work. The last clause recurses, and `seen` is what ends it: ownership is spawn
-  // OR dispatch, so two sessions can own each other, and a target that is only
-  // waiting back on x must not count — each would otherwise hold the other's wake
+  // target that is busy, carries a target-side defer, still owes x a wake that is
+  // NOT being held (a settle pending, or one that dropped or was refused on a
+  // dirty idle window — that target's re-invocation turn, or its owner's
+  // heartbeat, is what ends it), or is held and itself waiting on work. The last
+  // clause recurses, and `seen` is what ends it: ownership is spawn OR dispatch,
+  // so two sessions can own each other, and a held target that is only waiting
+  // back on x must not count — each would otherwise hold the other's wake
   // forever. Callers seed `seen` with the session being decided.
   _waitsOnWork(x: string, seen: Set<string>): boolean {
     if (this._inFlight.has(x) || this._deferredWakes.get(x)?.length) return true;
@@ -361,8 +369,7 @@ export class IdleSubscriptionHub {
       if (seen.has(t) || !callers.has(x)) continue;
       const ti = this.manager.byId.get(t);
       if (!ti || this._goneForGood(t)) continue;
-      if (ti.status !== 'idle' || this._targetDefers(ti)
-          || this._pendingSettles.has(t) || ti.turnOpening) return true;
+      if (ti.status !== 'idle' || this._targetDefers(ti) || !this._holding.has(t)) return true;
       seen.add(t);
       if (this._waitsOnWork(t, seen)) return true;
     }
@@ -373,9 +380,12 @@ export class IdleSubscriptionHub {
   // Yes while it still waits on work — unless the turn put a question or a plan to
   // the user, or was force-aborted (reported now, so the INTERRUPTED qualifier
   // describes the turn it belongs to).
+  // Called only at decision points, and records a true answer in _holding.
   _holds(target: InstanceLike): boolean {
     if (this._asked.has(target.id) || target.turnForceAborted === true) return false;
-    return this._waitsOnWork(target.id, new Set([target.id]));
+    const held = this._waitsOnWork(target.id, new Set([target.id]));
+    if (held) this._holding.add(target.id);
+    return held;
   }
 
   // Consume every armed wake on a target and deliver each: stop the heartbeats,
@@ -387,6 +397,7 @@ export class IdleSubscriptionHub {
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
+    this._holding.delete(targetInstanceId);
     this._cancelSettle(targetInstanceId);
     if (announce) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     const abort = this._abortQualifier(this.manager.byId.get(targetInstanceId));
@@ -399,9 +410,10 @@ export class IdleSubscriptionHub {
   // A wait of `x` ended without x opening a turn (a worker removed, a wake to x
   // refused or abandoned, a disarm). If x is idle with its owners' wakes held and
   // nothing still holds them, this is their decision point: deliver now. A no-op
-  // for an x mid-turn — its own turn_end decides.
+  // for an x mid-turn — its own turn_end decides — and for an x whose wakes are
+  // armed but not held: those are owed by x's own pending turn or settle.
   _releaseHeld(x: string): void {
-    if (this._suspended) return;
+    if (this._suspended || !this._holding.has(x)) return;
     const ti = this.manager.byId.get(x);
     if (!ti?.proc || ti.status !== 'idle' || !this.subscribers.get(x)?.size) return;
     if (this._targetDefers(ti) || this._holds(ti)) return;
@@ -651,6 +663,8 @@ export class IdleSubscriptionHub {
     // fine. Without this, that turn's wake reported "was INTERRUPTED … do not
     // treat this as a result" about a completed turn.
     const survived = (this.subscribers.get(targetInstanceId)?.size ?? 0) > 0;
+    // A turn is the target's next decision point; until it ends it is busy.
+    this._holding.delete(targetInstanceId);
     let armed = false;
     for (const callerInstanceId of this.ownersOf(targetInstanceId)) {
       if (this._arm(targetInstanceId, callerInstanceId)) armed = true;
@@ -784,6 +798,7 @@ export class IdleSubscriptionHub {
     subs.delete(callerInstanceId);
     if (subs.size === 0) {
       this.subscribers.delete(targetInstanceId);
+      this._holding.delete(targetInstanceId);
       // No watchers left — a pending idle-drain settle has nothing to deliver
       // to (its fire-time re-check would drop it; this is the eager form so the
       // map stays clean).
@@ -820,6 +835,7 @@ export class IdleSubscriptionHub {
     if (!instanceId) return;
     const waiters = [...this.subscribers.get(instanceId)?.keys() ?? []];
     this._asked.delete(instanceId);
+    this._holding.delete(instanceId);
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
     this._owners.delete(instanceId); // as target: every owner edge pointing at it
     for (const [target, owners] of this._owners) { // as owner of something else
@@ -847,6 +863,7 @@ export class IdleSubscriptionHub {
         subs.delete(instanceId);
         if (subs.size === 0) {
           this.subscribers.delete(target);
+          this._holding.delete(target);
           this._cancelSettle(target); // that target lost its last watcher
         }
       }

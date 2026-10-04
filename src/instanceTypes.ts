@@ -153,9 +153,6 @@ export interface InstanceLike {
   // True when the current idle window contains non-task-lifecycle activity —
   // read by IdleSubscriptionHub to refuse arming an idle task-drain settle.
   readonly idleWindowDirty: boolean;
-  // True from a `system/init` that arrived while idle — an unprompted turn
-  // announcing itself before its message_start — until the next turn_end.
-  readonly turnOpening: boolean;
   readonly project: string;
   readonly status: string;
   readonly mode: string;
