@@ -242,6 +242,86 @@ test('removing the worker an idle child waits on releases the owner\'s held wake
   await r.teardown();
 });
 
+// Invariant: the removal release never fires for a child that is deferring its
+// own wake target-side, or whose process is gone — only for a live child with
+// nothing still outstanding.
+test('the removal release skips a child that is deferring or has no process', async (t) => {
+  const cases = [
+    ['live child, nothing outstanding', () => {}, 1],
+    ['child with a live subagent', (C) => { C.activeAgentTaskCount = 1; }, 0],
+    ['child with no process', (C) => { C.proc = null; }, 0],
+  ];
+  for (const [name, mutate, wakes] of cases) {
+    await t.test(name, async () => {
+      const r = rig();
+      const { P, C } = chain(r);
+      r.end(C);
+      mutate(C);
+      r.instances.byId.delete('G');
+      r.instances._purgeIdleFor('G');
+      await tick();
+      assert.equal(P.calls.length, wakes);
+      await r.teardown();
+    });
+  }
+});
+
+// Invariant: a worker whose wake to the child is decided but not yet delivered
+// (an idle-drain settle pending) is still work, so no other cleared wait releases
+// the owner early; the owner is woken exactly once, after the child has had the
+// worker's result.
+test('a worker with an idle-drain settle pending keeps the owner held until the child\'s real turn end', async () => {
+  const r = rig();
+  const { P, C, G } = chain(r);
+  const H = r.mk('H');
+  r.own(C, H); r.start(H);
+  G.activeAgentTaskCount = 1;
+  r.end(G); // deferred on the live subagent
+  r.end(C); // held
+  G.activeAgentTaskCount = 0;
+  r.emit(G, { kind: 'system', subtype: 'task_notification', data: { task_id: 't' } });
+  assert.ok(r.hub._pendingSettles.has('G'), 'premise: G\'s settle is pending');
+  r.instances.byId.delete('H');
+  r.instances._purgeIdleFor('H'); // C's other wait cleared
+  await tick();
+  assert.equal(P.calls.length, 0, 'not released while G\'s wake to C is pending');
+  await until(() => C.calls.length === 1, SETTLE_MS + 5000);
+  assert.equal(P.calls.length, 0, 'C is in the turn G\'s result opened');
+  r.end(C);
+  await tick();
+  assert.equal(P.calls.length, 1, 'one wake, after C\'s real turn end');
+  assert.ok(folded(P.calls[0]));
+  await r.teardown();
+});
+
+// Invariant: a project removal that deletes both a child and its worker never
+// wakes the child's owner, whichever kill finishes first.
+test('removing a project that holds both a child and its worker does not wake the child\'s owner', async (t) => {
+  for (const [name, both, wakes] of [['child and worker removed', true, 0], ['only the worker removed', false, 1]]) {
+    await t.test(name, async () => {
+      const r = rig();
+      const { P, C, G } = chain(r, {
+        C: { project: both ? 'doomed' : 'p' },
+        G: { project: 'doomed' },
+      });
+      r.end(C);
+      // G's kill resolves at once; C's waits until after G has been purged.
+      let releaseC;
+      const cGate = new Promise((res) => { releaseC = res; });
+      G.kill = async () => { G.proc = null; };
+      C.kill = async () => { await cGate; C.proc = null; };
+      const removal = r.instances.removeAllForProject('doomed');
+      await until(() => !r.instances.byId.has('G'));
+      await tick();
+      releaseC();
+      await removal;
+      await tick();
+      assert.equal(P.calls.length, wakes);
+      await r.teardown();
+    });
+  }
+});
+
 // Invariant: the removal release never wakes the owner while the child is
 // mid-turn — the child's own turn end decides.
 test('removing the worker of a mid-turn child leaves the decision to the child\'s turn end', async () => {
@@ -387,8 +467,7 @@ test('the idle-drain settle and an idle rotation hold too', async (t) => {
       C.activeAgentTaskCount = 0;
       r.emit(C, { kind: 'system', subtype: 'task_notification', data: { task_id: 't' } });
       assert.ok(r.hub._pendingSettles.has('C'), 'premise: settle armed');
-      await sleep(SETTLE_MS + 40);
-      assert.equal(r.hub._pendingSettles.has('C'), false, 'the settle fired');
+      await until(() => !r.hub._pendingSettles.has('C'), SETTLE_MS + 5000);
       await tick();
       assert.equal(P.calls.length, held ? 0 : 1);
       await r.teardown();

@@ -52,6 +52,9 @@ afterEach(async () => {
   await instances.shutdown();
   instances._idleSubscribers?.clear();
   instances._idleHub?._owners.clear();
+  // drainToManifest suspends wake delivery for the rest of the process; this
+  // file's tests share one manager, so each starts with wakes live again.
+  if (instances._idleHub) instances._idleHub._suspended = false;
   await rmrf(home);
 });
 
@@ -540,6 +543,7 @@ test('drainToManifest carries a plain session\'s subtree and delivers no wake wh
 
     // C has ended a turn holding P's wake while G is mid-turn on C's dispatch.
     const hub = instances._idleHub;
+    assert.equal(hub._suspended, false, 'premise: wakes are live before the drain');
     hub.onTurnStart(C.id);
     await G.prompt('go');
     await waitFor(() => G.status === 'turn');

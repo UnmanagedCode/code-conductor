@@ -4668,7 +4668,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this._idleHub.disarmSilently(targetInstanceId, caller.id);
   }
   _idleSubscriberSnapshot(): Record<string, string[]> { return this._idleHub.snapshot(); }
-  _purgeIdleFor(instanceId: string): void { return this._idleHub.purge(instanceId); }
+  _purgeIdleFor(instanceId: string, opts?: { removing?: ReadonlySet<string> }): void { return this._idleHub.purge(instanceId, opts); }
   // Stop every wake delivery for the rest of this process — the resume-restart
   // drain's, so no session it winds down starts another turn on the way out.
   suspendWakes(): void { this._idleHub.suspend(); }
@@ -6451,6 +6451,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // everything down anyway.
   async removeAllForProject(projectName: string): Promise<number> {
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
+    const removing = new Set(victims.map(i => i.id));
     await Promise.all(victims.map(async (i) => {
       // UNCONDITIONALLY, for the same reason remove() does: `kill()` is the
       // one place that reclaims a session's mount scaffolding and it handles
@@ -6465,7 +6466,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       if (i._redirect) rmSync(sessionTmpDir(i.id), { recursive: true, force: true });
       this.byId.delete(i.id);
       this._cancelAutoResume(i.id);
-      this._purgeIdleFor(i.id);
+      this._purgeIdleFor(i.id, { removing });
     }));
     if (victims.length > 0) this.emit('list_changed');
     return victims.length;

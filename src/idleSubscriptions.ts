@@ -348,8 +348,9 @@ export class IdleSubscriptionHub {
   // Is `x` still waiting on work — will something still open a turn on it, or is
   // something it waits on still working? True when a wake is on its way to x
   // (in flight, or deferred until x's own boundary), or when x is armed on a live
-  // target that is busy, carries a target-side defer, or is itself waiting on
-  // work. The last clause recurses, and `seen` is what ends it: ownership is spawn
+  // target that is busy, carries a target-side defer, has an idle-drain settle
+  // pending (its wake to x is decided but not yet delivered), or is itself
+  // waiting on work. The last clause recurses, and `seen` is what ends it: ownership is spawn
   // OR dispatch, so two sessions can own each other, and a target that is only
   // waiting back on x must not count — each would otherwise hold the other's wake
   // forever. Callers seed `seen` with the session being decided.
@@ -359,7 +360,7 @@ export class IdleSubscriptionHub {
       if (seen.has(t) || !callers.has(x)) continue;
       const ti = this.manager.byId.get(t);
       if (!ti || this._goneForGood(t)) continue;
-      if (ti.status !== 'idle' || this._targetDefers(ti)) return true;
+      if (ti.status !== 'idle' || this._targetDefers(ti) || this._pendingSettles.has(t)) return true;
       seen.add(t);
       if (this._waitsOnWork(t, seen)) return true;
     }
@@ -809,8 +810,11 @@ export class IdleSubscriptionHub {
   // Each caller that lost a wait on it then gets _releaseHeld: the removal may
   // have ended the last thing holding that caller's own owners' wakes. `release:
   // false` is the overage sever's: a release there would prompt into the
-  // throttled account the sever exists to keep quiet.
-  purge(instanceId: string, { release = true }: { release?: boolean } = {}): void {
+  // throttled account the sever exists to keep quiet. `removing` names the other
+  // instances the same sweep is deleting: a caller among them is never released,
+  // since it is going too — and the sweep's kill order must not decide whether
+  // its owner is woken.
+  purge(instanceId: string, { release = true, removing }: { release?: boolean; removing?: ReadonlySet<string> } = {}): void {
     if (!instanceId) return;
     const waiters = [...this.subscribers.get(instanceId)?.keys() ?? []];
     this._asked.delete(instanceId);
@@ -845,7 +849,7 @@ export class IdleSubscriptionHub {
         }
       }
     }
-    if (release) for (const caller of waiters) this._releaseHeld(caller);
+    if (release) for (const caller of waiters) if (!removing?.has(caller)) this._releaseHeld(caller);
   }
 
   // Sever every wake edge touching a session the overage stop is stopping, and
