@@ -6,6 +6,7 @@ import { encodeCwd, transcriptRoot, localPlace } from '../src/projects.ts';
 import { getSessionBackend } from '../src/sessionStore.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
+import { EXIT_STDERR_SETTLE_MS } from '../src/instances.ts';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { rmrf } from './rmrf.mjs';
@@ -194,6 +195,22 @@ export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}
     if (Date.now() - start > timeout) throw new Error('waitFor: timeout');
     await new Promise(r => setTimeout(r, interval));
   }
+}
+
+// Wait for `inst` to reach idle — or FAIL FAST, carrying its exit cause, when it
+// reaches a terminal status first. A bare `waitFor(() => inst.status ===
+// 'idle')` on a worker that already died waits out its whole deadline and
+// reports `waitFor: timeout`, which names nothing.
+export async function waitForIdleOrExit(inst, { timeout } = {}) {
+  const status = await waitFor(() => ['idle', 'exited', 'crashed'].includes(inst.status) && inst.status, { timeout });
+  if (status === 'idle') return;
+  const cause = inst.lastExit;
+  // The provisional tail is recut in place once the launch's stderr settles.
+  if (cause && cause.stderrTail === null) {
+    await waitFor(() => cause.stderrTail !== null, { timeout: EXIT_STDERR_SETTLE_MS + 500 }).catch(() => {});
+  }
+  throw new Error(`instance ${inst.id} ${status} before reaching idle — `
+    + (cause ? `code=${cause.code} signal=${cause.signal} stderr: ${cause.stderrTail ?? 'none'}` : 'commanded exit, no cause'));
 }
 
 // Drive one worker turn to completion. Replaces the removed send_prompt blocking-wait option.

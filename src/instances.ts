@@ -340,7 +340,7 @@ export const EXIT_CAUSE_CAP = 256;
 // How long an exit cause waits for its launch's stderr to reach EOF before the
 // tail is taken as final. A real child can deliver 'exit' before its last stderr
 // line has been read; a grandchild still holding the pipe means EOF may never come.
-const EXIT_STDERR_SETTLE_MS = 1000;
+export const EXIT_STDERR_SETTLE_MS = 1000;
 
 function stderrTail(stderr: string): string | null {
   const lines = stderr.trim().split('\n').slice(-EXIT_STDERR_TAIL_LINES).join('\n');

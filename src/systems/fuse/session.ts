@@ -55,7 +55,10 @@ export const DEFAULT_DEADLINES: Deadlines = {
   pollMs: 50,
 };
 
-export type AbortOutcome = 'aborted' | 'abort-failed' | 'ABORT-UNAVAILABLE' | 'no-minor' | 'skipped';
+// `not-mounted`: the union root was not attached on the recorded minor when
+// the abort was due, so that minor was not provably this session's and was
+// left alone.
+export type AbortOutcome = 'aborted' | 'abort-failed' | 'ABORT-UNAVAILABLE' | 'not-mounted' | 'no-minor' | 'skipped';
 
 export interface TeardownReport {
   instanceId: string;
@@ -525,14 +528,19 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        survive WITH NO WEDGE REPORT. A schema-violating record is a
   //        reported wedge, never a mid-machine throw.
   //
-  //        `fusectl` by EXACT equality with the path cc itself chose, not by
-  //        prefix; `minor` digits only, on top of the `includes` check the
-  //        abort already makes.
+  //        `fusectl` and `root` by EXACT equality with the paths cc itself
+  //        chose, not by prefix; `minor` digits only, on top of the ownership
+  //        check the abort makes.
   const fusectlOk = record?.fusectl === path.join(rundir, 'fusectl');
+  const rootOk = record?.root === path.join(rundir, 'root');
   const minorOk = typeof record?.minor === 'string' && /^\d+$/.test(record.minor);
   if (record && !fusectlOk) {
     schemaViolation = true;
     notes.push(`SCHEMA: fusectl '${record.fusectl}' is not ${path.join(rundir, 'fusectl')} — not used`);
+  }
+  if (record && !rootOk) {
+    schemaViolation = true;
+    notes.push(`SCHEMA: root '${record.root}' is not ${path.join(rundir, 'root')} — not used`);
   }
   if (record && record.minor !== '' && !minorOk) {
     schemaViolation = true;
@@ -615,32 +623,60 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   const nsPid = await pickNsPid(driver, record);
   if (record && nsPid === null) notes.push('no recorded pid is alive — the mount namespace is reachable only through an unrecorded member, if any');
 
-  // ── 2. unmount DEEPEST-FIRST, and BEFORE the abort. The fusectl mount is
-  //       held back deliberately: step 3 needs it, and unmounting it here is
-  //       what would make the abort a silent no-op.
+  const unmount = async (pid: number, mp: string): Promise<void> => {
+    if (await driver.umountIn(pid, mp, { lazy: false })) { report.unmounted.push(mp); return; }
+    if (await driver.umountIn(pid, mp, { lazy: true })) { report.unmounted.push(mp); report.lazyUnmounted.push(mp); return; }
+    notes.push(`could not unmount ${mp}, even lazily`);
+  };
+
+  // ── 2. unmount DEEPEST-FIRST, every mount but two BEFORE the abort, so no
+  //       path lookup crosses an aborted connection. Two are held back for
+  //       step 3: the fusectl mount, because the abort is written through it,
+  //       and the UNION ROOT, because its attachment on the recorded minor is
+  //       the only proof that minor is still this session's.
   if (record && nsPid !== null) {
     const rec = record;
     const mounts = (await driver.readMounts(nsPid)) ?? [];
-    const targets = mounts.filter(mp => under(mp, rundir) && !(fusectlOk && mp === rec.fusectl))
+    const targets = mounts.filter(mp => under(mp, rundir)
+      && !(fusectlOk && mp === rec.fusectl) && !(rootOk && mp === rec.root))
       .sort((a, b) => b.length - a.length);
-    for (const mp of targets) {
-      if (await driver.umountIn(nsPid, mp, { lazy: false })) { report.unmounted.push(mp); continue; }
-      if (await driver.umountIn(nsPid, mp, { lazy: true })) { report.unmounted.push(mp); report.lazyUnmounted.push(mp); continue; }
-      notes.push(`could not unmount ${mp}, even lazily`);
-    }
+    for (const mp of targets) await unmount(nsPid, mp);
   }
 
-  // ── 3. abort the FUSE connection BY THE MINOR CAPTURED AT MOUNT TIME.
-  //       Only ever a minor this session recorded.
+  // ── 3. abort the FUSE connection BY THE MINOR CAPTURED AT MOUNT TIME, and
+  //       ONLY WHILE OWNERSHIP IS PROVEN, then unmount the root.
+  //
+  //       A fusectl listing is never proof: fusectl is one global superblock
+  //       and lists every connection on the host. Unmounting the union root
+  //       destroys this session's superblock and frees its anon minor, which
+  //       the kernel hands out lowest-free — so the next FUSE mount anywhere,
+  //       typically another session's bootstrap, gets the same number. An
+  //       abort issued after the root's unmount kills that session. While the
+  //       root is attached on the minor, the superblock is alive and the minor
+  //       is ours; the driver checks that in the same root shell as the write.
+  //
+  //       Aborting BEFORE the root's unmount keeps the abort the solvent for a
+  //       busy root that only a lazy unmount detaches. The aborted daemon sees
+  //       POLLERR on its device and skips its own unmount, so step 4 still
+  //       finds it to stop.
   const nsPid3 = await pickNsPid(driver, record);
   if (record && nsPid3 !== null && fusectlOk) {
     const rec = record;
     const conns = await driver.listConnections(nsPid3, rec.fusectl);
     report.strayConnections = conns.filter(c => c !== rec.minor).length;
     if (!rec.minor || !minorOk) { report.abort = 'no-minor'; notes.push('no usable connection minor was recorded at mount time — nothing to abort'); }
-    else if (!conns.includes(rec.minor)) { report.abort = 'ABORT-UNAVAILABLE'; notes.push(`no fusectl entry for connection ${rec.minor}`); }
-    else if (await driver.abortMinor(nsPid3, rec.fusectl, rec.minor)) report.abort = 'aborted';
-    else { report.abort = 'abort-failed'; notes.push(`the write to ${rec.fusectl}/${rec.minor}/abort failed`); }
+    else if (rootOk) {
+      const result = await driver.abortOwnConnection(nsPid3, rec.fusectl, rec.minor, rec.root);
+      if (result === 'aborted') report.abort = 'aborted';
+      else if (result === 'not-mounted') {
+        report.abort = 'not-mounted';
+        notes.push(`the union at ${rec.root} is not mounted on connection ${rec.minor}; that minor is not provably this session's, so it was not aborted`);
+      } else if (result === 'no-entry') { report.abort = 'ABORT-UNAVAILABLE'; notes.push(`no fusectl entry for connection ${rec.minor}`); }
+      else { report.abort = 'abort-failed'; notes.push(`the write to ${rec.fusectl}/${rec.minor}/abort failed`); }
+    }
+  }
+  if (record && nsPid3 !== null && rootOk && ((await driver.readMounts(nsPid3)) ?? []).includes(record.root)) {
+    await unmount(nsPid3, record.root);
   }
 
   // ── 4. and only now the daemon. ────────────────────────────────────────

@@ -62,6 +62,9 @@
 //                           creates them on the remote
 //   fuse-union-listing.real what a marked listing of a remote directory
 //                           names, at the wide and the narrow default root
+//   fuse-teardown-minor-reuse.real
+//                           a session that reused a torn-down session's
+//                           connection minor survives that teardown
 //
 // SPLIT ACROSS FILES ON PURPOSE. Every arm here is a real spawn, a real mount
 // and a real teardown costing ~2.4s, so one file was charged their SUM and sat

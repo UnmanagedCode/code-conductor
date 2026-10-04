@@ -99,9 +99,9 @@ export interface FuseIntent {
 
 // The bootstrap's handshake, written at step 7 while the mount exists. `minor`
 // is captured from /proc/self/mountinfo AT MOUNT TIME and never re-resolved:
-// resolving it by mountpoint works only while the mount is there, so the same
-// helper silently no-ops when called after an unmount — which is exactly when
-// teardown calls it.
+// teardown's abort is a CHECK that the union root is still attached on this
+// recorded minor, and a minor re-resolved from the root would make that check
+// pass for whatever is mounted there.
 export interface FuseMountRecord extends FuseIntent {
   // `starting` — the bootstrap has started processes but the mount is not up
   // yet; `mounted` — the handshake is complete. cc's awaitHandshake waits for

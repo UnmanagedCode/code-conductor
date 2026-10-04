@@ -22,6 +22,21 @@ export interface ProcStat {
   state: string;
 }
 
+// `not-mounted`: `root` is not attached on `minor`, so the minor is not
+// provably this session's; `no-entry`: fusectl has no `<minor>/abort`.
+export type AbortOwnResult = 'aborted' | 'not-mounted' | 'no-entry' | 'failed';
+
+// THE OWNERSHIP CHECK AND THE WRITE, IN ONE SHELL.
+// `$1` fusectl, `$2` minor, `$3` the union root, `$4` the mountinfo to read
+// (`/proc/self/mountinfo` of the shell itself, inside the namespace). A minor
+// is this session's exactly while its union root is attached on it: some
+// mountinfo line has mountpoint `$3` (field 5) and a dev (field 3) whose minor,
+// `*:` stripped as bootstrap.sh step 6 strips it, is `$2`. Exit 3 when not,
+// 4 when fusectl has no entry for it, else the write's own status.
+export const ABORT_OWN_CONNECTION_SH = `awk -v p="$3" -v m="$2" '$5 == p { d = $3; sub(/^[^:]*:/, "", d); if (d == m) f = 1 } END { exit !f }' "$4" || exit 3
+[ -e "$1/$2/abort" ] || exit 4
+printf 1 > "$1/$2/abort"`;
+
 export interface MountDriver {
   // Mountpoints listed in /proc/<pid>/mounts, in file order. Null when the pid
   // is gone. NEVER `mountpoint -q`: it stat()s the path and reports "not
@@ -32,8 +47,13 @@ export interface MountDriver {
   readTaskDir(pid: number): Promise<string[] | null>;
   // `nsenter --mount=/proc/<nsPid>/ns/mnt -- umount [-l] <mp>`, as root.
   umountIn(nsPid: number, mountpoint: string, opts: { lazy: boolean }): Promise<boolean>;
-  // `echo 1 > <fusectl>/<minor>/abort`, as root, inside the namespace.
-  abortMinor(nsPid: number, fusectl: string, minor: string): Promise<boolean>;
+  // `echo 1 > <fusectl>/<minor>/abort`, as root, inside the namespace — but
+  // ONLY while `root` is attached in that namespace on connection `minor`,
+  // checked in the same root shell as the write (ABORT_OWN_CONNECTION_SH).
+  // There is deliberately no unverified abort: a fusectl entry carries no
+  // owner, and once this session's superblock is gone its minor is any other
+  // session's to reuse.
+  abortOwnConnection(nsPid: number, fusectl: string, minor: string, root: string): Promise<AbortOwnResult>;
   // The connection minors listed under <fusectl> inside the namespace.
   listConnections(nsPid: number, fusectl: string): Promise<string[]>;
   // `privileged` routes through sudo, for the root-owned daemon; the worker has
@@ -63,6 +83,22 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const child = execFile(cmd, args, { timeout: timeoutMs }, (err) => resolve(!err));
     child.on('error', () => resolve(false));
+  });
+}
+
+// A command's exit status: null when it could not be run to an exit at all
+// (spawn failure, timeout, signal).
+export type StatusRunner = (cmd: string, args: string[], timeoutMs: number) => Promise<number | null>;
+
+// `run`, keeping the exit status.
+export function runStatus(cmd: string, args: string[], timeoutMs: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = execFile(cmd, args, { timeout: timeoutMs }, (err) => {
+      if (!err) { resolve(0); return; }
+      const code = (err as { code?: unknown }).code;
+      resolve(typeof code === 'number' ? code : null);
+    });
+    child.on('error', () => resolve(null));
   });
 }
 
@@ -100,46 +136,55 @@ export function pidIsAlive(pid: number, kill: (p: number, sig: number) => void =
   catch (e) { return (e as NodeJS.ErrnoException)?.code !== 'ESRCH'; }
 }
 
-export const realMountDriver: MountDriver = {
-  async readMounts(pid) {
-    let raw: string;
-    try { raw = await fsp.readFile(`/proc/${pid}/mounts`, 'utf8'); }
-    catch { return null; }
-    return raw.split('\n').filter(Boolean).map(l => unescapeMountPath(l.split(' ')[1] ?? '')).filter(Boolean);
-  },
-  async readProcStat(pid) {
-    try { return parseProcStat(await fsp.readFile(`/proc/${pid}/stat`, 'utf8')); }
-    catch { return null; }
-  },
-  async readTaskDir(pid) {
-    try { return await fsp.readdir(`/proc/${pid}/task`); }
-    catch { return null; }
-  },
-  umountIn(nsPid, mountpoint, { lazy }) {
-    const args = ['-n', 'nsenter', `--mount=/proc/${nsPid}/ns/mnt`, '--', 'umount'];
-    if (lazy) args.push('-l');
-    args.push(mountpoint);
-    return run('sudo', args, 10_000);
-  },
-  abortMinor(nsPid, fusectl, minor) {
-    // The write is done by a shell inside the namespace: fusectl's `abort` is a
-    // procfs-style file, and only a write of any byte to it has the effect.
-    return run('sudo', ['-n', 'nsenter', `--mount=/proc/${nsPid}/ns/mnt`, '--',
-      '/bin/sh', '-c', `printf 1 > "$1/$2/abort"`, 'sh', fusectl, minor], 10_000);
-  },
-  async listConnections(nsPid, fusectl) {
-    const out = await capture('sudo', ['-n', 'nsenter', `--mount=/proc/${nsPid}/ns/mnt`, '--',
-      '/bin/sh', '-c', 'ls "$1" 2>/dev/null || true', 'sh', fusectl], 10_000);
-    return (out ?? '').split('\n').map(s => s.trim()).filter(Boolean);
-  },
-  async signal(pid, sig, { privileged }) {
-    if (privileged) { await run('sudo', ['-n', 'kill', `-${sig.slice(3)}`, String(pid)], 10_000); return; }
-    // Swallowed deliberately, and NOT read as death: EPERM lands here too (a
-    // FUSE worker is root until the bootstrap's setpriv runs). Nothing here
-    // concludes anything from the throw — every caller re-verifies the pid
-    // positively afterwards, which is what makes that safe.
-    try { process.kill(pid, sig); } catch { /* gone, or not ours to signal */ }
-  },
-  now() { return Date.now(); },
-  sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
-};
+// `exec` is the runner the abort path's one command goes through. Injectable so
+// a test can run the shipping argv — the ownership-checked script, its
+// positionals and the exit mapping — against files standing in for a
+// namespace's mountinfo and fusectl, with no sudo.
+export function createRealMountDriver({ exec = runStatus }: { exec?: StatusRunner } = {}): MountDriver {
+  return {
+    async readMounts(pid) {
+      let raw: string;
+      try { raw = await fsp.readFile(`/proc/${pid}/mounts`, 'utf8'); }
+      catch { return null; }
+      return raw.split('\n').filter(Boolean).map(l => unescapeMountPath(l.split(' ')[1] ?? '')).filter(Boolean);
+    },
+    async readProcStat(pid) {
+      try { return parseProcStat(await fsp.readFile(`/proc/${pid}/stat`, 'utf8')); }
+      catch { return null; }
+    },
+    async readTaskDir(pid) {
+      try { return await fsp.readdir(`/proc/${pid}/task`); }
+      catch { return null; }
+    },
+    umountIn(nsPid, mountpoint, { lazy }) {
+      const args = ['-n', 'nsenter', `--mount=/proc/${nsPid}/ns/mnt`, '--', 'umount'];
+      if (lazy) args.push('-l');
+      args.push(mountpoint);
+      return run('sudo', args, 10_000);
+    },
+    async abortOwnConnection(nsPid, fusectl, minor, root) {
+      // The write is done by a shell inside the namespace: fusectl's `abort` is a
+      // procfs-style file, and only a write of any byte to it has the effect.
+      const status = await exec('sudo', ['-n', 'nsenter', `--mount=/proc/${nsPid}/ns/mnt`, '--',
+        '/bin/sh', '-c', ABORT_OWN_CONNECTION_SH, 'sh', fusectl, minor, root, '/proc/self/mountinfo'], 10_000);
+      return status === 0 ? 'aborted' : status === 3 ? 'not-mounted' : status === 4 ? 'no-entry' : 'failed';
+    },
+    async listConnections(nsPid, fusectl) {
+      const out = await capture('sudo', ['-n', 'nsenter', `--mount=/proc/${nsPid}/ns/mnt`, '--',
+        '/bin/sh', '-c', 'ls "$1" 2>/dev/null || true', 'sh', fusectl], 10_000);
+      return (out ?? '').split('\n').map(s => s.trim()).filter(Boolean);
+    },
+    async signal(pid, sig, { privileged }) {
+      if (privileged) { await run('sudo', ['-n', 'kill', `-${sig.slice(3)}`, String(pid)], 10_000); return; }
+      // Swallowed deliberately, and NOT read as death: EPERM lands here too (a
+      // FUSE worker is root until the bootstrap's setpriv runs). Nothing here
+      // concludes anything from the throw — every caller re-verifies the pid
+      // positively afterwards, which is what makes that safe.
+      try { process.kill(pid, sig); } catch { /* gone, or not ours to signal */ }
+    },
+    now() { return Date.now(); },
+    sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
+  };
+}
+
+export const realMountDriver: MountDriver = createRealMountDriver();
