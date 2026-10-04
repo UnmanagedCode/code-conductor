@@ -20,7 +20,8 @@ import { runTeardown, DEFAULT_DEADLINES, describePolicyEvents, parsePolicyEvents
 import { buildTierTable, renderPinsFile, binaryPins, installPins, resolveOnPath, resolveTierEntry, suggestPin, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { wrapLaunch, renderEnvFile, shellQuote, PLAN_KEYS, BOOTSTRAP } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
-import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
+import { parseProcStat, unescapeMountPath, createRealMountDriver } from '../src/systems/fuse/driver.ts';
+import { localExec, renderMountinfo } from './fuseAbortSeam.mjs';
 import { reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
 import { parseScan, membersOf, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { FuseSession } from '../src/systems/fuse/session.ts';
@@ -56,6 +57,19 @@ function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, c
   const calls = [];
   const rec = (op, ...args) => calls.push([op, ...args]);
   const connTable = conns.map(c => typeof c === 'string' ? { minor: c, owner: 'self', aborted: false } : c);
+  const shipping = (fusectl, minor) => createRealMountDriver({ exec: localExec({
+    mountinfoFor: async (nsPid) => {
+      const file = path.join(await mkdtemp('cc-fake-mountinfo-'), 'mountinfo');
+      await fs.writeFile(file, renderMountinfo((await d.readMounts(nsPid)) ?? [], devs));
+      return file;
+    },
+    after: async ({ status }) => {
+      for (const c of connTable) {
+        if (await fs.readFile(path.join(fusectl, c.minor, 'abort'), 'utf8').catch(() => '') === '1') c.aborted = true;
+      }
+      if (status !== 3 && status !== 4) rec('abort', minor);
+    },
+  }) });
   const d = {
     calls,
     procs,
@@ -91,19 +105,20 @@ function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, c
       }
       return true;
     },
-    // The ownership-checked abort: the write happens only while `root` is
-    // attached in the namespace's table on `minor`, and reaches whichever
-    // connection holds `minor` — a fusectl entry carries no owner. `abort` is
-    // recorded only for a write actually attempted.
+    // THE SHIPPING ABORT, not a model of it: the real driver's abort path
+    // (tests/fuseAbortSeam.mjs) decides, against this namespace's table
+    // rendered as its mountinfo and the connections rendered as a fusectl
+    // directory. A write lands on whichever connection holds `minor` — a
+    // fusectl entry carries no owner. A refused write (`abortOk: false`) is a
+    // read-only `abort` file. `abort` is recorded only for a write attempted.
     async abortOwnConnection(nsPid, fusectl, minor, root) {
       rec('abort-check', minor, root);
-      if (!((await d.readMounts(nsPid)) ?? []).includes(root) || devs[root] !== minor) return 'not-mounted';
-      const c = connTable.find(x => x.minor === minor);
-      if (!c) return 'no-entry';
-      rec('abort', minor);
-      if (!abortOk) return 'failed';
-      c.aborted = true;
-      return 'aborted';
+      await fs.rm(fusectl, { recursive: true, force: true });
+      for (const c of connTable) {
+        await fs.mkdir(path.join(fusectl, c.minor), { recursive: true });
+        await fs.writeFile(path.join(fusectl, c.minor, 'abort'), '', { mode: abortOk ? 0o644 : 0o444 });
+      }
+      return shipping(fusectl, minor).abortOwnConnection(nsPid, fusectl, minor, root);
     },
     async listConnections() { return connTable.map(c => c.minor); },
     // A signalled process dies, unless the fixture marks it `undead` — which
@@ -251,22 +266,45 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     assert.equal(report.minor, '91');
   });
 
-  // T1 — PINS: a minor another session took over after our superblock died is
-  // never aborted. Unmounting the union root destroys the superblock and frees
-  // its anon minor, which the kernel hands out lowest-free — so the next FUSE
-  // mount on the host, typically another session's bootstrap, gets the same
-  // number, and fusectl (one global superblock) lists it. Listed is not owned.
-  test('a minor another session took over after our unmount is never aborted', async () => {
-    const { rundir, record } = await seedRun();
-    const driver = fakeDriver({
-      procs: liveBoth(), nsMounts: healthyMounts(record),
-      conns: ['77'], devs: { [record.root]: '77' },
-      onSuperblockGone: (minor, conns) => conns.push({ minor, owner: 'other-session', aborted: false }),
+  // T1 — PINS: a teardown never writes to the abort of a minor another session
+  // now holds. Unmounting the union root destroys the superblock and frees its
+  // anon minor, which the kernel hands out lowest-free — so the next FUSE mount
+  // on the host, typically another session's bootstrap, gets the same number,
+  // and fusectl (one global superblock) lists it. Listed is not owned.
+  //
+  // THE OWNERSHIP DECISION HERE IS THE SHIPPING ONE: the fake driver's abort is
+  // the real driver's, run against this fixture's mount table as mountinfo and
+  // its connections as a fusectl directory, and `aborted` below is read back
+  // from those files (fakeDriver, tests/fuseAbortSeam.mjs).
+  test('a minor another session holds is never aborted by our teardown', async (t) => {
+    await t.test('the other session takes the minor when our root unmounts mid-teardown', async () => {
+      const { rundir, record } = await seedRun();
+      const driver = fakeDriver({
+        procs: liveBoth(), nsMounts: healthyMounts(record),
+        conns: ['77'], devs: { [record.root]: '77' },
+        onSuperblockGone: (minor, conns) => conns.push({ minor, owner: 'other-session', aborted: false }),
+      });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+      const other = driver.conns.find(c => c.owner === 'other-session');
+      assert.ok(other, 'the reuse was never forced: the union root was never unmounted');
+      assert.equal(other.aborted, false, `teardown aborted connection ${other.minor}, which another session had taken over`);
+      // The positive control: the same path DID abort this session's own
+      // connection while it held the minor, so the write path is live here.
+      assert.equal(report.abort, 'aborted', report.notes.join(' | '));
+      assert.ok(driver.calls.some(c => c[0] === 'abort' && c[1] === '77'), 'no abort write was issued at all');
     });
-    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
-    const other = driver.conns.find(c => c.owner === 'other-session');
-    assert.ok(other, 'the reuse was never forced: the union root was never unmounted');
-    assert.equal(other.aborted, false, `teardown aborted connection ${other.minor}, which another session had taken over`);
+
+    await t.test('our root is already gone when teardown starts, and the minor is another session\'s', async () => {
+      const { rundir, record } = await seedRun();
+      const driver = fakeDriver({
+        procs: liveBoth(), nsMounts: healthyMounts(record).filter(mp => mp !== record.root),
+        conns: [{ minor: '77', owner: 'other-session', aborted: false }],
+      });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+      assert.ok(driver.calls.some(c => c[0] === 'abort-check'), 'the ownership check never ran, so this proves nothing');
+      assert.equal(driver.conns[0].aborted, false, 'teardown aborted connection 77, which another session holds');
+      assert.equal(report.abort, 'not-mounted');
+    });
   });
 
   // T2 — PINS the dev-equality half of the ownership check: the root is

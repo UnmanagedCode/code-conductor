@@ -238,6 +238,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assert.equal(mine.wedged, false, JSON.stringify(mine));
     assert.equal(mine.removedRunDir, true, JSON.stringify(mine));
     assert.ok(mine.unmounted.includes(record.root), `the sweep did not unmount the union: ${JSON.stringify(mine.unmounted)}`);
+    // The union root was still attached on the recorded minor when the sweep
+    // reached it, so the connection was provably this session's to abort.
+    assert.equal(mine.abort, 'aborted', JSON.stringify(mine));
     console.log(`fuse gate: boot sweep reclaimed ${inst.id} → ${mine.terminalState}`
       + `, unmounted ${mine.unmounted.length} (lazily ${mine.lazyUnmounted.length}), abort=${mine.abort}`
       + `, fusectl entries with no record of ours: ${mine.strayConnections} (reported, never aborted)`);

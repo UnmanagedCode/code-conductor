@@ -91,6 +91,8 @@ describe('a FUSE teardown and another session that reused its minor', { skip: !E
       if (driverErrors.length) throw driverErrors[0];
       assert.equal(rootUnmounts, 1, `A's teardown never unmounted its union root: ${JSON.stringify(report)}`);
       assert.ok(instB && recB, 'B was never started');
+      // A aborted its OWN connection, while its root was still attached on it.
+      assert.equal(report.abort, 'aborted', JSON.stringify(report));
       console.log(`fuse gate [minor-reuse] attempt ${attempt}: A minor=${recA.minor} abort=${report.abort}`
         + `, B minor=${recB.minor}, unmounted ${report.unmounted.length}`);
       assertNoResidue(before, runRoot, recA, `minor-reuse A (attempt ${attempt})`);
