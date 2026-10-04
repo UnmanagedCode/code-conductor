@@ -63,32 +63,6 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       for (const e of out) frames.push(JSON.stringify({ t: 'event', id, ev: e }));
       for (const ws of subs) for (const msg of frames) safeSend(ws, msg);
     }
-    // Turn-end notifications go to every connected client (not just
-    // subscribers), so users get pings for background instances they aren't
-    // currently viewing in the foreground tab.
-    //
-    // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in
-    // InstanceManager's constructor) always runs before this handler
-    // (registered by attachWsHub in server.ts). shouldSuppressTurnNotification
-    // relies on IdleSubscriptionHub._justConsumed being populated by that
-    // earlier listener. Do not reorder those registrations without revisiting
-    // instances.shouldSuppressTurnNotification().
-    if (ev?.kind === 'turn_end') {
-      const inst = instances.get(id);
-      // Suppress orchestration-internal notifications:
-      //   - conductor finishing its own turn while waiting for a worker (isCaller)
-      //   - worker whose turn_end just woke its owner (wasConsumed)
-      if (instances.shouldSuppressTurnNotification(id)) return;
-      const note = JSON.stringify({
-        t: 'turn_notification',
-        id,
-        project: inst?.project ?? null,
-        isError: !!ev.isError,
-        stopReason: ev.stopReason ?? null,
-        cost: ev.costDelta ?? ev.cost ?? null,
-      });
-      broadcastAll(note);
-    }
   });
 
   instances.on('status', (summary: InstanceSummary) => {

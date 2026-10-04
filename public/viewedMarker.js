@@ -21,6 +21,12 @@ import { apiFetch } from './http.js';
 // A localStorage key no module reads; install removes it.
 const LEGACY_UNREAD_KEY = 'code-conductor:unread';
 
+// The "seen" half of check(): the document is visible and no full-page view
+// owns the pane. Shared with the attention notifier's on-screen test.
+export function isActivePaneSeen({ doc = document, win = window } = {}) {
+  return doc.visibilityState === 'visible' && !isMainViewHash(win.location.hash) && !isAnyMainViewOpen();
+}
+
 export function installViewedMarker({
   getActiveInstance, fetchJson = apiFetch, doc = document, win = window, storage = localStorage,
 }) {
@@ -29,8 +35,7 @@ export function installViewedMarker({
   const posted = new Map();
 
   function check() {
-    if (doc.visibilityState !== 'visible') return;
-    if (isMainViewHash(win.location.hash) || isAnyMainViewOpen()) return;
+    if (!isActivePaneSeen({ doc, win })) return;
     const inst = getActiveInstance();
     const sid = inst?.sessionId;
     if (!sid) return;

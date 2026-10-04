@@ -117,7 +117,7 @@ const mkFake = (id, sessionId) => ({
   async prompt() {}, async interrupt() {},
 });
 
-test('a killing worker whose turn was not interrupted is not suppressed', async () => {
+test('a killing worker whose turn was not interrupted still consumes the wake', async () => {
   const instances = new InstanceManager({ platform: posixPlatform });
   const worker = mkFake('w', 'ws'); const conductor = mkFake('c', 'cs');
   instances.byId.set('w', worker); instances.byId.set('c', conductor);
@@ -126,14 +126,12 @@ test('a killing worker whose turn was not interrupted is not suppressed', async 
   worker._killing = true;
   instances.emit('event', { id: 'w', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
   assert.equal(instances._idleHub.subscribers.get('w')?.size ?? 0, 0, 'the wake was consumed as before');
-  await Promise.resolve(); // past the hub's same-dispatch "consumed" marker
-  assert.equal(instances.shouldSuppressTurnNotification('w'), false, '_killing alone suppresses nothing');
   instances._idleHub.subscribers.clear();
   await instances.shutdown().catch(() => {});
 });
 
-// The hub and the suppression read only the flag: the manager runs on posix.
-test('the interrupted turn_end of a killed worker neither wakes the conductor nor notifies', async () => {
+// The hub reads only the flag: the manager runs on posix.
+test('the interrupted turn_end of a killed worker does not wake the conductor', async () => {
   const instances = new InstanceManager({ platform: posixPlatform });
   const worker = mkFake('w', 'ws'); const conductor = mkFake('c', 'cs');
   instances.byId.set('w', worker); instances.byId.set('c', conductor);
@@ -142,9 +140,6 @@ test('the interrupted turn_end of a killed worker neither wakes the conductor no
   worker._stopInterruptedTurn = true;
   instances.emit('event', { id: 'w', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
   assert.ok(instances._idleHub.subscribers.get('w')?.size, 'the armed wake is still armed');
-  assert.equal(instances.shouldSuppressTurnNotification('w'), true);
-  worker._stopInterruptedTurn = false;
-  assert.equal(instances.shouldSuppressTurnNotification('w'), instances._idleHub.isCaller('w'));
   instances._idleHub.subscribers.clear();
   await instances.shutdown().catch(() => {});
 });

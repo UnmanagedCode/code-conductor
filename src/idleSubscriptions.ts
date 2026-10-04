@@ -162,14 +162,12 @@ export class IdleSubscriptionHub {
   // `Instance.callerInstanceId`, and a second copy would be a second source.
   _owners: Map<string, Map<string, OwnerEntry>>;
   // Short-lived map of targetInstanceId → the callerInstanceIds that were watching
-  // it, populated in _onTurnEnd() BEFORE subscribers is cleared, so the
-  // synchronously-following wsHub turn_notification handler can read it (via
-  // wasConsumed) and so a decline note can be attributed to a caller whose
-  // wake has already been consumed in this dispatch (see
-  // noteRenewalDeclined). A queueMicrotask cleanup runs after both synchronous
-  // listeners complete. turn_end-ONLY by contract: the settle path never touches
-  // it (a settle fires while the worker is idle with a frozen stream, so no worker
-  // turn_notification exists to suppress).
+  // it, populated in _onTurnEnd() BEFORE subscribers is cleared, so a decline note
+  // can be attributed to a caller whose wake has already been consumed in this
+  // dispatch (see noteRenewalDeclined, via _isWaitingOn). A queueMicrotask cleanup
+  // runs after the synchronous dispatch completes. turn_end-ONLY by contract: the
+  // settle path never touches it (a settle fires while the worker is idle with a
+  // frozen stream, and a renewal expiry runs only in a turn_end dispatch).
   _justConsumed: Map<string, Set<string>>;
   // Pending idle task-drain settles, keyed by targetInstanceId (see
   // PendingSettle).
@@ -271,12 +269,9 @@ export class IdleSubscriptionHub {
     this._cancelSettle(targetInstanceId);
     const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return;
-    // Mark BEFORE the defer check / clearing so the wsHub 'event' listener
-    // (registered after this one in server.ts: new InstanceManager() then
-    // attachWsHub()) can still detect that the target had a watcher when its
-    // turn_end fired — on the deferred intermediate turn_end as well as the
-    // final one, so the worker's turn_notification stays suppressed across the
-    // whole deferral.
+    // Mark BEFORE the defer check / clearing so _isWaitingOn can still see that
+    // the target had a watcher when its turn_end fired — on a deferred
+    // intermediate turn_end as well as the final one.
     this._justConsumed.set(targetInstanceId, new Set(subs.keys()));
     queueMicrotask(() => this._justConsumed.delete(targetInstanceId));
     // Defer while background subagents are still running OR an unconsumed
@@ -396,7 +391,7 @@ export class IdleSubscriptionHub {
     if (inst.ring?.nextSeq !== pending.armSeq) return;
     // Consume — the same shape as the heartbeat path, but with the normal
     // "finished" stub. NOTE: _justConsumed is intentionally NOT marked (it is
-    // turn_end-only; no worker turn_notification is in flight right now).
+    // turn_end-only; _isWaitingOn reads it for a renewal expiry, which runs in the turn_end dispatch).
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
@@ -929,12 +924,6 @@ export class IdleSubscriptionHub {
   hasArmedWake(instanceId: string): boolean {
     const subs = this.subscribers.get(instanceId);
     return subs != null && subs.size > 0;
-  }
-
-  // Returns true when instanceId was the *target* of a wake that fired
-  // this synchronous event-dispatch cycle (populated before subscribers clears).
-  wasConsumed(instanceId: string): boolean {
-    return this._justConsumed.has(instanceId);
   }
 
   // Is `callerInstanceId` waiting on `targetInstanceId` right now — either still

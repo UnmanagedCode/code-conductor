@@ -3,8 +3,8 @@
 // is a pure leaf consumer: every dependency it needs is already constructed and
 // injected, no holder/forward-ref required.
 //
-// Owns the nine routing/data handlers (snapshot, reset_snapshot, event,
-// turn_notification, status, instances, projects, the window 'popstate', and
+// Owns the eight routing/data handlers (snapshot, reset_snapshot, event,
+// status, instances, projects, the window 'popstate', and
 // the first-connect 'open' anchor-restore / auto-resume) plus the one-shot
 // `firstConnect` flag they share.
 //
@@ -22,7 +22,7 @@
 // public/accountUsage.js.
 
 import { bus, send } from './ws.js';
-import { maybeNotifyTurnEnd, resolveNotificationInstance } from './notifications.js';
+import { resolveNotificationInstance } from './notifications.js';
 import { readSessionAnchor, writeSessionAnchor, consumeStashedAnchor } from './anchor.js';
 
 export function installWsRouter({
@@ -207,17 +207,6 @@ export function installWsRouter({
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'rate_limit_event')) {
       headerHandle.update();
     }
-  });
-
-  bus.addEventListener('turn_notification', (e) => {
-    const m = e.detail;
-    const inst = state.instances.find(i => i.id === m.id);
-    maybeNotifyTurnEnd({
-      instanceId: m.id,
-      projectName: m.project ?? 'instance',
-      sessionId: inst?.sessionId ?? null,
-      turnEvent: { isError: m.isError, stopReason: m.stopReason, cost: m.cost },
-    });
   });
 
   bus.addEventListener('status', (e) => {

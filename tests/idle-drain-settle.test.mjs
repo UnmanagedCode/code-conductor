@@ -140,8 +140,6 @@ test('orphan repro: idle task-drain with no following turn_end wakes via the set
   assert.equal(instances._idleHub.hasArmedWake('w1'), false, 'subscription consumed');
   assert.equal(pendingSettles().size, 0, 'settle entry self-cleaned');
   assert.ok(subChanges.some(e => e.targetId === 'w1'), 'subscription_changed emitted on settle-consume');
-  assert.equal(instances._idleHub.wasConsumed('w1'), false,
-    '_justConsumed stays turn_end-only (no turn_notification exists at settle-fire)');
 
   // The watchdog was cancelled by the consume — no second delivery at its deadline.
   await sleep(3200 - SETTLE_MS);
