@@ -221,3 +221,23 @@ test('entries carry projectName, worktreeName, temp and synthetic for the strip 
   assert.deepEqual(facts(entry('H')), { projectName: 'p', worktreeName: 'wt', temp: false, synthetic: false }, 'a persistent hand-spawned session in a worktree');
   assert.deepEqual(facts(entry('T')), { projectName: 'p', worktreeName: null, temp: true, synthetic: true }, 'a temp hand-spawned session is synthetic');
 });
+
+test('topLevelEntries includes a running hand session that deriveStrip omits', () => {
+  const instances = [handInst('H', { status: 'turn' })];
+  const conductors = deriveConductors({ instances }).live;
+  assert.deepEqual(sids(N.topLevelEntries({ conductors, instances })), ['H']);
+  assert.deepEqual(groupOf(N.deriveStrip({ conductors, instances }), 'H'), []);
+});
+
+test('topLevelEntries excludes conducted workers and dead sessions, and lists conductors before hand sessions', () => {
+  const instances = [
+    handInst('H1', { createdAt: 1 }),
+    workerInst('W', 'C'),
+    handInst('X', { status: 'exited' }),
+    handInst('Z', { status: 'crashed' }),
+    cond('C'),
+    handInst('H2', { createdAt: 5 }),
+  ];
+  const conductors = deriveConductors({ instances }).live;
+  assert.deepEqual(sids(N.topLevelEntries({ conductors, instances })), ['C', 'H2', 'H1']);
+});

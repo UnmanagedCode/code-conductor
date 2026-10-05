@@ -61,6 +61,12 @@ export interface InstanceSummary {
   // The session record's turn marks (src/sessionStore.ts getTurnMarks).
   turnEndSeq?: number;
   viewedSeq?: number;
+  // Live-only, per Instance object (never hydrated): outer turn ends seen, not
+  // counting a commanded-stop interrupted one; the latest counted one's is_error;
+  // live null→ask transitions of awaitingUser. Read by public/attention.js.
+  liveTurnEnds?: number;
+  lastTurnError?: boolean;
+  liveAsks?: number;
   [key: string]: unknown;
 }
 
@@ -304,7 +310,6 @@ export interface InstanceManagerLike {
   // sessionId), and called synchronously from SessionRenewController's turn_end
   // handling (src/idleSubscriptions.ts documents why synchronously).
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void;
-  shouldSuppressTurnNotification(instanceId: string): boolean;
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null }) => void): void;
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;

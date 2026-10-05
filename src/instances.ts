@@ -697,6 +697,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   // hydrated from the transcript at launch and reduced from live events after.
   // Never set on a conducted worker; never persisted.
   _awaitingUser: AskState;
+  // Live-only attention counters (summary(); read by public/attention.js). Never
+  // hydrated and never reset, so a resume or a pre-launch listing cannot fake a
+  // transition.
+  liveTurnEnds: number;
+  lastTurnError: boolean;
+  liveAsks: number;
   _liveAsk: LiveAskFacts;
   debug: boolean;
   debugDir: string | null;
@@ -930,6 +936,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.parentSessionId = parentSessionId ?? null;
     this.rootOwnerSessionId = rootOwnerSessionId ?? null;
     this._awaitingUser = null;
+    this.liveTurnEnds = 0;
+    this.lastTurnError = false;
+    this.liveAsks = 0;
     this._liveAsk = new LiveAskFacts(() => this._planAutoApproves());
     // When true, raw CLI stdin/stdout/stderr is mirrored to the
     // central store's debug dir for offline inspection. Streams + the
@@ -1321,6 +1330,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       title: this.title,
       turnEndSeq: this.turnEndSeq,
       viewedSeq: this.viewedSeq,
+      liveTurnEnds: this.liveTurnEnds,
+      lastTurnError: this.lastTurnError,
+      liveAsks: this.liveAsks,
       lastResponseAt: this.lastResponseAt,
       // Rotation tell. Pinning the public id makes a rotation invisible, which
       // removes the ONLY signal a conductor previously had that one happened — a
@@ -1786,7 +1798,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // wake hubs (see the hub registrations in InstanceManager's constructor).
     this.emit('event', wrapped, replayed);
     if (!replayed && !this.conducted) {
-      for (const fact of this._liveAsk.feed(wrapped)) this._setAwaitingUser(reduceAsk(this._awaitingUser, fact));
+      for (const fact of this._liveAsk.feed(wrapped)) {
+        const next = reduceAsk(this._awaitingUser, fact);
+        if (next && !this._awaitingUser) this.liveAsks += 1;
+        this._setAwaitingUser(next);
+      }
     }
     // AFTER the emit: the boundary event that makes the stream quiescent must
     // reach subscribers (and the ring) before the abort is dispatched.
@@ -2895,6 +2911,11 @@ export class Instance extends EventEmitter implements InstanceLike {
         // cross-turn comparison. A turn with no requests leaves P unchanged.
         if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
         this.lastResponseAt = Date.now();
+        // A turn a commanded stop interrupted is not a turn finishing.
+        if (!this._stopInterruptedTurn) {
+          this.liveTurnEnds += 1;
+          this.lastTurnError = !!ev.isError;
+        }
         // Every real turn end counts toward unread, whoever started the turn.
         // Tracked so a read after this turn sees the new count.
         const sid = this.sessionId;
@@ -4672,32 +4693,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // idle hub so it rides the REQUESTING conductor's wake — see src/idleSubscriptions.ts.
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void {
     this._idleHub.noteRenewalDeclined(targetInstanceId, requestedBy);
-  }
-
-  // Returns true when a turn_notification for instanceId should be suppressed:
-  //   Condition 1 — session is a conductor mid-orchestration (it holds an armed
-  //                 wake on a worker); isCaller() is reliable here because an armed
-  //                 wake is consumed only when the TARGET finishes (its turn_end,
-  //                 the idle task-drain settle, or a rotation that comes up idle) —
-  //                 the heartbeat reports without consuming, so a hung worker keeps
-  //                 the conductor's ping suppressed rather than un-suppressing it.
-  //   Condition 2 — session is a worker whose turn_end fired with an owner watching (whether it woke the conductor now or was
-  //                 deferred pending the worker's background subagents);
-  //                 wasConsumed() reads _justConsumed, populated in
-  //                 IdleSubscriptionHub._onTurnEnd() before the defer check /
-  //                 before subscribers clears, so the worker's ping stays
-  //                 suppressed across the whole deferral. (The settle path never
-  //                 marks it — no turn_notification exists at settle-fire time.)
-  // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in the
-  // InstanceManager constructor, instances.ts) must run before wsHub's listener
-  // (registered by attachWsHub in server.ts). wasConsumed() is only valid during
-  // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
-  // reorder those registrations without revisiting this method.
-  shouldSuppressTurnNotification(instanceId: string): boolean {
-    if (this.byId.get(instanceId)?._stopInterruptedTurn) return true;  // a turn a commanded stop interrupted
-    if (this._idleHub.isCaller(instanceId)) return true;   // Condition 1
-    if (this._idleHub.wasConsumed(instanceId)) return true; // Condition 2
-    return false;
   }
 
   setServerPort(port: number): void {

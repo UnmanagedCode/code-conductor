@@ -5,31 +5,33 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MODULE_PATH = path.resolve(__dirname, '..', 'public', 'notifications.js');
-const { shouldNotify, summarizeOpenNotifications, resolveNotificationInstance } = await import(pathToFileURL(MODULE_PATH).href);
+const { shouldNotify, summarizeOpenNotifications, resolveNotificationInstance, attentionNotification } = await import(pathToFileURL(MODULE_PATH).href);
 // Fresh module instance per test below, so mutating NotificationState (permission,
 // globalEnabled) in one test can't leak into another.
 const loadFresh = () => import(pathToFileURL(MODULE_PATH).href + `?t=${Math.random()}`);
 
+const OPEN = { permission: 'granted', globalEnabled: true, muted: false, onScreen: false };
+
+test('shouldNotify: fires when every gate is open', () => {
+  assert.equal(shouldNotify(OPEN), true);
+});
+
 test('shouldNotify: respects global toggle', () => {
-  assert.equal(shouldNotify({ permission: 'granted', globalEnabled: false, mutedInstance: false, documentHidden: true, isError: false }), false);
+  assert.equal(shouldNotify({ ...OPEN, globalEnabled: false }), false);
 });
 
 test('shouldNotify: requires granted permission', () => {
-  assert.equal(shouldNotify({ permission: 'denied', globalEnabled: true, mutedInstance: false, documentHidden: true, isError: false }), false);
-  assert.equal(shouldNotify({ permission: 'default', globalEnabled: true, mutedInstance: false, documentHidden: true, isError: false }), false);
+  assert.equal(shouldNotify({ ...OPEN, permission: 'denied' }), false);
+  assert.equal(shouldNotify({ ...OPEN, permission: 'default' }), false);
 });
 
-test('shouldNotify: muted instance suppresses', () => {
-  assert.equal(shouldNotify({ permission: 'granted', globalEnabled: true, mutedInstance: true, documentHidden: true, isError: false }), false);
+test('shouldNotify: a muted session is suppressed', () => {
+  assert.equal(shouldNotify({ ...OPEN, muted: true }), false);
 });
 
-test('shouldNotify: only fires when tab is hidden (for non-error turns)', () => {
-  assert.equal(shouldNotify({ permission: 'granted', globalEnabled: true, mutedInstance: false, documentHidden: false, isError: false }), false);
-  assert.equal(shouldNotify({ permission: 'granted', globalEnabled: true, mutedInstance: false, documentHidden: true, isError: false }), true);
-});
-
-test('shouldNotify: errors notify even when tab is visible', () => {
-  assert.equal(shouldNotify({ permission: 'granted', globalEnabled: true, mutedInstance: false, documentHidden: false, isError: true }), true);
+test('shouldNotify: a session on screen is suppressed, and nothing overrides that', () => {
+  assert.equal(shouldNotify({ ...OPEN, onScreen: true }), false);
+  assert.equal(shouldNotify({ ...OPEN, onScreen: true, isError: true }), false);
 });
 
 test('summarizeOpenNotifications: empty tray → no summary', () => {
@@ -37,59 +39,90 @@ test('summarizeOpenNotifications: empty tray → no summary', () => {
   assert.deepEqual(summarizeOpenNotifications(null), { shouldFire: false });
 });
 
-test('summarizeOpenNotifications: single instance → no summary', () => {
-  const open = [{ tag: 'instance:a', data: { project: 'projA' } }];
+test('summarizeOpenNotifications: single session → no summary', () => {
+  const open = [{ tag: 'session:a', data: { project: 'projA' } }];
   assert.deepEqual(summarizeOpenNotifications(open), { shouldFire: false });
 });
 
-test('summarizeOpenNotifications: two instances → summary with both projects', () => {
+test('summarizeOpenNotifications: two sessions → summary with both projects', () => {
   const open = [
-    { tag: 'instance:a', data: { project: 'projA' } },
-    { tag: 'instance:b', data: { project: 'projB' } },
+    { tag: 'session:a', data: { project: 'projA' } },
+    { tag: 'session:b', data: { project: 'projB' } },
   ];
   const out = summarizeOpenNotifications(open);
   assert.equal(out.shouldFire, true);
-  assert.equal(out.title, '2 turns complete');
+  assert.equal(out.title, '2 sessions need you');
   assert.equal(out.body, 'projA, projB');
 });
 
 test('summarizeOpenNotifications: dedupes project names and truncates with overflow', () => {
   const open = [
-    { tag: 'instance:a', data: { project: 'projA' } },
-    { tag: 'instance:b', data: { project: 'projB' } },
-    { tag: 'instance:c', data: { project: 'projC' } },
-    { tag: 'instance:d', data: { project: 'projD' } },
-    { tag: 'instance:e', data: { project: 'projA' } }, // duplicate name, distinct instance
+    { tag: 'session:a', data: { project: 'projA' } },
+    { tag: 'session:b', data: { project: 'projB' } },
+    { tag: 'session:c', data: { project: 'projC' } },
+    { tag: 'session:d', data: { project: 'projD' } },
+    { tag: 'session:e', data: { project: 'projA' } }, // duplicate name, distinct session
   ];
   const out = summarizeOpenNotifications(open);
   assert.equal(out.shouldFire, true);
-  assert.equal(out.title, '5 turns complete');
+  assert.equal(out.title, '5 sessions need you');
   assert.equal(out.body, 'projA, projB, projC …+1 more');
 });
 
-test('summarizeOpenNotifications: ignores non-instance tags (cc-summary, foreign)', () => {
+test('summarizeOpenNotifications: ignores non-session tags (cc-summary, foreign)', () => {
   const open = [
-    { tag: 'instance:a', data: { project: 'projA' } },
+    { tag: 'session:a', data: { project: 'projA' } },
     { tag: 'cc-summary' },
-    { tag: 'instance:b', data: { project: 'projB' } },
+    { tag: 'session:b', data: { project: 'projB' } },
     { tag: 'other:thing', data: { project: 'projZ' } },
   ];
   const out = summarizeOpenNotifications(open);
   assert.equal(out.shouldFire, true);
-  assert.equal(out.title, '2 turns complete');
+  assert.equal(out.title, '2 sessions need you');
   assert.equal(out.body, 'projA, projB');
 });
 
 test('summarizeOpenNotifications: counts entries even when project data is missing', () => {
   const open = [
-    { tag: 'instance:a' },
-    { tag: 'instance:b', data: {} },
-    { tag: 'instance:c', data: { project: 'projC' } },
+    { tag: 'session:a' },
+    { tag: 'session:b', data: {} },
+    { tag: 'session:c', data: { project: 'projC' } },
   ];
   const out = summarizeOpenNotifications(open);
   assert.equal(out.shouldFire, true);
-  assert.equal(out.title, '3 turns complete');
+  assert.equal(out.title, '3 sessions need you');
   assert.equal(out.body, 'projC');
+});
+
+// ── attentionNotification wording ───────────────────────────────────────────
+
+const handEntry = { label: 'fix the build', projectName: 'proj-a', worktreeName: null, conductor: false };
+const waiting = (ask, source, entry = handEntry) => ({ kind: 'waiting', sessionId: 's1', instanceId: 'i1', entry, ask, source });
+const finished = (isError, entry = handEntry) => ({ kind: 'finished', sessionId: 's1', instanceId: 'i1', entry, isError });
+
+test('attentionNotification: waiting names the kind of ask', () => {
+  assert.equal(attentionNotification(waiting('question', 'tool')).title, '❓ proj-a — waiting on you (question)');
+  assert.equal(attentionNotification(waiting('plan', 'tool')).title, '❓ proj-a — waiting on you (plan approval)');
+  assert.equal(attentionNotification(waiting('question', 'text')).title, '❓ proj-a — waiting on you (asked in text)');
+});
+
+test('attentionNotification: finished ok and finished errored wording', () => {
+  assert.equal(attentionNotification(finished(false)).title, '✓ proj-a — finished');
+  assert.equal(attentionNotification(finished(true)).title, '❌ proj-a — turn errored');
+});
+
+test('attentionNotification: where is Conductor for a conductor, project · worktree otherwise', () => {
+  const conductor = { ...handEntry, conductor: true, projectName: '.conduct' };
+  assert.equal(attentionNotification(finished(false, conductor)).title, '✓ Conductor — finished');
+  const wt = { ...handEntry, worktreeName: 'feat-x' };
+  assert.equal(attentionNotification(finished(false, wt)).title, '✓ proj-a · feat-x — finished');
+});
+
+test('attentionNotification: body is the entry label; tag and data are per session', () => {
+  const n = attentionNotification(finished(false));
+  assert.equal(n.body, 'fix the build');
+  assert.equal(n.tag, 'session:s1');
+  assert.deepEqual(n.data, { project: 'proj-a', instanceId: 'i1', sessionId: 's1' });
 });
 
 // ── resolveNotificationInstance ─────────────────────────────────────────────
@@ -122,7 +155,7 @@ test('resolveNotificationInstance: missing data returns null', () => {
   assert.equal(resolveNotificationInstance(undefined, [{ id: 'i1' }]), null);
 });
 
-// ── fire / maybeNotifyTurnEnd click wiring ──────────────────────────────────
+// ── fire click wiring ──────────────────────────────────
 // Mock just enough of the page-level Notification path (SW registration
 // left null so `fire` falls through to `new Notification(...)`) to assert
 // the data shape and the onclick → cc-notification-click dispatch, without
@@ -149,21 +182,6 @@ function installFakeNotificationGlobals() {
   return { dispatched, isFocused: () => focused };
 }
 
-test('maybeNotifyTurnEnd: fired notification data carries instanceId and sessionId', async () => {
-  const { maybeNotifyTurnEnd, NotificationState } = await loadFresh();
-  installFakeNotificationGlobals();
-  NotificationState.globalEnabled = true;
-  NotificationState.permission = 'granted';
-  const result = maybeNotifyTurnEnd({
-    instanceId: 'inst-1',
-    projectName: 'proj-a',
-    sessionId: 'sess-1',
-    turnEvent: { isError: false, stopReason: 'end_turn', cost: null },
-  });
-  assert.ok(result, 'notification fired');
-  assert.deepEqual(result.data, { project: 'proj-a', instanceId: 'inst-1', sessionId: 'sess-1' });
-});
-
 // ── per-session mute ────────────────────────────────────────────────────────
 // The mute set is keyed by sessionId (not the per-process instance id) so a
 // respawn under a new instance id can't silently un-mute a session.
@@ -180,9 +198,10 @@ function installFakeLocalStorage(seed = {}) {
 
 test('muted session stays silent while an unmuted sibling still notifies', async () => {
   const mod = await loadFresh();
-  const { maybeNotifyTurnEnd, muteSession, isSessionMuted, NotificationState } = mod;
+  const { notifyAttention, muteSession, isSessionMuted, NotificationState } = mod;
   installFakeNotificationGlobals();
   installFakeLocalStorage();
+  const t = (sessionId, instanceId, over = {}) => ({ ...finished(false), sessionId, instanceId, ...over });
   try {
     NotificationState.globalEnabled = true;
     NotificationState.permission = 'granted';
@@ -190,32 +209,19 @@ test('muted session stays silent while an unmuted sibling still notifies', async
     assert.equal(isSessionMuted('sess-muted'), true);
     assert.equal(isSessionMuted('sess-loud'), false);
 
-    // shouldNotify's mutedInstance branch, fed from the real mute set.
-    const base = { permission: 'granted', globalEnabled: true, documentHidden: true, isError: false };
-    assert.equal(mod.shouldNotify({ ...base, mutedInstance: isSessionMuted('sess-muted') }), false);
-    assert.equal(mod.shouldNotify({ ...base, mutedInstance: isSessionMuted('sess-loud') }), true);
-
-    // …and end-to-end through the turn_end helper.
-    const turnEvent = { isError: false, stopReason: 'end_turn', cost: null };
-    assert.equal(
-      maybeNotifyTurnEnd({ instanceId: 'i-muted', projectName: 'p', sessionId: 'sess-muted', turnEvent }),
-      null, 'muted session fires nothing');
-    assert.ok(
-      maybeNotifyTurnEnd({ instanceId: 'i-loud', projectName: 'p', sessionId: 'sess-loud', turnEvent }),
+    assert.equal(notifyAttention({ transition: t('sess-muted', 'i-muted'), onScreen: false }), null,
+      'muted session fires nothing');
+    assert.ok(notifyAttention({ transition: t('sess-loud', 'i-loud'), onScreen: false }),
       'unmuted sibling still notifies');
 
     // Respawn: same session, brand-new instance id — still muted.
-    assert.equal(
-      maybeNotifyTurnEnd({ instanceId: 'i-muted-respawned', projectName: 'p', sessionId: 'sess-muted', turnEvent }),
-      null, 'mute survives a respawn under a new instance id');
-
-    // Mute beats the isError override that otherwise notifies on a visible tab.
-    assert.equal(
-      maybeNotifyTurnEnd({ instanceId: 'i-muted', projectName: 'p', sessionId: 'sess-muted', turnEvent: { isError: true, stopReason: 'error', cost: null } }),
-      null, 'muted session stays silent even on an errored turn');
+    assert.equal(notifyAttention({ transition: t('sess-muted', 'i-muted-respawned'), onScreen: false }), null,
+      'mute survives a respawn under a new instance id');
+    assert.equal(notifyAttention({ transition: t('sess-muted', 'i-muted', { isError: true }), onScreen: false }), null,
+      'muted session stays silent even on an errored finish');
 
     muteSession('sess-muted', false);
-    assert.ok(maybeNotifyTurnEnd({ instanceId: 'i-muted', projectName: 'p', sessionId: 'sess-muted', turnEvent }), 'unmuting restores pings');
+    assert.ok(notifyAttention({ transition: t('sess-muted', 'i-muted'), onScreen: false }), 'unmuting restores pings');
   } finally {
     delete globalThis.localStorage;
   }
@@ -260,7 +266,7 @@ test('fire: page-level fallback onclick dispatches cc-notification-click and clo
   const { fire } = await loadFresh();
   const { dispatched, isFocused } = installFakeNotificationGlobals();
   const data = { project: 'proj-a', instanceId: 'inst-1', sessionId: 'sess-1' };
-  const n = fire({ title: 't', body: 'b', tag: 'instance:inst-1', data });
+  const n = fire({ title: 't', body: 'b', tag: 'session:inst-1', data });
   assert.ok(n, 'notification constructed');
   n.onclick();
   assert.equal(isFocused(), true, 'page focused on click');
@@ -268,30 +274,4 @@ test('fire: page-level fallback onclick dispatches cc-notification-click and clo
   assert.equal(dispatched[0].type, 'cc-notification-click');
   assert.deepEqual(dispatched[0].detail, data);
   assert.equal(n.closed, true, 'notification closed after click');
-});
-
-// ── turn-end notification cost segment pin ──────────────────────────────────
-// Characterization pin ahead of consolidating the six `toFixed(4)` cost sites
-// onto one exported `fmtCost` in usage.js. Pins the notification body's 4dp
-// figure and the `!= null` guard that omits the whole ` · ` segment when the
-// turn reports no cost.
-
-test('maybeNotifyTurnEnd: body carries a 4dp cost, and none when cost is null', async () => {
-  const { maybeNotifyTurnEnd, NotificationState } = await loadFresh();
-  installFakeNotificationGlobals();
-  NotificationState.globalEnabled = true;
-  NotificationState.permission = 'granted';
-
-  const withCost = maybeNotifyTurnEnd({
-    instanceId: 'inst-1', projectName: 'proj-a', sessionId: 'sess-1',
-    turnEvent: { isError: false, stopReason: 'end_turn', cost: 0.5 },
-  });
-  assert.equal(withCost.opts.body, 'end_turn · $0.5000');
-
-  const noCost = maybeNotifyTurnEnd({
-    instanceId: 'inst-1', projectName: 'proj-a', sessionId: 'sess-1',
-    turnEvent: { isError: false, stopReason: 'end_turn', cost: null },
-  });
-  assert.equal(noCost.opts.body, 'end_turn');
-  assert.ok(!noCost.opts.body.includes(' · '), 'no separator when there is no cost');
 });

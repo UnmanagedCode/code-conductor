@@ -233,25 +233,6 @@ test('(d) the heartbeat keeps firing across a deferral when a subagent never com
   instances.byId.delete('w5');
 });
 
-test('a deferred turn_end still marks the worker consumed (turn_notification stays suppressed)', async () => {
-  const cond = makeFake({ id: 'c6', sessionId: 'cs6' });
-  const work = makeFake({ id: 'w6', sessionId: 'ws6', activeAgentTaskCount: 1 });
-  inject(cond, work);
-  armWake('cs6', 'ws6');
-
-  emitTurnEnd('w6');
-  // wasConsumed() is set synchronously in onTurnEnd (before the microtask that
-  // clears it) so the wsHub handler suppresses the worker's ping on the
-  // deferred intermediate turn_end too.
-  assert.equal(instances._idleHub.wasConsumed('w6'), true,
-    'worker marked consumed on the deferred turn_end');
-  await tick();
-  assert.equal(cond._promptCalls.length, 0, 'still deferred (no delivery)');
-  assert.equal(instances._idleHub.hasArmedWake('w6'), true);
-
-  cleanup(cond, work);
-});
-
 // ---------------------------------------------------------------------------
 // Instance-lifecycle tests: the taskNotificationPending set/clear edges,
 // driven through a real (unspawned) Instance's _handleStdoutLine with raw

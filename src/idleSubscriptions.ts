@@ -162,14 +162,12 @@ export class IdleSubscriptionHub {
   // `Instance.callerInstanceId`, and a second copy would be a second source.
   _owners: Map<string, Map<string, OwnerEntry>>;
   // Short-lived map of targetInstanceId → the callerInstanceIds that were watching
-  // it, populated in _onTurnEnd() BEFORE subscribers is cleared, so the
-  // synchronously-following wsHub turn_notification handler can read it (via
-  // wasConsumed) and so a decline note can be attributed to a caller whose
-  // wake has already been consumed in this dispatch (see
-  // noteRenewalDeclined). A queueMicrotask cleanup runs after both synchronous
-  // listeners complete. turn_end-ONLY by contract: the settle path never touches
-  // it (a settle fires while the worker is idle with a frozen stream, so no worker
-  // turn_notification exists to suppress).
+  // it, populated in _onTurnEnd() BEFORE subscribers is cleared, so a decline note
+  // can be attributed to a caller whose wake has already been consumed in this
+  // dispatch (see noteRenewalDeclined, via _isWaitingOn). A queueMicrotask cleanup
+  // runs after the synchronous dispatch completes. turn_end-ONLY by contract: the
+  // settle path never touches it (a settle fires while the worker is idle with a
+  // frozen stream, and a renewal expiry runs only in a turn_end dispatch).
   _justConsumed: Map<string, Set<string>>;
   // Pending idle task-drain settles, keyed by targetInstanceId (see
   // PendingSettle).
@@ -186,6 +184,12 @@ export class IdleSubscriptionHub {
   // and carried, because it belongs to the wake that was deferred, not to
   // whatever else that pair does in between.
   _deferredWakes: Map<string, Array<{ targetInstanceId: string; opts?: DeliverOpts; note: string | null }>>;
+  // Wakes consumed but not yet SENT, keyed by callerInstanceId → count. deliver()
+  // sends on a microtask after (for a folded stub) an async transcript read, so
+  // between the consume and the send the conductor is idle with no armed wake —
+  // a state indistinguishable from "finished". isCaller() counts these, so
+  // `awaitingWake` holds until prompt() has run (status has left idle) or failed.
+  _inFlight: Map<string, number>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
@@ -195,6 +199,7 @@ export class IdleSubscriptionHub {
     this._pendingSettles = new Map();
     this._pendingDeclines = new Map();
     this._deferredWakes = new Map();
+    this._inFlight = new Map();
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands
@@ -271,12 +276,9 @@ export class IdleSubscriptionHub {
     this._cancelSettle(targetInstanceId);
     const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return;
-    // Mark BEFORE the defer check / clearing so the wsHub 'event' listener
-    // (registered after this one in server.ts: new InstanceManager() then
-    // attachWsHub()) can still detect that the target had a watcher when its
-    // turn_end fired — on the deferred intermediate turn_end as well as the
-    // final one, so the worker's turn_notification stays suppressed across the
-    // whole deferral.
+    // Mark BEFORE the defer check / clearing so _isWaitingOn can still see that
+    // the target had a watcher when its turn_end fired — on a deferred
+    // intermediate turn_end as well as the final one.
     this._justConsumed.set(targetInstanceId, new Set(subs.keys()));
     queueMicrotask(() => this._justConsumed.delete(targetInstanceId));
     // Defer while background subagents are still running OR an unconsumed
@@ -396,7 +398,7 @@ export class IdleSubscriptionHub {
     if (inst.ring?.nextSeq !== pending.armSeq) return;
     // Consume — the same shape as the heartbeat path, but with the normal
     // "finished" stub. NOTE: _justConsumed is intentionally NOT marked (it is
-    // turn_end-only; no worker turn_notification is in flight right now).
+    // turn_end-only; _isWaitingOn reads it for a renewal expiry, which runs in the turn_end dispatch).
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
@@ -724,6 +726,7 @@ export class IdleSubscriptionHub {
     // deferred wake's TARGET it needs no cleanup — deliver() resolves a missing
     // target to its raw id and still reports honestly.)
     this._deferredWakes.delete(instanceId);
+    this._inFlight.delete(instanceId);
     this._pendingDeclines.delete(instanceId); // …and every note about it
     // As CALLER: a note filed for this instance under some other target can no
     // longer reach anyone either.
@@ -851,6 +854,7 @@ export class IdleSubscriptionHub {
     // …and so does an EXITED one: there is no finished result to fold.
     const fold = !opts?.timedOut && !opts?.stale && !opts?.interrupted && !opts?.exited
       && caller.status !== 'turn';
+    this._inFlight.set(callerInstanceId, (this._inFlight.get(callerInstanceId) ?? 0) + 1);
     const deliver = async (): Promise<void> => {
       // Read-and-delete BEFORE any await: the expiry that recorded this note ran
       // synchronously in the dispatch that queued this microtask, and the note
@@ -876,11 +880,23 @@ export class IdleSubscriptionHub {
           kind: 'system', subtype: 'stderr',
           data: { line: `idle-callback delivery failed: ${(err as Error).message}` },
         });
+      } finally {
+        this._endInFlight(callerInstanceId, targetInstanceId);
       }
     };
     // A mid-turn caller receives the wake live (steering); an idle caller gets
     // it folded. Either way it goes out on the next microtask.
     queueMicrotask(deliver);
+  }
+
+  // One delivery finished (sent, refused, or abandoned). When that leaves the
+  // caller with nothing armed, nothing deferred and nothing in flight, announce
+  // the change: a refused send leaves it idle, and nothing else would say so.
+  _endInFlight(callerInstanceId: string, targetInstanceId: string): void {
+    const n = (this._inFlight.get(callerInstanceId) ?? 0) - 1;
+    if (n > 0) this._inFlight.set(callerInstanceId, n);
+    else this._inFlight.delete(callerInstanceId);
+    if (!this.isCaller(callerInstanceId)) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
 
   // The plain pointer stub — text for the heartbeat path and the live
@@ -931,12 +947,6 @@ export class IdleSubscriptionHub {
     return subs != null && subs.size > 0;
   }
 
-  // Returns true when instanceId was the *target* of a wake that fired
-  // this synchronous event-dispatch cycle (populated before subscribers clears).
-  wasConsumed(instanceId: string): boolean {
-    return this._justConsumed.has(instanceId);
-  }
-
   // Is `callerInstanceId` waiting on `targetInstanceId` right now — either still
   // ARMED, or armed at the turn_end being dispatched (this hub's listener
   // runs FIRST, so by the time the renew controller expires a request the delivered
@@ -971,8 +981,12 @@ export class IdleSubscriptionHub {
   // i.e. one of its sessions is mid-turn right now and it is due a report when
   // that turn ends. This is what the sidebar's accent idle dot reads (surfaced as
   // `awaitingWake`), and it stays true across a heartbeat, because a heartbeat
-  // reports without consuming.
+  // reports without consuming. It also stays true from a wake's
+  // consume until its send has run (`_inFlight`), and while a wake is held for a
+  // mid-turn recipient (`_deferredWakes`): the conductor is idle with nothing armed
+  // in that gap, which must not read as finished.
   isCaller(instanceId: string): boolean {
+    if (this._inFlight.has(instanceId) || this._deferredWakes.get(instanceId)?.length) return true;
     for (const callers of this.subscribers.values()) {
       if (callers.has(instanceId)) return true;
     }

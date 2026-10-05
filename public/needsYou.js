@@ -86,18 +86,23 @@ function handEntry(inst) {
   };
 }
 
-// The strip's groups. `conductors` is deriveConductors(...).live, in its order;
-// `instances` is the raw /api/instances list, from which the hand-spawned
-// sessions (not conducted, not a conductor) are taken, newest first. Conducted
-// workers are never listed; Running lists conductors only.
-export function deriveStrip({ conductors = [], instances = [] } = {}) {
+// Every top-level session, grouped or not: `conductors` is
+// deriveConductors(...).live, in its order; `instances` is the raw
+// /api/instances list, from which the hand-spawned sessions (not conducted, not
+// a conductor) are taken, newest first. Conducted workers are never included.
+// The strip and the attention notifier share this population.
+export function topLevelEntries({ conductors = [], instances = [] } = {}) {
   const hand = instances
     .filter(i => i.sessionId && !i.conducted && i.project !== '.conduct' && isLiveStatus(i.status))
     .map(handEntry)
     .sort((a, b) => b.activity - a.activity);
-  const pool = [...conductors.map(conductorEntry), ...hand];
+  return [...conductors.map(conductorEntry), ...hand];
+}
+
+// The strip's groups. Running lists conductors only.
+export function deriveStrip({ conductors = [], instances = [] } = {}) {
   const groups = { waiting: [], running: [], finished: [] };
-  for (const e of pool) {
+  for (const e of topLevelEntries({ conductors, instances })) {
     const g = stripGroupOf(e);
     if (!g || (g === 'running' && !e.conductor)) continue;
     groups[g].push(e);

@@ -1,10 +1,13 @@
-// Browser notifications for turn completion.
+// Browser notifications for a top-level session entering the needs-you strip's
+// Waiting or Finished group (detection: public/attention.js).
 //
 // Uses the Notification API directly (works on Android Chrome / Termux
 // browser when bound to localhost). The decision logic is split out as
 // pure functions so it can be unit-tested without a real browser.
 
-import { fmtCost } from './usage.js';
+import { askLabel } from './needsYou.js';
+import { createAttentionTracker } from './attention.js';
+import { isActivePaneSeen } from './viewedMarker.js';
 
 export const NotificationState = {
   permission: 'default',          // mirrors Notification.permission
@@ -18,16 +21,11 @@ export const NotificationState = {
 
 /**
  * Pure decision: given current state, should we fire a notification?
+ * `onScreen` is true when the user is looking at that session's pane.
  * Public so tests can exercise it directly.
  */
-export function shouldNotify({ permission, globalEnabled, mutedInstance, documentHidden, isError }) {
-  if (!globalEnabled) return false;
-  if (permission !== 'granted') return false;
-  if (mutedInstance) return false;
-  // Always notify on errors, even if the tab is visible — they're rare and
-  // important. Otherwise only notify when the user can't see the tab.
-  if (isError) return true;
-  return documentHidden;
+export function shouldNotify({ permission, globalEnabled, muted, onScreen }) {
+  return !!globalEnabled && permission === 'granted' && !muted && !onScreen;
 }
 
 export function isNotificationAPIAvailable() {
@@ -149,7 +147,7 @@ const SUMMARY_PROJECT_LIMIT = 3;
  * should be visible and what it should say. Public for tests.
  */
 export function summarizeOpenNotifications(notifications) {
-  const ours = (notifications || []).filter(n => typeof n?.tag === 'string' && n.tag.startsWith('instance:'));
+  const ours = (notifications || []).filter(n => typeof n?.tag === 'string' && n.tag.startsWith('session:'));
   if (ours.length < 2) return { shouldFire: false };
   const projects = [];
   const seen = new Set();
@@ -165,7 +163,7 @@ export function summarizeOpenNotifications(notifications) {
   if (overflow > 0) body += ` …+${overflow} more`;
   return {
     shouldFire: true,
-    title: `${ours.length} turns complete`,
+    title: `${ours.length} sessions need you`,
     body,
   };
 }
@@ -195,30 +193,62 @@ export async function closeAllOnFocus() {
   const open = await getOpenNotifications();
   if (open == null) return;
   for (const n of open) {
-    if (n.tag === SUMMARY_TAG || (typeof n.tag === 'string' && n.tag.startsWith('instance:'))) n.close();
+    if (n.tag === SUMMARY_TAG || (typeof n.tag === 'string' && n.tag.startsWith('session:'))) n.close();
   }
 }
 
 /**
- * Decide-and-fire helper for a turn_end event.
- * Returns the Notification instance (or null if suppressed).
+ * Pure: the notification for one attention transition (public/attention.js).
  */
-export function maybeNotifyTurnEnd({ instanceId, projectName, sessionId, turnEvent }) {
+export function attentionNotification(t) {
+  const where = t.entry.conductor
+    ? 'Conductor'
+    : `${t.entry.projectName}${t.entry.worktreeName ? ` · ${t.entry.worktreeName}` : ''}`;
+  const title = t.kind === 'waiting'
+    ? `❓ ${where} — waiting on you (${askLabel(t.ask, t.source)})`
+    : t.isError ? `❌ ${where} — turn errored` : `✓ ${where} — finished`;
+  return {
+    title,
+    body: t.entry.label,
+    tag: `session:${t.sessionId}`,
+    data: { project: where, instanceId: t.instanceId, sessionId: t.sessionId },
+  };
+}
+
+/**
+ * Gate, fire, and refresh the summary for one transition.
+ * Returns the fire() result (null if suppressed).
+ */
+export function notifyAttention({ transition, onScreen }) {
   const decision = shouldNotify({
     permission: NotificationState.permission,
     globalEnabled: NotificationState.globalEnabled,
-    mutedInstance: isSessionMuted(sessionId),
-    documentHidden: typeof document !== 'undefined' ? document.hidden : false,
-    isError: !!turnEvent.isError,
+    muted: isSessionMuted(transition.sessionId),
+    onScreen,
   });
   if (!decision) return null;
-  const cost = turnEvent.cost != null ? ` · ${fmtCost(turnEvent.cost)}` : '';
-  const title = turnEvent.isError ? `❌ ${projectName} — turn errored` : `✓ ${projectName} — turn complete`;
-  const body = `${turnEvent.stopReason ?? 'end_turn'}${cost}`;
-  const result = fire({ title, body, tag: `instance:${instanceId}`, data: { project: projectName, instanceId, sessionId } });
-  // Best-effort summary refresh; failures here must not block the per-instance ping.
+  const result = fire(attentionNotification(transition));
+  // Best-effort summary refresh; failures here must not block the per-session ping.
   maybeUpdateSummary();
   return result;
+}
+
+/**
+ * Owns the attention tracker. observe(instances) runs on every /api/instances
+ * refresh. A transition is consumed whether or not it notifies, so a
+ * suppressed one (focus, mute, bell off) is never replayed later.
+ */
+export function installAttentionNotifier({ getActiveInstance, doc = document, win = window }) {
+  const tracker = createAttentionTracker();
+  return {
+    observe(instances) {
+      for (const transition of tracker.observe(instances)) {
+        const onScreen = isActivePaneSeen({ doc, win })
+          && getActiveInstance()?.sessionId === transition.sessionId;
+        notifyAttention({ transition, onScreen });
+      }
+    },
+  };
 }
 
 /**

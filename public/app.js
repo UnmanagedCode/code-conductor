@@ -11,7 +11,7 @@ import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
 import { UsageTracker, RateLimitTracker } from './usage.js';
-import { restoreMutedSessions, installNotifyToggle } from './notifications.js';
+import { restoreMutedSessions, installNotifyToggle, installAttentionNotifier } from './notifications.js';
 import {
   writeSessionAnchor, pushSessionAnchor, stashCurrentAnchorForRelaunch,
 } from './anchor.js';
@@ -251,6 +251,12 @@ const accountUsage = installAccountUsage({
 // (public/viewedMarker.js). Checked on every selectInstance and every
 // instances refresh.
 const viewedMarker = installViewedMarker({
+  getActiveInstance: () => state.instances.find(i => i.id === state.activeId) ?? null,
+});
+
+// Notifies when a top-level session enters the needs-you strip's Waiting or
+// Finished group (public/attention.js); fed every instances refresh.
+const attentionNotifier = installAttentionNotifier({
   getActiveInstance: () => state.instances.find(i => i.id === state.activeId) ?? null,
 });
 
@@ -848,6 +854,7 @@ async function refreshInstances() {
     () => fetch('/api/instances').then(r => r.json()),
     (data) => {
       state.instances = data;
+      attentionNotifier.observe(state.instances);
       sidebar.setInstances(state.instances);
       subagentPanel.setInstances(state.instances, state.activeId);
       headerHandle.update();
@@ -898,7 +905,7 @@ installExternalLinkOpener({
 installLightbox();
 
 // WS event router (public/wsRouter.js): the bus data/routing handlers
-// (snapshot / reset_snapshot / event / turn_notification / status / instances /
+// (snapshot / reset_snapshot / event / status / instances /
 // projects), the window 'popstate', and the first-connect 'open' anchor-restore
 // / auto-resume. Wired LAST — after every module/handle/state above is
 // constructed — so it injects resolved objects (no holder/forward-ref) and is a

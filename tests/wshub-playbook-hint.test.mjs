@@ -72,3 +72,22 @@ test('a playbook_changed emit delivers exactly one {t:"instances"} frame and no 
     assert.deepEqual(client.messages, [{ t: 'instances' }]);
   } finally { await client.close(); await hub.close(); }
 });
+
+// The attention notifier (public/attention.js) detects only on an
+// /api/instances refresh, so every manager event that can move a session into
+// Waiting or Finished must reach clients as an `instances` hint.
+for (const [event, payload] of [
+  ['status', { id: 'w1', status: 'idle', sessionId: 's1', mode: 'plan' }],
+  ['subscription_changed', { targetId: 'w1' }],
+]) {
+  test(`a ${event} emit delivers an {t:"instances"} frame to a client that never subscribed`, async () => {
+    const hub = await bootHub();
+    const client = await wsClient(hub.url);
+    try {
+      await waitFor(() => client.messages.some(m => m.t === 'hello'));
+      client.messages.length = 0;
+      hub.instances.emit(event, payload);
+      await waitFor(() => client.messages.some(m => m.t === 'instances'));
+    } finally { await client.close(); await hub.close(); }
+  });
+}
