@@ -3,7 +3,15 @@
 // not of a registration verb:
 //
 //   an owned session enters a turn, therefore its owner is woken when that
-//   turn ends.
+//   turn ends — unless the session ends it still waiting on work of its own.
+//
+// That exception is the HOLD (_holds): a session that ends a turn while it is
+// itself still waiting on a live worker (_waitsOnWork) keeps its owners' wakes
+// armed, so an owner is woken when its child needs it rather than at every
+// dispatch the child makes to its own workers. A question or plan for the user
+// (_asked) and a force-aborted turn pass through. A wait that ends without a turn
+// (the worker removed, a wake to the child refused, a disarm) releases the hold at
+// that point (_releaseHeld).
 //
 // A conductor OWNS a target if it spawned it (`target.callerInstanceId`) or has
 // ever dispatched to it (noteDispatch, called by every turn-starting MCP
@@ -25,7 +33,7 @@
 // persisted, and every map is purged on remove(), so there is nothing to
 // "survive a restart."
 //
-// An ARMED entry is consumed by whichever of FOUR trigger paths lands first:
+// An ARMED entry is consumed by whichever of FIVE trigger paths lands first:
 //   1. turn_end (the classic path — see _onTurnEnd and its defer gate),
 //   2. the idle task-drain settle (_onTaskEvent/_fireSettle — a background
 //      task finishing while the worker is already idle, with NO re-invocation
@@ -36,7 +44,9 @@
 //      and is delivered by its reseed turn's turn_end instead),
 //   4. the target's CLI exiting on its own (onTargetExit — no turn_end can ever
 //      follow, so the exit is the wake, reported as EXITED; a commanded kill is
-//      not this path and keeps the heartbeat retirement below).
+//      not this path and keeps the heartbeat retirement below),
+//   5. the release of a hold whose wait ended without a turn (_releaseHeld).
+// Paths 1–3 and 5 each decide the hold first; the exit path never holds.
 // A forced `interrupt_turn` clears only the INTERRUPTER's own entry
 // (disarmSilently) — every other owner is still woken at that turn_end and told
 // the turn was INTERRUPTED rather than finished, since silencing an owner that did
@@ -54,6 +64,7 @@ import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
 import { humanizeDuration } from './duration.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
+import { askFactsOfEvent } from './awaitingUser.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 
@@ -65,8 +76,10 @@ import type { UiEvent } from './parser.ts';
 // may go without telling its owner it is still running", so raising
 // ORCH_SUBSCRIBE_TIMEOUT_MS moves the default and the cap together.
 // Delivery of the real wake is deferred until the worker's turn ends AND all its
-// background subagents have finished (see _onTurnEnd / _onTaskEvent), so without
-// the heartbeat a stuck subagent would leave the owner silent indefinitely.
+// background subagents have finished (see _onTurnEnd / _onTaskEvent), and held
+// while the worker waits on workers of its own (_holds), so without the
+// heartbeat a stuck subagent or grandchild would leave the owner silent
+// indefinitely. A held entry keeps its interval across the worker's turns.
 export const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_MS) || 1_800_000;
 
 // The same ceiling in the unit the MCP params take. FLOOR, not round: it is what
@@ -152,7 +165,8 @@ export class IdleSubscriptionHub {
   manager: InstanceManagerLike;
   // ARMED wakes: when target hits turn_end, deliver a stub user prompt to every
   // armed owner and clear the set. Armed by onTurnStart (a turn began) — so this
-  // map is empty for every target that is not mid-turn.
+  // map is empty for every target that is neither mid-turn nor deferring or
+  // holding its owners' wakes.
   // Keyed by targetInstanceId → Map<callerInstanceId, SubscriptionEntry>.
   subscribers: Map<string, Map<string, SubscriptionEntry>>;
   // OWNERSHIP edges established by dispatch, targetInstanceId →
@@ -190,6 +204,20 @@ export class IdleSubscriptionHub {
   // a state indistinguishable from "finished". isCaller() counts these, so
   // `awaitingWake` holds until prompt() has run (status has left idle) or failed.
   _inFlight: Map<string, number>;
+  // Targets whose current turn put a question or a plan to the user (a top-level
+  // AskUserQuestion, or an ExitPlanMode that was not auto-approved). Such a turn
+  // end is never held. Cleared with the abort qualifier — at a turn start no
+  // armed wake survived into — and by purge.
+  _asked: Set<string>;
+  // Set once by suspend() for the resume-restart drain: from then on nothing is
+  // delivered, so no session in the draining process starts a turn.
+  _suspended: boolean;
+  // Targets whose owners' wakes a hold decision is holding (_holds returned
+  // true at their last decision point). Cleared when those wakes are consumed,
+  // dropped or purged, and when the target starts a turn. It is what tells
+  // _waitsOnWork a held target (recurse into its own waits) from an idle target
+  // whose armed wake is still owed for any other reason (owed work).
+  _holding: Set<string>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
@@ -200,6 +228,15 @@ export class IdleSubscriptionHub {
     this._pendingDeclines = new Map();
     this._deferredWakes = new Map();
     this._inFlight = new Map();
+    this._asked = new Set();
+    this._suspended = false;
+    this._holding = new Set();
+  }
+
+  // Stop every delivery for the rest of this process's life. Called by the
+  // resume-restart drain, whose process exits after it.
+  suspend(): void {
+    this._suspended = true;
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands
@@ -214,6 +251,7 @@ export class IdleSubscriptionHub {
   // arrived while the target was idle, set its idleWindowDirty flag — the two
   // structural signals the settle path uses to avoid firing early.
   onEvent({ id, ev }: { id: string; ev: UiEvent | null }): void {
+    if (ev && askFactsOfEvent(ev).some(f => f.t === 'toolAsk')) this._asked.add(id);
     if (ev?.kind === 'turn_end') {
       this._onTurnEnd(id);
       // …and, as the RECIPIENT of a held-back wake, this is the boundary that
@@ -300,16 +338,87 @@ export class IdleSubscriptionHub {
     // Same shape and same reason as rotationPending — the flag lives on the
     // Instance and is set in the send_prompt handler before the abort is even
     // armed, so this defer is independent of listener registration order.
-    if (target.activeAgentTaskCount > 0 || target.taskNotificationPending
-        || target.rotationPending || target.steerPending) return;
+    if (this._targetDefers(target)) return;
+    // Still waiting on its own workers, with nothing for the owner: hold. The
+    // entries and their heartbeats stay armed for a later decision point.
+    if (this._holds(target)) return;
+    this._consume(targetInstanceId, { announce: false });
+  }
+
+  // The target-side defer reasons _onTurnEnd documents: a wake decided now would
+  // report this target one turn early.
+  _targetDefers(target: InstanceLike): boolean {
+    return target.activeAgentTaskCount > 0 || target.taskNotificationPending
+      || target.rotationPending || target.steerPending;
+  }
+
+  // Is `x` still waiting on work — will something still open a turn on it, or is
+  // something it waits on still working? True when a wake is on its way to x
+  // (in flight, or deferred until x's own boundary), or when x is armed on a live
+  // target that is busy, carries a target-side defer, still owes x a wake that is
+  // NOT being held (a settle pending, or one that dropped or was refused on a
+  // dirty idle window — which the target's next turn end, or, once the target is
+  // gone for good, the heartbeat's retirement, ends), or is held and itself
+  // waiting on work. The last
+  // clause recurses, and `seen` is what ends it: ownership is spawn OR dispatch,
+  // so two sessions can own each other, and a held target that is only waiting
+  // back on x must not count — each would otherwise hold the other's wake
+  // forever. Callers seed `seen` with the session being decided.
+  _waitsOnWork(x: string, seen: Set<string>): boolean {
+    if (this._inFlight.has(x) || this._deferredWakes.get(x)?.length) return true;
+    for (const [t, callers] of this.subscribers) {
+      if (seen.has(t) || !callers.has(x)) continue;
+      const ti = this.manager.byId.get(t);
+      if (!ti || this._goneForGood(t)) continue;
+      if (ti.status !== 'idle' || this._targetDefers(ti) || !this._holding.has(t)) return true;
+      seen.add(t);
+      if (this._waitsOnWork(t, seen)) return true;
+    }
+    return false;
+  }
+
+  // Should the wake this target owes its owners be held at this decision point?
+  // Yes while it still waits on work — unless the turn put a question or a plan to
+  // the user, or was force-aborted (reported now, so the INTERRUPTED qualifier
+  // describes the turn it belongs to).
+  // Called only at decision points, and records a true answer in _holding.
+  _holds(target: InstanceLike): boolean {
+    if (this._asked.has(target.id) || target.turnForceAborted === true) return false;
+    const held = this._waitsOnWork(target.id, new Set([target.id]));
+    if (held) this._holding.add(target.id);
+    return held;
+  }
+
+  // Consume every armed wake on a target and deliver each: stop the heartbeats,
+  // drop any pending settle, and (`announce`) emit the graph change. The tail
+  // every non-exit consuming path shares.
+  _consume(targetInstanceId: string, { announce }: { announce: boolean }): void {
+    const subs = this.subscribers.get(targetInstanceId);
+    if (!subs || subs.size === 0) return;
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
-    const abort = this._abortQualifier(target);
+    this._holding.delete(targetInstanceId);
+    this._cancelSettle(targetInstanceId);
+    if (announce) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    const abort = this._abortQualifier(this.manager.byId.get(targetInstanceId));
     for (const [callerInstanceId, { timerId }] of entries) {
-      clearInterval(timerId); // stop the heartbeat — turn_end arrived
+      clearInterval(timerId);
       this.deliver(callerInstanceId, targetInstanceId, abort);
     }
+  }
+
+  // A wait of `x` ended without x opening a turn (a worker removed, a wake to x
+  // refused or abandoned, a disarm). If x is idle with its owners' wakes held and
+  // nothing still holds them, this is their decision point: deliver now. A no-op
+  // for an x mid-turn — its own turn_end decides — and for an x whose wakes are
+  // armed but not held: those are owed by x's own pending turn or settle.
+  _releaseHeld(x: string): void {
+    if (this._suspended || !this._holding.has(x)) return;
+    const ti = this.manager.byId.get(x);
+    if (!ti?.proc || ti.status !== 'idle' || !this.subscribers.get(x)?.size) return;
+    if (this._targetDefers(ti) || this._holds(ti)) return;
+    this._consume(x, { announce: true });
   }
 
   // The INTERRUPTED qualifier, or undefined for an ordinary resolution. Read by
@@ -396,18 +505,11 @@ export class IdleSubscriptionHub {
         || inst.taskNotificationPending || inst.idleWindowDirty) return;
     // The freeze check: zero events of any kind since the arming task event.
     if (inst.ring?.nextSeq !== pending.armSeq) return;
-    // Consume — the same shape as the heartbeat path, but with the normal
-    // "finished" stub. NOTE: _justConsumed is intentionally NOT marked (it is
-    // turn_end-only; _isWaitingOn reads it for a renewal expiry, which runs in the turn_end dispatch).
-    const entries = [...subs.entries()];
-    subs.clear();
-    this.subscribers.delete(targetInstanceId);
-    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-    const abort = this._abortQualifier(inst);
-    for (const [callerInstanceId, { timerId }] of entries) {
-      clearInterval(timerId); // stop the heartbeat — the settle won
-      this.deliver(callerInstanceId, targetInstanceId, abort);
-    }
+    if (this._holds(inst)) return;
+    // Consume with the normal "finished" stub. NOTE: _justConsumed is
+    // intentionally NOT marked (it is turn_end-only; _isWaitingOn reads it for a
+    // renewal expiry, which runs in the turn_end dispatch).
+    this._consume(targetInstanceId, { announce: true });
   }
 
   // A rotation finished. Fire the wake immediately IFF the mechanism declared the
@@ -423,19 +525,9 @@ export class IdleSubscriptionHub {
   _onRotationComplete(targetInstanceId: string, ev: UiEvent): void {
     const data = (ev as { data?: { comesUpIdle?: unknown } }).data;
     if (data?.comesUpIdle !== true) return;
-    const subs = this.subscribers.get(targetInstanceId);
-    if (!subs || subs.size === 0) return;
-    const entries = [...subs.entries()];
-    subs.clear();
-    this.subscribers.delete(targetInstanceId);
-    // No watchers left, so any pending idle-drain settle has nothing to deliver to.
-    this._cancelSettle(targetInstanceId);
-    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-    const abort = this._abortQualifier(this.manager.byId.get(targetInstanceId));
-    for (const [callerInstanceId, { timerId }] of entries) {
-      clearInterval(timerId); // stop the heartbeat — the rotation won
-      this.deliver(callerInstanceId, targetInstanceId, abort);
-    }
+    const inst = this.manager.byId.get(targetInstanceId);
+    if (inst && this._holds(inst)) return;
+    this._consume(targetInstanceId, { announce: true });
   }
 
   // The target's CLI exited ON ITS OWN, whatever the code (the manager's
@@ -523,7 +615,10 @@ export class IdleSubscriptionHub {
   // If the target is ALREADY mid-turn, arm right here: onTurnStart has been and
   // gone for that turn, and a mid-turn steer from a conductor that did not
   // previously own the target would otherwise get no wake for the very turn it
-  // just steered. An owner already armed makes this a no-op.
+  // just steered. An owner already armed has its heartbeat restarted instead, so
+  // the window counts from this dispatch — a held wake can stay armed across many
+  // of the target's turns, and a beat timed from an older one would report a
+  // target the owner just prompted as not finishing.
   noteDispatch(callerSessionId: string, targetSessionId: string, timeoutMs?: number): void {
     if (typeof callerSessionId !== 'string' || !callerSessionId) {
       throw new Error('callerSessionId required');
@@ -539,7 +634,12 @@ export class IdleSubscriptionHub {
     const target = this.manager.liveForSession(targetSessionId);
     if (!target) throw new Error(`target session not live: ${targetSessionId}`);
     this._recordOwner(target.id, caller.id, timeoutMs);
-    if (target.status === 'turn' && this._arm(target.id, caller.id)) {
+    const armed = this.subscribers.get(target.id)?.get(caller.id);
+    if (armed) {
+      clearInterval(armed.timerId);
+      this.subscribers.get(target.id)!.delete(caller.id);
+      this._arm(target.id, caller.id);
+    } else if (target.status === 'turn' && this._arm(target.id, caller.id)) {
       this.manager.emit('subscription_changed', { targetId: target.id });
     }
   }
@@ -564,11 +664,19 @@ export class IdleSubscriptionHub {
     // fine. Without this, that turn's wake reported "was INTERRUPTED … do not
     // treat this as a result" about a completed turn.
     const survived = (this.subscribers.get(targetInstanceId)?.size ?? 0) > 0;
+    // A turn is the target's next decision point; until it ends it is busy.
+    this._holding.delete(targetInstanceId);
     let armed = false;
     for (const callerInstanceId of this.ownersOf(targetInstanceId)) {
       if (this._arm(targetInstanceId, callerInstanceId)) armed = true;
     }
-    if (!survived) this.manager.byId.get(targetInstanceId)?.consumeTurnForceAborted?.();
+    if (!survived) {
+      this.manager.byId.get(targetInstanceId)?.consumeTurnForceAborted?.();
+      // An ask belongs to the wake it travelled with, the same lifetime as the
+      // abort qualifier: kept for a deferred wake's re-invocation turn, dropped
+      // once its wake was delivered.
+      this._asked.delete(targetInstanceId);
+    }
     if (armed) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
 
@@ -612,6 +720,7 @@ export class IdleSubscriptionHub {
     this._dropArmed(targetInstanceId, callerInstanceId);
     this._takeDecline(targetInstanceId, callerInstanceId); // this wait is over
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    this._releaseHeld(callerInstanceId);
   }
 
   // Create/update one dispatch ownership edge. A usable timeoutMs wins; anything
@@ -690,6 +799,7 @@ export class IdleSubscriptionHub {
     subs.delete(callerInstanceId);
     if (subs.size === 0) {
       this.subscribers.delete(targetInstanceId);
+      this._holding.delete(targetInstanceId);
       // No watchers left — a pending idle-drain settle has nothing to deliver
       // to (its fire-time re-check would drop it; this is the eager form so the
       // map stays clean).
@@ -714,8 +824,19 @@ export class IdleSubscriptionHub {
   // was the target — armed wakes AND the ownership edges behind them, because a
   // removed instance can neither be woken nor start another turn. Clears
   // heartbeat timers. Called on instance removal. Guards a falsy id.
-  purge(instanceId: string): void {
+  //
+  // Each caller that lost a wait on it then gets _releaseHeld: the removal may
+  // have ended the last thing holding that caller's own owners' wakes. `release:
+  // false` is the overage sever's: a release there would prompt into the
+  // throttled account the sever exists to keep quiet. `removing` names the other
+  // instances the same sweep is deleting: a caller among them is never released,
+  // since it is going too — and the sweep's kill order must not decide whether
+  // its owner is woken.
+  purge(instanceId: string, { release = true, removing }: { release?: boolean; removing?: ReadonlySet<string> } = {}): void {
     if (!instanceId) return;
+    const waiters = [...this.subscribers.get(instanceId)?.keys() ?? []];
+    this._asked.delete(instanceId);
+    this._holding.delete(instanceId);
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
     this._owners.delete(instanceId); // as target: every owner edge pointing at it
     for (const [target, owners] of this._owners) { // as owner of something else
@@ -743,9 +864,15 @@ export class IdleSubscriptionHub {
         subs.delete(instanceId);
         if (subs.size === 0) {
           this.subscribers.delete(target);
+          this._holding.delete(target);
           this._cancelSettle(target); // that target lost its last watcher
         }
       }
+    }
+    for (const caller of waiters) {
+      if (removing?.has(caller)) continue;
+      if (release) this._releaseHeld(caller);
+      else this._redecideHold(caller);
     }
   }
 
@@ -778,7 +905,7 @@ export class IdleSubscriptionHub {
     const lostFrom = [...this.subscribers]
       .filter(([, subs]) => subs.has(instanceId)).map(([target]) => target);
     if (lostFrom.length || this._deferredWakes.has(instanceId)) lost.add(instanceId);
-    this.purge(instanceId);
+    this.purge(instanceId, { release: false });
     for (const [callerInstanceId, queue] of [...this._deferredWakes]) {
       const kept = queue.filter(q => q.targetInstanceId !== instanceId);
       if (kept.length === queue.length) continue;
@@ -817,6 +944,7 @@ export class IdleSubscriptionHub {
   }
 
   deliver(callerInstanceId: string, targetInstanceId: string, opts?: DeliverOpts): void {
+    if (this._suspended) return;
     // Resolve the live caller instance directly by instanceId.
     const caller = this.manager.byId.get(callerInstanceId);
     if (!caller || !caller.proc) {
@@ -892,11 +1020,25 @@ export class IdleSubscriptionHub {
   // One delivery finished (sent, refused, or abandoned). When that leaves the
   // caller with nothing armed, nothing deferred and nothing in flight, announce
   // the change: a refused send leaves it idle, and nothing else would say so.
+  // A refused or abandoned send is also a wait that ended without a turn, so it
+  // may release wakes the caller was holding; a sent one has already put the
+  // caller into a turn, which makes the release a no-op.
   _endInFlight(callerInstanceId: string, targetInstanceId: string): void {
     const n = (this._inFlight.get(callerInstanceId) ?? 0) - 1;
     if (n > 0) this._inFlight.set(callerInstanceId, n);
     else this._inFlight.delete(callerInstanceId);
     if (!this.isCaller(callerInstanceId)) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    this._releaseHeld(callerInstanceId);
+  }
+
+  // Re-decide whether x is still holding, delivering nothing either way — for a
+  // wait that ended where no release may be sent (the overage sever). A marker
+  // left on an x with no waits would read as "held, nothing outstanding" to
+  // x's owner's decision, though x still owes that owner its armed wake.
+  _redecideHold(x: string): void {
+    if (!this._holding.has(x)) return;
+    const ti = this.manager.byId.get(x);
+    if (!ti || !this._holds(ti)) this._holding.delete(x);
   }
 
   // The plain pointer stub — text for the heartbeat path and the live
@@ -978,8 +1120,8 @@ export class IdleSubscriptionHub {
   }
 
   // Returns true when instanceId is the *caller* (conductor) of any ARMED wake —
-  // i.e. one of its sessions is mid-turn right now and it is due a report when
-  // that turn ends. This is what the sidebar's accent idle dot reads (surfaced as
+  // i.e. one of its sessions is mid-turn right now, or ended a turn holding the
+  // wake (_holds), and it is due a report when that wait ends. This is what the sidebar's accent idle dot reads (surfaced as
   // `awaitingWake`), and it stays true across a heartbeat, because a heartbeat
   // reports without consuming. It also stays true from a wake's
   // consume until its send has run (`_inFlight`), and while a wake is held for a

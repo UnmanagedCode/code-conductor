@@ -446,13 +446,12 @@ export function buildTools(): Tool[] {
     {
       name: 'set_idle_timeout',
       description:
-        'Shorten the HEARTBEAT window on one of your sessions. There is nothing to register: you are woken ' +
-        'when a session you spawned or have ever prompted ends a turn, automatically and with no opt-out. ' +
-        'While such a session is mid-turn you are also pinged every ORCH_SUBSCRIBE_TIMEOUT_MS with a stub ' +
-        'labelled "did NOT finish" — meaning still running, not finished — and that ping repeats until the ' +
-        'turn ends without ever consuming the real turn-end wake. This tool changes only how often that ping ' +
-        'arrives. It re-arms a heartbeat that is already running, so mid-turn is its use case; `armed:true` ' +
-        'in the result means the target was mid-turn and its live heartbeat was re-armed. The ceiling is the ' +
+        'Shorten the HEARTBEAT window on one of your sessions: the "did NOT finish" stub (still running, not ' +
+        'finished) that repeats every ORCH_SUBSCRIBE_TIMEOUT_MS while you are owed a wake from it, without ever ' +
+        'consuming that wake. There is nothing to register — a session you spawned or have ever prompted wakes ' +
+        'you automatically. This tool changes only how often that ping arrives. It re-arms a heartbeat that is ' +
+        'already running; `armed:true` in the result means a wake from the target was pending and its live ' +
+        'heartbeat was re-armed. The ceiling is the ' +
         'default, so this can only shorten. Caller identity is taken from the MCP URL (?caller=<sessionId>), ' +
         'so this only works for orchestrator-spawned instances.',
       inputSchema: {

@@ -20,7 +20,7 @@ import {
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT,
 } from '../public/injectedTurns.js';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
-import { RESUME_TEXT, buildConductorResumeText } from '../src/resumeRestart.ts';
+import { RESUME_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';
 import { buildRebasePrompt } from '../src/worktrees.ts';
 
@@ -43,7 +43,7 @@ const REBASE = {
 };
 const NOTICES = {
   'restart notice (RESUME_TEXT)': RESUME_TEXT,
-  'conductor restart notice': buildConductorResumeText([{ project: 'p', sessionId: 's1', worktreeName: 'w' }]),
+  'restart notice with workers': buildWorkersResumeText('root', [{ project: 'p', sessionId: 's1', worktreeName: 'w', parentSessionId: 'root' }]),
   'overage preamble AUTO_RESUME_TEXT': AUTO_RESUME_TEXT,
   'overage preamble IDLE_PARKED_RESUME_TEXT': IDLE_PARKED_RESUME_TEXT,
   'overage preamble QUEUED_ONLY_RESUME_TEXT': QUEUED_ONLY_RESUME_TEXT,

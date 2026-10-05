@@ -27,17 +27,17 @@ You only see the human's input when your current tool call returns, and worker p
 ```
 send_prompt({sessionId, text})   // or approve_plan / reject_plan / answer_question — each starts a worker turn
 // End your turn — the human is free to talk to you.
-// When the worker's turn ends (and all its background subagents finished), the
-// orchestrator wakes you with a stub naming the worker; if you were idle waiting,
-// the worker's recent output is already folded into the stub — read it and proceed:
+// The orchestrator wakes you with a stub naming the worker (when: "You are woken
+// automatically" below); if you were idle waiting, the worker's recent output is
+// already folded into the stub — read it and proceed:
 approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_recent_messages needed
 ```
 
 - **A wake implies the worker's subagents finished too** — the orchestrator defers it until backgrounded `Agent` tasks complete (a stuck one shows up as a heartbeat instead).
-- **You are woken automatically.** A session you spawned or have ever prompted is yours: whenever it enters a turn, you are woken when that turn ends. Nothing to arm, nothing to re-arm, no way to opt out — including turns it starts on its own (an auto-approved plan rolling into implementation). Abandon a worker with `kill_instance`.
+- **You are woken automatically.** A session you spawned or have ever prompted is yours: whenever it enters a turn, you are woken when that turn ends — unless it ends still waiting on its own workers with no question or plan for you; then your wake is held until it ends a turn that isn't, or its wait clears. Nothing to arm, nothing to re-arm, no way to opt out — including turns it starts on its own (an auto-approved plan rolling into implementation). Abandon a worker with `kill_instance`.
 - **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel — a turn ending is not the work being done.
 - **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `sync_worktree`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need you to end your turn.
-- **Heartbeat, never timers.** While one of your sessions is mid-turn it pings you every `ORCH_SUBSCRIBE_TIMEOUT_MS` with a stub labelled "did NOT finish" — that means still running, not finished, and it repeats until the turn ends. A heartbeat never consumes your turn-end wake; that still arrives. On one, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
+- **Heartbeat, never timers.** While one of your sessions is mid-turn or holding your wake it pings you every `ORCH_SUBSCRIBE_TIMEOUT_MS` with a stub labelled "did NOT finish" — that means still running, not finished, and it repeats until your wake arrives. A heartbeat never consumes that wake; it still arrives. On one, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
 
 ## Your own plan mode
 
@@ -76,7 +76,7 @@ Call every `mcp__code-conductor__*` tool this document names as `mcp__code-condu
 
 **Drive workers** — always dispatch-and-wake (see Core rule).
 - `send_prompt` — send a turn. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
-- `set_idle_timeout({sessionId, timeoutSeconds})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so mid-turn is its use case.
+- `set_idle_timeout({sessionId, timeoutSeconds})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so a worker mid-turn or holding your wake is its use case.
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
 - `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance`.
 

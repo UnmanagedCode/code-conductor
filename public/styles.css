@@ -1510,6 +1510,7 @@ details.block.system > summary { cursor: pointer; }
 #subagent-panel .task-row { cursor: pointer; border-radius: 3px; }
 #subagent-panel .task-row:hover { background: rgba(255,255,255,.05); }
 .task-row.subagent-idle .task-marker { color: var(--muted); }
+.task-row.subagent-awaiting .task-marker { color: var(--accent); animation: pulse 1s infinite alternate; }
 .task-row.subagent-crashed .task-marker { color: var(--red); }
 .task-row.subagent-crashed .task-text { color: var(--red); opacity: .8; }
 .subagent-playbook {

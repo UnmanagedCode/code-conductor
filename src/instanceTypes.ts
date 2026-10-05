@@ -275,6 +275,15 @@ export interface InstanceLike {
   off(event: 'status', cb: (s: InstanceSummary) => void): void;
 }
 
+// One session spawned (transitively) under a root, as the resume manifest
+// carries it — see InstanceManager.conductedSubtreeOf.
+export interface SubtreeRow {
+  project: string;
+  sessionId: string;
+  worktreeName: string | null;
+  parentSessionId: string | null;
+}
+
 export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
@@ -315,8 +324,9 @@ export interface InstanceManagerLike {
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
-  conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }>;
+  conductedSubtreeOf(rootId: string): SubtreeRow[];
   isIdleCaller(instanceId: string): boolean;
+  suspendWakes(): void;
   shutdownForResumeSync(): void;
   create(input: CreateInstanceInput): Promise<InstanceLike>;
   _inUsageWindowFlow(inst: InstanceLike): boolean;

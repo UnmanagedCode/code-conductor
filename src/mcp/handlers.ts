@@ -1154,7 +1154,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       // `callerId` is now the conductor's stable sessionId (from ?caller=) —
       // resolve it back to the conductor's live instanceId so the internal
       // Instance.callerInstanceId field stays an instanceId (consumers:
-      // public/subagents.js, conductedWorkersOf — both match on instanceId).
+      // public/subagents.js, conductedSubtreeOf — both match on instanceId).
       callerInstanceId: callerInst?.id ?? null,
     };
     inst = await instances.create(createArgs);

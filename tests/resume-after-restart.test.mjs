@@ -18,7 +18,7 @@ import {
 import {
   drainToManifest,
   restoreFromResumeManifest,
-  buildConductorResumeText,
+  buildWorkersResumeText,
   RESUME_TEXT,
 } from '../src/resumeRestart.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
@@ -52,6 +52,9 @@ afterEach(async () => {
   await instances.shutdown();
   instances._idleSubscribers?.clear();
   instances._idleHub?._owners.clear();
+  // drainToManifest suspends wake delivery for the rest of the process; this
+  // file's tests share one manager, so each starts with wakes live again.
+  if (instances._idleHub) instances._idleHub._suspended = false;
   await rmrf(home);
 });
 
@@ -238,28 +241,39 @@ for (const flagged of [false, true]) {
   });
 }
 
-// --- 4. conductedWorkersOf -------------------------------------------------
+// --- 4. conductedSubtreeOf -------------------------------------------------
 
-test('conductedWorkersOf enumerates a conductor\'s live workers', async () => {
+// Invariant: the subtree list holds every session spawned under the root at any
+// depth, and nothing else, each row naming its spawner's sessionId.
+test('conductedSubtreeOf lists the whole subtree with each row\'s parent sessionId', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'cwproj' });
-  const conductor = await instances.create({ project: 'cwproj' });
-  await waitFor(() => conductor.sessionId);
-  const w1 = await instances.create({ project: 'cwproj', callerInstanceId: conductor.id, conducted: true });
-  const w2 = await instances.create({ project: 'cwproj', callerInstanceId: conductor.id, conducted: true });
+  const root = await instances.create({ project: 'cwproj' });
+  const unrelated = await instances.create({ project: 'cwproj' });
+  await waitFor(() => root.sessionId && unrelated.sessionId);
+  const w1 = await instances.create({ project: 'cwproj', callerInstanceId: root.id, conducted: true });
+  const w2 = await instances.create({ project: 'cwproj', callerInstanceId: root.id, conducted: true });
   await waitFor(() => w1.sessionId && w2.sessionId);
+  const g = await instances.create({ project: 'cwproj', callerInstanceId: w1.id, conducted: true });
+  const stray = await instances.create({ project: 'cwproj', callerInstanceId: unrelated.id, conducted: true });
+  await waitFor(() => g.sessionId && stray.sessionId);
 
-  const workers = instances.conductedWorkersOf(conductor.id);
-  assert.equal(workers.length, 2);
-  const sids = workers.map(w => w.sessionId).sort();
-  assert.deepEqual(sids, [w1.sessionId, w2.sessionId].sort());
-  assert.ok(workers.every(w => w.worktreeName === null));
-  assert.ok(workers.every(w => w.project === 'cwproj'), 'each worker carries its project');
-  assert.equal(instances.conductedWorkersOf('nobody').length, 0);
+  const rows = instances.conductedSubtreeOf(root.id);
+  const bySid = Object.fromEntries(rows.map(r => [r.sessionId, r]));
+  assert.deepEqual(Object.keys(bySid).sort(), [w1.sessionId, w2.sessionId, g.sessionId].sort());
+  assert.equal(bySid[w1.sessionId].parentSessionId, root.sessionId);
+  assert.equal(bySid[w2.sessionId].parentSessionId, root.sessionId);
+  assert.equal(bySid[g.sessionId].parentSessionId, w1.sessionId, 'a grandchild names its own spawner');
+  assert.ok(rows.every(r => r.worktreeName === null && r.project === 'cwproj'), 'each row carries project + worktree');
+  assert.equal(instances.conductedSubtreeOf('nobody').length, 0);
 });
 
 // --- 5+6. boot restore: three-group split + conductor worker injection -----
 
-test('restoreFromResumeManifest resumes conductors + others, skips workers, injects worker list', async () => {
+// Invariant: only top-level entries are resumed; a root with a subtree — a
+// conductor or a plain session alike — is told every row with its spawner, and a
+// top-level session with none — a conductor included — gets the plain
+// RESUME_TEXT.
+test('restoreFromResumeManifest resumes top-level sessions only and tells each root its subtree', async () => {
   const transcript = path.join(os.tmpdir(), `cc-restore-${randomUUID()}.log`);
   const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
@@ -267,13 +281,18 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
     await api(baseUrl, 'POST', '/api/projects', { name: 'realproj' });
 
     const conductorSid = randomUUID();
+    const bareConductorSid = randomUUID();
     const otherSid = randomUUID();
+    const otherRootSid = randomUUID();
+    const otherChildSid = randomUUID();
+    const otherGrandSid = randomUUID();
     const workerSid = randomUUID();
+    const grandSid = randomUUID();
     const conductCwd = path.join(projectsRoot, '.conduct');
     const otherCwd = path.join(projectsRoot, 'realproj');
 
     // Materialize resumable jsonls at the cwd-encoded paths loadHistory reads.
-    for (const [cwd, sid] of [[conductCwd, conductorSid], [otherCwd, otherSid]]) {
+    for (const [cwd, sid] of [[conductCwd, conductorSid], [conductCwd, bareConductorSid], [otherCwd, otherSid], [otherCwd, otherRootSid]]) {
       const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
@@ -286,7 +305,16 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
         worktreeName: null, temp: true, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'conductor',
-        workers: [{ project: 'realproj', sessionId: workerSid, worktreeName: 'realproj_worktree_zz' }],
+        workers: [
+          { project: 'realproj', sessionId: workerSid, worktreeName: 'realproj_worktree_zz', parentSessionId: conductorSid },
+          { project: 'realproj', sessionId: grandSid, worktreeName: null, parentSessionId: workerSid },
+        ],
+      },
+      {
+        project: '.conduct', sessionId: bareConductorSid, cwd: conductCwd,
+        mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
+        worktreeName: null, temp: true, conducted: false, debug: false, title: null,
+        autoApprovePlan: false, group: 'conductor',
       },
       {
         project: 'realproj', sessionId: workerSid, cwd: otherCwd,
@@ -295,37 +323,60 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
         title: null, autoApprovePlan: false, group: 'worker',
       },
       {
+        project: 'realproj', sessionId: grandSid, cwd: otherCwd,
+        mode: 'plan', effort: 'high', thinking: 'adaptive', model: null,
+        worktreeName: null, temp: true, conducted: true, debug: false,
+        title: null, autoApprovePlan: false, group: 'worker',
+      },
+      {
         project: 'realproj', sessionId: otherSid, cwd: otherCwd,
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
         worktreeName: null, temp: false, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'other',
       },
+      {
+        project: 'realproj', sessionId: otherRootSid, cwd: otherCwd,
+        mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
+        worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+        autoApprovePlan: false, group: 'other',
+        workers: [
+          { project: 'realproj', sessionId: otherChildSid, worktreeName: null, parentSessionId: otherRootSid },
+          { project: 'realproj', sessionId: otherGrandSid, worktreeName: null, parentSessionId: otherChildSid },
+        ],
+      },
     ]);
 
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
-    assert.equal(restored, 2, 'conductor + other resumed, worker skipped');
+    assert.equal(restored, 4, 'both conductors + both others resumed, workers skipped');
 
     const sids = [...instances.byId.values()].map(i => i.sessionId);
     assert.ok(sids.includes(conductorSid), 'conductor resumed');
     assert.ok(sids.includes(otherSid), 'other resumed');
     assert.ok(!sids.includes(workerSid), 'conducted worker NOT resumed from boot loop');
+    assert.ok(!sids.includes(grandSid), 'grandchild worker NOT resumed from boot loop');
 
     // Manifest consumed.
     await assert.rejects(() => fs.access(resumeManifestPath()));
 
-    // Resume notifications injected to stdin (shared transcript). fake-claude
-    // writes the transcript asynchronously, so poll until both prompts land.
-    await waitFor(async () => {
-      try {
-        const d = await fs.readFile(transcript, 'utf8');
-        return d.includes(RESUME_TEXT) && d.includes(workerSid);
-      } catch { return false; }
-    });
-    const dump = await fs.readFile(transcript, 'utf8');
-    assert.ok(dump.includes(RESUME_TEXT), 'plain resume text injected');
-    assert.ok(dump.includes(workerSid), 'conductor prompt embeds worker sessionId');
-    assert.ok(dump.includes('project `realproj`'), 'conductor prompt embeds worker project');
-    assert.ok(dump.includes('resume conducting your workers'), 'conductor resume text injected');
+    // Attributed per session through each one's own ring.
+    const echoes = (sid) => instances.liveForSession(sid).ring.toArray()
+      .filter(e => e.kind === 'user_echo').map(e => String(e.text ?? ''))
+      .filter(t => t.startsWith(RESUME_TEXT.slice(0, 40)));
+    await waitFor(() => [conductorSid, bareConductorSid, otherSid, otherRootSid].every(sid => echoes(sid).length === 1));
+    const [rootText] = echoes(conductorSid);
+    assert.ok(rootText.includes(`sessionId \`${workerSid}\`, worktree \`realproj_worktree_zz\`, spawned by you`),
+      'the direct worker, spawned by the root');
+    assert.ok(rootText.includes(`sessionId \`${grandSid}\`, (no worktree), spawned by \`${workerSid}\``),
+      'the grandchild, naming its own spawner');
+    assert.ok(rootText.includes('project `realproj`'), 'each row carries its project');
+    assert.deepEqual(echoes(bareConductorSid), [RESUME_TEXT], 'a conductor with no workers gets RESUME_TEXT');
+    assert.deepEqual(echoes(otherSid), [RESUME_TEXT], 'a session with no workers gets RESUME_TEXT');
+    const [otherRootText] = echoes(otherRootSid);
+    assert.notEqual(otherRootText, RESUME_TEXT, 'a plain session with workers does not get RESUME_TEXT');
+    assert.ok(otherRootText.includes(`sessionId \`${otherChildSid}\`, (no worktree), spawned by you`),
+      'a plain root is told its direct worker');
+    assert.ok(otherRootText.includes(`sessionId \`${otherGrandSid}\`, (no worktree), spawned by \`${otherChildSid}\``),
+      'and its grandchild, naming the spawner');
   } finally {
     if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
@@ -411,14 +462,18 @@ test('a restarted conductor keeps its OWN level, not a default that changed unde
   clearResumeManifest();
 });
 
-test('buildConductorResumeText lists each worker sessionId + worktree', () => {
-  const txt = buildConductorResumeText([
-    { project: 'p1', sessionId: 'aaa', worktreeName: 'wt-1' },
-    { project: 'p2', sessionId: 'bbb', worktreeName: null },
+// Invariant: each row names its spawner — "you" for the root itself — and a
+// row with no parentSessionId (written by a build that listed direct workers
+// only) reads as the root's.
+test('buildWorkersResumeText names each row\'s spawner, and a row without one is the root\'s', () => {
+  const txt = buildWorkersResumeText('root', [
+    { project: 'p1', sessionId: 'aaa', worktreeName: 'wt-1', parentSessionId: 'root' },
+    { project: 'p2', sessionId: 'bbb', worktreeName: null, parentSessionId: 'aaa' },
+    { project: 'p3', sessionId: 'ccc', worktreeName: null },
   ]);
-  assert.ok(txt.includes('project `p1`, sessionId `aaa`, worktree `wt-1`'));
-  assert.ok(txt.includes('project `p2`, sessionId `bbb`, (no worktree)'));
-  assert.ok(buildConductorResumeText([]).includes('(none recorded)'));
+  assert.ok(txt.includes('project `p1`, sessionId `aaa`, worktree `wt-1`, spawned by you'));
+  assert.ok(txt.includes('project `p2`, sessionId `bbb`, (no worktree), spawned by `aaa`'));
+  assert.ok(txt.includes('project `p3`, sessionId `ccc`, (no worktree), spawned by you'));
 });
 
 // --- 7. drain: mid-turn instance wound down to idle, written to manifest ----
@@ -482,6 +537,62 @@ test('drainToManifest sets wasBusy:true for mid-turn and wasBusy:false for idle'
 
     assert.equal(byId[idleInst.sessionId].wasBusy, false, 'idle session → wasBusy:false');
     assert.equal(byId[busyInst.sessionId].wasBusy, true,  'busy session → wasBusy:true');
+    clearResumeManifest();
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+// Invariant: a top-level session that is not a conductor carries its spawn
+// subtree into the manifest; a worker entry carries none.
+// Invariant (same drain): once the drain begins no wake reaches any session — a
+// worker the drain winds down does not wake its idle owner, whose own owner's
+// wake is held on it.
+test('drainToManifest carries a plain session\'s subtree and delivers no wake while draining', async () => {
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'treeproj' });
+    const P = await instances.create({ project: 'treeproj' });
+    await waitFor(() => P.sessionId);
+    const C = await instances.create({ project: 'treeproj', callerInstanceId: P.id, conducted: true });
+    await waitFor(() => C.sessionId);
+    const G = await instances.create({ project: 'treeproj', callerInstanceId: C.id, conducted: true });
+    await waitFor(() => [P, C, G].every(i => i.status === 'idle' && i.sessionId));
+
+    // C has ended a turn holding P's wake while G is mid-turn on C's dispatch.
+    const hub = instances._idleHub;
+    assert.equal(hub._suspended, false, 'premise: wakes are live before the drain');
+    hub.onTurnStart(C.id);
+    await G.prompt('go');
+    await waitFor(() => G.status === 'turn');
+    await waitFor(() => G.ring.toArray().some(ev => ev.kind === 'system' && ev.subtype === 'init'));
+    instances.emit('event', { id: C.id, ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+    assert.equal(hub.subscribers.get(C.id)?.has(P.id), true, 'premise: P held on C');
+    assert.equal(hub.subscribers.get(G.id)?.has(C.id), true, 'premise: C armed on G');
+
+    // A stub is built synchronously in the delivery microtask, before any I/O,
+    // so this records every wake the hub tries to send.
+    const built = [];
+    const fold = hub._buildFoldedStub.bind(hub), plain = hub._plainStub.bind(hub);
+    hub._buildFoldedStub = (sid, ...a) => { built.push(sid); return fold(sid, ...a); };
+    hub._plainStub = (sid, ...a) => { built.push(sid); return plain(sid, ...a); };
+    const echoesBefore = (i) => i.ring.toArray().filter(e => e.kind === 'user_echo').length;
+    const before = [P, C].map(echoesBefore);
+
+    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(hub.subscribers.get(G.id)?.has(C.id) ?? false, false,
+      'premise: G\'s wound-down turn ended and consumed C\'s wake');
+    assert.deepEqual(built, [], 'no wake was built during the drain');
+    assert.deepEqual([P, C].map(echoesBefore), before, 'no prompt reached P or C');
+
+    const bySid = Object.fromEntries(entries.map(e => [e.sessionId, e]));
+    assert.equal(bySid[P.sessionId].group, 'other', 'premise: P is not a conductor');
+    assert.deepEqual(bySid[P.sessionId].workers.map(w => [w.sessionId, w.parentSessionId]).sort(),
+      [[C.sessionId, P.sessionId], [G.sessionId, C.sessionId]].sort());
+    assert.equal(bySid[C.sessionId].workers, undefined, 'a worker entry lists nothing');
     clearResumeManifest();
   } finally {
     if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
