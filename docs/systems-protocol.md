@@ -304,10 +304,10 @@ cc  →  {"type":"listRemotes","id":"l1"}
   ids the provider's own **configuration** maps to a target, at the moment it
   composes the answer. Its configuration is state it holds independently of
   its targets — declared to it, or otherwise authoritative — and **never
-  learned by contacting a target or the service hosting one**. A set
-  discovered by polling and cached is not configuration, however it is
-  stored. Whether a configured target is reachable right now is **not
-  consulted**, so composing the list attempts no target.
+  learned by asking a target, or the service hosting one, which targets
+  exist**. A set discovered by polling and cached is not configuration,
+  however it is stored. Whether a configured target is reachable right now is
+  **not consulted**, so composing the list attempts no target.
 - **Two refusals share `ENOREMOTE`; only one decides membership.** A
   *configuration refusal* is decided from that configuration alone, before any
   attempt, and such an id is never listed. A *reachability refusal* is learned
@@ -324,8 +324,9 @@ cc  →  {"type":"listRemotes","id":"l1"}
   every well-formed id. A configuration that is a rule admitting an unbounded
   set — a name pattern, say — is the same. Listing the targets that happen to
   be reachable now does not license the capability: that set is learned by
-  contacting them, so it is a reachability snapshot, not configuration.
-  Neither does keeping a configuration while also attempting ids outside it.
+  asking the targets, or the service hosting them, which exist, so it is a
+  reachability snapshot, not configuration. Neither does keeping a
+  configuration while also attempting ids outside it.
 - **An entry is an object carrying `remoteId` only.** Each `remoteId` MUST be one
   cc accepts as a project's Remote — non-empty, no whitespace or control
   characters, at most `REMOTE_ID_MAX` characters; the rule is `remoteIdDefect`
