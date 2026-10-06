@@ -16,7 +16,7 @@
 // stops those overrides rotting silently: it builds a REAL refusal from the
 // real server functions and checks the tail the dialog strips is still there.
 
-import { test } from 'node:test';
+import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
@@ -844,24 +844,57 @@ test('completion lists the chosen system and remote, fills the field, and the PO
   assert.deepEqual(d.requests.at(-1).body, { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'r1' });
 });
 
-// PINS: the cache is per placement, and the dialog invalidates it when the
-// placement moves — both knobs, not just the system.
-test('changing the system or the remote refetches the same directory', async () => {
-  const d = await bootDialog();
-  await d.pick('prod-box');
-  await d.typePath('/srv/x');
-  assert.equal(d.listings.length, 1);
-  await d.typePath('/srv/y');
-  assert.equal(d.listings.length, 1, 'same placement, same directory: cached');
+// PINS: the dialog RESETS the picker when the placement moves — it closes a list
+// that was about the old placement, not merely refetches. (A changed placement
+// changes the cache key, so a refetch alone proves nothing about the reset.)
+// The stale failure: a list open on prod-box survives a switch to local, which
+// clears the path programmatically with no `input` event, and clicking a row
+// writes a remote path into a local form.
+describe('a placement change closes the picker', () => {
+  const listing = () => ({ ok: true, entries: ['x1', 'x2'], links: [], truncated: true, max: 9 });
+  const assertReset = (d, why) => {
+    assert.equal(d.el('apd-path-completions').hidden, true, `${why}: list hidden`);
+    assert.equal(d.el('apd-path-completions').children.length, 0, `${why}: list empty`);
+    assert.equal(d.el('apd-path').getAttribute('aria-expanded'), 'false', `${why}: aria-expanded`);
+    assert.equal(d.el('apd-path-note').textContent, '', `${why}: note cleared`);
+  };
+  const assertOpen = (d) => {
+    assert.equal(d.el('apd-path-completions').hidden, false, 'a list is open before the change');
+    assert.equal(d.el('apd-path').getAttribute('aria-expanded'), 'true');
+    assert.match(d.el('apd-path-note').textContent, /more than 9/);
+  };
 
-  await d.typeRemote('r2');
-  await d.typePath('/srv/x');
-  assert.equal(d.listings.length, 2, 'a new remote is a new listing');
+  test('changing the remote', async () => {
+    const d = await bootDialog({ listing });
+    await d.pick('prod-box');
+    await d.typePath('/srv/x');
+    assertOpen(d);
+    await d.typeRemote('r2');
+    assertReset(d, 'remote changed');
+    await d.typePath('/srv/x');
+    assert.equal(d.listings.length, 2, 'and the same directory is a new listing');
+    assert.equal(d.listings.at(-1).params.get('remoteId'), 'r2');
+  });
 
-  await d.pick('local');
-  await d.typePath('/srv/x');
-  assert.equal(d.listings.length, 3, 'a new system is a new listing');
-  assert.equal(d.listings.at(-1).params.get('system'), null, 'local sends no system');
+  test('changing the system', async () => {
+    const d = await bootDialog({ listing });
+    await d.pick('prod-box');
+    await d.typePath('/srv/x');
+    assertOpen(d);
+    await d.pick('local');
+    assertReset(d, 'system changed');
+    await d.typePath('/srv/x');
+    assert.equal(d.listings.length, 2);
+    assert.equal(d.listings.at(-1).params.get('system'), null, 'local sends no system');
+  });
+
+  test('typing within a directory under an unchanged placement stays cached', async () => {
+    const d = await bootDialog({ listing });
+    await d.pick('prod-box');
+    await d.typePath('/srv/x');
+    await d.typePath('/srv/y');
+    assert.equal(d.listings.length, 1);
+  });
 });
 
 // PINS: an unreachable system SAYS SO next to the field and costs only the

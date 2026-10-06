@@ -9,7 +9,7 @@
 // not an entry on the bare-`fs` exception list.
 //
 // COST BOUND: one `readDir` plus at most DIR_LIST_MAX_LINK_STATS symlink
-// `stat`s, however many symlinks the directory holds. `readDir` reports a
+// `stat`s IN TOTAL per listing, however many symlinks the directory holds. `readDir` reports a
 // symlink as `symlink` without saying what it points at, and `stat` (which
 // follows links) is the only System call that answers it. Links past the budget,
 // or unanswered when DIR_LIST_LINK_DEADLINE_MS passes, are returned MARKED in
@@ -95,15 +95,11 @@ export async function selectDirs(
   const dropped = new Set<string>();
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // A flag, not only the race: a batch that wins the race in the same tick the
-  // timer fires must not let the NEXT batch start.
-  let fired = false;
   const deadline = new Promise<typeof TIMED_OUT>(resolve => {
-    timer = setTimeout(() => { fired = true; resolve(TIMED_OUT); }, linkDeadlineMs);
+    timer = setTimeout(() => resolve(TIMED_OUT), linkDeadlineMs);
   });
   try {
     for (let i = 0; i < toResolve.length; i += DIR_LIST_LINK_STAT_BATCH) {
-      if (fired) break;
       const batch = toResolve.slice(i, i + DIR_LIST_LINK_STAT_BATCH);
       const stats = batch.map(async name => {
         try {

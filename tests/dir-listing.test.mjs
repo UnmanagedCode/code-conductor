@@ -134,10 +134,10 @@ describe('selectDirs: selection, cap and the link budget', () => {
     const out = await selectDirs(sys, '/x', [link('a'), link('b'), dir('real')], { linkDeadlineMs: 20 });
     assert.deepEqual(out.entries, ['real']);
     assert.deepEqual(out.links, ['a', 'b']);
-    assert.equal(sys.calls.stat.length, 2, 'no further batch starts once the sub-deadline fires');
+    assert.equal(sys.calls.stat.length, 2, 'the sub-deadline ends the link phase after the batch in flight');
   });
 
-  test('no batch starts after the sub-deadline: stat calls stop at the batch boundary', async () => {
+  test('once the sub-deadline wins, stat calls stop at the batch boundary and every unresolved link comes back marked', async () => {
     const many = Array.from({ length: DIR_LIST_LINK_STAT_BATCH * 3 }, (_, i) => link(`l${String(i).padStart(3, '0')}`));
     const sys = fakeSystem({ statImpl: () => new Promise(() => {}) });
     const out = await selectDirs(sys, '/x', many, { linkDeadlineMs: 20 });

@@ -381,17 +381,43 @@ test('reopening clears the picker, and the create body is the unchanged placemen
   assert.deepEqual(posts, [{ name: 'demo', system: 'prod-box', systemPath: '/srv/demo', remoteId: 'r1' }]);
 });
 
-// PINS: the remote field invalidates the cache — a listing is about one target.
-test('changing the remote refetches the same directory', async () => {
-  const { window, open, choose, typePath, listings } = await setup();
+// PINS: changing the remote RESETS the picker — a list open for the old target
+// closes and its note clears — not merely refetches (a changed remote already
+// changes the cache key, so a refetch alone proves nothing about the reset).
+test('changing the remote closes the picker and the same directory is listed afresh', async () => {
+  const { window, open, choose, typePath, listings } = await setup({
+    listing: () => ({ ok: true, entries: ['d1'], links: [], truncated: true, max: 9 }),
+  });
   await open();
   await choose('prod-box');
   await typePath('/srv/d');
-  await typePath('/srv/e');
-  assert.equal(listings.length, 1, 'same placement, same directory: cached');
+  assert.equal($('np-system-path-completions').hidden, false, 'a list is open before the change');
+  assert.equal($('np-system-path').getAttribute('aria-expanded'), 'true');
+  assert.match($('np-system-path-note').textContent, /more than 9/);
+
   $('np-remote').value = 'r2';
   $('np-remote').dispatchEvent(new window.Event('input'));
+  assert.equal($('np-system-path-completions').hidden, true);
+  assert.equal($('np-system-path-completions').children.length, 0);
+  assert.equal($('np-system-path').getAttribute('aria-expanded'), 'false');
+  assert.equal($('np-system-path-note').textContent, '');
+
   await typePath('/srv/d');
   assert.equal(listings.length, 2);
   assert.equal(listings[1].params.get('remoteId'), 'r2');
+});
+
+// PINS: changing the system closes the picker too, for the same reason.
+test('changing the system closes the picker', async () => {
+  const { open, choose, typePath } = await setup({
+    listing: () => ({ ok: true, entries: ['d1'], links: [], truncated: true, max: 9 }),
+  });
+  await open();
+  await choose('prod-box');
+  await typePath('/srv/d');
+  assert.equal($('np-system-path-completions').hidden, false);
+  await choose('local');
+  assert.equal($('np-system-path-completions').hidden, true);
+  assert.equal($('np-system-path').getAttribute('aria-expanded'), 'false');
+  assert.equal($('np-system-path-note').textContent, '');
 });
