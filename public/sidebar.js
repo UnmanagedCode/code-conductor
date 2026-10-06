@@ -49,8 +49,6 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
       row.instanceAwaitingWake = !!inst.awaitingWake;
-      row.autoResumeAt = inst.autoResumeAt ?? null;
-      row.queuedCount = inst.queuedCount ?? 0;
       // Conducted is durable on-disk metadata (row.conducted may already
       // be set from the API). A live conducted instance is authoritative;
       // OR the two so a UI-resumed conducted session stays grouped.
@@ -418,12 +416,10 @@ export class Sidebar {
     this._applyOwner(row, owner);
     row.title = tooltipParts.join('\n');
 
-    const resumeBadge = autoResumeBadge(session, { compact: true });
     const showPromote = session.instanceTemp && isLive && isLiveStatus(status);
     const stage = showStage ? stageText(session) : null;
     const keys = ['dot', 'ago', showStage ? 'labelcol' : 'preview'];
     if (unread > 0) keys.push('unread');
-    if (resumeBadge) keys.push('resume');
     if (showPromote) keys.push('promote');
     if (showDelete) keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
@@ -461,7 +457,6 @@ export class Sidebar {
         b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
         return b;
       }
-      if (k === 'resume') return this._resumeBadge(ex, resumeBadge);
       if (k === 'promote') {
         // Live temp instance → promote button trailing the row, left of ×
         // where the row has one. Always visible (no opacity:0 hover) so
@@ -1198,7 +1193,7 @@ export class Sidebar {
     return group === 'finished' && (this.unreadBySessionId.get(entry.sessionId) ?? 0) > 0;
   }
 
-  // One strip entry: the dot (ringed while unread), the label, and the ×. Its state is not rendered as
+  // One strip entry: the dot (ringed while unread), the label, the armed auto-resume badge if any, and the ×. Its state is not rendered as
   // text (the dot and the heading carry it); it is in the tooltip and the
   // accessible name. The entry button cannot hold the ×, so the × is its sibling.
   _stripEntry(existing, entry, group) {
@@ -1223,14 +1218,18 @@ export class Sidebar {
     btn.className = 'strip-entry' + (entry.instanceId === this.activeInstanceId ? ' active' : '') + (unread ? ' unread' : '');
     this._applyOwner(btn, entry.conductor ? entry.sessionId : null);
     btn.title = `${entry.label}\n${reason}`;
-    btn.setAttribute('aria-label', `${entry.label} — ${reason}`);
-    reconcileChildren(btn, ['dot', 'title'], (k, ex) => {
+    // The aria-label replaces the button's content, so the armed resume's full
+    // wording rides in it.
+    const resumeBadge = autoResumeBadge(entry, { compact: true });
+    btn.setAttribute('aria-label', `${entry.label} — ${reason}` + (resumeBadge ? ` — ${autoResumeBadge(entry).text}` : ''));
+    reconcileChildren(btn, ['dot', 'title', ...(resumeBadge ? ['resume'] : [])], (k, ex) => {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
           status: entry.status, awaitingWake: entry.awaitingWake,
           awaitingUser: entry.awaitingUser, awaitingUserSource: entry.awaitingUserSource,
         });
       }
+      if (k === 'resume') return this._resumeBadge(ex, resumeBadge);
       const t = ex ?? el('span', { class: 'strip-title' });
       t.textContent = entry.label;
       return t;
@@ -1381,7 +1380,7 @@ export class Sidebar {
     }, '↑');
   }
 
-  // The overage auto-resume pill of a session or conductor row, from
+  // The overage auto-resume pill of a needs-you strip entry, from
   // autoResumeBadge's compact text and tooltip.
   _resumeBadge(existing, badge) {
     const b = existing ?? el('span', { class: 'session-resume-badge' });
@@ -1474,13 +1473,11 @@ export class Sidebar {
     const c = holder.conductor;
     const { text, untitled } = conductorTitle(c);
     const unread = this.unreadBySessionId.get(c.sessionId) ?? 0;
-    const resumeBadge = autoResumeBadge(c, { compact: true });
     row.className = 'conductor-row' + (c.instanceId && c.instanceId === this.activeInstanceId ? ' active' : '');
     row.title = c.sessionId;
     row._caret.setAttribute('aria-expanded', open ? 'true' : 'false');
     const keys = ['caret', 'dot', 'title', 'ago'];
     if (unread > 0) keys.push('unread');
-    if (resumeBadge) keys.push('resume');
     if (c.live && c.instanceTemp) keys.push('promote');
     // A live conductor closes from the needs-you strip; only an inactive one has
     // no strip entry, so only it carries a ×.
@@ -1513,7 +1510,6 @@ export class Sidebar {
         b.title = `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`;
         return b;
       }
-      if (k === 'resume') return this._resumeBadge(ex, resumeBadge);
       if (k === 'promote') {
         return ex ?? this._promoteButton(() => {
           const c = holder.conductor;

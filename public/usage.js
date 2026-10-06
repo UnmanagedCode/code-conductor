@@ -245,10 +245,10 @@ export function formatAutoResumeTime(unixSecs) {
 }
 
 // The armed overage auto-resume badge's text and tooltip, shared by the header
-// chip and the sidebar's session and conductor rows. Null when nothing is armed.
-// `compact` is the sidebar-row form, "⏸ 6:40pm · 2", sized to leave a 280px
-// row its title and buttons; its tooltip leads with the full wording the
-// header chip shows.
+// chip and the sidebar's needs-you strip entries. Null when nothing is armed.
+// `compact` is the strip-entry form, "2 · ⏸ 6:40pm", sized to leave a 280px
+// entry its title; its tooltip leads with the full wording the header chip
+// shows.
 export function autoResumeBadge({ autoResumeAt, queuedCount }, { compact = false } = {}) {
   if (!autoResumeAt) return null;
   const n = queuedCount || 0;
@@ -258,7 +258,7 @@ export function autoResumeBadge({ autoResumeAt, queuedCount }, { compact = false
     : 'auto-stopped on overage — will resume when the rate-limit window resets';
   if (!compact) return { text, title };
   return {
-    text: `⏸ ${formatAutoResumeClock(autoResumeAt)}` + (n > 0 ? ` · ${n}` : ''),
+    text: (n > 0 ? `${n} · ` : '') + `⏸ ${formatAutoResumeClock(autoResumeAt)}`,
     title: `${text}\n${title}`,
   };
 }

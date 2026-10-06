@@ -463,8 +463,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   color: var(--accent); min-width: 48px;
 }
 /* A row label (this, .session-label-col, .conductor-title) grows from a 0
-   basis to a 2em floor: spare width goes to it, and only once it is at the
-   floor does the row's .session-resume-badge give way. */
+   basis to a 2em floor: spare width goes to it, so the ago label and the
+   ↑ / × stay inside the row. */
 .session-preview {
   flex: 1 1 0; min-width: 2em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -499,7 +499,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   background: transparent; font-size: 12px; text-align: left; color: var(--text);
 }
 .strip-list > li:hover > .strip-entry:not(:disabled) { background: var(--panel-2); }
-.strip-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.strip-title { flex: 1 1 0; min-width: 2em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 /* An unread Finished entry: the waiting-on-you ring's geometry in --accent, so
    unread never reads as waiting (amber). A Finished dot is always a plain idle
    one (never awaiting, never needs-you), so the ring sits on the --muted fill. */
@@ -581,9 +581,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
    reads bold italic, since selected is bold by spec. */
 .session-row.active .session-preview, .conductor-row.active .conductor-title,
 .strip-entry.active .strip-title { font-weight: 700; }
-/* Overage auto-resume badge — shown on a stopped session awaiting resume. The
-   one row part that shrinks below its text, after the label hits its floor,
-   so the ago label and the ↑ / × stay inside the row; the tooltip has it all. */
+/* Overage auto-resume badge — shown on a needs-you strip entry whose session
+   awaits resume. The one entry part that shrinks below its text, after the
+   title hits its floor; the tooltip has it all. */
 .session-resume-badge {
   font-size: 10px;
   color: var(--amber, #e0a000);

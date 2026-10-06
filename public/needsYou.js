@@ -62,6 +62,8 @@ function conductorEntry(c) {
     awaitingWake: !!c.instanceAwaitingWake,
     awaitingUser: c.awaitingUser ?? null,
     awaitingUserSource: c.awaitingUserSource ?? null,
+    autoResumeAt: c.autoResumeAt ?? null,
+    queuedCount: c.queuedCount ?? 0,
   };
 }
 
@@ -82,6 +84,8 @@ function handEntry(inst) {
     awaitingWake: !!inst.awaitingWake,
     awaitingUser: inst.awaitingUser ?? null,
     awaitingUserSource: inst.awaitingUserSource ?? null,
+    autoResumeAt: inst.autoResumeAt ?? null,
+    queuedCount: inst.queuedCount ?? 0,
     activity: inst.lastResponseAt ?? inst.createdAt ?? 0,
   };
 }
