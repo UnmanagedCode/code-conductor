@@ -208,14 +208,16 @@ export interface Capabilities {
   // On the handshake rather than in it because the descriptor there describes
   // ONE target and a `remotes` provider has many, whose layouts differ.
   remoteDescriptors: boolean;
-  // The provider answers `listRemotes` with the `remoteId`s it serves (§2.2).
-  // Absent → cc never sends the frame, and a `remoteId` is learned out of band.
+  // The provider answers `listRemotes` with the `remoteId`s it is configured to
+  // route to, reachable or not (§2.2). Absent → cc never sends the frame, and a
+  // `remoteId` is learned out of band.
   //
   // ITS OWN KEY RATHER THAN PART OF `remotes`, for two reasons. Folding it in
   // would oblige every `remotes` provider written before it to answer a frame
   // it ignores as an unknown type, so a caller would wait out its deadline. And
-  // some `remotes` providers cannot enumerate at all: one that accepts any
-  // well-formed `user@host` learns whether a target exists only by trying.
+  // some `remotes` providers have no configured set to list: one whose ids are
+  // themselves addresses it attempts learns whether a target exists only by
+  // trying.
   //
   // READ ONLY ALONGSIDE `remotes`: a provider without it serves one unnamed
   // target, so there are no `remoteId`s to list.

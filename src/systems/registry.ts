@@ -307,8 +307,8 @@ export async function systemById(id: string, remoteId: string | null, subject: s
 // `systemById` already refuses a provider that will not come up and a remote it
 // does not serve — but `connect()`, `assertRemoteKnown()` and `mirror()` all
 // memoise on the handshake OBJECT, which is the connection GENERATION. A
-// container that stopped AFTER that generation began is invisible to all three
-// until first use. For an ordinary operation that is fine: the next call
+// target that became unreachable AFTER that generation began is invisible to
+// all three until first use. For an ordinary operation that is fine: the next call
 // discovers it and reports. For a FUSE-union spawn it is not — the worker is
 // mounted onto a system that is not there and discovers it inside its own
 // chroot, with every project path answering -EIO and nothing to say why.

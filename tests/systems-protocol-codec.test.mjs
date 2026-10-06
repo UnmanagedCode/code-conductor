@@ -243,7 +243,7 @@ test('remoteListing is read only alongside remotes — a single-target provider 
 // §2.2's validity table, as `readRemoteList` executes it. Each row a subtest,
 // so one red run shows every row rather than the first.
 test('readRemoteList accepts an empty list, and ignores unknown fields on the frame and on entries', async (t) => {
-  await t.test('an empty list is a valid "serves no target right now"', () => {
+  await t.test('an empty list is a valid "no target is configured right now"', () => {
     assert.deepEqual(readRemoteList({ type: 'remoteList', id: 'l1', remotes: [] }), { ok: true, remoteIds: [] });
   });
   await t.test('unknown fields on the frame and on an entry are inert', () => {

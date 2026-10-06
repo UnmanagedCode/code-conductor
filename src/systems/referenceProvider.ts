@@ -402,8 +402,9 @@ export class ReferenceProvider {
 
   // ── listRemotes ────────────────────────────────────────────────────
 
-  // Exactly the `--remote` ids: a set fixed for the process lifetime, so the
-  // list is complete by construction. Without any, the frame is refused rather
+  // Exactly the `--remote` ids — its whole configuration (§2.2), and the only
+  // thing its routing reads, so it has no reachability refusal — a set fixed
+  // for the process lifetime, so the list is complete by construction. Without any, the frame is refused rather
   // than left unanswered, id-addressed so nothing else on the connection fails.
   #listRemotes(f: AnyFrame): void {
     const id = String(f.id);

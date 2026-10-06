@@ -210,7 +210,7 @@ cc  →  {"type":"describeRemote","id":"d1","remoteId":"ctr-a"}
 
 - **A frame, not a handshake field**, because the handshake's `system`
   descriptor is one-per-connection (§2) and a `remotes` provider's targets
-  plausibly differ — `/app` in one container, `/srv/thing` in another.
+  plausibly differ — `/app` on one target, `/srv/thing` on another.
 - `remoteId` **omitted** asks about the provider's default target, the same
   convention the other three request frames use. It is the **fourth** request
   frame carrying `remoteId`, and the only one with no follow-on frames, so §4's
@@ -279,8 +279,8 @@ refused rather than followed (`MIRROR_ADVERTISEMENT_CHANGED`). Pinned in
 
 ### 2.2 Remote enumeration
 
-**Which `remoteId`s a provider serves.** One request/response pair, gated on
-`remoteListing`:
+**Which `remoteId`s a provider is configured to route to.** One request/response
+pair, gated on `remoteListing`:
 
 ```
 cc  →  {"type":"listRemotes","id":"l1"}
@@ -300,13 +300,27 @@ cc  →  {"type":"listRemotes","id":"l1"}
   to bind. It may be open alongside any other operation, including another
   `listRemotes`. A `close` for it is honoured: the provider emits nothing
   further for that id.
-- **Membership — a MUST.** The listed set is exactly the set of ids that a
-  request naming them, at the moment the provider composes the answer, would
-  **not** refuse `ENOREMOTE` (§8). A target the provider has switched off, and
-  so refuses `ENOREMOTE`, is not listed. **A provider whose served set it cannot
-  enumerate completely** — one that accepts any well-formed `user@host` and
-  learns whether it exists only by trying — **MUST NOT advertise
-  `remoteListing`.**
+- **Membership — a MUST: the configured set.** The listed set is exactly the
+  ids the provider's own **configuration** maps to a target, at the moment it
+  composes the answer. Its configuration is whatever state it keeps apart from
+  its targets. Whether a configured target is reachable right now is **not
+  consulted**, so composing the list attempts no target.
+- **Two refusals share `ENOREMOTE`; only one decides membership.** A
+  *configuration refusal* is decided from that configuration alone, before any
+  attempt, and such an id is never listed. A *reachability refusal* is learned
+  by an attempt that finds the target absent or unreachable. It is a
+  per-operation outcome that a listed id may hit. The wire carries no
+  distinction and cc reads neither as a membership statement, so a provider
+  owes cc none. What it owes is that its list and its configuration refusals
+  come from the same configuration: it lists every id that configuration
+  admits and none it refuses.
+- **A provider with no configured set MUST NOT advertise `remoteListing`.**
+  One whose ids are themselves addresses it attempts, so it learns whether a
+  target exists only by trying, refuses no well-formed id from configuration:
+  its configured set is every well-formed id and cannot be listed. Listing the
+  targets that happen to be reachable now is a reachability snapshot, not its
+  configured set, and does not license the capability. Neither does keeping a
+  configuration while also attempting ids outside it.
 - **An entry is an object carrying `remoteId` only.** Each `remoteId` MUST be one
   cc accepts as a project's Remote — non-empty, no whitespace or control
   characters, at most `REMOTE_ID_MAX` characters; the rule is `remoteIdDefect`
@@ -314,15 +328,16 @@ cc  →  {"type":"listRemotes","id":"l1"}
   listed twice.
 - **No order is defined**, and cc reads no meaning into one. **The whole list
   rides in one frame**, bounded by `MAX_LINE_BYTES` (§1); there is no paging.
-- **An empty list is valid**: `"remotes": []` means "serves no target right
-  now". **An absent or non-array `remotes` is invalid, never read as empty** —
-  unlike `remoteDescriptor`'s absent fields, which mean "nothing advertised",
+- **An empty list is valid**: `"remotes": []` means "no target is configured
+  right now". **An absent or non-array `remotes` is invalid, never read as
+  empty** — unlike `remoteDescriptor`'s absent fields, which mean "nothing advertised",
   confusing a malformed list with "none" is a wrong answer, not a safe default.
-- **A provider that cannot enumerate** (its daemon is down, its store is
-  unreadable) answers an **id-addressed** `error`, `EUNKNOWN`, with the reason
-  in `message` and `exitCode`/`stderr` when a command it ran failed. It **MUST
-  NOT answer a partial list.** An id-less error would tear down every other
-  target's work (§9).
+- **A provider whose configuration is unreadable** answers an
+  **id-addressed** `error`, `EUNKNOWN`, with the reason in `message` and
+  `exitCode`/`stderr` when a command it ran failed. It **MUST NOT answer a
+  partial list.** A target being unreachable is not such a case: the
+  configuration still reads, and its targets stay listed. An id-less error
+  would tear down every other target's work (§9).
 - **A provider that does not advertise `remoteListing`** may ignore the frame
   (an unknown type, §2) or answer an id-addressed `EUNSUPPORTED`. The reference
   provider answers `EUNSUPPORTED`.
@@ -330,11 +345,11 @@ cc  →  {"type":"listRemotes","id":"l1"}
   list** — `EUNSUPPORTED` from a provider that advertised the capability
   included. Unlike §2.1, where `EUNSUPPORTED` falls back to "no advertisement",
   a list has no safe narrowest default.
-- **Each answer is a snapshot**, true when composed. Two asks on one connection
-  may differ — containers come and go — so **cc does not memoise it** (unlike
-  `describeRemote`, pinned per connection generation). The provider sends no
-  unsolicited "changed" frame. A cc caller bounds the request like any other
-  (§5's backstop).
+- **Each answer is a snapshot** of the configuration, true when composed. Two
+  asks on one connection may differ — the configuration changes — so
+  **cc does not memoise it** (unlike `describeRemote`, pinned per connection
+  generation). The provider sends no unsolicited "changed" frame. A cc caller
+  bounds the request like any other (§5's backstop).
 - **An unrecognised field on `remoteList`, or on an entry, is ignored**, as on
   every provider → cc frame (§2.1).
 
@@ -342,7 +357,7 @@ cc  →  {"type":"listRemotes","id":"l1"}
 
 | `remoteList` | Verdict |
 |---|---|
-| `remotes` is `[]` | **Valid** — serves no target right now |
+| `remotes` is `[]` | **Valid** — no target is configured right now |
 | `remotes` absent, `null`, or not an array | refused |
 | an entry that is not a plain object (`null`, an array, a string included) | refused, naming its index |
 | an entry's `remoteId` absent or not a string | refused, naming its index |
@@ -357,10 +372,13 @@ stays up**.
 **What cc must not assume:**
 
 - that a provider not advertising `remoteListing` serves no remotes;
-- that a listed id will succeed — a fence, a toolchain refusal or a transport
-  failure can still fail an operation on it;
-- that an unlisted id will refuse `ENOREMOTE`. The operation's own answer stays
-  authoritative for that id.
+- that a listed id is reachable, or that an operation on it will succeed — a
+  reachability refusal (`ENOREMOTE`), a fence, a toolchain refusal or a
+  transport failure can still fail it;
+- that `ENOREMOTE` on a listed id means the id left the configuration — it
+  may be a reachability refusal;
+- that an unlisted id will refuse `ENOREMOTE`. The operation's own answer
+  stays authoritative for that id.
 
 ## 3. Frames
 
@@ -385,7 +403,7 @@ anything — but it is lying in its own logs.
 | `readFile` | `id`, `path`, `remoteId?`, `offset?`, `length?` | Read |
 | `writeFile` | `id`, `path`, `remoteId?`, `mode?`, `atomic?`, `exclusive?` | Open a write; `data`… then `end` follow |
 | `describeRemote` | `id`, `remoteId?` | Ask for a target's mirror advertisement (§2.1). **Requires `remoteDescriptors`** |
-| `listRemotes` | `id` | Ask which `remoteId`s the provider serves (§2.2). **Requires `remoteListing`.** Carries no `remoteId` |
+| `listRemotes` | `id` | Ask which `remoteId`s the provider is configured to route to (§2.2). **Requires `remoteListing`.** Carries no `remoteId` |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a `writeFile` payload |
 | `end` | `id` | End of a `writeFile` payload |
 
@@ -789,7 +807,7 @@ shell.
 | `ESHELLGONE` | A redirected command destroyed its own framing, so no sentinel could arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
 | `ECANCELLED` | The caller went away: an interrupt, or a tool timeout. **cc raises this one itself**, from the caller's cancellation channel (see §5), in `src/systems/providerShell.ts`. The provider-produced table below has no row for it. |
-| `ENOREMOTE` | The request named a `remoteId` this provider does not serve — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
+| `ENOREMOTE` | The request named a `remoteId` this provider does not serve — one it is not configured to route to, or one whose target an attempt found absent or unreachable (§2.2) — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
 
 ### What a provider puts in an `error` frame
 
@@ -801,7 +819,7 @@ provider's choice — it follows from what failed:
 | `readFile` / `writeFile` that the filesystem refused | **the FS code the local filesystem would have raised**, from `FS_ERROR_CODES` (`src/systems/protocol.ts`) — e.g. `EEXIST` (an `exclusive` write over an existing file), `EISDIR` (a read of a directory) |
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
-| an `exec`, `readFile`, `writeFile` or `describeRemote` naming a `remoteId` it does not serve, or naming none while it advertises `remotes` — never a `listRemotes`, which names no remote by design (§2.2) | `ENOREMOTE`, **id-addressed** |
+| an `exec`, `readFile`, `writeFile` or `describeRemote` naming a `remoteId` it does not serve (§2.2's configuration or reachability refusal), or naming none while it advertises `remotes` — never a `listRemotes`, which names no remote by design (§2.2) | `ENOREMOTE`, **id-addressed** |
 | a `listRemotes` it cannot answer completely | `EUNKNOWN`, **id-addressed**, the reason in `message` — never a partial list (§2.2) |
 | a `listRemotes` while not advertising `remoteListing`, if it answers at all | `EUNSUPPORTED`, **id-addressed** |
 | a frame it could not read at all | `EPROTO`, **id-less** — that is a connection-level failure |
@@ -897,7 +915,7 @@ that passes them, so renaming one reds the suite.
 | Flag / variable | The provider must | Effect on the handshake |
 |---|---|---|
 | `--no-process-group-signal` | send a `signal` to the direct child only (§5) | `processGroupSignal: false` |
-| `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true`, and `remoteListing: true` if the provider implements §2.2 — its `remoteList` must then be exactly the `--remote` ids |
+| `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true`, and `remoteListing: true` if the provider implements §2.2 — its `remoteList` must then be exactly the `--remote` ids — its configured set (§2.2) |
 | `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` (§2.1) | `remoteDescriptors: true` |
 | `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` | `remoteDescriptors: true` |
 | `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts**, naming the target it ran on | — (asserted directly, not negotiated) |
@@ -905,7 +923,12 @@ that passes them, so renaming one reds the suite.
 **The enumeration rows (§2.2) are gated on the handshake.** A provider that does
 not advertise `remoteListing` gets them **skipped with a printed reason** — the
 capability is optional, so there is nothing to verify; one that does is held to
-them.
+them. They verify membership only with every configured target reachable: each
+`--remote` root is a directory the suite made. So they cannot tell the
+configured set from a reachability snapshot, and a provider that drops an
+unreachable target from its list passes them. The suite has no portable way to
+make a provider's target unreachable and adds no launch flag to fake one, so
+that half of §2.2 is the provider's own to test.
 
 **`CC_CONFORMANCE_REMOTE_ID` (below) presupposes `--remote`**, and the two ids
 must match. cc refuses a `remoteId` on its own side whenever the handshake
@@ -1010,10 +1033,11 @@ ten of each.
 | `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. It is then **out of MUST 3's exit reap too**, which covers operations still open: a detached `docker exec` keeps running, exactly as a detached local one does |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
-| `remoteListing` | `true` when the provider can enumerate the containers it would accept; the `remoteList` must agree with its `ENOREMOTE` rule (§2.2) |
+| `remoteListing` | `false` for the shape above: it attempts any container name and learns from the daemon whether one exists, so it has no configured set (§2.2). `true` only for a provider that keeps its own configuration of the containers it routes; it lists them whether reachable or not, and an unreachable one is then an `ENOREMOTE` on the operation, not an absence from the list |
 
 The three primitives and every optional capability above; a `docker exec`
-provider satisfies all of them. **Three things it is not thin about**, worth knowing before starting one:
+provider satisfies all of them (`remoteListing` only with a configuration of
+its own, per its row). **Three things it is not thin about**, worth knowing before starting one:
 
 1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the
    container and are not reparented to the provider, so stdin-EOF ends the
