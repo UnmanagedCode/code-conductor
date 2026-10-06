@@ -338,6 +338,7 @@ const INSTANCE = {
   status: 'idle',
   displayStatus: 'running',
   activeAgentTasks: 2,
+  backgroundJobs: [],
   mode: 'code',
   effort: 'high',
   thinking: 'adaptive',
@@ -384,7 +385,7 @@ describe('renderSessions — live rows', () => {
       '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 0 · archived 0',
       '  main checkout  br main   live 1 · inactive 0 · archived 0',
       `    [1] LIVE ${SID_A}`,
-      '        status idle   display running   agents 2   queued 0   awaiting-wake yes',
+      '        status idle   display running   agents 2   jobs 0   queued 0   awaiting-wake yes',
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
@@ -429,6 +430,20 @@ describe('renderSessions — live rows', () => {
     assert.ok(!out.includes('[object Object]'));
   });
 
+  test('a worker with a background job renders `jobs 1` and one `job` line naming it', () => {
+    const startedAt = Date.now() - 125_000;
+    const out = liveOnly([{ ...INSTANCE, backgroundJobs: [{ title: 'npm test', startedAt }] }]);
+    assert.match(out, /^ {8}status idle {3}display running {3}agents 2 {3}jobs 1 {3}queued 0 {3}awaiting-wake yes$/m);
+    // Whole seconds of a running clock: the render may land a second later.
+    assert.match(out, /^ {8}job "npm test" — running 2m(5|6)s$/m);
+  });
+
+  test('a worker with no background job renders `jobs 0` and no `job` line', () => {
+    const out = liveOnly([INSTANCE]);
+    assert.match(out, /   jobs 0   /);
+    assert.doesNotMatch(out, /^ *job /m);
+  });
+
   test('a live row is marked LIVE so it cannot be read as a stopped session', () => {
     assert.match(liveOnly([INSTANCE]), new RegExp(`^ {4}\\[1\\] LIVE ${SID_A}$`, 'm'));
   });
@@ -470,7 +485,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
       '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 1 · archived 0',
       '  main checkout  br main   live 1 · inactive 1 · archived 0',
       `    [1] LIVE ${SID_A}`,
-      '        status idle   display running   agents 2   queued 0   awaiting-wake yes',
+      '        status idle   display running   agents 2   jobs 0   queued 0   awaiting-wake yes',
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
@@ -611,7 +626,7 @@ describe('renderSession (describe_session)', () => {
       `SESSION ${SID_A}   live`,
       '',
       `[1] LIVE ${SID_A}`,
-      '    status idle   display running   agents 2   queued 0   awaiting-wake yes',
+      '    status idle   display running   agents 2   jobs 0   queued 0   awaiting-wake yes',
       '    project code-conductor   worktree code-conductor_worktree_dcd22e',
       '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
@@ -931,6 +946,8 @@ describe('list_sessions renders every allowlisted field', () => {
   const sentinelRow = (over = {}) => ({
     ...Object.fromEntries(ALL_KEYS.map(k => [k, sentinel(k)])),
     awaitingWake: true,
+    // A list of jobs, not a scalar: the sentinel rides in the one job's title.
+    backgroundJobs: [{ title: sentinel('backgroundJobs'), startedAt: 0 }],
     ...over,
   });
 

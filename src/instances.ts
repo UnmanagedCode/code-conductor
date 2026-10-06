@@ -109,6 +109,7 @@ import { buildApprovePrompt } from '../public/planApproval.js';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
+import { reconcileBackgroundJobs, jobWaiters, type BackgroundJob } from './backgroundJobs.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
@@ -842,6 +843,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // model that cannot take a mid-turn injection. See queueSteerAfterStop.
   _pendingSteers: PendingSteer[];
   _activeAgentTasks: Map<string, string | null>;
+  _backgroundJobs: Map<string, BackgroundJob>;
   _taskNotificationPending: boolean;
   _idleWindowDirty: boolean;
   _turnFirstReqCacheRead: number | null;
@@ -1171,6 +1173,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (see below) overlays `running` for as long as this map is non-empty.
     // Reset on (re)spawn so a stale entry never survives a respawn/resume.
     this._activeAgentTasks = new Map<string, string | null>();
+    // Running background Bash jobs, keyed by task_id, from the CLI's
+    // `background_tasks_changed` snapshot (src/backgroundJobs.ts). Display-only:
+    // no wake hold reads it. Reset on (re)spawn and cleared in _handleExit — a
+    // CLI killed outright emits no final snapshot.
+    this._backgroundJobs = new Map<string, BackgroundJob>();
     // True when a `task_notification` fired mid-turn (status === 'turn') and no
     // delivery edge has consumed it yet. Mirrors the CLI's internal message
     // queue, which is unobservable on stdout — but its state is fully inferable
@@ -1264,6 +1271,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // without building the whole summary object.
   get activeAgentTaskCount(): number { return this._activeAgentTasks.size; }
 
+  // The background Bash jobs still running, in start order.
+  get backgroundJobs(): BackgroundJob[] { return [...this._backgroundJobs.values()]; }
+
   // True when a mid-turn task_notification is still unconsumed (so a
   // re-invocation turn is owed — see the _taskNotificationPending comment).
   // Read by IdleSubscriptionHub as a second defer reason alongside
@@ -1306,6 +1316,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // crash or collide with `'turn'`.
       activeAgentTasks: this._activeAgentTasks.size,
       displayStatus: (this.status === 'idle' && this._activeAgentTasks.size > 0) ? 'running' : this.status,
+      // Never overlays displayStatus: a job alone leaves an idle session `idle`.
+      backgroundJobs: this.backgroundJobs,
       pid: this.pid,
       worktree: this.worktree
         ? {
@@ -2299,6 +2311,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A fresh process starts with no in-flight Agent tasks — any entries
     // from a prior run's background subagents are gone with that process.
     this._activeAgentTasks = new Map<string, string | null>();
+    this._backgroundJobs = new Map<string, BackgroundJob>();
     // Same reasoning for the live quiescence scan: a prior run's open blocks /
     // unreturned tools died with its process, so a stale non-empty state must
     // not hold the next run's first armed interrupt.
@@ -2956,6 +2969,15 @@ export class Instance extends EventEmitter implements InstanceLike {
       // over-report-running polarity as TERMINAL_TASK_STATUSES). A completed
       // Bash task that owes a re-invocation turn is still deferred correctly
       // by _taskNotificationPending, which is task-type-agnostic on purpose.
+      // Background Bash jobs are tracked display-only in _backgroundJobs, from
+      // the `background_tasks_changed` snapshot below, not from these frames.
+      if (ev.kind === 'system' && ev.subtype === 'background_tasks_changed') {
+        const next = reconcileBackgroundJobs(this._backgroundJobs, evData(ev)?.tasks, Date.now());
+        if (next) {
+          this._backgroundJobs = next;
+          this.emit('status', this.summary());
+        }
+      }
       if (ev.kind === 'system' && ev.subtype === 'task_started') {
         const data = evData(ev);
         if (data?.task_id && data.task_type !== 'local_bash') {
@@ -3148,6 +3170,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       });
     }
     this.emit('exit_cause', this.lastExit);
+    // Before the status change, so the exit's own 'status' emission already
+    // carries no jobs: a CLI killed outright never sends the empty snapshot.
+    this._backgroundJobs = new Map<string, BackgroundJob>();
     this._setStatus(crashed ? 'crashed' : 'exited');
     for (const p of this._pending.values()) {
       clearTimeout(p.timer);
@@ -4753,10 +4778,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // `awaitingWake` is the CALLER side (isIdleCaller — "this instance is waiting on
   // someone"), never the target side. The sidebar's accent idle dot and
   // list_sessions' `awaiting-wake` column both read it.
-  list(): Array<InstanceSummary & { awaitingWake: boolean }> {
-    return [...this.byId.values()].map(i => ({
+  // `waitingOnJob` is display-only and UI-only: a live session with a running
+  // background Bash job, or any live owner above one. Distinct from
+  // `awaitingWake`, which is the held-wake predicate.
+  list(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }> {
+    const insts = [...this.byId.values()];
+    const waiters = jobWaiters(insts, id => this._idleHub.ownersOf(id));
+    return insts.map(i => ({
       ...i.summary(),
       awaitingWake: this.isIdleCaller(i.id),
+      waitingOnJob: waiters.has(i.id),
     }));
   }
 

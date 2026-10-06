@@ -151,6 +151,67 @@ test('the awaiting modifier is dropped when the armed wake is consumed', async (
   assert.equal(dot.title, 'idle');
 });
 
+// `waitingOnJob` (list()'s display-only flag: a background Bash job on this
+// session or on a live session it owns) lights the same modifier, with its own
+// tooltip; a held wake wins the tooltip; the modifier drops when the job clears.
+test('an idle row waiting on a background job renders the awaiting modifier and names the job', async () => {
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [], sessions: { count: 0, lastActivity: 0 },
+  }]);
+  const inst = (sid, o) => ({ id: `inst-${sid}`, project: 'demo', sessionId: sid, status: 'idle', mode: 'plan', worktree: null, ...o });
+  const dotFor = (sid) => [...root.querySelectorAll('.session-row')]
+    .find(r => r.parentElement?._holder?.session?.sessionId === sid)?.querySelector('.dot');
+
+  sidebar.setInstances([
+    inst('sid-job', { awaitingWake: false, waitingOnJob: true }),
+    inst('sid-both', { awaitingWake: true, waitingOnJob: true }),
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  const job = dotFor('sid-job');
+  assert.ok(job.classList.contains('idle') && job.classList.contains('awaiting'));
+  assert.equal(job.title, 'idle — waiting on a background job');
+  assert.equal(dotFor('sid-both').title, 'idle — waiting on a worker', 'a held wake wins the tooltip');
+
+  sidebar.setInstances([
+    inst('sid-job', { awaitingWake: false, waitingOnJob: false }),
+    inst('sid-both', { awaitingWake: false, waitingOnJob: false }),
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  const cleared = dotFor('sid-job');
+  assert.ok(!cleared.classList.contains('awaiting'), 'the modifier drops when the job clears');
+  assert.equal(cleared.title, 'idle');
+});
+
+// Invariant: when the live instance already has an on-disk row (any session
+// that has run a turn), the merge copies `waitingOnJob` onto that row, so the
+// one combined row shows the awaiting dot and the background-job tooltip.
+test('an on-disk row merged with a live instance waiting on a background job shows the awaiting dot', async () => {
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [
+      { sessionId: 'sid-job', firstPrompt: 'ran a turn', lastActivity: Date.now() - 60_000, size: 100 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [], sessions: { count: 1, lastActivity: Date.now() - 60_000 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-job', project: 'demo', sessionId: 'sid-job', status: 'idle', mode: 'plan',
+      worktree: null, awaitingWake: false, waitingOnJob: true },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const rows = root.querySelectorAll('.session-row');
+  assert.equal(rows.length, 1, 'the instance merged into its on-disk row, no synthetic second row');
+  assert.ok(rows[0].classList.contains('live'), 'the on-disk row carries the live overlay');
+  assert.ok(rows[0].textContent.includes('ran a turn'), 'and it is the on-disk row');
+  const dot = rows[0].querySelector('.dot');
+  assert.ok(dot.classList.contains('idle') && dot.classList.contains('awaiting'), dot.className);
+  assert.equal(dot.title, 'idle — waiting on a background job');
+});
+
 test('Sessions subnode renders a synthetic row for a freshly-spawned instance with no on-disk jsonl', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [], // no on-disk sessions

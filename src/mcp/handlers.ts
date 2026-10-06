@@ -166,6 +166,9 @@ export const CONDUCTOR_VIEW_KEYS = [
   // idle-and-done vs idle-with-a-subagent-still-running — the wake semantics.
   'displayStatus',
   'activeAgentTasks',
+  // Background Bash jobs still running — each one's exit re-invokes the worker.
+  // The wake stub is a snapshot; this is how an owner re-checks before acting.
+  'backgroundJobs',
   'mode',
   'effort',
   'thinking',

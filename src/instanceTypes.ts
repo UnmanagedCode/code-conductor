@@ -22,6 +22,7 @@ import type { WorktreeMeta } from './worktrees.ts';
 import type { PlaybookEnforcement } from './playbooks.ts';
 import type { SessionRedirect } from './systems/toolRedirect.ts';
 import type { TurnMarks } from './sessionStore.ts';
+import type { BackgroundJob } from './backgroundJobs.ts';
 import type { Response } from 'express';
 
 // One backing segment's claim on the ring's seq space: ring content with
@@ -67,6 +68,8 @@ export interface InstanceSummary {
   liveTurnEnds?: number;
   lastTurnError?: boolean;
   liveAsks?: number;
+  // Running background Bash jobs (src/backgroundJobs.ts).
+  backgroundJobs?: BackgroundJob[];
   [key: string]: unknown;
 }
 
@@ -149,6 +152,7 @@ export interface InstanceLike {
   _overageResetsAt: number | null;
   _overageQueue: unknown[];
   readonly activeAgentTaskCount: number;
+  readonly backgroundJobs: BackgroundJob[];
   readonly taskNotificationPending: boolean;
   // True when the current idle window contains non-task-lifecycle activity —
   // read by IdleSubscriptionHub to refuse arming an idle task-drain settle.
@@ -339,7 +343,7 @@ export interface InstanceManagerLike {
   // ids — see InstanceManager.resolveResumeRef for why one is not enough.
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
   resolveResumeRef(input: string): Promise<{ handle: string; resume: string } | { ambiguous: string[]; tooShort: boolean } | null>;
-  list(): Array<InstanceSummary & { awaitingWake: boolean }>;
+  list(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
   liveForSession(sessionId: string): InstanceLike | null;
   // The last spontaneous exit of a session by its exact PUBLIC id, or null. In
   // memory only; cleared by a commanded exit and by a successful resume.

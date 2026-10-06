@@ -137,6 +137,28 @@ test('only an idle awaiting worker gets the awaiting treatment', async (t) => {
   }
 });
 
+// Invariant: an idle worker with a background job still running (on it or below
+// it) gets the same awaiting treatment, labelled "on a job".
+test('an idle worker waiting on a background job renders as awaiting, titled "on a job"', async () => {
+  const { host, SubagentPanel } = await setupDOM();
+  new SubagentPanel(host).setInstances([worker({ displayStatus: 'idle', waitingOnJob: true })], CONDUCTOR_ID);
+  const li = host.querySelector('li.task-row');
+  assert.equal(li.querySelector('.task-marker').textContent, '▶');
+  assert.ok(li.classList.contains('subagent-awaiting'));
+  assert.equal(li.title, 'on a job');
+});
+
+// Invariant: a worker whose subagent is still running reads plain running even
+// with a job — the job never turns a running row into an awaiting one.
+test('displayStatus running with a job stays plain running, not awaiting', async () => {
+  const { host, SubagentPanel } = await setupDOM();
+  new SubagentPanel(host).setInstances([worker({ displayStatus: 'running', waitingOnJob: true })], CONDUCTOR_ID);
+  const li = host.querySelector('li.task-row');
+  assert.equal(li.querySelector('.task-marker').textContent, '▶');
+  assert.equal(li.classList.contains('subagent-awaiting'), false);
+  assert.equal(li.title, '');
+});
+
 // Invariant: the awaiting marker is the accent colour and pulses.
 test('the subagent-awaiting marker is styled accent and pulsing', async () => {
   const { readFile } = await import('node:fs/promises');

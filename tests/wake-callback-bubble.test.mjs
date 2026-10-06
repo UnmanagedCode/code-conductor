@@ -116,6 +116,37 @@ test('wake-callback echo renders a collapsed <details> bubble', async () => {
     'folded payload appears in the body');
 });
 
+// The background-jobs block belongs to the always-visible summary, one job per
+// line, and leaves the folded body exactly as it is without it.
+test('a folded stub with a jobs block shows the job lines in the visible summary; the body is unchanged', async () => {
+  setupDOM();
+  const Conversation = await importConversation();
+  const JOBS = 'Background jobs still running:\n- "npm test" — running 2m5s\n'
+    + 'Worker `abc12345` is re-invoked when each job exits, and you will be woken again after that turn.';
+  const bodyOf = (text) => {
+    const root = document.createElement('div');
+    new Conversation(root, {}).apply({ kind: 'user_echo', text, userIndex: 0 });
+    const details = root.querySelector('details.block.wake');
+    const summary = details.querySelector('summary').textContent;
+    expand(details);
+    return { summary, body: details.querySelector('.block.text').textContent };
+  };
+  const withJobs = bodyOf(buildWakeStub({ targetSessionId: 'abc12345', payloadText: PAYLOAD, jobsNote: JOBS }));
+  const without = bodyOf(STUB);
+  assert.ok(withJobs.summary.includes('finished its turn'));
+  assert.ok(withJobs.summary.includes('\n- "npm test" — running 2m5s\n'), withJobs.summary);
+  assert.ok(withJobs.summary.includes('is re-invoked when each job exits'));
+  assert.ok(!without.summary.includes('Background jobs'));
+  assert.equal(withJobs.body, without.body, 'the folded body is untouched');
+});
+
+// The job lines are separated by newlines, which only render as lines under
+// pre-line on both wake summary shapes.
+test('CSS pin: wake summaries keep their newlines', async () => {
+  const css = await import('node:fs/promises').then(fs => fs.readFile(STYLES, 'utf8'));
+  assert.match(css, /\.block\.wake > summary, \.block\.wake\.plain \{ white-space: pre-line; \}/);
+});
+
 test('a body-less (plain) marked stub renders the bubble with no collapsible body', async () => {
   setupDOM();
   const Conversation = await importConversation();

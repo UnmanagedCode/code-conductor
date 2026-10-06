@@ -34,6 +34,8 @@
 //                             for death
 //   idle-wake-exit            a worker whose CLI exits on its own: the EXITED
 //                             wake, at once, and its heartbeat gone with it
+//   idle-wake-bg-jobs         a background Bash job: delivered not held, listed
+//                             in the stub, `waitingOnJob` up the owner chain
 //
 // Card 2026-0221 split them out of a single 1610-line file: the per-file
 // hang-guard deadline (FILE_KILL_MS, tests/hangGuardConfig.mjs) is charged one

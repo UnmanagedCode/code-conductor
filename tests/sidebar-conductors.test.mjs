@@ -616,6 +616,20 @@ test('conductor-row dot keeps the running / awaiting-wake / idle semantics', asy
   assert.equal(dot('I').className, 'dot idle');
 });
 
+test('a conductor row waiting on a background job gets the awaiting dot', async () => {
+  const { conductorList, sidebar } = await setupSidebar();
+  await render(sidebar, {
+    instances: [
+      conductor('J', { status: 'idle', waitingOnJob: true }),
+      conductor('I', { status: 'idle', waitingOnJob: false }),
+    ],
+  });
+  const dot = (sid) => conductorOf(conductorList, sid).querySelector('.conductor-row > .dot');
+  assert.equal(dot('J').className, 'dot idle awaiting');
+  assert.equal(dot('J').title, 'idle — waiting on a background job');
+  assert.equal(dot('I').className, 'dot idle');
+});
+
 test('setActive marks the conductor row and the worker row .active', async () => {
   const { conductorList, sidebar } = await setupSidebar();
   await render(sidebar, TREE_FIXTURE);

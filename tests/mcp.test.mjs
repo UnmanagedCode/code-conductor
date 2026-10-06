@@ -655,7 +655,7 @@ test('describe_session renders a LIVE worker as the same block list_sessions pri
   const out = text(await callTool(baseUrl, 'describe_session', { sessionId: spawn.sessionId }));
   assert.match(out, new RegExp(`^SESSION ${spawn.sessionId} {3}live$`, 'm'));
   assert.match(out, new RegExp(`^\\[1\\] LIVE ${spawn.sessionId}$`, 'm'));
-  assert.match(out, /^ {4}status idle {3}display idle {3}agents 0 {3}queued 0 {3}awaiting-wake no$/m);
+  assert.match(out, /^ {4}status idle {3}display idle {3}agents 0 {3}jobs 0 {3}queued 0 {3}awaiting-wake no$/m);
   assert.match(out, /^ {4}project a {3}worktree —$/m);
   assert.match(out, /^ {4}mode bypassPermissions {3}effort high {3}thinking \S+ {3}model \S+\/\S+$/m);
   // The same row list_sessions prints — asserted against it, not restated.
