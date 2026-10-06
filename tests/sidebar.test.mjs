@@ -184,6 +184,34 @@ test('an idle row waiting on a background job renders the awaiting modifier and 
   assert.equal(cleared.title, 'idle');
 });
 
+// Invariant: when the live instance already has an on-disk row (any session
+// that has run a turn), the merge copies `waitingOnJob` onto that row, so the
+// one combined row shows the awaiting dot and the background-job tooltip.
+test('an on-disk row merged with a live instance waiting on a background job shows the awaiting dot', async () => {
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [
+      { sessionId: 'sid-job', firstPrompt: 'ran a turn', lastActivity: Date.now() - 60_000, size: 100 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [], sessions: { count: 1, lastActivity: Date.now() - 60_000 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-job', project: 'demo', sessionId: 'sid-job', status: 'idle', mode: 'plan',
+      worktree: null, awaitingWake: false, waitingOnJob: true },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const rows = root.querySelectorAll('.session-row');
+  assert.equal(rows.length, 1, 'the instance merged into its on-disk row, no synthetic second row');
+  assert.ok(rows[0].classList.contains('live'), 'the on-disk row carries the live overlay');
+  assert.ok(rows[0].textContent.includes('ran a turn'), 'and it is the on-disk row');
+  const dot = rows[0].querySelector('.dot');
+  assert.ok(dot.classList.contains('idle') && dot.classList.contains('awaiting'), dot.className);
+  assert.equal(dot.title, 'idle — waiting on a background job');
+});
+
 test('Sessions subnode renders a synthetic row for a freshly-spawned instance with no on-disk jsonl', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [], // no on-disk sessions
