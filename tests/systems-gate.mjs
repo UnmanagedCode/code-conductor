@@ -14,11 +14,11 @@
 //   * THE FALLBACK RUNS — a capability whose absent-behaviour has never
 //     executed is a flag, not a fallback.
 //
-// WHICH OF THE THREE OPTIONAL CAPABILITIES (Capabilities, src/systems/protocol.ts)
+// WHICH OF THE OPTIONAL CAPABILITIES (Capabilities, src/systems/protocol.ts)
 // THE MATRIX MOVES. It TOGGLES one — `processGroupSignal`, one row with the
 // fallback on. It carries `remotes` ON IN ROW 1 — folded into an existing pass
 // rather than given its own, and cleared on row 2 — and it does not exercise
-// `remoteDescriptors` at all.
+// `remoteDescriptors` or `remoteListing` at all.
 //
 //   * `remotes` is folded because a separate pass costs a WHOLE SUITE and buys the
 //     same field on the same frames. Measured across the two rows: byte-for-byte
@@ -38,6 +38,10 @@
 //     Measured: a `--mirror /` row receives ZERO `describeRemote` frames across
 //     the whole suite. Its fallback is proved by tests/systems-mirror-fallback.test.mjs
 //     and by the `remoteDescriptors:false` row of the conformance suite.
+//   * `remoteListing` rides row 1 with `remotes` — the reference provider
+//     advertises it whenever it serves named targets — but the application
+//     never sends `listRemotes` in a row. The rows that exercise it are the
+//     conformance suite's, which run inside every row.
 //
 // WHAT THE FOLD COSTS, so it is not discovered by surprise: no configuration
 // here now runs `processGroupSignal:true` + `remotes:false` together. That cell

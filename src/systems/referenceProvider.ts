@@ -21,10 +21,11 @@
 // `--remote` turns one process into an endpoint serving MANY named targets —
 // the docker-daemon shape, emulated. Given at least one, the provider
 // advertises `remotes`, requires every request to name a known target, and
-// scopes each target to its own root. The root scoping is what makes a
-// wrong-target bug impossible to mistake for success on a machine where every
-// target is in fact the same filesystem: a cross-target read is REFUSED rather
-// than answered with plausible bytes.
+// scopes each target to its own root. It also advertises `remoteListing` and
+// answers `listRemotes` with exactly the `--remote` ids (§2.2). The root
+// scoping is what makes a wrong-target bug impossible to mistake for success on
+// a machine where every target is in fact the same filesystem: a cross-target
+// read is REFUSED rather than answered with plausible bytes.
 //
 // `--mirror` / `--exclude` are the MIRROR ADVERTISEMENT (§2.1), and they are
 // deliberately SEPARATE FLAGS from `--remote`'s root. That root is a FENCE —
@@ -43,14 +44,17 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   BINARY_SNIFF_BYTES, CHUNK_BYTES, MAX_FILE_BYTES, NdjsonDecoder, PROTOCOL_VERSION,
-  SystemError, encodeFrame, type AnyFrame, type FsErrorCode, type ProviderFrame, type SystemErrorCode,
+  SystemError, encodeFrame, remoteIdDefect, type AnyFrame, type FsErrorCode, type ProviderFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { FS_ERROR_CODES } from './protocol.ts';
 
 const KILL_GRACE_MS = 100;
 
-// The frames that OPEN an operation, and therefore the only ones that name a
-// remote. Everything else inherits the binding through its `id`.
+// The frames that NAME a remote. Everything else inherits the binding through
+// its `id`.
+//
+// `listRemotes` OPENS an operation too and is DELIBERATELY ABSENT: it names no
+// remote, so the routing gate below would refuse it ENOREMOTE.
 const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile', 'describeRemote']);
 
 // THE ONE CWD A REMOTE'S ROOT DOES NOT FENCE, and it is cc's, not this
@@ -115,6 +119,10 @@ export function parseProviderArgs(argv: string[]): Options {
       if (!id || !path.isAbsolute(root)) {
         throw new Error(`--remote wants <id>=<absolute root>, got ${JSON.stringify(spec)}`);
       }
+      // Refused here so the `remoteList` this provider answers can never carry
+      // an id cc would refuse.
+      const defect = remoteIdDefect(id);
+      if (defect !== null) throw new Error(`--remote id ${JSON.stringify(id)} is not a valid remoteId (${defect})`);
       o.remotes.set(id, path.resolve(root));
     }
     else if (a === '--mirror') {
@@ -189,6 +197,7 @@ export class ReferenceProvider {
           processGroupSignal: this.#opts.processGroupSignal,
           remotes: this.#opts.remotes.size > 0,
           remoteDescriptors: this.#opts.mirrors.size > 0,
+          remoteListing: this.#opts.remotes.size > 0,
         },
       });
       return;
@@ -231,6 +240,7 @@ export class ReferenceProvider {
       case 'detach': return this.#detach(f);
       case 'readFile': return void this.#readFile(f);
       case 'describeRemote': return this.#describeRemote(f);
+      case 'listRemotes': return this.#listRemotes(f);
       case 'writeFile': return this.#writeOpen(f);
       case 'data': return this.#writeData(f);
       case 'end': return void this.#writeEnd(f);
@@ -388,6 +398,20 @@ export class ReferenceProvider {
       ...(m?.mirrorRoot ? { mirrorRoot: m.mirrorRoot } : {}),
       ...(m && m.exclude.length > 0 ? { exclude: m.exclude } : {}),
     });
+  }
+
+  // ── listRemotes ────────────────────────────────────────────────────
+
+  // Exactly the `--remote` ids: a set fixed for the process lifetime, so the
+  // list is complete by construction. Without any, the frame is refused rather
+  // than left unanswered, id-addressed so nothing else on the connection fails.
+  #listRemotes(f: AnyFrame): void {
+    const id = String(f.id);
+    if (this.#opts.remotes.size === 0) {
+      this.#fail(id, 'EUNSUPPORTED', 'this provider serves one unnamed target and does not advertise remoteListing');
+      return;
+    }
+    this.#write({ type: 'remoteList', id, remotes: [...this.#opts.remotes.keys()].map(remoteId => ({ remoteId })) });
   }
 
   // ── readFile ───────────────────────────────────────────────────────

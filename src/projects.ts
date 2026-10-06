@@ -14,6 +14,7 @@ import {
   resolveSystem, systemById,
 } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
+import { REMOTE_ID_MAX, remoteIdDefect } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 import { hostPlatform, samePath, type Platform } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
@@ -1169,23 +1170,19 @@ export function normalizeSystemPath(p: string): string {
   return n.length > 1 && n.endsWith('/') ? n.slice(0, -1) : n;
 }
 
-// The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote
-// id is a container name, a hostname or a VM id, and those legitimately carry
-// `_` and `.`. What is refused is what cannot survive being a wire field or
-// cannot be told apart from a mistake — nothing, whitespace, a control
-// character, or a length no real identifier has.
-export const REMOTE_ID_MAX = 128;
-
+// The rule itself is `remoteIdDefect` (src/systems/protocol.ts), shared with
+// the wire's `remoteList` so a listed id is always one this accepts. What is
+// this function's own: null and blank mean "no remote", and the trim.
 export function validateRemoteId(v: unknown): string | null {
   if (v === null || v === undefined) return null;
   if (typeof v !== 'string') throw httpError(400, 'remoteId must be a string or null');
   const t = v.trim();
-  if (t === '') return null;
-  if (t.length > REMOTE_ID_MAX) {
+  const defect = remoteIdDefect(t);
+  if (defect === 'empty') return null;
+  if (defect === 'too-long') {
     throw httpError(400, `remoteId is ${t.length} characters, above the ${REMOTE_ID_MAX}-character limit`);
   }
-  // eslint-disable-next-line no-control-regex
-  if (/[\s\u0000-\u001f\u007f]/.test(t)) {
+  if (defect === 'invalid-char') {
     throw httpError(400, `invalid remoteId ${JSON.stringify(v)} — whitespace and control characters are not allowed`);
   }
   return t;

@@ -99,6 +99,27 @@ describe('changing a project target', () => {
     assert.equal('remoteId' in (await readRecord('app')), false, 'and the empty field is dropped');
   });
 
+  // PINS validateRemoteId's TRIM, which is its own rather than the shared
+  // remoteIdDefect rule's: surrounding whitespace is not part of the id, and a
+  // blank value means "no remote". Subtests, so each half reds on its own.
+  test('a padded target is stored trimmed, and a blank one clears like an empty one', async (t) => {
+    await t.test('padding is dropped, not refused as whitespace', async () => {
+      await seed();
+      const result = await setProjectRemote('app', '  b\t', NO_INSTANCES);
+      assert.equal(result.remoteId, 'b');
+      assert.equal((await readRecord('app')).location.remoteId, 'b');
+    });
+    for (const [i, blank] of ['', '   ', ' \t '].entries()) {
+      await t.test(`${JSON.stringify(blank)} clears the target`, async () => {
+        const name = `blank${i}`;
+        await seed(name);
+        const result = await setProjectRemote(name, blank, NO_INSTANCES);
+        assert.equal(result.remoteId, null);
+        assert.equal((await readRecord(name)).location.remoteId ?? null, null);
+      });
+    }
+  });
+
   // ── The guard ────────────────────────────────────────────────────────
 
   // PINS: the change is refused while a session is live, and the refusal NAMES

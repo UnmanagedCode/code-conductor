@@ -44,6 +44,25 @@ export const MIRROR_PATH_MAX = 4096;
 // of headroom while still catching a provider that never emits a newline.
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
+// The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote
+// id is a container name, a hostname or a VM id, and those legitimately carry
+// `_` and `.`. What is refused is what cannot survive being a wire field or
+// cannot be told apart from a mistake — nothing, whitespace, a control
+// character, or a length no real identifier has.
+export const REMOTE_ID_MAX = 128;
+
+// THE ONE remoteId RULE, shared by the Remote field (`validateRemoteId`,
+// src/projects.ts) and a provider's `remoteList` (`readRemoteList` below), so an
+// id a provider lists is always one cc accepts back as a project's Remote.
+// Returns the defect, not a message: each caller words its own refusal.
+export function remoteIdDefect(id: string): 'empty' | 'too-long' | 'invalid-char' | null {
+  if (id === '') return 'empty';
+  if (id.length > REMOTE_ID_MAX) return 'too-long';
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(id)) return 'invalid-char';
+  return null;
+}
+
 // ── Error taxonomy ───────────────────────────────────────────────────
 //
 // Split by LAYER, which is the only split that survives contact with a shell:
@@ -189,10 +208,22 @@ export interface Capabilities {
   // On the handshake rather than in it because the descriptor there describes
   // ONE target and a `remotes` provider has many, whose layouts differ.
   remoteDescriptors: boolean;
+  // The provider answers `listRemotes` with the `remoteId`s it serves (§2.2).
+  // Absent → cc never sends the frame, and a `remoteId` is learned out of band.
+  //
+  // ITS OWN KEY RATHER THAN PART OF `remotes`, for two reasons. Folding it in
+  // would oblige every `remotes` provider written before it to answer a frame
+  // it ignores as an unknown type, so a caller would wait out its deadline. And
+  // some `remotes` providers cannot enumerate at all: one that accepts any
+  // well-formed `user@host` learns whether a target exists only by trying.
+  //
+  // READ ONLY ALONGSIDE `remotes`: a provider without it serves one unnamed
+  // target, so there are no `remoteId`s to list.
+  remoteListing: boolean;
 }
 
 export const NO_CAPABILITIES: Capabilities = {
-  processGroupSignal: false, remotes: false, remoteDescriptors: false,
+  processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false,
 };
 
 export function readCapabilities(v: unknown): Capabilities {
@@ -201,6 +232,9 @@ export function readCapabilities(v: unknown): Capabilities {
     processGroupSignal: o.processGroupSignal === true,
     remotes: o.remotes === true,
     remoteDescriptors: o.remoteDescriptors === true,
+    // Gated on `remotes`, so no caller gating on `remoteListing` alone can reach
+    // a single-target provider.
+    remoteListing: o.remotes === true && o.remoteListing === true,
   };
 }
 
@@ -232,7 +266,9 @@ export interface HelloProviderFrame {
 // `describeRemote`): every follow-on frame (`signal`, `close`, `detach`, `data`,
 // `end`) is addressed by `id`, and AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
 // a provider that advertises `remotes`; `describeRemote` — the fourth — is
-// itself sent only to one that advertises `remoteDescriptors`.
+// itself sent only to one that advertises `remoteDescriptors`. `listRemotes`
+// is a request frame OUTSIDE these four: it asks about the provider, not a
+// target, so it names none.
 export interface ExecFrame {
   type: 'exec';
   id: string;
@@ -275,6 +311,15 @@ export interface RemoteDescriptorFrame {
   type: 'remoteDescriptor'; id: string; mirrorRoot?: string | null; exclude?: string[];
 }
 
+// A request frame carrying NO `remoteId` — the set of targets is a fact about
+// the provider, not about any one of them — and with no follow-on frames.
+// Sent only to a provider advertising `remoteListing` (§2.2).
+export interface ListRemotesFrame { type: 'listRemotes'; id: string }
+// An OBJECT per entry, not a bare string, so an entry can grow a field later
+// under the unknown-field rule; a string array never could.
+export interface RemoteListEntry { remoteId: string }
+export interface RemoteListFrame { type: 'remoteList'; id: string; remotes: RemoteListEntry[] }
+
 export interface StreamFrame { type: 'stdout' | 'stderr'; id: string; seq: number; dataB64: string }
 export interface ExitFrame {
   type: 'exit'; id: string; code: number; signal: string | null; timedOut: boolean;
@@ -297,12 +342,50 @@ export interface ErrorFrame {
 
 export type ClientFrame =
   | HelloClientFrame | ExecFrame | SignalFrame | CloseFrame | DetachFrame
-  | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | DataFrame | EndFrame;
+  | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | ListRemotesFrame | DataFrame | EndFrame;
 
 export type ProviderFrame =
   | HelloProviderFrame | StreamFrame | ExitFrame
-  | ReadFileResultFrame | WriteFileResultFrame | RemoteDescriptorFrame
+  | ReadFileResultFrame | WriteFileResultFrame | RemoteDescriptorFrame | RemoteListFrame
   | DataFrame | EndFrame | ErrorFrame;
+
+// §2.2's validity table, executable: what cc will believe of a `remoteList`.
+//
+// ALL OR NOTHING. Every entry is checked before anything is returned, and one
+// bad entry refuses the whole answer — a silently shortened list cannot be told
+// apart from a true one. The refusal is not EPROTO: the line framed, so the
+// connection stays up. Unknown fields, on the frame and on each entry, are
+// ignored.
+export function readRemoteList(
+  f: { remotes?: unknown },
+): { ok: true; remoteIds: string[] } | { ok: false; reason: string } {
+  const list = f.remotes;
+  if (!Array.isArray(list)) {
+    return { ok: false, reason: `remotes is ${list === undefined ? 'absent' : JSON.stringify(list)}, not an array` };
+  }
+  const remoteIds: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < list.length; i++) {
+    const entry: unknown = list[i];
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return { ok: false, reason: `remotes[${i}] is ${JSON.stringify(entry)}, not an object` };
+    }
+    const id = (entry as Record<string, unknown>).remoteId;
+    if (typeof id !== 'string') {
+      return { ok: false, reason: `remotes[${i}].remoteId is ${id === undefined ? 'absent' : JSON.stringify(id)}, not a string` };
+    }
+    const defect = remoteIdDefect(id);
+    if (defect !== null) {
+      return { ok: false, reason: `remotes[${i}].remoteId ${JSON.stringify(id)} is not a valid remoteId (${defect})` };
+    }
+    if (seen.has(id)) {
+      return { ok: false, reason: `remotes[${i}].remoteId ${JSON.stringify(id)} is listed twice` };
+    }
+    seen.add(id);
+    remoteIds.push(id);
+  }
+  return { ok: true, remoteIds };
+}
 
 // Any decoded line. Both ends decode into this and narrow on `type`; a frame
 // whose `type` neither end knows is still a valid frame and is IGNORED, which
