@@ -29,8 +29,9 @@
 // Injected interface:
 //   - dom: { adoptProjectBtn, adoptProjectDialog, apdForm, apdStale, apdName,
 //            apdSystem, apdSystemNote, apdRemote, apdRemoteRow, apdPath,
-//            apdSuggestions, apdScanNote, apdError, apdStaleSummary,
+//            apdPathCompletions, apdPathNote, apdSuggestions, apdScanNote, apdError, apdStaleSummary,
 //            apdStaleDiscards, apdStaleError } els.
+//   - timers (optional):      { setTimeout, clearTimeout } for the path picker's debounce.
 //   - refreshProjects():      reloads the sidebar project list after an adopt.
 //   - closeSidebarOverflow(): dismisses the sidebar ≡ menu.
 
@@ -85,8 +86,9 @@ export function messageFor(result) {
 }
 
 import { loadCapabilities } from './capabilities.js';
+import { installPathPicker } from './pathPicker.js';
 
-export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOverflow }) {
+export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOverflow, timers }) {
   // The {name, path, system, remoteId} the open dialog is about. Module-local
   // rather than captured per listener because it has to survive the stale
   // round-trip: the relocate/replace buttons re-send the target the user
@@ -111,6 +113,16 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
   // the error that may follow it name one thing.
   const describePlacement = (system, remote) =>
     remote ? `remote '${remote}' of system '${system}'` : `system '${system}'`;
+
+  // Directory completion for the path field, for whichever placement is chosen.
+  // The path, system and remote changing all invalidate what it has cached.
+  const pathPicker = installPathPicker({
+    input: dom.apdPath,
+    list: dom.apdPathCompletions,
+    note: dom.apdPathNote,
+    getPlacement: () => ({ system: chosenSystem(), remoteId: chosenRemote() }),
+    timers,
+  });
 
   async function buildSystems() {
     dom.apdSystem.innerHTML = '';
@@ -159,7 +171,7 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     dom.apdRemoteRow.hidden = !system;
     dom.apdSuggestions.hidden = !!system;
     dom.apdScanNote.textContent = system
-      ? `Type an absolute path on ${describePlacement(system, chosenRemote())} — cc cannot list directories there.`
+      ? `Type an absolute path on ${describePlacement(system, chosenRemote())}.`
       : lastLocalNote;
   }
 
@@ -318,6 +330,7 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     dom.apdName.value = '';
     dom.apdPath.value = '';
     dom.apdRemote.value = '';
+    pathPicker.reset();
     dom.apdSystemNote.textContent = '';
     dom.apdError.textContent = '';
     dom.apdStaleError.textContent = '';
@@ -338,9 +351,13 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
   dom.apdSystem.addEventListener('change', () => {
     dom.apdPath.value = '';
     dom.apdError.textContent = '';
+    pathPicker.reset();
     syncPlacement();
   });
-  dom.apdRemote.addEventListener('input', syncPlacement);
+  dom.apdRemote.addEventListener('input', () => {
+    pathPicker.reset();
+    syncPlacement();
+  });
 
   dom.adoptProjectDialog.addEventListener('close', async () => {
     const action = dom.adoptProjectDialog.returnValue;

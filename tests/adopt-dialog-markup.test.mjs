@@ -42,6 +42,8 @@ const WIRING = {
   apdRemote: 'apd-remote',
   apdRemoteRow: 'apd-remote-row',
   apdPath: 'apd-path',
+  apdPathCompletions: 'apd-path-completions',
+  apdPathNote: 'apd-path-note',
   apdSuggestions: 'apd-suggestions',
   apdScanNote: 'apd-scan-note',
   apdError: 'apd-error',

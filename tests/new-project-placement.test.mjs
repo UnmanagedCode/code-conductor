@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { withHealth } from './capabilitiesStub.mjs';
+import { fakeTimers } from './composerDraftsHarness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -26,15 +27,22 @@ const SYSTEMS = [
 ];
 
 let counter = 0;
-async function setup({ systems = SYSTEMS, createResponse } = {}) {
+async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok: true, entries: [], links: [], truncated: false, max: 1000 }) } = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.localStorage = window.localStorage;
   const posts = [];
+  const listings = [];
+  const timers = fakeTimers();
   const impl = async (url, opts = {}) => {
     if (String(url).includes('/api/settings/systems')) {
       return { ok: true, status: 200, json: async () => ({ systems }) };
+    }
+    if (String(url).includes('/api/fs/dirs')) {
+      const params = new URL(String(url), 'http://localhost').searchParams;
+      listings.push({ params });
+      return { ok: true, status: 200, json: async () => listing(params) };
     }
     if (String(url).includes('/api/settings/conventions/project')) {
       return { ok: true, status: 200, json: async () => ({ conventions: [] }) };
@@ -60,6 +68,8 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
         <input id="np-name" />
         <select id="np-system"></select>
         <label id="np-system-path-row"><input id="np-system-path" /></label>
+        <ul id="np-system-path-completions" hidden></ul>
+        <p id="np-system-path-note"></p>
         <label id="np-remote-row"><input id="np-remote" /></label>
         <code id="np-preview"></code>
         <div id="np-contributions"></div>
@@ -93,16 +103,30 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
       npSystem: document.getElementById('np-system'),
       npSystemPath: document.getElementById('np-system-path'),
       npSystemPathRow: document.getElementById('np-system-path-row'),
+      npSystemPathCompletions: document.getElementById('np-system-path-completions'),
+      npSystemPathNote: document.getElementById('np-system-path-note'),
       npRemote: document.getElementById('np-remote'),
       npRemoteRow: document.getElementById('np-remote-row'),
     },
     refreshProjects: async () => {},
     closeSidebarOverflow: () => {},
+    timers,
   });
   const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
   const open = async () => { document.getElementById('np-btn').click(); await tick(); };
   const submit = async () => { dlg.returnValue = 'create'; dlg.dispatchEvent(new window.Event('close')); await tick(); };
-  return { window, document, dlg, posts, open, submit, tick };
+  const typePath = async (v) => {
+    $('np-system-path').value = v;
+    $('np-system-path').dispatchEvent(new window.Event('input', { bubbles: true }));
+    timers.fireAll();
+    await tick();
+  };
+  const choose = async (id) => {
+    $('np-system').value = id;
+    $('np-system').dispatchEvent(new window.Event('change'));
+    await tick();
+  };
+  return { window, document, dlg, posts, listings, timers, typePath, choose, open, submit, tick };
 }
 
 const $ = (id) => document.getElementById(id);
@@ -298,4 +322,102 @@ test('a git notice from one create is cleared by the next', async () => {
   assert.equal(n, 1);
   assert.equal($('np-git-skipped').hidden, true);
   assert.equal($('np-scaffold-block').hidden, false);
+});
+
+// ── PATH COMPLETION ─────────────────────────────────────────────────────────
+
+// PINS: the system path field completes against the chosen placement, and a
+// completion goes through the same `input` event the preview listens to, so what
+// the dialog says it will create follows what the user picked.
+test('completing a directory asks the chosen system and updates the preview', async () => {
+  const { window, open, choose, typePath, listings } = await setup({
+    listing: () => ({ ok: true, entries: ['demo', 'other'], links: [], truncated: false, max: 1000 }),
+  });
+  await open();
+  await choose('prod-box');
+  $('np-remote').value = 'r1';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  await typePath('/srv/d');
+  assert.equal(listings.length, 1);
+  assert.equal(listings[0].params.get('system'), 'prod-box');
+  assert.equal(listings[0].params.get('remoteId'), 'r1');
+  assert.equal(listings[0].params.get('path'), '/srv');
+  assert.deepEqual([...$('np-system-path-completions').children].map(li => li.textContent), ['demo']);
+
+  $('np-system-path').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true }));
+  assert.equal($('np-system-path').value, '/srv/demo/');
+  assert.match($('np-preview').textContent, /\/srv\/demo\//, 'the dispatched input kept the preview in step');
+});
+
+// PINS: the OPEN handler resets the picker (list, note, cache). After the
+// reopen the system is selected by writing the select's value, NOT by a `change`
+// event: that event resets the picker through its own listener and would clear
+// the cache whether or not the open handler did.
+test('reopening clears the picker, and the create body is the unchanged placement shape', async () => {
+  const { window, dlg, open, choose, typePath, listings, submit, posts } = await setup({
+    listing: () => ({ ok: true, entries: ['demo'], links: [], truncated: true, max: 5 }),
+  });
+  await open();
+  await choose('prod-box');
+  await typePath('/srv/d');
+  assert.equal($('np-system-path-completions').hidden, false, 'the first open left a list showing');
+  assert.match($('np-system-path-note').textContent, /more than 5/);
+  assert.equal(listings.length, 1);
+  dlg.close('cancel');
+
+  await open();
+  assert.equal($('np-system-path-completions').hidden, true);
+  assert.equal($('np-system-path-completions').children.length, 0);
+  assert.equal($('np-system-path-note').textContent, '');
+  $('np-system').value = 'prod-box';
+  await typePath('/srv/d');
+  assert.equal(listings.length, 2, 'the cache did not survive the reopen');
+
+  $('np-name').value = 'demo';
+  $('np-system-path').value = '/srv/demo';
+  $('np-remote').value = 'r1';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  await submit();
+  assert.deepEqual(posts, [{ name: 'demo', system: 'prod-box', systemPath: '/srv/demo', remoteId: 'r1' }]);
+});
+
+// PINS: changing the remote RESETS the picker — a list open for the old target
+// closes and its note clears — not merely refetches (a changed remote already
+// changes the cache key, so a refetch alone proves nothing about the reset).
+test('changing the remote closes the picker and the same directory is listed afresh', async () => {
+  const { window, open, choose, typePath, listings } = await setup({
+    listing: () => ({ ok: true, entries: ['d1'], links: [], truncated: true, max: 9 }),
+  });
+  await open();
+  await choose('prod-box');
+  await typePath('/srv/d');
+  assert.equal($('np-system-path-completions').hidden, false, 'a list is open before the change');
+  assert.equal($('np-system-path').getAttribute('aria-expanded'), 'true');
+  assert.match($('np-system-path-note').textContent, /more than 9/);
+
+  $('np-remote').value = 'r2';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  assert.equal($('np-system-path-completions').hidden, true);
+  assert.equal($('np-system-path-completions').children.length, 0);
+  assert.equal($('np-system-path').getAttribute('aria-expanded'), 'false');
+  assert.equal($('np-system-path-note').textContent, '');
+
+  await typePath('/srv/d');
+  assert.equal(listings.length, 2);
+  assert.equal(listings[1].params.get('remoteId'), 'r2');
+});
+
+// PINS: changing the system closes the picker too, for the same reason.
+test('changing the system closes the picker', async () => {
+  const { open, choose, typePath } = await setup({
+    listing: () => ({ ok: true, entries: ['d1'], links: [], truncated: true, max: 9 }),
+  });
+  await open();
+  await choose('prod-box');
+  await typePath('/srv/d');
+  assert.equal($('np-system-path-completions').hidden, false);
+  await choose('local');
+  assert.equal($('np-system-path-completions').hidden, true);
+  assert.equal($('np-system-path').getAttribute('aria-expanded'), 'false');
+  assert.equal($('np-system-path-note').textContent, '');
 });

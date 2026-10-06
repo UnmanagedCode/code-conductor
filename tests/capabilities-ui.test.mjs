@@ -122,6 +122,7 @@ test('the New-project dialog hides the system rows and sends no system', async (
         <input id="np-name" />
         <label>System <select id="np-system"></select></label>
         <label id="np-system-path-row" hidden><input id="np-system-path" /></label>
+        <ul id="np-system-path-completions" hidden></ul><p id="np-system-path-note"></p>
         <label id="np-remote-row" hidden><input id="np-remote" /></label>
         <code id="np-preview"></code><div id="np-contributions"></div><p id="np-error"></p>
       </form>
@@ -138,6 +139,7 @@ test('the New-project dialog hides the system rows and sends no system', async (
       newProjectBtn: $('np-btn'), newProjectDialog: dlg, npName: $('np-name'), npError: $('np-error'),
       npPreview: $('np-preview'), npContributions: $('np-contributions'), npSystem: $('np-system'),
       npSystemPath: $('np-system-path'), npSystemPathRow: $('np-system-path-row'),
+      npSystemPathCompletions: $('np-system-path-completions'), npSystemPathNote: $('np-system-path-note'),
       npRemote: $('np-remote'), npRemoteRow: $('np-remote-row'), npForm: $('np-form'),
       npConfirm: $('np-confirm'), npScaffoldText: $('np-scaffold-text'),
       npScaffoldBlock: $('np-scaffold-block'), npGitSkipped: $('np-git-skipped'),
@@ -183,7 +185,7 @@ test('the Adopt dialog hides the system picker and sends no system', async () =>
         <label>System <select id="apd-system"></select></label>
         <p id="apd-system-note"></p>
         <label id="apd-remote-row" hidden><input id="apd-remote" /></label>
-        <input id="apd-path" /><ul id="apd-suggestions"></ul><p id="apd-scan-note"></p><p id="apd-error"></p>
+        <input id="apd-path" /><ul id="apd-path-completions" hidden></ul><p id="apd-path-note"></p><ul id="apd-suggestions"></ul><p id="apd-scan-note"></p><p id="apd-error"></p>
       </form>
       <p id="apd-stale-summary"></p><ul id="apd-stale-discards"></ul><p id="apd-stale-error"></p>
     </dialog>`;
@@ -197,6 +199,7 @@ test('the Adopt dialog hides the system picker and sends no system', async () =>
       adoptProjectBtn: $('adopt-btn'), adoptProjectDialog: dlg, apdForm: $('apd-form'), apdStale: $('apd-form'),
       apdName: $('apd-name'), apdSystem: $('apd-system'), apdSystemNote: $('apd-system-note'),
       apdRemote: $('apd-remote'), apdRemoteRow: $('apd-remote-row'), apdPath: $('apd-path'),
+      apdPathCompletions: $('apd-path-completions'), apdPathNote: $('apd-path-note'),
       apdSuggestions: $('apd-suggestions'), apdScanNote: $('apd-scan-note'), apdError: $('apd-error'),
       apdStaleSummary: $('apd-stale-summary'), apdStaleDiscards: $('apd-stale-discards'), apdStaleError: $('apd-stale-error'),
     },
