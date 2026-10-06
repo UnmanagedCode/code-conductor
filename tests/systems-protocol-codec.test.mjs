@@ -11,9 +11,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   FS_ERROR_CODES, MAX_LINE_BYTES, NO_CAPABILITIES, NdjsonDecoder, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION,
-  SystemError, classifySpawnError, classifyStderr, decodeFrame, encodeFrame, execFailure,
-  isBase64, isSystemErrorCode, readCapabilities,
+  REMOTE_ID_MAX, SystemError, classifySpawnError, classifyStderr, decodeFrame, encodeFrame, execFailure,
+  isBase64, isSystemErrorCode, readCapabilities, readRemoteList, remoteIdDefect,
 } from '../src/systems/protocol.ts';
+import { validateRemoteId } from '../src/projects.ts';
 
 const push = (dec, s) => dec.push(Buffer.from(s, 'utf8'));
 
@@ -223,6 +224,84 @@ test('capability negotiation: a missing key is false, an unknown key is ignored'
     'a system that serves many targets says so, and says nothing else');
   assert.deepEqual(readCapabilities({ processGroupSignal: 'yes' }), NO_CAPABILITIES,
     'only a literal true enables a capability');
+});
+
+test('remoteListing is read only alongside remotes — a single-target provider has no remoteIds to list', async (t) => {
+  await t.test('remoteListing without remotes is read as neither', () => {
+    assert.deepEqual(readCapabilities({ remoteListing: true }), NO_CAPABILITIES);
+  });
+  await t.test('remoteListing with remotes is read as both', () => {
+    assert.deepEqual(readCapabilities({ remotes: true, remoteListing: true }),
+      { ...NO_CAPABILITIES, remotes: true, remoteListing: true });
+  });
+  await t.test('only a literal true enables it', () => {
+    assert.deepEqual(readCapabilities({ remotes: true, remoteListing: 'yes' }),
+      { ...NO_CAPABILITIES, remotes: true });
+  });
+});
+
+// §2.2's validity table, as `readRemoteList` executes it. Each row a subtest,
+// so one red run shows every row rather than the first.
+test('readRemoteList accepts an empty list, and ignores unknown fields on the frame and on entries', async (t) => {
+  await t.test('an empty list is a valid "serves no target right now"', () => {
+    assert.deepEqual(readRemoteList({ type: 'remoteList', id: 'l1', remotes: [] }), { ok: true, remoteIds: [] });
+  });
+  await t.test('unknown fields on the frame and on an entry are inert', () => {
+    assert.deepEqual(
+      readRemoteList({ type: 'remoteList', id: 'l1', extra: 1, remotes: [{ remoteId: 'a', label: { nested: [1] } }, { remoteId: 'b.c_d' }] }),
+      { ok: true, remoteIds: ['a', 'b.c_d'] });
+  });
+  await t.test('an id of exactly REMOTE_ID_MAX characters is valid', () => {
+    const id = 'x'.repeat(REMOTE_ID_MAX);
+    assert.deepEqual(readRemoteList({ remotes: [{ remoteId: id }] }), { ok: true, remoteIds: [id] });
+  });
+});
+
+test('readRemoteList refuses the whole answer rather than salvaging a partial list', async (t) => {
+  const refuses = (remotes, needle) => {
+    const got = readRemoteList(remotes === undefined ? {} : { remotes });
+    assert.equal(got.ok, false, `accepted ${JSON.stringify(remotes)}`);
+    assert.equal('remoteIds' in got, false, 'a refusal carries no ids');
+    assert.ok(got.reason.includes(needle), `the reason names ${needle}: ${got.reason}`);
+  };
+  await t.test('remotes absent', () => refuses(undefined, 'absent'));
+  await t.test('remotes null', () => refuses(null, 'null'));
+  await t.test('remotes an object', () => refuses({}, '{}'));
+  await t.test('remotes a string', () => refuses('a', '"a"'));
+  await t.test('an entry null', () => refuses([{ remoteId: 'a' }, null], 'remotes[1]'));
+  await t.test('an entry an array', () => refuses([[]], 'remotes[0]'));
+  await t.test('an entry a bare string', () => refuses([{ remoteId: 'a' }, 'b'], 'remotes[1]'));
+  await t.test('remoteId missing', () => refuses([{ name: 'a' }], 'remotes[0]'));
+  await t.test('remoteId not a string', () => refuses([{ remoteId: 7 }], 'remotes[0]'));
+  await t.test('remoteId empty', () => refuses([{ remoteId: '' }], 'remotes[0]'));
+  await t.test('remoteId with a space', () => refuses([{ remoteId: 'a b' }], 'remotes[0]'));
+  await t.test('remoteId with a tab', () => refuses([{ remoteId: 'tab\there' }], 'remotes[0]'));
+  await t.test('remoteId with a NUL', () => refuses([{ remoteId: 'nul\0' }], 'remotes[0]'));
+  await t.test('remoteId past REMOTE_ID_MAX', () => refuses([{ remoteId: 'x'.repeat(REMOTE_ID_MAX + 1) }], 'remotes[0]'));
+  await t.test('a duplicate id', () => refuses([{ remoteId: 'a' }, { remoteId: 'b' }, { remoteId: 'a' }], 'remotes[2]'));
+  await t.test('one bad entry after a good one returns no ids at all', () => {
+    const got = readRemoteList({ remotes: [{ remoteId: 'a' }, { remoteId: 'a b' }] });
+    assert.deepEqual(Object.keys(got).sort(), ['ok', 'reason']);
+    assert.equal(got.ok, false);
+    assert.ok(got.reason.includes('remotes[1]') && got.reason.includes('"a b"'), got.reason);
+  });
+});
+
+// PINS THE SINGLE SOURCE: an id is accepted on the wire exactly when the Remote
+// field accepts it, so a listed id can always be put back into that field.
+test('remoteIdDefect is the one rule validateRemoteId and readRemoteList share', async (t) => {
+  const samples = [
+    '', 'a', 'ctr-a', 'b.c_d', 'user@host', 'x'.repeat(REMOTE_ID_MAX), 'x'.repeat(REMOTE_ID_MAX + 1),
+    'a b', 'tab\there', 'nl\nhere', 'nul\0', 'del\u007f',
+  ];
+  for (const id of samples) {
+    await t.test(JSON.stringify(id).slice(0, 40), () => {
+      const field = (() => { try { return validateRemoteId(id) === id; } catch { return false; } })();
+      const wire = readRemoteList({ remotes: [{ remoteId: id }] }).ok;
+      assert.equal(wire, field, `the Remote field ${field ? 'accepts' : 'refuses'} it and the wire ${wire ? 'accepts' : 'refuses'} it`);
+      assert.equal(remoteIdDefect(id) === null, field);
+    });
+  }
 });
 
 // PINS THE DECODE HALF of the no-descriptor rule: an unknown FIELD on a KNOWN

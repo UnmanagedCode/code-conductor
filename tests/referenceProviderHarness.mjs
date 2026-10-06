@@ -90,7 +90,7 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 // third-party relaxation lives.
 //
 // Neither passes `--remote` or `--mirror`, so both report
-// `remotes:false` and `remoteDescriptors:false`. That is a property of THIS
+// `remotes:false`, `remoteListing:false` and `remoteDescriptors:false`. That is a property of THIS
 // matrix, not of the gate's — see the divergence note at the top of the file.
 // `remotes` and `remoteDescriptors` have their own multi-target/mirror fixtures,
 // which register their own systems and work under every configuration here:
@@ -103,12 +103,12 @@ export const CAPABILITY_CONFIGS = [
   {
     name: 'all capabilities',
     flags: [],
-    caps: { processGroupSignal: true, remotes: false, remoteDescriptors: false },
+    caps: { processGroupSignal: true, remotes: false, remoteDescriptors: false, remoteListing: false },
   },
   {
     name: 'processGroupSignal:false',
     flags: ['--no-process-group-signal'],
-    caps: { processGroupSignal: false, remotes: false, remoteDescriptors: false },
+    caps: { processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false },
   },
 ];
 
@@ -140,8 +140,8 @@ export const TOGGLED_CAPABILITIES = Object.keys(CAPABILITY_CONFIGS[0].caps)
 // flags it was launched with are the whole of what it advertises.
 //
 // RELAXED for a third-party provider, on ONE axis only — the toggled
-// capabilities must still match, and `remotes`/`remoteDescriptors` may be a
-// SUPERSET. A provider kind that serves many targets (a container id per
+// capabilities must still match, and `remotes`/`remoteDescriptors`/
+// `remoteListing` may be a SUPERSET. A provider kind that serves many targets (a container id per
 // target) advertises `remotes:true` always; making it lie to get through the
 // suite would be a test-only divergence in the one field cc negotiates on.
 //
@@ -176,5 +176,42 @@ export function assertNegotiatedCapabilities(caps, config, isReference = IS_REFE
   for (const cap of TOGGLED_CAPABILITIES) {
     assert.equal(caps[cap], config.caps[cap],
       `${cap}: the flag the provider was launched with is what it advertises`);
+  }
+}
+
+// THE ENUMERATION ROWS' GATE (docs/systems-protocol.md §2.2, §10).
+// `remoteListing` is optional, so a third-party provider that does not
+// advertise it has nothing to verify and gets the rows skipped with this
+// reason; one that does is held to them. The reference provider is always
+// held to them. Split out so the gate is drivable without a provider.
+export const VERIFY_LISTING = 'verify';
+
+export function remoteListingVerdict(caps, isReference = IS_REFERENCE_PROVIDER) {
+  return isReference || caps.remoteListing === true
+    ? VERIFY_LISTING
+    : 'the provider does not advertise remoteListing — optional (§2); nothing to verify';
+}
+
+// One raw `listRemotes` on an up connection, resolving with the id it sent and
+// its terminal frame — `remoteList` or `error` — or the `down` error. Bounded,
+// so a provider that answers nothing fails BY NAME rather than at the per-file
+// kill.
+export async function listRemotesRaw(conn, ms = 10_000) {
+  const id = conn.nextId('l');
+  let timer;
+  try {
+    const frame = await new Promise((resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no terminal frame for listRemotes ${id} within ${ms} ms — MUST 5`)), ms);
+      conn.open(id, {
+        frame: (f) => { if (f.type === 'remoteList' || f.type === 'error') resolve(f); },
+        down: resolve,
+      });
+      conn.send({ type: 'listRemotes', id });
+    });
+    return { id, frame };
+  } finally {
+    clearTimeout(timer);
+    conn.close(id);
   }
 }

@@ -58,7 +58,7 @@ Provider MUSTs:
 4. Interleave concurrent ids correctly (§4).
 5. **Answer every operation it accepts, or refuse it.** Each `id` cc opens
    terminates in a frame for that `id` — `exit`, `readFileResult` + `end`,
-   `writeFileResult`, `remoteDescriptor`, or an `error` frame from §8's
+   `writeFileResult`, `remoteDescriptor`, `remoteList`, or an `error` frame from §8's
    taxonomy — unless cc ends it first with `close` or `detach`, after which the
    provider emits nothing for it (§5's rules). Accepting an operation and then
    answering nothing is a breach.
@@ -191,6 +191,7 @@ a user-visible difference, **and a test that runs the fallback**.
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
 | **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None in traffic or geometry: a session on such a system is byte-identical to one before the capability existed. **Known wording defect:** an `outside-mirror-root` refusal still calls that default root "the mirror root that system advertises" and names the one path twice (`outsideMirrorRefusal`, `src/systems/fuse/tierTable.ts`, receives no advertised-vs-defaulted signal) | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
+| **`remoteListing`** | **2 — OPTIONAL** | cc **never sends `listRemotes`**; a `remoteId` is learned out of band (a user names one in the Remote field). **Read as absent unless `remotes` is also advertised** — a single-target provider has no `remoteId`s to list | None: no cc surface enumerates remotes, so a project, a session and the Remote field are the same either way | `tests/systems-protocol-codec.test.mjs` → "remoteListing is read only alongside remotes"; the `remoteListing:false` asserted in every configuration's handshake row of `tests/systems-protocol-conformance.test.mjs`; and that suite's reference-only row "a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed". `npm run gate:systems` does NOT exercise the present-behaviour: its row 1 advertises the capability because it carries `--remote`, but no cc caller sends the frame |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename` | **not in the protocol** | — | cc never renames on a system: a cross-tier rename is `EXDEV` and a project-tier directory rename refuses, so nothing can ask for one | — |
@@ -276,6 +277,91 @@ refused rather than followed (`MIRROR_ADVERTISEMENT_CHANGED`). Pinned in
 `tests/systems-mirror-wide.test.mjs`; the absence of any local image in
 `tests/systems-session-root.test.mjs`.
 
+### 2.2 Remote enumeration
+
+**Which `remoteId`s a provider serves.** One request/response pair, gated on
+`remoteListing`:
+
+```
+cc  →  {"type":"listRemotes","id":"l1"}
+   ←  {"type":"remoteList","id":"l1","remotes":[{"remoteId":"ctr-a"},{"remoteId":"ctr-b"}]}
+```
+
+- **Gated on `remoteListing`, which requires `remotes`.** cc never sends
+  `listRemotes` to a provider that does not advertise it. A provider advertising
+  `remoteListing` without `remotes` is read as not advertising it
+  (`readCapabilities`, `src/systems/protocol.ts`).
+- **A request frame carrying no `remoteId`.** The set of targets is a fact about
+  the provider, not about any one target, so the frame names none — a provider
+  MUST NOT refuse it `ENOREMOTE` for naming no remote. It is not a §7
+  derivation for the same reason: every derivation is an `exec` on one target.
+- **One exchange, multiplexed by id.** `remoteList` or an `error` is its
+  terminal frame and nothing follows either, so §4's id-binding rule has nothing
+  to bind. It may be open alongside any other operation, including another
+  `listRemotes`. A `close` for it is honoured: the provider emits nothing
+  further for that id.
+- **Membership — a MUST.** The listed set is exactly the set of ids that a
+  request naming them, at the moment the provider composes the answer, would
+  **not** refuse `ENOREMOTE` (§8). A target the provider has switched off, and
+  so refuses `ENOREMOTE`, is not listed. **A provider whose served set it cannot
+  enumerate completely** — one that accepts any well-formed `user@host` and
+  learns whether it exists only by trying — **MUST NOT advertise
+  `remoteListing`.**
+- **An entry is an object carrying `remoteId` only.** Each `remoteId` MUST be one
+  cc accepts as a project's Remote — non-empty, no whitespace or control
+  characters, at most `REMOTE_ID_MAX` characters; the rule is `remoteIdDefect`
+  in `src/systems/protocol.ts`, the same one the Remote field enforces. No id is
+  listed twice.
+- **No order is defined**, and cc reads no meaning into one. **The whole list
+  rides in one frame**, bounded by `MAX_LINE_BYTES` (§1); there is no paging.
+- **An empty list is valid**: `"remotes": []` means "serves no target right
+  now". **An absent or non-array `remotes` is invalid, never read as empty** —
+  unlike `remoteDescriptor`'s absent fields, which mean "nothing advertised",
+  confusing a malformed list with "none" is a wrong answer, not a safe default.
+- **A provider that cannot enumerate** (its daemon is down, its store is
+  unreadable) answers an **id-addressed** `error`, `EUNKNOWN`, with the reason
+  in `message` and `exitCode`/`stderr` when a command it ran failed. It **MUST
+  NOT answer a partial list.** An id-less error would tear down every other
+  target's work (§9).
+- **A provider that does not advertise `remoteListing`** may ignore the frame
+  (an unknown type, §2) or answer an id-addressed `EUNSUPPORTED`. The reference
+  provider answers `EUNSUPPORTED`.
+- **cc treats every `error` answer as a failed enumeration, never as an empty
+  list** — `EUNSUPPORTED` from a provider that advertised the capability
+  included. Unlike §2.1, where `EUNSUPPORTED` falls back to "no advertisement",
+  a list has no safe narrowest default.
+- **Each answer is a snapshot**, true when composed. Two asks on one connection
+  may differ — containers come and go — so **cc does not memoise it** (unlike
+  `describeRemote`, pinned per connection generation). The provider sends no
+  unsolicited "changed" frame. A cc caller bounds the request like any other
+  (§5's backstop).
+- **An unrecognised field on `remoteList`, or on an entry, is ignored**, as on
+  every provider → cc frame (§2.1).
+
+**What cc will not believe** (`readRemoteList`, `src/systems/protocol.ts`):
+
+| `remoteList` | Verdict |
+|---|---|
+| `remotes` is `[]` | **Valid** — serves no target right now |
+| `remotes` absent, `null`, or not an array | refused |
+| an entry that is not a plain object (`null`, an array, a string included) | refused, naming its index |
+| an entry's `remoteId` absent or not a string | refused, naming its index |
+| an entry's `remoteId` empty, longer than `REMOTE_ID_MAX`, or carrying whitespace or a control character (`remoteIdDefect`) | refused, naming its index and the value |
+| a `remoteId` listed twice | refused, naming the repeat's index and the value |
+
+**A refusal fails the whole enumeration**: the message names the offending
+value, and **nothing is salvaged** — a silently shortened list cannot be told
+apart from a true one. It is not `EPROTO`: the line framed, so **the connection
+stays up**.
+
+**What cc must not assume:**
+
+- that a provider not advertising `remoteListing` serves no remotes;
+- that a listed id will succeed — a fence, a toolchain refusal or a transport
+  failure can still fail an operation on it;
+- that an unlisted id will refuse `ENOREMOTE`. The operation's own answer stays
+  authoritative for that id.
+
 ## 3. Frames
 
 Every request carries a unique string `id`. Stream frames echo it with a `seq`
@@ -299,6 +385,7 @@ anything — but it is lying in its own logs.
 | `readFile` | `id`, `path`, `remoteId?`, `offset?`, `length?` | Read |
 | `writeFile` | `id`, `path`, `remoteId?`, `mode?`, `atomic?`, `exclusive?` | Open a write; `data`… then `end` follow |
 | `describeRemote` | `id`, `remoteId?` | Ask for a target's mirror advertisement (§2.1). **Requires `remoteDescriptors`** |
+| `listRemotes` | `id` | Ask which `remoteId`s the provider serves (§2.2). **Requires `remoteListing`.** Carries no `remoteId` |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a `writeFile` payload |
 | `end` | `id` | End of a `writeFile` payload |
 
@@ -306,7 +393,8 @@ anything — but it is lying in its own logs.
 It names which of the provider's targets the operation is for, and it is sent
 only to a provider that advertises `remotes` — see §4 for why every follow-on
 frame omits it, and the `remotes` row in §2 for why an optimistically-sent field
-would be unsafe.
+would be unsafe. `listRemotes` is a request frame that carries none: it asks
+about the provider, not a target (§2.2).
 
 ### provider → cc
 
@@ -320,6 +408,7 @@ would be unsafe.
 | `end` | `id` | Terminal for a `readFile` |
 | `writeFileResult` | `id`, `ok:true` | Terminal for a `writeFile` |
 | `remoteDescriptor` | `id`, `mirrorRoot?`, `exclude?` | Terminal for a `describeRemote`; both fields optional (§2.1) |
+| `remoteList` | `id`, `remotes` | Terminal for a `listRemotes`; `remotes` is `[{remoteId}]` (§2.2) |
 | `error` | `id?`, `code`, `message`, `exitCode?`, `stderr?` | Terminal for the id; **id-less means the whole connection failed** |
 
 ## 4. Multiplexing
@@ -334,7 +423,8 @@ Ids are generated by cc, are never reused, and are opaque to the provider.
 **AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME.** The `remoteId` on the
 opening `exec` / `readFile` / `writeFile` is the operation's target for every
 frame that follows it (`describeRemote`, the fourth request frame, has no
-follow-on frames — it opens and closes in one exchange) — `signal`, `close`,
+follow-on frames — it opens and closes in one exchange — and neither has
+`listRemotes`, which names no remote at all) — `signal`, `close`,
 `detach`, `data`, `end` carry no `remoteId` and a provider must not look for one on them. A provider
 that re-derived the target per frame would have to answer "which target" for a
 frame that never names one.
@@ -712,6 +802,8 @@ provider's choice — it follows from what failed:
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
 | a request naming a `remoteId` it does not serve, or naming none while it advertises `remotes` | `ENOREMOTE`, **id-addressed** |
+| a `listRemotes` it cannot answer completely | `EUNKNOWN`, **id-addressed**, the reason in `message` — never a partial list (§2.2) |
+| a `listRemotes` while not advertising `remoteListing`, if it answers at all | `EUNSUPPORTED`, **id-addressed** |
 | a frame it could not read at all | `EPROTO`, **id-less** — that is a connection-level failure |
 | a filesystem failure it has no code for | `EUNKNOWN`, with `exitCode`/`stderr` filled in |
 
@@ -771,7 +863,7 @@ as "no such file" turns one fixable fault into a fleet of misses.
 | A malformed frame | The connection is torn down and restarted like a death. |
 | cc tears the connection down (`dispose`, a protocol violation, a handshake timeout) | cc **closes the provider's stdin** and lets MUST 3 do the work, then **SIGKILLs** it if it has not exited within a bounded grace. A provider that ignores EOF is still terminated — but cc cannot reap what such a provider started, which is what MUST 3 exists to prevent. After `dispose` the connection is **not reusable**: a caller still holding the handle is refused, not reconnected. |
 | An id-less `error` frame | Connection-level: everything in flight fails with that code. |
-| **One dead remote is not a dead connection** | On a provider serving many targets, one connection carries every target's work. So a refusal ABOUT a target — `ENOREMOTE`, or any FS code from an operation on it — **MUST be id-addressed**. A provider that answered a bad `remoteId` id-lessly would tear the connection down and fail every OTHER target's in-flight operation with it. Pinned by `tests/systems-protocol-conformance.test.mjs` → "ENOREMOTE is id-addressed". |
+| **One dead remote is not a dead connection** | On a provider serving many targets, one connection carries every target's work. So a refusal ABOUT a target — `ENOREMOTE`, or any FS code from an operation on it — **MUST be id-addressed**. A provider that answered a bad `remoteId` id-lessly would tear the connection down and fail every OTHER target's in-flight operation with it. A failed enumeration (§2.2) is likewise id-addressed. Pinned by `tests/systems-protocol-conformance.test.mjs` → "ENOREMOTE is id-addressed". |
 
 ## 10. Verifying a provider
 
@@ -805,10 +897,15 @@ that passes them, so renaming one reds the suite.
 | Flag / variable | The provider must | Effect on the handshake |
 |---|---|---|
 | `--no-process-group-signal` | send a `signal` to the direct child only (§5) | `processGroupSignal: false` |
-| `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true` |
+| `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true`, and `remoteListing: true` if the provider implements §2.2 — its `remoteList` must then be exactly the `--remote` ids |
 | `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` (§2.1) | `remoteDescriptors: true` |
 | `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` | `remoteDescriptors: true` |
 | `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts**, naming the target it ran on | — (asserted directly, not negotiated) |
+
+**The enumeration rows (§2.2) are gated on the handshake.** A provider that does
+not advertise `remoteListing` gets them **skipped with a printed reason** — the
+capability is optional, so there is nothing to verify; one that does is held to
+them.
 
 **`CC_CONFORMANCE_REMOTE_ID` (below) presupposes `--remote`**, and the two ids
 must match. cc refuses a `remoteId` on its own side whenever the handshake
@@ -850,10 +947,10 @@ gives up is silent — each row is either relaxed here or skipped in the output
 with its own reason:
 
 - **The capability assertion is relaxed on one axis.** The capabilities
-  `CAPABILITY_CONFIGS` toggles must still match the flags exactly; `remotes` and
-  `remoteDescriptors` may be a **superset** of the configuration. So the suite
-  stops being the verifier for the `remotes` and `remoteDescriptors` rows of
-  §2's capability table.
+  `CAPABILITY_CONFIGS` toggles must still match the flags exactly; `remotes`,
+  `remoteDescriptors` and `remoteListing` may be a **superset** of the
+  configuration. So the suite stops being the verifier for those rows of §2's
+  capability table.
 - **The CC-SIDE rows are SKIPPED.** They use a provider as a fixture to assert
   what *cc* does — what it sends a provider that advertises a capability off,
   what this suite's own defaults are — so they are pinned to the reference
@@ -913,9 +1010,10 @@ ten of each.
 | `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. It is then **out of MUST 3's exit reap too**, which covers operations still open: a detached `docker exec` keeps running, exactly as a detached local one does |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
+| `remoteListing` | `true` when the provider can enumerate the containers it would accept; the `remoteList` must agree with its `ENOREMOTE` rule (§2.2) |
 
-Three primitives and three capabilities; a `docker exec` provider satisfies all
-of them. **Three things it is not thin about**, worth knowing before starting one:
+The three primitives and every optional capability above; a `docker exec`
+provider satisfies all of them. **Three things it is not thin about**, worth knowing before starting one:
 
 1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the
    container and are not reparented to the provider, so stdin-EOF ends the

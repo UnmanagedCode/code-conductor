@@ -17,13 +17,14 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  CHUNK_BYTES, FS_ERROR_CODES, MAX_FILE_BYTES, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION,
+  CHUNK_BYTES, FS_ERROR_CODES, MAX_FILE_BYTES, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION, readRemoteList,
 } from '../src/systems/protocol.ts';
 import { ProviderConnection } from '../src/systems/providerConnection.ts';
 import { parseFindLines } from '../src/systems/providerSystem.ts';
 import {
-  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, REMOTE_ID_ENV, TOGGLED_CAPABILITIES,
-  assertNegotiatedCapabilities, conformanceRemoteId, makeProviderSystem, providerArgv,
+  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, REMOTE_ID_ENV, TOGGLED_CAPABILITIES, VERIFY_LISTING,
+  assertNegotiatedCapabilities, conformanceRemoteId, listRemotesRaw, makeProviderSystem, providerArgv,
+  remoteListingVerdict,
 } from './referenceProviderHarness.mjs';
 
 // The binding for a frame or a flag a fixture builds by hand. Empty — so the
@@ -964,6 +965,149 @@ test('an unrecognised field on a remoteDescriptor is ignored, not an error', asy
   await rmrf(dir);
 });
 
+// ── listRemotes: remote enumeration (§2.2) ───────────────────────────
+//
+// Outside the per-configuration loop: no configuration in CAPABILITY_CONFIGS
+// passes `--remote`, and the frame's behaviour does not depend on the other
+// capabilities. Rows that verify a provider gate on `remoteListingVerdict`: a
+// third-party provider that does not advertise the capability skips them with
+// the reason printed, one that does is held to them.
+
+// The ids a provider launched by `withRemotes` serves: `a` and `b`, plus the
+// target a bound run's argv must declare (§10) when CC_CONFORMANCE_REMOTE_ID
+// is set.
+const LISTED = [...new Set(['a', 'b', ...(conformanceRemoteId() === null ? [] : [conformanceRemoteId()])])].sort();
+
+// PINS THE MEMBERSHIP RULE: the list is exactly the set of ids a request would
+// not refuse ENOREMOTE — each listed id routes to its own target, and an id
+// outside it refuses. Also that the frame, naming no remote, is ANSWERED by a
+// `remotes` provider rather than refused ENOREMOTE by its routing gate.
+//
+// NOT CLAIMING: that the list and the routing are read off one process. The
+// enumeration runs on a second connection launched with the same argv, whose
+// served set the argv decides.
+test('listRemotes enumerates exactly the targets that do not refuse ENOREMOTE', async (t) => {
+  await withRemotes(async (sys, { rootA, rootB }) => {
+    const conn = new ProviderConnection({
+      launch: { argv: providerArgv(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`]) },
+    });
+    try {
+      const hs = await conn.ensureUp();
+      const verdict = remoteListingVerdict(hs.capabilities);
+      if (verdict !== VERIFY_LISTING) { t.skip(verdict); return; }
+      assert.equal(hs.capabilities.remoteListing, true,
+        'a provider serving named targets it can enumerate advertises remoteListing');
+      const { id, frame } = await listRemotesRaw(conn);
+      assert.equal(frame.type, 'remoteList',
+        `listRemotes was answered ${frame.type} ${frame.code ?? ''} (${frame.message ?? ''}) — a frame naming no remote is not refused for naming none`);
+      assert.equal(frame.id, id, 'the answer is addressed to the request');
+      const read = readRemoteList(frame);
+      assert.equal(read.ok, true, `cc would not believe this remoteList: ${read.reason}`);
+      assert.deepEqual([...read.remoteIds].sort(), LISTED, 'exactly the targets the provider was launched to serve');
+      for (const listed of read.remoteIds) {
+        // `/` is the cwd every provider MUST accept (§7).
+        const r = await sys.bindRemote(listed).exec({ shell: 'echo "$CC_REMOTE"' }, { cwd: '/' });
+        assert.equal(r.stdout.trim(), listed, `listed id ${listed} routes to its own target`);
+      }
+      await assert.rejects(() => sys.bindRemote('ghost').readFile(path.join(rootA, 'anything')),
+        (e) => expectCode(e, 'ENOREMOTE', 'a request naming an id the list does not carry'));
+    } finally { conn.dispose(); }
+  });
+});
+
+// One raw exec on a connection, resolving with its stdout and exit frame.
+function rawExec(conn, frame) {
+  return new Promise((resolve) => {
+    let stdout = '';
+    conn.open(frame.id, {
+      frame: (f) => {
+        if (f.type === 'stdout') stdout += Buffer.from(f.dataB64, 'base64').toString('utf8');
+        else if (f.type === 'exit' || f.type === 'error') { conn.close(frame.id); resolve({ stdout, end: f }); }
+      },
+      down: (e) => resolve({ stdout, end: e }),
+    });
+    conn.send(frame);
+  });
+}
+
+// PINS: `listRemotes` is multiplexed like any other id — two open at once each
+// get their own answer — and answering them leaves another target's in-flight
+// exec untouched. The exec cannot finish until the test releases it, so it is
+// in flight across both enumerations by construction, not by timing.
+test('listRemotes is one id among many: answered beside an in-flight exec, never disturbing it', async (t) => {
+  await withRemotes(async (_sys, { rootA, rootB }) => {
+    const conn = new ProviderConnection({
+      launch: { argv: providerArgv(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`]) },
+    });
+    const release = path.join(rootA, 'release');
+    try {
+      const hs = await conn.ensureUp();
+      const verdict = remoteListingVerdict(hs.capabilities);
+      if (verdict !== VERIFY_LISTING) { t.skip(verdict); return; }
+      const running = rawExec(conn, {
+        type: 'exec', id: conn.nextId('e'), remoteId: 'a', cwd: '/', timeoutMs: 20_000,
+        shell: `while [ ! -e '${release}' ]; do sleep 0.05; done; echo survived`,
+      });
+      const answers = await Promise.all([listRemotesRaw(conn), listRemotesRaw(conn)]);
+      assert.notEqual(answers[0].id, answers[1].id, 'two enumerations are two ids');
+      for (const { id, frame } of answers) {
+        assert.equal(frame.type, 'remoteList', `listRemotes ${id} was answered ${frame.type}`);
+        assert.equal(frame.id, id, 'each answer is addressed to its own request');
+        const read = readRemoteList(frame);
+        assert.equal(read.ok, true, `cc would not believe this remoteList: ${read.reason}`);
+        assert.deepEqual([...read.remoteIds].sort(), LISTED);
+      }
+      await fs.writeFile(release, '');
+      const r = await running;
+      assert.equal(r.end.type, 'exit', `the exec ended ${r.end.type ?? r.end.code}`);
+      assert.equal(r.end.code, 0);
+      assert.equal(r.stdout, 'survived\n', 'the other target\'s work ran to completion, untouched');
+    } finally { conn.dispose(); }
+  });
+});
+
+// PINS THE ABSENT-BEHAVIOUR on the reference provider: with no `--remote` it
+// does not advertise `remoteListing`, and a stray `listRemotes` is refused
+// `EUNSUPPORTED`, id-addressed — never left unanswered, never a connection-level
+// error. The handshake object's identity is the connection generation, so the
+// same object after two refusals proves neither tore the connection down.
+//
+// Reference-only: a provider that does not advertise a capability may ignore
+// its frame (§2).
+test('a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed',
+  { skip: IS_REFERENCE_PROVIDER ? false : 'a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it' },
+  async () => {
+    const conn = new ProviderConnection({ launch: { argv: providerArgv([]) } });
+    try {
+      await conn.ensureUp();
+      const hs = conn.handshake;
+      assert.equal(hs.capabilities.remoteListing, false, 'a single-target provider has nothing to list');
+      for (const attempt of ['first', 'second']) {
+        const { id, frame } = await listRemotesRaw(conn);
+        assert.equal(frame.type, 'error', `${attempt}: answered ${frame.type}`);
+        assert.equal(frame.id, id, `${attempt}: the refusal is addressed to the request, not the connection`);
+        expectCode(frame, 'EUNSUPPORTED', `${attempt} listRemotes to a provider without remoteListing`);
+      }
+      assert.equal(conn.handshake, hs, 'the same connection generation answered both');
+    } finally { conn.dispose(); }
+  });
+
+// PINS THE GATE the enumeration rows above run behind: a provider that does
+// not advertise the optional capability skips them rather than failing them,
+// and the reference provider is held to them whatever it advertises.
+//
+// Pure: it drives the verdict directly, launching no provider.
+test('a provider that does not advertise remoteListing skips the enumeration rows, never fails them', () => {
+  const skip = 'the provider does not advertise remoteListing — optional (§2); nothing to verify';
+  assert.equal(remoteListingVerdict({ remoteListing: false }, true), VERIFY_LISTING,
+    'the reference provider is always held to them');
+  assert.equal(remoteListingVerdict({ remotes: true, remoteListing: true }, false), VERIFY_LISTING,
+    'a third-party provider that advertises it is held to them');
+  assert.equal(remoteListingVerdict({ remoteListing: false }, false), skip);
+  assert.equal(remoteListingVerdict({ remotes: true, remoteListing: false }, false), skip,
+    'a provider serving named targets that cannot enumerate them stays conformant');
+});
+
 test('a write above the protocol cap is refused before a byte reaches the wire', async () => {
   // Outside the per-configuration loop: this allocates the cap, and the refusal
   // is cc-side, identical whatever the provider advertises.
@@ -1073,14 +1217,14 @@ test('a bound run is refused at the handshake unless the provider serves that ta
 });
 
 // PINS: the third-party half of the capability assertion relaxes EXACTLY one
-// axis. `remotes`/`remoteDescriptors` may be a superset of the matrix, every
+// axis. `remotes`/`remoteDescriptors`/`remoteListing` may be a superset of the matrix, every
 // capability the matrix TOGGLES must still match, and the reference half stays
 // exact — so a relaxation cannot leak onto the default run.
 //
 // Pure: it drives the assertion directly, launching no provider.
 test('the third-party capability assertion tolerates a superset but pins the toggle', () => {
   for (const config of CAPABILITY_CONFIGS) {
-    const superset = { ...config.caps, remotes: true, remoteDescriptors: true };
+    const superset = { ...config.caps, remotes: true, remoteDescriptors: true, remoteListing: true };
     assertNegotiatedCapabilities(superset, config, false);
     assert.throws(() => assertNegotiatedCapabilities(superset, config, true), assert.AssertionError,
       'the reference provider is still held to the exact set');
