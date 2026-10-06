@@ -171,6 +171,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
     'describe_playbook', 'describe_session',
+    'enumerate_remotes',
     'get_recent_messages', 'get_transcript',
     'interrupt_turn',
     'kill_instance',

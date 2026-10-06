@@ -36,7 +36,8 @@ const DIALOG_HTML = `
       <input id="apd-name" />
       <select id="apd-system"></select>
       <p id="apd-system-note"></p>
-      <label id="apd-remote-row" hidden><input id="apd-remote" /></label>
+      <label id="apd-remote-row" hidden><select id="apd-remote-select" hidden></select><input id="apd-remote" /></label>
+      <p id="apd-remote-note"></p>
       <input id="apd-path" />
       <ul id="apd-path-completions" hidden></ul>
       <p id="apd-path-note"></p>
@@ -71,10 +72,13 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 
 // Boots the dialog against a real happy-dom document and a scripted server.
 // `posts` is consumed in order — one entry per POST the flow is expected to
-// make; the last entry repeats if the flow makes more.
+// make; the last entry repeats if the flow makes more. `remotes(system)`
+// answers `GET /api/systems/<system>/remotes` with a body (or a promise of
+// one); the default is a System that does not enumerate.
 async function bootDialog({
   scan = EMPTY_SCAN, scanStatus = 200, posts = [], systems = SYSTEMS, systemsStatus = 200,
   listing = () => ({ ok: true, entries: [], links: [], truncated: false, max: 1000 }),
+  remotes = (system) => ({ system, label: system, state: 'not-enumerable', reason: 'does not advertise remoteListing' }),
 } = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
@@ -85,8 +89,19 @@ async function bootDialog({
   let scans = 0;
   let postIdx = 0;
   const listings = [];
+  const remoteAsks = [];
   const timers = fakeTimers();
   globalThis.fetch = withHealth(async (url, opts) => {
+    // A GET with its own log, before the catch-all for the same reason the
+    // registry is: recording it would corrupt every POST-count assertion.
+    const asked = String(url).match(/^\/api\/systems\/([^/]+)\/remotes$/);
+    if (asked) {
+      const system = decodeURIComponent(asked[1]);
+      remoteAsks.push(system);
+      const body = await remotes(system);
+      if (body === undefined) return { ok: false, status: 503, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => body };
+    }
     if (String(url).includes('/api/projects/suggestions')) {
       scans++;
       return { ok: scanStatus < 400, status: scanStatus, json: async () => scan };
@@ -124,6 +139,8 @@ async function bootDialog({
       apdSystemNote: el('apd-system-note'),
       apdRemote: el('apd-remote'),
       apdRemoteRow: el('apd-remote-row'),
+      apdRemoteSelect: el('apd-remote-select'),
+      apdRemoteNote: el('apd-remote-note'),
       apdPath: el('apd-path'),
       apdPathCompletions: el('apd-path-completions'),
       apdPathNote: el('apd-path-note'),
@@ -155,6 +172,18 @@ async function bootDialog({
     el('apd-remote').dispatchEvent(new window.Event('input'));
     await tick();
   };
+  // Choosing from the Remote dropdown the way a user does: by `change`.
+  const pickRemote = async (value) => {
+    el('apd-remote-select').value = value;
+    el('apd-remote-select').dispatchEvent(new window.Event('change'));
+    await tick();
+  };
+  // "Other…" by its label, so no test restates the option's sentinel value.
+  const pickOther = async () => {
+    const other = [...el('apd-remote-select').options].find(o => o.textContent === 'Other…');
+    assert.ok(other, 'the dropdown offers Other…');
+    await pickRemote(other.value);
+  };
   // Typing into the path field the way a user does, then letting the debounce
   // fire and the response land.
   const typePath = async (v) => {
@@ -164,7 +193,8 @@ async function bootDialog({
     await tick();
   };
   return {
-    listings, timers, typePath,
+    listings, timers, typePath, remoteAsks, pickRemote, pickOther,
+    remoteOptions: () => [...el('apd-remote-select').options].map(o => o.textContent),
     el, window, requests, messageFor: mod.messageFor, overrides: mod.REFUSAL_OVERRIDES,
     close, pick, typeRemote, scans: () => scans,
     reopen: async () => { el('adopt-project-btn').click(); await tick(); },
@@ -732,6 +762,38 @@ test('reopening the dialog resets every field the previous open left behind', as
   assert.deepEqual(d.requests.at(-1).body, { name: 'other', path: '/root/other' });
 });
 
+// PINS RESET ON REOPEN for the dropdown family: an abandoned Other… with text
+// in it, on a System that enumerated, comes back as the plain free-text field
+// with no dropdown and no note — and does not ride out on the next POST.
+test('reopening the dialog resets the Remote dropdown, Other… and its note', async () => {
+  const d = await bootDialog({
+    remotes: (system) => ({ system, label: system, state: 'listed', remoteIds: ['ctr-a'] }),
+  });
+  d.el('apd-name').value = 'api';
+  await d.pick('prod-box');
+  await d.pickOther();
+  await d.typeRemote('ctr-z');
+  d.el('apd-path').value = '/srv/api';
+  await d.close('cancel');
+
+  await d.reopen();
+  assert.equal(d.el('apd-remote-select').hidden, true);
+  assert.equal(d.el('apd-remote-select').options.length, 0);
+  assert.equal(d.el('apd-remote').hidden, false);
+  assert.equal(d.el('apd-remote').value, '');
+  assert.equal(d.el('apd-remote-note').textContent, '');
+  assert.equal(d.el('apd-remote-row').hidden, true);
+  assert.equal(d.el('apd-system').value, 'local');
+
+  // A value write (no `change`, so no ask) puts the adopt on the system: had
+  // the dropdown mode survived, it would be refused for want of a remote.
+  d.el('apd-name').value = 'other';
+  d.el('apd-system').value = 'prod-box';
+  d.el('apd-path').value = '/srv/other';
+  await d.close('adopt');
+  assert.deepEqual(d.requests.at(-1).body, { name: 'other', path: '/srv/other', system: 'prod-box' });
+});
+
 // PINS: an unreadable registry SAYS SO. Falling through silently to a local-only
 // picker makes "cc could not ask" indistinguishable from "nothing is
 // registered", and the user would read the missing system as one they never
@@ -949,4 +1011,202 @@ test('reopening clears the picker\'s list, note and cache', async () => {
   assert.equal(d.el('apd-path-note').textContent, '');
   await d.typePath('/srv/x');
   assert.equal(d.listings.length, 2, 'the cache did not survive: the same directory is fetched again');
+});
+
+// ── THE REMOTE DROPDOWN ─────────────────────────────────────────────────────
+//
+// The same switch the New project dialog has, implemented in this module: a
+// System whose provider enumerates offers its configured remotes as a dropdown
+// with Other…; one that does not, or whose enumeration failed, keeps free text,
+// and a failure says why.
+
+const listedOn = (...remoteIds) => (system) => ({ system, label: system, state: 'listed', remoteIds });
+
+describe('the Remote dropdown', () => {
+  // PINS the dropdown half of the switch, and that the picked id is posted.
+  test('an enumerable system offers its remotes as a dropdown', async () => {
+    const d = await bootDialog({ remotes: listedOn('ctr-a', 'ctr-b') });
+    d.el('apd-name').value = 'api';
+    await d.pick('prod-box');
+    assert.equal(d.el('apd-remote-select').hidden, false);
+    assert.deepEqual(d.remoteOptions(), ['— choose a remote —', 'ctr-a', 'ctr-b', 'Other…']);
+    assert.equal(d.el('apd-remote').hidden, true);
+    assert.equal(d.el('apd-remote-note').textContent, '');
+
+    await d.pickRemote('ctr-b');
+    assert.match(d.el('apd-scan-note').textContent, /remote 'ctr-b' of system 'prod-box'/,
+      'the placement hint follows the picked remote');
+    d.el('apd-path').value = '/srv/api';
+    await d.close('adopt');
+    assert.deepEqual(d.requests.at(-1).body, { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr-b' });
+  });
+
+  // PINS the free-text half: not enumerable is the field as it always was.
+  test('a non-enumerable system keeps the free-text Remote field', async () => {
+    const d = await bootDialog();
+    await d.pick('prod-box');
+    assert.equal(d.el('apd-remote-select').hidden, true);
+    assert.equal(d.el('apd-remote').hidden, false);
+    assert.equal(d.el('apd-remote-note').textContent, '');
+  });
+
+  // PINS failure ≠ empty: free text, and the reason said.
+  test('a failed enumeration keeps free text and says why', async (t) => {
+    await t.test('a failed state names its reason', async () => {
+      const d = await bootDialog({
+        remotes: (system) => ({ system, label: system, state: 'failed', reason: 'the provider is down', code: 'SYSTEM_UNREACHABLE' }),
+      });
+      await d.pick('prod-box');
+      assert.equal(d.el('apd-remote-select').hidden, true);
+      assert.equal(d.el('apd-remote').hidden, false);
+      assert.match(d.el('apd-remote-note').textContent, /Could not list the remotes of system 'prod-box' \(the provider is down\)/);
+    });
+    await t.test('a non-OK response names its status', async () => {
+      const d = await bootDialog({ remotes: () => undefined });
+      await d.pick('prod-box');
+      assert.equal(d.el('apd-remote-select').hidden, true);
+      assert.match(d.el('apd-remote-note').textContent, /\(HTTP 503\)/);
+    });
+  });
+
+  // PINS empty ≠ not-enumerable: placeholder and Other… only, and a note.
+  test('an empty list offers only Other… and says so', async () => {
+    const d = await bootDialog({ remotes: listedOn() });
+    await d.pick('prod-box');
+    assert.equal(d.el('apd-remote-select').hidden, false);
+    assert.deepEqual(d.remoteOptions(), ['— choose a remote —', 'Other…']);
+    assert.match(d.el('apd-remote-note').textContent, /lists no configured remotes right now/);
+  });
+
+  // PINS Other…: it reveals the field, and what is typed is posted.
+  test('Other… reveals the free-text field and posts what is typed', async () => {
+    const d = await bootDialog({ remotes: listedOn('ctr-a') });
+    d.el('apd-name').value = 'api';
+    await d.pick('prod-box');
+    await d.pickOther();
+    assert.equal(d.el('apd-remote').hidden, false);
+    await d.typeRemote(' ctr-z ');
+    d.el('apd-path').value = '/srv/api';
+    await d.close('adopt');
+    assert.deepEqual(d.requests.at(-1).body, { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr-z' });
+  });
+
+  // PINS the refusal: with a dropdown up, a remote must be chosen.
+  test('the placeholder, or Other… left blank, is refused in the dialog', async (t) => {
+    for (const [title, act, message] of [
+      ['the placeholder', async () => {}, /choose a remote on 'prod-box'/],
+      ['Other… left blank', async (d) => d.pickOther(), /type a remote for 'prod-box', or pick a listed one/],
+    ]) {
+      await t.test(title, async () => {
+        const d = await bootDialog({ remotes: listedOn('ctr-a') });
+        d.el('apd-name').value = 'api';
+        await d.pick('prod-box');
+        d.el('apd-path').value = '/srv/api';
+        await act(d);
+        await d.close('adopt');
+        assert.equal(d.requests.length, 0, 'nothing was posted');
+        assert.match(d.state().error, message);
+        assert.equal(d.state().formHidden, false);
+        assert.equal(d.el('adopt-project-dialog').open, true, 'the dialog reopens on the field to fix');
+      });
+    }
+  });
+
+  // PINS THE STALE-ANSWER DROP, one conjunct per subtest.
+  test('a late answer for a previously chosen system is dropped', async (t) => {
+    const TWO = [...SYSTEMS, { id: 'lab', label: 'Lab', managed: false, launch: ['ssh', 'lab'] }];
+
+    // The SEQUENCE conjunct: an older ask of the system chosen again.
+    await t.test('an older ask of the system chosen again', async () => {
+      let release;
+      let asks = 0;
+      const d = await bootDialog({
+        systems: TWO,
+        remotes: (system) => {
+          if (system !== 'prod-box') return listedOn('lab-1')(system);
+          return ++asks === 1 ? new Promise(r => { release = () => r(listedOn('stale-1')(system)); }) : listedOn('fresh-1')(system);
+        },
+      });
+      await d.pick('prod-box');
+      await d.pick('lab');
+      await d.pick('prod-box');
+      assert.deepEqual(d.remoteOptions(), ['— choose a remote —', 'fresh-1', 'Other…']);
+      release();
+      await tick();
+      await tick();
+      assert.deepEqual(d.remoteOptions(), ['— choose a remote —', 'fresh-1', 'Other…'], 'the older answer was dropped');
+    });
+
+    // The SYSTEM conjunct: the choice moved by a value write, so no new ask.
+    await t.test('an answer for a system no longer chosen', async () => {
+      let release;
+      const d = await bootDialog({
+        systems: TWO,
+        remotes: (system) => new Promise(r => { release = () => r(listedOn('stale-1')(system)); }),
+      });
+      await d.pick('prod-box');
+      d.el('apd-system').value = 'lab';
+      release();
+      await tick();
+      await tick();
+      assert.equal(d.el('apd-remote-select').hidden, true, 'no dropdown for a system that is not chosen');
+      assert.equal(d.el('apd-remote-select').options.length, 0);
+    });
+  });
+
+  // PINS that picking a listed remote resets the path picker, as typing does.
+  test('choosing a listed remote resets the path picker', async () => {
+    const d = await bootDialog({
+      remotes: listedOn('ctr-a', 'ctr-b'),
+      listing: () => ({ ok: true, entries: ['d1'], links: [], truncated: true, max: 9 }),
+    });
+    await d.pick('prod-box');
+    await d.pickRemote('ctr-a');
+    await d.typePath('/srv/d');
+    assert.equal(d.el('apd-path-completions').hidden, false, 'a list is open before the pick');
+    await d.pickRemote('ctr-b');
+    assert.equal(d.el('apd-path-completions').hidden, true);
+    assert.equal(d.el('apd-path-note').textContent, '');
+  });
+
+  // PINS the local short-circuit on the client: choosing this machine asks
+  // nothing — on open, or when chosen back.
+  test('local asks nothing', async () => {
+    const d = await bootDialog({ remotes: listedOn('ctr-a') });
+    await d.pick('prod-box');
+    await d.pick('local');
+    assert.deepEqual(d.remoteAsks, ['prod-box']);
+    assert.equal(d.el('apd-remote-select').hidden, true);
+  });
+});
+
+// PINS SELECT-MODE PLACEMENT ON THE COMPLETION QUERY: the path picker asks
+// for the remote the DROPDOWN names, not the raw text field — a listed pick
+// reaches `/api/fs/dirs` as `remoteId=<picked id>`, and Other… plus typed text
+// as `remoteId=<typed text>`. One subtest each, so each half is its own
+// verdict.
+test('completion asks for the remote the dropdown chose', async (t) => {
+  const bootListed = () => bootDialog({
+    remotes: listedOn('ctr-a', 'ctr-b'),
+    listing: () => ({ ok: true, entries: ['api'], links: [], truncated: false, max: 1000 }),
+  });
+  await t.test('a listed pick', async () => {
+    const d = await bootListed();
+    await d.pick('prod-box');
+    await d.pickRemote('ctr-b');
+    assert.equal(d.el('apd-remote').value, '', 'the text field holds nothing — only the dropdown names ctr-b');
+    await d.typePath('/srv/a');
+    assert.equal(d.listings.length, 1);
+    assert.equal(d.listings[0].params.get('system'), 'prod-box');
+    assert.equal(d.listings[0].params.get('remoteId'), 'ctr-b');
+  });
+  await t.test('Other… with typed text', async () => {
+    const d = await bootListed();
+    await d.pick('prod-box');
+    await d.pickOther();
+    await d.typeRemote(' ctr-z ');
+    await d.typePath('/srv/a');
+    assert.equal(d.listings.length, 1);
+    assert.equal(d.listings[0].params.get('remoteId'), 'ctr-z');
+  });
 });

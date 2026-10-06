@@ -40,8 +40,10 @@
 //     and by the `remoteDescriptors:false` row of the conformance suite.
 //   * `remoteListing` rides row 1 with `remotes` — the reference provider
 //     advertises it whenever it serves named targets — but the application
-//     never sends `listRemotes` in a row. The rows that exercise it are the
-//     conformance suite's, which run inside every row.
+//     never sends `listRemotes` to this `local` stand-in: enumeration decides
+//     `local` by id (`enumerateSystemRemotes`, src/systems/remoteEnumeration.ts)
+//     before any handle is touched. The suites that do send it register their
+//     own providers and run inside every row.
 //
 // WHAT THE FOLD COSTS, so it is not discovered by surprise: no configuration
 // here now runs `processGroupSignal:true` + `remotes:false` together. That cell

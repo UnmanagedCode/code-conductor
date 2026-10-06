@@ -17,7 +17,9 @@
 // gated on the provider's `remotes` capability: cc cannot know that without
 // connecting, and the server's named refusal at adopt time is what answers it.
 // Blank means the provider's own default target, so the field is omitted
-// rather than sent empty.
+// rather than sent empty. When the system's provider lists the remotes it is
+// configured for, the field is a dropdown of them instead — see the Remote
+// block below.
 //
 // BARE `fetch`, NOT `apiFetch`. `POST /api/projects/external` answers 200 +
 // {ok:false, code, reason} for every refusal, and `http.js`'s apiFetch would
@@ -28,7 +30,8 @@
 //
 // Injected interface:
 //   - dom: { adoptProjectBtn, adoptProjectDialog, apdForm, apdStale, apdName,
-//            apdSystem, apdSystemNote, apdRemote, apdRemoteRow, apdPath,
+//            apdSystem, apdSystemNote, apdRemote, apdRemoteRow, apdRemoteSelect,
+//            apdRemoteNote, apdPath,
 //            apdPathCompletions, apdPathNote, apdSuggestions, apdScanNote, apdError, apdStaleSummary,
 //            apdStaleDiscards, apdStaleError } els.
 //   - timers (optional):      { setTimeout, clearTimeout } for the path picker's debounce.
@@ -105,9 +108,100 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     return v && v !== 'local' ? v : null;
   };
 
+  // ── The Remote field: a dropdown when the System enumerates ────────
+  //
+  // A system whose provider lists the remotes it is configured for
+  // (`GET /api/systems/:id/remotes` answering `listed`) offers them as a
+  // dropdown: an unsubmittable placeholder, the ids, and Other…, which reveals
+  // the free-text field for one it did not list. A system that is not
+  // enumerable keeps the free-text field; a FAILED enumeration keeps it too and
+  // says why, so it is never read as "no remotes". `local` is never asked.
+  //
+  // The Other… sentinel carries a space, which no remoteId may hold (the server's
+  // remoteId rule), so it can never collide with a listed id.
+  const REMOTE_OTHER = ' other';
+  // 'free': the text field is the Remote. 'select': the dropdown is.
+  let remoteMode = 'free';
+  // Bumped by every ask and every reset; an answer lands only if its ask is
+  // still the latest one.
+  let remoteSeq = 0;
+
+  function showRemoteFree(note) {
+    remoteMode = 'free';
+    dom.apdRemoteSelect.hidden = true;
+    dom.apdRemoteSelect.innerHTML = '';
+    dom.apdRemote.hidden = false;
+    dom.apdRemoteNote.textContent = note;
+  }
+
+  // On open and on choosing this machine: no remote, no dropdown, and any ask
+  // still in flight is dropped when it lands.
+  function resetRemote() {
+    ++remoteSeq;
+    dom.apdRemote.value = '';
+    showRemoteFree('');
+  }
+
+  function showRemoteList(system, remoteIds) {
+    const select = dom.apdRemoteSelect;
+    select.innerHTML = '';
+    const add = (value, text) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    };
+    add('', '— choose a remote —');
+    for (const id of remoteIds) add(id, id);
+    add(REMOTE_OTHER, 'Other…');
+    remoteMode = 'select';
+    select.hidden = false;
+    // A remote already typed stays the answer, under Other… — so the switch
+    // never changes what chosenRemote() reads.
+    const typed = dom.apdRemote.value.trim() !== '';
+    select.value = typed ? REMOTE_OTHER : '';
+    dom.apdRemote.hidden = !typed;
+    dom.apdRemoteNote.textContent = remoteIds.length ? ''
+      : `System '${system}' lists no configured remotes right now — choose Other… to type one.`;
+  }
+
+  async function loadRemotes(system) {
+    const mine = ++remoteSeq;
+    showRemoteFree(`Listing the remotes system '${system}' is configured for…`);
+    let answer;
+    try {
+      const res = await fetch(`/api/systems/${encodeURIComponent(system)}/remotes`);
+      answer = res.ok ? await res.json() : { state: 'failed', reason: `HTTP ${res.status}` };
+    } catch (e) {
+      answer = { state: 'failed', reason: e.message };
+    }
+    if (mine !== remoteSeq || chosenSystem() !== system) return;
+    if (answer.state === 'listed') showRemoteList(system, answer.remoteIds);
+    else if (answer.state === 'failed') {
+      showRemoteFree(`Could not list the remotes of system '${system}' (${answer.reason}) — type one.`);
+    } else showRemoteFree('');
+  }
+
   // Blank IS an answer — the provider's own default target — so it reads as
-  // null rather than as an empty target name.
-  const chosenRemote = () => dom.apdRemote.value.trim() || null;
+  // null rather than as an empty target name. So does the placeholder, which
+  // the adopt refuses before it gets this far.
+  const chosenRemote = () => {
+    const select = dom.apdRemoteSelect;
+    if (remoteMode === 'select' && select.value !== REMOTE_OTHER) return select.value || null;
+    return dom.apdRemote.value.trim() || null;
+  };
+
+  // With a dropdown up, a remote has to be chosen: the placeholder is not an
+  // answer, and neither is Other… left blank.
+  const remoteError = (system) => {
+    if (!system || remoteMode !== 'select') return null;
+    const select = dom.apdRemoteSelect;
+    if (select.value === '') return `choose a remote on '${system}' — it lists the remotes it is configured for`;
+    if (select.value === REMOTE_OTHER && !dom.apdRemote.value.trim()) {
+      return `type a remote for '${system}', or pick a listed one`;
+    }
+    return null;
+  };
 
   // The same vocabulary the server uses in its own refusals, so the hint and
   // the error that may follow it name one thing.
@@ -175,11 +269,14 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
       : lastLocalNote;
   }
 
-  // The server refuses this too (INVALID_TARGET_PATH); checking here is what
-  // keeps the dialog open on the field the user has to fix. Gated on a chosen
-  // system so a LOCAL adopt surfaces exactly the refusals it did before.
+  // The server refuses a relative path too (INVALID_TARGET_PATH); checking here
+  // is what keeps the dialog open on the field the user has to fix. The remote
+  // check is the dialog's own: a dropdown left on its placeholder would
+  // otherwise post the provider's default target, which nobody chose. Both
+  // gated on a chosen system so a LOCAL adopt surfaces exactly the refusals it
+  // did before.
   const placementError = t =>
-    t.system && !t.path.startsWith('/') ? `the path on '${t.system}' must be absolute` : null;
+    t.system && !t.path.startsWith('/') ? `the path on '${t.system}' must be absolute` : remoteError(t.system);
 
   function showForm() {
     dom.apdForm.hidden = false;
@@ -329,7 +426,7 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     pending = null;
     dom.apdName.value = '';
     dom.apdPath.value = '';
-    dom.apdRemote.value = '';
+    resetRemote();
     pathPicker.reset();
     dom.apdSystemNote.textContent = '';
     dom.apdError.textContent = '';
@@ -352,9 +449,19 @@ export function installAdoptProjectDialog({ dom, refreshProjects, closeSidebarOv
     dom.apdPath.value = '';
     dom.apdError.textContent = '';
     pathPicker.reset();
+    const system = chosenSystem();
+    if (system) loadRemotes(system);
+    else resetRemote();
     syncPlacement();
   });
   dom.apdRemote.addEventListener('input', () => {
+    pathPicker.reset();
+    syncPlacement();
+  });
+  dom.apdRemoteSelect.addEventListener('change', () => {
+    const other = dom.apdRemoteSelect.value === REMOTE_OTHER;
+    dom.apdRemote.hidden = !other;
+    if (other) dom.apdRemote.focus();
     pathPicker.reset();
     syncPlacement();
   });

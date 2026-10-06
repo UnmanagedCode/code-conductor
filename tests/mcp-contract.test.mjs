@@ -419,6 +419,8 @@ const RENDERED_TOOLS = [
   { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },
   // Loads from playbooks/*.json, so it needs no repo fixture.
   { name: 'describe_playbook', args: { id: 'solo' }, head: /^PLAYBOOK solo$/m },
+  // Every registered System, `local` included, so it needs no fixture either.
+  { name: 'enumerate_remotes', args: {}, head: /^SYSTEMS \(/ },
   // Needs a session to describe, so its args are resolved inside the test from
   // the worker spawned there.
   { name: 'describe_session', args: env => ({ sessionId: env.sessionId }), head: /^SESSION \S+ {3}live$/m },
@@ -477,6 +479,7 @@ test('tools/list emits readOnly / destructive / idempotent annotations', async (
   assert.equal(byName.list_playbooks.readOnlyHint, true);
   assert.equal(byName.describe_playbook.readOnlyHint, true);
   assert.equal(byName.playbook_state.readOnlyHint, true);
+  assert.equal(byName.enumerate_remotes.readOnlyHint, true);
   assert.equal(byName.kill_instance.destructiveHint, true);
   assert.equal(byName.delete_worktree.destructiveHint, true);
   assert.equal(byName.merge_worktree.destructiveHint, true);

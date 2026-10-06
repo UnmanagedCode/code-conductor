@@ -23,7 +23,7 @@
 import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
-  type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
+  readRemoteList, type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
 import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
@@ -228,6 +228,39 @@ export class ProviderSystem implements System, ShellHost {
     this.#mirrorAgainst = hs;
     this.#mirror = advertisement;
     return advertisement;
+  }
+
+  // ── Remote enumeration ─────────────────────────────────────────────
+
+  // The remoteIds the provider is configured to route to (§2.2), or `null`
+  // when it does not advertise `remoteListing` — and then the frame is NEVER
+  // SENT. Asked of the provider, not of a target, so it is sent on whatever
+  // handle it is called on and carries no `remoteId`.
+  //
+  // Every failure REJECTS; none of them reads as `[]`. Unlike `mirror()`, an
+  // advertiser's EUNSUPPORTED is not caught: an absent advertisement has a safe
+  // default and a list has none, so a provider that broke its own
+  // advertisement is a failed enumeration, not one configured for nothing. The
+  // same goes for the backstop's ETIMEDOUT, a dead transport, and a list
+  // `readRemoteList` refuses.
+  //
+  // NOT MEMOISED: each answer is a snapshot of the provider's configuration,
+  // which can change without a restart.
+  async listRemotes(): Promise<string[] | null> {
+    const hs = await this.#conn.ensureUp();
+    // THE GATE.
+    if (!hs.capabilities.remoteListing) return null;
+    return this.#request<string[]>('l', (id) => ({ type: 'listRemotes', id }), (_id, f, resolve, fail) => {
+      if (f.type !== 'remoteList') return;
+      const r = readRemoteList({ remotes: f.remotes });
+      if (r.ok) resolve(r.remoteIds);
+      else {
+        fail(Object.assign(
+          new Error(`system '${this.id}' answered listRemotes with a list cc will not believe: ${r.reason}`),
+          { code: 'REMOTE_LIST_INVALID' },
+        ));
+      }
+    });
   }
 
   // ── exec: the primitive ────────────────────────────────────────────
@@ -906,6 +939,14 @@ function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 
 function decodeData(f: AnyFrame): Buffer {
   return Buffer.from(typeof f.dataB64 === 'string' ? f.dataB64 : '', 'base64');
+}
+
+// Whether a handle can be asked for its provider's remote list. Structural, in
+// the style of `isRedirectable` (src/systems/toolRedirect.ts), rather than a
+// member of `System`: enumeration is a question about a provider, and the
+// in-process `local` System has none.
+export function canListRemotes(sys: System): sys is System & Pick<ProviderSystem, 'listRemotes'> {
+  return typeof (sys as Partial<Pick<ProviderSystem, 'listRemotes'>>).listRemotes === 'function';
 }
 
 function frameMessage(f: AnyFrame): string {

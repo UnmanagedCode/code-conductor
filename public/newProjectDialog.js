@@ -22,19 +22,22 @@
 // where the user is still looking at the field.
 //
 // One system can serve many named TARGETS, so a non-local system also offers a
-// `remoteId`. It is offered UNCONDITIONALLY there rather than gated on the
-// provider's `remotes` capability: cc cannot know that without connecting, and
-// the server's named refusal at create time (SYSTEM_NO_REMOTES /
-// REMOTE_NOT_FOUND, raised before anything is written) is what answers it. Blank
-// means the provider's own default target, so the field is omitted rather than
-// sent empty.
+// `remoteId`, chosen before the path because the path picker completes against
+// it. It is offered UNCONDITIONALLY there rather than gated on the provider's
+// `remotes` capability: cc cannot know that without connecting, and the
+// server's named refusal at create time (SYSTEM_NO_REMOTES / REMOTE_NOT_FOUND,
+// raised before anything is written) is what answers it. Blank means the
+// provider's own default target, so the field is omitted rather than sent
+// empty. When the system's provider lists the remotes it is configured for,
+// the field is a dropdown of them instead — see the Remote block below.
 //
 // Injected interface:
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
 //            npContributions, npForm, npConfirm, npScaffoldText,
 //            npScaffoldBlock, npGitSkipped,
 //            npSystem, npSystemPath, npSystemPathRow, npSystemPathCompletions,
-//            npSystemPathNote, npRemote, npRemoteRow } els.
+//            npSystemPathNote, npRemote, npRemoteRow, npRemoteSelect,
+//            npRemoteNote } els.
 //   - timers (optional):      { setTimeout, clearTimeout } for the path picker's debounce.
 //   - refreshProjects():      reloads the sidebar project list after a create.
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
@@ -130,9 +133,102 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     return v && v !== 'local' ? v : null;
   };
 
+  // ── The Remote field: a dropdown when the System enumerates ────────
+  //
+  // A system whose provider lists the remotes it is configured for
+  // (`GET /api/systems/:id/remotes` answering `listed`) offers them as a
+  // dropdown: an unsubmittable placeholder, the ids, and Other…, which reveals
+  // the free-text field for one it did not list. A system that is not
+  // enumerable keeps the free-text field; a FAILED enumeration keeps it too and
+  // says why, so it is never read as "no remotes". `local` is never asked.
+  //
+  // Guarded on `dom.npRemoteSelect`, as the path picker is on its input: other
+  // suites install this dialog into fragments that carry no dropdown.
+  //
+  // The Other… sentinel carries a space, which no remoteId may hold (the server's
+  // remoteId rule), so it can never collide with a listed id.
+  const REMOTE_OTHER = ' other';
+  // 'free': the text field is the Remote. 'select': the dropdown is.
+  let remoteMode = 'free';
+  // Bumped by every ask and every reset; an answer lands only if its ask is
+  // still the latest one.
+  let remoteSeq = 0;
+  const remoteSelect = dom.npRemoteSelect;
+
+  function showRemoteFree(note) {
+    remoteMode = 'free';
+    remoteSelect.hidden = true;
+    remoteSelect.innerHTML = '';
+    dom.npRemote.hidden = false;
+    dom.npRemoteNote.textContent = note;
+  }
+
+  // On open and on choosing this machine: no remote, no dropdown, and any ask
+  // still in flight is dropped when it lands.
+  function resetRemote() {
+    ++remoteSeq;
+    if (dom.npRemote) dom.npRemote.value = '';
+    if (remoteSelect) showRemoteFree('');
+  }
+
+  function showRemoteList(system, remoteIds) {
+    remoteSelect.innerHTML = '';
+    const add = (value, text) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = text;
+      remoteSelect.appendChild(opt);
+    };
+    add('', '— choose a remote —');
+    for (const id of remoteIds) add(id, id);
+    add(REMOTE_OTHER, 'Other…');
+    remoteMode = 'select';
+    remoteSelect.hidden = false;
+    // A remote already typed stays the answer, under Other… — so the switch
+    // never changes what chosenRemote() reads.
+    const typed = dom.npRemote.value.trim() !== '';
+    remoteSelect.value = typed ? REMOTE_OTHER : '';
+    dom.npRemote.hidden = !typed;
+    dom.npRemoteNote.textContent = remoteIds.length ? ''
+      : `System '${system}' lists no configured remotes right now — choose Other… to type one.`;
+  }
+
+  async function loadRemotes(system) {
+    if (!remoteSelect) return;
+    const mine = ++remoteSeq;
+    showRemoteFree(`Listing the remotes system '${system}' is configured for…`);
+    let answer;
+    try {
+      const res = await fetch(`/api/systems/${encodeURIComponent(system)}/remotes`);
+      answer = res.ok ? await res.json() : { state: 'failed', reason: `HTTP ${res.status}` };
+    } catch (e) {
+      answer = { state: 'failed', reason: e.message };
+    }
+    if (mine !== remoteSeq || chosenSystem() !== system) return;
+    if (answer.state === 'listed') showRemoteList(system, answer.remoteIds);
+    else if (answer.state === 'failed') {
+      showRemoteFree(`Could not list the remotes of system '${system}' (${answer.reason}) — type one.`);
+    } else showRemoteFree('');
+  }
+
   // Blank IS an answer — the provider's own default target — so it reads as
-  // null rather than as an empty target name.
-  const chosenRemote = () => (dom.npRemote?.value ?? '').trim() || null;
+  // null rather than as an empty target name. So does the placeholder, which
+  // the create refuses before it gets this far.
+  const chosenRemote = () => {
+    if (remoteMode === 'select' && remoteSelect.value !== REMOTE_OTHER) return remoteSelect.value || null;
+    return (dom.npRemote?.value ?? '').trim() || null;
+  };
+
+  // With a dropdown up, a remote has to be chosen: the placeholder is not an
+  // answer, and neither is Other… left blank.
+  const remoteError = (system) => {
+    if (!system || remoteMode !== 'select') return null;
+    if (remoteSelect.value === '') return `choose a remote on '${system}' — it lists the remotes it is configured for`;
+    if (remoteSelect.value === REMOTE_OTHER && !dom.npRemote.value.trim()) {
+      return `type a remote for '${system}', or pick a listed one`;
+    }
+    return null;
+  };
 
   // Directory completion for the system path. The system and remote changing
   // invalidate what it has cached.
@@ -205,7 +301,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npName.value = '';
     dom.npError.textContent = '';
     if (dom.npSystemPath) dom.npSystemPath.value = '';
-    if (dom.npRemote) dom.npRemote.value = '';
+    resetRemote();
     pathPicker?.reset();
     showForm();
     await buildSystems();
@@ -215,10 +311,20 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   dom.npName.addEventListener('input', updatePreview);
   dom.npSystem?.addEventListener('change', () => {
     pathPicker?.reset();
+    const system = chosenSystem();
+    if (system) loadRemotes(system);
+    else resetRemote();
     syncSystemPathRow();
   });
   dom.npSystemPath?.addEventListener('input', updatePreview);
   dom.npRemote?.addEventListener('input', () => {
+    pathPicker?.reset();
+    updatePreview();
+  });
+  remoteSelect?.addEventListener('change', () => {
+    const other = remoteSelect.value === REMOTE_OTHER;
+    dom.npRemote.hidden = !other;
+    if (other) dom.npRemote.focus();
     pathPicker?.reset();
     updatePreview();
   });
@@ -229,12 +335,14 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     const conventions = [...dom.npContributions.querySelectorAll('input[data-kind="convention"]:checked')].map(cb => cb.value);
     const system = chosenSystem();
     const systemPath = (dom.npSystemPath?.value ?? '').trim();
-    // The server refuses both of these too; checking here is what keeps the
-    // dialog open on the field the user has to fix.
+    // The server refuses the two path checks too; checking here is what keeps
+    // the dialog open on the field the user has to fix. The remote check is the
+    // dialog's own: a dropdown left on its placeholder would otherwise post the
+    // provider's default target, which nobody chose.
     const placementError = !system ? null
       : !systemPath ? `a path on '${system}' is required — cc has no default location on another machine`
       : !systemPath.startsWith('/') ? `the path on '${system}' must be absolute`
-      : null;
+      : remoteError(system);
     if (placementError) {
       dom.npError.textContent = placementError;
       showForm();

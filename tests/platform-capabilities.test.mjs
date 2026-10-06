@@ -57,6 +57,7 @@ describe('every capability off', () => {
       ['GET', '/api/settings/systems'],
       ['POST', '/api/settings/systems', { id: 'box', label: 'Box', launch: ['x'] }],
       ['PUT', '/api/projects/x/remote', { remoteId: 'r' }],
+      ['GET', '/api/systems/x/remotes'],
       ['POST', '/api/projects', { name: 'remote1', system: 'box', systemPath: '/srv/x' }],
     ]) {
       const r = await api(baseUrl, method, url, body);
@@ -91,6 +92,7 @@ describe('every capability off', () => {
     assert.ok(names.includes('project_bash'), 'positive control: other tools remain');
     assert.ok(!names.includes('system_bash'));
     assert.ok(!names.includes('set_project_remote'));
+    assert.ok(!names.includes('enumerate_remotes'));
 
     const call = async (name, args) => (await rpc('tools/call', { name, arguments: args })).result;
     const created = await call('create_project', { name: 'rm1', system: 'box', systemPath: '/srv/x' });

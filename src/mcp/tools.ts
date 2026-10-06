@@ -704,6 +704,29 @@ export function buildTools(): Tool[] {
       annotations: { readOnlyHint: true },
     },
     {
+      name: 'enumerate_remotes',
+      requires: 'remoteSystems',
+      description:
+        'Ask registered Systems which remoteIds (named targets) their providers are configured to route to, as PLAIN TEXT '
+        + '(this tool returns no JSON). One block per System: its id and label, whether it is enumerable, then its remoteIds '
+        + 'or the reason it is not enumerable or why enumeration failed. `system` names one registry id; omit it for every '
+        + 'registered System, `local` included (never enumerable — cc\'s own machine has no named remotes). A System whose '
+        + 'provider does not advertise remote listing is reported NOT ENUMERABLE, never as having no remotes — its Remote '
+        + 'is named by hand; a failed enumeration is reported per System with its reason, never as an empty list. Each call '
+        + 'asks the provider afresh over the systems protocol. A listed id is configured, not necessarily reachable, and an '
+        + 'unlisted one is not necessarily refused. Unlike a plugin tool that lists one provider\'s own records, this asks '
+        + 'every System through cc\'s provider protocol and returns only the remoteIds a project\'s Remote field takes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          system: { type: 'string', minLength: 1, description: 'A system registry id; omit for every registered System.' },
+        },
+        required: [],
+      },
+      handler: h.enumerateRemotes,
+      annotations: { readOnlyHint: true },
+    },
+    {
       name: 'create_workspace',
       description:
         'Register a workspace name so it appears in the sidebar even before any project joins it. ' +
@@ -1147,9 +1170,9 @@ export function buildTools(): Tool[] {
         'processes belongs in a spawned worker instead. Run a shell command on a REGISTERED SYSTEM ' +
         'addressed directly — no project in play, so a box can be inspected before anything is ' +
         'placed on it. `system` is a registry id and `remoteId` one of its named targets (omit for ' +
-        'the provider\'s own default target). There is no list_systems. list_projects names a ' +
-        'project\'s placement only when it is on a NON-LOCAL system, so nothing lists a system ' +
-        'with nothing on it — the case this tool exists for. ' +
+        'the provider\'s own default target). list_projects names a project\'s placement only when ' +
+        'it is on a NON-LOCAL system; enumerate_remotes lists every registered System and the ' +
+        'remoteIds it is configured for, where its provider can say. ' +
         'Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
         'cc\'s own machine. The command runs in a plain login shell on that system. ' +
         bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?'),
