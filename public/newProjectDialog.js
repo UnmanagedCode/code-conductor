@@ -33,14 +33,17 @@
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
 //            npContributions, npForm, npConfirm, npScaffoldText,
 //            npScaffoldBlock, npGitSkipped,
-//            npSystem, npSystemPath, npSystemPathRow, npRemote, npRemoteRow } els.
+//            npSystem, npSystemPath, npSystemPathRow, npSystemPathCompletions,
+//            npSystemPathNote, npRemote, npRemoteRow } els.
+//   - timers (optional):      { setTimeout, clearTimeout } for the path picker's debounce.
 //   - refreshProjects():      reloads the sidebar project list after a create.
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
 
 import { apiFetch } from './http.js';
 import { loadCapabilities } from './capabilities.js';
+import { installPathPicker } from './pathPicker.js';
 
-export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOverflow }) {
+export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOverflow, timers }) {
   const pluginOf = (slug, explicit) => explicit ?? (slug.includes('/') ? slug.split('/')[0] : null);
 
   // One opt-in checkbox row. textContent everywhere (never innerHTML) — plugin
@@ -131,6 +134,18 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   // null rather than as an empty target name.
   const chosenRemote = () => (dom.npRemote?.value ?? '').trim() || null;
 
+  // Directory completion for the system path. The system and remote changing
+  // invalidate what it has cached.
+  const pathPicker = dom.npSystemPath
+    ? installPathPicker({
+      input: dom.npSystemPath,
+      list: dom.npSystemPathCompletions,
+      note: dom.npSystemPathNote,
+      getPlacement: () => ({ system: chosenSystem(), remoteId: chosenRemote() }),
+      timers,
+    })
+    : null;
+
   // What the dialog says it is about to create — kept in step with both inputs,
   // because a preview that lags the placement is a promise about the wrong
   // machine.
@@ -191,15 +206,22 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npError.textContent = '';
     if (dom.npSystemPath) dom.npSystemPath.value = '';
     if (dom.npRemote) dom.npRemote.value = '';
+    pathPicker?.reset();
     showForm();
     await buildSystems();
     await buildContributions();
     dom.newProjectDialog.showModal();
   });
   dom.npName.addEventListener('input', updatePreview);
-  dom.npSystem?.addEventListener('change', syncSystemPathRow);
+  dom.npSystem?.addEventListener('change', () => {
+    pathPicker?.reset();
+    syncSystemPathRow();
+  });
   dom.npSystemPath?.addEventListener('input', updatePreview);
-  dom.npRemote?.addEventListener('input', updatePreview);
+  dom.npRemote?.addEventListener('input', () => {
+    pathPicker?.reset();
+    updatePreview();
+  });
   dom.newProjectDialog.addEventListener('close', async () => {
     if (dom.newProjectDialog.returnValue !== 'create') return; // cancel / confirmation Done
     const name = dom.npName.value.trim();

@@ -2746,3 +2746,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .prune-savings { margin: 10px 0 4px; min-height: 90px; }
 .prune-savings .stats-table tr:last-child td { font-weight: 600; border-top: 1px solid var(--border); }
 #prune-dialog input[type="range"] { width: 100%; margin: 4px 0 12px; }
+
+/* Directory autocomplete under a path field (public/pathPicker.js). In flow, not
+   absolute, so a dialog on a narrow screen cannot clip it. No `display` here:
+   the author rule would outrank the UA's `[hidden] { display: none }`. */
+.path-completions {
+  list-style: none; margin: 4px 0; padding: 0; max-height: 12em; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 4px; font-family: monospace; font-size: 13px;
+}
+.path-completions li { padding: 3px 8px; cursor: pointer; overflow-wrap: anywhere; }
+.path-completions li[aria-selected="true"] { background: var(--panel-2); color: var(--accent); }
+.path-completions li.path-completion-unresolved { color: var(--muted); font-style: italic; }

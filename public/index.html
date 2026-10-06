@@ -593,6 +593,8 @@
       <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
       <label>System <select id="np-system"></select></label>
       <label id="np-system-path-row" hidden>Path on that system <input id="np-system-path" placeholder="/srv/myproject" /></label>
+      <ul id="np-system-path-completions" class="path-completions" role="listbox" hidden></ul>
+      <p class="hint" id="np-system-path-note"></p>
       <label id="np-remote-row" hidden>Remote <input id="np-remote" placeholder="container / host / VM id — blank for the system's default" /></label>
       <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
       <div id="np-contributions"></div>
@@ -624,6 +626,8 @@
       <p class="hint" id="apd-system-note"></p>
       <label id="apd-remote-row" hidden>Remote <input id="apd-remote" placeholder="container / host / VM id — blank for the system's default" /></label>
       <label>Directory <input id="apd-path" required placeholder="/absolute/path/to/directory" /></label>
+      <ul id="apd-path-completions" class="path-completions" role="listbox" hidden></ul>
+      <p class="hint" id="apd-path-note"></p>
       <ul id="apd-suggestions" class="apd-suggestions" hidden></ul>
       <p class="hint" id="apd-scan-note"></p>
       <p class="error" id="apd-error"></p>

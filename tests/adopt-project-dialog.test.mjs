@@ -23,6 +23,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { withHealth } from './capabilitiesStub.mjs';
+import { fakeTimers } from './composerDraftsHarness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -37,6 +38,8 @@ const DIALOG_HTML = `
       <p id="apd-system-note"></p>
       <label id="apd-remote-row" hidden><input id="apd-remote" /></label>
       <input id="apd-path" />
+      <ul id="apd-path-completions" hidden></ul>
+      <p id="apd-path-note"></p>
       <ul id="apd-suggestions" hidden></ul>
       <p id="apd-scan-note"></p>
       <p id="apd-error"></p>
@@ -69,7 +72,10 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 // Boots the dialog against a real happy-dom document and a scripted server.
 // `posts` is consumed in order — one entry per POST the flow is expected to
 // make; the last entry repeats if the flow makes more.
-async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], systems = SYSTEMS, systemsStatus = 200 } = {}) {
+async function bootDialog({
+  scan = EMPTY_SCAN, scanStatus = 200, posts = [], systems = SYSTEMS, systemsStatus = 200,
+  listing = () => ({ ok: true, entries: [], links: [], truncated: false, max: 1000 }),
+} = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
@@ -78,6 +84,8 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
   const requests = [];
   let scans = 0;
   let postIdx = 0;
+  const listings = [];
+  const timers = fakeTimers();
   globalThis.fetch = withHealth(async (url, opts) => {
     if (String(url).includes('/api/projects/suggestions')) {
       scans++;
@@ -87,6 +95,12 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
     // request would corrupt every POST-count assertion in this file.
     if (String(url).includes('/api/settings/systems')) {
       return { ok: systemsStatus < 400, status: systemsStatus, json: async () => ({ systems }) };
+    }
+    // Likewise a GET with its own log: the path picker's listings are not POSTs.
+    if (String(url).includes('/api/fs/dirs')) {
+      const params = new URL(String(url), 'http://localhost').searchParams;
+      listings.push({ url: String(url), params, signal: opts?.signal });
+      return { ok: true, status: 200, json: async () => listing(params) };
     }
     requests.push({ url: String(url), method: opts?.method, body: opts?.body ? JSON.parse(opts.body) : null });
     const next = posts[Math.min(postIdx++, posts.length - 1)] ?? { status: 201, body: { ok: true } };
@@ -111,6 +125,8 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
       apdRemote: el('apd-remote'),
       apdRemoteRow: el('apd-remote-row'),
       apdPath: el('apd-path'),
+      apdPathCompletions: el('apd-path-completions'),
+      apdPathNote: el('apd-path-note'),
       apdSuggestions: el('apd-suggestions'),
       apdScanNote: el('apd-scan-note'),
       apdError: el('apd-error'),
@@ -120,6 +136,7 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
     },
     refreshProjects: async () => { refreshed++; },
     closeSidebarOverflow: () => { overflowClosed++; },
+    timers,
   });
 
   el('adopt-project-btn').click();
@@ -138,7 +155,16 @@ async function bootDialog({ scan = EMPTY_SCAN, scanStatus = 200, posts = [], sys
     el('apd-remote').dispatchEvent(new window.Event('input'));
     await tick();
   };
+  // Typing into the path field the way a user does, then letting the debounce
+  // fire and the response land.
+  const typePath = async (v) => {
+    el('apd-path').value = v;
+    el('apd-path').dispatchEvent(new window.Event('input', { bubbles: true }));
+    timers.fireAll();
+    await tick();
+  };
   return {
+    listings, timers, typePath,
     el, window, requests, messageFor: mod.messageFor, overrides: mod.REFUSAL_OVERRIDES,
     close, pick, typeRemote, scans: () => scans,
     reopen: async () => { el('adopt-project-btn').click(); await tick(); },
@@ -520,7 +546,8 @@ test('choosing a system hides the local list, reveals the target field, and reta
   assert.equal(d.el('apd-suggestions').hidden, true, 'a scan of cc\'s disk is not about prod-box');
   assert.equal(d.el('apd-remote-row').hidden, false);
   assert.match(d.el('apd-scan-note').textContent, /system 'prod-box'/);
-  assert.match(d.el('apd-scan-note').textContent, /cc cannot list directories there/);
+  assert.match(d.el('apd-scan-note').textContent, /Type an absolute path on/);
+  assert.doesNotMatch(d.el('apd-scan-note').textContent, /cannot list/);
 
   await d.pick('local');
   assert.equal(d.el('apd-suggestions').hidden, false, 'the list comes back');
@@ -687,6 +714,9 @@ test('reopening the dialog resets every field the previous open left behind', as
   d.el('apd-path').value = '/srv/api';
   await d.close('adopt');
   assert.match(d.state().error, /already exists/, 'the first attempt left an error standing');
+  // The picker leaves its own residue: an open list, a note and a cached listing.
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 1);
   await d.close('cancel'); // the user gives up on that attempt
 
   await d.reopen();
@@ -697,6 +727,11 @@ test('reopening the dialog resets every field the previous open left behind', as
   assert.equal(d.state().error, '');
   assert.equal(d.el('apd-remote-row').hidden, true, 'and the form is laid out for the placement it reset to');
   assert.equal(d.el('apd-suggestions').hidden, false);
+  assert.equal(d.el('apd-path-completions').hidden, true, 'the picker list does not outlive the dialog');
+  assert.equal(d.el('apd-path-completions').children.length, 0);
+  assert.equal(d.el('apd-path-note').textContent, '');
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 2, 'and its cache does not either: the same directory is fetched again');
 
   // The reset is what the POST is made of, not merely what the form shows.
   d.el('apd-name').value = 'other';
@@ -788,4 +823,82 @@ test('the overridden refusals still end with the exact tails the dialog strips',
     disposeSystemHandles();
     await rmrf(home);
   }
+});
+
+// ── PATH COMPLETION ─────────────────────────────────────────────────────────
+
+// PINS: the picker is an INPUT HELPER on the one path field. The listing asks
+// about the chosen placement, a completion fills the field, and the submit is the
+// same body it always was — nothing the picker knows rides along.
+test('completion lists the chosen system and remote, fills the field, and the POST body is unchanged', async () => {
+  const d = await bootDialog({
+    listing: () => ({ ok: true, entries: ['api', 'web'], links: [], truncated: false, max: 1000 }),
+    posts: [{ status: 201, body: { ok: true } }],
+  });
+  d.el('apd-name').value = 'api';
+  await d.pick('prod-box');
+  await d.typeRemote('r1');
+  await d.typePath('/srv/a');
+  assert.equal(d.listings.length, 1);
+  assert.equal(d.listings[0].params.get('system'), 'prod-box');
+  assert.equal(d.listings[0].params.get('remoteId'), 'r1');
+  assert.equal(d.listings[0].params.get('path'), '/srv');
+  assert.deepEqual([...d.el('apd-path-completions').children].map(li => li.textContent), ['api']);
+
+  d.el('apd-path').dispatchEvent(new d.window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true }));
+  assert.equal(d.el('apd-path').value, '/srv/api/');
+  d.el('apd-path').value = '/srv/api';
+  await d.close('adopt');
+  assert.deepEqual(d.requests.at(-1).body, { name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'r1' });
+});
+
+// PINS: the cache is per placement, and the dialog invalidates it when the
+// placement moves — both knobs, not just the system.
+test('changing the system or the remote refetches the same directory', async () => {
+  const d = await bootDialog();
+  await d.pick('prod-box');
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 1);
+  await d.typePath('/srv/y');
+  assert.equal(d.listings.length, 1, 'same placement, same directory: cached');
+
+  await d.typeRemote('r2');
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 2, 'a new remote is a new listing');
+
+  await d.pick('local');
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 3, 'a new system is a new listing');
+  assert.equal(d.listings.at(-1).params.get('system'), null, 'local sends no system');
+});
+
+// PINS: an unreachable system SAYS SO next to the field and costs only the
+// list — the user can still type the path and submit.
+test('a refused listing shows its reason inline and the submit still POSTs', async () => {
+  const d = await bootDialog({
+    listing: () => ({ ok: false, code: 'SYSTEM_UNREACHABLE', reason: "system 'prod-box' did not answer" }),
+    posts: [{ status: 201, body: { ok: true } }],
+  });
+  d.el('apd-name').value = 'api';
+  await d.pick('prod-box');
+  await d.typePath('/srv/api');
+  assert.equal(d.el('apd-path-note').textContent, "system 'prod-box' did not answer");
+  assert.equal(d.el('apd-path-completions').hidden, true);
+  await d.close('adopt');
+  assert.equal(d.requests.length, 1);
+  assert.equal(d.requests[0].body.path, '/srv/api');
+});
+
+// PINS: Escape in the path field closes the picker's list, not the dialog.
+test('Escape in the path field closes the list and leaves the dialog open', async () => {
+  const d = await bootDialog({ listing: () => ({ ok: true, entries: ['a'], links: [], truncated: false, max: 1000 }) });
+  const dialog = d.el('adopt-project-dialog');
+  assert.equal(dialog.open, true);
+  await d.typePath('/');
+  assert.equal(d.el('apd-path-completions').hidden, false);
+  const esc = new d.window.KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+  d.el('apd-path').dispatchEvent(esc);
+  assert.equal(esc.defaultPrevented, true);
+  assert.equal(d.el('apd-path-completions').hidden, true);
+  assert.equal(dialog.open, true);
 });

@@ -112,6 +112,7 @@ import {
 // `src/projects.ts`'s filesystem-level one it wraps.
 import { listPlaybooks, createProject } from './mcp/handlers.ts';
 import { requireCapability, remotePlacementRefused, capabilitySoftRefusal } from './capabilities.ts';
+import { listDirectories } from './dirListing.ts';
 import { hostPlatform, type PlatformCapabilities } from './platform/index.ts';
 import {
   CORE_META as WORKSPACE_CORE_META,
@@ -578,6 +579,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   r.get('/projects/suggestions', async (req, res, next) => {
     try { res.json(await suggestAdoptableDirs()); }
     catch (e) { next(e); }
+  });
+
+  // Subdirectory names of one absolute path on one system — the path
+  // autocomplete in the Adopt and New-project dialogs. Soft refusals return 200
+  // with {ok:false, code, reason}, like POST /projects/external. Contract and
+  // limits: src/dirListing.ts, docs/protocol.md.
+  r.get('/fs/dirs', async (req, res, next) => {
+    try {
+      const { path: p, system, remoteId } = req.query;
+      if (remotePlacementRefused(capabilities, system)) return void res.json(capabilitySoftRefusal('remoteSystems'));
+      res.json(await listDirectories({ system, remoteId, path: p }));
+    } catch (e) { next(e); }
   });
 
   // Adopt an existing directory as a project.
