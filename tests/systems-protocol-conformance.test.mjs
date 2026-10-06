@@ -1005,7 +1005,7 @@ test('listRemotes enumerates exactly the configured targets; an unconfigured id 
       const verdict = remoteListingVerdict(hs.capabilities);
       if (verdict !== VERIFY_LISTING) { t.skip(verdict); return; }
       assert.equal(hs.capabilities.remoteListing, true,
-        'a provider serving named targets it can enumerate advertises remoteListing');
+        'a provider serving named targets whose configured set it can list completely advertises remoteListing');
       const { id, frame } = await listRemotesRaw(conn);
       assert.equal(frame.type, 'remoteList',
         `listRemotes was answered ${frame.type} ${frame.code ?? ''} (${frame.message ?? ''}) — a frame naming no remote is not refused for naming none`);
@@ -1114,7 +1114,7 @@ test('a provider that does not advertise remoteListing skips the enumeration row
     'a third-party provider that advertises it is held to them');
   assert.equal(remoteListingVerdict({ remoteListing: false }, false), skip);
   assert.equal(remoteListingVerdict({ remotes: true, remoteListing: false }, false), skip,
-    'a provider serving named targets that cannot enumerate them stays conformant');
+    'a provider serving named targets whose configured set it cannot list completely stays conformant');
 });
 
 test('a write above the protocol cap is refused before a byte reaches the wire', async () => {

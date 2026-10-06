@@ -302,8 +302,11 @@ cc  →  {"type":"listRemotes","id":"l1"}
   further for that id.
 - **Membership — a MUST: the configured set.** The listed set is exactly the
   ids the provider's own **configuration** maps to a target, at the moment it
-  composes the answer. Its configuration is whatever state it keeps apart from
-  its targets. Whether a configured target is reachable right now is **not
+  composes the answer. Its configuration is state it holds independently of
+  its targets — declared to it, or otherwise authoritative — and **never
+  learned by contacting a target or the service hosting one**. A set
+  discovered by polling and cached is not configuration, however it is
+  stored. Whether a configured target is reachable right now is **not
   consulted**, so composing the list attempts no target.
 - **Two refusals share `ENOREMOTE`; only one decides membership.** A
   *configuration refusal* is decided from that configuration alone, before any
@@ -313,14 +316,16 @@ cc  →  {"type":"listRemotes","id":"l1"}
   distinction and cc reads neither as a membership statement, so a provider
   owes cc none. What it owes is that its list and its configuration refusals
   come from the same configuration: it lists every id that configuration
-  admits and none it refuses.
-- **A provider with no configured set MUST NOT advertise `remoteListing`.**
-  One whose ids are themselves addresses it attempts, so it learns whether a
-  target exists only by trying, refuses no well-formed id from configuration:
-  its configured set is every well-formed id and cannot be listed. Listing the
-  targets that happen to be reachable now is a reachability snapshot, not its
-  configured set, and does not license the capability. Neither does keeping a
-  configuration while also attempting ids outside it.
+  admits and none that configuration refuses.
+- **A provider whose configured set it cannot list completely MUST NOT
+  advertise `remoteListing`.** The worked case is one whose ids are themselves
+  addresses it attempts, so it learns whether a target exists only by trying:
+  it refuses no well-formed id from configuration, so its configured set is
+  every well-formed id. A configuration that is a rule admitting an unbounded
+  set — a name pattern, say — is the same. Listing the targets that happen to
+  be reachable now does not license the capability: that set is learned by
+  contacting them, so it is a reachability snapshot, not configuration.
+  Neither does keeping a configuration while also attempting ids outside it.
 - **An entry is an object carrying `remoteId` only.** Each `remoteId` MUST be one
   cc accepts as a project's Remote — non-empty, no whitespace or control
   characters, at most `REMOTE_ID_MAX` characters; the rule is `remoteIdDefect`
@@ -820,7 +825,7 @@ provider's choice — it follows from what failed:
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
 | an `exec`, `readFile`, `writeFile` or `describeRemote` naming a `remoteId` it does not serve (§2.2's configuration or reachability refusal), or naming none while it advertises `remotes` — never a `listRemotes`, which names no remote by design (§2.2) | `ENOREMOTE`, **id-addressed** |
-| a `listRemotes` it cannot answer completely | `EUNKNOWN`, **id-addressed**, the reason in `message` — never a partial list (§2.2) |
+| a `listRemotes` it cannot answer completely this time, because its configuration is unreadable — a provider that can never list its configured set completely does not advertise `remoteListing` and falls under the next row | `EUNKNOWN`, **id-addressed**, the reason in `message` — never a partial list (§2.2) |
 | a `listRemotes` while not advertising `remoteListing`, if it answers at all | `EUNSUPPORTED`, **id-addressed** |
 | a frame it could not read at all | `EPROTO`, **id-less** — that is a connection-level failure |
 | a filesystem failure it has no code for | `EUNKNOWN`, with `exitCode`/`stderr` filled in |
@@ -1033,7 +1038,7 @@ ten of each.
 | `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. It is then **out of MUST 3's exit reap too**, which covers operations still open: a detached `docker exec` keeps running, exactly as a detached local one does |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
-| `remoteListing` | `false` for the shape above: it attempts any container name and learns from the daemon whether one exists, so it has no configured set (§2.2). `true` only for a provider that keeps its own configuration of the containers it routes; it lists them whether reachable or not, and an unreachable one is then an `ENOREMOTE` on the operation, not an absence from the list |
+| `remoteListing` | `false` for the shape above: it attempts any container name and learns from the daemon whether one exists, so it cannot list its configured set completely (§2.2). `true` only for a provider that keeps its own configuration of the containers it routes; it lists them whether reachable or not, and an unreachable one is then an `ENOREMOTE` on the operation, not an absence from the list |
 
 The three primitives and every optional capability above; a `docker exec`
 provider satisfies all of them (`remoteListing` only with a configuration of
