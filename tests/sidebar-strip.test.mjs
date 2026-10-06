@@ -4,7 +4,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setupSidebar, tick, project, conductor, worker, hand, rowOf } from './sidebar-fixture.mjs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { assertNull } from './dom-assert.mjs';
+import { PUB, setupSidebar, tick, project, conductor, worker, hand, rowOf } from './sidebar-fixture.mjs';
+
+const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
+// The clock alone, as the existing formatter renders it.
+const clockOf = (t) => formatAutoResumeTime(t).replace('resumes at ', '');
 
 async function render(sidebar, { projects = [project('p')], instances = [], conductRows = [] } = {}) {
   sidebar.setProjects(projects);
@@ -389,4 +396,69 @@ test('unread counters on Waiting and Running entries render nothing', async () =
     assert.ok(!entryOf(strip, sid).querySelector(':scope > .dot').matches(RING), `${sid}: no ring`);
     assert.ok(!entryOf(strip, sid).getAttribute('aria-label').includes('unread'), `${sid}: no unread reason`);
   }
+});
+
+// Invariant: a strip entry with an armed resume carries the compact badge —
+// the queued count first ("N · ⏸ <time>"), the full wording in its tooltip —
+// after the title, updated in place and removed (entry kept) on clear.
+test('an armed strip entry shows the compact auto-resume badge, count first, updated in place and dropped on clear', async () => {
+  const { strip, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  const badgesOf = () => entryOf(strip, 'A').querySelectorAll('.session-resume-badge');
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: T, queuedCount: 2 })] });
+  const li = entryOf(strip, 'A');
+  assert.equal(badgesOf().length, 1, 'one badge in the entry');
+  const badge = badgesOf()[0];
+  assert.equal(badge.textContent, `2 · ⏸ ${clockOf(T)}`);
+  assert.equal(badge.title, `${formatAutoResumeTime(T)} · 2 queued\nauto-stopped on overage — 2 messages queued; will resume when the window resets`);
+  assert.deepEqual([...li.children].map(c => c.classList[0]), ['dot', 'strip-title', 'session-resume-badge']);
+
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: T, queuedCount: 0 })] });
+  assert.ok(badgesOf()[0] === badge, 'the badge is updated in place');
+  assert.equal(badge.textContent, `⏸ ${clockOf(T)}`, 'no count with nothing queued');
+
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: null, queuedCount: 0 })] });
+  assertNull(entryOf(strip, 'A').querySelector('.session-resume-badge'), 'the badge goes with the armed resume');
+  assert.ok(entryOf(strip, 'A') === li, 'the entry itself is kept');
+});
+
+// Invariant: hand-spawned entries carry the badge as conductor entries do.
+test("an armed hand-spawned strip entry carries the badge too", async () => {
+  const { strip, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  await render(sidebar, { instances: [hand('h', 'p', null, { autoResumeAt: T, queuedCount: 1 })] });
+  assert.deepEqual(groupSids(strip, 'finished'), ['h']);
+  assert.equal(entryOf(strip, 'h').querySelector('.session-resume-badge')?.textContent, `1 · ⏸ ${clockOf(T)}`);
+});
+
+// Invariant: the aria-label replaces the entry's content, so it carries the
+// full resume wording while armed and is unchanged otherwise.
+test("an armed entry's aria-label carries the full resume wording", async () => {
+  const { strip, sidebar } = await setupSidebar();
+  const T = 1_900_000_000;
+  await render(sidebar, { instances: [
+    conductor('A', { title: 'Am', autoResumeAt: T, queuedCount: 2 }),
+    conductor('B', { title: 'Bm' }),
+  ] });
+  assert.equal(entryOf(strip, 'A').getAttribute('aria-label'), `Am — turn ended — ${formatAutoResumeTime(T)} · 2 queued`);
+  assert.equal(entryOf(strip, 'B').getAttribute('aria-label'), 'Bm — turn ended');
+});
+
+// Invariant: the strip title keeps a non-zero floor and a 0 flex basis, so
+// only the resume badge gives way when the entry is narrow.
+test('the strip title keeps a non-zero floor and only the resume badge gives way', async () => {
+  const { window, strip, sidebar } = await setupSidebar({ withCss: true });
+  await render(sidebar, { instances: [conductor('A', { autoResumeAt: 1_900_000_000, queuedCount: 1 })] });
+  const title = entryOf(strip, 'A').querySelector('.strip-title');
+  const badge = entryOf(strip, 'A').querySelector('.session-resume-badge');
+  assert.ok(title && badge, 'sanity: both render');
+  const t = window.getComputedStyle(title);
+  assert.ok(parseFloat(t.minWidth) > 0, `title min-width is a non-zero floor (got ${t.minWidth})`);
+  assert.equal(parseFloat(t.flexBasis), 0, `title flex-basis 0 (got ${t.flexBasis})`);
+  assert.equal(t.flexGrow, '1', 'title takes the spare width');
+  const b = window.getComputedStyle(badge);
+  assert.ok(parseFloat(b.flexShrink) > 0, 'badge may shrink');
+  assert.equal(parseFloat(b.minWidth), 0, 'badge down to nothing');
+  assert.equal(b.overflow, 'hidden');
+  assert.equal(b.textOverflow, 'ellipsis');
 });

@@ -34,8 +34,6 @@ export function sessionFromInstance(inst) {
     instanceMode: inst.mode,
     instanceTemp: !!inst.temp,
     instanceAwaitingWake: !!inst.awaitingWake,
-    autoResumeAt: inst.autoResumeAt ?? null,
-    queuedCount: inst.queuedCount ?? 0,
     conducted: !!inst.conducted,
     ownerSessionId: inst.ownerSessionId ?? null,
     playbook: inst.playbook ?? null,

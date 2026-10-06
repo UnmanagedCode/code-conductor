@@ -246,9 +246,10 @@ test('an armed session shows the auto-resume chip with its queued count; clearin
 });
 
 // Invariant: one paused conductor reads in full in its own header chip
-// ("resumes at <time> · N queued") and in the compact form on its sidebar row
-// ("⏸ <time> · N"), the row's tooltip leading with the header's wording.
-test('the header chip keeps the full auto-resume wording while the conductor row shows the compact form', async () => {
+// ("resumes at <time> · N queued") and in the compact form on its needs-you
+// strip entry ("N · ⏸ <time>"), the entry's tooltip leading with the header's
+// wording.
+test('the header chip keeps the full auto-resume wording while the needs-you strip entry shows the compact form', async () => {
   const { formatAutoResumeTime } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
   const T = 1_900_000_000;
   const paused = { project: '.conduct', autoResumeAt: T, queuedCount: 2 };
@@ -260,12 +261,12 @@ test('the header chip keeps the full auto-resume wording while the conductor row
   assert.equal(chip?.textContent, full, 'header: the full wording');
 
   const { setupSidebar, conductor, tick } = await import('./sidebar-fixture.mjs');
-  const { conductorList, sidebar } = await setupSidebar();
+  const { strip, sidebar } = await setupSidebar();
   sidebar.setInstances([conductor(SESSION_SID, paused)]);
   await tick();
-  const badge = conductorList.querySelector(`[data-key="conductor:${SESSION_SID}"] .conductor-row .session-resume-badge`);
-  assert.equal(badge?.textContent, `⏸ ${formatAutoResumeTime(T).replace('resumes at ', '')} · 2`, 'row: the compact form');
-  assert.ok(badge.title.startsWith(`${full}\n`), `row tooltip leads with the header's wording (got ${JSON.stringify(badge.title)})`);
+  const badge = strip.querySelector(`[data-key="entry:${SESSION_SID}"] .session-resume-badge`);
+  assert.equal(badge?.textContent, `2 · ⏸ ${formatAutoResumeTime(T).replace('resumes at ', '')}`, 'strip entry: the compact form');
+  assert.ok(badge.title.startsWith(`${full}\n`), `entry tooltip leads with the header's wording (got ${JSON.stringify(badge.title)})`);
   assert.notEqual(badge.textContent, chip.textContent, 'sanity: the two surfaces differ');
 });
 
