@@ -1179,3 +1179,34 @@ describe('the Remote dropdown', () => {
     assert.equal(d.el('apd-remote-select').hidden, true);
   });
 });
+
+// PINS SELECT-MODE PLACEMENT ON THE COMPLETION QUERY: the path picker asks
+// for the remote the DROPDOWN names, not the raw text field — a listed pick
+// reaches `/api/fs/dirs` as `remoteId=<picked id>`, and Other… plus typed text
+// as `remoteId=<typed text>`. One subtest each, so each half is its own
+// verdict.
+test('completion asks for the remote the dropdown chose', async (t) => {
+  const bootListed = () => bootDialog({
+    remotes: listedOn('ctr-a', 'ctr-b'),
+    listing: () => ({ ok: true, entries: ['api'], links: [], truncated: false, max: 1000 }),
+  });
+  await t.test('a listed pick', async () => {
+    const d = await bootListed();
+    await d.pick('prod-box');
+    await d.pickRemote('ctr-b');
+    assert.equal(d.el('apd-remote').value, '', 'the text field holds nothing — only the dropdown names ctr-b');
+    await d.typePath('/srv/a');
+    assert.equal(d.listings.length, 1);
+    assert.equal(d.listings[0].params.get('system'), 'prod-box');
+    assert.equal(d.listings[0].params.get('remoteId'), 'ctr-b');
+  });
+  await t.test('Other… with typed text', async () => {
+    const d = await bootListed();
+    await d.pick('prod-box');
+    await d.pickOther();
+    await d.typeRemote(' ctr-z ');
+    await d.typePath('/srv/a');
+    assert.equal(d.listings.length, 1);
+    assert.equal(d.listings[0].params.get('remoteId'), 'ctr-z');
+  });
+});

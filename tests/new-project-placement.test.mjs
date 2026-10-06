@@ -128,7 +128,15 @@ async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok:
   });
   const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
   const open = async () => { document.getElementById('np-btn').click(); await tick(); };
-  const submit = async () => { dlg.returnValue = 'create'; dlg.dispatchEvent(new window.Event('close')); await tick(); };
+  // A submit the way a <form method="dialog"> does it: the dialog is CLOSED
+  // (open false, returnValue set) before `close` fires. So `dlg.open` after a
+  // submit is true only if the close handler re-opened it — which is what lets
+  // a "the dialog reopens" assertion fail.
+  const submit = async () => {
+    dlg.close('create');
+    dlg.dispatchEvent(new window.Event('close'));
+    await tick();
+  };
   const typePath = async (v) => {
     $('np-system-path').value = v;
     $('np-system-path').dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -189,12 +197,17 @@ test('choosing a system reveals the path field and retargets the preview', async
 // PINS: a local create still posts exactly what it always did — no placement
 // keys leak onto the request when none was chosen.
 test('a local create posts no placement', async () => {
-  const { open, submit, posts } = await setup();
+  const { open, submit, posts, dlg } = await setup();
   await open();
   $('np-name').value = 'demo';
   await submit();
   assert.deepEqual(posts.at(-1), { name: 'demo' },
     'no placement keys leak onto a request that chose none');
+  // PINS the harness's control for every "the dialog reopens" assertion in
+  // this file: a create with nothing to refuse and nothing to confirm leaves
+  // the dialog CLOSED, so `submit()` really closes it and `dlg.open` after a
+  // refusal is the close handler's doing.
+  assert.equal(dlg.open, false, 'a plain create leaves the dialog closed');
 });
 
 // PINS: the placement reaches the server as the two fields the route reads.
@@ -255,6 +268,8 @@ test('a remote create with no target posts no remoteId', async () => {
 
 // PINS: the dialog refuses a system with no path ITSELF, without a round trip —
 // the server's 400 says the same thing, but only after the dialog has closed.
+// AND PINS that the refusal RE-OPENS the dialog: `submit()` closes it first, so
+// `dlg.open` is true only if the close handler called showModal again.
 test('a system with no path is refused in the dialog, before any request', async () => {
   const { window, open, submit, posts, dlg, tick } = await setup();
   await open();
@@ -545,7 +560,9 @@ test('Other… reveals the free-text field and posts what is typed', async () =>
 });
 
 // PINS the refusal: with a dropdown up, a remote has to be chosen — the
-// placeholder, or Other… left blank, keeps the dialog open with nothing sent.
+// placeholder, or Other… left blank, is refused with nothing sent, and the
+// refusal RE-OPENS the dialog (`submit()` closes it first, so `dlg.open` is
+// true only if the close handler called showModal again).
 test('the placeholder, or Other… left blank, is refused in the dialog', async (t) => {
   for (const [title, act, message] of [
     ['the placeholder', async () => {}, /choose a remote on 'prod-box'/],
@@ -678,4 +695,38 @@ test('reopening resets the dropdown, Other… and the note', async () => {
   $('np-name').value = 'demo';
   await submit();
   assert.deepEqual(posts.at(-1), { name: 'demo' });
+});
+
+// PINS SELECT-MODE PLACEMENT ON THE COMPLETION QUERY: the path picker asks
+// for the remote the DROPDOWN names, not the raw text field — a listed pick
+// reaches `/api/fs/dirs` as `remoteId=<picked id>`, and Other… plus typed text
+// as `remoteId=<typed text>`. One subtest each, so each half is its own
+// verdict.
+test('completion asks for the remote the dropdown chose', async (t) => {
+  const setupListed = () => setup({
+    remotes: () => LISTED('ctr-a', 'ctr-b'),
+    listing: () => ({ ok: true, entries: ['demo'], links: [], truncated: false, max: 1000 }),
+  });
+  await t.test('a listed pick', async () => {
+    const { open, choose, pickRemote, typePath, listings } = await setupListed();
+    await open();
+    await choose('prod-box');
+    await pickRemote('ctr-b');
+    assert.equal($('np-remote').value, '', 'the text field holds nothing — only the dropdown names ctr-b');
+    await typePath('/srv/d');
+    assert.equal(listings.length, 1);
+    assert.equal(listings[0].params.get('system'), 'prod-box');
+    assert.equal(listings[0].params.get('remoteId'), 'ctr-b');
+  });
+  await t.test('Other… with typed text', async () => {
+    const { window, open, choose, pickOther, typePath, listings } = await setupListed();
+    await open();
+    await choose('prod-box');
+    await pickOther();
+    $('np-remote').value = ' ctr-z ';
+    $('np-remote').dispatchEvent(new window.Event('input'));
+    await typePath('/srv/d');
+    assert.equal(listings.length, 1);
+    assert.equal(listings[0].params.get('remoteId'), 'ctr-z');
+  });
 });
