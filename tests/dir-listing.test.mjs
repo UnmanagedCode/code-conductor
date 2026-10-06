@@ -137,6 +137,15 @@ describe('selectDirs: selection, cap and the link budget', () => {
     assert.equal(sys.calls.stat.length, 2, 'no further batch starts once the sub-deadline fires');
   });
 
+  test('no batch starts after the sub-deadline: stat calls stop at the batch boundary', async () => {
+    const many = Array.from({ length: DIR_LIST_LINK_STAT_BATCH * 3 }, (_, i) => link(`l${String(i).padStart(3, '0')}`));
+    const sys = fakeSystem({ statImpl: () => new Promise(() => {}) });
+    const out = await selectDirs(sys, '/x', many, { linkDeadlineMs: 20 });
+    assert.equal(sys.calls.stat.length, DIR_LIST_LINK_STAT_BATCH);
+    assert.equal(out.links.length, many.length, 'every link, started or not, is returned marked');
+    assert.deepEqual(out.entries, []);
+  });
+
   test('a late rejection after the sub-deadline is not an unhandled rejection', async () => {
     let reject;
     const sys = fakeSystem({ statImpl: () => new Promise((_, rej) => { reject = rej; }) });
@@ -333,8 +342,9 @@ describe('listDirectories with a fake System', () => {
 
   test('a stat that never settles never becomes LIST_TIMEOUT', async () => {
     const sys = fakeSystem({ dirents: [link('a'), dir('d')], statImpl: () => new Promise(() => {}) });
-    // deadlineMs is tiny: it bounds connect + readDir only, which have answered.
-    const r = await listDirectories({ system: 'box', path: '/x' }, { ...via(sys), deadlineMs: 2000 });
+    // The link sub-deadline (20 ms) outlasts the endpoint deadline (50 ms) only
+    // if the link phase were inside it: it is not, so the listing stays ok.
+    const r = await listDirectories({ system: 'box', path: '/x' }, { ...via(sys), deadlineMs: 50, linkDeadlineMs: 20 });
     assert.equal(r.ok, true);
     assert.deepEqual(r.links, ['a']);
   });

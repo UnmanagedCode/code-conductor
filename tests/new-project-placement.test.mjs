@@ -349,24 +349,27 @@ test('completing a directory asks the chosen system and updates the preview', as
   assert.match($('np-preview').textContent, /\/srv\/demo\//, 'the dispatched input kept the preview in step');
 });
 
-// PINS: reopening resets the picker with the rest of the form — list, note and
-// cache — and what the reset leaves is what the POST is made of.
-test('reopening resets the picker, and the create body is the unchanged placement shape', async () => {
-  const { window, open, choose, typePath, listings, submit, posts } = await setup({
+// PINS: the OPEN handler resets the picker (list, note, cache). After the
+// reopen the system is selected by writing the select's value, NOT by a `change`
+// event: that event resets the picker through its own listener and would clear
+// the cache whether or not the open handler did.
+test('reopening clears the picker, and the create body is the unchanged placement shape', async () => {
+  const { window, dlg, open, choose, typePath, listings, submit, posts } = await setup({
     listing: () => ({ ok: true, entries: ['demo'], links: [], truncated: true, max: 5 }),
   });
   await open();
   await choose('prod-box');
   await typePath('/srv/d');
-  assert.equal($('np-system-path-completions').hidden, false);
+  assert.equal($('np-system-path-completions').hidden, false, 'the first open left a list showing');
   assert.match($('np-system-path-note').textContent, /more than 5/);
   assert.equal(listings.length, 1);
+  dlg.close('cancel');
 
   await open();
   assert.equal($('np-system-path-completions').hidden, true);
   assert.equal($('np-system-path-completions').children.length, 0);
   assert.equal($('np-system-path-note').textContent, '');
-  await choose('prod-box');
+  $('np-system').value = 'prod-box';
   await typePath('/srv/d');
   assert.equal(listings.length, 2, 'the cache did not survive the reopen');
 
@@ -376,4 +379,19 @@ test('reopening resets the picker, and the create body is the unchanged placemen
   $('np-remote').dispatchEvent(new window.Event('input'));
   await submit();
   assert.deepEqual(posts, [{ name: 'demo', system: 'prod-box', systemPath: '/srv/demo', remoteId: 'r1' }]);
+});
+
+// PINS: the remote field invalidates the cache — a listing is about one target.
+test('changing the remote refetches the same directory', async () => {
+  const { window, open, choose, typePath, listings } = await setup();
+  await open();
+  await choose('prod-box');
+  await typePath('/srv/d');
+  await typePath('/srv/e');
+  assert.equal(listings.length, 1, 'same placement, same directory: cached');
+  $('np-remote').value = 'r2';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  await typePath('/srv/d');
+  assert.equal(listings.length, 2);
+  assert.equal(listings[1].params.get('remoteId'), 'r2');
 });

@@ -95,11 +95,15 @@ export async function selectDirs(
   const dropped = new Set<string>();
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // A flag, not only the race: a batch that wins the race in the same tick the
+  // timer fires must not let the NEXT batch start.
+  let fired = false;
   const deadline = new Promise<typeof TIMED_OUT>(resolve => {
-    timer = setTimeout(() => resolve(TIMED_OUT), linkDeadlineMs);
+    timer = setTimeout(() => { fired = true; resolve(TIMED_OUT); }, linkDeadlineMs);
   });
   try {
     for (let i = 0; i < toResolve.length; i += DIR_LIST_LINK_STAT_BATCH) {
+      if (fired) break;
       const batch = toResolve.slice(i, i + DIR_LIST_LINK_STAT_BATCH);
       const stats = batch.map(async name => {
         try {
@@ -135,8 +139,9 @@ export async function selectDirs(
 
 export async function listDirectories(
   q: { system?: unknown; remoteId?: unknown; path?: unknown },
-  { deadlineMs = DIR_LIST_DEADLINE_MS, resolveSystem = systemById }: {
+  { deadlineMs = DIR_LIST_DEADLINE_MS, linkDeadlineMs, resolveSystem = systemById }: {
     deadlineMs?: number;
+    linkDeadlineMs?: number;
     // The seam the unit tests hand a fake System through; production uses the registry.
     resolveSystem?: typeof systemById;
   } = {},
@@ -192,7 +197,7 @@ export async function listDirectories(
   }
 
   try {
-    const { entries, links, truncated } = await selectDirs(sys, p, dirents);
+    const { entries, links, truncated } = await selectDirs(sys, p, dirents, { linkDeadlineMs });
     return { ok: true, system, remoteId, path: p, entries, links, truncated, max: DIR_LIST_MAX_ENTRIES };
   } catch (e) {
     return mapError(e);

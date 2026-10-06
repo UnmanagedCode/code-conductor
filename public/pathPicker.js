@@ -13,7 +13,8 @@
 //
 // CACHE. One listing per (system, remoteId, directory). Typing within a loaded
 // directory only re-filters — no timer, no request. A refusal is cached too
-// (the same directory is not asked again); a transport failure is not. The
+// (the same directory is not asked again) unless its code is in
+// TRANSIENT_REFUSAL_CODES; a transport failure is never cached. The
 // dialog calls `reset()` whenever the placement or the dialog itself resets.
 //
 // STALENESS. Every request carries a sequence number and an AbortController; a
@@ -29,6 +30,11 @@
 // textContent everywhere, never innerHTML: names come off a disk.
 
 export const PATH_PICKER_DEBOUNCE_MS = 250;
+
+// Refusal codes that describe the moment, not the directory: they show their
+// reason but are not cached, so typing in that directory again retries. Every
+// other refusal (ENOENT, EACCES, …) is a fact about the path and stays cached.
+export const TRANSIENT_REFUSAL_CODES = new Set(['LIST_TIMEOUT', 'ETIMEDOUT', 'ETRANSPORT', 'SYSTEM_UNREACHABLE']);
 
 // `/a/b/pre` → dir `/a/b`, dirSlash `/a/b/`, prefix `pre`. Only POSIX-absolute
 // text is completed; anything else (a Windows `C:\…` path, a relative path,
@@ -153,7 +159,7 @@ export function installPathPicker({
         max: data.max,
       }
       : { refusal: { reason: typeof data?.reason === 'string' ? data.reason : '' } };
-    cache.set(key, entry);
+    if (!(entry.refusal && TRANSIENT_REFUSAL_CODES.has(data?.code))) cache.set(key, entry);
     const now = splitPath(input.value);
     if (!now || now.dir !== s.dir) return;
     show(entry, now);
@@ -199,8 +205,8 @@ export function installPathPicker({
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       const n = shown.length;
-      setActive(e.key === 'ArrowDown' ? (active + 1) % n : (active - 1 + n) % n);
-    } else if (e.key === 'Tab') {
+      setActive(e.key === 'ArrowDown' ? (active + 1) % n : active <= 0 ? n - 1 : active - 1);
+    } else if (e.key === 'Tab' && !e.shiftKey) {
       e.preventDefault();
       complete(shown[active >= 0 ? active : 0]);
     } else if (e.key === 'Enter' && active >= 0) {

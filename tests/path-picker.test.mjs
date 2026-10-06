@@ -175,6 +175,23 @@ describe('rendering', () => {
     assert.match(t.note.textContent, /more than 321 directories/);
   });
 
+  test('the input opts out of browser autocomplete and spellcheck and declares a list', async () => {
+    const t = boot();
+    assert.equal(t.input.getAttribute('autocomplete'), 'off');
+    assert.equal(t.input.getAttribute('spellcheck'), 'false');
+    assert.equal(t.input.getAttribute('aria-autocomplete'), 'list');
+  });
+
+  test('the note says Listing <dir>… while the request is pending', async () => {
+    let release;
+    const t = boot({ script: () => new Promise(r => { release = () => r(ok(['a'])); }) });
+    await t.type('/srv/x');
+    assert.equal(t.note.textContent, 'Listing /srv…');
+    release();
+    await tick();
+    assert.equal(t.note.textContent, '');
+  });
+
   test('every option carries role, id and the combobox wiring', async () => {
     const t = boot({ script: () => ok(['a', 'b']) });
     await t.type('/');
@@ -256,6 +273,25 @@ describe('keyboard and pointer', () => {
     assert.equal(t.input.value, '/b/');
   });
 
+  test('ArrowUp from no active item selects the last; ArrowDown from none selects the first', async () => {
+    const up = boot({ script: () => ok(['a', 'b', 'c']) });
+    await up.type('/');
+    up.key('ArrowUp');
+    assert.deepEqual([...up.list.children].map(li => li.getAttribute('aria-selected')), ['false', 'false', 'true']);
+    const down = boot({ script: () => ok(['a', 'b', 'c']) });
+    await down.type('/');
+    down.key('ArrowDown');
+    assert.deepEqual([...down.list.children].map(li => li.getAttribute('aria-selected')), ['true', 'false', 'false']);
+  });
+
+  test('Shift+Tab is left to the browser: not prevented, value unchanged', async () => {
+    const t = boot({ script: () => ok(['a']) });
+    await t.type('/');
+    const e = t.key('Tab', { shiftKey: true });
+    assert.equal(e.defaultPrevented, false);
+    assert.equal(t.input.value, '/');
+  });
+
   test('Enter with no active item is left alone so the form still submits', async () => {
     const t = boot({ script: () => ok(['a']) });
     await t.type('/');
@@ -300,15 +336,31 @@ describe('keyboard and pointer', () => {
 });
 
 describe('failures', () => {
-  test('a refusal shows its reason, closes the list, is cached, and leaves the input editable', async () => {
-    const t = boot({ script: () => ({ ok: false, code: 'SYSTEM_UNREACHABLE', reason: "could not reach system 'box'" }) });
+  test('a refusal about the path shows its reason, closes the list, is cached, and leaves the input editable', async () => {
+    const t = boot({ script: () => ({ ok: false, code: 'EACCES', reason: "cannot read '/srv'" }) });
     await t.type('/srv/x');
-    assert.equal(t.note.textContent, "could not reach system 'box'");
+    assert.equal(t.note.textContent, "cannot read '/srv'");
     assert.equal(t.list.hidden, true);
     await t.type('/srv/xy', { settle: false });
     assert.equal(t.requests.length, 1, 'the refused directory is not asked again');
-    assert.equal(t.note.textContent, "could not reach system 'box'");
+    assert.equal(t.note.textContent, "cannot read '/srv'");
     assert.equal(t.input.value, '/srv/xy');
+  });
+
+  describe('transient refusals are shown but not cached', () => {
+    for (const code of ['LIST_TIMEOUT', 'ETIMEDOUT', 'ETRANSPORT', 'SYSTEM_UNREACHABLE']) {
+      test(code, async () => {
+        let n = 0;
+        const t = boot({ script: () => (++n === 1 ? { ok: false, code, reason: `slow: ${code}` } : ok(['a'])) });
+        await t.type('/srv/x');
+        assert.equal(t.note.textContent, `slow: ${code}`);
+        await t.type('/srv/', { settle: false });
+        t.timers.fireAll();
+        await tick();
+        assert.equal(t.requests.length, 2, 'retyping in that directory retries');
+        assert.deepEqual(t.items(), ['a']);
+      });
+    }
   });
 
   test('a refusal without a reason still says something, never the bare code', async () => {

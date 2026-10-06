@@ -714,9 +714,6 @@ test('reopening the dialog resets every field the previous open left behind', as
   d.el('apd-path').value = '/srv/api';
   await d.close('adopt');
   assert.match(d.state().error, /already exists/, 'the first attempt left an error standing');
-  // The picker leaves its own residue: an open list, a note and a cached listing.
-  await d.typePath('/srv/x');
-  assert.equal(d.listings.length, 1);
   await d.close('cancel'); // the user gives up on that attempt
 
   await d.reopen();
@@ -727,11 +724,6 @@ test('reopening the dialog resets every field the previous open left behind', as
   assert.equal(d.state().error, '');
   assert.equal(d.el('apd-remote-row').hidden, true, 'and the form is laid out for the placement it reset to');
   assert.equal(d.el('apd-suggestions').hidden, false);
-  assert.equal(d.el('apd-path-completions').hidden, true, 'the picker list does not outlive the dialog');
-  assert.equal(d.el('apd-path-completions').children.length, 0);
-  assert.equal(d.el('apd-path-note').textContent, '');
-  await d.typePath('/srv/x');
-  assert.equal(d.listings.length, 2, 'and its cache does not either: the same directory is fetched again');
 
   // The reset is what the POST is made of, not merely what the form shows.
   d.el('apd-name').value = 'other';
@@ -901,4 +893,27 @@ test('Escape in the path field closes the list and leaves the dialog open', asyn
   assert.equal(esc.defaultPrevented, true);
   assert.equal(d.el('apd-path-completions').hidden, true);
   assert.equal(dialog.open, true);
+});
+
+// PINS: the OPEN handler resets the picker. The residue is left on the LOCAL
+// placement on purpose: the cache key includes the placement, and choosing a
+// system resets the picker through its own listener, so a residue on any other
+// placement would be rebuilt after the reopen whether or not the open handler
+// reset anything.
+test('reopening clears the picker\'s list, note and cache', async () => {
+  const d = await bootDialog({
+    listing: () => ({ ok: true, entries: ['x1', 'x2'], links: [], truncated: true, max: 7 }),
+  });
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 1);
+  assert.equal(d.el('apd-path-completions').hidden, false, 'the first open left a list showing');
+  assert.match(d.el('apd-path-note').textContent, /more than 7 directories/);
+  await d.close('cancel');
+
+  await d.reopen();
+  assert.equal(d.el('apd-path-completions').hidden, true);
+  assert.equal(d.el('apd-path-completions').children.length, 0);
+  assert.equal(d.el('apd-path-note').textContent, '');
+  await d.typePath('/srv/x');
+  assert.equal(d.listings.length, 2, 'the cache did not survive: the same directory is fetched again');
 });
