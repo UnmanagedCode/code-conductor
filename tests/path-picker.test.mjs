@@ -130,6 +130,21 @@ describe('cache', () => {
     assert.equal(t.requests.length, 2, 'the same directory on another system is a different listing');
   });
 
+  test('the key includes the remoteId: another remote of the same system and directory is its own fetch, with no reset between', async () => {
+    const t = boot({ script: () => ok(['a']) });
+    t.setPlacement({ system: 'box', remoteId: 'r1' });
+    await t.type('/srv/x');
+    t.setPlacement({ system: 'box', remoteId: 'r2' });
+    await t.type('/srv/x');
+    assert.equal(t.requests.length, 2);
+    assert.equal(t.requests[0].params.get('remoteId'), 'r1');
+    assert.equal(t.requests[1].params.get('remoteId'), 'r2');
+    t.setPlacement({ system: 'box', remoteId: 'r1' });
+    await t.type('/srv/x', { settle: false });
+    assert.equal(t.timers.count, 0);
+    assert.equal(t.requests.length, 2, 'and each remote keeps its own cached listing');
+  });
+
   test('reset() clears the cache and aborts the in-flight request', async () => {
     let release;
     const t = boot({ script: req => (req.params.get('path') === '/slow' ? new Promise(r => { release = () => r(ok(['z'])); }) : ok(['a'])) });
@@ -244,6 +259,15 @@ describe('keyboard and pointer', () => {
     assert.equal(e.defaultPrevented, true);
     assert.equal(t.input.value, '/alpha/');
     assert.equal(inputs, 1);
+  });
+
+  test('Tab completes the ACTIVE option, not the first', async () => {
+    const t = boot({ script: () => ok(['a', 'b', 'c']) });
+    await t.type('/');
+    t.key('ArrowDown');
+    t.key('ArrowDown');
+    t.key('Tab');
+    assert.equal(t.input.value, '/b/');
   });
 
   test('completing lists the new directory next', async () => {

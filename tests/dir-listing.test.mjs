@@ -162,6 +162,8 @@ describe('listDirectories on a fake System-free path: argument checks', () => {
     ['empty', { path: '' }, 'INVALID_PATH'],
     ['absent', {}, 'INVALID_PATH'],
     ['repeated parameter', { path: ['/a', '/b'] }, 'INVALID_PATH'],
+    ['system as array', { path: '/tmp', system: ['a', 'b'] }, 'INVALID_PATH'],
+    ['system as number', { path: '/tmp', system: 5 }, 'INVALID_PATH'],
     ['remoteId on local', { path: '/tmp', remoteId: 'r' }, 'INVALID_REMOTE_ID'],
     ['remoteId on explicit local', { path: '/tmp', system: 'local', remoteId: 'r' }, 'INVALID_REMOTE_ID'],
     ['remoteId as array', { path: '/tmp', system: 'x', remoteId: ['a'] }, 'INVALID_REMOTE_ID'],
@@ -219,6 +221,14 @@ describe('listDirectories and the route, against real systems', () => {
   test('a repeated path parameter is refused, not listed', async () => {
     const r = await api(ctx.baseUrl, 'GET', `/api/fs/dirs?path=${encodeURIComponent(tree)}&path=/tmp`);
     assert.equal(r.body.code, 'INVALID_PATH');
+  });
+
+  test('a repeated system parameter is refused as INVALID_PATH with a reason, not a 500', async () => {
+    const r = await api(ctx.baseUrl, 'GET', `/api/fs/dirs?path=${encodeURIComponent(tree)}&system=a&system=b`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, false);
+    assert.equal(r.body.code, 'INVALID_PATH');
+    assert.ok(r.body.reason);
   });
 
   describe('remote dispatch', () => {
