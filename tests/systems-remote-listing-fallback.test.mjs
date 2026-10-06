@@ -1,80 +1,94 @@
 // THE `remoteListing` FALLBACK: cc never sends `listRemotes` to a provider that
-// does not advertise it (docs/systems-protocol.md §2, §2.2).
+// does not advertise it (docs/systems-protocol.md §2, §2.2), and such a System
+// is reported NOT ENUMERABLE — never as having no remotes.
 //
-// While cc has no sender at all, that holds by construction, and a recording
-// provider would see no `listRemotes` frame whether or not it advertised the
-// capability — a wire test could not tell the gate from the absence of any
-// caller. So the pin is STRUCTURAL: no cc source file (the scope is defined
-// at SOURCE_EXT below), outside the frame's own definition and the reference
-// provider's handler, names the frame's type. It reds on ANY sender, gated or
-// not, which is what hands the first one its obligation: a capability-gated
-// recording test in the shape of tests/systems-mirror-fallback.test.mjs.
+// cc has one sender — `ProviderSystem.listRemotes`, reached through
+// `enumerateSystemRemotes` (src/systems/remoteEnumeration.ts) — and two
+// front-ends on it: `GET /api/systems/:id/remotes` and the MCP tool
+// `enumerate_remotes`. A capability gate asserted from cc's side would pass
+// whether or not the frame stayed home, so the evidence here is the bytes that
+// crossed the pipe, recorded by tests/fixtures/recordingProvider.mjs, with every
+// surface driven against the same recorder.
 
-import { test } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { api, bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+import { addSystem } from '../src/appSettings.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { enumerateAllRemotes, enumerateSystemRemotes } from '../src/systems/remoteEnumeration.ts';
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// cc source is every file with one of these extensions, repo-wide — server.ts
-// and the other root-level modules, src/, public/, migrations/, bin/ — except
-// under the directories below, none of which carries cc runtime code:
-//   node_modules/  third-party dependencies
-//   tests/         the suite, this file and its fixtures included
-//   harness/       dev tooling (mutation runner, Playwright checks)
-//   any dot-directory — .git/, .compile-cache/, and the working copies the
-//                  mutation harness writes under a dot-directory
-const SOURCE_EXT = /\.(ts|js|mjs|cjs)$/;
-const SKIP_DIRS = new Set(['node_modules', 'tests', 'harness']);
-// The frame's definition and the reference provider's handler: the two places
-// the type legitimately appears without anything in cc sending it.
-const OWNERS = ['src/systems/protocol.ts', 'src/systems/referenceProvider.ts'];
-// The type as a string literal in any quoting, which is how a frame is built.
-const LITERAL = /(['"`])listRemotes\1/;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const RECORDER = path.join(__dirname, 'fixtures', 'recordingProvider.mjs');
 
-async function sourceFilesUnder(rel) {
-  const out = [];
-  for (const e of await fs.readdir(path.join(REPO, rel), { withFileTypes: true })) {
-    const r = rel === '' ? e.name : `${rel}/${e.name}`;
-    if (e.isDirectory()) {
-      if (!e.name.startsWith('.') && !(rel === '' && SKIP_DIRS.has(e.name)) && e.name !== 'node_modules') {
-        out.push(...await sourceFilesUnder(r));
-      }
-    } else if (e.isFile() && SOURCE_EXT.test(e.name)) out.push(r);
-  }
-  return out;
+async function wire(file) {
+  let raw = '';
+  try { raw = await fs.readFile(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
-async function filesNamingTheFrame() {
-  const files = await sourceFilesUnder('');
-  const hits = [];
-  for (const f of files) {
-    if (LITERAL.test(await fs.readFile(path.join(REPO, f), 'utf8'))) hits.push(f);
-  }
-  return { scanned: files, hits: hits.sort() };
+let nextRpcId = 1;
+async function callTool(baseUrl, name, args) {
+  const res = await fetch(baseUrl + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  return (await res.json()).result;
 }
 
-// PINS the absent-behaviour of `remoteListing`: no cc caller sends the frame.
-//
-// The positive control comes first: the scan must find the literal in exactly
-// the two owners, so a scanner that read nothing, or a literal that drifted,
-// reds here rather than reading clean.
-test('no cc source sends listRemotes — the remoteListing fallback until a sender exists', async () => {
-  const { scanned, hits } = await filesNamingTheFrame();
-  for (const expected of ['server.ts', 'src/projects.ts', 'public/app.js', 'migrations/', 'bin/']) {
-    assert.ok(scanned.some(f => f === expected || (expected.endsWith('/') && f.startsWith(expected))),
-      `the scan reached ${expected}`);
-  }
-  assert.ok(!scanned.some(f => /^(tests|harness)\/|(^|\/)(node_modules|\.[^/]*)\//.test(f)),
-    'and nothing under an excluded directory');
-  assert.deepEqual(hits.filter(f => OWNERS.includes(f)), [...OWNERS].sort(),
-    'positive control: the scan finds the frame type where it is defined and handled');
-  const senders = hits.filter(f => !OWNERS.includes(f));
-  assert.deepEqual(senders, [],
-    `a cc source file now names the 'listRemotes' frame: ${senders.join(', ')}. A cc sender must be gated on `
-    + '`remoteListing`: add a capability-gated recording test in the shape of '
-    + 'tests/systems-mirror-fallback.test.mjs — a provider that does not advertise remoteListing, '
-    + 'driven through the new caller, receives no listRemotes frame on the wire — and name it in '
-    + "the remoteListing row's Fallback test cell in docs/systems-protocol.md §2, in place of this test.");
+describe('a provider that does not advertise remoteListing', () => {
+  let ctx, home;
+  before(async () => { ctx = await bootServer(); });
+  after(async () => { await ctx.close(); });
+  beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+  afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
+
+  // PINS THE CAPABILITY GATE, on the wire, through every surface the sender
+  // has: no `listRemotes` frame reaches a provider that did not advertise
+  // `remoteListing`. AND PINS not-enumerable ≠ empty: each surface reports the
+  // System as `not-enumerable`, and none of them carries a `remoteIds` list —
+  // an empty one would read as "this provider is configured for nothing".
+  test('no listRemotes frame reaches a provider that does not advertise remoteListing', async () => {
+    const rec = path.join(await mkdtemp('cc-wire-'), 'frames.jsonl');
+    await addSystem({ id: 'box', label: 'Box', launch: ['node', RECORDER, '--record', rec] });
+
+    const one = await enumerateSystemRemotes('box');
+    const all = (await enumerateAllRemotes()).find(e => e.system === 'box');
+    const viaRoute = await api(ctx.baseUrl, 'GET', '/api/systems/box/remotes');
+    const viaTool = await callTool(ctx.baseUrl, 'enumerate_remotes', { system: 'box' });
+
+    assert.equal(viaRoute.status, 200);
+    for (const [surface, r] of [['enumerateSystemRemotes', one], ['enumerateAllRemotes', all], ['the route', viaRoute.body]]) {
+      assert.equal(r.state, 'not-enumerable', `${surface}: ${JSON.stringify(r)}`);
+      assert.equal('remoteIds' in r, false, `${surface} carries no remoteIds`);
+    }
+    const text = viaTool.content[0].text;
+    assert.match(text, /^box · Box\n {2}not enumerable — /m, text);
+    assert.doesNotMatch(text, /no configured remotes/, 'the tool does not read the System as empty');
+
+    const frames = await wire(rec);
+    assert.ok(frames.length > 0, 'the recorder really saw traffic');
+    assert.deepEqual(frames.filter(f => f.type === 'listRemotes'), []);
+  });
+
+  // PINS THE GATE'S OTHER DIRECTION — the positive control for the test above:
+  // the same recorder, in front of a provider that DOES advertise, sees exactly
+  // one `listRemotes` per enumeration. And the frame names no `remoteId`: the set
+  // of targets is a fact about the provider, not about one of them.
+  test('the recorder sees exactly one listRemotes per enumeration of an advertising provider', async () => {
+    const rec = path.join(await mkdtemp('cc-wire-'), 'frames.jsonl');
+    const root = await fs.realpath(await mkdtemp('cc-remote-'));
+    await addSystem({ id: 'lister', label: 'Lister', launch: ['node', RECORDER, '--record', rec, '--remote', `ctr-a=${root}`] });
+
+    const r = await enumerateSystemRemotes('lister');
+    assert.deepEqual(r, { system: 'lister', label: 'Lister', state: 'listed', remoteIds: ['ctr-a'] });
+
+    const sent = (await wire(rec)).filter(f => f.type === 'listRemotes');
+    assert.equal(sent.length, 1);
+    assert.deepEqual(Object.keys(sent[0]).sort(), ['id', 'type']);
+  });
 });

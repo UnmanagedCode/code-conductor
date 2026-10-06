@@ -41,6 +41,8 @@ const WIRING = {
   apdSystemNote: 'apd-system-note',
   apdRemote: 'apd-remote',
   apdRemoteRow: 'apd-remote-row',
+  apdRemoteSelect: 'apd-remote-select',
+  apdRemoteNote: 'apd-remote-note',
   apdPath: 'apd-path',
   apdPathCompletions: 'apd-path-completions',
   apdPathNote: 'apd-path-note',

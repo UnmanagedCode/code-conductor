@@ -1,5 +1,5 @@
 // Plain-text rendering layer for the MCP tools whose whole result is text: the
-// five recon read tools plus describe_playbook.
+// five recon read tools plus describe_playbook and enumerate_remotes.
 //
 // Pure tests — no server boot, no I/O: hand-built payloads in, exact strings
 // out, mirroring tests/mcp-recent-turn-bond.test.mjs. The rendering is the
@@ -14,7 +14,7 @@ import {
 } from '../src/mcp/textRender.ts';
 import {
   renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
-  renderPlaybook,
+  renderPlaybook, renderRemoteEnumeration,
 } from '../src/mcp/readRenderers.ts';
 import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
 import { STAGE_KEYS, TRANSITION_KEYS, PLAYBOOK_KEYS } from '../src/playbooks.ts';
@@ -1295,6 +1295,56 @@ describe('a git ownership refusal', () => {
       '',
       'FILES (1)',
       '  README.md',
+    ].join('\n'));
+  });
+});
+
+describe('renderRemoteEnumeration', () => {
+  const LOCAL = { system: 'local', label: 'This machine', state: 'not-enumerable', reason: "cc's own machine has no named remotes" };
+
+  // PINS the listed block's count wording and one id per line, for 2, 1 and 0
+  // ids — and that an EMPTY list is worded as a configuration with nothing in
+  // it, distinct from both not-enumerable and failed.
+  test('a listed System renders its count and one id per line', () => {
+    assert.equal(renderRemoteEnumeration([
+      { system: 'box', label: 'Box', state: 'listed', remoteIds: ['ctr-a', 'ctr-b'] },
+      { system: 'one', label: 'One', state: 'listed', remoteIds: ['solo'] },
+      { system: 'none', label: 'None', state: 'listed', remoteIds: [] },
+    ]), [
+      'SYSTEMS (3)',
+      '',
+      'box · Box',
+      '  enumerable — 2 remotes',
+      '    ctr-a',
+      '    ctr-b',
+      '',
+      'one · One',
+      '  enumerable — 1 remote',
+      '    solo',
+      '',
+      'none · None',
+      '  enumerable — no configured remotes right now',
+    ].join('\n'));
+  });
+
+  // PINS not-enumerable ≠ empty and failed ≠ empty: each carries its reason and
+  // no id lines, and a failure's code is bracketed only when it has one.
+  test('not-enumerable and failed Systems render their reasons, never a list', () => {
+    assert.equal(renderRemoteEnumeration([
+      LOCAL,
+      { system: 'lab', label: 'Lab', state: 'failed', reason: 'the provider is down', code: 'SYSTEM_UNREACHABLE' },
+      { system: 'odd', label: 'Odd', state: 'failed', reason: 'something broke' },
+    ]), [
+      'SYSTEMS (3)',
+      '',
+      'local · This machine',
+      "  not enumerable — cc's own machine has no named remotes",
+      '',
+      'lab · Lab',
+      '  enumeration failed [SYSTEM_UNREACHABLE] — the provider is down',
+      '',
+      'odd · Odd',
+      '  enumeration failed — something broke',
     ].join('\n'));
   });
 });

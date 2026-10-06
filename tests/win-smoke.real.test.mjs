@@ -222,7 +222,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     assert.equal(adopt.body.code, SYSTEMS_UNAVAILABLE);
     const tools = await mcpList(base);
     assert.ok(tools.includes('project_bash'), `tools/list: ${tools.join(',')}`);
-    for (const gone of ['system_bash', 'set_project_remote']) assert.ok(!tools.includes(gone), `${gone} is listed`);
+    for (const gone of ['system_bash', 'set_project_remote', 'enumerate_remotes']) assert.ok(!tools.includes(gone), `${gone} is listed`);
   });
 
   test('create project makes the initial commit', { timeout: 60_000 }, async () => {

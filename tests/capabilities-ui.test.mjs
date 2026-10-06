@@ -184,7 +184,8 @@ test('the Adopt dialog hides the system picker and sends no system', async () =>
         <input id="apd-name" />
         <label>System <select id="apd-system"></select></label>
         <p id="apd-system-note"></p>
-        <label id="apd-remote-row" hidden><input id="apd-remote" /></label>
+        <label id="apd-remote-row" hidden><select id="apd-remote-select" hidden></select><input id="apd-remote" /></label>
+        <p id="apd-remote-note"></p>
         <input id="apd-path" /><ul id="apd-path-completions" hidden></ul><p id="apd-path-note"></p><ul id="apd-suggestions"></ul><p id="apd-scan-note"></p><p id="apd-error"></p>
       </form>
       <p id="apd-stale-summary"></p><ul id="apd-stale-discards"></ul><p id="apd-stale-error"></p>
@@ -198,7 +199,8 @@ test('the Adopt dialog hides the system picker and sends no system', async () =>
     dom: {
       adoptProjectBtn: $('adopt-btn'), adoptProjectDialog: dlg, apdForm: $('apd-form'), apdStale: $('apd-form'),
       apdName: $('apd-name'), apdSystem: $('apd-system'), apdSystemNote: $('apd-system-note'),
-      apdRemote: $('apd-remote'), apdRemoteRow: $('apd-remote-row'), apdPath: $('apd-path'),
+      apdRemote: $('apd-remote'), apdRemoteRow: $('apd-remote-row'),
+      apdRemoteSelect: $('apd-remote-select'), apdRemoteNote: $('apd-remote-note'), apdPath: $('apd-path'),
       apdPathCompletions: $('apd-path-completions'), apdPathNote: $('apd-path-note'),
       apdSuggestions: $('apd-suggestions'), apdScanNote: $('apd-scan-note'), apdError: $('apd-error'),
       apdStaleSummary: $('apd-stale-summary'), apdStaleDiscards: $('apd-stale-discards'), apdStaleError: $('apd-stale-error'),

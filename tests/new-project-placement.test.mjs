@@ -27,17 +27,28 @@ const SYSTEMS = [
 ];
 
 let counter = 0;
-async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok: true, entries: [], links: [], truncated: false, max: 1000 }) } = {}) {
+// `remotes(system)` answers `GET /api/systems/<system>/remotes` — a body, or a
+// promise of one so a test can hold an answer back. Omitted (or answering
+// undefined), the request falls through to the 503 catch-all below.
+async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok: true, entries: [], links: [], truncated: false, max: 1000 }), remotes = () => undefined } = {}) {
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.localStorage = window.localStorage;
   const posts = [];
   const listings = [];
+  const remoteAsks = [];
   const timers = fakeTimers();
   const impl = async (url, opts = {}) => {
     if (String(url).includes('/api/settings/systems')) {
       return { ok: true, status: 200, json: async () => ({ systems }) };
+    }
+    const asked = String(url).match(/^\/api\/systems\/([^/]+)\/remotes$/);
+    if (asked) {
+      const system = decodeURIComponent(asked[1]);
+      remoteAsks.push(system);
+      const body = await remotes(system);
+      if (body !== undefined) return { ok: true, status: 200, json: async () => body };
     }
     if (String(url).includes('/api/fs/dirs')) {
       const params = new URL(String(url), 'http://localhost').searchParams;
@@ -70,7 +81,8 @@ async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok:
         <label id="np-system-path-row"><input id="np-system-path" /></label>
         <ul id="np-system-path-completions" hidden></ul>
         <p id="np-system-path-note"></p>
-        <label id="np-remote-row"><input id="np-remote" /></label>
+        <label id="np-remote-row"><select id="np-remote-select" hidden></select><input id="np-remote" /></label>
+        <p id="np-remote-note"></p>
         <code id="np-preview"></code>
         <div id="np-contributions"></div>
         <p id="np-error"></p>
@@ -107,6 +119,8 @@ async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok:
       npSystemPathNote: document.getElementById('np-system-path-note'),
       npRemote: document.getElementById('np-remote'),
       npRemoteRow: document.getElementById('np-remote-row'),
+      npRemoteSelect: document.getElementById('np-remote-select'),
+      npRemoteNote: document.getElementById('np-remote-note'),
     },
     refreshProjects: async () => {},
     closeSidebarOverflow: () => {},
@@ -126,7 +140,19 @@ async function setup({ systems = SYSTEMS, createResponse, listing = () => ({ ok:
     $('np-system').dispatchEvent(new window.Event('change'));
     await tick();
   };
-  return { window, document, dlg, posts, listings, timers, typePath, choose, open, submit, tick };
+  // Choosing from the Remote dropdown the way a user does: by `change`.
+  const pickRemote = async (value) => {
+    $('np-remote-select').value = value;
+    $('np-remote-select').dispatchEvent(new window.Event('change'));
+    await tick();
+  };
+  // "Other…" by its label, so no test restates the option's sentinel value.
+  const pickOther = async () => {
+    const other = [...$('np-remote-select').options].find(o => o.textContent === 'Other…');
+    assert.ok(other, 'the dropdown offers Other…');
+    await pickRemote(other.value);
+  };
+  return { window, document, dlg, posts, listings, remoteAsks, timers, typePath, choose, open, submit, tick, pickRemote, pickOther };
 }
 
 const $ = (id) => document.getElementById(id);
@@ -420,4 +446,236 @@ test('changing the system closes the picker', async () => {
   assert.equal($('np-system-path-completions').hidden, true);
   assert.equal($('np-system-path').getAttribute('aria-expanded'), 'false');
   assert.equal($('np-system-path-note').textContent, '');
+});
+
+// ── THE REMOTE DROPDOWN ─────────────────────────────────────────────────────
+//
+// A System whose provider enumerates its configured remotes offers them as a
+// dropdown, with Other… as the way to type one it did not list. A System that
+// does not enumerate, or whose enumeration failed, keeps the free-text field —
+// and a failure says why, so it is never read as "no remotes".
+
+const LISTED = (...remoteIds) => ({ system: 'prod-box', label: 'Prod box', state: 'listed', remoteIds });
+const optionTexts = () => [...$('np-remote-select').options].map(o => o.textContent);
+
+// PINS the dropdown half of the switch: listed ids become options between an
+// unsubmittable placeholder and Other…, the free-text field hides, and the id
+// picked is the one posted.
+test('an enumerable system offers its remotes as a dropdown', async () => {
+  const { window, open, choose, pickRemote, submit, posts } = await setup({ remotes: () => LISTED('ctr-a', 'ctr-b') });
+  await open();
+  $('np-name').value = 'demo';
+  await choose('prod-box');
+  assert.equal($('np-remote-select').hidden, false);
+  assert.deepEqual(optionTexts(), ['— choose a remote —', 'ctr-a', 'ctr-b', 'Other…']);
+  assert.equal($('np-remote-select').value, '', 'the placeholder is what starts selected');
+  assert.equal($('np-remote').hidden, true, 'the free-text field hides behind Other…');
+  assert.equal($('np-remote-note').textContent, '');
+
+  await pickRemote('ctr-b');
+  assert.match($('np-preview').textContent, /remote 'ctr-b' of system 'prod-box'/);
+  $('np-system-path').value = '/srv/demo';
+  $('np-system-path').dispatchEvent(new window.Event('input'));
+  await submit();
+  assert.deepEqual(posts.at(-1), { name: 'demo', system: 'prod-box', systemPath: '/srv/demo', remoteId: 'ctr-b' });
+});
+
+// PINS the free-text half: a System that is not enumerable keeps exactly the
+// field it always had, with nothing said.
+test('a non-enumerable system keeps the free-text Remote field', async () => {
+  const { open, choose } = await setup({
+    remotes: () => ({ system: 'prod-box', label: 'Prod box', state: 'not-enumerable', reason: 'does not advertise' }),
+  });
+  await open();
+  await choose('prod-box');
+  assert.equal($('np-remote-select').hidden, true);
+  assert.equal($('np-remote').hidden, false);
+  assert.equal($('np-remote-note').textContent, '');
+});
+
+// PINS failure ≠ empty in the dialog: a failed enumeration — reported by the
+// server, or a request that never got a state back — keeps free text and says
+// why, rather than offering an empty dropdown.
+test('a failed enumeration keeps free text and says why', async (t) => {
+  await t.test('a failed state names its reason', async () => {
+    const { open, choose } = await setup({
+      remotes: () => ({ system: 'prod-box', label: 'Prod box', state: 'failed', reason: 'the provider is down', code: 'SYSTEM_UNREACHABLE' }),
+    });
+    await open();
+    await choose('prod-box');
+    assert.equal($('np-remote-select').hidden, true);
+    assert.equal($('np-remote').hidden, false);
+    assert.match($('np-remote-note').textContent, /Could not list the remotes of system 'prod-box' \(the provider is down\)/);
+  });
+  await t.test('a non-OK response names its status', async () => {
+    const { open, choose } = await setup(); // the 503 catch-all
+    await open();
+    await choose('prod-box');
+    assert.equal($('np-remote-select').hidden, true);
+    assert.equal($('np-remote').hidden, false);
+    assert.match($('np-remote-note').textContent, /\(HTTP 503\)/);
+  });
+});
+
+// PINS empty ≠ not-enumerable: a provider configured for nothing still gets
+// the dropdown — placeholder and Other… only — and the note says so.
+test('an empty list offers only Other… and says so', async () => {
+  const { open, choose } = await setup({ remotes: () => LISTED() });
+  await open();
+  await choose('prod-box');
+  assert.equal($('np-remote-select').hidden, false);
+  assert.deepEqual(optionTexts(), ['— choose a remote —', 'Other…']);
+  assert.match($('np-remote-note').textContent, /lists no configured remotes right now/);
+});
+
+// PINS Other…: it reveals the free-text field, and what is typed there is what
+// is posted.
+test('Other… reveals the free-text field and posts what is typed', async () => {
+  const { window, open, choose, pickOther, submit, posts } = await setup({ remotes: () => LISTED('ctr-a') });
+  await open();
+  $('np-name').value = 'demo';
+  await choose('prod-box');
+  await pickOther();
+  assert.equal($('np-remote').hidden, false);
+  $('np-remote').value = ' ctr-z ';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  $('np-system-path').value = '/srv/demo';
+  await submit();
+  assert.deepEqual(posts.at(-1), { name: 'demo', system: 'prod-box', systemPath: '/srv/demo', remoteId: 'ctr-z' });
+});
+
+// PINS the refusal: with a dropdown up, a remote has to be chosen — the
+// placeholder, or Other… left blank, keeps the dialog open with nothing sent.
+test('the placeholder, or Other… left blank, is refused in the dialog', async (t) => {
+  for (const [title, act, message] of [
+    ['the placeholder', async () => {}, /choose a remote on 'prod-box'/],
+    ['Other… left blank', async (d) => d.pickOther(), /type a remote for 'prod-box', or pick a listed one/],
+  ]) {
+    await t.test(title, async () => {
+      const d = await setup({ remotes: () => LISTED('ctr-a') });
+      await d.open();
+      $('np-name').value = 'demo';
+      await d.choose('prod-box');
+      $('np-system-path').value = '/srv/demo';
+      await act(d);
+      await d.submit();
+      assert.equal(d.posts.length, 0, 'nothing was posted');
+      assert.match($('np-error').textContent, message);
+      assert.equal(d.dlg.open, true, 'the dialog reopens on the field to fix');
+    });
+  }
+});
+
+// PINS THE STALE-ANSWER DROP, one conjunct per subtest. An answer is applied
+// only while it is the latest ask AND its system is still the one chosen.
+test('a late answer for a previously chosen system is dropped', async (t) => {
+  const TWO = [...SYSTEMS, { id: 'lab', label: 'Lab', managed: false, launch: ['ssh', 'lab'] }];
+
+  // The SEQUENCE conjunct: the late answer is for the very system chosen now,
+  // but an older ask of it — only the ask counter tells them apart.
+  await t.test('an older ask of the system chosen again', async () => {
+    let release;
+    let asks = 0;
+    const { open, choose } = await setup({
+      systems: TWO,
+      remotes: (system) => {
+        if (system !== 'prod-box') return { system, label: 'Lab', state: 'listed', remoteIds: ['lab-1'] };
+        return ++asks === 1 ? new Promise(r => { release = () => r(LISTED('stale-1')); }) : LISTED('fresh-1');
+      },
+    });
+    await open();
+    await choose('prod-box');
+    await choose('lab');
+    await choose('prod-box');
+    assert.deepEqual(optionTexts(), ['— choose a remote —', 'fresh-1', 'Other…']);
+    release();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(optionTexts(), ['— choose a remote —', 'fresh-1', 'Other…'], 'the older answer was dropped');
+  });
+
+  // The SYSTEM conjunct: the choice moved by a value write — no `change`, so no
+  // new ask — and only the chosen-system check stops the answer landing.
+  await t.test('an answer for a system no longer chosen', async () => {
+    let release;
+    const { open, choose, tick } = await setup({
+      systems: TWO,
+      remotes: () => new Promise(r => { release = () => r(LISTED('stale-1')); }),
+    });
+    await open();
+    await choose('prod-box');
+    $('np-system').value = 'lab';
+    release();
+    await tick();
+    assert.equal($('np-remote-select').hidden, true, 'no dropdown for a system that is not chosen');
+    assert.equal($('np-remote-select').options.length, 0);
+  });
+});
+
+// PINS that a remote picked from the dropdown resets the path picker, as typing
+// one does: a list open for the old target closes and its note clears.
+test('choosing a listed remote resets the path picker', async () => {
+  const { open, choose, typePath, pickRemote } = await setup({
+    remotes: () => LISTED('ctr-a', 'ctr-b'),
+    listing: () => ({ ok: true, entries: ['d1'], links: [], truncated: true, max: 9 }),
+  });
+  await open();
+  await choose('prod-box');
+  await pickRemote('ctr-a');
+  await typePath('/srv/d');
+  assert.equal($('np-system-path-completions').hidden, false, 'a list is open before the pick');
+  await pickRemote('ctr-b');
+  assert.equal($('np-system-path-completions').hidden, true);
+  assert.equal($('np-system-path-completions').children.length, 0);
+  assert.equal($('np-system-path-note').textContent, '');
+});
+
+// PINS the local short-circuit on the client: this machine has no named
+// remotes, so choosing it asks the server nothing.
+test('local asks nothing', async () => {
+  const { open, choose, remoteAsks } = await setup({ remotes: () => LISTED('ctr-a') });
+  await open();
+  await choose('prod-box');
+  await choose('local');
+  assert.deepEqual(remoteAsks, ['prod-box']);
+});
+
+// PINS RESET ON REOPEN, for the whole family the dropdown added: an abandoned
+// Other… with text in it must not come back as the next open's state — nor
+// ride out on its POST.
+test('reopening resets the dropdown, Other… and the note', async () => {
+  const { window, dlg, open, choose, pickOther, submit, posts } = await setup({ remotes: () => LISTED('ctr-a') });
+  await open();
+  await choose('prod-box');
+  await pickOther();
+  $('np-remote').value = 'ctr-z';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  $('np-system-path').value = '/srv/demo';
+  $('np-name').value = 'abandoned';
+  dlg.close('cancel');
+
+  await open();
+  assert.equal($('np-remote-select').hidden, true);
+  assert.equal($('np-remote-select').options.length, 0);
+  assert.equal($('np-remote').hidden, false);
+  assert.equal($('np-remote').value, '');
+  assert.equal($('np-remote-note').textContent, '');
+  assert.equal($('np-remote-row').hidden, true);
+  assert.equal($('np-system').value, 'local');
+  assert.equal($('np-system-path').value, '');
+  assert.equal($('np-name').value, '');
+
+  // The reset is what the POST is made of. A value write (no `change`, so no
+  // ask) puts the project on the system: had the dropdown mode survived, this
+  // would be refused for want of a chosen remote rather than posted bare.
+  $('np-name').value = 'demo';
+  $('np-system').value = 'prod-box';
+  $('np-system-path').value = '/srv/demo';
+  await submit();
+  assert.deepEqual(posts.at(-1), { name: 'demo', system: 'prod-box', systemPath: '/srv/demo' });
+
+  await open();
+  $('np-name').value = 'demo';
+  await submit();
+  assert.deepEqual(posts.at(-1), { name: 'demo' });
 });

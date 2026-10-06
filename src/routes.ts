@@ -21,6 +21,7 @@ import {
   getProjectUpstreamStatus, getProjectCommits, setWorktreeLock,
 } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from './systems/registry.ts';
+import { enumerateSystemRemotes } from './systems/remoteEnumeration.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -321,7 +322,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
   // Features the host platform turns off are refused here, before their handlers.
-  r.use(['/settings/systems', '/projects/:name/remote'], requireCapability(capabilities, 'remoteSystems'));
+  r.use(['/settings/systems', '/systems', '/projects/:name/remote'], requireCapability(capabilities, 'remoteSystems'));
   r.use(['/transcribe', '/tts', '/settings/transcribe', '/settings/tts'], requireCapability(capabilities, 'voice'));
   // Plugin management API (GET /, rescan, enable/disable/start/stop/status/
   // version, library list/install) — delegates to the registry/library,
@@ -2055,6 +2056,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       if (!ok) return res.status(404).json({ error: 'system not found' });
       res.json(await systemsState());
     } catch (e) { next(e); }
+  });
+
+  // Which remoteIds a System's provider is configured for — the MCP tool
+  // `enumerate_remotes` answers from the same caller. ALWAYS 200: every
+  // per-System outcome, an unregistered id included, is a state in the body,
+  // so no client can read a failure as an empty list.
+  r.get('/systems/:id/remotes', async (req, res, next) => {
+    try { res.json(await enumerateSystemRemotes(req.params.id)); } catch (e) { next(e); }
   });
 
   // Custom models — a label + the backend's own model id + its REQUIRED native

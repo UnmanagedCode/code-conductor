@@ -40,6 +40,7 @@ import {
 } from '../worktrees.ts';
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
+import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.js';
 // DOM-free formatter shared with the UI question card (public/blocks.js
@@ -56,7 +57,7 @@ import {
 } from './content.ts';
 import {
   renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
-  renderPlaybook,
+  renderPlaybook, renderRemoteEnumeration,
 } from './readRenderers.ts';
 import { pageInstanceEvents, pagePersistedEvents } from '../eventArchive.ts';
 import { indexDiffLines, paginateDiff, capPathList } from './diffPaging.ts';
@@ -2962,6 +2963,15 @@ export async function bashProject({ project, worktree, command, timeout }: {
   });
 
   return bashPayload({ project, worktree: wtName, cwd }, r);
+}
+
+// Which remoteIds registered Systems are configured for. The same caller as
+// `GET /api/systems/:id/remotes`; every per-System outcome is a block in the
+// text, so nothing here throws for a System that could not be enumerated.
+export async function enumerateRemotes({ system }: { system?: string }) {
+  return textResult(renderRemoteEnumeration(
+    system ? [await enumerateSystemRemotes(system)] : await enumerateAllRemotes(),
+  ));
 }
 
 // Run a shell command on a registered system addressed DIRECTLY — no project in

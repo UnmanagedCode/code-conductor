@@ -107,8 +107,8 @@ async function setup({ enforcement } = {}) {
     conductorId,
     call: (name, args) => callAs(conductorId, name, args),
     callAs,
-    // The recon read tools and describe_playbook's success path return a
-    // plain-text rendering, not JSON.
+    // The recon read tools, enumerate_remotes and describe_playbook's success
+    // path return a plain-text rendering, not JSON.
     callText: (name, args) => callRawAs(conductorId, name, args),
     async spawnWorker(args) {
       const out = await callAs(conductorId, 'spawn_instance', args);

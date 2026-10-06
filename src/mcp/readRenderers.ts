@@ -1,6 +1,7 @@
 // Per-tool plain-text renderers for the MCP tools whose whole result is text:
 // the five recon read tools (list_projects, list_worktrees, list_sessions,
-// describe_session, project_status) plus describe_playbook.
+// describe_session, project_status) plus describe_playbook and
+// enumerate_remotes.
 //
 // The rendering is the tool's ENTIRE result — there is no JSON channel beside
 // it (src/mcp/content.ts textResult). So the bar is: every fact a conductor acts
@@ -57,6 +58,7 @@ import { jobLine, type BackgroundJob } from '../backgroundJobs.ts';
 // The one definition of "resuming this lands ungated" — shared with the resume
 // path itself so the flag and the behaviour cannot drift.
 import { resumesHot } from '../sessionModes.ts';
+import type { RemoteEnumeration } from '../systems/remoteEnumeration.ts';
 
 type Row = Record<string, unknown>;
 
@@ -607,4 +609,24 @@ export function renderPlaybook(playbook: unknown): string {
     lines.push(...describedBlock('description', edges[i].description, 4));
   });
   return lines.join('\n');
+}
+
+// ---------- enumerate_remotes ----------
+
+// One block per System. The three states are worded apart on purpose: an
+// empty list ("no configured remotes"), a System that cannot be asked ("not
+// enumerable") and a failed ask ("enumeration failed") are three different
+// answers, and the last two never print an id line.
+export function renderRemoteEnumeration(entries: RemoteEnumeration[]): string {
+  const blocks = entries.map((e) => {
+    const head = `${e.system} · ${e.label}`;
+    if (e.state === 'not-enumerable') return [head, `  not enumerable — ${e.reason}`];
+    if (e.state === 'failed') {
+      return [head, `  enumeration failed${e.code ? ` [${e.code}]` : ''} — ${e.reason}`];
+    }
+    const n = e.remoteIds.length;
+    if (n === 0) return [head, '  enumerable — no configured remotes right now'];
+    return [head, `  enumerable — ${n} remote${n === 1 ? '' : 's'}`, ...indent(e.remoteIds, 4)];
+  });
+  return block(heading('SYSTEMS', entries.length), ...blocks.flatMap(b => ['', b]));
 }
