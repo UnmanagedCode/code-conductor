@@ -978,15 +978,24 @@ test('an unrecognised field on a remoteDescriptor is ignored, not an error', asy
 // is set.
 const LISTED = [...new Set(['a', 'b', ...(conformanceRemoteId() === null ? [] : [conformanceRemoteId()])])].sort();
 
-// PINS THE MEMBERSHIP RULE: the list is exactly the set of ids a request would
-// not refuse ENOREMOTE — each listed id routes to its own target, and an id
-// outside it refuses. Also that the frame, naming no remote, is ANSWERED by a
-// `remotes` provider rather than refused ENOREMOTE by its routing gate.
+// PINS CONFIGURED MEMBERSHIP (§2.2): the list is exactly the ids the launch
+// configured — the `--remote` ids — and an id outside them refuses
+// ENOREMOTE, a configuration refusal. Each listed id is also routed to its
+// own target; that holds because §10's launch surface obliges a provider to
+// serve every `--remote` target and each root is a directory this suite
+// made, not because membership promises an operation succeeds. Also that
+// the frame, naming no remote, is ANSWERED by a `remotes` provider rather
+// than refused ENOREMOTE by its routing gate.
 //
-// NOT CLAIMING: that the list and the routing are read off one process. The
-// enumeration runs on a second connection launched with the same argv, whose
-// served set the argv decides.
-test('listRemotes enumerates exactly the targets that do not refuse ENOREMOTE', async (t) => {
+// NOT CLAIMING: that a configured target the provider cannot reach stays
+// listed. Every target here is reachable, so a provider that lists only
+// what it can reach passes too. No portable launch flag makes a target
+// unreachable, and the reference provider's routing reads only its argv, so
+// it has no reachability refusal to exhibit (§10). Nor that the list and the
+// routing are read off one process: the enumeration runs on a second
+// connection launched with the same argv, whose configured set the argv
+// decides.
+test('listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE', async (t) => {
   await withRemotes(async (sys, { rootA, rootB }) => {
     const conn = new ProviderConnection({
       launch: { argv: providerArgv(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`]) },
@@ -996,21 +1005,21 @@ test('listRemotes enumerates exactly the targets that do not refuse ENOREMOTE', 
       const verdict = remoteListingVerdict(hs.capabilities);
       if (verdict !== VERIFY_LISTING) { t.skip(verdict); return; }
       assert.equal(hs.capabilities.remoteListing, true,
-        'a provider serving named targets it can enumerate advertises remoteListing');
+        'a provider serving named targets whose configured set it can list completely advertises remoteListing');
       const { id, frame } = await listRemotesRaw(conn);
       assert.equal(frame.type, 'remoteList',
         `listRemotes was answered ${frame.type} ${frame.code ?? ''} (${frame.message ?? ''}) — a frame naming no remote is not refused for naming none`);
       assert.equal(frame.id, id, 'the answer is addressed to the request');
       const read = readRemoteList(frame);
       assert.equal(read.ok, true, `cc would not believe this remoteList: ${read.reason}`);
-      assert.deepEqual([...read.remoteIds].sort(), LISTED, 'exactly the targets the provider was launched to serve');
+      assert.deepEqual([...read.remoteIds].sort(), LISTED, 'exactly the configured targets — the --remote ids');
       for (const listed of read.remoteIds) {
         // `/` is the cwd every provider MUST accept (§7).
         const r = await sys.bindRemote(listed).exec({ shell: 'echo "$CC_REMOTE"' }, { cwd: '/' });
         assert.equal(r.stdout.trim(), listed, `listed id ${listed} routes to its own target`);
       }
       await assert.rejects(() => sys.bindRemote('ghost').readFile(path.join(rootA, 'anything')),
-        (e) => expectCode(e, 'ENOREMOTE', 'a request naming an id the list does not carry'));
+        (e) => expectCode(e, 'ENOREMOTE', 'a request naming an id the configuration does not carry'));
     } finally { conn.dispose(); }
   });
 });
@@ -1105,7 +1114,7 @@ test('a provider that does not advertise remoteListing skips the enumeration row
     'a third-party provider that advertises it is held to them');
   assert.equal(remoteListingVerdict({ remoteListing: false }, false), skip);
   assert.equal(remoteListingVerdict({ remotes: true, remoteListing: false }, false), skip,
-    'a provider serving named targets that cannot enumerate them stays conformant');
+    'a provider serving named targets whose configured set it cannot list completely stays conformant');
 });
 
 test('a write above the protocol cap is refused before a byte reaches the wire', async () => {
