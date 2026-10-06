@@ -39,9 +39,9 @@
 //     the whole suite. Its fallback is proved by tests/systems-mirror-fallback.test.mjs
 //     and by the `remoteDescriptors:false` row of the conformance suite.
 //   * `remoteListing` rides row 1 with `remotes` — the reference provider
-//     advertises it whenever it serves named targets — and is never exercised
-//     there, because no cc caller sends `listRemotes`. Its rows are the
-//     conformance suite's.
+//     advertises it whenever it serves named targets — but the application
+//     never sends `listRemotes` in a row. The rows that exercise it are the
+//     conformance suite's, which run inside every row.
 //
 // WHAT THE FOLD COSTS, so it is not discovered by surprise: no configuration
 // here now runs `processGroupSignal:true` + `remotes:false` together. That cell
