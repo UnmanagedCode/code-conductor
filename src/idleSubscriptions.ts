@@ -63,6 +63,7 @@
 import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
 import { humanizeDuration } from './duration.ts';
+import { backgroundJobsNote } from './backgroundJobs.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 import { askFactsOfEvent } from './awaitingUser.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
@@ -151,6 +152,9 @@ interface DeliverOpts {
   // The target's CLI exited on its own mid-turn (onTargetExit). Carries the
   // sessionId because a held wake can outlive the target's byId entry. Never folded.
   exited?: { sessionId: string | null; code: number | null; signal: string | null };
+  // The target's still-running background Bash jobs, rendered at build time
+  // (backgroundJobsNote). Set by deliver() itself, never by a caller.
+  jobsNote?: string | null;
 }
 
 // The wording for a declined renewal request, prefixed into the wake stub's
@@ -991,9 +995,14 @@ export class IdleSubscriptionHub {
       const note = opts?.note ?? this._takeDecline(targetInstanceId, callerInstanceId);
       try {
         if (!caller.proc) return;
+        // The jobs live NOW, at build time — a deferred wake lists what is still
+        // running when it finally goes out. A heartbeat carries none: the wake it
+        // stands in for will list them.
+        const jobsNote = opts?.timedOut ? null : backgroundJobsNote(targetSessionId,
+          this.manager.byId.get(targetInstanceId)?.backgroundJobs ?? [], Date.now());
         const stub = fold
-          ? await this._buildFoldedStub(targetSessionId, note)
-          : this._plainStub(targetSessionId, { ...opts, note });
+          ? await this._buildFoldedStub(targetSessionId, note, jobsNote)
+          : this._plainStub(targetSessionId, { ...opts, note, jobsNote });
         // `internal:true` — this is an orchestrator-injected wake, not a user
         // takeover, so it must NOT cancel a pending overage auto-resume armed on
         // the caller (an overage-stopped conductor still gets woken when its
@@ -1069,17 +1078,20 @@ export class IdleSubscriptionHub {
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to inspect the result.`;
     const prefix = [opts?.note, opts?.stale ? STALE_WAKE_NOTE : null].filter(Boolean).join(' ');
-    return markPlainStub(prefix ? `${prefix} ${summary}` : summary);
+    const text = prefix ? `${prefix} ${summary}` : summary;
+    return markPlainStub(opts?.jobsNote ? `${text}\n${opts.jobsNote}` : text);
   }
 
   // The folded stub — reuses buildRecentMessages (the SAME selection/bonding a
   // default get_recent_messages call runs) and flattens it inline so the caller
   // doesn't need the follow-up MCP round-trip. Falls back to the plain stub on a
   // soft-refusal (e.g. the worker went away between turn_end and delivery).
-  async _buildFoldedStub(targetSessionId: string, note: string | null = null): Promise<string> {
+  async _buildFoldedStub(
+    targetSessionId: string, note: string | null = null, jobsNote: string | null = null,
+  ): Promise<string> {
     const r = await buildRecentMessages({ sessionId: targetSessionId }, { instances: this.manager });
-    if ('soft' in r) return this._plainStub(targetSessionId, { note });
-    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note });
+    if ('soft' in r) return this._plainStub(targetSessionId, { note, jobsNote });
+    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note, jobsNote });
   }
 
   // Does this target have at least one ARMED wake on it — i.e. is someone due a

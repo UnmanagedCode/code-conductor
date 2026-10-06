@@ -925,6 +925,8 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   cursor: pointer; list-style: none; color: var(--muted);
   display: flex; align-items: baseline; gap: 0; word-break: break-word;
 }
+/* A wake summary can end in a background-jobs block, one job per line. */
+.block.wake > summary, .block.wake.plain { white-space: pre-line; }
 .block.wake > summary::-webkit-details-marker, .block.renew-seed > summary::-webkit-details-marker,
 .block.forward-frame > summary::-webkit-details-marker, .block.compaction > summary::-webkit-details-marker { display: none; }
 .block.wake > summary::before, .block.renew-seed > summary::before, .block.forward-frame > summary::before,

@@ -53,6 +53,7 @@ import {
   DASH, block, dash, deviations, heading, indent, table, trunc, ts,
   type DeviantSpec,
 } from './textRender.ts';
+import { jobLine, type BackgroundJob } from '../backgroundJobs.ts';
 // The one definition of "resuming this lands ungated" — shared with the resume
 // path itself so the flag and the behaviour cannot drift.
 import { resumesHot } from '../sessionModes.ts';
@@ -216,9 +217,12 @@ function contextLine(r: Row): string {
 
 function instanceRows(rows: Row[]): Array<string | string[]> {
   const parts: Array<string | string[]> = [];
+  const now = Date.now();
   rows.forEach((r, i) => {
+    const jobs = (r.backgroundJobs ?? []) as BackgroundJob[];
     const lines: string[] = [
-      `status ${dash(r.status)}   display ${dash(r.displayStatus)}   agents ${dash(r.activeAgentTasks ?? 0)}   queued ${dash(r.queuedCount ?? 0)}   awaiting-wake ${r.awaitingWake ? 'yes' : 'no'}`,
+      `status ${dash(r.status)}   display ${dash(r.displayStatus)}   agents ${dash(r.activeAgentTasks ?? 0)}   jobs ${jobs.length}   queued ${dash(r.queuedCount ?? 0)}   awaiting-wake ${r.awaitingWake ? 'yes' : 'no'}`,
+      ...jobs.map(j => `job ${jobLine(j, now)}`),
       `project ${dash(r.project)}   worktree ${worktreeName(r.worktree)}`,
       `cwd ${dash(r.cwd)}`,
       `mode ${dash(r.mode)}   effort ${dash(r.effort)}   thinking ${dash(r.thinking)}   model ${dash(r.backend)}/${dash(r.model)}`,

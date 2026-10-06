@@ -34,6 +34,7 @@ export function sessionFromInstance(inst) {
     instanceMode: inst.mode,
     instanceTemp: !!inst.temp,
     instanceAwaitingWake: !!inst.awaitingWake,
+    instanceWaitingOnJob: !!inst.waitingOnJob,
     conducted: !!inst.conducted,
     ownerSessionId: inst.ownerSessionId ?? null,
     playbook: inst.playbook ?? null,
@@ -65,6 +66,7 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
       instanceStatus: null,
       instanceDisplayStatus: null,
       instanceAwaitingWake: false,
+      instanceWaitingOnJob: false,
       // Instance-only: a dead conductor is never waiting on you, whatever
       // its disk row reports.
       awaitingUser: null,
@@ -88,6 +90,7 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
     row.instanceStatus = inst.status;
     row.instanceDisplayStatus = inst.displayStatus ?? null;
     row.instanceAwaitingWake = !!inst.awaitingWake;
+    row.instanceWaitingOnJob = !!inst.waitingOnJob;
     row.awaitingUser = inst.awaitingUser ?? null;
     row.awaitingUserSource = inst.awaitingUserSource ?? null;
     row.instanceTemp = !!inst.temp;

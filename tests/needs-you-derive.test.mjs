@@ -241,3 +241,45 @@ test('topLevelEntries excludes conducted workers and dead sessions, and lists co
   const conductors = deriveConductors({ instances }).live;
   assert.deepEqual(sids(N.topLevelEntries({ conductors, instances })), ['C', 'H2', 'H1']);
 });
+
+// Background Bash jobs: `waitingOnJob` (list()'s display-only tree flag) holds an
+// idle session out of Finished exactly as a held wake does, and reads "on a job".
+test('waitingOn: worker beats job, and only an idle session waits on either', () => {
+  assert.equal(N.waitingOn('idle', true, false), 'worker');
+  assert.equal(N.waitingOn('idle', false, true), 'job');
+  assert.equal(N.waitingOn('idle', true, true), 'worker', 'a held wake wins');
+  assert.equal(N.waitingOn('idle', false, false), null);
+  for (const s of ['turn', 'running', 'spawning', 'exited']) {
+    assert.equal(N.waitingOn(s, true, true), null, s);
+  }
+});
+
+test('an idle conductor waiting on a job is running, not finished, and reads "on a job"', () => {
+  const g = strip([
+    cond('J', { status: 'idle', waitingOnJob: true }),
+    cond('B', { status: 'idle', waitingOnJob: true, awaitingWake: true }),
+    cond('F', { status: 'idle', waitingOnJob: false }),
+  ]);
+  assert.deepEqual(groupOf(g, 'J'), ['running']);
+  assert.deepEqual(groupOf(g, 'F'), ['finished']);
+  const reason = (sid) => N.entryReason(g.running.find(e => e.sessionId === sid), 'running');
+  assert.equal(reason('J'), 'on a job');
+  assert.equal(reason('B'), 'on a worker', 'both flags: the held wake wins');
+});
+
+test('a hand-spawned idle session waiting on a job is not finished', () => {
+  const g = strip([handInst('h', { status: 'idle', waitingOnJob: true }), handInst('f', { status: 'idle' })]);
+  assert.deepEqual(groupOf(g, 'h'), [], 'running lists conductors only, and it is not finished');
+  assert.deepEqual(groupOf(g, 'f'), ['finished']);
+});
+
+test('a non-idle session with waitingOnJob never reads "on a job"', () => {
+  const e = (o) => ({ status: 'idle', awaitingWake: false, waitingOnJob: true, awaitingUser: null, awaitingUserSource: null, ...o });
+  assert.equal(N.entryReason(e({ status: 'turn' }), 'running'), 'working');
+  assert.equal(N.entryReason(e({ status: 'running' }), 'running'), 'working');
+  assert.equal(N.runLabel('running', false, true), 'running');
+  assert.equal(N.runLabel('idle', false, true), 'on a job');
+  assert.equal(N.runLabel('idle', true, true), 'on a worker');
+  assert.equal(N.needsYouTitle(e({ awaitingUser: 'plan', awaitingUserSource: 'tool' })), 'waiting on you (plan approval) · on a job');
+  assert.equal(N.stripGroupOf({ live: true, status: 'idle', awaitingWake: false, waitingOnJob: true, awaitingUser: null }), 'running');
+});

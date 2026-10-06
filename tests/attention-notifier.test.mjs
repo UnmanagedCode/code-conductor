@@ -125,3 +125,18 @@ test('a live ask notifies as waiting with the ask wording', async () => {
   notifier.observe([done('s1', { liveAsks: 1, awaitingUser: 'plan', awaitingUserSource: 'tool' })]);
   assert.deepEqual(pings(shown).map(n => n.title), ['❓ proj — waiting on you (plan approval)']);
 });
+
+// A turn end while a background job is still running keeps the session out of
+// Finished (waitingOnJob), so it is announced once the job clears — not at the
+// turn end, and not twice.
+test('a turn end while waiting on a background job notifies only when the job clears', async () => {
+  const { notifier, shown } = await rig({ activeSid: 's2' });
+  notifier.observe([inst('s1')]);
+  notifier.observe([done('s1', { waitingOnJob: true })]);
+  assert.deepEqual(pings(shown), [], 'no finished while the job runs');
+  notifier.observe([done('s1', { waitingOnJob: false })]);
+  assert.equal(pings(shown).length, 1, 'finished once the job clears');
+  assert.equal(pings(shown)[0].title, '✓ proj — finished');
+  notifier.observe([done('s1', { waitingOnJob: false })]);
+  assert.equal(pings(shown).length, 1, 'and only once');
+});

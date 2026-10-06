@@ -112,7 +112,7 @@ export function buildTools(): Tool[] {
         'project\'s main checkout first, then its worktrees. A group header carries its branch, ' +
         'ahead/behind, and `live N · inactive N · archived N`. ' +
         'Each LIVE worker summary is ' +
-        '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
+        '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, backgroundJobs, mode, effort, thinking, ' +
         'backend, model, contextTokens, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
@@ -126,8 +126,9 @@ export function buildTools(): Tool[] {
         '`playbook`/`stage` say where the session sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +
         '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
-        '`displayStatus` reads `running` while an idle worker still has background subagents — ' +
-        'read it, not `status`, to decide whether work is actually finished. ' +
+        '`displayStatus` reads `running` while an idle worker still has background subagents, and ' +
+        '`backgroundJobs` lists the background Bash jobs it still has running (each one\'s exit re-invokes it) — ' +
+        'read both, not `status`, to decide whether work is actually finished. ' +
         '`contextTokens` is the context in use — the latest API call\'s prompt — and `contextWindowTokens` the model\'s capacity, in tokens; either is null when unknown (`contextTokens` until a call measures it, including after a prune, compaction, renewal or model switch); after a live switch to an unrecognised model `contextWindowTokens` stays the previous model\'s. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
         '`rotationReason` says whether the session\'s context was last reset by its own ' +

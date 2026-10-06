@@ -21,14 +21,17 @@ export const WAKE_BODY_SEP = '\n[[cc:wake-body]]\n';
 // already inline; the body is the flattened get_recent_messages payload. An
 // optional `note` (server-side wording, e.g. a declined renewal request) is
 // prefixed into the summary, so it lands in the always-visible line rather than
-// the collapsed body.
-export function buildWakeStub({ targetSessionId, payloadText, note = null }) {
+// the collapsed body. An optional `jobsNote` (the worker's still-running
+// background jobs) is appended to the summary on its own lines, for the same
+// reason.
+export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsNote = null }) {
   const summary =
     (note ? `${note} ` : '') +
     `Worker \`${targetSessionId}\` finished its turn. ` +
     `Its recent output is folded in below (equivalent to a default ` +
     `\`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` call), ` +
-    `so you do NOT need to call get_recent_messages again — read it and decide the next step.`;
+    `so you do NOT need to call get_recent_messages again — read it and decide the next step.` +
+    (jobsNote ? `\n${jobsNote}` : '');
   return `${WAKE_CALLBACK_MARKER}${summary}${WAKE_BODY_SEP}${payloadText}`;
 }
 

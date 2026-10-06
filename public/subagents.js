@@ -5,7 +5,7 @@
 // both arrive via the existing `instances` hint → refreshInstances() (the hint
 // also fires on a ledger spawn/transition, not just a status flip).
 
-import { runLabel } from './needsYou.js';
+import { runLabel, waitingOn } from './needsYou.js';
 
 export class SubagentPanel {
   constructor(host) {
@@ -39,8 +39,9 @@ export class SubagentPanel {
       const li = document.createElement('li');
       li.className = `task-row ${this._rowClass(w)}`;
       // An idle worker still waiting on workers of its own is busy for its
-      // parent's purposes (the parent's wake is held), so it reads as running.
-      if (this._awaiting(w)) li.title = runLabel(w.displayStatus, true);
+      // parent's purposes (the parent's wake is held), so it reads as running;
+      // so does one with a background job still running on it or below it.
+      if (this._awaiting(w)) li.title = runLabel(w.displayStatus, w.awaitingWake, w.waitingOnJob);
 
       const marker = document.createElement('span');
       marker.className = 'task-marker';
@@ -82,7 +83,7 @@ export class SubagentPanel {
   }
 
   _awaiting(w) {
-    return w.displayStatus === 'idle' && !!w.awaitingWake;
+    return waitingOn(w.displayStatus, w.awaitingWake, w.waitingOnJob) != null;
   }
 
   _rowClass(w) {

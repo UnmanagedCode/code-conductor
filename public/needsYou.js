@@ -8,14 +8,27 @@
 
 import { isLiveStatus, conductorTitle } from './conductors.js';
 
+// What an idle session is still waiting on: 'worker' (a held wake — it owns a
+// worker whose turn is still running), 'job' (a running background Bash job on
+// it or on a live session it owns), or null. A worker wins: that wait is the one
+// that will wake it. Only an idle session can be waiting; any other status
+// already reads as busy or dead.
+export function waitingOn(status, awaitingWake, waitingOnJob) {
+  if (status !== 'idle') return null;
+  if (awaitingWake) return 'worker';
+  return waitingOnJob ? 'job' : null;
+}
+
+const WAITING_LABEL = { worker: 'on a worker', job: 'on a job' };
+
 // Which strip group an entry sits in, or null for none. `status` is the status
 // the dot renders (displayStatus over status). A sticky awaitingUser wins over
 // every run state: a conductor re-invoked by a worker callback is running AND
 // waiting on you, and is listed once, under Waiting.
-export function stripGroupOf({ live, status, awaitingWake, awaitingUser }) {
+export function stripGroupOf({ live, status, awaitingWake, waitingOnJob, awaitingUser }) {
   if (!live) return null;
   if (awaitingUser) return 'waiting';
-  if (status === 'idle' && !awaitingWake) return 'finished';
+  if (status === 'idle' && !waitingOn(status, awaitingWake, waitingOnJob)) return 'finished';
   return 'running';
 }
 
@@ -26,8 +39,8 @@ export function askLabel(kind, source) {
 }
 
 // The run state alone.
-export function runLabel(status, awaitingWake) {
-  if (status === 'idle') return awaitingWake ? 'on a worker' : 'idle';
+export function runLabel(status, awaitingWake, waitingOnJob) {
+  if (status === 'idle') return WAITING_LABEL[waitingOn(status, awaitingWake, waitingOnJob)] ?? 'idle';
   if (status === 'turn' || status === 'running') return 'running';
   return status;
 }
@@ -36,15 +49,15 @@ export function runLabel(status, awaitingWake) {
 // `unread` (a Finished entry with an unseen turn end) is read in Finished only.
 export function entryReason(entry, group, unread = false) {
   if (group === 'waiting') {
-    return `${askLabel(entry.awaitingUser, entry.awaitingUserSource)} · ${runLabel(entry.status, entry.awaitingWake)}`;
+    return `${askLabel(entry.awaitingUser, entry.awaitingUserSource)} · ${runLabel(entry.status, entry.awaitingWake, entry.waitingOnJob)}`;
   }
-  if (group === 'running') return entry.awaitingWake ? 'on a worker' : 'working';
+  if (group === 'running') return WAITING_LABEL[waitingOn(entry.status, entry.awaitingWake, entry.waitingOnJob)] ?? 'working';
   return unread ? 'turn ended · unread' : 'turn ended';
 }
 
 // The tooltip of a ringed dot.
-export function needsYouTitle({ status, awaitingWake, awaitingUser, awaitingUserSource }) {
-  return `waiting on you (${askLabel(awaitingUser, awaitingUserSource)}) · ${runLabel(status, awaitingWake)}`;
+export function needsYouTitle({ status, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource }) {
+  return `waiting on you (${askLabel(awaitingUser, awaitingUserSource)}) · ${runLabel(status, awaitingWake, waitingOnJob)}`;
 }
 
 function conductorEntry(c) {
@@ -60,6 +73,7 @@ function conductorEntry(c) {
     live: isLiveStatus(c.instanceStatus),
     status: c.instanceDisplayStatus ?? c.instanceStatus,
     awaitingWake: !!c.instanceAwaitingWake,
+    waitingOnJob: !!c.instanceWaitingOnJob,
     awaitingUser: c.awaitingUser ?? null,
     awaitingUserSource: c.awaitingUserSource ?? null,
     autoResumeAt: c.autoResumeAt ?? null,
@@ -82,6 +96,7 @@ function handEntry(inst) {
     live: isLiveStatus(inst.status),
     status: inst.displayStatus ?? inst.status,
     awaitingWake: !!inst.awaitingWake,
+    waitingOnJob: !!inst.waitingOnJob,
     awaitingUser: inst.awaitingUser ?? null,
     awaitingUserSource: inst.awaitingUserSource ?? null,
     autoResumeAt: inst.autoResumeAt ?? null,

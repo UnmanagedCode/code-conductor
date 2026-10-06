@@ -40,7 +40,7 @@ function rig() {
     const calls = [];
     const inst = {
       id, sessionId: `${id}-s`, project: 'p', proc: { pid: 1 }, status: 'idle',
-      acceptsMidTurnSteering: true, steerPending: false, activeAgentTaskCount: 0,
+      acceptsMidTurnSteering: true, steerPending: false, activeAgentTaskCount: 0, backgroundJobs: [],
       taskNotificationPending: false, rotationPending: false, idleWindowDirty: false,
       _stopInterruptedTurn: false, turnForceAborted: false,
       consumeTurnForceAborted() { const was = inst.turnForceAborted; inst.turnForceAborted = false; return was; },

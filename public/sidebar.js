@@ -5,7 +5,7 @@ import {
   sessionFromInstance, deriveConductors, conductorTitle, workersOf, conductorChips,
   ownersByPlace, worktreeOwnership, ownerLabel, stageText, isLiveStatus,
 } from './conductors.js';
-import { deriveStrip, isStripEmpty, entryReason, needsYouTitle } from './needsYou.js';
+import { deriveStrip, isStripEmpty, entryReason, needsYouTitle, waitingOn } from './needsYou.js';
 import { unreadBySession } from './unreadMarks.js';
 import { closeActionOf, CLOSE_TITLES } from './closeAction.js';
 
@@ -49,6 +49,7 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
       row.instanceAwaitingWake = !!inst.awaitingWake;
+      row.instanceWaitingOnJob = !!inst.waitingOnJob;
       // Conducted is durable on-disk metadata (row.conducted may already
       // be set from the API). A live conducted instance is authoritative;
       // OR the two so a UI-resumed conducted session stays grouped.
@@ -335,15 +336,17 @@ export class Sidebar {
   // running turn, not because it is done. The accent modifier is the only thing
   // on the row that distinguishes those two, and it stays lit across a
   // heartbeat (a heartbeat reports without consuming the wake), so a conductor
-  // whose worker is hung no longer reads as done. `awaitingUser` adds the
-  // waiting-on-you ring over whatever fill the run state gives, on a live dot
-  // only.
-  _applyDot(dot, { status, awaitingWake, awaitingUser = null, awaitingUserSource = null }) {
-    const awaiting = status === 'idle' && !!awaitingWake;
+  // whose worker is hung no longer reads as done. `waitingOnJob` lights the
+  // same modifier for a running background job on this session or on a live
+  // session it owns. `awaitingUser` adds the waiting-on-you ring over whatever
+  // fill the run state gives, on a live dot only.
+  _applyDot(dot, { status, awaitingWake, waitingOnJob = false, awaitingUser = null, awaitingUserSource = null }) {
+    const on = waitingOn(status, awaitingWake, waitingOnJob);
     const forYou = !!awaitingUser && status !== 'offline' && isLiveStatus(status);
-    dot.className = `dot ${status}${awaiting ? ' awaiting' : ''}${forYou ? ' needs-you' : ''}`;
-    dot.title = forYou ? needsYouTitle({ status, awaitingWake, awaitingUser, awaitingUserSource })
-      : awaiting ? 'idle — waiting on a worker' : status;
+    dot.className = `dot ${status}${on ? ' awaiting' : ''}${forYou ? ' needs-you' : ''}`;
+    dot.title = forYou ? needsYouTitle({ status, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource })
+      : on === 'worker' ? 'idle — waiting on a worker'
+      : on === 'job' ? 'idle — waiting on a background job' : status;
     return dot;
   }
 
@@ -426,6 +429,7 @@ export class Sidebar {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
           status, awaitingWake: session.instanceAwaitingWake,
+          waitingOnJob: session.instanceWaitingOnJob,
         });
       }
       if (k === 'labelcol') {
@@ -1225,7 +1229,7 @@ export class Sidebar {
     reconcileChildren(btn, ['dot', 'title', ...(resumeBadge ? ['resume'] : [])], (k, ex) => {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
-          status: entry.status, awaitingWake: entry.awaitingWake,
+          status: entry.status, awaitingWake: entry.awaitingWake, waitingOnJob: entry.waitingOnJob,
           awaitingUser: entry.awaitingUser, awaitingUserSource: entry.awaitingUserSource,
         });
       }
@@ -1487,7 +1491,7 @@ export class Sidebar {
       if (k === 'dot') {
         return this._applyDot(ex ?? el('span', { class: 'dot' }), {
           status: c.instanceDisplayStatus ?? c.instanceStatus ?? 'offline',
-          awaitingWake: c.instanceAwaitingWake,
+          awaitingWake: c.instanceAwaitingWake, waitingOnJob: c.instanceWaitingOnJob,
           awaitingUser: c.awaitingUser, awaitingUserSource: c.awaitingUserSource,
         });
       }

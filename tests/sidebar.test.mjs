@@ -151,6 +151,39 @@ test('the awaiting modifier is dropped when the armed wake is consumed', async (
   assert.equal(dot.title, 'idle');
 });
 
+// `waitingOnJob` (list()'s display-only flag: a background Bash job on this
+// session or on a live session it owns) lights the same modifier, with its own
+// tooltip; a held wake wins the tooltip; the modifier drops when the job clears.
+test('an idle row waiting on a background job renders the awaiting modifier and names the job', async () => {
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [], sessions: { count: 0, lastActivity: 0 },
+  }]);
+  const inst = (sid, o) => ({ id: `inst-${sid}`, project: 'demo', sessionId: sid, status: 'idle', mode: 'plan', worktree: null, ...o });
+  const dotFor = (sid) => [...root.querySelectorAll('.session-row')]
+    .find(r => r.parentElement?._holder?.session?.sessionId === sid)?.querySelector('.dot');
+
+  sidebar.setInstances([
+    inst('sid-job', { awaitingWake: false, waitingOnJob: true }),
+    inst('sid-both', { awaitingWake: true, waitingOnJob: true }),
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  const job = dotFor('sid-job');
+  assert.ok(job.classList.contains('idle') && job.classList.contains('awaiting'));
+  assert.equal(job.title, 'idle — waiting on a background job');
+  assert.equal(dotFor('sid-both').title, 'idle — waiting on a worker', 'a held wake wins the tooltip');
+
+  sidebar.setInstances([
+    inst('sid-job', { awaitingWake: false, waitingOnJob: false }),
+    inst('sid-both', { awaitingWake: false, waitingOnJob: false }),
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  const cleared = dotFor('sid-job');
+  assert.ok(!cleared.classList.contains('awaiting'), 'the modifier drops when the job clears');
+  assert.equal(cleared.title, 'idle');
+});
+
 test('Sessions subnode renders a synthetic row for a freshly-spawned instance with no on-disk jsonl', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [], // no on-disk sessions
