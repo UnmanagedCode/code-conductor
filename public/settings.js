@@ -53,6 +53,7 @@ export function installSettings({
   const smCustomContextEl = document.getElementById('sm-custom-context');
   const smCustomSteerEl = document.getElementById('sm-custom-steer');
   const smCustomAddEl = document.getElementById('sm-custom-add');
+  const smCustomCancelEl = document.getElementById('sm-custom-cancel');
   const smCustomStatusEl = document.getElementById('sm-custom-status');
   let lastModelsData = null;
   // Backends group elements (the backend registry — Settings → Backends).
@@ -68,6 +69,7 @@ export function installSettings({
   const sbFormStatusEl = document.getElementById('sb-form-status');
   // null = add mode; a backend id = editing that row (mirrors conventionsPanel).
   let sbEditingId = null;
+  let smCustomEditing = null; // {backend, model} of the custom model being edited, else null
   // Systems group elements (the system registry — Settings → Systems).
   const syStatusEl = document.getElementById('sy-status');
   const syListEl = document.getElementById('sy-list');
@@ -1445,8 +1447,9 @@ export function installSettings({
         smCustomBackendEl.appendChild(opt);
       }
       if (substitution.some(b => b.id === prev)) smCustomBackendEl.value = prev;
-      smCustomBackendEl.disabled = !substitution.length;
+      smCustomBackendEl.disabled = !substitution.length || !!smCustomEditing;
     }
+    if (smCustomEditing && !list.some(c => c.backend === smCustomEditing.backend && c.model === smCustomEditing.model)) closeCustomForm();
     if (!smCustomListEl) return;
     const backendLabel = (id) => (backends || []).find(b => b.id === id)?.label || id;
     smCustomListEl.innerHTML = '';
@@ -1467,17 +1470,53 @@ export function installSettings({
       const steer = c.midTurnSteering === false ? ' · no mid-turn steering' : '';
       meta.textContent = `${c.label} — ${c.model} · ${backendLabel(c.backend)}${ctx}${steer}`;
       li.appendChild(meta);
+      const actions = document.createElement('div');
+      actions.className = 'sm-custom-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'btn sm-custom-edit';
+      edit.textContent = 'Edit';
+      edit.addEventListener('click', () => openEditCustomModel(c));
+      actions.appendChild(edit);
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'btn sm-custom-remove';
       rm.textContent = 'Remove';
       rm.addEventListener('click', () => onRemoveCustomModel(c.backend, c.model));
-      li.appendChild(rm);
+      actions.appendChild(rm);
+      li.appendChild(actions);
       smCustomListEl.appendChild(li);
     }
   }
 
-  async function onAddCustomModel() {
+  function closeCustomForm() {
+    smCustomEditing = null;
+    if (smCustomLabelEl) smCustomLabelEl.value = '';
+    if (smCustomBackendEl) smCustomBackendEl.disabled = !smCustomBackendEl.options.length;
+    if (smCustomModelEl) { smCustomModelEl.value = ''; smCustomModelEl.disabled = false; }
+    if (smCustomContextEl) smCustomContextEl.value = '';
+    if (smCustomSteerEl) smCustomSteerEl.checked = true;
+    if (smCustomAddEl) smCustomAddEl.textContent = 'Add';
+    if (smCustomCancelEl) smCustomCancelEl.hidden = true;
+    if (smCustomStatusEl) smCustomStatusEl.textContent = '';
+  }
+
+  // Edit changes label / context / steering only: the (backend, model) pair is
+  // the identity tier bindings and session records name, so both stay locked.
+  function openEditCustomModel(c) {
+    smCustomEditing = { backend: c.backend, model: c.model };
+    if (smCustomLabelEl) smCustomLabelEl.value = c.label;
+    if (smCustomBackendEl) { smCustomBackendEl.value = c.backend; smCustomBackendEl.disabled = true; }
+    if (smCustomModelEl) { smCustomModelEl.value = c.model; smCustomModelEl.disabled = true; }
+    // The raw integer, not fmtCtxTokens: "131k" would save back as 131000.
+    if (smCustomContextEl) smCustomContextEl.value = String(c.contextWindow);
+    if (smCustomSteerEl) smCustomSteerEl.checked = c.midTurnSteering !== false;
+    if (smCustomAddEl) smCustomAddEl.textContent = 'Save';
+    if (smCustomCancelEl) smCustomCancelEl.hidden = false;
+    if (smCustomStatusEl) smCustomStatusEl.textContent = `Editing ${c.label} — backend and model id are fixed`;
+  }
+
+  async function onSaveCustomModel() {
     const label = smCustomLabelEl?.value?.trim();
     const model = smCustomModelEl?.value?.trim();
     const backend = smCustomBackendEl?.value;
@@ -1491,25 +1530,30 @@ export function installSettings({
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Context is required: a positive token count, optionally with a k or m suffix (e.g. 200k, 1m).';
       return;
     }
-    if (smCustomStatusEl) smCustomStatusEl.textContent = 'Adding…';
+    const editing = smCustomEditing;
+    if (smCustomStatusEl) smCustomStatusEl.textContent = editing ? 'Saving…' : 'Adding…';
     if (smCustomAddEl) smCustomAddEl.disabled = true;
     try {
-      const r = await fetch('/api/settings/models/custom', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label, model, backend, contextWindow: ctx, midTurnSteering: smCustomSteerEl ? !!smCustomSteerEl.checked : true }),
-      });
+      const midTurnSteering = smCustomSteerEl ? !!smCustomSteerEl.checked : true;
+      const r = editing
+        ? await fetch(`/api/settings/models/custom/${encodeURIComponent(editing.backend)}/${encodeURIComponent(editing.model)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ label, contextWindow: ctx, midTurnSteering }),
+        })
+        : await fetch('/api/settings/models/custom', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ label, model, backend, contextWindow: ctx, midTurnSteering }),
+        });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      if (smCustomLabelEl) smCustomLabelEl.value = '';
-      if (smCustomModelEl) smCustomModelEl.value = '';
-      if (smCustomContextEl) smCustomContextEl.value = '';
-      if (smCustomSteerEl) smCustomSteerEl.checked = true;
-      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Added.';
+      closeCustomForm();
+      if (smCustomStatusEl) smCustomStatusEl.textContent = editing ? 'Saved.' : 'Added.';
       renderModels(data);
       onModelsChange?.(data);
     } catch (e) {
-      if (smCustomStatusEl) smCustomStatusEl.textContent = `Add failed: ${e.message || e}`;
+      if (smCustomStatusEl) smCustomStatusEl.textContent = `${editing ? 'Save' : 'Add'} failed: ${e.message || e}`;
     } finally {
       if (smCustomAddEl) smCustomAddEl.disabled = false;
     }
@@ -1522,6 +1566,7 @@ export function installSettings({
       const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(backend)}/${encodeURIComponent(model)}`, { method: 'DELETE' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      if (smCustomEditing?.backend === backend && smCustomEditing?.model === model) closeCustomForm();
       renderModels(data);
       onModelsChange?.(data);
     } catch (e) {
@@ -1529,7 +1574,8 @@ export function installSettings({
     }
   }
 
-  smCustomAddEl?.addEventListener('click', onAddCustomModel);
+  smCustomAddEl?.addEventListener('click', onSaveCustomModel);
+  smCustomCancelEl?.addEventListener('click', closeCustomForm);
   smRoleAddEl?.addEventListener('click', onAddRole);
 
   smCompactWindowEnabledEl?.addEventListener('change', () => {
