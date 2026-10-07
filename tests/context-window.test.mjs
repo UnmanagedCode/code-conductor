@@ -2,7 +2,7 @@
 //   - the `claude` catalog declares it per version (src/modelVersions.ts), plus
 //     an optional `launchTag` for builds that need a suffix to reach it —
 //     Sonnet 4.x ships separate 200k/1M builds so it always launches `[1m]`;
-//     Sonnet 5 / Opus / Fable are natively 1M and launch bare; Haiku is 200k.
+//     Sonnet 5 / Opus / Fable are natively 1M and launch bare; Haiku 4.5 is 200k.
 //   - a substitution backend's model declares it on its custom-model row.
 // The number is resolved ONCE server-side from {backend, exact model} and
 // surfaces as `contextWindowTokens`.
@@ -366,7 +366,7 @@ test('a Claude-backed spawn never sets CLAUDE_CODE_AUTO_COMPACT_WINDOW or CLAUDE
   }
 });
 
-test('each Claude model spawns at its ONE native window: Sonnet 5 bare, Sonnet 4.6 tagged, Haiku 200k', async () => {
+test('each Claude model spawns at its ONE native window: Sonnet 5 bare, Sonnet 4.6 tagged, Haiku 4.5 200k', async () => {
   // Sonnet 5 is natively 1M — bare, no tag. (It used to be pinned `[1m]`.)
   const s5 = await spawnAndDump('claude-sonnet-5', { project: 'nat-a' });
   assert.equal(modelFromArgv(s5.argv), 'claude-sonnet-5');
@@ -378,7 +378,7 @@ test('each Claude model spawns at its ONE native window: Sonnet 5 bare, Sonnet 4
   assert.equal(modelFromArgv(s46.argv), 'claude-sonnet-4-6[1m]');
   assert.equal(s46.summary.contextWindowTokens, 1_000_000);
 
-  // Haiku is 200k, bare — the one Claude model that is not 1M.
+  // Haiku 4.5 is 200k, bare — the one Claude model that is not 1M.
   const h = await spawnAndDump('claude-haiku-4-5', { project: 'nat-c' });
   assert.equal(modelFromArgv(h.argv), 'claude-haiku-4-5');
   assert.equal(h.summary.contextWindowTokens, 200_000);
