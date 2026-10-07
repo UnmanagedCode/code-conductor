@@ -4,13 +4,16 @@
 //
 // Focus: the opt-in raw-text channel. A child may return {text, meta?} instead
 // of {result} to have its output emitted as raw, UNESCAPED content blocks. The
-// bridge's job is producing the right payload; where the blocks land in
-// content[] is src/mcp/server.ts's job and is not re-asserted here.
+// bridge's job is producing the right payload. The wire-level tests mount the
+// real MCP router over the same bridge and pin the content[] each body shape
+// produces through the real toolsCall.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import express from 'express';
 import { createMcpBridge } from '../src/plugins/mcpBridge.ts';
-import { isTextPayload } from '../src/mcp/content.ts';
+import { buildMcpRouter } from '../src/mcp/server.ts';
+import { isTextPayload, isTextResult } from '../src/mcp/content.ts';
 
 const PLUGIN_ID = 'testplug';
 
@@ -54,22 +57,47 @@ async function withChild(body, fn) {
   assert.equal(tools[0].name, `${PLUGIN_ID}__run`);
   const call = (args = {}) => tools[0].handler(args, { callerId: null });
 
+  const router = buildMcpRouter({
+    instances: null,
+    pluginHost: { init: async () => {}, toolsFor: () => bridge.toolsFor() },
+    playbookGate: { check: async ({ args }) => ({ args }) },
+  });
+  const app = express();
+  app.use('/mcp', router);
+  const mcpServer = await new Promise(resolve => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const mcpPort = mcpServer.address().port;
+  let rpcId = 0;
+  const callMcp = async (args = {}) => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: ++rpcId, method: 'tools/call',
+        params: { name: `${PLUGIN_ID}__run`, arguments: args },
+      }),
+    });
+    return (await res.json()).result;
+  };
+
   try {
-    await fn({ call, seen, set: v => { current = v; } });
+    await fn({ call, callMcp, seen, set: v => { current = v; } });
   } finally {
+    await new Promise(resolve => mcpServer.close(resolve));
     await new Promise(resolve => server.close(resolve));
   }
 }
 
-test('text as a single string → a text payload with one body, left un-escaped', async () => {
+test('text as a single string with no meta → a text result, left un-escaped', async () => {
   await withChild({ text: 'line one\nline two' }, async ({ call }) => {
     const r = await call();
-    assert.ok(isTextPayload(r), 'result is tagged as a text payload');
-    assert.deepEqual(r.bodies, ['line one\nline two']);
-    assert.equal(r.meta, null, 'omitted meta becomes null');
+    assert.ok(isTextResult(r), 'result is tagged as a text result');
+    assert.ok(!isTextPayload(r), 'no metadata-carrying payload');
+    assert.equal(r.text, 'line one\nline two');
     // The whole point: a real newline survives, rather than being escaped
     // into the two characters \ and n by JSON.stringify.
-    assert.ok(r.bodies[0].includes('\n'));
+    assert.ok(r.text.includes('\n'));
   });
 });
 
@@ -101,8 +129,8 @@ test('{meta, text} carries meta through alongside the bodies', async () => {
 test('sending both result and text is a contract violation that degrades: text wins', async () => {
   await withChild({ result: { x: 1 }, text: 'raw' }, async ({ call }) => {
     const r = await call();
-    assert.ok(isTextPayload(r), 'text takes the payload path');
-    assert.deepEqual(r.bodies, ['raw']);
+    assert.ok(isTextResult(r), 'text takes the text path (single string, no meta)');
+    assert.equal(r.text, 'raw');
     assert.equal(r.result, undefined, 'the ignored result is not smuggled through');
   });
 });
@@ -136,5 +164,47 @@ test('200 + {error} still throws a plain tool error with no HTTP status', async 
     assert.ok(e instanceof Error, 'rejects');
     assert.match(e.message, /boom/);
     assert.equal(e.statusCode, undefined, 'tool-level failure carries no status code');
+  });
+});
+
+const block = text => ({ type: 'text', text });
+
+test('wire: {text} with no meta → exactly one raw text block', async () => {
+  await withChild({ text: 'line one\nline two' }, async ({ callMcp }) => {
+    const r = await callMcp();
+    assert.ok(!r.isError);
+    assert.deepEqual(r.content, [block('line one\nline two')]);
+  });
+});
+
+test('wire: {meta: null, text} → exactly one raw text block', async () => {
+  await withChild({ meta: null, text: 'x' }, async ({ callMcp }) => {
+    const r = await callMcp();
+    assert.ok(!r.isError);
+    assert.deepEqual(r.content, [block('x')]);
+  });
+});
+
+test('wire: {meta, text} keeps the compact-JSON meta block then raw bodies', async () => {
+  await withChild({ meta: { page: 'Intro' }, text: ['first', 'second'] }, async ({ callMcp }) => {
+    const r = await callMcp();
+    assert.ok(!r.isError);
+    assert.deepEqual(r.content, [block('{"page":"Intro"}'), block('first'), block('second')]);
+  });
+});
+
+test('wire: a text list with no meta keeps its null meta block', async () => {
+  await withChild({ text: ['a', 'b'] }, async ({ callMcp }) => {
+    const r = await callMcp();
+    assert.ok(!r.isError);
+    assert.deepEqual(r.content, [block('null'), block('a'), block('b')]);
+  });
+});
+
+test('wire: {result} stays one compact-JSON block', async () => {
+  await withChild({ result: { x: 1 } }, async ({ callMcp }) => {
+    const r = await callMcp();
+    assert.ok(!r.isError);
+    assert.deepEqual(r.content, [block('{"x":1}')]);
   });
 });

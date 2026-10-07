@@ -15,10 +15,12 @@
 // error; 200+{error} maps to a plain tool error with no status code.
 //
 // Additive to that contract: a success body may use {text, meta?} instead
-// of {result} to get raw, UNESCAPED text blocks (see makeHandler below).
+// of {result} to get raw, UNESCAPED text blocks (see makeHandler below): a
+// single string `text` with no `meta` is exactly one raw block; otherwise a
+// compact-JSON `meta` block precedes the raw blocks.
 import { httpError } from '../httpError.ts';
 import { humanizeDuration } from '../duration.ts';
-import { textPayload } from '../mcp/content.ts';
+import { textPayload, textResult } from '../mcp/content.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PluginMcp } from './manifest.ts';
 
@@ -103,12 +105,19 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
       // Opt-in raw-text channel (additive to the pinned contract): instead of
       // `result`, a child may return `text` (one string OR a list of strings)
       // plus optional `meta`, to have them emitted as raw, UNESCAPED content
-      // blocks after a compact-JSON meta block. The child says `text` because
+      // blocks after a compact-JSON meta block — except a single string with
+      // no (or null) `meta`, which is the whole result as exactly one raw block
+      // (textResult). That is decided here because textResult's Symbol tag
+      // can't cross the child's JSON hop and only the bridge sees that `meta`
+      // was omitted. The child says `text` because
       // that channel only ever carries text; textPayload's param is `bodies`
       // because it's generic (file bodies, diffs, prose). `text` wins if both
       // are sent; absent `text` → today's `result` path.
       const rec = body as { text?: unknown; meta?: unknown; result?: unknown };
-      if (rec.text !== undefined) return textPayload(rec.meta ?? null, rec.text);
+      if (rec.text !== undefined) {
+        if (rec.meta == null && typeof rec.text === 'string') return textResult(rec.text);
+        return textPayload(rec.meta ?? null, rec.text);
+      }
       return rec.result;
     };
   }
