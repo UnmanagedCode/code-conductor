@@ -531,10 +531,11 @@ test('Remove on a custom model sends that row\'s backend and model', async () =>
 
 // ── Custom models: Edit ─────────────────────────────────────────────────────
 const MINE = { label: 'Mine', model: 'mine:v1', backend: 'ollama', contextWindow: 131072, midTurnSteering: false };
+const SIBLING = { label: 'Sibling', model: 'sib:v3', backend: 'ollama', contextWindow: 64000, midTurnSteering: true };
 const OTHER = { label: 'Other', model: 'other:v2', backend: 'my-proxy', contextWindow: 300000, midTurnSteering: true };
 
-async function setupEdit(handler) {
-  const payload = modelsPayload({ customModels: [MINE, OTHER] });
+async function setupEdit(handler, customModels = [MINE, OTHER]) {
+  const payload = modelsPayload({ customModels });
   const { impl, calls } = stubFetch(payload, handler);
   const { window, mod } = await setup(impl);
   mod.installSettings({});
@@ -576,7 +577,7 @@ test('saving an edit PATCHes the pair URL with label/contextWindow/midTurnSteeri
     body: { label: 'Mine 2', contextWindow: 200000, midTurnSteering: true },
   }]);
   assert.deepEqual(form(), {
-    label: '', backend: form().backend, model: '', context: '', steer: true,
+    label: '', backend: 'ollama', model: '', context: '', steer: true,
     backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: 'Saved.',
   });
 });
@@ -646,6 +647,42 @@ test('a re-render while editing keeps the backend locked; removing the edited ro
   $('sm-custom-label').value = 'dirty';
   window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')[0].click();
   await tick();
+  const f = form();
+  assert.deepEqual({ ...f, backend: undefined }, {
+    label: '', backend: undefined, model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
+  });
+});
+
+test('removing a different row while editing leaves the edit form open on the edited pair', async () => {
+  const { window, calls, $, editBtn, form, payload } = await setupEdit(call => (call.method === 'DELETE'
+    ? { body: { ...payload, customModels: [MINE] } } : undefined), [MINE, SIBLING]);
+  editBtn(0).click();
+  $('sm-custom-label').value = 'Mine edited';
+  window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')[1].click();
+  await tick();
+  assert.deepEqual(form(), {
+    label: 'Mine edited', backend: 'ollama', model: 'mine:v1', context: '131072', steer: false,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Editing Mine — backend and model id are fixed',
+  });
+  $('sm-custom-add').click();
+  await tick();
+  assert.deepEqual(calls.at(-1), {
+    url: '/api/settings/models/custom/ollama/mine%3Av1', method: 'PATCH',
+    body: { label: 'Mine edited', contextWindow: 131072, midTurnSteering: false },
+  });
+});
+
+test('a re-render whose payload lacks the edited row leaves edit mode without Remove being used', async () => {
+  const { window, calls, $, editBtn, form, payload } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-label').value = 'dirty';
+  payload.customModels = [OTHER]; // removed elsewhere; the next settings load no longer has it
+  window.location.hash = '#';
+  await tick();
+  await openSettings(window);
+  assert.equal(calls.length, 0, 'no Remove / save request was made');
   const f = form();
   assert.deepEqual({ ...f, backend: undefined }, {
     label: '', backend: undefined, model: '', context: '', steer: true,

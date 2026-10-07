@@ -188,8 +188,8 @@ purpose: each closes a distinct route, and none subsumes another.
 — the models selectable for a substitution backend.
 
 - Identity is the `(backend, model)` pair (`model` is the backend's own model id):
-  re-adding a pair updates that row in place, and one model id may be registered on
-  several backends.
+  re-adding a pair replaces that row's values and moves it to the end of the list,
+  and one model id may be registered on several backends.
 - **Edit** (the row button in Settings → Models, or `PATCH /api/settings/models/custom/:backend/:model`)
   changes `label`, `contextWindow` and `midTurnSteering` only, keeping the row's list
   position. The pair is read-only because tier/role bindings and session records name
