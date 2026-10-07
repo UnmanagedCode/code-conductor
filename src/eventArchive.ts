@@ -133,10 +133,13 @@ function normalizeWindow(before: number | null, after: number | null, lastSeq: n
 // nudge per hook, so the id names exactly one. A notified
 // `system`/`task_notification` correlates by its task's tool_use_id AND status:
 // a background Agent may notify more than once per tool use, and the pair is
-// unique within a session. Anything else needs both `msgId` and a numeric
-// `blockIdx`. Returns null when none applies.
+// unique within a session. A model-switch divider correlates by its ledger
+// `switchId`. Anything else needs both `msgId` and a numeric `blockIdx`.
+// Returns null when none applies.
 function correlationKey(ev: UiEvent): string | null {
   if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
+  const switchId = modelSwitchIdOf(ev);
+  if (switchId != null) return `msw ${switchId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (isNotifiedTask(ev) && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${(ev.data as { status?: unknown }).status}`;
   if (typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
@@ -182,7 +185,19 @@ function neverPersisted(ev: UiEvent): boolean {
   // narrowed.
   if (ev.kind !== 'system') return false;
   if (ev.subtype === 'task_notification') return !isNotifiedTask(ev);
+  // A model-switch divider is spliced from the session record's ledger
+  // (src/transcript.ts → replayPersistedText) — persisted, though not in the
+  // jsonl. An identity switch's `model_changed` carries no `switchId` and stays
+  // ring-only.
+  if (modelSwitchIdOf(ev) != null) return false;
   return ev.subtype !== 'soft_interrupted' && ev.subtype !== 'read_nudge';
+}
+
+// The ledger id a restart model switch's divider carries (modelSwitchEvent), or null.
+function modelSwitchIdOf(ev: UiEvent): string | null {
+  if (ev.kind !== 'system' || (ev.subtype !== 'model_changed' && ev.subtype !== 'model_switch_failed')) return null;
+  const id = (ev.data as { switchId?: unknown } | undefined)?.switchId;
+  return typeof id === 'string' && id ? id : null;
 }
 
 function isNotifiedTask(ev: UiEvent): boolean {

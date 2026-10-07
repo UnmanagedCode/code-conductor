@@ -226,14 +226,14 @@ export async function verifyUserPrompt({ place, sessionId, userMessageIndex, exp
 
 // Truncate <cwd>/<sessionId>.jsonl so that everything from the Nth pure
 // user-prompt line onward is dropped. Returns { droppedText, droppedLineCount,
-// remainingLineCount, lastSurvivingUuid }.
+// remainingLineCount, lastSurvivingUuid, survivingUuids }.
 //
 // After the rewrite, appends a fresh last-prompt / permission-mode metadata
 // pair pointing at lastSurvivingUuid (skipped when N==0 — the empty-history
 // case where no leaf exists to anchor the picker).
 export async function truncateSessionAtUserMessage({ place, sessionId, userMessageIndex, expectedText, mode }: {
   place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string; mode: string;
-}): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null }> {
+}): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null; survivingUuids: string[] }> {
   if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
@@ -260,6 +260,7 @@ export async function truncateSessionAtUserMessage({ place, sessionId, userMessa
     droppedLineCount: dropped.length,
     remainingLineCount: prefix.length,
     lastSurvivingUuid,
+    survivingUuids: prefix.flatMap(e => (typeof e.obj?.uuid === 'string' ? [e.obj.uuid] : [])),
   };
 }
 

@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { Window } from 'happy-dom';
 import { installFakeSocket } from './fakeSocket.mjs';
+import { assertNull } from './dom-assert.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -198,4 +199,262 @@ test('picking a tier sends only {id, tier} — no model, no backend key', async 
     'exactly {t, id, tier, reqId} — no model/backend key survives the rewrite');
   assert.equal(frame.tier, 'fast');
   assert.equal(frame.id, LIVE_INSTANCE.id);
+});
+
+// ── restart switching on a substitution backend ─────────────────────────────
+//
+// The picker groups tiers by backend (the session's own first). On a
+// substitution session its own backend's tiers restart the session (↻) and are
+// disabled while anything runs; every other backend is disabled. The tier
+// bindings come from public/models.js's cache — the SAME module instance
+// header.js imports — set here and restored after each test.
+
+const models = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
+const TIERS = ['fast', 'balanced', 'powerful', 'frontier'];
+const SUB_BINDINGS = {
+  fast: { backend: 'ollama', model: 'alpha:cloud' },
+  balanced: { backend: 'ollama', model: 'beta:cloud' },
+  powerful: { backend: 'claude', model: 'claude-opus-4-8' },
+  frontier: { backend: 'claude', model: 'claude-fable-5-1' },
+};
+const SUB_INSTANCE = {
+  ...LIVE_INSTANCE, mode: 'bypassPermissions', backend: 'ollama', model: 'alpha:cloud', displayStatus: 'idle',
+};
+
+async function withBindings(fn) {
+  const saved = Object.fromEntries(TIERS.map(t => [t, models.getActiveTierBackend(t)]));
+  models.setActiveTierBackend(SUB_BINDINGS);
+  try { return await fn(); } finally { models.setActiveTierBackend(saved); }
+}
+
+function openModelPicker(t) {
+  t.dom.changeModelBtn.click();
+  const popover = t.document.querySelector('.ih-usage-popover[aria-label="Change model"]');
+  assert.ok(popover, 'the popover opens');
+  return popover;
+}
+const entry = (popover, tier) => popover.querySelector(`.qs-model[data-tier="${tier}"]`);
+
+test('the picker groups tiers by backend, the session\'s own first', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  assert.deepEqual([...popover.querySelectorAll('.qs-backend-group')].map(n => n.textContent), ['Ollama', 'Claude']);
+  const rows = [...popover.querySelectorAll('.quick-spawn-models')];
+  assert.deepEqual(rows.map(r => [...r.querySelectorAll('.qs-model')].map(b => b.dataset.tier)),
+    [['fast', 'balanced'], ['powerful', 'frontier']]);
+}));
+
+test('a substitution session: its own backend\'s tiers restart (↻, footnote), other backends are disabled', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  for (const tier of ['fast', 'balanced']) {
+    const b = entry(popover, tier);
+    assert.equal(b.disabled, false, tier);
+    assert.equal(b.querySelector('.qs-restart-badge')?.textContent, '↻', `${tier} carries the restart badge`);
+  }
+  assert.ok(entry(popover, 'fast').classList.contains('qs-selected'), 'the running model is highlighted (exact id)');
+  assert.ok(!entry(popover, 'balanced').classList.contains('qs-selected'));
+  for (const tier of ['powerful', 'frontier']) {
+    const b = entry(popover, tier);
+    assert.equal(b.disabled, true, tier);
+    assert.match(b.title, /^On Claude — a different backend needs a new session or a fork$/);
+    assertNull(b.querySelector('.qs-restart-badge'), `${tier} has no restart badge`);
+  }
+  const notes = [...popover.querySelectorAll('.ih-usage-popover-note')].map(n => n.textContent);
+  assert.deepEqual(notes, ['↻ restarts the session · conversation is kept']);
+}));
+
+test('an identity session: Claude tiers switch live with no badge or footnote, other backends are disabled', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'turn', status: 'turn' }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  for (const tier of ['powerful', 'frontier']) {
+    assert.equal(entry(popover, tier).disabled, false, `${tier}: a live switch is allowed mid-turn, as before`);
+  }
+  for (const tier of ['fast', 'balanced']) {
+    assert.equal(entry(popover, tier).disabled, true);
+    assert.match(entry(popover, tier).title, /^On Ollama — /);
+  }
+  assertNull(popover.querySelector('.qs-restart-badge'), 'no restart badge on an identity session');
+  assertNull(popover.querySelector('.ih-usage-popover-note'), 'no footnote on an identity session');
+  assert.ok(entry(popover, 'powerful').classList.contains('qs-selected'));
+}));
+
+test('restart entries are disabled while busy: a turn, a running subagent, or a switch in flight', async () => {
+  const { modelEntryState, RESTART_BUSY_TITLE } = await import(pathToFileURL(path.join(PUB, 'header.js')).href);
+  const binding = SUB_BINDINGS.balanced;
+  assert.deepEqual(modelEntryState(SUB_INSTANCE, binding).disabled, false, 'premise: idle is enabled');
+  for (const busy of [{ status: 'turn', displayStatus: 'turn' }, { displayStatus: 'running' }, { modelSwitch: { from: 'a', to: 'b' } }]) {
+    const s = modelEntryState({ ...SUB_INSTANCE, ...busy }, binding);
+    assert.equal(s.kind, 'restart', JSON.stringify(busy));
+    assert.equal(s.disabled, true, JSON.stringify(busy));
+    assert.equal(s.title, RESTART_BUSY_TITLE, JSON.stringify(busy));
+  }
+  await withBindings(async () => {
+    const t = await clickSetup();
+    t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+    t.setActiveId('inst-1');
+    t.header.update();
+    const b = entry(openModelPicker(t), 'balanced');
+    assert.equal(b.disabled, true);
+    assert.equal(b.title, RESTART_BUSY_TITLE);
+  });
+});
+
+test('an open picker re-enables its restart entries when the session goes idle', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  assert.equal(entry(popover, 'balanced').disabled, true, 'premise: disabled mid-turn');
+  t.setInstances([SUB_INSTANCE]);
+  t.header.update();
+  assert.ok(popover.isConnected, 'the picker stayed open across the re-render');
+  assert.equal(entry(popover, 'balanced').disabled, false);
+}));
+
+test('a restart click sends exactly {t, id, tier, reqId} and closes the picker on the ack', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  entry(openModelPicker(t), 'balanced').click();
+  await new Promise(r => setImmediate(r));
+  assert.equal(t.modelFrames().length, 1);
+  const frame = t.modelFrames()[0];
+  assert.deepEqual(Object.keys(frame).sort(), ['id', 'reqId', 't', 'tier']);
+  assert.equal(frame.tier, 'balanced');
+  assertNull(t.document.querySelector('.ih-usage-popover[aria-label="Change model"]'), 'the picker closed on the ack');
+}));
+
+test('a refused restart is shown inside the open picker — no alert()', () => withBindings(async () => {
+  const sent = [];
+  installFakeSocket(sent, { ack: (m) => (m.t === 'model' ? { ok: false, error: 'cannot switch model during a running turn' } : { ok: true }) });
+  const t = await setup();
+  const { connect } = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+  connect();
+  const alerts = [];
+  const prevAlert = globalThis.alert;
+  globalThis.alert = (m) => alerts.push(m);
+  try {
+    t.setInstances([SUB_INSTANCE]);
+    t.setActiveId('inst-1');
+    t.header.update();
+    const popover = openModelPicker(t);
+    entry(popover, 'balanced').click();
+    await new Promise(r => setImmediate(r));
+    assert.ok(popover.isConnected, 'the picker stays open');
+    const warn = popover.querySelector('.ih-usage-popover-note.warn');
+    assert.ok(warn, 'the refusal is rendered inline');
+    assert.match(warn.textContent, /cannot switch model during a running turn/);
+    assert.deepEqual(alerts, []);
+    // It survives the next re-render of the same session.
+    t.header.update();
+    assert.match(popover.querySelector('.ih-usage-popover-note.warn')?.textContent ?? '', /running turn/);
+  } finally { globalThis.alert = prevAlert; }
+}));
+
+test('a switch in flight shows the restarting chip, blocks sending, and keeps the old model in the usage popover', async () => {
+  const t = await setup();
+  const switching = { ...SUB_INSTANCE, status: 'exited', displayStatus: 'exited', model: 'beta:cloud',
+    modelSwitch: { from: 'alpha:cloud', to: 'beta:cloud' } };
+  t.setInstances([switching]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const chip = t.dom.instanceTitle.querySelector('.ih-status');
+  assert.ok(chip.classList.contains('ih-status-restarting'), 'not the transient `exited`');
+  assert.equal(chip.textContent, 'Restarting · switching model alpha:cloud → beta:cloud');
+  assert.equal(t.dom.instanceTitle.querySelectorAll('.ih-status').length, 1);
+  assert.equal(t.dom.resumeBtn.hidden, true, 'no Resume offered for the switch\'s own exit');
+  assert.equal(t.dom.changeModelBtn.disabled, true);
+  assert.equal(t.dom.changeEffortBtn.disabled, true);
+
+  t.setInstances([{ ...switching, status: 'idle', displayStatus: 'idle' }]);
+  t.header.update();
+  assert.equal(t.composer.canSend, false, 'the grace window does not reopen Send');
+  t.dom.tiUsageSlot.querySelector('.ih-combined').click();
+  const meta = t.document.querySelector('.ih-usage-popover[aria-label="Usage details"] .ih-usage-meta');
+  assert.ok(meta.textContent.startsWith('alpha:cloud'), `the unconfirmed target is not shown yet: ${meta.textContent}`);
+});
+
+test('a failed switch shows a failure chip carrying the cause as its tooltip', async () => {
+  const t = await setup();
+  const failure = { from: 'alpha:cloud', to: 'beta:cloud', error: "Error: model 'beta:cloud' not found" };
+  t.setInstances([{ ...SUB_INSTANCE, modelSwitchFailure: failure }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const chip = t.dom.instanceTitle.querySelector('.ih-status-switch-failed');
+  assert.ok(chip);
+  assert.equal(chip.textContent, 'Switch to beta:cloud failed');
+  assert.equal(chip.title, failure.error);
+  assert.equal(t.composer.canSend, true, 'the session is back on its old model and usable');
+
+  t.setInstances([{ ...SUB_INSTANCE, modelSwitchFailure: failure, modelSwitch: { from: 'alpha:cloud', to: 'beta:cloud' } }]);
+  t.header.update();
+  assertNull(t.dom.instanceTitle.querySelector('.ih-status-switch-failed'), 'a new switch in flight replaces it');
+});
+
+test('a stale refusal note clears once the picker\'s entry states change', () => withBindings(async () => {
+  const sent = [];
+  installFakeSocket(sent, { ack: (m) => (m.t === 'model' ? { ok: false, error: 'cannot switch model during a running turn' } : { ok: true }) });
+  const t = await setup();
+  const { connect } = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+  connect();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  entry(popover, 'balanced').click();
+  await new Promise(r => setImmediate(r));
+  assert.ok(popover.querySelector('.ih-usage-popover-note.warn'), 'premise: the refusal is shown');
+  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
+  assertNull(popover.querySelector('.ih-usage-popover-note.warn'), 'the note went with the state it described');
+  t.setInstances([SUB_INSTANCE]);
+  t.header.update();
+  assertNull(popover.querySelector('.ih-usage-popover-note.warn'), 'and does not come back');
+}));
+
+test('a re-render with unchanged entry states keeps the very same buttons (a click in progress is not detached)', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  const before = entry(popover, 'balanced');
+  // A status update that moves nothing the picker shows (e.g. a title change).
+  t.setInstances([{ ...SUB_INSTANCE, title: 'renamed' }]);
+  t.header.update();
+  assert.ok(entry(popover, 'balanced') === before, 'not rebuilt');
+  assert.ok(before.isConnected);
+  // A real state change does rebuild.
+  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
+  assert.ok(entry(popover, 'balanced') !== before, 'rebuilt on a state change');
+  assert.equal(entry(popover, 'balanced').disabled, true);
+}));
+
+test('mid-switch the usage popover names the confirmed model with no window clause', async () => {
+  const t = await setup();
+  const meta = () => {
+    t.dom.tiUsageSlot.querySelector('.ih-combined').click();
+    return t.document.querySelector('.ih-usage-popover[aria-label="Usage details"] .ih-usage-meta').textContent;
+  };
+  t.setInstances([{ ...SUB_INSTANCE, model: 'beta:cloud', contextWindowTokens: 300_000,
+    modelSwitch: { from: 'alpha:cloud', to: 'beta:cloud' } }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  assert.equal(meta(), 'alpha:cloud', 'the new model\'s window is not paired with the old model\'s name');
+  t.setInstances([{ ...SUB_INSTANCE, model: 'beta:cloud', contextWindowTokens: 300_000 }]);
+  t.header.update();
+  assert.equal(meta(), 'beta:cloud · 300k context', 'control: settled, the window clause is back');
 });

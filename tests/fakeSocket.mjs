@@ -14,8 +14,9 @@
 // addEventListener, no ack path) serving a different test.
 //
 // It sets the WebSocket GLOBAL, which is what ws.js resolves; `sent` collects
-// every frame as a parsed object, in send order.
-export function installFakeSocket(sent) {
+// every frame as a parsed object, in send order. `ack(msg)` decides each ack's
+// `{ok, error}` — every frame succeeds unless a test passes a refusing one.
+export function installFakeSocket(sent, { ack = () => ({ ok: true }) } = {}) {
   class FakeSocket extends EventTarget {
     static OPEN = 1;
     static CLOSED = 3;
@@ -25,7 +26,7 @@ export function installFakeSocket(sent) {
       sent.push(msg);
       if (msg.reqId != null) {
         const ev = new Event('message');
-        ev.data = JSON.stringify({ t: 'ack', reqId: msg.reqId, ok: true });
+        ev.data = JSON.stringify({ t: 'ack', reqId: msg.reqId, ...ack(msg) });
         this.dispatchEvent(ev);
       }
     }

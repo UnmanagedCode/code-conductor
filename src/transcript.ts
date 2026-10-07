@@ -22,6 +22,7 @@ import { PlanFileTracker, planPathFromInput } from './planFile.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
 import { taskNotificationFromEnqueue } from './taskNotification.ts';
+import { getModelSwitchesForSegment, type ModelSwitchEntry } from './sessionStore.ts';
 
 // A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
 // disk that the live stream never carries (uuid, isSidechain, attachment,
@@ -391,6 +392,9 @@ export interface PersistedTranscript {
   planFile: string | null;
 }
 
+// The ONE reader that splices the session record's model-switch ledger into a
+// replay — every transcript surface (ring replay, archive, disk pages, lineage,
+// message reconstruction) reads through here.
 export async function loadPersistedTranscript(options: {
   place: TranscriptPlacement;
   sessionId: string;
@@ -402,21 +406,51 @@ export async function loadPersistedTranscript(options: {
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
-  return replayPersistedText({ place, sessionId, text, seqHint });
+  const modelSwitches = await getModelSwitchesForSegment(sessionId);
+  return replayPersistedText({ place, sessionId, text, seqHint, modelSwitches });
+}
+
+// A restart model switch's transcript divider (Instance.switchModel): a
+// `model_changed` carrying `restart`/`switchId` on success, `model_switch_failed`
+// on failure (`cancelled` when a Terminate stopped it). `switchId` is what makes it durable — eventArchive treats an event
+// carrying one as persisted and correlates it by that id. The replay splice
+// marks its copy `replayed`, which public/usage.js reads to keep a replayed
+// divider from blanking the ctx reading a later turn seeded.
+export function modelSwitchEvent(entry: ModelSwitchEntry, { replayed = false }: { replayed?: boolean } = {}): UiEvent {
+  const ev: UiEvent = entry.ok
+    ? { kind: 'system', subtype: 'model_changed', data: { from: entry.from, to: entry.to, restart: true, switchId: entry.id } }
+    : { kind: 'system', subtype: 'model_switch_failed', data: entry.cancelled
+      ? { from: entry.from, to: entry.to, cancelled: true, switchId: entry.id }
+      : { from: entry.from, to: entry.to, error: entry.error ?? '', switchId: entry.id } };
+  if (replayed) ev.replayed = true;
+  return ev;
 }
 
 // loadPersistedTranscript over a caller-supplied `text` of session
 // `sessionId`'s jsonl — for a caller that must derive several things from ONE
 // read (Instance.forkAtUserMessage). Sub-agent sibling files are still read
 // from disk: they feed only nested events, never the outer echo ordinals.
+//
+// `modelSwitches` (this segment's ledger entries) are spliced in as their own
+// lines: a null anchor first, every other one right after the first line whose
+// `uuid` is its anchor, an anchor never seen at the end. Splice lines count
+// toward neither `replayedCount` nor `lastLeafUuid`. Callers that count echoes
+// or copy lines pass none.
 export async function replayPersistedText(options: {
   place: TranscriptPlacement;
   sessionId: string;
   text: string;
   seqHint?: number;
+  modelSwitches?: readonly ModelSwitchEntry[];
 }): Promise<PersistedTranscript> {
-  const { place, sessionId, text, seqHint = 0 } = options;
+  const { place, sessionId, text, seqHint = 0, modelSwitches = [] } = options;
   const lines: Array<{ events: UiEvent[] }> = [];
+  const byAnchor = new Map<string, ModelSwitchEntry[]>();
+  for (const entry of modelSwitches) {
+    if (entry.afterUuid === null) { lines.push({ events: [modelSwitchEvent(entry, { replayed: true })] }); continue; }
+    const at = byAnchor.get(entry.afterUuid);
+    if (at) at.push(entry); else byAnchor.set(entry.afterUuid, [entry]);
+  }
   let lastLeafUuid: string | null = null;
   let lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null = null;
   let replayedCount = 0;
@@ -502,6 +536,14 @@ export async function replayPersistedText(options: {
     }
     if (typeof line.uuid === 'string') lastLeafUuid = line.uuid;
     lines.push({ events });
+    const spliced = typeof line.uuid === 'string' ? byAnchor.get(line.uuid) : undefined;
+    if (spliced) {
+      byAnchor.delete(line.uuid as string);
+      for (const entry of spliced) lines.push({ events: [modelSwitchEvent(entry, { replayed: true })] });
+    }
+  }
+  for (const entry of [...byAnchor.values()].flat()) {
+    lines.push({ events: [modelSwitchEvent(entry, { replayed: true })] });
   }
   return { lines, replayedCount, lastLeafUuid, lastAssistantUsage, planFile: planFiles.lastPath };
 }
@@ -561,6 +603,29 @@ export async function hasResumableConversation(options: { place: TranscriptPlace
     if (isResumableLine(obj)) return true;
   }
   return false;
+}
+
+// The `uuid` of the session jsonl's last line carrying one, or null when the file
+// is missing or no line does — the anchor a model-switch divider is spliced after
+// (Instance.switchModel). Read off the file, not the live leaf marker: the live
+// stream also stamps uuids on frames the CLI never persists (`result`,
+// `stream_event`), and the splice can only match a persisted line.
+export async function readLastLineUuid(options: { place: TranscriptPlacement; sessionId: string }): Promise<string | null> {
+  const { place, sessionId } = options;
+  if (!place?.cwd || !sessionId) return null;
+  let text: string;
+  try { text = await fs.readFile(sessionFilePath(place, sessionId), 'utf8'); }
+  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
+  let last: string | null = null;
+  for (const raw of text.split('\n')) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    let obj: unknown;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    const uuid = (obj as PersistedLine | null)?.uuid;
+    if (typeof uuid === 'string' && uuid) last = uuid;
+  }
+  return last;
 }
 
 // A real conversation record (user/assistant) — what hasResumableConversation

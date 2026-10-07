@@ -1241,7 +1241,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'cache_miss', 'playbook_warn', 'renew_error', 'read_nudge',
+  'model_changed', 'model_switch_failed', 'cache_miss', 'playbook_warn', 'renew_error', 'read_nudge',
 ]);
 
 const OVERAGE_DISABLED_LABEL = { out_of_credits: 'out of credits' };
@@ -1300,7 +1300,14 @@ export class SystemBlock {
       if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
-      if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
+      if (subtype === 'model_changed') {
+        return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}${data?.restart ? ' (session restarted)' : ''}`;
+      }
+      if (subtype === 'model_switch_failed') {
+        // A Terminate that stopped the switch: the user's stop, not a failure.
+        if (data?.cancelled) return `Switch to ${data?.to ?? '?'} cancelled — session stopped`;
+        return `Switch to ${data?.to ?? '?'} failed — still on ${data?.from ?? '?'}`;
+      }
       if (subtype === 'playbook_warn') {
         // Enforcement is `warn`: the call went through anyway. Name the target
         // worker when the refused call had one (spawn/capacity refusals don't).
@@ -1342,8 +1349,11 @@ export class SystemBlock {
       }
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
-    const warn = subtype === 'playbook_warn' || subtype === 'read_nudge';
-    this.node = el('div', { class: warn ? 'block system warn' : 'block system' },
+    const switchFailed = subtype === 'model_switch_failed' && !data?.cancelled;
+    const warn = subtype === 'playbook_warn' || subtype === 'read_nudge' || switchFailed;
+    // A failed switch's cause rides as the tooltip, keeping the line itself short.
+    const title = switchFailed ? (data?.error || null) : null;
+    this.node = el('div', { class: warn ? 'block system warn' : 'block system', title },
       el('span', { class: 'subtype' }, subtype),
       detail ? ` ${detail}` : '',
     );

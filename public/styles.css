@@ -703,6 +703,13 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-status-spawning { color: var(--amber); }
 .ih-chip.ih-status-interrupting { color: var(--amber); animation: pulse 1s infinite alternate; }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }
+/* A restart model switch in flight: amber with a spinning ↻ ahead of the text. */
+.ih-chip.ih-status-restarting { color: var(--amber); }
+.ih-chip.ih-status-restarting::before {
+  content: '↻'; display: inline-block; margin-right: 4px;
+  animation: composer-mic-spin 1s linear infinite;
+}
+.ih-chip.ih-status-switch-failed { color: var(--red); cursor: help; }
 
 /* Combined ctx+rl chip — toggleable button. Color-graded by the worse of
  * context fill and rate-limit utilization: green under 50%, amber 50-80%,
@@ -1798,6 +1805,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   .turn-indicator .ti-dot { animation: none; opacity: 1; }
   .turn-indicator .ti-ellipsis span { animation: none; opacity: 1; }
   .ih-chip.ih-status-interrupting { animation: none; opacity: 1; }
+  .ih-chip.ih-status-restarting::before { animation: none; }
 }
 
 .rl-overage-badge {
@@ -2177,6 +2185,13 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #settings-models .sm-field--enable { justify-content: center; min-width: 44px; }
 }
 .ih-usage-popover-note { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; }
+.ih-usage-popover-note.warn { color: var(--red); }
+/* Change model picker: one labelled row per backend, ↻ on restart entries. */
+.qs-backend-group { font-size: 11px; color: var(--muted); padding: 8px 2px 0; }
+.qs-backend-group + .quick-spawn-models { margin-top: 4px; }
+/* A restart entry sets its badge on the label's line, a space apart. */
+.quick-spawn-models .qs-model[data-kind="restart"] { flex-direction: row; justify-content: center; }
+.qs-restart-badge { font-size: 11px; font-weight: 400; opacity: .8; margin-left: .4em; }
 
 /* ── Settings → Backends group ────────────────────────────────────────────── */
 /* One card per registry row. Managed rows show their template as read-only text

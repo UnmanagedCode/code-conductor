@@ -73,7 +73,8 @@ import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
   isConducted, markConducted, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
-  type SessionBackendRecord, type TurnMarks,
+  appendModelSwitch, reanchorModelSwitches, getModelSwitchesForSegment,
+  type SessionBackendRecord, type TurnMarks, type ModelSwitchEntry,
 } from './sessionStore.ts';
 import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { applySessionTitle, forkTitle } from './sessionTitles.ts';
@@ -94,7 +95,7 @@ import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
-import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
+import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation, readLastLineUuid, modelSwitchEvent } from './transcript.ts';
 import { LiveAskFacts, reduceAsk, type AskState } from './awaitingUser.ts';
 import { deriveAwaitingUser, chainEndingAt } from './awaitingUserTranscript.ts';
 import { PlanFileTracker } from './planFile.ts';
@@ -497,6 +498,15 @@ const DEFAULT_SNAPSHOT_TAIL = 500;
 // queue, so it usually exceeds this and gets PROMPT_NOT_PERSISTED.
 export const FORK_PERSIST_WAIT_MS = 2000;
 export const FORK_PERSIST_POLL_MS = 50;
+// How long a restart model switch (Instance.switchModel) watches the relaunched
+// process before calling the switch confirmed. A wrapper that rejects the model
+// at launch exits inside it; one that accepts the launch and rejects the first
+// request is not caught (docs/models.md → known limitation).
+export const MODEL_SWITCH_GRACE_MS = 3000;
+// How long the relaunch may take to come up idle at all (its replay included)
+// before the switch is called failed. Generous: it bounds a CLI that stays alive
+// but never becomes usable, which would otherwise hold the switch forever.
+export const MODEL_SWITCH_IDLE_DEADLINE_MS = 60_000;
 
 export class EventLog {
   cap: number;
@@ -856,6 +866,25 @@ export class Instance extends EventEmitter implements InstanceLike {
   _mutating: RewriteKind | null;
   // FORK_PERSIST_WAIT_MS, per instance so a test can shrink it.
   _forkPersistWaitMs: number;
+  // A restart model switch in flight (switchModel), and the last one's failure —
+  // both on summary(). The failure clears at the next turn start or switch.
+  _modelSwitch: { from: string; to: string } | null;
+  _modelSwitchFailure: { from: string; to: string; error: string } | null;
+  // The detached switch body, kept so a test can await it; never rejects.
+  _modelSwitchRun: Promise<void> | null;
+  // MODEL_SWITCH_GRACE_MS / MODEL_SWITCH_IDLE_DEADLINE_MS, per instance so a
+  // test can shrink them.
+  _modelSwitchGraceMs: number;
+  _modelSwitchIdleDeadlineMs: number;
+  // The last launch's exit as _handleExit saw it — the switch's failure cause
+  // when that launch was the one being confirmed. `stderr` settles at stderr EOF.
+  _lastExitReport: { code: number | null; signal: NodeJS.Signals | null; stderr: Promise<string>; spawnError: string | null } | null;
+  // The current launch's spawn_error message, if its 'error' fired.
+  _spawnError: string | null;
+  // The current launch's post-spawn replay-then-idle step (spawn()'s detached
+  // tail); never rejects — spawn() logs a throw from it. A restart switch's failure arm awaits it so nothing
+  // it emits can land amid — or after a wipe, ahead of — that replay.
+  _replayDone: Promise<void>;
   _skipUsageSeed: boolean;
   _spawnArgv: string[] | null;
   // The env the last launch actually used. Recorded for the same reason as
@@ -1259,6 +1288,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // start (same falsy values the JS left as undefined).
     this._mutating = null;    // claimed synchronously by rewind/fork/prune
     this._forkPersistWaitMs = FORK_PERSIST_WAIT_MS;
+    this._modelSwitch = null;
+    this._modelSwitchFailure = null;
+    this._modelSwitchRun = null;
+    this._modelSwitchGraceMs = MODEL_SWITCH_GRACE_MS;
+    this._modelSwitchIdleDeadlineMs = MODEL_SWITCH_IDLE_DEADLINE_MS;
+    this._lastExitReport = null;
+    this._spawnError = null;
+    this._replayDone = Promise.resolve();
     this._skipUsageSeed = false; // one-shot: suppress the pre-prune ctx seed on replay
     this._spawnArgv = null;   // full launch argv, remembered for enableDebug's meta.json
     this._spawnEnv = {};
@@ -1371,6 +1408,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       // such a send rather than stranding it behind a resume that never fires.
       overageStoppedUnarmed: !!this._overageStoppedUnarmed,
       overageResetsAt: gate.active ? gate.resetsAt : null,
+      // A restart model switch in flight (`model` already names the target it is
+      // launching), and the last one's failure.
+      modelSwitch: this._modelSwitch,
+      modelSwitchFailure: this._modelSwitchFailure,
     };
   }
 
@@ -1693,6 +1734,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // prompt-initiated (prompt() → _setStatus) and unprompted (message_start
     // flips idle→turn) turns.
     if (next === 'turn') {
+      this._modelSwitchFailure = null;
       this._turnFirstReqCacheRead = null;
       this._turnFirstReqCacheCreation = null;
       this._turnMissDetected = false;
@@ -1957,6 +1999,15 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async loadHistory(backingId: string): Promise<void> {
+    // One-shot, set by pruneSession() and a restart model switch: the jsonl's
+    // newest assistant `usage` measures a context that no longer applies (the
+    // PRE-prune size; the old model's reading against the new model's window),
+    // so seeding it would show a known-wrong number until the first live turn
+    // re-measures — fall back to `ctx —`. Same reasoning as the
+    // `_lastContextUsage = null` in _wipeForResume. Consumed FIRST, so no early
+    // return below can leave it set for a later, unrelated replay.
+    const skipUsageSeed = this._skipUsageSeed;
+    this._skipUsageSeed = false;
     const result = await loadPersistedTranscript({
       place: this.transcriptPlace, sessionId: backingId, seqHint: this.ring.nextSeq,
     });
@@ -1979,13 +2030,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The wipe reset the live tracker; without this an ExitPlanMode after a
     // restart can't find a plan file written before it.
     if (result.planFile) this._planFiles.seed(result.planFile);
-    // One-shot, set by pruneSession(): the jsonl's newest assistant `usage` still
-    // reports the PRE-prune context size, so seeding it would tell the user the
-    // prune did nothing until the first live turn re-measures. A known-wrong
-    // number is worse than none — fall back to `ctx —`. Same reasoning as the
-    // `_lastContextUsage = null` in _wipeForResume.
-    const skipUsageSeed = this._skipUsageSeed;
-    this._skipUsageSeed = false;
     if (result.replayedCount > 0) {
       // Replay emits no `message_start` of its own, so nothing would latch
       // _lastContextUsage and a resumed/respawned/rewound session's ctx chip
@@ -2295,6 +2339,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Same for the stderr a launch's exit cause is cut from, and the cause itself.
     this._stderr = '';
     this.lastExit = null;
+    this._spawnError = null;
     // Clear any overage auto-stop/resume state from a prior run — a fresh
     // process can re-trigger and any pending timer was cancelled at respawn.
     this.autoStoppedForOverage = false;
@@ -2687,6 +2732,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // NOT part of the latch: 'error' also fires POST-spawn (a failed kill), so it
     // is not a terminal signal and must never null `proc` — only the latch does.
     this.proc.on('error', (err) => {
+      this._spawnError = (err as Error).message;
       this._emitUi({ kind: 'system', subtype: 'spawn_error', data: { message: (err as Error).message } });
       this._setStatus('crashed');
     });
@@ -2697,7 +2743,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // is alive and stdin is writable, we're idle. If we're resuming, replay
     // the persisted transcript into the ring buffer first so the UI shows
     // prior history alongside the new live stream.
-    (async () => {
+    this._replayDone = (async () => {
       if (resume && this.backingSessionId) {
         try { await this.loadHistory(this.backingSessionId); }
         catch (err) {
@@ -2707,7 +2753,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (this.proc && this.proc.stdin && this.proc.stdin.writable && this.status === 'spawning') {
         this._setStatus('idle');
       }
-    })();
+    })().catch((err: unknown) => {
+      // A throwing `event`/`status` listener (the history_load_error emit, the
+      // idle transition) rejects the tail. Nothing awaits it on most paths, so
+      // an unhandled rejection would take the server down: log it instead.
+      console.warn(`instances: replay tail for ${this.sessionId} threw: ${err instanceof Error ? err.message : String(err)}`);
+    });
     return facts;
   }
 
@@ -3131,6 +3182,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _handleExit(code: number | null, signal: NodeJS.Signals | null, settledStderr: Promise<string>): void {
     this.pid = null;
     this.proc = null;
+    this._lastExitReport = { code, signal, stderr: settledStderr, spawnError: this._spawnError };
     this._closeDrainWindow();
     const crashed = !(code === 0 && !signal);
     this._emitUi({ kind: 'system', subtype: 'exit', data: { code, signal } });
@@ -3258,7 +3310,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A fork does not block: see rewriteBlocksPrompts.
     if (this.rewriteBlocksPrompts) {
       throw Object.assign(
-        new Error('session is being rewritten (rewind/prune) — retry in a moment'),
+        new Error(this._mutating === 'model_switch'
+          ? 'session is switching model — retry once it settles'
+          : 'session is being rewritten (rewind/prune) — retry in a moment'),
         { statusCode: 409 },
       );
     }
@@ -3437,7 +3491,14 @@ export class Instance extends EventEmitter implements InstanceLike {
   // reseed) refuse. A fork does not: it copies from one complete-line snapshot
   // of the file, and a prompt's lines are appended after the clicked prompt's,
   // so they can never reach the copy (forkAtUserMessage).
-  get rewriteBlocksPrompts(): boolean { return this._mutating === 'rewind' || this._mutating === 'prune'; }
+  // A restart model switch blocks for its whole run, grace window included: a
+  // prompt there would start a turn on a model not yet confirmed.
+  get rewriteBlocksPrompts(): boolean {
+    return this._mutating === 'rewind' || this._mutating === 'prune' || this._mutating === 'model_switch';
+  }
+
+  // The restart model switch in flight, or null (summary().modelSwitch).
+  get modelSwitch(): { from: string; to: string } | null { return this._modelSwitch; }
 
   // Which mechanism holds the window, or null. The refusal sites need the reason,
   // not just the boolean: a renewal re-arming over its own window is idempotent,
@@ -3567,7 +3628,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // involves a SUBSTITUTION backend on either side (including
     // substitution↔substitution) can't be done live — refuse it with a clear
     // message rather than a silently-broken switch that keeps hitting the old
-    // model. Cross-backend kill+respawn is a separate, later enhancement.
+    // model. A same-backend switch on a substitution session restarts instead
+    // (switchModel); cross-backend stays refused here.
     if (this.backend !== CLAUDE_BACKEND_ID || backend !== CLAUDE_BACKEND_ID) {
       throw Object.assign(
         new Error('Cannot change model live for a session on a non-Claude backend — kill and respawn on that tier.'),
@@ -3612,6 +3674,243 @@ export class Instance extends EventEmitter implements InstanceLike {
     return this.model;
   }
 
+  // The WS "Change model" entry point. An identity session switching to a Claude
+  // tier goes live through setModel; a substitution session switching within its
+  // own backend restarts the CLI on the new model (the model is baked into the
+  // wrapper's argv and the context env at launch, so no control_request can
+  // reach it). Every other pair falls to setModel's 409 BACKEND_LOCKED.
+  // Resolves once a restart is ACCEPTED ({restart:true}); its outcome arrives as
+  // events. Refusals throw synchronously-checked 409s.
+  async switchModel({ model, backend, effort }: { model: string; backend: string; effort: string }): Promise<{ restart: boolean }> {
+    if (this.backend === CLAUDE_BACKEND_ID && backend === CLAUDE_BACKEND_ID) {
+      await this.setModel(model, backend);
+      return { restart: false };
+    }
+    if (this.backend !== CLAUDE_BACKEND_ID && backend === this.backend) {
+      return this._beginRestartSwitch({ model, effort });
+    }
+    await this.setModel(model, backend);
+    return { restart: false };
+  }
+
+  // Every check runs and `_mutating` is claimed with no await in between (fork's
+  // discipline), so two frames cannot both start a restart.
+  _beginRestartSwitch({ model, effort }: { model: string; effort: string }): { restart: boolean } {
+    this._assertNoRotationInFlight();
+    if (this._mutating) {
+      throw httpError(409, 'another rewind/fork/prune/model switch is in progress');
+    }
+    if (!this.proc) throw httpError(409, 'not running');
+    const busy = (why: string): Error => httpError(409, `cannot switch model ${why} — switching restarts the session`,
+      { code: 'SESSION_BUSY' });
+    // Also covers a pending steer or interrupt: `interrupting` clears on any exit
+    // from 'turn', and a parked steer is flushed (into a new turn) on the
+    // microtask after it is queued or after the turn_end it waited for.
+    if (this.status !== 'idle') throw busy('during a running turn');
+    if (this._activeAgentTasks.size > 0 || this._backgroundJobs.size > 0) {
+      throw busy('while background work is running (the restart would kill it)');
+    }
+    const to = canonicalizeModel(model, this.backend) as string;
+    // Re-selecting the running model: nothing to restart, nothing to record.
+    if (!to || to === this.model) return { restart: false };
+    const from = this.model as string;
+    this._mutating = 'model_switch';
+    this._modelSwitch = { from, to };
+    this._modelSwitchFailure = null;
+    this.emit('status', this.summary());
+    this._modelSwitchRun = this._runRestartSwitch({ from, to, effort });
+    return { restart: true };
+  }
+
+  // kill → relaunch on `to` → confirm, mirroring rewindToUserMessage's sequence.
+  // spawn() reads this.model for the argv, the context env and the session
+  // record, so setting it before launch() is what makes the new model both the
+  // one that runs and the one a cold resume comes back on. On failure the
+  // session is resumed again on `from` — it was idle and healthy there a moment
+  // ago — and the record is rewritten to it. Never rejects.
+  async _runRestartSwitch({ from, to, effort }: { from: string; to: string; effort: string }): Promise<void> {
+    const prev = {
+      model: this.model, effort: this.effort,
+      contextWindowTokens: this.contextWindowTokens, acceptsMidTurnSteering: this.acceptsMidTurnSteering,
+    };
+    const publicId = this.sessionId as string;
+    const segment = this.backingSessionId as string;
+    const entry = (ok: boolean, afterUuid: string | null, { error, cancelled }: { error?: string; cancelled?: true } = {}): ModelSwitchEntry => ({
+      id: randomUUID(), at: new Date().toISOString(), segment, afterUuid, from, to, ok,
+      ...(error ? { error } : {}), ...(cancelled ? { cancelled } : {}),
+    });
+    // `_suppressTempDelete` is held from the kill until the relaunch is
+    // CONFIRMED: a temp session must not be archived by the attempt's own crash,
+    // and neither process's exit is an exit cause — that outcome is the switch's.
+    // `_relaunching` is held for the whole run (see the confirmation below).
+    this._suppressTempDelete = true;
+    this._relaunching = true;
+    // The process being replaced's terminal latch: spawn() swaps in a new one,
+    // which is how the failure path tells "the relaunch was killed" (a user's
+    // Terminate) from the `_killing` this run's own kill left behind.
+    const replacedLatch = this._procEnded;
+    let afterUuid: string | null = null;
+    let resumable = false;
+    try {
+      resumable = await hasResumableConversation({ place: this.transcriptPlace, sessionId: segment });
+      // A segment that cannot be resumed is deleted before its `--session-id`
+      // relaunch, so any line in it is no anchor: the divider leads (null).
+      afterUuid = resumable ? await readLastLineUuid({ place: this.transcriptPlace, sessionId: segment }) : null;
+      try {
+        await this.kill({ graceMs: 300 });
+        this.model = to;
+        this.effort = effort;
+        this._refreshModelCapabilities();
+        // The jsonl's newest usage was measured on `from`; against `to`'s window
+        // it is a known-wrong reading (prune's rule). Consumed by the relaunch's
+        // replay, which only a resume runs.
+        this._skipUsageSeed = resumable;
+        await this._relaunchForSwitch(segment, resumable);
+        await this._awaitSwitchGrace();
+      } catch (err) {
+        const cancelled = this._procEnded !== replacedLatch && this._killing;
+        const error = err instanceof Error ? err.message : String(err);
+        if (this.proc) await this.kill({ graceMs: 300 });
+        this.model = prev.model;
+        this.effort = prev.effort;
+        this.contextWindowTokens = prev.contextWindowTokens;
+        this.acceptsMidTurnSteering = prev.acceptsMidTurnSteering;
+        // A launch that never reached its replay left the flag set; `from`'s
+        // own reading is the right one to seed.
+        this._skipUsageSeed = false;
+        // A launch that failed after spawn() left `to` recorded; one that failed
+        // before it never rewrote the record. Either way the record names `from`.
+        await setSessionBackend(publicId, this.backend, prev.model, prev.contextWindowTokens);
+        // The attempt's replay may still be running (spawn() does not await it):
+        // let it finish before the outcome is recorded or emitted, so its divider
+        // follows every replayed line and that replay's own ledger read predates
+        // the entry written below.
+        await this._replayDone;
+        if (cancelled) {
+          // A Terminate that landed mid-switch is the user's stop, not a failure:
+          // no failure chip, no re-resume. Its divider goes to the ring now (the
+          // ring is not rebuilt, so no replay will put it there).
+          const stop = entry(false, afterUuid, { cancelled: true });
+          await appendModelSwitch(publicId, stop);
+          this._emitUi(modelSwitchEvent(stop));
+          return;
+        }
+        await appendModelSwitch(publicId, entry(false, afterUuid, { error }));
+        this._modelSwitchFailure = { from, to, error };
+        try {
+          // The ledger already holds the failure, so this replay splices its
+          // divider exactly once — no live emit.
+          await this._relaunchForSwitch(segment, resumable);
+          await this._awaitSwitchGrace();
+        } catch (again) {
+          if (this.proc) await this.kill({ graceMs: 300 }).catch(() => {});
+          this._modelSwitchFailure = {
+            from, to, error: `${error}; resuming on ${from} also failed: ${again instanceof Error ? again.message : String(again)}`,
+          };
+        }
+        return;
+      }
+      // Confirmed: the session runs on `to`. Nothing below can make the SWITCH
+      // fail — a failure to record or announce it is logged, and the session
+      // stays on `to`. Only the exit suppression ends here: an exit from now on
+      // records its cause and `launch_failed` (both gate on it). `_relaunching`
+      // is held to `finally` with `_mutating`: until the switch settles, an exit
+      // must not wake the owner and a resume must not reclaim this instance.
+      this._suppressTempDelete = false;
+      const ok = entry(true, afterUuid);
+      const confirmedButFailed = (what: string, err: unknown): void => {
+        console.warn(`instances: model switch ${from} → ${to} on ${this.sessionId} is confirmed, but ${what} failed: `
+          + `${err instanceof Error ? err.message : String(err)}`);
+      };
+      try {
+        await appendModelSwitch(publicId, ok);
+      } catch (err) {
+        confirmedButFailed('recording it in the session ledger (its transcript divider will not survive a replay)', err);
+      }
+      try {
+        this._dropContextReading();
+        this._emitUi(modelSwitchEvent(ok));
+      } catch (err) {
+        confirmedButFailed('announcing it', err);
+      }
+    } catch (err) {
+      // Only the store reads/writes of the failure path and the pre-kill reads
+      // land here; the session's state is whatever the step before left, and the
+      // failure is surfaced, not swallowed.
+      const error = err instanceof Error ? err.message : String(err);
+      this._modelSwitchFailure = { from, to, error };
+      console.warn(`instances: model switch ${from} → ${to} on ${this.sessionId} failed: ${error}`);
+    } finally {
+      // Still set ⇒ the attempt never got confirmed, so any exit it ended in was
+      // suppressed: archive a temp session that ends without a process here,
+      // as its exit would have (the status emit below then drops it).
+      const suppressed = this._suppressTempDelete;
+      this._suppressTempDelete = false;
+      this._relaunching = false;
+      this._mutating = null;
+      this._modelSwitch = null;
+      if (suppressed && !this.proc && this.temp) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
+      this.emit('status', this.summary());
+    }
+  }
+
+  // Wipe and relaunch on the current this.model. A segment with no conversation
+  // has nothing to `--resume` (the CLI would exit): relaunch under the same id
+  // with `--session-id`, after removing any marker-only stub the CLI would
+  // refuse that id over — rewind's empty-prefix rule.
+  async _relaunchForSwitch(segment: string, resumable: boolean): Promise<void> {
+    this._wipeForResume();
+    if (resumable) { await this.launch({ resume: segment }); return; }
+    await fsp.rm(sessionFilePath(this.transcriptPlace, segment), { force: true });
+    await this._seedUnanchoredSwitches(segment);
+    await this.launch({});
+  }
+
+  // After a wipe that NO replay follows (`launch({})`): put the segment's
+  // null-anchored ledger dividers into the ring as the replay would have. The
+  // archive (loadPersistedTranscript) leads with them, so without this the ring
+  // lacks them and its seq space runs one short of the archive's — a false
+  // `history_gap` and an event dropped at the archive/ring cut.
+  async _seedUnanchoredSwitches(segment: string): Promise<void> {
+    for (const e of await getModelSwitchesForSegment(segment)) {
+      if (e.afterUuid === null) this._emitUi(modelSwitchEvent(e, { replayed: true }), { replayed: true });
+    }
+  }
+
+  // Resolves once the relaunched process has come up idle AND outlived
+  // `_modelSwitchGraceMs`; rejects with _lastExitCause() if it ends first, or
+  // when it has not come up idle by `_modelSwitchIdleDeadlineMs`.
+  _awaitSwitchGrace(): Promise<void> {
+    const ended = this._procEnded;
+    return new Promise<void>((resolve, reject) => {
+      let graceDone = false;
+      let done = false;
+      const finish = (err: Error | null): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        clearTimeout(deadline);
+        this.off('status', onStatus);
+        if (err) reject(err); else resolve();
+      };
+      const onStatus = (): void => { if (graceDone && this.proc && this.status === 'idle') finish(null); };
+      const timer = setTimeout(() => { graceDone = true; onStatus(); }, this._modelSwitchGraceMs);
+      const idleMs = this._modelSwitchIdleDeadlineMs;
+      const deadline = setTimeout(() => finish(new Error(`the relaunched CLI did not come up idle within ${idleMs}ms`)), idleMs);
+      this.on('status', onStatus);
+      void ended.then(async () => { if (!done) finish(new Error(await this._lastExitCause())); });
+    });
+  }
+
+  // Why the last launch ended: its last stderr line, else its spawn_error, else
+  // its exit code/signal.
+  async _lastExitCause(): Promise<string> {
+    const r = this._lastExitReport;
+    if (!r) return 'the relaunched CLI exited';
+    const line = (await r.stderr).split('\n').map(l => l.trim()).filter(Boolean).at(-1);
+    return line ?? r.spawnError ?? `the relaunched CLI exited code=${r.code} signal=${r.signal}`;
+  }
+
   // Live "Change effort" — the control protocol has NO `set_effort` subtype (the
   // CLI answers only `set_permission_mode` / `set_model` / `interrupt`), so this
   // writes `/effort <level>` on the SAME stdin path a user turn uses and lets the
@@ -3634,6 +3933,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Validate before anything reaches stdin: an unknown level must never be
     // written to the CLI, where it would land as an ordinary prose message.
     if (!isKnownEffort(effort)) throw new Error('invalid effort');
+    if (this._mutating === 'model_switch') {
+      throw httpError(409, 'cannot change effort while the session is switching model');
+    }
     if (this.status === 'turn') {
       throw httpError(409, 'cannot change effort during a running turn — interrupt first');
     }
@@ -4111,6 +4413,13 @@ export class Instance extends EventEmitter implements InstanceLike {
         mode: this.mode,
       });
 
+      // A model switch anchored inside the dropped tail still happened — the
+      // session stays on its model — so its divider moves to the cut rather
+      // than drifting past the turns that follow.
+      if (this.sessionId) {
+        await reanchorModelSwitches(this.sessionId, backingId, result.survivingUuids, result.lastSurvivingUuid);
+      }
+
       // Wipe in-memory state and tell subscribers to drop their conversation
       // DOM. `droppedText` rides on the broadcast frame so the client can
       // prefill the composer without racing the rewind HTTP response.
@@ -4125,6 +4434,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (result.remainingLineCount === 0) {
         await fsp.rm(sessionFilePath(this.transcriptPlace, backingId), { force: true });
         await fsp.rm(subAgentDirPath(this.transcriptPlace, backingId), { recursive: true, force: true });
+        await this._seedUnanchoredSwitches(backingId);
         await this.launch({});
       } else {
         await this.launch({ resume: backingId });
@@ -6406,6 +6716,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     if (inst.proc) {
       throw httpError(409, 'instance still running');
+    }
+    // Inside a relaunch window (a model switch's or rewind's kill→relaunch, a
+    // prune's rotation) the process is gone only for a moment and its owner is
+    // about to start the next one: a second CLI here would share its jsonl.
+    if (inst.relaunching || inst.rotationPending) {
+      throw httpError(409, 'a relaunch is in progress on this session — retry once it settles');
     }
     // A resume is RETIRING this session's in-memory instances right now (the
     // reclaim at the end of _doCreateResolved). Reviving one in place races that

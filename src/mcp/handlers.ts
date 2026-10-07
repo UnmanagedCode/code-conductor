@@ -155,7 +155,9 @@ interface DiffFileRow {
 // OVERAGE_STOPPED_UNARMED refusal delivers it where a conductor would act on it),
 // `turnEndSeq` + `viewedSeq` (the human's unread state — UI-only, like the route
 // that writes it), `liveTurnEnds` + `lastTurnError` + `liveAsks` (the browser's
-// notification counters — UI-only).
+// notification counters — UI-only), `modelSwitch` + `modelSwitchFailure` (a
+// restart switch is UI-started; send_prompt names one in flight as
+// SESSION_SWITCHING_MODEL).
 export const CONDUCTOR_VIEW_KEYS = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its
@@ -221,6 +223,9 @@ export const LIST_ONLY_KEYS = ['awaitingWake', 'playbook', 'stage'];
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
+  // Mid restart switch summary().model already names the unconfirmed target;
+  // `modelSwitch` is withheld here, so report the model the session is still on.
+  if (summary.modelSwitch) out.model = summary.modelSwitch.from;
   return out;
 }
 
@@ -1267,6 +1272,16 @@ export async function sendPrompt(
   ctx: McpCtx,
 ) {
   const { instances, callerId } = ctx;
+  // Ahead of getInst: across a restart model switch the session is process-less
+  // for a moment (getInst would answer SESSION_NOT_LIVE with resume advice that
+  // does not apply) and then idle on a model not yet confirmed (the prompt would
+  // be delivered). One refusal covers the whole run.
+  const switching = typeof sessionId === 'string' && sessionId ? instances?.anyForSession(sessionId)?.modelSwitch : null;
+  if (switching) {
+    return { ok: false, code: 'SESSION_SWITCHING_MODEL', sessionId, from: switching.from, to: switching.to,
+      reason: `session is restarting to switch model ${switching.from} → ${switching.to}; no prompt was sent — `
+        + 'retry once it is idle.' };
+  }
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;

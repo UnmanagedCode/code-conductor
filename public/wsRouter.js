@@ -220,6 +220,8 @@ export function installWsRouter({
       if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
       if (typeof m.playbookEnforcement === 'string') inst.playbookEnforcement = m.playbookEnforcement;
       inst.interrupting = !!m.interrupting;
+      inst.modelSwitch = m.modelSwitch ?? null;
+      inst.modelSwitchFailure = m.modelSwitchFailure ?? null;
       sidebar.setInstances(state.instances);
       subagentPanel.setInstances(state.instances, state.activeId);
       if (m.id === state.activeId) headerHandle.update();

@@ -17,7 +17,7 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { sessionFilePath, localPlace} from '../src/projects.ts';
 import { buildArchive } from '../src/eventArchive.ts';
-import { replayPersistedLine } from '../src/transcript.ts';
+import { replayPersistedLine, modelSwitchEvent } from '../src/transcript.ts';
 import { readNudgeText } from '../src/conductorReadNudge.ts';
 import { taskNotificationEvent } from '../src/taskNotification.ts';
 
@@ -241,6 +241,8 @@ test('T19: the trimmedBefore clamp stays strict — cut === trimmedBefore is hea
 // importing the implementation's own would let a mutation to it pass unnoticed.
 const keyOf = ev => {
   if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
+  if (ev.kind === 'system' && (ev.subtype === 'model_changed' || ev.subtype === 'model_switch_failed')
+      && typeof ev.data?.switchId === 'string' && ev.data.switchId) return `msw ${ev.data.switchId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.notified === true && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${ev.data.status}`;
   return typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number'
@@ -272,6 +274,9 @@ const SKIPPABLE_HEADS = [
   ['system[hook_pending]', { kind: 'system', subtype: 'hook_pending', _seq: 59 }],
   // A foreground or stopped task's notification: replay never emits it.
   ['system[task_notification, not notified]', { kind: 'system', subtype: 'task_notification', toolUseId: 'tuFg', data: { task_id: 'tFg', status: 'completed', notified: false }, _seq: 59 }],
+  // An identity (Claude↔Claude) switch's notice carries no ledger `switchId`:
+  // it has no persisted twin, unlike a restart switch's divider.
+  ['system[model_changed, identity]', { kind: 'system', subtype: 'model_changed', data: { from: 'a', to: 'b' }, _seq: 59 }],
   ['raw', { kind: 'raw', line: 'not json', _seq: 59 }],
   ['hook', { kind: 'hook', event: 'PreToolUse', _seq: 59 }],
   ['control_response', { kind: 'control_response', requestId: 'r1', ok: true, _seq: 59 }],
@@ -437,14 +442,16 @@ test('T25: a ring of only never-persisted events abandons to the echo fallback',
 
 // Tripwire for the carve-out's soundness condition. `neverPersisted` in
 // src/eventArchive.ts skips `system` at every subtype EXCEPT
-// `soft_interrupted`, `read_nudge` and a notified `task_notification`, on the
-// premise that replay emits exactly those three. If another one is ever added, skipping it would silently duplicate
-// it across the archive/ring seam — nothing else in the codebase would notice.
-// This test is what makes that loud.
+// `soft_interrupted`, `read_nudge`, a notified `task_notification` and a
+// model-switch divider (`model_changed`/`model_switch_failed` carrying a ledger
+// `switchId`), on the premise that replay emits exactly those. If another one is
+// ever added, skipping it would silently duplicate it across the archive/ring
+// seam — nothing else in the codebase would notice. This test is what makes that
+// loud.
 //
 // PINS: the set of `system` subtypes the replay path can construct is exactly
-// {read_nudge, soft_interrupted, task_notification}.
-test('T23: tripwire — replay constructs `system` for exactly three subtypes', async () => {
+// {model_changed, model_switch_failed, read_nudge, soft_interrupted, task_notification}.
+test('T23: tripwire — replay constructs `system` for exactly five subtypes', async () => {
   const srcDir = new URL('../src/', import.meta.url);
   const readWhole = async (url) => {
     const src = await fs.readFile(new URL(url, srcDir), 'utf8');
@@ -502,8 +509,17 @@ test('T23: tripwire — replay constructs `system` for exactly three subtypes', 
   // count: today's two sites legitimately share one subtype.
   assert.equal(found.length, sites, `scan found ${sites} \`system\` construction(s) in the replay path but only ${found.length} with an adjacent subtype — replay now builds a system event whose subtype this scan cannot read, so the set below no longer covers every site`);
 
-  assert.deepEqual(subtypes, ['read_nudge', 'soft_interrupted', 'task_notification'],
-    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`read_nudge\`, \`soft_interrupted\` and a notified \`task_notification\` on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
+  assert.deepEqual(subtypes, ['model_changed', 'model_switch_failed', 'read_nudge', 'soft_interrupted', 'task_notification'],
+    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`read_nudge\`, \`soft_interrupted\`, a notified \`task_notification\` and a model-switch divider on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
+
+  // Positive control for the ledger splice: replay's divider always carries the
+  // `switchId` the carve-out keys on, for both outcomes.
+  for (const ok of [true, false]) {
+    const div = modelSwitchEvent({ id: 'sw1', at: '', segment: 's', afterUuid: null, from: 'a', to: 'b', ok, error: 'e' }, { replayed: true });
+    assert.equal(div.kind, 'system');
+    assert.equal(div.subtype, ok ? 'model_changed' : 'model_switch_failed');
+    assert.equal(div.data.switchId, 'sw1', 'a replayed divider must carry its switchId or neverPersisted would skip it');
+  }
 
   // Positive control: the scanned literal is the one actually emitted.
   const emitted = replayPersistedLine({

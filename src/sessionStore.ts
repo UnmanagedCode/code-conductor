@@ -137,6 +137,23 @@ export interface SessionBackendRecord {
   contextWindowTokens: number | null;
 }
 
+// One restart model switch (Instance.switchModel), success or failure. The
+// session's transcript divider: replayPersistedText splices it into every replay
+// of `segment` right after the jsonl line whose `uuid` is `afterUuid` (null =
+// before the first line).
+export interface ModelSwitchEntry {
+  id: string;
+  at: string;
+  segment: string;
+  afterUuid: string | null;
+  from: string;
+  to: string;
+  ok: boolean;
+  error?: string;
+  // A failure that was the user's Terminate landing mid-switch, not the model's.
+  cancelled?: true;
+}
+
 export interface SessionRecord {
   current: string;
   // The full chain, tombstones included, oldest first.
@@ -155,6 +172,8 @@ export interface SessionRecord {
   project?: string;
   // The worktree NAME (WorktreeMeta.worktreeName), absent for a project root.
   worktree?: string;
+  // Oldest first. Absent means none.
+  modelSwitches?: ModelSwitchEntry[];
 }
 
 // publicId → record. The only persisted structure.
@@ -189,6 +208,20 @@ function parseBackend(raw: unknown): SessionBackendRecord | null {
     model: typeof r.model === 'string' && r.model ? r.model : null,
     contextWindowTokens: typeof r.contextWindowTokens === 'number' && Number.isFinite(r.contextWindowTokens)
       ? r.contextWindowTokens : null,
+  };
+}
+
+function parseModelSwitch(raw: unknown): ModelSwitchEntry | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = nonEmpty(r.id), segment = nonEmpty(r.segment), from = nonEmpty(r.from), to = nonEmpty(r.to);
+  if (!id || !segment || !from || !to || typeof r.ok !== 'boolean') return null;
+  if (r.afterUuid !== null && !nonEmpty(r.afterUuid)) return null;
+  return {
+    id, at: typeof r.at === 'string' ? r.at : '', segment,
+    afterUuid: (r.afterUuid as string | null), from, to, ok: r.ok,
+    ...(typeof r.error === 'string' && r.error ? { error: r.error } : {}),
+    ...(r.cancelled === true ? { cancelled: true as const } : {}),
   };
 }
 
@@ -241,6 +274,10 @@ export function parseSessionsDoc(obj: unknown): SessionsDoc {
     const parent = nonEmpty(v.parent); if (parent) rec.parent = parent;
     const project = nonEmpty(v.project); if (project) rec.project = project;
     const worktree = nonEmpty(v.worktree); if (worktree) rec.worktree = worktree;
+    if (Array.isArray(v.modelSwitches)) {
+      const switches = v.modelSwitches.map(parseModelSwitch).filter((e): e is ModelSwitchEntry => e !== null);
+      if (switches.length) rec.modelSwitches = switches;
+    }
     out.set(publicId, rec);
   }
   return out;
@@ -269,6 +306,11 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
       ...(r.parent ? { parent: r.parent } : {}),
       ...(r.project ? { project: r.project } : {}),
       ...(r.worktree ? { worktree: r.worktree } : {}),
+      ...(r.modelSwitches?.length ? { modelSwitches: r.modelSwitches.map(e => ({
+        id: e.id, at: e.at, segment: e.segment, afterUuid: e.afterUuid, from: e.from, to: e.to, ok: e.ok,
+        ...(e.error ? { error: e.error } : {}),
+        ...(e.cancelled ? { cancelled: true } : {}),
+      })) } : {}),
     };
   }
   return JSON.stringify({ sessions }, null, 2) + '\n';
@@ -694,6 +736,53 @@ export function markConducted(
   return sessionWrite('markConducted', id, false,
     rec => rec.conducted === true && keys.every(k => rec[k] === patch[k]),
     rec => { rec.conducted = true; Object.assign(rec, patch); return true; }, () => true);
+}
+
+// Append one model-switch ledger entry to the session's record.
+export function appendModelSwitch(id: string, entry: ModelSwitchEntry): Promise<boolean> {
+  if (typeof id !== 'string' || !id) return Promise.resolve(false);
+  return mutateSessions('appendModelSwitch', id, (doc) => {
+    const hit = ensureRecord(doc, id, { create: false });
+    if (hit === null || 'refused' in hit) {
+      warnRefused('appendModelSwitch', id, hit ? hit.refused : 'unresolvable');
+      return { changed: false, value: false };
+    }
+    hit.record.modelSwitches = [...(hit.record.modelSwitches ?? []), { ...entry }];
+    return { changed: true, value: true };
+  });
+}
+
+// The ledger entries recorded against transcript segment `backingId` (a live or
+// retired segment of any record), oldest first; [] when none.
+export async function getModelSwitchesForSegment(backingId: string): Promise<ModelSwitchEntry[]> {
+  if (typeof backingId !== 'string' || !backingId) return [];
+  const index = await loadSessions();
+  const owner = resolveOwner(index, backingId) ?? fullChainOwner(index.byPublic, backingId);
+  const rec = owner === null ? undefined : index.byPublic.get(owner);
+  return (rec?.modelSwitches ?? []).filter(e => e.segment === backingId);
+}
+
+// A rewind truncated `segment`'s jsonl: move each of its entries whose anchor
+// line did not survive (`survivingUuids`) to `anchor`, the last surviving line.
+export function reanchorModelSwitches(
+  id: string, segment: string, survivingUuids: readonly string[], anchor: string | null,
+): Promise<number> {
+  if (typeof id !== 'string' || !id) return Promise.resolve(0);
+  const surviving = new Set(survivingUuids);
+  const stale = (e: ModelSwitchEntry): boolean =>
+    e.segment === segment && e.afterUuid !== null && !surviving.has(e.afterUuid);
+  return mutateSessions('reanchorModelSwitches', id, (doc) => {
+    const hit = ensureRecord(doc, id, { create: false });
+    if (hit === null || 'refused' in hit) return { changed: false, value: 0 };
+    const list = hit.record.modelSwitches ?? [];
+    const moved = list.filter(stale).length;
+    if (moved === 0) return { changed: false, value: 0 };
+    hit.record.modelSwitches = list.map(e => (stale(e) ? { ...e, afterUuid: anchor } : e));
+    return { changed: true, value: moved };
+  }, (doc) => {
+    const hit = ensureRecord(doc, id, { create: false });
+    return hit && !('refused' in hit) && !(hit.record.modelSwitches ?? []).some(stale) ? { value: 0 } : null;
+  });
 }
 
 export interface TurnMarks { turnEndSeq: number; viewedSeq: number }

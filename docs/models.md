@@ -105,13 +105,87 @@ The consequences of being a substitution backend:
   breaks the next resume's `--model <key>`, drops the context env vars, and writes
   a foreign id + capacity into the session's recorded `backend`. Suppressing only the
   *lossy* shapes left exactly that hole. Unconditional is correct rather than
-  merely safe: live model changes are already refused here (below), so the
-  configured id is authoritative by construction. The guard is keyed on
+  merely safe: a model change here is a restart onto a configured id, never a
+  live switch (below), so the configured id is authoritative by construction. The guard is keyed on
   `backend !== 'claude'`, never on one backend id — narrowing it to
   `=== 'ollama'` reintroduces the bug for every user-defined backend.
-- **Live "Change model" is refused** — the endpoint is fixed at launch, so any
-  switch with a non-`claude` backend on either side (including
-  substitution↔substitution) is rejected `409 BACKEND_LOCKED`.
+- **"Change model" restarts within the session's own backend, and is refused
+  across backends.** The model is fixed at launch in three places — `{model}` in the
+  template's argv, the cc-managed context env vars, and `_trackModel` ignoring the
+  CLI's report — so no `set_model` control request can reach it. `Instance.switchModel`
+  (the WS `model` frame's dispatcher) therefore:
+  - identity session → `claude` tier: live `setModel` (`set_model` control request), unchanged;
+  - substitution session → a tier on the **same** backend: **restart** —
+    kill → set `this.model`/`this.effort` (the tier's effort) → `_wipeForResume` →
+    `launch({resume})` (or `launch({})` under `--session-id` for a session with no
+    conversation yet) → confirm. `spawn()` reads `this.model` for the argv, the
+    context env and the session record, so the new model is both what runs and what
+    a cold resume comes back on;
+  - anything else (substitution ↔ another substitution, substitution ↔ `claude`) →
+    `409 BACKEND_LOCKED` (a new session or a fork is the way across).
+- **Restart switch: refusals, confirmation, failure** (`_beginRestartSwitch`,
+  `_runRestartSwitch`; every check runs and `_mutating = 'model_switch'` is claimed
+  with no await in between):
+
+  | Refusal | When |
+  |---|---|
+  | `409 SESSION_ROTATING` | a renew/prune rotation is in flight (`_assertNoRotationInFlight`) |
+  | `409` "another rewind/fork/prune/model switch is in progress" | `_mutating` held |
+  | `409` "not running" | no process |
+  | `409 SESSION_BUSY` | status not `idle` (turn, spawning — which also covers a pending steer or interrupt), background agent tasks or bash jobs running |
+  | no-op `{restart:false}` | the canonical target equals the running model — no restart, ledger entry or divider; effort untouched |
+
+  - **Confirmed** when the relaunch has come up idle and outlived
+    `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
+    entry is written and the divider emitted live. A failure to write the entry,
+    or a throw while announcing it (an `event` listener), is NOT a failed switch:
+    it is logged and the session stays on the new model with no failure chip — a
+    failed write costs only the divider's durability.
+  - **Failed** when the relaunch throws, ends inside that window, or has not come
+    up idle by `MODEL_SWITCH_IDLE_DEADLINE_MS` (`_modelSwitchIdleDeadlineMs`).
+    Cause: its last stderr line, else its `spawn_error`, else `exited code=…
+    signal=…`, else the deadline. The model, effort and capabilities are restored,
+    the record is rewritten to the old model, a failure ledger entry is written,
+    and the session is **resumed again on the old model** (same session id,
+    conversation kept, its own context reading re-seeded). If that resume also
+    fails the session is left `crashed`, recorded on the old model;
+    `modelSwitchFailure.error` names both causes.
+  - **Cancelled** — a kill landing on the relaunch inside the window (a Terminate)
+    is the user's stop: the record is rewritten to the old model, the ledger entry
+    carries `cancelled: true` (no `error`), the session stays stopped (no
+    re-resume) and `modelSwitchFailure` stays null — no failure chip.
+  - `_relaunching` is held for the whole run, released in `finally` with
+    `_mutating`: the session stays live for `isSessionLive` (a resume cannot
+    reclaim the instance), an exit delivers no EXITED wake to an owner, and REST
+    respawn is refused `409`.
+  - `_suppressTempDelete` is held from the kill until confirmation (a temp
+    session is not archived by the attempt; no exit cause is recorded). From
+    confirmation on an exit records its cause and `launch_failed` as usual — it
+    shows in `lastExit`, in `describe_session`, and in the next `send_prompt`'s
+    `SESSION_NOT_LIVE` with the exit details — but, `_relaunching` being still
+    held, no EXITED wake is delivered, then or when the switch settles: an owner
+    learns of it on its next engagement, or from the heartbeat's "did NOT finish"
+    stub. A temp session the attempt leaves
+    with no process while still suppressed (a cancel, a double failure) is
+    archived in `finally`, as its exit would have been.
+  - The relaunch's replay skips the jsonl's context-usage seed (`_skipUsageSeed`,
+    prune's rule): that reading was measured on the old model, and the window is
+    already the new one's, so the chip reads `ctx —` until the new model measures.
+    `loadHistory` consumes the flag before anything else, a missing transcript
+    included; the failure arm clears it before re-resuming on the old model.
+  - The failure and cancel arms await the attempt's replay (`_replayDone`, the
+    detached tail of `spawn()`) before writing their ledger entry or emitting,
+    so the divider follows every replayed line and that replay cannot also
+    splice it.
+  - `prompt()` refuses `409` for the whole run (`rewriteBlocksPrompts`), the grace
+    window included; `setEffort` refuses `409`.
+  - The conductor view (`toConductorView`) reports the switch's `from` as `model`
+    until it settles — conductors do not see `modelSwitch`, and `summary().model`
+    already names the target.
+- **Known limitation — confirmation is "process up + grace window".** A model the
+  backend accepts at launch but rejects on its first request surfaces as an API error
+  in that first turn, not as a switch failure, and the session stays recorded on
+  the new model.
   Live **"Change effort"** is *not* refused here: it repoints no endpoint — every
   backend runs the same inner Claude CLI, which handles `/effort` locally, and
   `--effort` is already passed unconditionally at spawn for all of them.
@@ -162,7 +236,19 @@ The consequences of being a substitution backend:
   means plain `claude`; a `null` model means backend-known/model-unknown (resume falls
   back to the jsonl and the next spawn self-heals it). `contextWindowTokens` is a
   fallback used only when the model's custom-model row has since been deleted. If the recorded backend has since been REMOVED from the
-  registry, resume is refused `422 BACKEND_GONE` (below).
+  registry, resume is refused `422 BACKEND_GONE` (below). A restart model switch
+  rewrites it to the new model (at the relaunch's spawn) and back to the old one on
+  failure.
+- **The record also holds the switch ledger** — `modelSwitches: [{id, at, segment,
+  afterUuid, from, to, ok, error?}]`, one entry per confirmed or failed restart
+  switch, oldest first. It is the transcript divider's durable home (the jsonl is the
+  CLI's): `loadPersistedTranscript` splices each entry of the segment being read
+  after the line whose `uuid` is `afterUuid` (`null` = first; always `null` when
+  the segment had no conversation to resume, since its file is deleted before the
+  `--session-id` relaunch) — see
+  [architecture.md](architecture.md) → `src/transcript.ts`. A rewind that truncates
+  an entry's anchor moves it to the last surviving line (`reanchorModelSwitches`). A
+  fork does not inherit the ledger.
 
 There is deliberately **no** per-backend health check and **no** per-backend model
 catalog. A bad backend or model simply fails at spawn and surfaces as
@@ -354,6 +440,7 @@ so a changed default moves *new spawns*, never anything already running:
 | Restart manifest (`src/resumeRestart.ts`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
 | `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
+| Restart model switch (`Instance.switchModel`, substitution backend) | the picked tier's Settings-row effort (`getTierEffort`), set before the relaunch; restored on failure. The live identity switch leaves effort alone |
 
 **A live "Change effort"** (⋮ menu → `⚡ Change effort`, `Instance.setEffort`) moves
 `this.effort` and nothing else — there is no on-disk store for effort. Every row
@@ -410,8 +497,8 @@ the window the session already held (first bullet below).
   the value the session already held; a new model whose window is known takes
   that window. The carried number can mislabel capacity (a Haiku 4.5 session
   switched to an unrecognised 1M-class id keeps `200k`) — accepted so the chip
-  stays populated. The rule needs a prior value: a create, a cold resume and
-  `_trackModel`'s silent-adopt branch resolve exactly, so a session that starts
+  stays populated. The rule needs a prior value: a create, a cold resume, a
+  restart model switch and `_trackModel`'s silent-adopt branch resolve exactly, so a session that starts
   on an unknown model reads `null`. The `model_changed` notice and the
   context-reading drop are unaffected — only the denominator carries.
 

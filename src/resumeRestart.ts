@@ -94,9 +94,12 @@ function groupOf(inst: InstanceLike): 'worker' | 'conductor' | 'other' {
 // Resolve once every live instance has left `turn` (idle/exited/crashed), or on
 // the grace timeout. Returns { timedOut, stragglers } where stragglers are the
 // instances still mid-turn at timeout.
+// A restart model switch counts as busy for its whole run, process-less gap
+// included: the manifest must carry the model it settles on, not one it has not
+// confirmed (Instance.switchModel).
 function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{ timedOut: boolean; stragglers: InstanceLike[] }> {
-  const live = [...instances.byId.values()].filter((i) => i.proc);
-  const pending = new Set(live.filter((i) => i.status === 'turn'));
+  const all = [...instances.byId.values()];
+  const pending = new Set(all.filter((i) => (i.proc && i.status === 'turn') || i.modelSwitch));
   return waitFor<{ timedOut: boolean; stragglers: InstanceLike[] }>({
     initial: () => pending.size === 0 ? { value: { timedOut: false, stragglers: [] } } : null,
     // The N-listener case is exactly why subscribe() returns an opaque teardown
@@ -105,7 +108,7 @@ function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{
       const listeners: Array<[InstanceLike, (s: InstanceSummary) => void]> = [];
       for (const inst of pending) {
         function fn(s: InstanceSummary): void {
-          if (s.status === 'turn' || s.status === 'spawning') return;
+          if (s.modelSwitch || s.status === 'turn' || s.status === 'spawning') return;
           pending.delete(inst);
           if (pending.size === 0) settle({ timedOut: false, stragglers: [] });
         }

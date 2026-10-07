@@ -70,6 +70,10 @@ export interface InstanceSummary {
   liveAsks?: number;
   // Running background Bash jobs (src/backgroundJobs.ts).
   backgroundJobs?: BackgroundJob[];
+  // A restart model switch in flight, and the last one's failure
+  // (Instance.switchModel).
+  modelSwitch?: { from: string; to: string } | null;
+  modelSwitchFailure?: { from: string; to: string; error: string } | null;
   [key: string]: unknown;
 }
 
@@ -107,7 +111,8 @@ export interface CreateInstanceInput {
 }
 
 // The destructive transcript rewrite holding an instance's `_mutating`.
-export type RewriteKind = 'rewind' | 'fork' | 'prune';
+// `model_switch` is Instance.switchModel's restart, which claims the same slot.
+export type RewriteKind = 'rewind' | 'fork' | 'prune' | 'model_switch';
 
 export interface InstanceLike {
   readonly id: string;
@@ -221,6 +226,10 @@ export interface InstanceLike {
   promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
+  // The WS "Change model" dispatcher: live for identity, restart for a
+  // same-backend substitution switch, BACKEND_LOCKED otherwise.
+  switchModel(opts: { model: string; backend: string; effort: string }): Promise<{ restart: boolean }>;
+  readonly modelSwitch: { from: string; to: string } | null;
   // Synchronous on purpose: `/effort` is a CLI-LOCAL slash command written to
   // stdin, so there is no control_response to await. See src/instances.ts.
   setEffort(effort: string): string;

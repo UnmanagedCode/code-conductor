@@ -69,6 +69,27 @@ const CONDUCT_PROJECT = '.conduct';
 export function isEnforcing(level) { return level !== 'warn'; }
 export function nextEnforcementLevel(level) { return isEnforcing(level) ? 'warn' : 'enforce'; }
 
+// What a "Change model" entry for tier binding `binding` does on session `inst`:
+//   live    — an identity (Claude) session to a Claude tier: switched in place.
+//   restart — a substitution session to a tier on its OWN backend: the server
+//             restarts the CLI on the new model and resumes the conversation.
+//             Disabled while anything runs; the server's refusal stays the
+//             authority (it also sees background bash jobs, which the client
+//             does not).
+//   cross   — any other backend: never switchable on this session.
+// Display only — the server re-resolves the tier and decides.
+export const RESTART_BUSY_TITLE = 'Switching restarts the session — wait for the running turn to finish';
+export function modelEntryState(inst, binding) {
+  const running = inst.backend || CLAUDE_BACKEND;
+  const target = backendIdOf(binding);
+  if (target !== running) {
+    return { kind: 'cross', disabled: true, title: `On ${getBackendLabel(target)} — a different backend needs a new session or a fork` };
+  }
+  if (running === CLAUDE_BACKEND) return { kind: 'live', disabled: false, title: '' };
+  const busy = inst.status !== 'idle' || inst.displayStatus === 'running' || !!inst.modelSwitch;
+  return { kind: 'restart', disabled: busy, title: busy ? RESTART_BUSY_TITLE : 'Restarts the session on this model — the conversation is kept' };
+}
+
 export function installHeader({
   dom,
   getActiveId,
@@ -202,10 +223,14 @@ export function installHeader({
     // Server-resolved capacity; omit the clause entirely when unknown rather
     // than printing a guessed number next to a real model name.
     const ctxWindow = inst.contextWindowTokens;
-    const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
+    // Mid-switch the server already names the target it is launching; the
+    // session is still on `from` until the switch is confirmed.
+    const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(default)';
     const meta = document.createElement('div');
     meta.className = 'ih-usage-meta';
-    meta.textContent = Number.isFinite(ctxWindow)
+    // Mid-switch `contextWindowTokens` is already the target's, so it would be
+    // paired with the wrong model's name: show the name alone.
+    meta.textContent = Number.isFinite(ctxWindow) && !inst.modelSwitch
       ? `${modelLabel} · ${formatTokens(ctxWindow)} context`
       : modelLabel;
     node.appendChild(meta);
@@ -281,7 +306,7 @@ export function installHeader({
   // set_model, via Instance.setModel) — no optimistic mutation of inst.model
   // here; the status broadcast (wsRouter.js) is what actually flips it once
   // the CLI acks. getActiveTierBackend/backendIdOf below are read for DISPLAY
-  // only (the blocked/disabled check and the .qs-selected highlight) — the
+  // only (grouping, modelEntryState and the .qs-selected highlight) — the
   // cache they read can be stale, but the server refuses (`BACKEND_LOCKED`)
   // rather than switching to whatever it's stale about.
   function closePicker() {
@@ -293,7 +318,10 @@ export function installHeader({
     openPicker = null;
   }
 
-  function togglePicker(anchor, build) {
+  // `meta` tags the open picker; update() refreshes an open model picker of the
+  // active session in place (its entries re-enable when the session goes idle)
+  // instead of closing it.
+  function togglePicker(anchor, build, meta = {}) {
     if (openPicker && openPicker.anchor === anchor) {
       closePicker();
       return;
@@ -319,10 +347,53 @@ export function installHeader({
       onDismiss: () => closePicker(),
     });
     ctl.arm();
-    openPicker = { node, anchor, ctl };
+    openPicker = { node, anchor, ctl, ...meta };
   }
 
-  function buildModelPopover(inst) {
+  // update()'s refresh of an open model picker. Rebuilds only when an entry's
+  // state actually changed — a rebuild between mousedown and mouseup would
+  // detach the button being clicked — and drops a refusal note then, since it
+  // described the state that just went away.
+  function refreshModelPicker(inst) {
+    const key = modelPickerKey(inst);
+    if (key === openPicker.key) return;
+    openPicker.key = key;
+    openPicker.warn = null;
+    renderModelPicker(inst);
+  }
+
+  function renderModelPicker(inst) {
+    openPicker.node.replaceChildren(...buildModelPopover(inst, { warn: openPicker.warn }).childNodes);
+  }
+
+  // The picker's entries: tiers grouped by backend, the session's own first,
+  // each with its modelEntryState and highlight. Only enabled tiers are offered.
+  function modelPickerGroups(inst) {
+    const runningBackend = inst.backend || CLAUDE_BACKEND;
+    const runningModel = inst.modelSwitch?.from ?? inst.model;
+    // The `[1m]`/`[200k]` launch tag is Claude catalog policy; a substitution
+    // backend's id is compared exactly.
+    const curModel = typeof runningModel !== 'string' ? null
+      : runningBackend === CLAUDE_BACKEND ? runningModel.replace(/\[(200k|1m)\]$/, '') : runningModel;
+    const groups = new Map([[runningBackend, []]]);
+    for (const tier of getTierList()) {
+      if (!getActiveTierEnabled(tier)) continue;
+      const binding = getActiveTierBackend(tier); // {backend, model}
+      const id = backendIdOf(binding);
+      const state = modelEntryState(inst, binding);
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push({ tier, state, selected: state.kind !== 'cross' && binding.model === curModel });
+    }
+    return [...groups].filter(([, entries]) => entries.length);
+  }
+
+  // Everything the rendered entries depend on, as one comparable string.
+  function modelPickerKey(inst) {
+    return JSON.stringify(modelPickerGroups(inst).map(([id, entries]) =>
+      [id, entries.map(e => [e.tier, getTierLabel(e.tier), e.state.kind, e.state.disabled, e.state.title, e.selected])]));
+  }
+
+  function buildModelPopover(inst, { warn = null } = {}) {
     const node = document.createElement('div');
     node.className = 'ih-usage-popover';
     node.setAttribute('role', 'dialog');
@@ -333,48 +404,74 @@ export function installHeader({
     header.textContent = 'Change model';
     node.appendChild(header);
 
-    // A live "Change model" is a control_request to the RUNNING process, whose
-    // endpoint is fixed at launch — so a switch involving any non-`claude`
-    // backend on either side can't be done live (including substitution↔
-    // substitution: a different model/host can't repoint the launched endpoint).
-    // The server enforces this too; here we disable the blocked tiers upfront.
-    const runningBackend = inst.backend || CLAUDE_BACKEND;
-    const curModel = typeof inst.model === 'string' ? inst.model.replace(/\[(200k|1m)\]$/, '') : null;
-    const row = document.createElement('div');
-    row.className = 'quick-spawn-models';
-    for (const tier of getTierList()) {
-      const binding = getActiveTierBackend(tier); // {backend, model}
-      const targetBackend = backendIdOf(binding);
-      const blocked = runningBackend !== CLAUDE_BACKEND || targetBackend !== CLAUDE_BACKEND;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'qs-model';
-      btn.dataset.tier = tier;
-      btn.hidden = !getActiveTierEnabled(tier);
-      btn.disabled = blocked;
-      if (blocked) btn.title = 'Kill and respawn on that tier to change backend';
-      // Highlight the tier the running (Claude) worker is on — same backend + id.
-      btn.classList.toggle('qs-selected', !blocked && binding.model === curModel);
-      btn.textContent = getTierLabel(tier);
-      if (!blocked) {
-        btn.addEventListener('click', async () => {
-          try {
-            await send('model', { id: inst.id, tier }, { ack: true });
-            closePicker();
-            closeOverflow();
-          } catch (e) {
-            alert('Change model failed: ' + e.message);
-          }
-        });
+    // Within its own backend an identity session switches live and a
+    // substitution session restarts (↻); every other group is disabled — see
+    // modelEntryState.
+    let restartShown = false;
+    for (const [backendId, entries] of modelPickerGroups(inst)) {
+      const label = document.createElement('div');
+      label.className = 'qs-backend-group';
+      label.textContent = getBackendLabel(backendId);
+      node.appendChild(label);
+      const row = document.createElement('div');
+      row.className = 'quick-spawn-models';
+      for (const { tier, state, selected } of entries) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'qs-model';
+        btn.dataset.tier = tier;
+        btn.dataset.kind = state.kind;
+        btn.disabled = state.disabled;
+        if (state.title) btn.title = state.title;
+        btn.classList.toggle('qs-selected', selected);
+        btn.textContent = getTierLabel(tier);
+        if (state.kind === 'restart') {
+          restartShown = true;
+          const badge = document.createElement('span');
+          badge.className = 'qs-restart-badge';
+          badge.textContent = '↻';
+          btn.appendChild(badge);
+        }
+        if (state.kind === 'live') {
+          btn.addEventListener('click', async () => {
+            try {
+              await send('model', { id: inst.id, tier }, { ack: true });
+              closePicker();
+              closeOverflow();
+            } catch (e) {
+              alert('Change model failed: ' + e.message);
+            }
+          });
+        } else if (state.kind === 'restart' && !state.disabled) {
+          // Acked once the server ACCEPTS the restart; the outcome arrives as
+          // the status chip and transcript lines. A refusal stays in the picker.
+          btn.addEventListener('click', async () => {
+            try {
+              await send('model', { id: inst.id, tier }, { ack: true });
+              closePicker();
+              closeOverflow();
+            } catch (e) {
+              if (!openPicker) return;
+              openPicker.warn = `Change model refused: ${e.message}`;
+              renderModelPicker(currentInst ?? inst);
+            }
+          });
+        }
+        row.appendChild(btn);
       }
-      row.appendChild(btn);
+      node.appendChild(row);
     }
-    node.appendChild(row);
-    if (runningBackend !== CLAUDE_BACKEND) {
+    if (restartShown) {
       const note = document.createElement('div');
       note.className = 'ih-usage-popover-note';
-      note.textContent = `${getBackendLabel(runningBackend)}-backed session — kill and respawn on a tier to change model.`;
+      note.textContent = '↻ restarts the session · conversation is kept';
       node.appendChild(note);
+    }
+    if (warn) {
+      const w = document.createElement('div');
+      w.className = 'ih-usage-popover-note warn';
+      w.textContent = warn;
+      node.appendChild(w);
     }
 
     return node;
@@ -382,7 +479,10 @@ export function installHeader({
 
   dom.changeModelBtn.addEventListener('click', () => {
     closeOverflow();
-    if (currentInst) togglePicker(dom.overflowToggle, () => buildModelPopover(currentInst));
+    if (currentInst) {
+      const inst = currentInst;
+      togglePicker(dom.overflowToggle, () => buildModelPopover(inst), { kind: 'model', instId: inst.id, key: modelPickerKey(inst) });
+    }
   });
 
   // "Change effort" popover: the same anchored picker shape as Change model, one
@@ -704,9 +804,16 @@ export function installHeader({
     // is no longer active (a programmatic switch; a user's click elsewhere
     // already dismisses it).
     closeCombinedPopover();
-    closePicker();
     const inst = getInstances().find(i => i.id === getActiveId());
     const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
+    // An open model picker of THIS session is refreshed in place, so its entries
+    // follow the session (a restart entry re-enables once it goes idle); any
+    // other open picker closes.
+    if (openPicker?.kind === 'model' && inst && canMenu && !inst.modelSwitch && openPicker.instId === inst.id) {
+      refreshModelPicker(inst);
+    } else {
+      closePicker();
+    }
     const narrow = narrowMq.matches;
     const hasWorktree = !!inst?.worktree?.worktreeName;
     // Below the breakpoint Sync lives in ⋮, so a crashed or exited
@@ -775,10 +882,20 @@ export function installHeader({
     // background subagent is still working) still surface. A soft interrupt
     // mid-turn shows a distinct "stopping…" chip. Cosmetic only — the real
     // `inst.status` (not `displayStatus`) still gates every action below.
-    if (inst.status === 'turn' && inst.interrupting) {
+    // A restart model switch wins over the transient exited/spawning it passes
+    // through: the session is not stopping, it is coming back on a new model.
+    if (inst.modelSwitch) {
+      mainLine.appendChild(chip('ih-status ih-status-restarting',
+        `Restarting · switching model ${inst.modelSwitch.from} → ${inst.modelSwitch.to}`));
+    } else if (inst.status === 'turn' && inst.interrupting) {
       mainLine.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
     } else if (inst.displayStatus !== 'idle') {
       mainLine.appendChild(chip(`ih-status ih-status-${inst.displayStatus}`, inst.displayStatus));
+    }
+    if (!inst.modelSwitch && inst.modelSwitchFailure) {
+      const fc = chip('ih-status ih-status-switch-failed', `Switch to ${inst.modelSwitchFailure.to} failed`);
+      fc.title = inst.modelSwitchFailure.error;
+      mainLine.appendChild(fc);
     }
     // Overage paused chip. armed (autoResumeAt) shows the resume time + queued
     // count; a not-yet-queued session paused by the GLOBAL window (overageActive,
@@ -803,7 +920,7 @@ export function installHeader({
     setModeToggle(inst.mode, inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited');
     dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
     dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
-    dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
+    dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited') || !!inst.modelSwitch;
     dom.turnIndicator.hidden = false;
     renderTiLeft(inst);
     // One predicate for both placements, so the bar button and its ⋮ twin
@@ -831,13 +948,13 @@ export function installHeader({
     dom.renameSessionBtn.hidden = !canMenu;
     dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
     dom.changeModelBtn.hidden = !canMenu;
-    dom.changeModelBtn.disabled = !canMenu || !inst.sessionId;
+    dom.changeModelBtn.disabled = !canMenu || !inst.sessionId || !!inst.modelSwitch;
     dom.changeModelBtn.textContent = '🧠 Change model';
     // Idle-only for the same reason as Prune below: mid-turn the CLI folds the
     // `/effort` line into the running turn's input instead of running it as a
     // local slash command (server refuses it 409 too).
     dom.changeEffortBtn.hidden = !canMenu;
-    dom.changeEffortBtn.disabled = inst.status !== 'idle' || !inst.sessionId;
+    dom.changeEffortBtn.disabled = inst.status !== 'idle' || !inst.sessionId || !!inst.modelSwitch;
     dom.changeEffortBtn.title = inst.status !== 'idle'
       ? 'Effort can only be changed between turns'
       : 'Change how hard this session reasons, without restarting';
@@ -891,7 +1008,9 @@ export function installHeader({
     }
     dom.autoApprovePlanBtn.setAttribute('aria-pressed', inst.autoApprovePlan ? 'true' : 'false');
     const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
-    const canSend = ['idle', 'turn'].includes(inst.status);
+    // No send for a whole restart model switch, grace window included — the
+    // server refuses one there, and nothing queues.
+    const canSend = ['idle', 'turn'].includes(inst.status) && !inst.modelSwitch;
     // While the overage window is active the composer stays usable, but sending
     // QUEUES the message (delivered when the window resets). Key on the GLOBAL
     // signal (overageActive) as well as an armed session (autoResumeAt) so
@@ -907,7 +1026,9 @@ export function installHeader({
     // No clickable button that just throws a 409: rewind only between turns,
     // fork mid-turn too.
     conversation.setUserActionsEnabled(userActionsForStatus(inst.status));
-    dom.composerInput.placeholder = inst.status === 'turn'
+    dom.composerInput.placeholder = inst.modelSwitch
+      ? 'switching model — the session is restarting…'
+      : inst.status === 'turn'
       ? 'turn running — type to steer the running turn'
       : inst.status === 'spawning'
         ? 'instance is starting…'
