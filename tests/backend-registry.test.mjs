@@ -811,15 +811,24 @@ describe('models + backends settings routes', () => {
   test('PATCH omitting a field keeps the addressed row\'s own stored values — matched on backend AND model, ids with "/" included', async () => {
     await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
     const slashId = 'meta-llama/Llama-3.1-8B';
+    // Both look-alikes precede the target, so a lookup on the model alone lands on
+    // 'Same id' and one on the backend alone lands on 'Same backend'.
+    await addCustomModel({ label: 'Same id', model: slashId, backend: 'p', contextWindow: 300_000, midTurnSteering: true });
     await addCustomModel({ label: 'Same backend', model: 'other:v1', backend: 'ollama', contextWindow: 200_000, midTurnSteering: true });
     await addCustomModel({ label: 'Target', model: slashId, backend: 'ollama', contextWindow: 100_000, midTurnSteering: false });
-    await addCustomModel({ label: 'Same id', model: slashId, backend: 'p', contextWindow: 300_000, midTurnSteering: true });
     const before = getCustomModels();
     const r = await api(baseUrl, 'PATCH', customUrl('ollama', slashId), { label: 'Target 2' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.deepEqual(r.body.updated, { label: 'Target 2', model: slashId, backend: 'ollama', contextWindow: 100_000, midTurnSteering: false },
       "defaults come from the row matching both backend and model, not a row sharing only one");
-    assert.deepEqual(r.body.customModels, [before[0], r.body.updated, before[2]], 'the other rows are untouched');
+    assert.deepEqual(r.body.customModels, [before[0], before[1], r.body.updated], 'the other rows are untouched');
+  });
+
+  test('PATCH without a label keeps the stored label', async () => {
+    await addCustomModel({ label: 'Stays', model: 'stays:v1', backend: 'ollama', contextWindow: 100_000 });
+    const r = await api(baseUrl, 'PATCH', customUrl('ollama', 'stays:v1'), { contextWindow: 150_000 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.updated, { label: 'Stays', model: 'stays:v1', backend: 'ollama', contextWindow: 150_000, midTurnSteering: true });
   });
 
   test('PATCH validates like POST and refuses an identity change', async () => {

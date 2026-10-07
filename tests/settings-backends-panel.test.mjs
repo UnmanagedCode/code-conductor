@@ -689,3 +689,35 @@ test('a re-render whose payload lacks the edited row leaves edit mode without Re
     backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
   });
 });
+
+test('removing a row with the edited model id on a different backend leaves the edit form open', async () => {
+  const sameId = { label: 'Same id', model: 'mine:v1', backend: 'my-proxy', contextWindow: 64000, midTurnSteering: true };
+  const { window, calls, $, editBtn, form, payload } = await setupEdit(call => (call.method === 'DELETE'
+    ? { body: { ...payload, customModels: [MINE] } } : undefined), [MINE, sameId]);
+  editBtn(0).click();
+  $('sm-custom-label').value = 'Mine edited';
+  window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')[1].click();
+  await tick();
+  assert.deepEqual(calls, [{ url: '/api/settings/models/custom/my-proxy/mine%3Av1', method: 'DELETE' }]);
+  assert.deepEqual(form(), {
+    label: 'Mine edited', backend: 'ollama', model: 'mine:v1', context: '131072', steer: false,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Editing Mine — backend and model id are fixed',
+  });
+});
+
+test('a re-render keeps edit mode only for a payload holding the exact edited pair, not a same-backend or same-model look-alike', async () => {
+  const { window, $, editBtn, form, payload } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-label').value = 'dirty';
+  // Same backend (ollama/sib:v3) and same model id (my-proxy/mine:v1) survive; the edited pair does not.
+  payload.customModels = [SIBLING, { label: 'Same id', model: 'mine:v1', backend: 'my-proxy', contextWindow: 64000, midTurnSteering: true }];
+  window.location.hash = '#';
+  await tick();
+  await openSettings(window);
+  const f = form();
+  assert.deepEqual({ ...f, backend: undefined }, {
+    label: '', backend: undefined, model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
+  });
+});
