@@ -63,7 +63,8 @@ export function isTextPayload(v: unknown): v is TextPayload {
 }
 
 // The rendered read tools' channel — the recon read tools, enumerate_remotes,
-// and describe_playbook's success path: the whole result IS a plain-text rendering,
+// describe_playbook's success path, and the plugin bridge's meta-less string
+// `{text}` (src/plugins/mcpBridge.ts): the whole result IS a plain-text rendering,
 // emitted as one raw block with no metadata block at all. Same Symbol-tag
 // discipline as textPayload, and for the same reason — the default path
 // JSON-stringifies, so a bare string cannot express this, and sniffing
