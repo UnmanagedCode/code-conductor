@@ -156,12 +156,16 @@ The consequences of being a substitution backend:
     re-resume) and `modelSwitchFailure` stays null — no failure chip.
   - `_relaunching` is held for the whole run, released in `finally` with
     `_mutating`: the session stays live for `isSessionLive` (a resume cannot
-    reclaim the instance), an exit wakes no owner, and REST respawn is refused
-    `409`.
+    reclaim the instance), an exit delivers no EXITED wake to an owner, and REST
+    respawn is refused `409`.
   - `_suppressTempDelete` is held from the kill until confirmation (a temp
     session is not archived by the attempt; no exit cause is recorded). From
-    confirmation on an exit records its cause and `launch_failed` as usual — but
-    wakes no owner until the switch settles. A temp session the attempt leaves
+    confirmation on an exit records its cause and `launch_failed` as usual — it
+    shows in `lastExit`, in `describe_session`, and in the next `send_prompt`'s
+    `SESSION_NOT_LIVE` with the exit details — but, `_relaunching` being still
+    held, no EXITED wake is delivered, then or when the switch settles: an owner
+    learns of it on its next engagement, or from the heartbeat's "did NOT finish"
+    stub. A temp session the attempt leaves
     with no process while still suppressed (a cancel, a double failure) is
     archived in `finally`, as its exit would have been.
   - The relaunch's replay skips the jsonl's context-usage seed (`_skipUsageSeed`,

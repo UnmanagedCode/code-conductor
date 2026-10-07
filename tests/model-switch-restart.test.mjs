@@ -761,3 +761,36 @@ test('REST respawn is refused 409 while a prune\'s rotation window is open', asy
   await instances.respawn(inst.id); // control: the window was the reason
   await waitFor(() => inst.status === 'idle');
 });
+
+test('a status listener throwing during the relaunch\'s replay tail is logged, not an unhandled rejection', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const rejections = [];
+  const onRejection = (r) => { rejections.push(r); };
+  process.on('unhandledRejection', onRejection);
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => { warnings.push(a.join(' ')); };
+  let thrown = false;
+  let spawning = false;
+  // Throws on the replay tail's own transition to idle (spawning → idle) while switching.
+  const boom = (s) => {
+    if (s.status === 'spawning') spawning = true;
+    if (!thrown && spawning && inst.modelSwitch && s.status === 'idle') { thrown = true; throw new Error('status boom'); }
+  };
+  inst.on('status', boom);
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await settled(inst);
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+  } finally {
+    inst.off('status', boom);
+    console.warn = realWarn;
+    process.off('unhandledRejection', onRejection);
+  }
+  assert.ok(thrown, 'fixture check: the listener did throw inside the replay tail');
+  assert.deepEqual(rejections, [], 'no unhandled rejection');
+  assert.ok(warnings.some(w => /status boom/.test(w)), `logged: ${JSON.stringify(warnings)}`);
+  assert.equal(inst.model, B, 'the switch itself still confirmed');
+});

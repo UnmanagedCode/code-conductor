@@ -882,7 +882,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // The current launch's spawn_error message, if its 'error' fired.
   _spawnError: string | null;
   // The current launch's post-spawn replay-then-idle step (spawn()'s detached
-  // tail); never rejects. A restart switch's failure arm awaits it so nothing
+  // tail); never rejects — spawn() logs a throw from it. A restart switch's failure arm awaits it so nothing
   // it emits can land amid — or after a wipe, ahead of — that replay.
   _replayDone: Promise<void>;
   _skipUsageSeed: boolean;
@@ -2753,7 +2753,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (this.proc && this.proc.stdin && this.proc.stdin.writable && this.status === 'spawning') {
         this._setStatus('idle');
       }
-    })();
+    })().catch((err: unknown) => {
+      // A throwing `event`/`status` listener (the history_load_error emit, the
+      // idle transition) rejects the tail. Nothing awaits it on most paths, so
+      // an unhandled rejection would take the server down: log it instead.
+      console.warn(`instances: replay tail for ${this.sessionId} threw: ${err instanceof Error ? err.message : String(err)}`);
+    });
     return facts;
   }
 
