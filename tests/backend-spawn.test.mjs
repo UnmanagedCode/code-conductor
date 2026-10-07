@@ -599,7 +599,7 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
 // pin an old model.
 describe('a UI-shaped spawn (row named, no model) lands on the CURRENT binding', () => {
   test('a tier spawn follows a rebind made after the row was last read', async () => {
-    // Bound away from `fast`'s OWN default (claude-haiku-4-5): a resolver that
+    // Bound away from `fast`'s OWN default (claude-haiku-5-5): a resolver that
     // fell back to DEFAULT_TIER_BACKEND instead of reading the stored binding
     // would still pass the haiku case, so this has to differ from the tier's
     // default to actually discriminate.

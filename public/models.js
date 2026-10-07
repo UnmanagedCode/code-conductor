@@ -19,7 +19,7 @@ const DEFAULT_VERSIONS = {
   fable: 'claude-fable-5-1',
   sonnet: 'claude-sonnet-5-5',
   opus: 'claude-opus-5-5',
-  haiku: 'claude-haiku-4-5',
+  haiku: 'claude-haiku-5-5',
 };
 
 // Friendly names for the pre-fetch fallback ids above — overwritten by the
@@ -28,7 +28,7 @@ const DEFAULT_VERSION_LABELS = {
   'claude-fable-5-1': 'Fable 5.1',
   'claude-sonnet-5-5': 'Sonnet 5.5',
   'claude-opus-5-5': 'Opus 5.5',
-  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-haiku-5-5': 'Haiku 5.5',
 };
 
 // The identity backend id (mirrors CLAUDE_BACKEND_ID in src/modelVersions.ts).

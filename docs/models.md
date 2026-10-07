@@ -295,6 +295,12 @@ unknown backend) falls back: `getTierBackend` to the tier's default Claude backe
 role → tier → dead-model chain reverts correctly, and re-guards a plugin *manifest*
 Claude id (which nothing else re-validates) against a retired catalog version.
 
+**Changing a family default.** Moving a catalog family default moves only tiers with
+no valid stored binding. A stored `models.tierBackend` entry keeps its version —
+including the `{backend:'claude', model:<old family default>}` entries migrations
+0016 → 0018b wrote into legacy stores. Moving such a tier means rebinding it in
+Settings → Models.
+
 ### Default effort
 
 A **second axis** on the same rows: which model a spawn runs *on* is the binding
@@ -313,6 +319,10 @@ for both axes. A role bound to a concrete `{backend, model}` has no tier to foll
 so its `inherit` resolves to `DEFAULT_EFFORT`. `inherit` is a role-only sentinel: a
 tier has nothing to inherit from, so `setTierEffort` refuses it (400). Invalid
 stored values revert on read, like the bindings.
+
+cc passes `--effort` and `--thinking` to every Claude model with no per-model gate.
+A model the CLI's own catalog marks as refusing disabled thinking is handled by the
+CLI when a caller asks for `thinking: 'disabled'`.
 
 **`resolveSpawnEffort({effort, tier, role})` (`src/appSettings.ts`) is the single
 resolution point** — the effort counterpart of `resolveBackendLaunch`. Precedence:
@@ -398,7 +408,7 @@ the window the session already held (first bullet below).
   `setModel`, both via `_refreshModelCapabilities({carryKnownWindow: true})`),
   a new model whose window resolves to `null` leaves `contextWindowTokens` at
   the value the session already held; a new model whose window is known takes
-  that window. The carried number can mislabel capacity (a Haiku session
+  that window. The carried number can mislabel capacity (a Haiku 4.5 session
   switched to an unrecognised 1M-class id keeps `200k`) — accepted so the chip
   stays populated. The rule needs a prior value: a create, a cold resume and
   `_trackModel`'s silent-adopt branch resolve exactly, so a session that starts

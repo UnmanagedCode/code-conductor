@@ -44,7 +44,7 @@ describe('catalog well-formedness', () => {
       fable: 'claude-fable-5-1',
       opus: 'claude-opus-5-5',
       sonnet: 'claude-sonnet-5-5',
-      haiku: 'claude-haiku-4-5',
+      haiku: 'claude-haiku-5-5',
     });
   });
 });
@@ -59,6 +59,7 @@ describe('canonicalizeModel — launch-tag policy', () => {
     assert.equal(canonicalizeModel('claude-opus-4-8', CLAUDE_BACKEND_ID), 'claude-opus-4-8');
     assert.equal(canonicalizeModel('claude-sonnet-5', CLAUDE_BACKEND_ID), 'claude-sonnet-5');
     assert.equal(canonicalizeModel('claude-sonnet-5-5', CLAUDE_BACKEND_ID), 'claude-sonnet-5-5');
+    assert.equal(canonicalizeModel('claude-haiku-5-5', CLAUDE_BACKEND_ID), 'claude-haiku-5-5');
   });
 
   test('returns a substitution-backend id BYTE-EXACT, even when [1m]-suffixed', () => {
@@ -124,7 +125,9 @@ describe('known-* guards and defaultVersion', () => {
     assert.ok(!isKnownVersion('sonnet', 'claude-opus-5'));
     assert.ok(isKnownClaudeModel('claude-opus-4-7'));
     assert.ok(!isKnownClaudeModel('ollama'));
-    assert.equal(defaultVersion('haiku'), 'claude-haiku-4-5');
+    assert.equal(defaultVersion('haiku'), 'claude-haiku-5-5');
+    assert.ok(isKnownVersion('haiku', 'claude-haiku-5-5'));
+    assert.ok(isKnownVersion('haiku', 'claude-haiku-4-5'));
     assert.equal(defaultVersion('sonnet'), 'claude-sonnet-5-5');
     assert.equal(defaultVersion('nope'), null);
   });
@@ -148,6 +151,10 @@ describe('managed backends + default bindings', () => {
       assert.equal(b.backend, CLAUDE_BACKEND_ID, `${tier.tier} must bind the identity backend`);
       assert.ok(isKnownClaudeModel(b.model), `${tier.tier} -> '${b.model}' is not a known claude model`);
     }
+  });
+
+  test('DEFAULT_TIER_BACKEND.fast is Haiku 5.5 on the claude backend', () => {
+    assert.deepEqual(DEFAULT_TIER_BACKEND.fast, { backend: 'claude', model: 'claude-haiku-5-5' });
   });
 
   test('DEFAULT_ROLE_BINDING binds every built-in role to the powerful tier', () => {

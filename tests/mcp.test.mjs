@@ -1536,10 +1536,8 @@ test('spawn_instance: haiku alias resolves to concrete model id', async () => {
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle({ project: 'demo', model: 'haiku', mode: 'bypassPermissions' });
-    assert.ok(
-      typeof summary.model === 'string' && summary.model.startsWith('claude-haiku-'),
-      `expected concrete haiku model id, got: ${summary.model}`,
-    );
+    assert.equal(summary.model, 'claude-haiku-5-5');
+    assert.equal(summary.contextWindowTokens, 1_000_000);
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;
@@ -1731,10 +1729,7 @@ test('spawn_instance: fast tier resolves through its bound backend (haiku) to a 
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle({ project: 'demo', model: 'fast', mode: 'bypassPermissions' });
-    assert.ok(
-      typeof summary.model === 'string' && summary.model.startsWith('claude-haiku-'),
-      `expected concrete haiku model id via the fast tier, got: ${summary.model}`,
-    );
+    assert.equal(summary.model, 'claude-haiku-5-5');
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;

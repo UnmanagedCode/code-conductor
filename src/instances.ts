@@ -1937,7 +1937,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // model's window resolves to unknown and the session already holds a known one,
   // the known one is kept: a wrong-but-populated denominator is the accepted
   // trade against a chip stuck on `ctx —` after switching to a model the catalog
-  // hasn't learned. It can mislabel capacity — a Haiku session switched to an
+  // hasn't learned. It can mislabel capacity — a Haiku 4.5 session switched to an
   // out-of-catalog 1M-class id reads `ctx 95% · 190k/200k`. A switch to a KNOWN
   // model still takes that model's window. Without the flag (silent adoption, or
   // a caller setting the model directly) the result is exactly what resolves,

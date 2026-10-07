@@ -112,8 +112,9 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = [
   {
     family: 'haiku',
     label: 'Haiku',
-    default: 'claude-haiku-4-5',
+    default: 'claude-haiku-5-5',
     versions: [
+      { id: 'claude-haiku-5-5', label: 'Haiku 5.5', contextWindow: 1_000_000 },
       { id: 'claude-haiku-4-5', label: 'Haiku 4.5', contextWindow: 200_000 },
     ],
   },

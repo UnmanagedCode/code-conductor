@@ -1021,7 +1021,7 @@ test('removeCustomRole does not materialize a roleEffort map in a store that nev
 //      through. This is the rung that kills an implementation reading
 //      `settings.models.tierBackend[tier]` raw and falling back only when the key
 //      is ABSENT: such an implementation returns `{ollama, gone:v1}` here.
-const REBOUND_POWERFUL = { backend: 'claude', model: 'claude-haiku-4-5' };
+const REBOUND_POWERFUL = { backend: 'claude', model: 'claude-haiku-5-5' };
 const POWERFUL_REVERT_TARGET = { backend: 'claude', model: 'claude-opus-5-5' };
 
 test('defaultSpawnBinding: a malformed defaultTier lands on the powerful tier\'s STORED binding', async () => {
@@ -1037,7 +1037,7 @@ test('defaultSpawnBinding: a malformed defaultTier lands on the powerful tier\'s
         const settingsFile = path.join(orchStoreRoot(), 'settings.json');
         await fs.mkdir(path.dirname(settingsFile), { recursive: true });
         await fs.writeFile(settingsFile, JSON.stringify({ models }));
-        assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-haiku-4-5' }, label);
+        assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-haiku-5-5' }, label);
       });
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   }
