@@ -442,3 +442,19 @@ test('a re-render with unchanged entry states keeps the very same buttons (a cli
   assert.ok(entry(popover, 'balanced') !== before, 'rebuilt on a state change');
   assert.equal(entry(popover, 'balanced').disabled, true);
 }));
+
+test('mid-switch the usage popover names the confirmed model with no window clause', async () => {
+  const t = await setup();
+  const meta = () => {
+    t.dom.tiUsageSlot.querySelector('.ih-combined').click();
+    return t.document.querySelector('.ih-usage-popover[aria-label="Usage details"] .ih-usage-meta').textContent;
+  };
+  t.setInstances([{ ...SUB_INSTANCE, model: 'beta:cloud', contextWindowTokens: 300_000,
+    modelSwitch: { from: 'alpha:cloud', to: 'beta:cloud' } }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  assert.equal(meta(), 'alpha:cloud', 'the new model\'s window is not paired with the old model\'s name');
+  t.setInstances([{ ...SUB_INSTANCE, model: 'beta:cloud', contextWindowTokens: 300_000 }]);
+  t.header.update();
+  assert.equal(meta(), 'beta:cloud · 300k context', 'control: settled, the window clause is back');
+});

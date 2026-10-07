@@ -137,10 +137,10 @@ The consequences of being a substitution backend:
 
   - **Confirmed** when the relaunch has come up idle and outlived
     `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
-    entry is written and the divider emitted live. A failure to write the entry is
-    NOT a failed switch: it is logged, the divider is still emitted, the session
-    stays on the new model with no failure chip — only the divider's durability is
-    lost.
+    entry is written and the divider emitted live. A failure to write the entry,
+    or a throw while announcing it (an `event` listener), is NOT a failed switch:
+    it is logged and the session stays on the new model with no failure chip — a
+    failed write costs only the divider's durability.
   - **Failed** when the relaunch throws, ends inside that window, or has not come
     up idle by `MODEL_SWITCH_IDLE_DEADLINE_MS` (`_modelSwitchIdleDeadlineMs`).
     Cause: its last stderr line, else its `spawn_error`, else `exited code=…
@@ -154,15 +154,25 @@ The consequences of being a substitution backend:
     is the user's stop: the record is rewritten to the old model, the ledger entry
     carries `cancelled: true` (no `error`), the session stays stopped (no
     re-resume) and `modelSwitchFailure` stays null — no failure chip.
-  - Held from the kill until confirmation: `_relaunching` (live for
-    `isSessionLive`; no idle-wake retirement; REST respawn refused `409`) and
-    `_suppressTempDelete` (a temp session is not archived by the attempt; no exit
-    cause is recorded). From confirmation on, an exit is an ordinary one —
-    `launch_failed`, exit cause, wake. A temp session the attempt leaves with no
-    process is archived like any exit.
+  - `_relaunching` is held for the whole run, released in `finally` with
+    `_mutating`: the session stays live for `isSessionLive` (a resume cannot
+    reclaim the instance), an exit wakes no owner, and REST respawn is refused
+    `409`.
+  - `_suppressTempDelete` is held from the kill until confirmation (a temp
+    session is not archived by the attempt; no exit cause is recorded). From
+    confirmation on an exit records its cause and `launch_failed` as usual — but
+    wakes no owner until the switch settles. A temp session the attempt leaves
+    with no process while still suppressed (a cancel, a double failure) is
+    archived in `finally`, as its exit would have been.
   - The relaunch's replay skips the jsonl's context-usage seed (`_skipUsageSeed`,
     prune's rule): that reading was measured on the old model, and the window is
     already the new one's, so the chip reads `ctx —` until the new model measures.
+    `loadHistory` consumes the flag before anything else, a missing transcript
+    included; the failure arm clears it before re-resuming on the old model.
+  - The failure and cancel arms await the attempt's replay (`_replayDone`, the
+    detached tail of `spawn()`) before writing their ledger entry or emitting,
+    so the divider follows every replayed line and that replay cannot also
+    splice it.
   - `prompt()` refuses `409` for the whole run (`rewriteBlocksPrompts`), the grace
     window included; `setEffort` refuses `409`.
   - The conductor view (`toConductorView`) reports the switch's `from` as `model`
@@ -229,7 +239,9 @@ The consequences of being a substitution backend:
   afterUuid, from, to, ok, error?}]`, one entry per confirmed or failed restart
   switch, oldest first. It is the transcript divider's durable home (the jsonl is the
   CLI's): `loadPersistedTranscript` splices each entry of the segment being read
-  after the line whose `uuid` is `afterUuid` (`null` = first) — see
+  after the line whose `uuid` is `afterUuid` (`null` = first; always `null` when
+  the segment had no conversation to resume, since its file is deleted before the
+  `--session-id` relaunch) — see
   [architecture.md](architecture.md) → `src/transcript.ts`. A rewind that truncates
   an entry's anchor moves it to the last surviving line (`reanchorModelSwitches`). A
   fork does not inherit the ledger.

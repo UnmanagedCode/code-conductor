@@ -881,6 +881,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _lastExitReport: { code: number | null; signal: NodeJS.Signals | null; stderr: Promise<string>; spawnError: string | null } | null;
   // The current launch's spawn_error message, if its 'error' fired.
   _spawnError: string | null;
+  // The current launch's post-spawn replay-then-idle step (spawn()'s detached
+  // tail); never rejects. A restart switch's failure arm awaits it so nothing
+  // it emits can land amid — or after a wipe, ahead of — that replay.
+  _replayDone: Promise<void>;
   _skipUsageSeed: boolean;
   _spawnArgv: string[] | null;
   // The env the last launch actually used. Recorded for the same reason as
@@ -1291,6 +1295,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._modelSwitchIdleDeadlineMs = MODEL_SWITCH_IDLE_DEADLINE_MS;
     this._lastExitReport = null;
     this._spawnError = null;
+    this._replayDone = Promise.resolve();
     this._skipUsageSeed = false; // one-shot: suppress the pre-prune ctx seed on replay
     this._spawnArgv = null;   // full launch argv, remembered for enableDebug's meta.json
     this._spawnEnv = {};
@@ -1994,6 +1999,15 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async loadHistory(backingId: string): Promise<void> {
+    // One-shot, set by pruneSession() and a restart model switch: the jsonl's
+    // newest assistant `usage` measures a context that no longer applies (the
+    // PRE-prune size; the old model's reading against the new model's window),
+    // so seeding it would show a known-wrong number until the first live turn
+    // re-measures — fall back to `ctx —`. Same reasoning as the
+    // `_lastContextUsage = null` in _wipeForResume. Consumed FIRST, so no early
+    // return below can leave it set for a later, unrelated replay.
+    const skipUsageSeed = this._skipUsageSeed;
+    this._skipUsageSeed = false;
     const result = await loadPersistedTranscript({
       place: this.transcriptPlace, sessionId: backingId, seqHint: this.ring.nextSeq,
     });
@@ -2016,13 +2030,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The wipe reset the live tracker; without this an ExitPlanMode after a
     // restart can't find a plan file written before it.
     if (result.planFile) this._planFiles.seed(result.planFile);
-    // One-shot, set by pruneSession(): the jsonl's newest assistant `usage` still
-    // reports the PRE-prune context size, so seeding it would tell the user the
-    // prune did nothing until the first live turn re-measures. A known-wrong
-    // number is worse than none — fall back to `ctx —`. Same reasoning as the
-    // `_lastContextUsage = null` in _wipeForResume.
-    const skipUsageSeed = this._skipUsageSeed;
-    this._skipUsageSeed = false;
     if (result.replayedCount > 0) {
       // Replay emits no `message_start` of its own, so nothing would latch
       // _lastContextUsage and a resumed/respawned/rewound session's ctx chip
@@ -2736,7 +2743,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // is alive and stdin is writable, we're idle. If we're resuming, replay
     // the persisted transcript into the ring buffer first so the UI shows
     // prior history alongside the new live stream.
-    (async () => {
+    this._replayDone = (async () => {
       if (resume && this.backingSessionId) {
         try { await this.loadHistory(this.backingSessionId); }
         catch (err) {
@@ -3727,10 +3734,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       id: randomUUID(), at: new Date().toISOString(), segment, afterUuid, from, to, ok,
       ...(error ? { error } : {}), ...(cancelled ? { cancelled } : {}),
     });
-    // Held from the kill until the relaunch is CONFIRMED: a temp session must not
-    // be archived by the attempt's own crash, and neither process's exit is an
-    // exit cause (no wake, nothing recorded) — that outcome is the switch's. Once
-    // confirmed, an exit is an ordinary one again.
+    // `_suppressTempDelete` is held from the kill until the relaunch is
+    // CONFIRMED: a temp session must not be archived by the attempt's own crash,
+    // and neither process's exit is an exit cause — that outcome is the switch's.
+    // `_relaunching` is held for the whole run (see the confirmation below).
     this._suppressTempDelete = true;
     this._relaunching = true;
     // The process being replaced's terminal latch: spawn() swaps in a new one,
@@ -3740,8 +3747,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     let afterUuid: string | null = null;
     let resumable = false;
     try {
-      afterUuid = await readLastLineUuid({ place: this.transcriptPlace, sessionId: segment });
       resumable = await hasResumableConversation({ place: this.transcriptPlace, sessionId: segment });
+      // A segment that cannot be resumed is deleted before its `--session-id`
+      // relaunch, so any line in it is no anchor: the divider leads (null).
+      afterUuid = resumable ? await readLastLineUuid({ place: this.transcriptPlace, sessionId: segment }) : null;
       try {
         await this.kill({ graceMs: 300 });
         this.model = to;
@@ -3767,6 +3776,11 @@ export class Instance extends EventEmitter implements InstanceLike {
         // A launch that failed after spawn() left `to` recorded; one that failed
         // before it never rewrote the record. Either way the record names `from`.
         await setSessionBackend(publicId, this.backend, prev.model, prev.contextWindowTokens);
+        // The attempt's replay may still be running (spawn() does not await it):
+        // let it finish before the outcome is recorded or emitted, so its divider
+        // follows every replayed line and that replay's own ledger read predates
+        // the entry written below.
+        await this._replayDone;
         if (cancelled) {
           // A Terminate that landed mid-switch is the user's stop, not a failure:
           // no failure chip, no re-resume. Its divider goes to the ring now (the
@@ -3792,19 +3806,28 @@ export class Instance extends EventEmitter implements InstanceLike {
         return;
       }
       // Confirmed: the session runs on `to`. Nothing below can make the SWITCH
-      // fail — a failure to record it is logged, and the session stays on `to`.
+      // fail — a failure to record or announce it is logged, and the session
+      // stays on `to`. Only the exit suppression ends here: an exit from now on
+      // records its cause and `launch_failed` (both gate on it). `_relaunching`
+      // is held to `finally` with `_mutating`: until the switch settles, an exit
+      // must not wake the owner and a resume must not reclaim this instance.
       this._suppressTempDelete = false;
-      this._relaunching = false;
       const ok = entry(true, afterUuid);
+      const confirmedButFailed = (what: string, err: unknown): void => {
+        console.warn(`instances: model switch ${from} → ${to} on ${this.sessionId} is confirmed, but ${what} failed: `
+          + `${err instanceof Error ? err.message : String(err)}`);
+      };
       try {
         await appendModelSwitch(publicId, ok);
       } catch (err) {
-        console.warn(`instances: model switch ${from} → ${to} on ${this.sessionId} is confirmed, but recording it `
-          + `in the session ledger failed (its transcript divider will not survive a replay): `
-          + `${err instanceof Error ? err.message : String(err)}`);
+        confirmedButFailed('recording it in the session ledger (its transcript divider will not survive a replay)', err);
       }
-      this._dropContextReading();
-      this._emitUi(modelSwitchEvent(ok));
+      try {
+        this._dropContextReading();
+        this._emitUi(modelSwitchEvent(ok));
+      } catch (err) {
+        confirmedButFailed('announcing it', err);
+      }
     } catch (err) {
       // Only the store reads/writes of the failure path and the pre-kill reads
       // land here; the session's state is whatever the step before left, and the

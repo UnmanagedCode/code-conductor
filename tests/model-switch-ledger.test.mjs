@@ -17,7 +17,7 @@ import { SwitchLauncher } from './switchLauncher.mjs';
 import { addCustomModel, setTierBackend } from '../src/appSettings.ts';
 import {
   parseSessionsDoc, serializeSessionsDoc, appendModelSwitch, getModelSwitchesForSegment,
-  removeSessionRecords, setSessionMode, settleSessionWrites, sessionsFile,
+  removeSessionRecords, setSessionMode, settleSessionWrites, sessionsFile, trackLineageWrite,
 } from '../src/sessionStore.ts';
 import { recordRotation } from '../src/sessionLineage.ts';
 import { replayPersistedText, loadPersistedTranscript } from '../src/transcript.ts';
@@ -423,4 +423,37 @@ test('L13: a failed no-turn switch\'s re-resume seeds its divider into the ring 
   assert.equal(ring.indexOf(dividers(ring)[0]), 0);
   await liveTurns(inst, 0, 8);
   await assertRingAgreesWithArchive(inst, 'failed no-turn switch');
+});
+
+test('L14: a Terminate during the relaunch\'s replay puts the cancel divider after every replayed line, once', async () => {
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId, turns(0, 3));
+  // Park the relaunch's replay: its ledger read (loadPersistedTranscript →
+  // loadSessions) waits on the store's read barrier until `release`.
+  let release;
+  trackLineageWrite(new Promise(res => { release = res; }));
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await waitFor(() => inst.proc && inst.status === 'spawning' && inst.model === B);
+    await inst.kill();
+    // The cancel arm has rewritten the record back to A (read raw — the store's
+    // own reader is parked too).
+    await waitFor(async () => JSON.parse(await fs.readFile(sessionsFile(), 'utf8')).sessions[inst.sessionId]?.backend?.model === A);
+    // Bounded look for a premature divider; nothing may land while the replay is parked.
+    await waitFor(() => dividers(inst.ringSnapshot()).length > 0, { timeout: 300 }).catch(() => {});
+    assert.equal(dividers(inst.ringSnapshot()).length, 0, 'not emitted ahead of the parked replay');
+    assert.equal(replyIdx(inst.ringSnapshot(), 'reply'), -1, 'fixture check: the replay really is parked');
+  } finally { release(); }
+  await inst._modelSwitchRun;
+  const ring = inst.ringSnapshot();
+  const d = dividers(ring);
+  assert.equal(d.length, 1, 'exactly once');
+  assert.equal(d[0].data.cancelled, true);
+  assert.ok(ring.indexOf(d[0]) > replyIdx(ring, 'reply 2'), 'after the last replayed line');
+  const flat = await loadStampedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId });
+  const persisted = new Set(flat.map(sig));
+  assert.deepEqual(ring.filter(e => persisted.has(sig(e))).map(sig), flat.map(sig),
+    'the ring holds the archive\'s content in the archive\'s order');
 });

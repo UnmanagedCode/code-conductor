@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
@@ -633,4 +634,130 @@ test('Change effort during the grace window is refused and leaves the effort alo
   assert.equal(inst.status, 'idle', 'no /effort turn was started');
   await settled(inst);
   assert.equal(inst.effort, 'low');
+});
+
+// ── review round 2 ──────────────────────────────────────────────────────────
+
+test('a crash after confirmation but before the switch settles does not wake the owner, and the session stays live', async () => {
+  const conductor = await spawnSub();
+  const worker = await instances.create({ project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama',
+    conducted: true, callerInstanceId: conductor.id });
+  await waitFor(() => worker.status === 'idle');
+  worker._modelSwitchGraceMs = 30;
+  await seedTurn(worker);
+  launcher.plan.push({ hold: true });
+  const exits = [];
+  const hub = instances._idleHub;
+  const realOnTargetExit = hub.onTargetExit.bind(hub);
+  hub.onTargetExit = (id, info) => { exits.push(id); return realOnTargetExit(id, info); };
+  try {
+    await worker.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await inGrace(worker);
+    await withLock(sessionsFile(), async () => {
+      await waitFor(() => worker._suppressTempDelete === false);
+      launcher.ctl.last.crash('late boom');
+      await waitFor(() => worker.status === 'crashed');
+      assert.ok(worker.modelSwitch, 'fixture check: still inside the switch');
+      assert.deepEqual(exits, [], 'no owner wake while the switch holds the session');
+      assert.equal(instances.isSessionLive(worker.sessionId), true, 'still live to a resume\'s guard: nothing may reclaim it');
+    });
+    await settled(worker);
+    assert.ok(instances.exitCauseFor(worker.sessionId), 'the exit cause is still recorded');
+  } finally { hub.onTargetExit = realOnTargetExit; }
+});
+
+test('a relaunch that cannot resume records no anchor, even when the segment file has a uuid\'d line', async () => {
+  const inst = await spawnSub();
+  // A file the CLI would refuse to --resume: uuid'd, but no user/assistant line.
+  await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId,
+    [{ type: 'attachment', uuid: 'stale-1', attachment: { type: 'hook_additional_context', content: [] } }]);
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.model, B);
+  assert.ok(!inst._spawnArgv.includes('--resume'), 'fixture check: the --session-id relaunch');
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => e.afterUuid), [null]);
+  await seedTurn(inst);
+  const replay = (await loadPersistedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId })).lines.flatMap(l => l.events);
+  assert.equal(replay[0].subtype, 'model_changed', 'the divider leads the replay, not trails it');
+});
+
+test('a listener throwing on the confirmed switch\'s divider does not turn it into a failed switch', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const warnings = [];
+  const realWarn = console.warn;
+  const boom = (ev) => { if (ev?.subtype === 'model_changed' && ev.data?.restart) throw new Error('listener boom'); };
+  inst.on('event', boom);
+  console.warn = (...a) => { warnings.push(a.join(' ')); };
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await settled(inst);
+  } finally { console.warn = realWarn; inst.off('event', boom); }
+  assert.equal(inst.model, B);
+  assert.equal(inst.summary().modelSwitchFailure, null, 'no failure chip');
+  assert.ok(inst.proc);
+  assert.equal(restartDividers(ringOf(inst)).length, 1, 'the divider reached the ring before the listener threw');
+  assert.equal((await getModelSwitchesForSegment(inst.backingSessionId)).map(e => e.ok).join(), 'true');
+  assert.ok(warnings.some(w => /listener boom/.test(w)), `logged: ${JSON.stringify(warnings)}`);
+});
+
+test('loadHistory consumes the one-shot usage-skip even when the transcript is missing', async () => {
+  const inst = await spawnSub();
+  await seedTurnWithUsage(inst);
+  inst._skipUsageSeed = true;
+  await inst.loadHistory(randomUUID()); // ENOENT: nothing to replay
+  assert.equal(inst._skipUsageSeed, false);
+  // So the next resume seeds its reading as usual.
+  await inst.kill();
+  await instances.respawn(inst.id);
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.summary().contextTokens, 190_000);
+});
+
+test('a relaunch that throws before reaching its replay does not leak the usage-skip into the old model\'s re-resume', async () => {
+  const inst = await spawnSub();
+  await seedTurnWithUsage(inst);
+  // The FIRST wipe (the relaunch onto B) throws in a snapshot_reset listener,
+  // before launch() — so no replay ever consumed the flag the relaunch set.
+  let thrown = false;
+  const once = () => { if (!thrown) { thrown = true; throw new Error('wipe boom'); } };
+  inst.on('snapshot_reset', once);
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await settled(inst);
+  } finally { inst.off('snapshot_reset', once); }
+  assert.equal(inst.model, A);
+  assert.match(inst.summary().modelSwitchFailure.error, /wipe boom/);
+  assert.ok(inst.proc, 'resumed on the old model');
+  await waitFor(() => inst.summary().contextTokens === 190_000);
+});
+
+for (const [name, plan, act] of [
+  ['a Terminate (cancelled)', [], async (inst) => { await inGrace(inst); await inst.kill(); }],
+  ['a double failure', [{ crash: 'boom on beta' }, { crash: 'boom on alpha' }], async () => {}],
+]) {
+  test(`a temp session whose switch ends with no process — ${name} — is archived and dropped`, async () => {
+    const inst = await spawnSub({ temp: true });
+    await seedTurn(inst);
+    inst._modelSwitchGraceMs = name.startsWith('a Terminate') ? 5000 : 30;
+    launcher.plan.push(...plan);
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await act(inst);
+    await settled(inst);
+    assert.equal(inst.proc, null, 'fixture check: no process left');
+    await waitFor(async () => await isArchived(inst.backingSessionId));
+    assert.equal(instances.get(inst.id), undefined, 'dropped from the live list, as any temp exit');
+  });
+}
+
+test('REST respawn is refused 409 while a prune\'s rotation window is open', async () => {
+  const inst = await spawnSub();
+  await inst.kill();
+  inst.beginRotation('prune');
+  try {
+    await assert.rejects(instances.respawn(inst.id), e => e.statusCode === 409 && /relaunch/.test(e.message));
+  } finally { inst._rotation = null; }
+  await instances.respawn(inst.id); // control: the window was the reason
+  await waitFor(() => inst.status === 'idle');
 });

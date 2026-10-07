@@ -228,7 +228,9 @@ export function installHeader({
     const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(default)';
     const meta = document.createElement('div');
     meta.className = 'ih-usage-meta';
-    meta.textContent = Number.isFinite(ctxWindow)
+    // Mid-switch `contextWindowTokens` is already the target's, so it would be
+    // paired with the wrong model's name: show the name alone.
+    meta.textContent = Number.isFinite(ctxWindow) && !inst.modelSwitch
       ? `${modelLabel} · ${formatTokens(ctxWindow)} context`
       : modelLabel;
     node.appendChild(meta);
