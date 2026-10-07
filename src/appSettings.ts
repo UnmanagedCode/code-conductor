@@ -798,6 +798,18 @@ export function resolveMidTurnSteering(input: { backend?: unknown; model?: unkno
   return true;
 }
 
+// The editable fields' shared check (create + edit): a non-empty trimmed label and
+// a positive, finite token window (stored `Math.round`ed).
+function validateCustomModelFields(input: { label?: unknown; contextWindow?: unknown }): { label: string; contextWindow: number } {
+  const label = String(input.label || '').trim();
+  if (!label) throw httpError(400, 'label is required');
+  const cw = Number(input.contextWindow);
+  if (!Number.isFinite(cw) || cw <= 0) {
+    throw httpError(400, 'contextWindow is required and must be a positive number of tokens');
+  }
+  return { label, contextWindow: Math.round(cw) };
+}
+
 // `contextWindow` is REQUIRED and must be a positive, finite number of raw tokens
 // (stored `Math.round`ed): it
 // drives the header ctx bar plus CLAUDE_CODE_AUTO_COMPACT_WINDOW and
@@ -815,15 +827,12 @@ export async function addCustomModel(input: { label?: unknown; model?: unknown; 
   if (cleanBackend === CLAUDE_BACKEND_ID || !isKnownBackend(cleanBackend)) {
     throw httpError(400, `backend '${cleanBackend}' is not a known custom-model backend — add it in Settings → Backends`);
   }
-  const cw = Number(contextWindow);
-  if (!Number.isFinite(cw) || cw <= 0) {
-    throw httpError(400, 'contextWindow is required and must be a positive number of tokens');
-  }
+  const { label: validLabel, contextWindow: validWindow } = validateCustomModelFields({ label, contextWindow });
   // Opt-out: only an explicit `false` from the caller turns steering off, so an
   // omitted field stores `true` rather than leaving the row unflagged (an
   // INPUT default — the stored shape always carries the boolean).
   const entry = {
-    label: cleanLabel, model: cleanModel, backend: cleanBackend, contextWindow: Math.round(cw),
+    label: validLabel, model: cleanModel, backend: cleanBackend, contextWindow: validWindow,
     midTurnSteering: midTurnSteering !== false,
   };
   const cur = loadSync();
@@ -831,6 +840,37 @@ export async function addCustomModel(input: { label?: unknown; model?: unknown; 
   const nextList = getCustomModels().filter(m => !(m.backend === cleanBackend && m.model === cleanModel)).concat([entry]);
   const next = { ...cur, models: { ...(cur.models || {}), customModels: nextList } };
   await writeSettings(next);
+  return entry;
+}
+
+// Edit a custom model's label / contextWindow / midTurnSteering in place (the row
+// keeps its list position). The (backend, model) pair is the identity that
+// tier/role bindings and session records name, so it is never editable. An
+// omitted field keeps its stored value. Edits reach a session at its next
+// spawn/resume: a running one keeps its spawn-time snapshot, and its CLI env is
+// fixed at spawn anyway. Returns null when no such custom row exists (built-in
+// presets and Claude ids are never rows).
+export async function updateCustomModel(
+  backend: string, model: string,
+  input: { label?: unknown; contextWindow?: unknown; midTurnSteering?: unknown; backend?: unknown; model?: unknown } = {},
+): Promise<{ label: string; model: string; backend: string; contextWindow: number; midTurnSteering: boolean } | null> {
+  if (input.backend !== undefined || input.model !== undefined) {
+    throw httpError(400, "the (backend, model) pair is a custom model's identity and cannot be edited — remove it and add it again");
+  }
+  const existing = getCustomModels();
+  const row = existing.find(m => m.backend === backend && m.model === model);
+  if (!row) return null;
+  const fields = validateCustomModelFields({
+    label: input.label ?? row.label,
+    contextWindow: input.contextWindow ?? row.contextWindow,
+  });
+  const entry = {
+    label: fields.label, model, backend, contextWindow: fields.contextWindow,
+    midTurnSteering: input.midTurnSteering === undefined ? row.midTurnSteering : input.midTurnSteering !== false,
+  };
+  const cur = loadSync();
+  const customModels = existing.map(m => (m.backend === backend && m.model === model ? entry : m));
+  await writeSettings({ ...cur, models: { ...(cur.models || {}), customModels } });
   return entry;
 }
 

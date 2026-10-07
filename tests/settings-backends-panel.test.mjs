@@ -10,6 +10,11 @@
 // appears in the backend select with no code change, and the curated cloud optgroup
 // is scoped to the built-in `ollama` row only.
 //
+// Custom models: each row offers Edit + Remove. Edit loads the row into the add
+// form with backend and model id locked (the pair is the identity bindings and
+// session records name); Save PATCHes label/context/steering, Cancel returns to
+// add mode.
+//
 // Mirrors the harness in tests/account-overage.test.mjs (cache-busted import so
 // module-level state doesn't leak).
 
@@ -74,6 +79,18 @@ function buildDOM(document) {
   const customList = document.createElement('ul');
   customList.id = 'sm-custom-list';
   models.appendChild(customList);
+  const customForm = document.createElement('div');
+  customForm.innerHTML = `
+    <input id="sm-custom-label" type="text" />
+    <select id="sm-custom-backend"></select>
+    <input id="sm-custom-model" type="text" />
+    <input id="sm-custom-context" type="text" />
+    <input id="sm-custom-steer" type="checkbox" checked />
+    <button type="button" id="sm-custom-add">Add</button>
+    <button type="button" id="sm-custom-cancel" hidden>Cancel</button>
+    <div id="sm-custom-status"></div>
+  `;
+  models.appendChild(customForm);
 
   view.querySelector('#settings-backends').innerHTML = `
     <div id="sb-status"></div>
@@ -111,9 +128,9 @@ async function setup(fetchImpl) {
   return { window, mod, ...dom };
 }
 
-// Serves the models payload; records every backend-CRUD and custom-model DELETE
-// call; a per-test `handler` can override the response for a backend call (e.g.
-// to return 409).
+// Serves the models payload; records every backend-CRUD and custom-model
+// POST/PATCH/DELETE call; a per-test `handler` can override the response for any
+// of them (e.g. to return 409 or 400).
 function stubFetch(payload, handler) {
   const calls = [];
   const ok = (body, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(body) });
@@ -125,8 +142,12 @@ function stubFetch(payload, handler) {
       calls.push({ url: u, method, body: JSON.parse(opts.body) });
       return ok(payload);
     }
-    if (u.startsWith('/api/settings/models/custom/') && method === 'DELETE') {
-      calls.push({ url: u, method });
+    if (u.startsWith('/api/settings/models/custom')) {
+      const call = { url: u, method };
+      if (opts.body) call.body = JSON.parse(opts.body);
+      calls.push(call);
+      const over = handler?.(call);
+      if (over) return over.error ? err(over.status, { error: over.error }) : ok(over.body ?? payload, over.status ?? 200);
       return ok(payload);
     }
     if (u.startsWith('/api/settings/models/backends')) {
@@ -477,15 +498,9 @@ test('Models picker: a backend with no bindable model shows the disabled empty s
 });
 
 test('Models picker: the custom-model add form offers every SUBSTITUTION backend, never claude', async () => {
-  // The form's backend select lives in the Models panel; add it to the scaffold.
   const { impl } = stubFetch(tierPayload({ fast: { backend: 'claude', model: 'claude-haiku-4-5' } }));
   const { window, mod } = await setup(impl);
-  const sel = window.document.createElement('select');
-  sel.id = 'sm-custom-backend';
-  window.document.getElementById('settings-models').appendChild(sel);
-  const list = window.document.createElement('ul');
-  list.id = 'sm-custom-list';
-  window.document.getElementById('settings-models').appendChild(list);
+  const sel = window.document.getElementById('sm-custom-backend');
 
   mod.installSettings({});
   await openSettings(window);
@@ -512,4 +527,197 @@ test('Remove on a custom model sends that row\'s backend and model', async () =>
   removes[1].click();
   await tick();
   assert.deepEqual(calls, [{ url: '/api/settings/models/custom/my-proxy/mine%3Av1', method: 'DELETE' }]);
+});
+
+// ── Custom models: Edit ─────────────────────────────────────────────────────
+const MINE = { label: 'Mine', model: 'mine:v1', backend: 'ollama', contextWindow: 131072, midTurnSteering: false };
+const SIBLING = { label: 'Sibling', model: 'sib:v3', backend: 'ollama', contextWindow: 64000, midTurnSteering: true };
+const OTHER = { label: 'Other', model: 'other:v2', backend: 'my-proxy', contextWindow: 300000, midTurnSteering: true };
+
+async function setupEdit(handler, customModels = [MINE, OTHER]) {
+  const payload = modelsPayload({ customModels });
+  const { impl, calls } = stubFetch(payload, handler);
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+  const $ = (id) => window.document.getElementById(id);
+  const editBtn = (i) => [...window.document.querySelectorAll('#sm-custom-list .sm-custom-edit')][i];
+  const form = () => ({
+    label: $('sm-custom-label').value, backend: $('sm-custom-backend').value, model: $('sm-custom-model').value,
+    context: $('sm-custom-context').value, steer: $('sm-custom-steer').checked,
+    backendDisabled: $('sm-custom-backend').disabled, modelDisabled: $('sm-custom-model').disabled,
+    button: $('sm-custom-add').textContent, cancelHidden: $('sm-custom-cancel').hidden, status: $('sm-custom-status').textContent,
+  });
+  return { window, calls, $, editBtn, form, payload };
+}
+
+test('a custom row offers Edit + Remove; Edit loads the row with backend and model id locked', async () => {
+  const { window, $, editBtn, form } = await setupEdit();
+  const rows = [...window.document.querySelectorAll('#sm-custom-list .sm-custom-item')];
+  assert.deepEqual(rows.map(r => [...r.querySelectorAll('button')].map(b => b.textContent)), [['Edit', 'Remove'], ['Edit', 'Remove']]);
+  editBtn(0).click();
+  assert.deepEqual(form(), {
+    label: 'Mine', backend: 'ollama', model: 'mine:v1', context: '131072', steer: false,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Editing Mine — backend and model id are fixed',
+  });
+  assert.equal($('sm-custom-context').value, '131072', 'the raw integer, not the lossy 131k');
+});
+
+test('saving an edit PATCHes the pair URL with label/contextWindow/midTurnSteering, then returns to add mode', async () => {
+  const { calls, $, editBtn, form } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-label').value = 'Mine 2';
+  $('sm-custom-context').value = '200k';
+  $('sm-custom-steer').checked = true;
+  $('sm-custom-add').click();
+  await tick();
+  assert.deepEqual(calls, [{
+    url: '/api/settings/models/custom/ollama/mine%3Av1', method: 'PATCH',
+    body: { label: 'Mine 2', contextWindow: 200000, midTurnSteering: true },
+  }]);
+  assert.deepEqual(form(), {
+    label: '', backend: 'ollama', model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: 'Saved.',
+  });
+});
+
+test('reopening the edit form on another row replaces every field the previous open left behind', async () => {
+  const { calls, $, editBtn, form } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-label').value = 'scribble';
+  $('sm-custom-context').value = '1';
+  $('sm-custom-steer').checked = true;
+  editBtn(1).click();
+  assert.deepEqual(form(), {
+    label: 'Other', backend: 'my-proxy', model: 'other:v2', context: '300000', steer: true,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Editing Other — backend and model id are fixed',
+  });
+  $('sm-custom-add').click();
+  await tick();
+  assert.deepEqual(calls, [{
+    url: '/api/settings/models/custom/my-proxy/other%3Av2', method: 'PATCH',
+    body: { label: 'Other', contextWindow: 300000, midTurnSteering: true },
+  }]);
+});
+
+test('Cancel resets every field and unlocks backend + model; the next click POSTs an add', async () => {
+  const { calls, $, editBtn, form } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-cancel').click();
+  const f = form();
+  assert.deepEqual({ ...f, backend: undefined }, {
+    label: '', backend: undefined, model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
+  });
+  $('sm-custom-label').value = 'New';
+  $('sm-custom-backend').value = 'my-proxy';
+  $('sm-custom-model').value = 'new:v1';
+  $('sm-custom-context').value = '1m';
+  $('sm-custom-add').click();
+  await tick();
+  assert.deepEqual(calls, [{
+    url: '/api/settings/models/custom', method: 'POST',
+    body: { label: 'New', model: 'new:v1', backend: 'my-proxy', contextWindow: 1000000, midTurnSteering: true },
+  }]);
+});
+
+test('a failed PATCH keeps edit mode and shows the server\'s message', async () => {
+  const { $, editBtn, form } = await setupEdit(call => (call.method === 'PATCH' ? { status: 400, error: 'contextWindow is required' } : undefined));
+  editBtn(0).click();
+  $('sm-custom-add').click();
+  await tick();
+  assert.deepEqual(form(), {
+    label: 'Mine', backend: 'ollama', model: 'mine:v1', context: '131072', steer: false,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Save failed: contextWindow is required',
+  });
+});
+
+test('a re-render while editing keeps the backend locked; removing the edited row closes the form', async () => {
+  const { window, $, editBtn, form, payload } = await setupEdit(call => (call.method === 'DELETE'
+    ? { body: { ...payload, customModels: [OTHER] } } : undefined));
+  editBtn(0).click();
+  window.location.hash = '#';
+  await tick();
+  await openSettings(window);
+  assert.equal($('sm-custom-backend').disabled, true, 're-rendering the list does not unlock the backend select');
+  assert.equal(form().button, 'Save', 'still editing');
+  $('sm-custom-label').value = 'dirty';
+  window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')[0].click();
+  await tick();
+  const f = form();
+  assert.deepEqual({ ...f, backend: undefined }, {
+    label: '', backend: undefined, model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
+  });
+});
+
+test('removing a different row while editing leaves the edit form open on the edited pair', async () => {
+  const { window, calls, $, editBtn, form, payload } = await setupEdit(call => (call.method === 'DELETE'
+    ? { body: { ...payload, customModels: [MINE] } } : undefined), [MINE, SIBLING]);
+  editBtn(0).click();
+  $('sm-custom-label').value = 'Mine edited';
+  window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')[1].click();
+  await tick();
+  assert.deepEqual(form(), {
+    label: 'Mine edited', backend: 'ollama', model: 'mine:v1', context: '131072', steer: false,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Editing Mine — backend and model id are fixed',
+  });
+  $('sm-custom-add').click();
+  await tick();
+  assert.deepEqual(calls.at(-1), {
+    url: '/api/settings/models/custom/ollama/mine%3Av1', method: 'PATCH',
+    body: { label: 'Mine edited', contextWindow: 131072, midTurnSteering: false },
+  });
+});
+
+test('a re-render whose payload lacks the edited row leaves edit mode without Remove being used', async () => {
+  const { window, calls, $, editBtn, form, payload } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-label').value = 'dirty';
+  payload.customModels = [OTHER]; // removed elsewhere; the next settings load no longer has it
+  window.location.hash = '#';
+  await tick();
+  await openSettings(window);
+  assert.equal(calls.length, 0, 'no Remove / save request was made');
+  const f = form();
+  assert.deepEqual({ ...f, backend: undefined }, {
+    label: '', backend: undefined, model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
+  });
+});
+
+test('removing a row with the edited model id on a different backend leaves the edit form open', async () => {
+  const sameId = { label: 'Same id', model: 'mine:v1', backend: 'my-proxy', contextWindow: 64000, midTurnSteering: true };
+  const { window, calls, $, editBtn, form, payload } = await setupEdit(call => (call.method === 'DELETE'
+    ? { body: { ...payload, customModels: [MINE] } } : undefined), [MINE, sameId]);
+  editBtn(0).click();
+  $('sm-custom-label').value = 'Mine edited';
+  window.document.querySelectorAll('#sm-custom-list .sm-custom-remove')[1].click();
+  await tick();
+  assert.deepEqual(calls, [{ url: '/api/settings/models/custom/my-proxy/mine%3Av1', method: 'DELETE' }]);
+  assert.deepEqual(form(), {
+    label: 'Mine edited', backend: 'ollama', model: 'mine:v1', context: '131072', steer: false,
+    backendDisabled: true, modelDisabled: true, button: 'Save', cancelHidden: false,
+    status: 'Editing Mine — backend and model id are fixed',
+  });
+});
+
+test('a re-render keeps edit mode only for a payload holding the exact edited pair, not a same-backend or same-model look-alike', async () => {
+  const { window, $, editBtn, form, payload } = await setupEdit();
+  editBtn(0).click();
+  $('sm-custom-label').value = 'dirty';
+  // Same backend (ollama/sib:v3) and same model id (my-proxy/mine:v1) survive; the edited pair does not.
+  payload.customModels = [SIBLING, { label: 'Same id', model: 'mine:v1', backend: 'my-proxy', contextWindow: 64000, midTurnSteering: true }];
+  window.location.hash = '#';
+  await tick();
+  await openSettings(window);
+  const f = form();
+  assert.deepEqual({ ...f, backend: undefined }, {
+    label: '', backend: undefined, model: '', context: '', steer: true,
+    backendDisabled: false, modelDisabled: false, button: 'Add', cancelHidden: true, status: '',
+  });
 });

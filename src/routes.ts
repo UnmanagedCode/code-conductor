@@ -66,7 +66,7 @@ import {
   getRoleEffort, setRoleEffort, inheritedRoleEffort,
   effectiveRoleBinding, setRoleBinding, resolveRoleBackend, isResolvableRole,
   getAllRoles, addCustomRole, removeCustomRole,
-  getCustomModels, addCustomModel, removeCustomModel,
+  getCustomModels, addCustomModel, updateCustomModel, removeCustomModel,
   getBackends, addBackend, updateBackend, removeBackend,
   getSystems, addSystem, updateSystem, removeSystem,
   getDebugByDefault, setDebugByDefault,
@@ -2075,6 +2075,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       const { label, model, backend, contextWindow, midTurnSteering } = body;
       const rec = await addCustomModel({ label, model, backend, contextWindow, midTurnSteering });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
+    } catch (e) { next(e); }
+  });
+
+  // Edit label / contextWindow / midTurnSteering in place; the pair is the identity.
+  r.patch('/settings/models/custom/:backend/:model', async (req, res, next) => {
+    try {
+      const { label, contextWindow, midTurnSteering, backend, model } = jsonBody(req);
+      const rec = await updateCustomModel(req.params.backend, req.params.model, { label, contextWindow, midTurnSteering, backend, model });
+      if (!rec) return res.status(404).json({ error: 'custom model not found' });
+      res.json({ ...modelsSettingsState(), updated: rec });
     } catch (e) { next(e); }
   });
 

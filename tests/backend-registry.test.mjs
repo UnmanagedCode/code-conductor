@@ -13,14 +13,14 @@ import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   addCustomModel, getCustomModels, removeCustomModel, isKnownBackendModel,
-  getTierBackend, setTierBackend, contextWindowForModel, backendsForModel, resolveMidTurnSteering,
+  getTierBackend, setTierBackend, contextWindowForModel, backendsForModel, resolveMidTurnSteering, resolveContextWindowTokens,
   getRoleBinding, setRoleBinding, resolveRoleBackend, setPluginRolesProvider,
   getBackends, getBackend, isKnownBackend, getSubstitutionBackends,
   addBackend, updateBackend, removeBackend,
 } from '../src/appSettings.ts';
 import {
   familyOf, canonicalizeModel, isKnownClaudeModel, MANAGED_BACKENDS,
-  MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
+  MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_VERSIONS, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
 } from '../src/modelVersions.ts';
 import { resolveBackendLaunch, backendEnv, resolveClaudeBin } from '../src/claudeLauncher.ts';
 import { posixPlatform } from '../src/platform/index.ts';
@@ -791,5 +791,73 @@ describe('models + backends settings routes', () => {
     const ghost = await api(baseUrl, 'DELETE', `/api/settings/models/custom/ollama/${encodeURIComponent('ghost:tag')}`);
     assert.equal(ghost.status, 404);
     assert.equal(getCustomModels().length, 1, 'a missed pair deletes nothing');
+  });
+
+  const customUrl = (backend, model) => `/api/settings/models/custom/${encodeURIComponent(backend)}/${encodeURIComponent(model)}`;
+
+  test('PATCH /settings/models/custom/:backend/:model edits label/contextWindow/midTurnSteering in place, keeping list position', async () => {
+    await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
+    await addCustomModel({ label: 'First', model: 'first:v1', backend: 'ollama', contextWindow: 100_000 });
+    await addCustomModel({ label: 'Mid', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
+    await addCustomModel({ label: 'Same id elsewhere', model: 'gemma4:cloud', backend: 'p', contextWindow: 64_000 });
+    const r = await api(baseUrl, 'PATCH', customUrl('ollama', 'gemma4:cloud'), { label: ' Renamed ', contextWindow: 131_072.4, midTurnSteering: false });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.updated, { label: 'Renamed', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 131_072, midTurnSteering: false });
+    assert.deepEqual(r.body.customModels.map(m => `${m.backend}/${m.model}`), ['ollama/first:v1', 'ollama/gemma4:cloud', 'p/gemma4:cloud'], 'the row keeps its position');
+    assert.deepEqual(r.body.customModels[1], r.body.updated);
+    assert.deepEqual(r.body.customModels[2], { label: 'Same id elsewhere', model: 'gemma4:cloud', backend: 'p', contextWindow: 64_000, midTurnSteering: true }, 'the same id on another backend is untouched');
+  });
+
+  test('PATCH omitting a field keeps the addressed row\'s own stored values — matched on backend AND model, ids with "/" included', async () => {
+    await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
+    const slashId = 'meta-llama/Llama-3.1-8B';
+    // Both look-alikes precede the target, so a lookup on the model alone lands on
+    // 'Same id' and one on the backend alone lands on 'Same backend'.
+    await addCustomModel({ label: 'Same id', model: slashId, backend: 'p', contextWindow: 300_000, midTurnSteering: true });
+    await addCustomModel({ label: 'Same backend', model: 'other:v1', backend: 'ollama', contextWindow: 200_000, midTurnSteering: true });
+    await addCustomModel({ label: 'Target', model: slashId, backend: 'ollama', contextWindow: 100_000, midTurnSteering: false });
+    const before = getCustomModels();
+    const r = await api(baseUrl, 'PATCH', customUrl('ollama', slashId), { label: 'Target 2' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.updated, { label: 'Target 2', model: slashId, backend: 'ollama', contextWindow: 100_000, midTurnSteering: false },
+      "defaults come from the row matching both backend and model, not a row sharing only one");
+    assert.deepEqual(r.body.customModels, [before[0], before[1], r.body.updated], 'the other rows are untouched');
+  });
+
+  test('PATCH without a label keeps the stored label', async () => {
+    await addCustomModel({ label: 'Stays', model: 'stays:v1', backend: 'ollama', contextWindow: 100_000 });
+    const r = await api(baseUrl, 'PATCH', customUrl('ollama', 'stays:v1'), { contextWindow: 150_000 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.updated, { label: 'Stays', model: 'stays:v1', backend: 'ollama', contextWindow: 150_000, midTurnSteering: true });
+  });
+
+  test('PATCH validates like POST and refuses an identity change', async () => {
+    await addCustomModel({ label: 'Keep', model: 'keep:v1', backend: 'ollama', contextWindow: 100_000 });
+    const before = JSON.stringify(getCustomModels());
+    const url = customUrl('ollama', 'keep:v1');
+    for (const body of [{ contextWindow: 0 }, { contextWindow: 'huge' }, { label: '' }, { label: '   ' }, { model: 'other:v1' }, { backend: 'claude' }, { backend: 'ollama', model: 'keep:v1' }]) {
+      const r = await api(baseUrl, 'PATCH', url, body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+    }
+    assert.equal(JSON.stringify(getCustomModels()), before, 'a refused edit stores nothing');
+  });
+
+  test('PATCH on an absent pair is 404 and creates nothing — curated presets and Claude ids are not editable', async () => {
+    const preset = OLLAMA_CLOUD_MODELS[0].model;
+    for (const [backend, model] of [['ollama', preset], ['claude', DEFAULT_VERSIONS.sonnet], ['ghost', 'x:v1']]) {
+      const r = await api(baseUrl, 'PATCH', customUrl(backend, model), { label: 'Hijack', contextWindow: 1000 });
+      assert.equal(r.status, 404, `${backend}/${model}`);
+    }
+    assert.deepEqual(getCustomModels(), [], 'an edit never creates a row');
+  });
+
+  test('an edited custom model keeps its tier binding and is what spawn resolution reads', async () => {
+    await addCustomModel({ label: 'Bound', model: 'bound:v1', backend: 'ollama', contextWindow: 100_000 });
+    await setTierBackend('fast', { backend: 'ollama', model: 'bound:v1' });
+    const r = await api(baseUrl, 'PATCH', customUrl('ollama', 'bound:v1'), { contextWindow: 262_144, midTurnSteering: false });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(getTierBackend('fast'), { backend: 'ollama', model: 'bound:v1' }, 'the binding survives the edit verbatim');
+    assert.equal(resolveContextWindowTokens({ backend: 'ollama', model: 'bound:v1' }), 262_144);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'bound:v1' }), false);
   });
 });

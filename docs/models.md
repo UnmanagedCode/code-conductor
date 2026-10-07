@@ -188,8 +188,13 @@ purpose: each closes a distinct route, and none subsumes another.
 — the models selectable for a substitution backend.
 
 - Identity is the `(backend, model)` pair (`model` is the backend's own model id):
-  re-adding a pair updates that row in place, and one model id may be registered on
-  several backends.
+  re-adding a pair replaces that row's values and moves it to the end of the list,
+  and one model id may be registered on several backends.
+- **Edit** (the row button in Settings → Models, or `PATCH /api/settings/models/custom/:backend/:model`)
+  changes `label`, `contextWindow` and `midTurnSteering` only, keeping the row's list
+  position. The pair is read-only because tier/role bindings and session records name
+  it; to change it, remove the model and add it again. A running session keeps its
+  spawn-time window and steering until its next spawn or resume.
 - An MCP `spawn_instance` naming such an id by the id alone is refused
   `MODEL_AMBIGUOUS` (carrying `model` + `backends:[<id>]`, registry order) until its
   `backend` argument picks one. A curated preset counts as registered on `ollama`, so
@@ -497,7 +502,7 @@ from `buildEffortPicker` — both reused by the Roles rows.
   none.
 
 **Custom models** fieldset: label + backend select + model id + **required** context
-tokens. **Roles** fieldset: one select per role listing every tier plus `Custom`
+tokens; each row has **Edit** (loads the shared form with backend and model id locked) and **Remove**. **Roles** fieldset: one select per role listing every tier plus `Custom`
 (which reveals the shared backend/model pickers), a **default-effort select** whose
 first option reads `Inherit (<level>)` — the payload's `inheritsTo`, so a row is
 never opaque about what it will run at — a name-only add form for custom roles, an
