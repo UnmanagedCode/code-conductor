@@ -2189,7 +2189,9 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* Change model picker: one labelled row per backend, ↻ on restart entries. */
 .qs-backend-group { font-size: 11px; color: var(--muted); padding: 8px 2px 0; }
 .qs-backend-group + .quick-spawn-models { margin-top: 4px; }
-.qs-restart-badge { font-size: 11px; font-weight: 400; opacity: .8; }
+/* A restart entry sets its badge on the label's line, a space apart. */
+.quick-spawn-models .qs-model[data-kind="restart"] { flex-direction: row; justify-content: center; }
+.qs-restart-badge { font-size: 11px; font-weight: 400; opacity: .8; margin-left: .4em; }
 
 /* ── Settings → Backends group ────────────────────────────────────────────── */
 /* One card per registry row. Managed rows show their template as read-only text

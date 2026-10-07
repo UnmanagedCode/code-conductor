@@ -12,14 +12,16 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
 import { addCustomModel, setTierBackend, setTierEffort, addBackend } from '../src/appSettings.ts';
-import { getSessionBackend, getModelSwitchesForSegment, isTemp, isArchived, isConducted, settleSessionWrites } from '../src/sessionStore.ts';
+import { getSessionBackend, getModelSwitchesForSegment, isTemp, isArchived, isConducted, settleSessionWrites, sessionsFile } from '../src/sessionStore.ts';
+import { withLock } from '../src/storeLock.ts';
 import { loadPersistedTranscript } from '../src/transcript.ts';
-import { sendPrompt } from '../src/mcp/handlers.ts';
+import { sendPrompt, describeSession } from '../src/mcp/handlers.ts';
 import { drainToManifest } from '../src/resumeRestart.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +84,14 @@ const TURN = [
   { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', model: A, content: [{ type: 'text', text: 'hi' }] } },
 ];
 async function seedTurn(inst) { await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId, TURN); }
+// The same turn with the usage the CLI persists: a 190k prompt on the old model.
+const OLD_USAGE = { input_tokens: 10_000, cache_read_input_tokens: 180_000, cache_creation_input_tokens: 0, output_tokens: 50 };
+async function seedTurnWithUsage(inst) {
+  await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId,
+    [TURN[0], { ...TURN[1], message: { ...TURN[1].message, usage: OLD_USAGE } }]);
+}
+// Inside the grace window: the relaunch on B is up and idle, the switch not yet confirmed.
+const inGrace = (inst) => waitFor(() => inst.proc && inst.status === 'idle' && inst.modelSwitch && inst.model === B);
 
 async function frame(c, inst, tier, reqId) {
   c.send({ t: 'model', id: inst.id, tier, reqId });
@@ -331,12 +341,12 @@ test('when the re-resume also fails the session is left crashed and recorded on 
   assert.equal(instances.get(inst.id), inst, 'still listed, so a manual Resume is one click away');
 });
 
-test('a Terminate during the grace window is a stop: no re-resume, recorded on the old model', async () => {
+test('a Terminate during the grace window is a stop: cancelled, not failed, and not re-resumed', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
   inst._modelSwitchGraceMs = 5000;
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
-  await waitFor(() => inst.proc && inst.status === 'idle' && inst.model === B);
+  await inGrace(inst);
   const launches = launcher.count;
   await inst.kill();
   await settled(inst);
@@ -344,10 +354,18 @@ test('a Terminate during the grace window is a stop: no re-resume, recorded on t
   assert.equal(inst.proc, null);
   assert.equal(inst.model, A);
   assert.deepEqual(await getSessionBackend(inst.sessionId), { backend: 'ollama', model: A, contextWindowTokens: 100_000 });
-  assert.match(inst.summary().modelSwitchFailure.error, /terminated during the switch/);
+  assert.equal(inst.summary().modelSwitchFailure, null, 'a stop is not a failure — no failure chip');
   const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
   assert.equal(ledger.length, 1);
   assert.equal(ledger[0].ok, false);
+  assert.equal(ledger[0].cancelled, true);
+  assert.equal(ledger[0].error, undefined);
+  const cancelled = failDividers(ringOf(inst));
+  assert.equal(cancelled.length, 1, 'the cancellation reaches the live conversation once');
+  assert.equal(cancelled[0].data.cancelled, true);
+  // A later replay (here: what a manual Resume reads) carries it once, cancelled.
+  const replay = (await loadPersistedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId })).lines.flatMap(l => l.events);
+  assert.deepEqual(failDividers(replay).map(e => e.data.cancelled), [true]);
 });
 
 test('a prompt during the switch is refused on every surface and never delivered', async () => {
@@ -463,4 +481,156 @@ test('an identity Claude session still switches live through set_model — no re
   assert.equal(inst.proc, proc);
   assert.notEqual(inst.effort, 'low', 'the live path leaves effort alone');
   assert.equal(inst._modelSwitchRun, null);
+});
+
+test('a failure to RECORD a confirmed switch is not a failed switch: the session stays on the new model, divider and all', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  inst._modelSwitchGraceMs = 300;
+  const warnings = [];
+  const realWarn = console.warn;
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await inGrace(inst);
+  // The store becomes unwritable for the confirmation's ledger write: a
+  // directory where sessions.json was makes the strict in-lock read fail.
+  const file = sessionsFile();
+  await fs.rename(file, `${file}.aside`);
+  await fs.mkdir(file);
+  console.warn = (...a) => { warnings.push(a.join(' ')); };
+  try {
+    await settled(inst);
+  } finally {
+    console.warn = realWarn;
+    await fs.rmdir(file);
+    await fs.rename(`${file}.aside`, file);
+  }
+  assert.equal(inst.model, B);
+  assert.equal(inst.effort, 'low');
+  assert.ok(inst.proc);
+  assert.equal(inst.status, 'idle');
+  assert.equal(inst.summary().modelSwitchFailure, null, 'no failure chip');
+  assert.equal(inst.summary().modelSwitch, null);
+  assert.equal(restartDividers(ringOf(inst)).length, 1, 'the live divider is still emitted');
+  assert.ok(warnings.some(w => /model switch/.test(w) && /recording/.test(w)), `the error is logged: ${JSON.stringify(warnings)}`);
+  assert.deepEqual(await getModelSwitchesForSegment(inst.backingSessionId), [], 'fixture check: the write really failed');
+});
+
+test('during confirmation no context reading measured on the old model is reported', async () => {
+  const inst = await spawnSub();
+  await seedTurnWithUsage(inst);
+  inst._modelSwitchGraceMs = 400;
+  const c = await wsClient(wsUrl);
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await inGrace(inst);
+    assert.equal(inst.contextWindowTokens, 300_000, 'premise: the window is already the new model\'s');
+    assert.equal(inst.summary().contextTokens, null);
+    assert.equal(inst.lastContextUsage, null);
+    c.send({ t: 'subscribe', id: inst.id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === inst.id);
+    assert.equal(snap.lastContextUsage, null, 'a late joiner is not seeded with it either');
+    await settled(inst);
+    assert.equal(inst.summary().contextTokens, null);
+  } finally { await c.close(); }
+});
+
+test('a failed switch re-resumes on the old model WITH its own context reading', async () => {
+  const inst = await spawnSub();
+  await seedTurnWithUsage(inst);
+  launcher.plan.push({ crash: 'no such model' });
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.model, A, 'fixture check: the switch failed');
+  await waitFor(() => inst.summary().contextTokens === 190_000);
+});
+
+test('a crash after confirmation, before the switch settles, is an ordinary crash: exit cause and launch_failed', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  inst._modelSwitchGraceMs = 30;
+  launcher.plan.push({ hold: true });
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await inGrace(inst);
+  // Holding the store lock parks the confirmation's ledger write, so the window
+  // between "confirmed" and "settled" stays open until the crash has landed.
+  await withLock(sessionsFile(), async () => {
+    await waitFor(() => inst._suppressTempDelete === false);
+    assert.ok(inst.modelSwitch, 'fixture check: confirmed but not yet settled');
+    launcher.ctl.last.crash('late boom');
+    await waitFor(() => inst.status === 'crashed');
+  });
+  await settled(inst);
+  const cause = instances.exitCauseFor(inst.sessionId);
+  assert.ok(cause, 'the exit cause is recorded');
+  await waitFor(() => cause.stderrTail !== null && /late boom/.test(cause.stderrTail));
+  const failed = ringOf(inst).filter(e => e.kind === 'system' && e.subtype === 'launch_failed');
+  assert.equal(failed.length, 1);
+  assert.match(failed[0].data.stderr, /late boom/);
+  assert.equal(inst.summary().modelSwitchFailure, null, 'the switch itself was confirmed');
+  assert.equal(restartDividers(ringOf(inst)).length, 1);
+});
+
+test('a relaunch that never comes up idle is a failed switch at the deadline', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  inst._modelSwitchIdleDeadlineMs = 150;
+  launcher.plan.push({ deaf: true });
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.model, A);
+  assert.equal(inst.status, 'idle');
+  assert.ok(inst.proc, 'resumed on the old model');
+  assert.equal(inst._mutating, null, 'the claim is released');
+  assert.match(inst.summary().modelSwitchFailure.error, /did not come up idle/);
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => e.ok), [false]);
+});
+
+test('a REST respawn during the switch\'s process-less gap is refused 409', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  inst._modelSwitchGraceMs = 300;
+  const attempts = [];
+  const onStatus = (s) => {
+    if (inst.modelSwitch && !inst.proc && (s.status === 'exited' || s.status === 'crashed') && attempts.length === 0) {
+      attempts.push(instances.respawn(inst.id).then(() => null, e => e));
+    }
+  };
+  inst.on('status', onStatus);
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await waitFor(() => attempts.length === 1);
+    const err = await attempts[0];
+    assert.equal(err?.statusCode, 409);
+    assert.match(err.message, /relaunch/);
+    await settled(inst);
+    assert.equal(inst.model, B, 'the switch went on unharmed');
+  } finally { inst.off('status', onStatus); }
+});
+
+test('a conductor reading the session mid-switch sees the confirmed model, not the unconfirmed target', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  inst._modelSwitchGraceMs = 400;
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await inGrace(inst);
+  assert.equal(inst.summary().model, B, 'premise: the summary already names the target');
+  const during = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  assert.match(during, /model ollama\/alpha:cloud/);
+  await settled(inst);
+  const after = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  assert.match(after, /model ollama\/beta:cloud/);
+});
+
+test('Change effort during the grace window is refused and leaves the effort alone', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  inst._modelSwitchGraceMs = 400;
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await inGrace(inst);
+  assert.throws(() => inst.setEffort('max'), e => e.statusCode === 409 && /switching model/.test(e.message));
+  assert.equal(inst.effort, 'low');
+  assert.equal(inst.status, 'idle', 'no /effort turn was started');
+  await settled(inst);
+  assert.equal(inst.effort, 'low');
 });

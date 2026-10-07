@@ -61,3 +61,12 @@ test('the failure divider names the target and the model still in use, with the 
   assert.equal(node.getAttribute('title'), "Error: model 'beta:cloud' not found");
   assert.ok(node.classList.contains('warn'), 'styled as a warning');
 });
+
+test('a cancelled switch (a Terminate mid-switch) reads as a stop, neutral, with no cause', async () => {
+  const node = await render({ kind: 'system', subtype: 'model_switch_failed',
+    data: { from: 'alpha:cloud', to: 'beta:cloud', cancelled: true, switchId: 's3' } });
+  assert.ok(node, 'rendered, not dropped');
+  assert.equal(detail(node), 'Switch to beta:cloud cancelled — session stopped');
+  assert.ok(!node.classList.contains('warn'), 'not warn-styled');
+  assert.equal(node.getAttribute('title'), null);
+});

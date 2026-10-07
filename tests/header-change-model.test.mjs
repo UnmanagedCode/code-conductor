@@ -402,3 +402,43 @@ test('a failed switch shows a failure chip carrying the cause as its tooltip', a
   t.header.update();
   assertNull(t.dom.instanceTitle.querySelector('.ih-status-switch-failed'), 'a new switch in flight replaces it');
 });
+
+test('a stale refusal note clears once the picker\'s entry states change', () => withBindings(async () => {
+  const sent = [];
+  installFakeSocket(sent, { ack: (m) => (m.t === 'model' ? { ok: false, error: 'cannot switch model during a running turn' } : { ok: true }) });
+  const t = await setup();
+  const { connect } = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+  connect();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  entry(popover, 'balanced').click();
+  await new Promise(r => setImmediate(r));
+  assert.ok(popover.querySelector('.ih-usage-popover-note.warn'), 'premise: the refusal is shown');
+  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
+  assertNull(popover.querySelector('.ih-usage-popover-note.warn'), 'the note went with the state it described');
+  t.setInstances([SUB_INSTANCE]);
+  t.header.update();
+  assertNull(popover.querySelector('.ih-usage-popover-note.warn'), 'and does not come back');
+}));
+
+test('a re-render with unchanged entry states keeps the very same buttons (a click in progress is not detached)', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([SUB_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  const before = entry(popover, 'balanced');
+  // A status update that moves nothing the picker shows (e.g. a title change).
+  t.setInstances([{ ...SUB_INSTANCE, title: 'renamed' }]);
+  t.header.update();
+  assert.ok(entry(popover, 'balanced') === before, 'not rebuilt');
+  assert.ok(before.isConnected);
+  // A real state change does rebuild.
+  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
+  assert.ok(entry(popover, 'balanced') !== before, 'rebuilt on a state change');
+  assert.equal(entry(popover, 'balanced').disabled, true);
+}));

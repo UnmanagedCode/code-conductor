@@ -223,6 +223,9 @@ export const LIST_ONLY_KEYS = ['awaitingWake', 'playbook', 'stage'];
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
+  // Mid restart switch summary().model already names the unconfirmed target;
+  // `modelSwitch` is withheld here, so report the model the session is still on.
+  if (summary.modelSwitch) out.model = summary.modelSwitch.from;
   return out;
 }
 

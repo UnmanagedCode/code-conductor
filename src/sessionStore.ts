@@ -150,6 +150,8 @@ export interface ModelSwitchEntry {
   to: string;
   ok: boolean;
   error?: string;
+  // A failure that was the user's Terminate landing mid-switch, not the model's.
+  cancelled?: true;
 }
 
 export interface SessionRecord {
@@ -219,6 +221,7 @@ function parseModelSwitch(raw: unknown): ModelSwitchEntry | null {
     id, at: typeof r.at === 'string' ? r.at : '', segment,
     afterUuid: (r.afterUuid as string | null), from, to, ok: r.ok,
     ...(typeof r.error === 'string' && r.error ? { error: r.error } : {}),
+    ...(r.cancelled === true ? { cancelled: true as const } : {}),
   };
 }
 
@@ -306,6 +309,7 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
       ...(r.modelSwitches?.length ? { modelSwitches: r.modelSwitches.map(e => ({
         id: e.id, at: e.at, segment: e.segment, afterUuid: e.afterUuid, from: e.from, to: e.to, ok: e.ok,
         ...(e.error ? { error: e.error } : {}),
+        ...(e.cancelled ? { cancelled: true } : {}),
       })) } : {}),
     };
   }

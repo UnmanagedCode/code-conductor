@@ -132,27 +132,42 @@ The consequences of being a substitution backend:
   | `409 SESSION_ROTATING` | a renew/prune rotation is in flight (`_assertNoRotationInFlight`) |
   | `409` "another rewind/fork/prune/model switch is in progress" | `_mutating` held |
   | `409` "not running" | no process |
-  | `409 SESSION_BUSY` | status not `idle` (turn, spawning), background agent tasks or bash jobs running, a steer or interrupt pending |
+  | `409 SESSION_BUSY` | status not `idle` (turn, spawning — which also covers a pending steer or interrupt), background agent tasks or bash jobs running |
   | no-op `{restart:false}` | the canonical target equals the running model — no restart, ledger entry or divider; effort untouched |
 
   - **Confirmed** when the relaunch has come up idle and outlived
     `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
-    entry is written and the divider emitted live.
-  - **Failed** when the relaunch throws or ends inside that window. Cause: its last
-    stderr line, else its `spawn_error`, else `exited code=… signal=…`. The model,
-    effort and capabilities are restored, the record is rewritten to the old model,
-    a failure ledger entry is written, and the session is **resumed again on the
-    old model** (same session id, conversation kept). If that resume also fails the
-    session is left `crashed`, recorded on the old model; `modelSwitchFailure.error`
-    names both causes.
-  - **Terminated** (a kill landing on the relaunch inside the window) ends the
-    switch as a failure with no re-resume.
-  - Held for the whole run: `_relaunching` (live for `isSessionLive`; no idle-wake
-    retirement) and `_suppressTempDelete` (a temp session is not archived by the
-    attempt; no exit cause is recorded). A temp session left with no process at the
-    end is archived like any exit.
+    entry is written and the divider emitted live. A failure to write the entry is
+    NOT a failed switch: it is logged, the divider is still emitted, the session
+    stays on the new model with no failure chip — only the divider's durability is
+    lost.
+  - **Failed** when the relaunch throws, ends inside that window, or has not come
+    up idle by `MODEL_SWITCH_IDLE_DEADLINE_MS` (`_modelSwitchIdleDeadlineMs`).
+    Cause: its last stderr line, else its `spawn_error`, else `exited code=…
+    signal=…`, else the deadline. The model, effort and capabilities are restored,
+    the record is rewritten to the old model, a failure ledger entry is written,
+    and the session is **resumed again on the old model** (same session id,
+    conversation kept, its own context reading re-seeded). If that resume also
+    fails the session is left `crashed`, recorded on the old model;
+    `modelSwitchFailure.error` names both causes.
+  - **Cancelled** — a kill landing on the relaunch inside the window (a Terminate)
+    is the user's stop: the record is rewritten to the old model, the ledger entry
+    carries `cancelled: true` (no `error`), the session stays stopped (no
+    re-resume) and `modelSwitchFailure` stays null — no failure chip.
+  - Held from the kill until confirmation: `_relaunching` (live for
+    `isSessionLive`; no idle-wake retirement; REST respawn refused `409`) and
+    `_suppressTempDelete` (a temp session is not archived by the attempt; no exit
+    cause is recorded). From confirmation on, an exit is an ordinary one —
+    `launch_failed`, exit cause, wake. A temp session the attempt leaves with no
+    process is archived like any exit.
+  - The relaunch's replay skips the jsonl's context-usage seed (`_skipUsageSeed`,
+    prune's rule): that reading was measured on the old model, and the window is
+    already the new one's, so the chip reads `ctx —` until the new model measures.
   - `prompt()` refuses `409` for the whole run (`rewriteBlocksPrompts`), the grace
     window included; `setEffort` refuses `409`.
+  - The conductor view (`toConductorView`) reports the switch's `from` as `model`
+    until it settles — conductors do not see `modelSwitch`, and `summary().model`
+    already names the target.
 - **Known limitation — confirmation is "process up + grace window".** A model the
   backend accepts at launch but rejects on its first request surfaces as an API error
   in that first turn, not as a switch failure, and the session stays recorded on

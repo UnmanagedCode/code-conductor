@@ -348,8 +348,47 @@ export function installHeader({
     openPicker = { node, anchor, ctl, ...meta };
   }
 
+  // update()'s refresh of an open model picker. Rebuilds only when an entry's
+  // state actually changed — a rebuild between mousedown and mouseup would
+  // detach the button being clicked — and drops a refusal note then, since it
+  // described the state that just went away.
   function refreshModelPicker(inst) {
+    const key = modelPickerKey(inst);
+    if (key === openPicker.key) return;
+    openPicker.key = key;
+    openPicker.warn = null;
+    renderModelPicker(inst);
+  }
+
+  function renderModelPicker(inst) {
     openPicker.node.replaceChildren(...buildModelPopover(inst, { warn: openPicker.warn }).childNodes);
+  }
+
+  // The picker's entries: tiers grouped by backend, the session's own first,
+  // each with its modelEntryState and highlight. Only enabled tiers are offered.
+  function modelPickerGroups(inst) {
+    const runningBackend = inst.backend || CLAUDE_BACKEND;
+    const runningModel = inst.modelSwitch?.from ?? inst.model;
+    // The `[1m]`/`[200k]` launch tag is Claude catalog policy; a substitution
+    // backend's id is compared exactly.
+    const curModel = typeof runningModel !== 'string' ? null
+      : runningBackend === CLAUDE_BACKEND ? runningModel.replace(/\[(200k|1m)\]$/, '') : runningModel;
+    const groups = new Map([[runningBackend, []]]);
+    for (const tier of getTierList()) {
+      if (!getActiveTierEnabled(tier)) continue;
+      const binding = getActiveTierBackend(tier); // {backend, model}
+      const id = backendIdOf(binding);
+      const state = modelEntryState(inst, binding);
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push({ tier, state, selected: state.kind !== 'cross' && binding.model === curModel });
+    }
+    return [...groups].filter(([, entries]) => entries.length);
+  }
+
+  // Everything the rendered entries depend on, as one comparable string.
+  function modelPickerKey(inst) {
+    return JSON.stringify(modelPickerGroups(inst).map(([id, entries]) =>
+      [id, entries.map(e => [e.tier, getTierLabel(e.tier), e.state.kind, e.state.disabled, e.state.title, e.selected])]));
   }
 
   function buildModelPopover(inst, { warn = null } = {}) {
@@ -363,34 +402,18 @@ export function installHeader({
     header.textContent = 'Change model';
     node.appendChild(header);
 
-    // Grouped by backend, the session's own first. Within it an identity session
-    // switches live and a substitution session restarts (↻); every other group
-    // is disabled — see modelEntryState. Only enabled tiers are offered.
-    const runningBackend = inst.backend || CLAUDE_BACKEND;
-    const runningModel = inst.modelSwitch?.from ?? inst.model;
-    // The `[1m]`/`[200k]` launch tag is Claude catalog policy; a substitution
-    // backend's id is compared exactly.
-    const curModel = typeof runningModel !== 'string' ? null
-      : runningBackend === CLAUDE_BACKEND ? runningModel.replace(/\[(200k|1m)\]$/, '') : runningModel;
-    const groups = new Map([[runningBackend, []]]);
-    for (const tier of getTierList()) {
-      if (!getActiveTierEnabled(tier)) continue;
-      const binding = getActiveTierBackend(tier); // {backend, model}
-      const id = backendIdOf(binding);
-      if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push({ tier, binding });
-    }
+    // Within its own backend an identity session switches live and a
+    // substitution session restarts (↻); every other group is disabled — see
+    // modelEntryState.
     let restartShown = false;
-    for (const [backendId, entries] of groups) {
-      if (!entries.length) continue;
+    for (const [backendId, entries] of modelPickerGroups(inst)) {
       const label = document.createElement('div');
       label.className = 'qs-backend-group';
       label.textContent = getBackendLabel(backendId);
       node.appendChild(label);
       const row = document.createElement('div');
       row.className = 'quick-spawn-models';
-      for (const { tier, binding } of entries) {
-        const state = modelEntryState(inst, binding);
+      for (const { tier, state, selected } of entries) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'qs-model';
@@ -398,7 +421,7 @@ export function installHeader({
         btn.dataset.kind = state.kind;
         btn.disabled = state.disabled;
         if (state.title) btn.title = state.title;
-        btn.classList.toggle('qs-selected', state.kind !== 'cross' && binding.model === curModel);
+        btn.classList.toggle('qs-selected', selected);
         btn.textContent = getTierLabel(tier);
         if (state.kind === 'restart') {
           restartShown = true;
@@ -428,7 +451,7 @@ export function installHeader({
             } catch (e) {
               if (!openPicker) return;
               openPicker.warn = `Change model refused: ${e.message}`;
-              refreshModelPicker(currentInst ?? inst);
+              renderModelPicker(currentInst ?? inst);
             }
           });
         }
@@ -456,7 +479,7 @@ export function installHeader({
     closeOverflow();
     if (currentInst) {
       const inst = currentInst;
-      togglePicker(dom.overflowToggle, () => buildModelPopover(inst), { kind: 'model', instId: inst.id });
+      togglePicker(dom.overflowToggle, () => buildModelPopover(inst), { kind: 'model', instId: inst.id, key: modelPickerKey(inst) });
     }
   });
 

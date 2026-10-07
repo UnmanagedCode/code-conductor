@@ -1303,7 +1303,11 @@ export class SystemBlock {
       if (subtype === 'model_changed') {
         return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}${data?.restart ? ' (session restarted)' : ''}`;
       }
-      if (subtype === 'model_switch_failed') return `Switch to ${data?.to ?? '?'} failed — still on ${data?.from ?? '?'}`;
+      if (subtype === 'model_switch_failed') {
+        // A Terminate that stopped the switch: the user's stop, not a failure.
+        if (data?.cancelled) return `Switch to ${data?.to ?? '?'} cancelled — session stopped`;
+        return `Switch to ${data?.to ?? '?'} failed — still on ${data?.from ?? '?'}`;
+      }
       if (subtype === 'playbook_warn') {
         // Enforcement is `warn`: the call went through anyway. Name the target
         // worker when the refused call had one (spawn/capacity refusals don't).
@@ -1345,9 +1349,10 @@ export class SystemBlock {
       }
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
-    const warn = subtype === 'playbook_warn' || subtype === 'read_nudge' || subtype === 'model_switch_failed';
+    const switchFailed = subtype === 'model_switch_failed' && !data?.cancelled;
+    const warn = subtype === 'playbook_warn' || subtype === 'read_nudge' || switchFailed;
     // A failed switch's cause rides as the tooltip, keeping the line itself short.
-    const title = subtype === 'model_switch_failed' ? (data?.error || null) : null;
+    const title = switchFailed ? (data?.error || null) : null;
     this.node = el('div', { class: warn ? 'block system warn' : 'block system', title },
       el('span', { class: 'subtype' }, subtype),
       detail ? ` ${detail}` : '',

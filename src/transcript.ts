@@ -412,14 +412,16 @@ export async function loadPersistedTranscript(options: {
 
 // A restart model switch's transcript divider (Instance.switchModel): a
 // `model_changed` carrying `restart`/`switchId` on success, `model_switch_failed`
-// on failure. `switchId` is what makes it durable — eventArchive treats an event
+// on failure (`cancelled` when a Terminate stopped it). `switchId` is what makes it durable — eventArchive treats an event
 // carrying one as persisted and correlates it by that id. The replay splice
 // marks its copy `replayed`, which public/usage.js reads to keep a replayed
 // divider from blanking the ctx reading a later turn seeded.
 export function modelSwitchEvent(entry: ModelSwitchEntry, { replayed = false }: { replayed?: boolean } = {}): UiEvent {
   const ev: UiEvent = entry.ok
     ? { kind: 'system', subtype: 'model_changed', data: { from: entry.from, to: entry.to, restart: true, switchId: entry.id } }
-    : { kind: 'system', subtype: 'model_switch_failed', data: { from: entry.from, to: entry.to, error: entry.error ?? '', switchId: entry.id } };
+    : { kind: 'system', subtype: 'model_switch_failed', data: entry.cancelled
+      ? { from: entry.from, to: entry.to, cancelled: true, switchId: entry.id }
+      : { from: entry.from, to: entry.to, error: entry.error ?? '', switchId: entry.id } };
   if (replayed) ev.replayed = true;
   return ev;
 }

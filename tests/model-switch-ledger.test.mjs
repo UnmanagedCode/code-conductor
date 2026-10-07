@@ -17,7 +17,7 @@ import { SwitchLauncher } from './switchLauncher.mjs';
 import { addCustomModel, setTierBackend } from '../src/appSettings.ts';
 import {
   parseSessionsDoc, serializeSessionsDoc, appendModelSwitch, getModelSwitchesForSegment,
-  removeSessionRecords, setSessionMode, settleSessionWrites,
+  removeSessionRecords, setSessionMode, settleSessionWrites, sessionsFile,
 } from '../src/sessionStore.ts';
 import { recordRotation } from '../src/sessionLineage.ts';
 import { replayPersistedText, loadPersistedTranscript } from '../src/transcript.ts';
@@ -256,6 +256,22 @@ test('L6b: a divider at the ring head correlates into the archive by its switchI
   assert.equal(arch.gap, false);
 });
 
+test('L6c: a FAILURE divider at the ring head is persisted too — exact cut on it, no duplicate, no gap', async () => {
+  const sid = randomUUID();
+  const place = localPlace('/fake/l6c');
+  await seedSessionJsonl(place, sid, turns(0, 3));
+  await setSessionMode(sid, 'plan');
+  await appendModelSwitch(sid, entry({ segment: sid, afterUuid: 'a0', ok: false, error: 'boom' }));
+  const flat = await loadStampedTranscript({ place, sessionId: sid });
+  const d = flat.findIndex(isDivider);
+  assert.equal(flat[d]?.subtype, 'model_switch_failed', 'fixture check: the archive holds the failure divider');
+  const ring = flat.slice(d).map((ev, i) => ({ ...ev, _seq: 100 + i }));
+  const arch = await buildArchive({ place, sessionId: sid, ring, trimmedBefore: 100, userEchoCount: 3 });
+  assert.equal(arch.cut, d, 'archive serves exactly what precedes the failure divider');
+  assert.equal(arch.gap, false);
+  assert.equal(dividers(arch.events.slice(0, arch.cut)).length, 0, 'not served twice');
+});
+
 test('L7: R3 get_transcript — disk (not live) and live both include the divider once', async () => {
   const inst = await switched(true);
   await appendTurn(inst, 1, 2);
@@ -309,6 +325,10 @@ test('L11: a rewind past the anchor moves the divider to the cut, ahead of the t
   await appendTurn(inst, 1, 3);
   const { sessionId, backingSessionId } = inst;
   await appendModelSwitch(sessionId, entry({ segment: backingSessionId, afterUuid: 'a2', to: 'late' }));
+  // Another segment's entry on the same record, anchored to a uuid this rewind
+  // does not keep: it is not this transcript's, so it must not move.
+  const foreign = entry({ segment: 'another-segment', afterUuid: 'a2', to: 'foreign' });
+  await appendModelSwitch(sessionId, foreign);
   await inst.kill();
   const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', resume: sessionId });
   const fresh = instances.get(r.body.id);
@@ -317,9 +337,90 @@ test('L11: a rewind past the anchor moves the divider to the cut, ahead of the t
   await fresh.rewindToUserMessage(2, 'prompt 2');
   const ledger = await getModelSwitchesForSegment(backingSessionId);
   assert.deepEqual(ledger.map(e => [e.to, e.afterUuid]), [[B, 'a0'], ['late', 'a1']], 'only the truncated anchor moved, to the last surviving line');
+  const record = JSON.parse(await fs.readFile(sessionsFile(), 'utf8')).sessions[sessionId];
+  assert.deepEqual(record.modelSwitches.find(e => e.id === foreign.id), foreign, 'another segment\'s entry is untouched');
   await appendTurn(fresh, 3, 4);
   const replay = (await loadPersistedTranscript({ place: fresh.transcriptPlace, sessionId: backingSessionId })).lines.flatMap(l => l.events);
   const late = replay.findIndex(e => isDivider(e) && e.data.to === 'late');
   assert.ok(late > replyIdx(replay, 'reply 1'), 'after the cut');
   assert.ok(late < echoIdx(replay, 'prompt 3'), 'before the turn that followed the rewind');
+});
+
+// ── a ring NOT rebuilt by a replay (launch({}) after a wipe) ────────────────
+//
+// The archive leads with the segment's null-anchored dividers; the ring has to
+// lead with them too, or the two seq spaces drift by one: the echo-anchored cut
+// overshoots the ring floor, a `history_gap` is marked and an event is dropped.
+// The later turns are emitted LIVE with exactly the events their replay yields
+// (and the matching lines are appended to the jsonl), so ring and file hold the
+// same content and only the leading divider can tell them apart.
+
+const sig = (e) => [e.kind, e.subtype ?? '', e.text ?? '', e.msgId ?? '', e.blockIdx ?? '', e.data?.switchId ?? ''].join('|');
+
+async function liveTurns(inst, from, to) {
+  const records = turns(from, to);
+  const { lines } = await replayPersistedText({ place: inst.transcriptPlace, sessionId: inst.backingSessionId, text: jsonl(records) });
+  for (const ev of lines.flatMap(l => l.events)) inst._emitUi({ ...ev });
+  const file = sessionFilePath(inst.transcriptPlace, inst.backingSessionId);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.appendFile(file, jsonl(records));
+}
+
+async function withRingCap(cap, fn) {
+  const prev = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = String(cap);
+  try { return await fn(); }
+  finally { if (prev === undefined) delete process.env.ORCH_EVENT_RING_CAP; else process.env.ORCH_EVENT_RING_CAP = prev; }
+}
+
+async function assertRingAgreesWithArchive(inst, label) {
+  assert.ok(inst.ring.trimmedBefore > 0, `${label}: fixture check — the ring was trimmed, so the archive is in play`);
+  const arch = await buildArchive({ place: inst.transcriptPlace, sessionId: inst.backingSessionId,
+    ring: inst.ringSnapshot(), trimmedBefore: inst.ring.trimmedBefore, userEchoCount: inst._userEchoCount });
+  assert.equal(arch.gap, false, `${label}: no false history_gap`);
+  const page = await pageInstanceEvents(inst, { limit: 1000 });
+  const served = page.events.filter(e => e.kind !== 'segment_seam');
+  assert.equal(served.filter(e => e.kind === 'history_gap').length, 0, `${label}: no gap marker served`);
+  assert.equal(dividers(served).length, 1, `${label}: the divider exactly once`);
+  const flat = await loadStampedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId });
+  assert.deepEqual(served.map(sig), flat.map(sig), `${label}: archive + ring serve the transcript whole, nothing lost at the cut`);
+}
+
+test('L12: a rewind to the first prompt seeds its null-anchored divider into the ring — ring and archive agree', async () => {
+  const inst = await switched(true);
+  const { sessionId, backingSessionId } = inst;
+  await inst.kill();
+  const fresh = await withRingCap(6, async () => {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', resume: sessionId });
+    return instances.get(r.body.id);
+  });
+  await waitFor(() => fresh.status === 'idle');
+  await fresh.rewindToUserMessage(0, 'prompt 0');
+  assert.deepEqual((await getModelSwitchesForSegment(backingSessionId)).map(e => e.afterUuid), [null],
+    'fixture check: the rewind left the divider null-anchored');
+  await waitFor(() => fresh.status === 'idle');
+  const ring = fresh.ringSnapshot();
+  assert.equal(dividers(ring).length, 1, 'in the live conversation right after the relaunch');
+  assert.equal(ring.indexOf(dividers(ring)[0]), 0, 'leading, as the archive has it');
+  await liveTurns(fresh, 1, 9);
+  await assertRingAgreesWithArchive(fresh, 'rewind to first');
+});
+
+test('L13: a failed no-turn switch\'s re-resume seeds its divider into the ring — ring and archive agree', async () => {
+  const inst = await withRingCap(6, async () => {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama' });
+    return instances.get(r.body.id);
+  });
+  await waitFor(() => inst.status === 'idle');
+  inst._modelSwitchGraceMs = 30;
+  launcher.plan.push({ crash: 'no such model' });
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await inst._modelSwitchRun;
+  assert.equal(inst.model, A, 'fixture check: the switch failed');
+  assert.deepEqual((await getModelSwitchesForSegment(inst.backingSessionId)).map(e => [e.ok, e.afterUuid]), [[false, null]]);
+  const ring = inst.ringSnapshot();
+  assert.equal(dividers(ring).length, 1, 'in the live conversation right after the re-resume');
+  assert.equal(ring.indexOf(dividers(ring)[0]), 0);
+  await liveTurns(inst, 0, 8);
+  await assertRingAgreesWithArchive(inst, 'failed no-turn switch');
 });
