@@ -69,10 +69,14 @@ export class UsageTracker {
     // moved. Never reset() — that would also blank cum.*, which backs the
     // session-totals popover and is genuinely cumulative work a switch does not
     // invalidate.
+    // A REPLAYED restart divider (src/transcript.ts → modelSwitchEvent) is the
+    // exception: it is spliced into history ahead of any later turns, whose
+    // reading the snapshot already seeded — clearing there would blank a valid
+    // reading on every reload. Its live twin cleared when it happened.
     if (ev.kind === 'system' && ev.subtype === 'model_changed') {
       const m = ev.data?.to;
       if (m) this.model = m;
-      this.lastUsage = null;
+      if (!ev.replayed) this.lastUsage = null;
       return;
     }
     // message_start is the AUTHORITATIVE source for "current context

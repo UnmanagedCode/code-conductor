@@ -64,6 +64,7 @@ const WITHHELD_KEYS = [
   'id', 'callerInstanceId', 'debugDir', 'autoApprovePlan',
   'playbookEnforcement', 'interrupting', 'overageStoppedUnarmed',
   'turnEndSeq', 'viewedSeq', 'liveTurnEnds', 'lastTurnError', 'liveAsks',
+  'modelSwitch', 'modelSwitchFailure',
 ];
 
 // Pull the documented key names out of the single `{…}` block in the

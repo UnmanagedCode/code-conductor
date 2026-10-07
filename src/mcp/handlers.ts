@@ -155,7 +155,9 @@ interface DiffFileRow {
 // OVERAGE_STOPPED_UNARMED refusal delivers it where a conductor would act on it),
 // `turnEndSeq` + `viewedSeq` (the human's unread state — UI-only, like the route
 // that writes it), `liveTurnEnds` + `lastTurnError` + `liveAsks` (the browser's
-// notification counters — UI-only).
+// notification counters — UI-only), `modelSwitch` + `modelSwitchFailure` (a
+// restart switch is UI-started; send_prompt names one in flight as
+// SESSION_SWITCHING_MODEL).
 export const CONDUCTOR_VIEW_KEYS = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its
@@ -1267,6 +1269,16 @@ export async function sendPrompt(
   ctx: McpCtx,
 ) {
   const { instances, callerId } = ctx;
+  // Ahead of getInst: across a restart model switch the session is process-less
+  // for a moment (getInst would answer SESSION_NOT_LIVE with resume advice that
+  // does not apply) and then idle on a model not yet confirmed (the prompt would
+  // be delivered). One refusal covers the whole run.
+  const switching = typeof sessionId === 'string' && sessionId ? instances?.anyForSession(sessionId)?.modelSwitch : null;
+  if (switching) {
+    return { ok: false, code: 'SESSION_SWITCHING_MODEL', sessionId, from: switching.from, to: switching.to,
+      reason: `session is restarting to switch model ${switching.from} → ${switching.to}; no prompt was sent — `
+        + 'retry once it is idle.' };
+  }
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;

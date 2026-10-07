@@ -647,3 +647,64 @@ test('R1: the live drop and the reload drop agree', () => {
   assert.equal(liveValue, reloadValue,
     'a live client and a reloading one must not disagree about the reading');
 });
+
+// ── restart switches (Instance.switchModel) ─────────────────────────────────
+
+function routerFixture(state, usage) {
+  installWsRouter({
+    state,
+    getTracker: () => ({ completedBatches: [], reset: noop, seedActive: noop, apply: noop }),
+    getUsage: () => usage,
+    globalRLTracker: new RateLimitTracker(),
+    conversation: { clear: noop, reset: noop, apply: noop, setCurrentSegment: noop, batchScroll: (fn) => fn() },
+    headerHandle: { update: noop },
+    lazyController: { init: noop, reset: noop },
+    sessionActions: { resumeSession: async () => {} },
+    composer: { prefill: noop },
+    sidebar: { setInstances: noop },
+    subagentPanel: { setInstances: noop },
+    refreshProjects: async () => {},
+    refreshInstances: async () => {},
+    selectInstance: noop,
+    setSidebarStatus: noop,
+  });
+}
+
+// R2 — a reload of a session whose replayed history holds a restart divider
+// BEFORE later turns. Replay retains no message_start, so the snapshot seed is
+// the later turns' reading; the replayed divider must not blank it. Its live
+// twin (no `replayed`) still drops the reading, as any switch does.
+test('R2: a replayed restart divider ahead of later turns does not blank the seeded reading', () => {
+  const usage = new UsageTracker();
+  routerFixture({ activeId: 'inst-R', instances: [{ id: 'inst-R' }] }, usage);
+  const divider = { kind: 'system', subtype: 'model_changed', data: { from: M1, to: M2, restart: true, switchId: 'sw' } };
+  const laterTurn = [
+    { kind: 'user_echo', text: 'later', _seq: 5 },
+    { kind: 'text_delta', msgId: 'm9', blockIdx: 0, text: 'on the new model', _seq: 6 },
+  ];
+  bus.dispatchEvent(new CustomEvent('snapshot', {
+    detail: { id: 'inst-R', events: [{ ...divider, replayed: true, _seq: 4 }, ...laterTurn], lastContextUsage: NEW_USAGE },
+  }));
+  assert.equal(usage.currentContextSize(), 420_000, 'the seeded reading survives the replayed divider');
+  assert.equal(usage.model, M2, 'the divider still moves the model');
+
+  bus.dispatchEvent(new CustomEvent('event', { detail: { id: 'inst-R', ev: { ...divider, _seq: 7 } } }));
+  assert.equal(usage.currentContextSize(), null, 'the live divider drops the reading');
+});
+
+// R3 — the status frame carries the switch state; the router copies it (and the
+// model) onto the instance entry the header renders from.
+test('R3: the status frame\'s model and switch fields reach the instance entry', () => {
+  const entry = { id: 'inst-S', model: M1 };
+  routerFixture({ activeId: 'inst-S', instances: [entry] }, new UsageTracker());
+  const sw = { from: M1, to: M2 };
+  bus.dispatchEvent(new CustomEvent('status', { detail: { id: 'inst-S', status: 'idle', mode: 'plan', sessionId: 's', model: M2, modelSwitch: sw, modelSwitchFailure: null } }));
+  assert.equal(entry.model, M2);
+  assert.deepEqual(entry.modelSwitch, sw);
+  assert.equal(entry.modelSwitchFailure, null);
+  const failure = { ...sw, error: 'boom' };
+  bus.dispatchEvent(new CustomEvent('status', { detail: { id: 'inst-S', status: 'idle', mode: 'plan', sessionId: 's', model: M1, modelSwitch: null, modelSwitchFailure: failure } }));
+  assert.equal(entry.modelSwitch, null);
+  assert.deepEqual(entry.modelSwitchFailure, failure);
+  assert.equal(entry.model, M1);
+});
