@@ -600,7 +600,7 @@ test('model switch via WS for a tier now on a non-Claude backend restarts the se
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId && instances.get(id).status === 'idle');
     const inst = instances.get(id);
-    inst._modelSwitchGraceMs = 30;
+    inst._relaunchGraceMs = 30;
     assert.equal(inst.backend, 'claude', 'premise: a Claude session');
 
     c = await wsClient(wsUrl);

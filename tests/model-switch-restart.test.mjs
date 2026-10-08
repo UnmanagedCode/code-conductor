@@ -1147,7 +1147,7 @@ test('a failed cross switch\'s divider and ledger entry name both backends', asy
 test('mid cross switch the summary names both backends, and a conductor sees the pair the session is still on', async () => {
   const inst = await spawnClaude();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 400;
+  inst._relaunchGraceMs = 400;
   await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
   await waitFor(() => inst.proc && inst.status === 'idle' && inst.modelSwitch && inst.model === A);
   assert.deepEqual(inst.summary().modelSwitch, { from: HAIKU, to: A, fromBackend: 'claude', toBackend: 'ollama' });
@@ -1295,7 +1295,7 @@ async function spawnModelLess() {
 
 test('a model-less session\'s cross switch labels its from side, persisted and shown, and its divider survives replay', async () => {
   const inst = await spawnModelLess();
-  inst._modelSwitchGraceMs = 300;
+  inst._relaunchGraceMs = 300;
   await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
   assert.deepEqual(inst.summary().modelSwitch, { from: ACCOUNT_DEFAULT, to: A, fromBackend: 'claude', toBackend: 'ollama' });
   const refused = await sendPrompt({ sessionId: inst.sessionId, text: 'x' }, { instances });
