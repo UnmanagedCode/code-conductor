@@ -247,7 +247,9 @@ export function installHeader({
     const ctxWindow = inst.contextWindowTokens;
     // Mid-switch the server already names the target it is launching; the
     // session is still on `from` until the switch is confirmed.
-    const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(default)';
+    // No known model: the CLI runs the account default — the server's name for
+    // it too, so a switch from such a session reads the same.
+    const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(account default)';
     const meta = document.createElement('div');
     meta.className = 'ih-usage-meta';
     // Mid-switch `contextWindowTokens` is already the target's, so it would be

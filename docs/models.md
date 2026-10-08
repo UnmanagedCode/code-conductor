@@ -157,10 +157,11 @@ The consequences of being a substitution backend:
 
   - A session whose model was never known (`this.model` null — a Claude resume
     with no record and no model in its jsonl, before its first `system/init`;
-    launched with no `--model`, so on the account default) names its `from`
-    `(account default)` (`ACCOUNT_DEFAULT_MODEL_LABEL`) in `modelSwitch`,
-    `modelSwitchFailure`, the ledger entry, the divider and `SESSION_SWITCHING_MODEL`;
-    a failed switch restores `this.model` to `null`, never the label.
+    launched with no `--model`, so on the account default) gets the label
+    `(account default)` (`ACCOUNT_DEFAULT_MODEL_LABEL`), which stands in for `from`
+    wherever a switch's from-side is shown or persisted, including the conductor
+    view's `model`; the usage popover uses the same name for such a session. A
+    failed switch restores `this.model` to `null`, never the label.
   - **Confirmed** when the relaunch has come up idle and outlived
     `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
     entry is written and the divider emitted live. A failure to write the entry,

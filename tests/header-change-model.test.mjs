@@ -833,3 +833,16 @@ test('a cross switch\'s restarting and failure chips name both backends', async 
   t.header.update();
   assert.equal(t.dom.instanceTitle.querySelector('.ih-status-switch-failed').textContent, 'Switch to beta:cloud failed');
 });
+
+// A session with no known model runs the account default; the usage popover
+// names it as a model switch from it does, so one element never shows two
+// names for one idea.
+test('the usage popover names a session with no known model `(account default)`', async () => {
+  const t = await setup();
+  t.setInstances([{ ...LIVE_INSTANCE, model: null }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  t.dom.tiUsageSlot.querySelector('.ih-combined').click();
+  const meta = t.document.querySelector('.ih-usage-popover[aria-label="Usage details"] .ih-usage-meta').textContent;
+  assert.ok(meta.startsWith('(account default)'), meta);
+});
