@@ -2125,8 +2125,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     //
     // Distinguished STRUCTURALLY, never by id length: a fresh spawn is the one
     // with neither a resume target nor an id already in hand. The
-    // `!this.backingSessionId` half is what preserves rewind's empty-prefix
-    // relaunch (`launch({})` on an instance that already has ids), which
+    // `!this.backingSessionId` half is what preserves the fresh relaunch of a
+    // segment with no conversation — rewind's or a model switch's, through
+    // _relaunchSegment (`launch({})` on an instance that already has ids), which
     // deliberately reuses the same id under `--session-id`.
     if (!resume && !this.backingSessionId) {
       this.backingSessionId = randomUUID();

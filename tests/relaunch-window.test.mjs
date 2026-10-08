@@ -18,6 +18,8 @@ import { SwitchLauncher } from './switchLauncher.mjs';
 import { isTemp, isArchived, settleSessionWrites } from '../src/sessionStore.ts';
 import { localPlace } from '../src/projects.ts';
 import { RELAUNCH_FAILED } from '../src/instances.ts';
+import { ROUTE_ERROR_LOG_MAX } from '../src/routes.ts';
+import { httpError } from '../src/httpError.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume-strict.json');
@@ -238,4 +240,28 @@ test('a 4xx route error is logged as a warning', async () => {
   assert.equal(logged.length, 1, JSON.stringify(lines));
   assert.match(logged[0], /POST \/api\/instances\/nope\/rewind/);
   assert.match(logged[0], /404/);
+});
+
+test('a route error with a multi-MB message logs at most ROUTE_ERROR_LOG_MAX, 5xx and 4xx alike', async (t) => {
+  const huge = 'x'.repeat(3_000_000);
+  const rows = [
+    ['5xx', 'error', 500, () => new Error(huge)],
+    ['4xx', 'warn', 409, () => httpError(409, huge)],
+  ];
+  for (const [name, method, status, make] of rows) {
+    // The file's beforeEach/afterEach hooks run around each subtest too.
+    await t.test(name, async () => {
+      const { inst } = await resumeSeeded(TWO_TURNS);
+      inst.rewindToUserMessage = async () => { throw make(); };
+      let res;
+      const lines = await capture(method, async () => { res = await rewind(inst, 0, 'x'); });
+      assert.equal(res.status, status);
+      const logged = lines.filter(l => l.startsWith('routes:'));
+      assert.equal(logged.length, 1, `one entry, got ${lines.length} console.${method} calls`);
+      assert.ok(lines.join('').length <= ROUTE_ERROR_LOG_MAX, `logged ${lines.join('').length} chars`);
+      assert.match(logged[0], new RegExp(`^routes: POST /api/instances/${inst.id}/rewind → ${status}: x+…`));
+      if (status >= 500) assert.match(logged[0], /\n\s+at /, 'the 5xx entry keeps its stack frames');
+      else assert.doesNotMatch(logged[0], /\n\s+at /, 'a 4xx entry is one line');
+    });
+  }
 });
