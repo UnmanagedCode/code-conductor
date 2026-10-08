@@ -606,7 +606,7 @@ describe('backend registry data model', () => {
   });
 
   test('a session backend is a {backend,model,contextWindowTokens} field on its sessions.json record: set / get / upsert', async () => {
-    assert.equal(await getSessionBackend('sid-1'), null);
+    assert.equal(await getSessionBackend('sid-1'), null, 'never recorded');
 
     await setSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000);
     assert.deepEqual(await getSessionBackend('sid-1'),
@@ -638,7 +638,17 @@ describe('backend registry data model', () => {
     assert.deepEqual(await getSessionBackend('sid-3'),
       { backend: 'my-proxy', model: 'mine:v1', contextWindowTokens: 42_000 });
 
-    // A set with no backend is refused (absence must mean "plain claude").
+    // `claude` is recorded like any other backend, and a substitution record
+    // flips to it (and back) by upsert — the record mirrors the running pair.
+    await setSessionBackend('sid-5', 'claude', 'claude-sonnet-4-6[1m]', 1_000_000);
+    assert.deepEqual(await getSessionBackend('sid-5'),
+      { backend: 'claude', model: 'claude-sonnet-4-6[1m]', contextWindowTokens: 1_000_000 });
+    await setSessionBackend('sid-3', 'claude', 'claude-opus-4-8', 200_000);
+    assert.deepEqual(await getSessionBackend('sid-3'),
+      { backend: 'claude', model: 'claude-opus-4-8', contextWindowTokens: 200_000 });
+
+    // A set with no backend is refused, and an id never recorded reads null —
+    // which reads as `claude`.
     assert.equal(await setSessionBackend('sid-4', null, 'x'), false);
     assert.equal(await getSessionBackend('sid-4'), null);
     const after = JSON.parse(await fs.readFile(sessionsFile(), 'utf8'));

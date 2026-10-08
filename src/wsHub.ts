@@ -27,8 +27,8 @@ import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
-import { isKnownTier, CLAUDE_BACKEND_ID } from './modelVersions.ts';
-import { getTierBackend, getTierEffort, isKnownBackendModel } from './appSettings.ts';
+import { isKnownTier } from './modelVersions.ts';
+import { getTierBackend, getTierEffort, isKnownBackend, isKnownBinding } from './appSettings.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
@@ -75,6 +75,9 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       sessionId: summary.sessionId,
       mode: summary.mode,
       model: summary.model ?? null,
+      // Moves with a cross-backend model switch, so it rides here rather than
+      // waiting for the `instances` refetch.
+      backend: summary.backend,
       autoApprovePlan: !!summary.autoApprovePlan,
       playbookEnforcement: summary.playbookEnforcement,
       interrupting: !!summary.interrupting,
@@ -251,30 +254,31 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             if (!inst) { reply(false, 'unknown instance'); return; }
             // The client names exactly one target: a TIER, which the server
             // resolves against the CURRENT stored binding (and applies its
-            // effort), or a MODEL registered on the session's own backend (a
-            // substitution session only; it keeps the session's effort).
-            // Instance.switchModel picks the path (live, restart, or
-            // BACKEND_LOCKED). A restart acks once it is ACCEPTED; its outcome
-            // arrives as status/events. A `backend` key only ever came with the
-            // legacy {model, backend} frame, from a page never reloaded since —
-            // refuse it rather than switching to a stale pair.
-            if ('backend' in msg) {
-              reply(false, "the model frame names a tier; the server resolves its model — reload the page");
-              return;
-            }
+            // effort), or a {model, backend} pair — the backend never inferred —
+            // which must be a binding Settings → Models would accept (it keeps
+            // the session's effort). Either may land on another backend.
+            // Instance.switchModel picks the path (live for Claude→Claude, a
+            // restart otherwise) and refuses a removed backend BACKEND_GONE. A
+            // restart acks once it is ACCEPTED; its outcome arrives as
+            // status/events.
             if (('tier' in msg) === ('model' in msg)) {
               reply(false, 'the model frame names exactly one of `tier` or `model`');
               return;
             }
             if ('model' in msg) {
               const model = typeof msg.model === 'string' ? msg.model.trim() : '';
-              if (inst.backend === CLAUDE_BACKEND_ID) { reply(false, 'a Claude session switches by tier'); return; }
-              if (!isKnownBackendModel(inst.backend, model)) {
-                reply(false, `model '${model}' is not registered on backend '${inst.backend}'`);
+              const backend = typeof msg.backend === 'string' ? msg.backend.trim() : '';
+              if (!backend) { reply(false, 'a model pick names its backend'); return; }
+              if (isKnownBackend(backend) && !isKnownBinding({ backend, model })) {
+                reply(false, `model '${model}' is not registered on backend '${backend}'`);
                 return;
               }
-              await inst.switchModel({ model, backend: inst.backend, effort: inst.effort });
+              await inst.switchModel({ model, backend, effort: inst.effort });
               reply(true);
+              return;
+            }
+            if ('backend' in msg) {
+              reply(false, 'a tier pick names no backend — the server resolves its binding');
               return;
             }
             const tier = typeof msg.tier === 'string' ? msg.tier.trim() : '';

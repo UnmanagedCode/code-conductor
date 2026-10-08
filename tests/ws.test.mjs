@@ -590,7 +590,7 @@ test('model switch via WS resolves the tier\'s CURRENT binding and acks', async 
   }
 });
 
-test('model switch via WS for a tier now on a non-Claude backend is refused BACKEND_LOCKED', async () => {
+test('model switch via WS for a tier now on a non-Claude backend restarts the session onto that backend', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   let c = null;
   try {
@@ -598,24 +598,27 @@ test('model switch via WS for a tier now on a non-Claude backend is refused BACK
     await setTierBackend('fast', { backend: 'ollama', model: 'gemma4:cloud' });
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
-    await waitFor(() => instances.get(id).sessionId);
+    await waitFor(() => instances.get(id).sessionId && instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+    inst._modelSwitchGraceMs = 30;
+    assert.equal(inst.backend, 'claude', 'premise: a Claude session');
 
     c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
-    const before = instances.get(id).model;
     c.send({ t: 'model', id, tier: 'fast', reqId: 'm3' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm3');
-    assert.equal(ack.ok, false);
-    assert.match(ack.error, /non-Claude backend/);
-    assert.equal(instances.get(id).model, before, 'a refused switch must not mutate the session model');
+    assert.equal(ack.ok, true, ack.error);
+    await c.wait(m => m.t === 'status' && m.id === id && m.modelSwitch === null && m.backend === 'ollama');
+    assert.equal(inst.backend, 'ollama');
+    assert.equal(inst.model, 'gemma4:cloud');
   } finally {
     if (c) await c.close();
     await close();
   }
 });
 
-test('a legacy model/backend WS frame is refused — there is no verbatim path left', async () => {
+test('a model WS frame names exactly one target, and a model names its backend', async (t) => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   let c = null;
   try {
@@ -623,15 +626,24 @@ test('a legacy model/backend WS frame is refused — there is no verbatim path l
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
     const before = instances.get(id).model;
-
     c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
-    c.send({ t: 'model', id, model: 'claude-sonnet-5', backend: 'claude', reqId: 'm4' });
-    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm4');
-    assert.equal(ack.ok, false);
-    assert.match(ack.error, /reload/, 'a stale, never-reloaded page must be told to reload — nothing is switched');
-    assert.equal(instances.get(id).model, before);
+    const cases = [
+      ['a model with no backend', { model: 'claude-opus-4-8' }, /a model pick names its backend/],
+      ['a tier with a backend', { tier: 'fast', backend: 'claude' }, /a tier pick names no backend/],
+      ['a model not in the Claude catalog', { model: 'claude-nope', backend: 'claude' }, /'claude-nope' is not registered on backend 'claude'/],
+    ];
+    for (const [name, target, error] of cases) {
+      await t.test(name, async () => {
+        const reqId = `m4-${name}`;
+        c.send({ t: 'model', id, ...target, reqId });
+        const ack = await c.wait(m => m.t === 'ack' && m.reqId === reqId);
+        assert.equal(ack.ok, false);
+        assert.match(ack.error, error);
+        assert.equal(instances.get(id).model, before);
+      });
+    }
   } finally {
     if (c) await c.close();
     await close();

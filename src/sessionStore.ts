@@ -152,6 +152,9 @@ export interface ModelSwitchEntry {
   error?: string;
   // A failure that was the user's Terminate landing mid-switch, not the model's.
   cancelled?: true;
+  // A switch that crossed backends names both; a same-backend one neither.
+  fromBackend?: string;
+  toBackend?: string;
 }
 
 export interface SessionRecord {
@@ -222,7 +225,15 @@ function parseModelSwitch(raw: unknown): ModelSwitchEntry | null {
     afterUuid: (r.afterUuid as string | null), from, to, ok: r.ok,
     ...(typeof r.error === 'string' && r.error ? { error: r.error } : {}),
     ...(r.cancelled === true ? { cancelled: true as const } : {}),
+    ...crossedBackends(r.fromBackend, r.toBackend),
   };
+}
+
+// `{fromBackend, toBackend}` only when both are non-empty and differ — the pair
+// is all or nothing. Shared by the parser and the serializer.
+function crossedBackends(from: unknown, to: unknown): { fromBackend?: string; toBackend?: string } {
+  const f = nonEmpty(from), t = nonEmpty(to);
+  return f && t && f !== t ? { fromBackend: f, toBackend: t } : {};
 }
 
 function nonEmpty(v: unknown): string | undefined {
@@ -310,6 +321,7 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
         id: e.id, at: e.at, segment: e.segment, afterUuid: e.afterUuid, from: e.from, to: e.to, ok: e.ok,
         ...(e.error ? { error: e.error } : {}),
         ...(e.cancelled ? { cancelled: true } : {}),
+        ...crossedBackends(e.fromBackend, e.toBackend),
       })) } : {}),
     };
   }
@@ -691,8 +703,9 @@ export function setSessionMode(id: string | null | undefined, mode: string | und
     rec => rec.mode === mode, rec => { rec.mode = mode; return true; }, () => true);
 }
 
-// The backend a session runs on and its EXACT launch model, or null for a plain
-// `claude` session (absence = 'claude').
+// The backend a session last ran on and its EXACT launch model — `claude`
+// included: Instance writes it on every spawn and on every model change. Null
+// when nothing was ever recorded, which reads as `claude`.
 export async function getSessionBackend(id: string | undefined): Promise<SessionBackendRecord | null> {
   if (typeof id !== 'string' || !id) return null;
   return recordFor(await loadSessions(), id)?.backend ?? null;

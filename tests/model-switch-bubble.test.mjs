@@ -70,3 +70,23 @@ test('a cancelled switch (a Terminate mid-switch) reads as a stop, neutral, with
   assert.ok(!node.classList.contains('warn'), 'not warn-styled');
   assert.equal(node.getAttribute('title'), null);
 });
+
+// A switch that crossed backends names each side's backend id; the same-backend
+// texts above are unchanged (their data carries no backends).
+test('a cross-backend divider names both backends on every outcome', async (t) => {
+  const backends = { from: 'claude-haiku-4-5', to: 'alpha:cloud', fromBackend: 'claude', toBackend: 'ollama' };
+  const cases = [
+    ['restarted', { subtype: 'model_changed', data: { ...backends, restart: true, switchId: 'c1' } },
+      'Model changed: claude-haiku-4-5 on claude → alpha:cloud on ollama (session restarted)'],
+    ['failed', { subtype: 'model_switch_failed', data: { ...backends, error: 'boom', switchId: 'c2' } },
+      'Switch to alpha:cloud on ollama failed — still on claude-haiku-4-5 on claude'],
+    ['cancelled', { subtype: 'model_switch_failed', data: { ...backends, cancelled: true, switchId: 'c3' } },
+      'Switch to alpha:cloud on ollama cancelled — session stopped'],
+  ];
+  for (const [name, ev, text] of cases) {
+    await t.test(name, async () => {
+      const node = await render({ kind: 'system', ...ev });
+      assert.equal(detail(node), text);
+    });
+  }
+});

@@ -669,21 +669,19 @@ describe('a UI-shaped spawn (row named, no model) lands on the CURRENT binding',
   });
 });
 
-describe('setModel live-switch gate', () => {
-  test('blocks changing model on a session running on a substitution backend', async () => {
+describe('setModel is the live Claude path only', () => {
+  test('on a substitution session it rejects with the invariant error and writes nothing to the CLI', async () => {
     const { inst } = await spawnOnBackend();
-    await assert.rejects(() => inst.setModel('claude-opus-4-8', 'claude'), /non-Claude backend/);
-  });
-
-  test('blocks switching a Claude session TO a substitution backend', async () => {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-opus-4-8' });
-    const inst = instances.get(r.body.id);
-    await waitFor(() => inst.status === 'idle');
-    await assert.rejects(() => inst.setModel('gemma4:cloud', 'ollama'), /non-Claude backend/);
-    // …and to a USER-DEFINED one, not just the built-in ollama row.
-    await addBackend({ id: 'p2', label: 'P2', template: 'p2 claude --model {model} --' });
-    await assert.rejects(() => inst.setModel('mine:v1', 'p2'), /non-Claude backend/);
+    const sent = [];
+    const realSend = inst._sendRaw;
+    inst._sendRaw = (m) => { sent.push(m); return realSend.call(inst, m); };
+    try {
+      await assert.rejects(() => inst.setModel('claude-opus-4-8'),
+        e => e.message === 'setModel is the live Claude path — switchModel restarts every other pair'
+          && e.code === undefined && e.statusCode === undefined);
+    } finally { inst._sendRaw = realSend; }
+    assert.deepEqual(sent, [], 'no control_request was written');
+    assert.equal(inst.model, 'gemma4:cloud');
   });
 });
 

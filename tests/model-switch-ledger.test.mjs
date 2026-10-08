@@ -159,6 +159,28 @@ test('L1: the ledger round-trips through the sessions doc, drops invalid entries
   assert.deepEqual(await getModelSwitchesForSegment(sid), [], 'gone with its record');
 });
 
+test('L1b: an entry\'s backend pair survives the sessions doc only when both are named and differ', async (t) => {
+  const cases = [
+    ['a crossed pair is kept', { fromBackend: 'claude', toBackend: 'ollama' }, { fromBackend: 'claude', toBackend: 'ollama' }],
+    ['an equal pair is dropped', { fromBackend: 'ollama', toBackend: 'ollama' }, {}],
+    ['a lone fromBackend is dropped', { fromBackend: 'claude' }, {}],
+    ['a lone toBackend is dropped', { toBackend: 'ollama' }, {}],
+    ['an empty side drops both', { fromBackend: '', toBackend: 'ollama' }, {}],
+    ['a non-string side drops both', { fromBackend: 'claude', toBackend: 7 }, {}],
+  ];
+  for (const [name, raw, kept] of cases) {
+    await t.test(name, () => {
+      const base = entry({ id: 'e1' });
+      const doc = parseSessionsDoc({ sessions: {
+        s1: { current: 's1', segments: [{ id: 's1', reason: 'initial', at: '' }], modelSwitches: [{ ...base, ...raw }] },
+      } });
+      assert.deepEqual(doc.get('s1').modelSwitches, [{ ...base, ...kept }]);
+      const again = parseSessionsDoc(JSON.parse(serializeSessionsDoc(doc)));
+      assert.deepEqual(again.get('s1').modelSwitches, [{ ...base, ...kept }], 'serialize → parse is lossless');
+    });
+  }
+});
+
 test('L2: replayPersistedText splices each entry at its anchor without touching the counts', async () => {
   const place = localPlace('/fake/l2');
   const text = jsonl(turns(0, 3));

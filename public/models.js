@@ -76,6 +76,7 @@ let backendModels = {};
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
 export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
+export function getBackends() { return backends; }
 export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
 export function getBackendModels(id) { return backendModels[id] || []; }
 export function setBackendModels(map) { backendModels = { ...(map || {}) }; }

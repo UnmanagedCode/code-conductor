@@ -109,27 +109,39 @@ The consequences of being a substitution backend:
   live switch (below), so the configured id is authoritative by construction. The guard is keyed on
   `backend !== 'claude'`, never on one backend id — narrowing it to
   `=== 'ollama'` reintroduces the bug for every user-defined backend.
-- **"Change model" restarts within the session's own backend, and is refused
-  across backends.** The model is fixed at launch in three places — `{model}` in the
-  template's argv, the cc-managed context env vars, and `_trackModel` ignoring the
-  CLI's report — so no `set_model` control request can reach it. `Instance.switchModel`
-  (the WS `model` frame's dispatcher) therefore:
-  - identity session → `claude` tier: live `setModel` (`set_model` control request),
-    **between turns only** — during a running turn it refuses `409 SESSION_BUSY`
-    (`_assertBetweenTurns`, shared with `setEffort`) before writing anything to the CLI;
-  - substitution session → a target on the **same** backend: **restart**. The target
-    is either a tier bound there (the switch applies that tier's effort) or any model
-    registered there — its custom-model rows plus, for `ollama`, the curated presets
-    (`backendModels` / `isKnownBackendModel`, `src/appSettings.ts`), which keeps the
-    session's own effort. A model registered only on another backend, or unknown,
-    is refused by the WS frame before any restart. The restart is
-    kill → set `this.model`/`this.effort` → `_wipeForResume` →
-    `launch({resume})` (or `launch({})` under `--session-id` for a session with no
-    conversation yet) → confirm. `spawn()` reads `this.model` for the argv, the
-    context env and the session record, so the new model is both what runs and what
-    a cold resume comes back on;
-  - anything else (substitution ↔ another substitution, substitution ↔ `claude`) →
-    `409 BACKEND_LOCKED` (a new session or a fork is the way across).
+- **"Change model" goes live only Claude→Claude; every other pair restarts onto
+  the target backend.** A substitution model is fixed at launch in three places —
+  `{model}` in the template's argv, the cc-managed context env vars, and
+  `_trackModel` ignoring the CLI's report — and the running process's endpoint and
+  auth are fixed with the backend, so no `set_model` control request can move it.
+  `Instance.switchModel` (the WS `model` frame's dispatcher) therefore:
+  - target backend no longer in the registry → `422 BACKEND_GONE`
+    (`backend '<b>' no longer exists — re-add it in Settings → Backends`), before
+    anything is claimed; a removal racing past it fails in `spawn()` and takes the
+    restart's rollback;
+  - `claude` session → `claude` model: live `setModel` (`set_model` control
+    request), **between turns only** — during a running turn it refuses
+    `409 SESSION_BUSY` (`_assertBetweenTurns`, shared with `setEffort`) before
+    writing anything to the CLI. `setModel` off `claude` throws a plain invariant
+    `Error` (no `code`; unreachable from any surface);
+  - every other pair — within one substitution backend, substitution → another
+    substitution, `claude` → substitution, substitution → `claude` — **restart**.
+    The target is a tier (the switch applies that tier's effort) or a
+    `{model, backend}` pair the WS frame validated as a binding (`isKnownBinding`:
+    the Claude catalog for `claude`, the backend's custom rows plus, for `ollama`,
+    the curated presets, otherwise), which keeps the session's effort. The target
+    model is canonicalized against the **target** backend (a Claude target gets
+    its catalog launch tag). The restart is kill → set
+    `this.backend`/`this.model`/`this.effort` and re-resolve the window and
+    mid-turn steering (`_refreshModelCapabilities`, nothing carried) →
+    `_wipeForResume` → `launch({resume})` (or `launch({})` under `--session-id` for
+    a session with no conversation yet) → confirm. `spawn()` reads `this.backend`
+    and `this.model` for the launch template, argv, context env and session
+    record, so the new pair is both what runs and what a cold resume comes back
+    on. Usage domain, cost rows, fork args and the restart manifest read the live
+    `backend`, so they follow too.
+  - cc does **no** transcript compatibility check across providers: the target
+    CLI resumes the jsonl the previous one wrote.
 - **Restart switch: refusals, confirmation, failure** (`_beginRestartSwitch`,
   `_runRestartSwitch`; every check runs and `_mutating = 'model_switch'` is claimed
   with no await in between):
@@ -140,7 +152,8 @@ The consequences of being a substitution backend:
   | `409` "another rewind/fork/prune/model switch is in progress" | `_mutating` held |
   | `409` "not running" | no process |
   | `409 SESSION_BUSY` | status not `idle` (turn, spawning — which also covers a pending steer or interrupt), background agent tasks or bash jobs running |
-  | no-op `{restart:false}` | the canonical target equals the running model — no restart, ledger entry or divider; effort untouched |
+  | no-op `{restart:false}` | the canonical target model AND its backend equal the running pair — no restart, ledger entry or divider; effort untouched. The same id on another backend is a switch |
+  | `501 FUSE_BACKEND_UNRESOLVED` | a remote-system session (`_redirectPlacement`, off an in-process launcher) whose target backend's launch command does not resolve on cc's `PATH` — create's guard (`assertBackendLaunchResolvable`), run for the target pair |
 
   - **Confirmed** when the relaunch has come up idle and outlived
     `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
@@ -151,14 +164,14 @@ The consequences of being a substitution backend:
   - **Failed** when the relaunch throws, ends inside that window, or has not come
     up idle by `MODEL_SWITCH_IDLE_DEADLINE_MS` (`_modelSwitchIdleDeadlineMs`).
     Cause: its last stderr line, else its `spawn_error`, else `exited code=…
-    signal=…`, else the deadline. The model, effort and capabilities are restored,
-    the record is rewritten to the old model, a failure ledger entry is written,
-    and the session is **resumed again on the old model** (same session id,
-    conversation kept, its own context reading re-seeded). If that resume also
-    fails the session is left `crashed`, recorded on the old model;
+    signal=…`, else the deadline. The backend, model, effort and capabilities are
+    restored, the record is rewritten to the old pair, a failure ledger entry is
+    written, and the session is **resumed again on the old pair** (same session
+    id, conversation kept, its own context reading re-seeded). If that resume
+    also fails the session is left `crashed`, recorded on the old pair;
     `modelSwitchFailure.error` names both causes.
   - **Cancelled** — a kill landing on the relaunch inside the window (a Terminate)
-    is the user's stop: the record is rewritten to the old model, the ledger entry
+    is the user's stop: the record is rewritten to the old pair, the ledger entry
     carries `cancelled: true` (no `error`), the session stays stopped (no
     re-resume) and `modelSwitchFailure` stays null — no failure chip.
   - `_relaunching` is held for the whole run, released in `finally` with
@@ -236,19 +249,25 @@ The consequences of being a substitution backend:
   Adding a monitor later is one `Set` entry (`src/usageWindowDomains.ts`).
 - **The session record holds it** — the `backend` field of the session's record in
   `<store>/sessions.json` (`src/sessionStore.ts`), keyed by the PUBLIC id, is
-  `{backend, model, contextWindowTokens}`, written at every spawn/resume onto a
-  substitution backend (a `claude` session records none); a rotation
-  (`/clear`, prune) never touches it. Two things the CLI jsonl can't
-  carry: which backend ran the session, and the model id in full. Absence of a record
-  means plain `claude`; a `null` model means backend-known/model-unknown (resume falls
-  back to the jsonl and the next spawn self-heals it). `contextWindowTokens` is a
-  fallback used only when the model's custom-model row has since been deleted. If the recorded backend has since been REMOVED from the
-  registry, resume is refused `422 BACKEND_GONE` (below). A restart model switch
-  rewrites it to the new model (at the relaunch's spawn) and back to the old one on
-  failure.
+  `{backend, model, contextWindowTokens}` and mirrors the running pair on **every**
+  backend, `claude` included (`Instance._recordBackend`). Written at every
+  spawn/resume, on a live `setModel`, and when `_trackModel` adopts a changed
+  model; a rotation (`/clear`, prune) never touches it. Two things the CLI jsonl
+  can't carry: which backend ran the session, and the model id in full — and the
+  jsonl's newest assistant line names the **previous** model until a turn runs on
+  a new one, so a cold resume reads the record's model ahead of the jsonl. A
+  missing record (a session never spawned since) still reads as `claude`, with the
+  model recovered from the jsonl; a `null` model means backend-known/model-unknown
+  (resume falls back to the jsonl and the next spawn self-heals it).
+  `contextWindowTokens` is a fallback used only when the registry can no longer
+  resolve the model's window. If the recorded backend has since been REMOVED from
+  the registry, resume is refused `422 BACKEND_GONE` (below). A restart model
+  switch rewrites it to the new pair (at the relaunch's spawn) and back to the old
+  one on failure.
 - **The record also holds the switch ledger** — `modelSwitches: [{id, at, segment,
-  afterUuid, from, to, ok, error?}]`, one entry per confirmed or failed restart
-  switch, oldest first. It is the transcript divider's durable home (the jsonl is the
+  afterUuid, from, to, ok, error?, cancelled?, fromBackend?, toBackend?}]`, one
+  entry per confirmed or failed restart switch, oldest first. `fromBackend` +
+  `toBackend` are present together, only on a switch that crossed backends. It is the transcript divider's durable home (the jsonl is the
   CLI's): `loadPersistedTranscript` splices each entry of the segment being read
   after the line whose `uuid` is `afterUuid` (`null` = first; always `null` when
   the segment had no conversation to resume, since its file is deleted before the
@@ -265,13 +284,14 @@ catalog. A bad backend or model simply fails at spawn and surfaces as
 
 Falling back to `claude` when a backend id can't be resolved would launch the real
 CLI against the real Anthropic account with a **foreign model id** — an opaque
-failure, billed. So every path refuses instead. These are four independent doors on
+failure, billed. So every path refuses instead. These are independent doors on
 purpose: each closes a distinct route, and none subsumes another.
 
 | Door | Where | Refusal |
 |---|---|---|
 | Create with an **explicit** unknown backend (`POST /api/instances`, restart replay) | `_doCreate`, `src/instances.ts` | `422 BACKEND_GONE` |
 | Resume whose **recorded** backend was removed since | `_doCreate`, same guard | `422 BACKEND_GONE` |
+| Change model onto a removed backend | `Instance.switchModel`, `src/instances.ts` | `422 BACKEND_GONE` |
 | Spawn/respawn after the row was removed **under a tracked instance** | `Instance.spawn()`, `src/instances.ts` | throws, instance → `crashed` (visible), instead of taking `resolveBackendLaunch`'s identity branch |
 | **Removing** a row that anything still references | `removeBackend()`, `src/appSettings.ts` | `409` — see [Settings → Backends](#settings--backends) |
 

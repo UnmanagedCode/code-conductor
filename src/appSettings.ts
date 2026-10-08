@@ -895,8 +895,10 @@ export async function removeCustomModel(backend: string, model: string): Promise
   return true;
 }
 
-// True if a {backend, model} binding names a real, currently-available backend.
-function isValidBinding(b: unknown): b is BackendBinding {
+// True if a {backend, model} binding names a real, currently-available backend
+// and a model it serves: the Claude catalog for `claude`, the backend's
+// registered models otherwise. Also the WS `model` frame's pair check.
+export function isKnownBinding(b: unknown): b is BackendBinding {
   if (!b || typeof b !== 'object') return false;
   const rec = b as { backend?: unknown; model?: unknown };
   if (rec.backend === CLAUDE_BACKEND_ID) return isKnownClaudeModel(rec.model);
@@ -921,7 +923,7 @@ function persistBinding(b: BackendBinding): BackendBinding {
 export function getTierBackend(tier: TierName): BackendBinding {
   const s = loadSync();
   const stored = s.models?.tierBackend?.[tier];
-  return isValidBinding(stored) ? stored : DEFAULT_TIER_BACKEND[tier];
+  return isKnownBinding(stored) ? stored : DEFAULT_TIER_BACKEND[tier];
 }
 
 // The {backend, model} a spawn that names no tier/role/model runs on: the tier
@@ -933,7 +935,7 @@ export function defaultSpawnBinding(): BackendBinding {
 }
 
 export async function setTierBackend(tier: TierName, backend: unknown): Promise<Record<string, unknown>> {
-  if (!isKnownTier(tier) || !isValidBinding(backend)) {
+  if (!isKnownTier(tier) || !isKnownBinding(backend)) {
     throw httpError(400, 'tierBackend must be {backend, model} naming a known backend + model');
   }
   const cur = loadSync();
@@ -946,12 +948,12 @@ export async function setTierBackend(tier: TierName, backend: unknown): Promise<
 // Roles group: role → binding. A binding is EITHER a tier binding
 // ({kind:'tier', tier}) or a concrete {backend, model} pair (the same shape a
 // tier binds to). The two are told apart by `kind === 'tier'`; a tier binding
-// validates via isKnownTier, a concrete one via isValidBinding.
+// validates via isKnownTier, a concrete one via isKnownBinding.
 function isValidRoleBinding(b: unknown): b is BackendBinding | TierBinding {
   if (b && typeof b === 'object' && (b as { kind?: unknown }).kind === 'tier') {
     return isKnownTier((b as { tier?: unknown }).tier);
   }
-  return isValidBinding(b);
+  return isKnownBinding(b);
 }
 
 // A role's fallback binding when nothing valid is stored. Built-in roles use
