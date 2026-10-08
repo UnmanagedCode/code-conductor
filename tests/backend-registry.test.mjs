@@ -473,6 +473,9 @@ describe('backend registry data model', () => {
     }
     assert.equal(isKnownBackendModel('p', 'local:cloud'), false);
     assert.equal(isKnownBackendModel('ollama', 'mine:v1'), false);
+    // An empty or non-string id is never registered.
+    assert.equal(isKnownBackendModel('ollama', ''), false);
+    assert.equal(isKnownBackendModel('ollama', null), false);
   });
 
   test('backendsForModel lists every serving backend in registry order', async () => {

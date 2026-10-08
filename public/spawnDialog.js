@@ -7,9 +7,9 @@
 // `spawnHandles` holder and calls them lazily (see app.js).
 //
 // models.js getters are imported directly: models.js is a singleton ESM module,
-// so these read the same state that app.js's setActive* setters mutate. app.js's
-// onModelsChange calls the setters first, then the returned sync handles, so the
-// getters always see fresh state.
+// so these read the same state that models.js's applyModelsPayload writes.
+// app.js's onModelsChange calls applyModelsPayload first, then the returned sync
+// handles, so the getters always see fresh state.
 //
 // Injected interface:
 //   - dom:                the spawn dialog els + conductBtn (see app.js dom map).

@@ -646,8 +646,9 @@ test('a substitution session with nothing else registered on its backend says so
 });
 
 // The registered-model list follows the server: seeded by the boot fetch, and
-// replaced by every Settings → Models response (public/app.js's onModelsChange
-// hands that payload to the same applyModelsPayload).
+// replaced by every Settings → Models response through the same
+// applyModelsPayload (that the Settings handler calls it is pinned by
+// tests/app-models-change-wiring.test.mjs).
 
 test('a models payload replaces the picker\'s registered models: an added model appears, a removed one goes', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
   const NOTE = 'No other model is registered on Ollama — add one in Settings → Models';
