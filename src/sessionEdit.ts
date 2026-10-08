@@ -226,14 +226,17 @@ export async function verifyUserPrompt({ place, sessionId, userMessageIndex, exp
 
 // Truncate <cwd>/<sessionId>.jsonl so that everything from the Nth pure
 // user-prompt line onward is dropped. Returns { droppedText, droppedLineCount,
-// remainingLineCount, lastSurvivingUuid, survivingUuids }.
+// resumable, lastSurvivingUuid, survivingUuids }. `resumable` is whether the
+// prefix still holds a conversation record (isResumableLine) — the CLI's
+// leading records (queue-operation, ai-title, mode) are none, and `--resume`
+// on a file without one exits at startup.
 //
 // After the rewrite, appends a fresh last-prompt / permission-mode metadata
 // pair pointing at lastSurvivingUuid (skipped when N==0 — the empty-history
 // case where no leaf exists to anchor the picker).
 export async function truncateSessionAtUserMessage({ place, sessionId, userMessageIndex, expectedText, mode }: {
   place: TranscriptPlacement; sessionId: string; userMessageIndex: number; expectedText: string; mode: string;
-}): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null; survivingUuids: string[] }> {
+}): Promise<{ droppedText: string; droppedLineCount: number; resumable: boolean; lastSurvivingUuid: string | null; survivingUuids: string[] }> {
   if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
     throw httpError(400, 'userMessageIndex must be a non-negative integer');
@@ -258,7 +261,7 @@ export async function truncateSessionAtUserMessage({ place, sessionId, userMessa
   return {
     droppedText,
     droppedLineCount: dropped.length,
-    remainingLineCount: prefix.length,
+    resumable: prefix.some(e => isResumableLine(e.obj)),
     lastSurvivingUuid,
     survivingUuids: prefix.flatMap(e => (typeof e.obj?.uuid === 'string' ? [e.obj.uuid] : [])),
   };

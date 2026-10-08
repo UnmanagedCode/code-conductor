@@ -2477,6 +2477,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
 
   r.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = (err as { statusCode?: number } | null)?.statusCode ?? 500;
+    const line = `routes: ${req.method} ${req.originalUrl} → ${status}: ${errMessage(err)}`;
+    if (status >= 500) console.error(line, err); else console.warn(line);
     res.status(status).json(errorBody(err));
   });
 

@@ -8,8 +8,8 @@ import { ControllableLauncher } from './controllableLauncher.mjs';
 //   {hold: true}          stays up until the test calls `launcher.ctl.last.crash()`;
 //   {deaf: true}          stays up with its stdin already closed, so the
 //                         session never leaves 'spawning' (a CLI that hung).
-// Shared by the model-switch suites, whose failure paths need exactly one launch
-// to misbehave.
+// Shared by the model-switch and relaunch-window suites, whose failure paths
+// need exactly one launch to misbehave.
 //
 // This module is NOT named `*.test.mjs`, so run.mjs's discover() ignores it.
 export class SwitchLauncher {

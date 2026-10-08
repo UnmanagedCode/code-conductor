@@ -1,7 +1,9 @@
 // End-to-end REST coverage of POST /api/instances/:id/rewind. Seeds a
 // jsonl on disk (the fake-claude doesn't write one), spawns a --resume
 // instance against it, calls the endpoint, and asserts the ring buffer
-// + jsonl reflect the rewind.
+// + jsonl reflect the rewind. The fake runs with `strict_resume`, so a
+// relaunch that `--resume`s a file with no conversation dies at startup
+// the way the real CLI does.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,9 +13,10 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { isTemp, isArchived } from '../src/sessionStore.ts';
+import { RENEW_HEAD } from './segmentChain.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume-strict.json');
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
@@ -22,7 +25,23 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot, claudeProjectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
+// What the real CLI writes ahead of a session's first prompt: the prompt's
+// queue enqueue/dequeue pair. Neither line is a conversation record.
+const HEAD = [
+  { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-03T00:00:00.000Z', content: 'queued' },
+  { type: 'queue-operation', operation: 'dequeue', timestamp: '2026-10-03T00:00:00.010Z' },
+];
+
+// Whether the instance's current process was launched to resume `sid` (vs a
+// fresh `--session-id` launch).
+const launchedWith = (inst, flag, sid) => {
+  const argv = inst._spawnArgv ?? [];
+  const at = argv.indexOf(flag);
+  return at !== -1 && argv[at + 1] === sid;
+};
+
 async function seedSession({ projectName, sid, lines }) {
+  lines = [...HEAD, ...lines];
   await api(baseUrl, 'POST', '/api/projects', { name: projectName });
   const projectPath = path.join(projectsRoot, projectName);
   const sessionDir = path.join(claudeProjectsRoot, encodeCwd(projectPath));
@@ -94,6 +113,7 @@ test('rewind drops the chosen user message + tail, ring is rebuilt from truncate
     'droppedText rides on the snapshot_reset frame');
 
   await waitFor(() => instances.get(id).status === 'idle');
+  assert.ok(launchedWith(instances.get(id), '--resume', sid), 'a later prompt still relaunches with --resume');
 
   // After rewind: ring has events from re-replayed truncated history.
   const postRing = instances.get(id).ringSnapshot();
@@ -109,14 +129,16 @@ test('rewind drops the chosen user message + tail, ring is rebuilt from truncate
 });
 
 test('rewind to index 0 wipes the session and respawns under the same sessionId', async () => {
-  // Empty-prefix case: --resume <sid> against a zero-line jsonl would crash
-  // the real CLI, so the orchestrator deletes the file and respawns with
-  // --session-id under the same id. The URL anchor stays valid and the
-  // instance lands back at idle, ready for a fresh first turn.
+  // The prefix left by rewinding the first prompt holds the CLI's leading
+  // records (queue-operation pair, ai-title) and no conversation, so
+  // `--resume <sid>` would exit at startup: the orchestrator deletes the file
+  // and respawns with --session-id under the same id. The URL anchor stays
+  // valid and the instance lands back at idle, ready for a fresh first turn.
   const sid = '00000000-2222-3333-4444-555555555555';
   const { sessionDir } = await seedSession({
     projectName: 'wipeable', sid,
     lines: [
+      { type: 'ai-title', aiTitle: 'A title', sessionId: sid },
       { type: 'user', uuid: 'u1', message: { role: 'user', content: 'only prompt' } },
       { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
         { type: 'text', text: 'only reply' },
@@ -137,30 +159,99 @@ test('rewind to index 0 wipes the session and respawns under the same sessionId'
     if (snap.id === id) resets.push(snap);
   });
   const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0, text: 'only prompt' });
-  assert.equal(rew.status, 200);
+  assert.equal(rew.status, 200, JSON.stringify(rew.body));
   assert.equal(rew.body.droppedText, 'only prompt');
   assert.equal(resets.length, 1, 'snapshot_reset emitted exactly once');
   assert.equal(resets[0].droppedText, 'only prompt',
     'droppedText rides on the snapshot_reset frame');
 
   await waitFor(() => instances.get(id).status === 'idle');
+  const inst = instances.get(id);
+  assert.ok(inst.proc, 'the relaunched CLI is up');
+  assert.ok(launchedWith(inst, '--session-id', sid), 'relaunched fresh under the same id');
+  assert.ok(!(inst._spawnArgv ?? []).includes('--resume'), 'not resumed');
 
   // Same sessionId — URL anchor preserved.
-  assert.equal(instances.get(id).sessionId, sid);
+  assert.equal(inst.sessionId, sid);
 
   // No user_echo events in the rebuilt ring.
-  const postRing = instances.get(id).ringSnapshot();
+  const postRing = inst.ringSnapshot();
   const postEchoes = postRing.filter(ev => ev.kind === 'user_echo');
   assert.equal(postEchoes.length, 0, 'ring has no surviving user_echo');
 
-  // The empty jsonl was deleted (the fresh subprocess hasn't written its
-  // own yet — fake-claude only writes when the scenario tells it to).
+  // The conversation-less jsonl was deleted (the fresh subprocess hasn't
+  // written its own yet — fake-claude only writes when the scenario tells it to).
   const exists = await fs.stat(path.join(sessionDir, `${sid}.jsonl`)).then(() => true, () => false);
-  assert.equal(exists, false, 'empty jsonl was deleted');
+  assert.equal(exists, false, 'conversation-less jsonl was deleted');
 
   // Sanity: events were observed (collectEvents is a smoke check that the
   // bus stayed alive across the wipe + respawn).
   assert.ok(events.length > 0, 'event bus still streaming after wipe');
+});
+
+test('rewind to the first prompt of a renewed segment relaunches fresh', async () => {
+  // A renewed segment opens with `mode`, then the `/clear` caveat, command and
+  // local_command lines; the `/clear` line is prompt 0. Rewinding to it leaves
+  // only `mode` — no conversation to resume.
+  const sid = 'cccccccc-2222-3333-4444-555555555555';
+  await seedSession({
+    projectName: 'renewed', sid,
+    lines: [
+      { type: 'mode', mode: 'bypassPermissions', sessionId: sid },
+      ...RENEW_HEAD,
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'reseed summary' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'text', text: 'got it' },
+      ] } },
+    ],
+  });
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'renewed', mode: 'bypassPermissions', resume: sid,
+  });
+  assert.equal(r.status, 201);
+  const id = r.body.id;
+  await waitFor(() => instances.get(id).status === 'idle');
+  const clearEcho = instances.get(id).ringSnapshot()
+    .find(ev => ev.kind === 'user_echo' && ev.text.startsWith('<command-name>/clear</command-name>'));
+  assert.ok(clearEcho, 'the /clear line replays as a bubble');
+
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`,
+    { userMessageIndex: clearEcho.userIndex, text: clearEcho.text });
+  assert.equal(rew.status, 200, JSON.stringify(rew.body));
+  await waitFor(() => instances.get(id).status === 'idle');
+  const inst = instances.get(id);
+  assert.ok(inst.proc, 'the relaunched CLI is up');
+  assert.ok(launchedWith(inst, '--session-id', sid), 'relaunched fresh under the same id');
+});
+
+test('rewind to the first prompt on a temp session relaunches fresh and stays temp', async () => {
+  const sid = 'tttttttt-2222-3333-4444-777777777777';
+  await seedSession({
+    projectName: 'tempfresh', sid,
+    lines: [
+      { type: 'ai-title', aiTitle: 'A title', sessionId: sid },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'text', text: 'first reply' },
+      ] } },
+    ],
+  });
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'tempfresh', temp: true, resume: sid,
+  });
+  assert.equal(r.status, 201);
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle');
+
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0, text: 'first prompt' });
+  assert.equal(rew.status, 200, JSON.stringify(rew.body));
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(instances.get(id), inst, 'the same instance stays registered');
+  assert.ok(inst.proc, 'the relaunched CLI is up');
+  assert.ok(launchedWith(inst, '--session-id', sid), 'relaunched fresh under the same id');
+  assert.equal(await isTemp(sid), true, 'session remains temp after rewind');
+  assert.equal(await isArchived(sid), false, 'session is not archived after rewind');
 });
 
 test('rewind during a running turn is refused 409', async () => {
@@ -188,37 +279,6 @@ test('rewind during a running turn is refused 409', async () => {
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
-});
-
-test('rewind on a temp session succeeds', async () => {
-  const sid = 'tttttttt-2222-3333-4444-666666666666';
-  await seedSession({
-    projectName: 'tempd', sid,
-    lines: [
-      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
-      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
-        { type: 'text', text: 'first reply' },
-      ] } },
-    ],
-  });
-  const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'tempd', temp: true, resume: sid,
-  });
-  const id = r.body.id;
-  await waitFor(() => instances.get(id).status === 'idle');
-
-  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0, text: 'first prompt' });
-  assert.equal(rew.status, 200, 'temp session rewind is allowed');
-  assert.equal(rew.body.droppedText, 'first prompt');
-
-  await waitFor(() => instances.get(id) && instances.get(id).status === 'idle');
-
-  // Killing the subprocess mid-rewind must not archive the temp session, and
-  // must not drop it from the manager's map either — it respawns right
-  // after and should stay live and temp, reachable via instances.get(id).
-  assert.ok(instances.get(id), 'instance survives the rewind in the manager (not dropped from byId)');
-  assert.equal(await isTemp(sid), true, 'session remains temp after rewind');
-  assert.equal(await isArchived(sid), false, 'session is not archived after rewind');
 });
 
 test('user_echo events carry absolute userIndex; rewind by stamp survives ring trimming', async () => {

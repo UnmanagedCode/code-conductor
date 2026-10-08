@@ -78,7 +78,7 @@ async function spawnSub(extra = {}) {
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
-  inst._modelSwitchGraceMs = 30;
+  inst._relaunchGraceMs = 30;
   return inst;
 }
 
@@ -348,7 +348,7 @@ test('a live switch frame on a Claude session during a running turn is refused, 
 test('a second frame while a switch is in flight is refused — one restart only', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 300;
+  inst._relaunchGraceMs = 300;
   const launches = launcher.count;
   const c = await wsClient(wsUrl);
   try {
@@ -385,7 +385,7 @@ test('re-selecting the running model is a no-op: no restart, no ledger entry, no
 test('the ack arrives once the switch is accepted, before it settles', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 400;
+  inst._relaunchGraceMs = 400;
   const c = await wsClient(wsUrl);
   try {
     c.send({ t: 'subscribe', id: inst.id });
@@ -466,7 +466,7 @@ test('when the re-resume also fails the session is left crashed and recorded on 
 test('a Terminate during the grace window is a stop: cancelled, not failed, and not re-resumed', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 5000;
+  inst._relaunchGraceMs = 5000;
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await inGrace(inst);
   const launches = launcher.count;
@@ -493,7 +493,7 @@ test('a Terminate during the grace window is a stop: cancelled, not failed, and 
 test('a prompt during the switch is refused on every surface and never delivered', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 600;
+  inst._relaunchGraceMs = 600;
   const gap = [];
   // The process-less gap: the old process's exit, before the relaunch spawns.
   const onStatus = (s) => {
@@ -535,7 +535,7 @@ test('a temp conducted worker survives a switch as itself', async () => {
   const worker = await instances.create({ project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama',
     temp: true, conducted: true, callerInstanceId: conductor.id });
   await waitFor(() => worker.status === 'idle');
-  worker._modelSwitchGraceMs = 30;
+  worker._relaunchGraceMs = 30;
   await seedTurn(worker);
   const exits = [];
   const hub = instances._idleHub;
@@ -580,7 +580,7 @@ test('a session with no turns relaunches under --session-id and its divider lead
 test('the graceful-restart drain waits for an in-flight switch and manifests the settled model', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 300;
+  inst._relaunchGraceMs = 300;
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   assert.ok(inst.modelSwitch);
   const entries = await drainToManifest({ server: null, wss: null, instances, log: QUIET, graceMs: 5000 });
@@ -608,7 +608,7 @@ test('an identity Claude session still switches live through set_model — no re
 test('a failure to RECORD a confirmed switch is not a failed switch: the session stays on the new model, divider and all', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 300;
+  inst._relaunchGraceMs = 300;
   const warnings = [];
   const realWarn = console.warn;
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
@@ -640,7 +640,7 @@ test('a failure to RECORD a confirmed switch is not a failed switch: the session
 test('during confirmation no context reading measured on the old model is reported', async () => {
   const inst = await spawnSub();
   await seedTurnWithUsage(inst);
-  inst._modelSwitchGraceMs = 400;
+  inst._relaunchGraceMs = 400;
   const c = await wsClient(wsUrl);
   try {
     await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
@@ -669,7 +669,7 @@ test('a failed switch re-resumes on the old model WITH its own context reading',
 test('a crash after confirmation, before the switch settles, is an ordinary crash: exit cause and launch_failed', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 30;
+  inst._relaunchGraceMs = 30;
   launcher.plan.push({ hold: true });
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await inGrace(inst);
@@ -695,7 +695,7 @@ test('a crash after confirmation, before the switch settles, is an ordinary cras
 test('a relaunch that never comes up idle is a failed switch at the deadline', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchIdleDeadlineMs = 150;
+  inst._relaunchIdleDeadlineMs = 150;
   launcher.plan.push({ deaf: true });
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await settled(inst);
@@ -711,7 +711,7 @@ test('a relaunch that never comes up idle is a failed switch at the deadline', a
 test('a REST respawn during the switch\'s process-less gap is refused 409', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 300;
+  inst._relaunchGraceMs = 300;
   const attempts = [];
   const onStatus = (s) => {
     if (inst.modelSwitch && !inst.proc && (s.status === 'exited' || s.status === 'crashed') && attempts.length === 0) {
@@ -733,7 +733,7 @@ test('a REST respawn during the switch\'s process-less gap is refused 409', asyn
 test('a conductor reading the session mid-switch sees the confirmed model, not the unconfirmed target', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 400;
+  inst._relaunchGraceMs = 400;
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await inGrace(inst);
   assert.equal(inst.summary().model, B, 'premise: the summary already names the target');
@@ -747,7 +747,7 @@ test('a conductor reading the session mid-switch sees the confirmed model, not t
 test('Change effort during the grace window is refused and leaves the effort alone', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
-  inst._modelSwitchGraceMs = 400;
+  inst._relaunchGraceMs = 400;
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await inGrace(inst);
   assert.throws(() => inst.setEffort('max'), e => e.statusCode === 409 && /switching model/.test(e.message));
@@ -764,7 +764,7 @@ test('a crash after confirmation but before the switch settles does not wake the
   const worker = await instances.create({ project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama',
     conducted: true, callerInstanceId: conductor.id });
   await waitFor(() => worker.status === 'idle');
-  worker._modelSwitchGraceMs = 30;
+  worker._relaunchGraceMs = 30;
   await seedTurn(worker);
   launcher.plan.push({ hold: true });
   const exits = [];
@@ -861,7 +861,7 @@ for (const [name, plan, act] of [
   test(`a temp session whose switch ends with no process — ${name} — is archived and dropped`, async () => {
     const inst = await spawnSub({ temp: true });
     await seedTurn(inst);
-    inst._modelSwitchGraceMs = name.startsWith('a Terminate') ? 5000 : 30;
+    inst._relaunchGraceMs = name.startsWith('a Terminate') ? 5000 : 30;
     launcher.plan.push(...plan);
     await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
     await act(inst);

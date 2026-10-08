@@ -44,17 +44,18 @@ test('a bubble\'s rewind and fork clicks pass the echo\'s raw text as the second
 });
 
 // Drives one sessionActions mutation with confirm() accepted; returns the
-// requests it made.
-async function runAction(name, args) {
+// requests it made. `response` overrides the fake server's answer; with
+// `alerts` given, alert() records into it instead of failing the test.
+async function runAction(name, args, { response, alerts } = {}) {
   const window = setupWindow();
   globalThis.confirm = () => true;
   window.confirm = () => true;
-  globalThis.alert = (m) => { throw new Error(`unexpected alert: ${m}`); };
+  globalThis.alert = alerts ? (m) => { alerts.push(m); } : (m) => { throw new Error(`unexpected alert: ${m}`); };
   const requests = [];
   globalThis.fetch = async (url, opts) => {
     requests.push({ url, method: opts?.method, body: opts?.body ? JSON.parse(opts.body) : null });
-    const body = { ok: true, droppedText: 'x', instance: { id: 'new-inst' } };
-    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    const { ok = true, status = 200, json: body = { ok: true, droppedText: 'x', instance: { id: 'new-inst' } } } = response ?? {};
+    return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
   };
   const { installSessionActions } = await import(
     pathToFileURL(path.join(PUB, 'sessionActions.js')).href + `?t=${Math.random()}`);
@@ -76,4 +77,12 @@ test('rewindActiveSession POSTs {userMessageIndex, text} with the text unchanged
 test('forkActiveSession POSTs {userMessageIndex, text} with the text unchanged', async () => {
   const requests = await runAction('forkActiveSession', [7, RAW_TEXT]);
   assert.deepEqual(requests[0], { url: '/api/instances/inst-1/fork', method: 'POST', body: { userMessageIndex: 7, text: RAW_TEXT } });
+});
+
+test('rewindActiveSession surfaces a non-2xx as its \'rewind failed\' alert', async () => {
+  const error = 'the transcript was rewound, but the session failed to relaunch: No conversation found';
+  const alerts = [];
+  await runAction('rewindActiveSession', [7, RAW_TEXT],
+    { response: { ok: false, status: 500, json: { error, code: 'RELAUNCH_FAILED' } }, alerts });
+  assert.deepEqual(alerts, [`rewind failed: ${error}`]);
 });

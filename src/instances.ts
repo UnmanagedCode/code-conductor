@@ -389,9 +389,9 @@ function rootOwnerOf(caller: Instance | undefined): string | null {
 }
 
 // An instance with a process attached, or inside a window where one is coming
-// back (a prune's kill→relaunch under rotationPending, a respawn/rewind under
-// `_relaunching`). The single PER-INSTANCE form of "is this worker live";
-// isSessionLive and the resume reclaim in _doCreateResolved are its only readers, so
+// back (a prune's kill→relaunch under rotationPending, a rewind / prune / model
+// switch / respawn under `_relaunching`). The single PER-INSTANCE form of "is
+// this worker live"; isSessionLive and the resume reclaim in _doCreateResolved are its only readers, so
 // neither can drift from the other — and that is load-bearing, because the
 // reclaim's safety rests on the guard being false only when every instance it
 // can then reach is settled.
@@ -498,15 +498,18 @@ const DEFAULT_SNAPSHOT_TAIL = 500;
 // queue, so it usually exceeds this and gets PROMPT_NOT_PERSISTED.
 export const FORK_PERSIST_WAIT_MS = 2000;
 export const FORK_PERSIST_POLL_MS = 50;
-// How long a restart model switch (Instance.switchModel) watches the relaunched
-// process before calling the switch confirmed. A wrapper that rejects the model
-// at launch exits inside it; one that accepts the launch and rejects the first
-// request is not caught (docs/models.md → known limitation).
-export const MODEL_SWITCH_GRACE_MS = 3000;
+// How long a relaunch (rewind, prune, restart model switch) watches the
+// relaunched process before calling it confirmed. A CLI that dies at startup
+// (a `--resume` with no conversation, a wrapper rejecting the model) exits
+// inside it; one that accepts the launch and rejects the first request is not
+// caught (docs/models.md → known limitation).
+export const RELAUNCH_GRACE_MS = 3000;
 // How long the relaunch may take to come up idle at all (its replay included)
-// before the switch is called failed. Generous: it bounds a CLI that stays alive
-// but never becomes usable, which would otherwise hold the switch forever.
-export const MODEL_SWITCH_IDLE_DEADLINE_MS = 60_000;
+// before it is called failed. Generous: it bounds a CLI that stays alive but
+// never becomes usable, which would otherwise hold the relaunch forever.
+export const RELAUNCH_IDLE_DEADLINE_MS = 60_000;
+// `code` of the error a relaunch that was never confirmed rejects with.
+export const RELAUNCH_FAILED = 'RELAUNCH_FAILED';
 
 export class EventLog {
   cap: number;
@@ -769,17 +772,17 @@ export class Instance extends EventEmitter implements InstanceLike {
   //   exactly the outcome the interlock exists to prevent.
   _renewing: boolean;
   // TRUE while this instance is between an old proc (killed, or already dead)
-  // and the launch() that replaces it, for the two relaunch paths that are
-  // NOT `_rotation`: rewindToUserMessage and InstanceManager.respawn. Read
-  // ONLY by isSessionLive — deliberately NOT folded into `_rotation`/
-  // `rotationPending`, which carries a `reason: RotationMechanism` ('renew' |
-  // 'prune') that _assertNoRotationInFlight's error text and the
-  // rotation_complete/idle-wake path both key off; widening that union would
-  // make a rewind/respawn collision misreport as "a context renewal is in
-  // progress" and would wire an unrelated wake path these operations were
-  // never meant to arm. This flag has none of that: no reason string, no UI
-  // event, no interaction with any other guard — it exists solely so a
-  // worker mid-relaunch here reads live the same way prune's window does.
+  // and the confirmed launch() that replaces it. Opened by the relaunch window
+  // (_beginRelaunch: rewind, prune, restart model switch) and by
+  // InstanceManager.respawn. Read by isLiveOrComingUp, the `exit_cause` wake
+  // guard, respawn's 409 and IdleSubscriptionHub._goneForGood, so a worker
+  // mid-relaunch reads live and its relaunch gap is not taken for death.
+  // Deliberately NOT folded into `_rotation`/`rotationPending`, which carries a
+  // `reason: RotationMechanism` ('renew' | 'prune') that
+  // _assertNoRotationInFlight's error text and the rotation_complete/idle-wake
+  // path both key off; widening that union would make a rewind/respawn
+  // collision misreport as "a context renewal is in progress" and would wire
+  // an unrelated wake path these operations were never meant to arm.
   _relaunching: boolean;
   // The last COMPLETED rotation. Pinning the public id removes the only tell a
   // conductor had that a rotation happened at all, so these replace it. Set here;
@@ -872,10 +875,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _modelSwitchFailure: (ModelSwitchState & { error: string }) | null;
   // The detached switch body, kept so a test can await it; never rejects.
   _modelSwitchRun: Promise<void> | null;
-  // MODEL_SWITCH_GRACE_MS / MODEL_SWITCH_IDLE_DEADLINE_MS, per instance so a
-  // test can shrink them.
-  _modelSwitchGraceMs: number;
-  _modelSwitchIdleDeadlineMs: number;
+  // RELAUNCH_GRACE_MS / RELAUNCH_IDLE_DEADLINE_MS, per instance so a
+  // test can shrink them (the manager copies its `relaunchGraceMs` in).
+  _relaunchGraceMs: number;
+  _relaunchIdleDeadlineMs: number;
   // The last launch's exit as _handleExit saw it — the switch's failure cause
   // when that launch was the one being confirmed. `stderr` settles at stderr EOF.
   _lastExitReport: { code: number | null; signal: NodeJS.Signals | null; stderr: Promise<string>; spawnError: string | null } | null;
@@ -1291,8 +1294,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._modelSwitch = null;
     this._modelSwitchFailure = null;
     this._modelSwitchRun = null;
-    this._modelSwitchGraceMs = MODEL_SWITCH_GRACE_MS;
-    this._modelSwitchIdleDeadlineMs = MODEL_SWITCH_IDLE_DEADLINE_MS;
+    this._relaunchGraceMs = RELAUNCH_GRACE_MS;
+    this._relaunchIdleDeadlineMs = RELAUNCH_IDLE_DEADLINE_MS;
     this._lastExitReport = null;
     this._spawnError = null;
     this._replayDone = Promise.resolve();
@@ -3482,9 +3485,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // and by the two refusal sites that keep renew and prune mutually exclusive.
   get rotationPending(): boolean { return this._rotation !== null; }
 
-  // True while a rewindToUserMessage/InstanceManager.respawn relaunch is in
-  // flight — see the `_relaunching` field comment. Read by isSessionLive and by
-  // the idle-wake paths that must not treat the relaunch gap as death.
+  // True while a relaunch (rewind, prune, model switch, respawn) is in flight —
+  // see the `_relaunching` field comment for its readers.
   get relaunching(): boolean { return this._relaunching; }
 
   // Whether the rewrite holding `_mutating` makes prompt() (and so a renewal's
@@ -3771,12 +3773,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       id: randomUUID(), at: new Date().toISOString(), segment, afterUuid, from, to, ok,
       ...(error ? { error } : {}), ...(cancelled ? { cancelled } : {}), ...backends,
     });
-    // `_suppressTempDelete` is held from the kill until the relaunch is
-    // CONFIRMED: a temp session must not be archived by the attempt's own crash,
-    // and neither process's exit is an exit cause — that outcome is the switch's.
-    // `_relaunching` is held for the whole run (see the confirmation below).
-    this._suppressTempDelete = true;
-    this._relaunching = true;
+    // Neither process's exit is an exit cause — that outcome is the switch's.
+    // The window's suppression ends at confirmation; `_relaunching` is held for
+    // the whole run (see the confirmation below).
+    this._beginRelaunch();
     // The process being replaced's terminal latch: spawn() swaps in a new one,
     // which is how the failure path tells "the relaunch was killed" (a user's
     // Terminate) from the `_killing` this run's own kill left behind.
@@ -3800,8 +3800,8 @@ export class Instance extends EventEmitter implements InstanceLike {
         // it is a known-wrong reading (prune's rule). Consumed by the relaunch's
         // replay, which only a resume runs.
         this._skipUsageSeed = resumable;
-        await this._relaunchForSwitch(segment, resumable);
-        await this._awaitSwitchGrace();
+        await this._relaunchSegment(segment, resumable);
+        await this._awaitRelaunchConfirmed();
       } catch (err) {
         const cancelled = this._procEnded !== replacedLatch && this._killing;
         const error = err instanceof Error ? err.message : String(err);
@@ -3837,8 +3837,8 @@ export class Instance extends EventEmitter implements InstanceLike {
         try {
           // The ledger already holds the failure, so this replay splices its
           // divider exactly once — no live emit.
-          await this._relaunchForSwitch(segment, resumable);
-          await this._awaitSwitchGrace();
+          await this._relaunchSegment(segment, resumable);
+          await this._awaitRelaunchConfirmed();
         } catch (again) {
           if (this.proc) await this.kill({ graceMs: 300 }).catch(() => {});
           this._modelSwitchFailure = {
@@ -3850,10 +3850,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
       // Confirmed: the session runs on `to`. Nothing below can make the SWITCH
       // fail — a failure to record or announce it is logged, and the session
-      // stays on `to`. Only the exit suppression ends here: an exit from now on
-      // records its cause and `launch_failed` (both gate on it). `_relaunching`
-      // is held to `finally` with `_mutating`: until the switch settles, an exit
-      // must not wake the owner and a resume must not reclaim this instance.
+      // stays on `to`. Only the exit suppression ends here, ahead of
+      // _endRelaunch: an exit from now on records its cause and `launch_failed`
+      // (both gate on it). `_relaunching` is held to `finally` with `_mutating`:
+      // until the switch settles, an exit must not wake the owner and a resume
+      // must not reclaim this instance.
       this._suppressTempDelete = false;
       const ok = entry(true, afterUuid);
       const confirmedButFailed = (what: string, err: unknown): void => {
@@ -3879,27 +3880,43 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._modelSwitchFailure = { from, to, fromBackend, toBackend, error };
       console.warn(`instances: model switch ${fromName} → ${toName} on ${this.sessionId} failed: ${error}`);
     } finally {
-      // Still set ⇒ the attempt never got confirmed, so any exit it ended in was
-      // suppressed: archive a temp session that ends without a process here,
-      // as its exit would have (the status emit below then drops it).
-      const suppressed = this._suppressTempDelete;
-      this._suppressTempDelete = false;
-      this._relaunching = false;
       this._mutating = null;
       this._modelSwitch = null;
-      if (suppressed && !this.proc && this.temp) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
-      this.emit('status', this.summary());
+      this._endRelaunch();
     }
   }
 
-  // Wipe and relaunch on the current this.model. A segment with no conversation
-  // has nothing to `--resume` (the CLI would exit): relaunch under the same id
-  // with `--session-id`, after removing any marker-only stub the CLI would
-  // refuse that id over — rewind's empty-prefix rule.
-  async _relaunchForSwitch(segment: string, resumable: boolean): Promise<void> {
-    this._wipeForResume();
+  // THE relaunch window, shared by rewind, prune and the restart model switch:
+  // opened immediately before the kill, closed by _endRelaunch once the
+  // relaunch is confirmed (_awaitRelaunchConfirmed) or abandoned. Inside it no
+  // exit archives a temp session and no status emit (the kill's exit, the
+  // attempt's own crash, launch()'s _hydrateAwaitingUser) drops it from the
+  // manager — the manager's temp drop reads `_suppressTempDelete`.
+  _beginRelaunch(): void {
+    this._suppressTempDelete = true;
+    this._relaunching = true;
+  }
+
+  // Still suppressed ⇒ the relaunch was never confirmed, so any exit it ended in
+  // was suppressed: archive a temp session left without a process here, as its
+  // exit would have (the status emit then lets the manager drop it).
+  _endRelaunch(): void {
+    const suppressed = this._suppressTempDelete;
+    this._suppressTempDelete = false;
+    this._relaunching = false;
+    if (suppressed && !this.proc && this.temp) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
+    this.emit('status', this.summary());
+  }
+
+  // Wipe and relaunch `segment` on the current this.model. A segment with no
+  // conversation has nothing to `--resume` (the CLI would exit): relaunch under
+  // the same id with `--session-id`, after removing the stub the CLI would
+  // refuse that id over and any stale sub-agent dir.
+  async _relaunchSegment(segment: string, resumable: boolean, wipeExtra: Record<string, unknown> = {}): Promise<void> {
+    this._wipeForResume(wipeExtra);
     if (resumable) { await this.launch({ resume: segment }); return; }
     await fsp.rm(sessionFilePath(this.transcriptPlace, segment), { force: true });
+    await fsp.rm(subAgentDirPath(this.transcriptPlace, segment), { recursive: true, force: true });
     await this._seedUnanchoredSwitches(segment);
     await this.launch({});
   }
@@ -3916,27 +3933,27 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Resolves once the relaunched process has come up idle AND outlived
-  // `_modelSwitchGraceMs`; rejects with _lastExitCause() if it ends first, or
-  // when it has not come up idle by `_modelSwitchIdleDeadlineMs`.
-  _awaitSwitchGrace(): Promise<void> {
+  // `_relaunchGraceMs`; rejects (RELAUNCH_FAILED, 500) with _lastExitCause() if
+  // it ends first, or when it has not come up idle by `_relaunchIdleDeadlineMs`.
+  _awaitRelaunchConfirmed(): Promise<void> {
     const ended = this._procEnded;
     return new Promise<void>((resolve, reject) => {
       let graceDone = false;
       let done = false;
-      const finish = (err: Error | null): void => {
+      const finish = (cause: string | null): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         clearTimeout(deadline);
         this.off('status', onStatus);
-        if (err) reject(err); else resolve();
+        if (cause !== null) reject(httpError(500, cause, { code: RELAUNCH_FAILED })); else resolve();
       };
       const onStatus = (): void => { if (graceDone && this.proc && this.status === 'idle') finish(null); };
-      const timer = setTimeout(() => { graceDone = true; onStatus(); }, this._modelSwitchGraceMs);
-      const idleMs = this._modelSwitchIdleDeadlineMs;
-      const deadline = setTimeout(() => finish(new Error(`the relaunched CLI did not come up idle within ${idleMs}ms`)), idleMs);
+      const timer = setTimeout(() => { graceDone = true; onStatus(); }, this._relaunchGraceMs);
+      const idleMs = this._relaunchIdleDeadlineMs;
+      const deadline = setTimeout(() => finish(`the relaunched CLI did not come up idle within ${idleMs}ms`), idleMs);
       this.on('status', onStatus);
-      void ended.then(async () => { if (!done) finish(new Error(await this._lastExitCause())); });
+      void ended.then(async () => { if (!done) finish(await this._lastExitCause()); });
     });
   }
 
@@ -4403,12 +4420,19 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Rewind this session to before the Nth user prompt (0-indexed). Kills
   // the live subprocess, truncates the persisted jsonl, wipes the in-memory
   // ring buffer, broadcasts a `snapshot_reset` so subscribed clients clear
-  // their conversation view, then respawns with `--resume <sessionId>` so
-  // the freshly-truncated history is replayed into the ring.
+  // their conversation view, then relaunches the session so the
+  // freshly-truncated history is replayed into the ring — and resolves only
+  // once that relaunch is confirmed (_awaitRelaunchConfirmed).
   //
   // `userMessageIndex` is the bubble's live ordinal and `expectedText` its text;
   // both are checked against the file BEFORE the kill, so a refusal leaves the
   // process, the ring and the file untouched.
+  //
+  // A relaunch that is never confirmed rejects with nothing left running, and
+  // gets no fail-safe: the truncation is the state the user asked for, and the
+  // failure (a missing backend, a CLI dying at startup) would recur on a retry.
+  // The relaunch window then archives and drops a temp session; a persistent
+  // one stays registered, dead and resumable.
   //
   // Returns { droppedText }: the prompt text of the dropped user message,
   // so the frontend can prefill it back into the composer.
@@ -4428,27 +4452,24 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw httpError(409, 'cannot rewind during a running turn — interrupt first');
     }
     this._mutating = 'rewind';
+    let windowOpen = false;
+    let rewound = false;
     try {
       // prompt() refuses while `_mutating` is set, so no prompt lands between
-      // this check and the kill. setEffort does not check it: an `/effort`
-      // sent in that window is persisted after the target and so falls in the
-      // truncated tail — and truncate re-checks the target itself.
+      // this check and the kill — nor before the relaunch is confirmed.
+      // setEffort does not check it: an `/effort` sent in that window is
+      // persisted after the target and so falls in the truncated tail — and
+      // truncate re-checks the target itself.
       const fileIdx = await this._fileOrdinalFor(userMessageIndex) ?? promptUnresolved();
       await verifyUserPrompt({ place: this.transcriptPlace, sessionId: backingId, userMessageIndex: fileIdx, expectedText });
-      // Marks the kill→relaunch window for isSessionLive — see the
-      // `_relaunching` field comment. Deliberately NOT beginRotation: this is
-      // not a `renew`/`prune` rotation (no reason string, no rotation_complete
-      // event, no interaction with _assertNoRotationInFlight's messaging).
-      this._relaunching = true;
+      // Deliberately NOT beginRotation: this is not a `renew`/`prune` rotation
+      // (no reason string, no rotation_complete event, no interaction with
+      // _assertNoRotationInFlight's messaging).
+      this._beginRelaunch();
+      windowOpen = true;
       // Kill the subprocess first so the CLI can't flush a stale tail
-      // into the jsonl mid-truncate. Suppress the temp-archive-on-exit
-      // behavior in _handleExit — a rewind respawns right after, so a temp
-      // session must stay live and temp, not get archived out from under it.
-      if (this.proc) {
-        this._suppressTempDelete = true;
-        try { await this.kill({ graceMs: 300 }); }
-        finally { this._suppressTempDelete = false; }
-      }
+      // into the jsonl mid-truncate.
+      if (this.proc) await this.kill({ graceMs: 300 });
 
       const result = await truncateSessionAtUserMessage({
         place: this.transcriptPlace,
@@ -4457,6 +4478,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         expectedText,
         mode: this.mode,
       });
+      rewound = true;
 
       // A model switch anchored inside the dropped tail still happened — the
       // session stays on its model — so its divider moves to the cut rather
@@ -4465,30 +4487,28 @@ export class Instance extends EventEmitter implements InstanceLike {
         await reanchorModelSwitches(this.sessionId, backingId, result.survivingUuids, result.lastSurvivingUuid);
       }
 
-      // Wipe in-memory state and tell subscribers to drop their conversation
-      // DOM. `droppedText` rides on the broadcast frame so the client can
-      // prefill the composer without racing the rewind HTTP response.
-      this._wipeForResume({ droppedText: result.droppedText });
-
-      // Empty prefix (rewound to the first user message): the jsonl now has
-      // zero lines, so `--resume <sid>` would point the CLI at a file with
-      // no init line and the subprocess would exit immediately. Delete the
-      // empty file (plus any stale sub-agent dir from the dropped tail) and
-      // respawn with --session-id under the same id so the URL anchor stays
-      // valid and the instance comes back ready for a fresh first turn.
-      if (result.remainingLineCount === 0) {
-        await fsp.rm(sessionFilePath(this.transcriptPlace, backingId), { force: true });
-        await fsp.rm(subAgentDirPath(this.transcriptPlace, backingId), { recursive: true, force: true });
-        await this._seedUnanchoredSwitches(backingId);
-        await this.launch({});
-      } else {
-        await this.launch({ resume: backingId });
-      }
+      // Fresh vs resume is chosen by resumability (isResumableLine), not line
+      // count. `droppedText` rides on the wipe's snapshot_reset frame so the
+      // client can prefill the composer without racing the HTTP response.
+      await this._relaunchSegment(backingId, result.resumable, { droppedText: result.droppedText });
+      await this._awaitRelaunchConfirmed();
 
       return { droppedText: result.droppedText };
+    } catch (e) {
+      if (!windowOpen) throw e;
+      // Reap a live-but-unconfirmed relaunch, and any pre-spawn mount scaffolding.
+      await this.kill({ graceMs: 300 }).catch(() => {});
+      if (!rewound) throw e;
+      const err = e as { statusCode?: unknown; code?: unknown; message?: unknown };
+      const refusal = typeof err?.statusCode === 'number';
+      throw httpError(
+        refusal ? err.statusCode as number : 500,
+        `the transcript was rewound, but the session failed to relaunch: ${typeof err?.message === 'string' ? err.message : String(e)}`,
+        refusal && typeof err.code === 'string' ? { code: err.code } : {},
+      );
     } finally {
       this._mutating = null;
-      this._relaunching = false;
+      if (windowOpen) this._endRelaunch();
     }
   }
 
@@ -4763,6 +4783,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     this._mutating = 'prune';
     this.beginRotation('prune');
+    // The relaunch window (see _beginRelaunch): a temp session relaunches right
+    // after the kill and must not be archived or dropped out from under it.
+    this._beginRelaunch();
     let rotationOk = false;
     const oldSid = backingId;
     // Server-minted, up front. Unlike a renewal (where the CLI mints and the
@@ -4771,13 +4794,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     const newSid = randomUUID();
     try {
       // Kill first so the CLI can't flush a stale tail into the jsonl while we
-      // read it. _suppressTempDelete for the same reason rewind sets it: a temp
-      // session respawns immediately and must not be archived out from under us.
-      if (this.proc) {
-        this._suppressTempDelete = true;
-        try { await this.kill({ graceMs: 300 }); }
-        finally { this._suppressTempDelete = false; }
-      }
+      // read it.
+      if (this.proc) await this.kill({ graceMs: 300 });
 
       const { saved, turnCount, cutTurnIndex: cut } = await pruneSessionToNewId({
         place: this.transcriptPlace,
@@ -4805,6 +4823,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // The public id is pinned across this rotation — only backingSessionId
       // moves, and spawn() sets it from `resume`.
       await this.launch({ resume: newSid });
+      await this._awaitRelaunchConfirmed();
       // Archive the pre-prune transcript now that the pruned one is running (the
       // new segment already inherited temp in recordRotation). Awaited so the
       // REST response can't beat the archive into the sidebar refresh.
@@ -4828,23 +4847,33 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (this.sessionId) await revertRotation(this.sessionId, newSid).catch(() => {});
       const at = this._segments.lastIndexOf(newSid);
       if (at !== -1) this._segments.splice(at, 1);
-      if (!this.proc) {
-        this._wipeForResume();
-        // `_skipUsageSeed` may already be set for the PRUNED session's replay. The
-        // recovery replays the ORIGINAL instead, whose jsonl usage is accurate —
-        // leaving the flag set would suppress a perfectly good ctx reading and
-        // strand the recovered session on `ctx —` until its next turn.
-        this._skipUsageSeed = false;
-        this.backingSessionId = oldSid;
-        await this.launch({ resume: oldSid }).catch(() => {});
+      // Reap a live-but-unconfirmed relaunch (and any pre-spawn mount
+      // scaffolding) before relaunching the original.
+      await this.kill({ graceMs: 300 }).catch(() => {});
+      this._wipeForResume();
+      // `_skipUsageSeed` may already be set for the PRUNED session's replay. The
+      // recovery replays the ORIGINAL instead, whose jsonl usage is accurate —
+      // leaving the flag set would suppress a perfectly good ctx reading and
+      // strand the recovered session on `ctx —` until its next turn.
+      this._skipUsageSeed = false;
+      this.backingSessionId = oldSid;
+      try {
+        await this.launch({ resume: oldSid });
+        await this._awaitRelaunchConfirmed();
+      } catch {
+        // Both relaunches failed: nothing left running, and the window's close
+        // settles the session as dead (a temp one archived and dropped).
+        await this.kill({ graceMs: 300 }).catch(() => {});
       }
       throw e;
     } finally {
       this._mutating = null;
       // Prune comes up IDLE with no turn, so the completion event is the ONLY wake
       // point — including on the failure path, where the recovery relaunch also
-      // lands idle and an owner must not be left hanging on heartbeats.
+      // lands idle and an owner must not be left hanging on heartbeats. Ahead of
+      // _endRelaunch, so the wake fires while the instance is still registered.
       this.endRotation({ ok: rotationOk, comesUpIdle: true });
+      this._endRelaunch();
     }
   }
 
@@ -4915,6 +4944,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _platform: Platform;
   // How the synchronous stops (shutdownForResumeSync, stopLiveSync) treat live CLIs.
   _syncStop: { graceMs: number; killSurvivors: boolean };
+  // RELAUNCH_GRACE_MS, copied onto every Instance this manager constructs, so a
+  // test can shrink every relaunch's confirmation at once.
+  relaunchGraceMs: number;
   _resuming: Map<string, Promise<Instance>>;
   // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
   // whatever string the caller passed, and normalizing it to the public id means an
@@ -4957,6 +4989,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._platform = platform;
     // Where SIGTERM is soft a CLI's children exit on EOF once cc is gone, so
     // survivors are left alone; where it is not, they are tree-killed at the deadline.
+    this.relaunchGraceMs = RELAUNCH_GRACE_MS;
     this._syncStop = platform.softSigterm
       ? { graceMs: 2000, killSurvivors: false }
       : { graceMs: CLEAN_STOP_GRACE_MS, killSurvivors: true };
@@ -5950,6 +5983,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       launcher: this._claudeLauncher,
       platform: this._platform,
     });
+    inst._relaunchGraceMs = this.relaunchGraceMs;
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
     // Attached BEFORE launch(): spawn() reads it to widen the injected hook
     // surface, and the hook broker reads it on every tool call.
