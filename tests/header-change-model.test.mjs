@@ -201,11 +201,11 @@ test('picking a tier sends only {id, tier} — no model, no backend key', async 
   assert.equal(frame.id, LIVE_INSTANCE.id);
 });
 
-// ── restart switching on a substitution backend ─────────────────────────────
+// ── restart switching ───────────────────────────────────────────────────────
 //
-// The picker groups tiers by backend (the session's own first). On a
-// substitution session its own backend's tiers restart the session (↻) and are
-// disabled while anything runs; every other backend is disabled. The tier
+// The picker groups tiers by backend (the session's own first). Claude→Claude
+// switches live; every other entry — on the session's own backend or another —
+// restarts the session (↻) and is disabled while anything runs. The tier
 // bindings come from public/models.js's cache — the SAME module instance
 // header.js imports — set here and restored after each test.
 
@@ -247,30 +247,29 @@ test('the picker groups tiers by backend, the session\'s own first', () => withB
     [['fast', 'balanced'], ['powerful', 'frontier']]);
 }));
 
-test('a substitution session: its own backend\'s tiers restart (↻, footnote), other backends are disabled', () => withBindings(async () => {
+test('a substitution session: every tier restarts (↻, footnote); one on another backend names that backend', () => withBindings(async () => {
   const t = await clickSetup();
   t.setInstances([SUB_INSTANCE]);
   t.setActiveId('inst-1');
   t.header.update();
   const popover = openModelPicker(t);
-  for (const tier of ['fast', 'balanced']) {
+  for (const tier of TIERS) {
     const b = entry(popover, tier);
     assert.equal(b.disabled, false, tier);
+    assert.equal(b.dataset.kind, 'restart', tier);
     assert.equal(b.querySelector('.qs-restart-badge')?.textContent, '↻', `${tier} carries the restart badge`);
   }
   assert.ok(entry(popover, 'fast').classList.contains('qs-selected'), 'the running model is highlighted (exact id)');
   assert.ok(!entry(popover, 'balanced').classList.contains('qs-selected'));
+  assert.equal(entry(popover, 'balanced').title, 'Restarts the session on this model — the conversation is kept');
   for (const tier of ['powerful', 'frontier']) {
-    const b = entry(popover, tier);
-    assert.equal(b.disabled, true, tier);
-    assert.match(b.title, /^On Claude — a different backend needs a new session or a fork$/);
-    assertNull(b.querySelector('.qs-restart-badge'), `${tier} has no restart badge`);
+    assert.equal(entry(popover, tier).title, 'Restarts the session on Claude — the conversation is kept', tier);
   }
   const notes = [...popover.querySelectorAll('.ih-usage-popover-note')].map(n => n.textContent);
   assert.deepEqual(notes, ['↻ restarts the session · conversation is kept']);
 }));
 
-test('an identity session: Claude tiers switch live with no badge or footnote, other backends are disabled', () => withBindings(async () => {
+test('an identity session: Claude tiers switch live with no badge; tiers on another backend restart onto it', () => withBindings(async () => {
   const t = await clickSetup();
   t.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' }]);
   t.setActiveId('inst-1');
@@ -279,15 +278,30 @@ test('an identity session: Claude tiers switch live with no badge or footnote, o
   for (const tier of ['powerful', 'frontier']) {
     assert.equal(entry(popover, tier).disabled, false, `${tier}: a live switch is offered between turns`);
     assert.equal(entry(popover, tier).dataset.kind, 'live');
+    assertNull(entry(popover, tier).querySelector('.qs-restart-badge'), `${tier}: no restart badge on a live entry`);
   }
   for (const tier of ['fast', 'balanced']) {
-    assert.equal(entry(popover, tier).disabled, true);
-    assert.match(entry(popover, tier).title, /^On Ollama — /);
+    const b = entry(popover, tier);
+    assert.equal(b.disabled, false, tier);
+    assert.equal(b.dataset.kind, 'restart', tier);
+    assert.equal(b.title, 'Restarts the session on Ollama — the conversation is kept');
+    assert.equal(b.querySelector('.qs-restart-badge')?.textContent, '↻');
   }
-  assertNull(popover.querySelector('.qs-restart-badge'), 'no restart badge on an identity session');
-  assertNull(popover.querySelector('.ih-usage-popover-note'), 'no footnote on an identity session');
-  assertNull(popover.querySelector('.qs-model[data-model]'), 'an identity session is offered no model entries');
+  assert.deepEqual([...popover.querySelectorAll('.ih-usage-popover-note')].map(n => n.textContent),
+    ['↻ restarts the session · conversation is kept']);
   assert.ok(entry(popover, 'powerful').classList.contains('qs-selected'));
+}));
+
+test('a restart click on a tier bound to another backend still sends only {t, id, tier, reqId}', () => withBindings(async () => {
+  const t = await clickSetup();
+  t.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  entry(openModelPicker(t), 'fast').click();
+  await new Promise(r => setImmediate(r));
+  assert.equal(t.modelFrames().length, 1);
+  assert.deepEqual(Object.keys(t.modelFrames()[0]).sort(), ['id', 'reqId', 't', 'tier']);
+  assert.equal(t.modelFrames()[0].tier, 'fast');
 }));
 
 test('an identity session mid-turn: its live Claude tier entries are disabled until the turn ends', () => withBindings(async () => {
@@ -516,11 +530,11 @@ test('mid-switch the usage popover names the confirmed model with no window clau
   assert.equal(meta(), 'beta:cloud · 300k context', 'control: settled, the window clause is back');
 });
 
-// ── a substitution session's registered models ───────────────────────────────
+// ── registered models ───────────────────────────────────────────────────────
 //
-// A non-Claude session is offered every model registered on its own backend
+// Every session is offered every model registered on each substitution backend
 // (public/models.js's backendModels cache, shipped by the server), after the
-// tiers bound there. The motivating install: every tier on Claude, and Ollama
+// tiers bound there; these tests drive a non-Claude session. The motivating install: every tier on Claude, and Ollama
 // sessions spawned from a role bound straight to a curated preset.
 
 const ALL_CLAUDE = {
@@ -549,7 +563,7 @@ async function withRegistry(bindings, backendModels, fn) {
 }
 const modelEntry = (popover, model) => popover.querySelector(`.qs-model[data-model="${model}"]`);
 
-test('an Ollama role session with every tier on Claude is offered its backend\'s registered models', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
+test('an Ollama role session with every tier on Claude is offered its backend\'s registered models and the Claude tiers', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
   const t = await clickSetup();
   t.setInstances([ROLE_INSTANCE]);
   t.setActiveId('inst-1');
@@ -565,13 +579,15 @@ test('an Ollama role session with every tier on Claude is offered its backend\'s
     assert.equal(b.firstChild.textContent, label, `${model} is labelled from the registry`);
     assert.equal(b.querySelector('.qs-restart-badge')?.textContent, '↻', model);
     assert.equal(b.dataset.tier, undefined, `${model} is not a tier entry`);
+    assert.equal(b.dataset.backend, 'ollama', model);
   }
   assert.ok(modelEntry(popover, 'deepseek-v4.1-flash:cloud').classList.contains('qs-selected'), 'the running model is highlighted');
   assert.ok(!modelEntry(popover, 'glm-5.3-flash:cloud').classList.contains('qs-selected'));
   for (const tier of TIERS) {
     const b = other.querySelector(`.qs-model[data-tier="${tier}"]`);
-    assert.equal(b.disabled, true, tier);
-    assert.match(b.title, /^On Claude — /);
+    assert.equal(b.disabled, false, tier);
+    assert.equal(b.dataset.kind, 'restart', tier);
+    assert.equal(b.title, 'Restarts the session on Claude — the conversation is kept', tier);
   }
   assert.deepEqual([...popover.querySelectorAll('.ih-usage-popover-note')].map(n => n.textContent),
     ['↻ restarts the session · conversation is kept']);
@@ -580,8 +596,9 @@ test('an Ollama role session with every tier on Claude is offered its backend\'s
   await new Promise(r => setImmediate(r));
   assert.equal(t.modelFrames().length, 1);
   const frame = t.modelFrames()[0];
-  assert.deepEqual(Object.keys(frame).sort(), ['id', 'model', 'reqId', 't'], 'exactly {t, id, model, reqId}: no tier, no backend');
+  assert.deepEqual(Object.keys(frame).sort(), ['backend', 'id', 'model', 'reqId', 't'], 'exactly {t, id, model, backend, reqId}: no tier');
   assert.equal(frame.model, 'glm-5.3-flash:cloud');
+  assert.equal(frame.backend, 'ollama');
   assert.equal(frame.id, ROLE_INSTANCE.id);
   assertNull(t.document.querySelector('.ih-usage-popover[aria-label="Change model"]'), 'the picker closed on the ack');
 }));
@@ -614,47 +631,45 @@ test('registered-model entries are disabled with the restart-busy title while a 
   }
 }));
 
-test('a substitution session with nothing else registered on its backend says so', async (t) => {
-  const NOTE = 'No other model is registered on Ollama — add one in Settings → Models';
-  await t.test('nothing registered at all', () => withRegistry(ALL_CLAUDE, { ollama: [] }, async () => {
-    const h = await clickSetup();
-    h.setInstances([ROLE_INSTANCE]);
-    h.setActiveId('inst-1');
-    h.header.update();
-    const popover = openModelPicker(h);
-    assert.ok([...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
-    assert.equal(popover.querySelectorAll('.qs-model:not([disabled])').length, 0, 'no enabled entry');
-  }));
-  await t.test('only the running model registered', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
-    const h = await clickSetup();
-    h.setInstances([ROLE_INSTANCE]);
-    h.setActiveId('inst-1');
-    h.header.update();
-    const popover = openModelPicker(h);
-    assert.ok([...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
-    const enabled = [...popover.querySelectorAll('.qs-model:not([disabled])')];
-    assert.deepEqual(enabled.map(b => b.dataset.model), ['deepseek-v4.1-flash:cloud'], 'only the running model itself');
-  }));
-  await t.test('never on an identity session, even with nothing else selectable', () => withRegistry(
-    Object.fromEntries(TIERS.map(tier => [tier, { backend: 'claude', model: 'claude-opus-4-8' }])), {}, async () => {
+test('a picker with nothing but the running model says so — on any backend', async (t) => {
+  const NOTE = 'No other model is available — add one in Settings → Models';
+  const notes = (popover) => [...popover.querySelectorAll('.ih-usage-popover-note')].map(n => n.textContent);
+  const ALL_ON = (backend, model) => Object.fromEntries(TIERS.map(tier => [tier, { backend, model }]));
+  await t.test('a substitution session, every tier on its running model, nothing else registered', () => withRegistry(
+    ALL_ON('ollama', 'deepseek-v4.1-flash:cloud'), { ollama: [] }, async () => {
+      const h = await clickSetup();
+      h.setInstances([ROLE_INSTANCE]);
+      h.setActiveId('inst-1');
+      h.header.update();
+      const popover = openModelPicker(h);
+      assert.ok(notes(popover).includes(NOTE));
+      assert.ok([...popover.querySelectorAll('.qs-model')].every(b => b.classList.contains('qs-selected')),
+        'premise: every offered entry is the running model');
+    }));
+  await t.test('an identity session, every tier on its running model, nothing registered', () => withRegistry(
+    ALL_ON('claude', 'claude-opus-4-8'), { ollama: [] }, async () => {
       const h = await clickSetup();
       h.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' }]);
       h.setActiveId('inst-1');
       h.header.update();
-      const popover = openModelPicker(h);
-      const entries = [...popover.querySelectorAll('.qs-model')];
-      assert.ok(entries.length > 0 && entries.every(b => b.classList.contains('qs-selected')),
-        'premise: every offered entry is the running model');
-      assertNull(popover.querySelector('.ih-usage-popover-note'), 'a Claude session switches by tier; no registry note');
+      assert.ok(notes(openModelPicker(h)).includes(NOTE));
     }));
-  await t.test('control: another model registered', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
-    const h = await clickSetup();
-    h.setInstances([ROLE_INSTANCE]);
-    h.setActiveId('inst-1');
-    h.header.update();
-    const popover = openModelPicker(h);
-    assert.ok(![...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
-  }));
+  await t.test('control: one registered model on another backend makes a switch available', () => withRegistry(
+    ALL_ON('claude', 'claude-opus-4-8'), { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
+      const h = await clickSetup();
+      h.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' }]);
+      h.setActiveId('inst-1');
+      h.header.update();
+      assert.ok(!notes(openModelPicker(h)).includes(NOTE));
+    }));
+  await t.test('control: a tier on another model makes a switch available', () => withRegistry(
+    { ...ALL_ON('ollama', 'deepseek-v4.1-flash:cloud'), frontier: { backend: 'claude', model: 'claude-opus-4-8' } }, { ollama: [] }, async () => {
+      const h = await clickSetup();
+      h.setInstances([ROLE_INSTANCE]);
+      h.setActiveId('inst-1');
+      h.header.update();
+      assert.ok(!notes(openModelPicker(h)).includes(NOTE));
+    }));
 });
 
 // The registered-model list follows the server: seeded by the boot fetch, and
@@ -663,24 +678,20 @@ test('a substitution session with nothing else registered on its backend says so
 // tests/app-models-change-wiring.test.mjs).
 
 test('a models payload replaces the picker\'s registered models: an added model appears, a removed one goes', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
-  const NOTE = 'No other model is registered on Ollama — add one in Settings → Models';
   const t = await clickSetup();
   t.setInstances([ROLE_INSTANCE]);
   t.setActiveId('inst-1');
   t.header.update();
   const read = () => {
     const popover = openModelPicker(t);
-    const shown = {
-      models: [...popover.querySelectorAll('.qs-model[data-model]')].map(b => b.dataset.model),
-      note: [...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE),
-    };
+    const shown = { models: [...popover.querySelectorAll('.qs-model[data-model]')].map(b => b.dataset.model) };
     t.dom.changeModelBtn.click(); // toggles the picker closed
     return shown;
   };
-  assert.deepEqual(read(), { models: ['deepseek-v4.1-flash:cloud'], note: true }, 'premise: only the running model');
+  assert.deepEqual(read(), { models: ['deepseek-v4.1-flash:cloud'] }, 'premise: only the running model');
   const spawnTier = models.getActiveDefaultSpawnTier();
   models.applyModelsPayload({ backendModels: { ollama: OLLAMA_MODELS }, defaultSpawnTier: spawnTier });
-  assert.deepEqual(read(), { models: OLLAMA_MODELS.map(m => m.model), note: false }, 'the added models are offered at once');
+  assert.deepEqual(read(), { models: OLLAMA_MODELS.map(m => m.model) }, 'the added models are offered at once');
   models.applyModelsPayload({ backendModels: { ollama: OLLAMA_MODELS.slice(0, 2) }, defaultSpawnTier: spawnTier });
   assert.deepEqual(read().models, OLLAMA_MODELS.slice(0, 2).map(m => m.model), 'a removed model is no longer offered');
 }));
@@ -696,3 +707,142 @@ test('the boot fetch seeds the registered models from the payload', () => withRe
   } finally { globalThis.fetch = realFetch; }
   assert.deepEqual(models.getBackendModels('ollama'), OLLAMA_MODELS);
 }));
+
+// ── cross-backend entries ───────────────────────────────────────────────────
+//
+// Every substitution backend's registered models are offered, on any session,
+// as restart entries carrying their backend; a click sends the pair.
+
+const CLAUDE_OPUS = { ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' };
+const PROXY = { id: 'my-proxy', label: 'My Proxy', managed: false };
+
+async function withBackendList(list, fn) {
+  const saved = models.getBackends();
+  models.setBackends(list);
+  try { return await fn(); } finally { models.setBackends(saved); }
+}
+const backendEntry = (popover, backend, model) => popover.querySelector(`.qs-model[data-backend="${backend}"][data-model="${model}"]`);
+
+test('a Claude session is offered other backends\' registered models; a click sends exactly {t, id, model, backend, reqId}', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
+  const t = await clickSetup();
+  t.setInstances([CLAUDE_OPUS]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  assert.deepEqual([...popover.querySelectorAll('.qs-backend-group')].map(n => n.textContent), ['Claude', 'Ollama']);
+  for (const { model, label } of OLLAMA_MODELS) {
+    const b = backendEntry(popover, 'ollama', model);
+    assert.ok(b, model);
+    assert.equal(b.dataset.kind, 'restart', model);
+    assert.equal(b.disabled, false, model);
+    assert.equal(b.title, 'Restarts the session on Ollama — the conversation is kept', model);
+    assert.equal(b.firstChild.textContent, label, model);
+    assert.ok(!b.classList.contains('qs-selected'), model);
+  }
+  backendEntry(popover, 'ollama', 'glm-5.3:cloud').click();
+  await new Promise(r => setImmediate(r));
+  assert.equal(t.modelFrames().length, 1);
+  const frame = t.modelFrames()[0];
+  assert.deepEqual(Object.keys(frame).sort(), ['backend', 'id', 'model', 'reqId', 't']);
+  assert.deepEqual([frame.model, frame.backend, frame.id], ['glm-5.3:cloud', 'ollama', CLAUDE_OPUS.id]);
+}));
+
+test('every registered backend is listed, in registry order, after the tiers', () => withBackendList(
+  [{ id: 'claude', label: 'Claude', managed: true }, { id: 'ollama', label: 'Ollama', managed: true }, PROXY],
+  () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS.slice(0, 1), 'my-proxy': [{ model: 'mine:v2', label: 'Mine' }] }, async () => {
+    const t = await clickSetup();
+    t.setInstances([CLAUDE_OPUS]);
+    t.setActiveId('inst-1');
+    t.header.update();
+    const popover = openModelPicker(t);
+    assert.deepEqual([...popover.querySelectorAll('.qs-backend-group')].map(n => n.textContent), ['Claude', 'Ollama', 'My Proxy']);
+    assert.equal(backendEntry(popover, 'my-proxy', 'mine:v2').title, 'Restarts the session on My Proxy — the conversation is kept');
+  })));
+
+test('cross entries are disabled while busy: a turn, a running subagent, or a switch in flight', async () => {
+  const { modelEntryState, RESTART_BUSY_TITLE } = await import(pathToFileURL(path.join(PUB, 'header.js')).href);
+  const cross = SUB_BINDINGS.fast; // ollama, from a Claude session
+  assert.deepEqual(modelEntryState(CLAUDE_OPUS, cross),
+    { kind: 'restart', disabled: false, title: 'Restarts the session on Ollama — the conversation is kept' }, 'premise: idle is enabled');
+  for (const busy of [{ status: 'turn', displayStatus: 'turn' }, { displayStatus: 'running' },
+    { modelSwitch: { from: 'claude-haiku-4-5', to: 'claude-opus-4-8', fromBackend: 'claude', toBackend: 'claude' } }]) {
+    assert.deepEqual(modelEntryState({ ...CLAUDE_OPUS, ...busy }, cross),
+      { kind: 'restart', disabled: true, title: RESTART_BUSY_TITLE }, JSON.stringify(busy));
+  }
+  // In the open picker: a turn starting greys the cross entries in place.
+  await withRegistry(SUB_BINDINGS, { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
+    const h = await clickSetup();
+    h.setInstances([CLAUDE_OPUS]);
+    h.setActiveId('inst-1');
+    h.header.update();
+    const popover = openModelPicker(h);
+    h.setInstances([{ ...CLAUDE_OPUS, status: 'turn', displayStatus: 'turn' }]);
+    h.header.update();
+    for (const b of [entry(popover, 'fast'), backendEntry(popover, 'ollama', OLLAMA_MODELS[0].model)]) {
+      assert.equal(b.disabled, true);
+      assert.equal(b.title, RESTART_BUSY_TITLE);
+    }
+  });
+});
+
+test('the highlight needs the running backend as well as the running model id', () => withBackendList(
+  [{ id: 'claude', label: 'Claude', managed: true }, { id: 'ollama', label: 'Ollama', managed: true }, PROXY],
+  () => withRegistry(ALL_CLAUDE, { ollama: [{ model: 'alpha:cloud', label: 'Alpha' }], 'my-proxy': [{ model: 'alpha:cloud', label: 'Alpha proxied' }] }, async () => {
+    const t = await clickSetup();
+    t.setInstances([SUB_INSTANCE]); // alpha:cloud on ollama
+    t.setActiveId('inst-1');
+    t.header.update();
+    const popover = openModelPicker(t);
+    assert.ok(backendEntry(popover, 'ollama', 'alpha:cloud').classList.contains('qs-selected'));
+    assert.ok(!backendEntry(popover, 'my-proxy', 'alpha:cloud').classList.contains('qs-selected'), 'same id, another backend');
+    assert.equal(backendEntry(popover, 'my-proxy', 'alpha:cloud').disabled, false);
+  })));
+
+// Mid switch summary().backend may already name the target; the picker's
+// running backend is the switch's `fromBackend`. (The picker itself cannot be
+// open then — Change model is disabled and an open one closes — so the rule is
+// pinned on the two exported readers.)
+test('mid cross switch the running backend is the one the session is still on', async () => {
+  const { modelEntryState, runningBackendOf } = await import(pathToFileURL(path.join(PUB, 'header.js')).href);
+  const switching = { ...LIVE_INSTANCE, backend: 'ollama', model: 'alpha:cloud',
+    modelSwitch: { from: 'claude-opus-4-8', to: 'alpha:cloud', fromBackend: 'claude', toBackend: 'ollama' } };
+  assert.equal(runningBackendOf(switching), 'claude');
+  assert.equal(runningBackendOf({ ...switching, modelSwitch: null }), 'ollama', 'settled: the summary\'s backend');
+  assert.equal(runningBackendOf({ ...LIVE_INSTANCE }), 'claude', 'no backend reads as claude');
+  assert.equal(modelEntryState(switching, SUB_BINDINGS.powerful).kind, 'live', 'Claude→Claude from the backend it is still on');
+  assert.equal(modelEntryState({ ...switching, modelSwitch: null }, SUB_BINDINGS.powerful).kind, 'restart', 'control');
+});
+
+test('a cross switch\'s restarting and failure chips name both backends', async () => {
+  const t = await setup();
+  const sw = { from: 'claude-opus-4-8', to: 'alpha:cloud', fromBackend: 'claude', toBackend: 'ollama' };
+  t.setInstances([{ ...SUB_INSTANCE, status: 'exited', displayStatus: 'exited', modelSwitch: sw }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  assert.equal(t.dom.instanceTitle.querySelector('.ih-status-restarting').textContent,
+    'Restarting · switching model claude-opus-4-8 on claude → alpha:cloud on ollama');
+  t.setInstances([{ ...LIVE_INSTANCE, backend: 'claude', model: 'claude-opus-4-8', modelSwitchFailure: { ...sw, error: 'boom' } }]);
+  t.header.update();
+  assert.equal(t.dom.instanceTitle.querySelector('.ih-status-switch-failed').textContent, 'Switch to alpha:cloud on ollama failed');
+  // A same-backend switch's chips are unchanged.
+  const same = { from: 'alpha:cloud', to: 'beta:cloud', fromBackend: 'ollama', toBackend: 'ollama' };
+  t.setInstances([{ ...SUB_INSTANCE, modelSwitch: same }]);
+  t.header.update();
+  assert.equal(t.dom.instanceTitle.querySelector('.ih-status-restarting').textContent, 'Restarting · switching model alpha:cloud → beta:cloud');
+  t.setInstances([{ ...SUB_INSTANCE, modelSwitchFailure: { ...same, error: 'boom' } }]);
+  t.header.update();
+  assert.equal(t.dom.instanceTitle.querySelector('.ih-status-switch-failed').textContent, 'Switch to beta:cloud failed');
+});
+
+// A session with no known model runs the account default; the usage popover
+// names it as a model switch from it does, so one element never shows two
+// names for one idea.
+test('the usage popover names a session with no known model `(account default)`', async () => {
+  const t = await setup();
+  t.setInstances([{ ...LIVE_INSTANCE, model: null }]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  t.dom.tiUsageSlot.querySelector('.ih-combined').click();
+  const meta = t.document.querySelector('.ih-usage-popover[aria-label="Usage details"] .ih-usage-meta').textContent;
+  assert.ok(meta.startsWith('(account default)'), meta);
+});

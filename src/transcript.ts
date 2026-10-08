@@ -417,11 +417,13 @@ export async function loadPersistedTranscript(options: {
 // marks its copy `replayed`, which public/usage.js reads to keep a replayed
 // divider from blanking the ctx reading a later turn seeded.
 export function modelSwitchEvent(entry: ModelSwitchEntry, { replayed = false }: { replayed?: boolean } = {}): UiEvent {
+  // A switch that crossed backends names both on either outcome.
+  const backends = entry.fromBackend && entry.toBackend ? { fromBackend: entry.fromBackend, toBackend: entry.toBackend } : {};
   const ev: UiEvent = entry.ok
-    ? { kind: 'system', subtype: 'model_changed', data: { from: entry.from, to: entry.to, restart: true, switchId: entry.id } }
+    ? { kind: 'system', subtype: 'model_changed', data: { from: entry.from, to: entry.to, ...backends, restart: true, switchId: entry.id } }
     : { kind: 'system', subtype: 'model_switch_failed', data: entry.cancelled
-      ? { from: entry.from, to: entry.to, cancelled: true, switchId: entry.id }
-      : { from: entry.from, to: entry.to, error: entry.error ?? '', switchId: entry.id } };
+      ? { from: entry.from, to: entry.to, ...backends, cancelled: true, switchId: entry.id }
+      : { from: entry.from, to: entry.to, ...backends, error: entry.error ?? '', switchId: entry.id } };
   if (replayed) ev.replayed = true;
   return ev;
 }

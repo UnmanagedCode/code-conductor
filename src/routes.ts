@@ -1893,7 +1893,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       roleEffort,
       customModels: getCustomModels(),
       // Every substitution backend's registered models ({model, label}), keyed
-      // by backend id — what Change model offers a session on that backend.
+      // by backend id — what Change model offers every session, entry by entry.
       backendModels: Object.fromEntries(getSubstitutionBackends().map(b => [b.id, backendModels(b.id)])),
       ollamaCloudModels: OLLAMA_CLOUD_MODELS,
       ollamaCloudTierDefaults: OLLAMA_CLOUD_TIER_DEFAULTS,

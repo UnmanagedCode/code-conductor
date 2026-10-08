@@ -223,9 +223,13 @@ export const LIST_ONLY_KEYS = ['awaitingWake', 'playbook', 'stage'];
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
-  // Mid restart switch summary().model already names the unconfirmed target;
-  // `modelSwitch` is withheld here, so report the model the session is still on.
-  if (summary.modelSwitch) out.model = summary.modelSwitch.from;
+  // Mid restart switch summary().model and .backend may already name the
+  // unconfirmed target; `modelSwitch` is withheld here, so report the pair the
+  // session is still on.
+  if (summary.modelSwitch) {
+    out.model = summary.modelSwitch.from;
+    out.backend = summary.modelSwitch.fromBackend;
+  }
   return out;
 }
 
@@ -1278,9 +1282,13 @@ export async function sendPrompt(
   // be delivered). One refusal covers the whole run.
   const switching = typeof sessionId === 'string' && sessionId ? instances?.anyForSession(sessionId)?.modelSwitch : null;
   if (switching) {
+    const crossed = switching.fromBackend !== switching.toBackend;
+    const what = crossed
+      ? `${switching.from} on ${switching.fromBackend} → ${switching.to} on ${switching.toBackend}`
+      : `${switching.from} → ${switching.to}`;
     return { ok: false, code: 'SESSION_SWITCHING_MODEL', sessionId, from: switching.from, to: switching.to,
-      reason: `session is restarting to switch model ${switching.from} → ${switching.to}; no prompt was sent — `
-        + 'retry once it is idle.' };
+      fromBackend: switching.fromBackend, toBackend: switching.toBackend,
+      reason: `session is restarting to switch model ${what}; no prompt was sent — retry once it is idle.` };
   }
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;

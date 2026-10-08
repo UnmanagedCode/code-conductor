@@ -49,7 +49,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getBackendModels, getEffortLevels, CLAUDE_BACKEND } from './models.js';
+import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackends, getBackendLabel, getBackendModels, getEffortLevels, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted, muteSession } from './notifications.js';
 import { MOBILE_LAYOUT_QUERY } from './layout.js';
 import { userActionsForStatus } from './conversation.js';
@@ -73,31 +73,43 @@ export function nextEnforcementLevel(level) { return isEnforcing(level) ? 'warn'
 // server refuses each 409 mid-turn too.
 export function isBetweenTurns(inst) { return inst.status === 'idle'; }
 
+// A restart switch (or its failure) that crossed backends — the chips then
+// name each side's backend.
+function crossed(sw) { return !!sw.fromBackend && !!sw.toBackend && sw.fromBackend !== sw.toBackend; }
+function switchText(sw) {
+  return crossed(sw) ? `${sw.from} on ${sw.fromBackend} → ${sw.to} on ${sw.toBackend}` : `${sw.from} → ${sw.to}`;
+}
+
+// The backend the session is running on: mid restart switch `inst.backend` may
+// already name the unconfirmed target, so the switch's `fromBackend` wins.
+export function runningBackendOf(inst) {
+  return inst.modelSwitch?.fromBackend ?? inst.backend ?? CLAUDE_BACKEND;
+}
+
 // What a "Change model" entry for `binding` ({backend, model}: a tier's binding,
-// or a model registered on the session's backend) does on session `inst`:
-//   live    — an identity (Claude) session to a Claude tier: switched in place,
-//             between turns.
-//   restart — a substitution session to a tier or registered model on its OWN
-//             backend: the server restarts the CLI on the new model and resumes
-//             the conversation. Disabled while anything runs; the server's
-//             refusal stays the authority (it also sees background bash jobs,
-//             which the client does not).
-//   cross   — any other backend: never switchable on this session.
+// or a model registered on a substitution backend) does on session `inst`:
+//   live    — a Claude session to a Claude model: switched in place, between
+//             turns.
+//   restart — every other pair, on the session's own backend or another: the
+//             server restarts the CLI on the target backend and model and
+//             resumes the conversation. Disabled while anything runs; the
+//             server's refusal stays the authority (it also sees background
+//             bash jobs, which the client does not).
 // Display only — the server re-resolves the target and decides.
 export const RESTART_BUSY_TITLE = 'Switching restarts the session — wait for the running turn to finish';
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
 export function modelEntryState(inst, binding) {
-  const running = inst.backend || CLAUDE_BACKEND;
+  const running = runningBackendOf(inst);
   const target = backendIdOf(binding);
-  if (target !== running) {
-    return { kind: 'cross', disabled: true, title: `On ${getBackendLabel(target)} — a different backend needs a new session or a fork` };
-  }
-  if (running === CLAUDE_BACKEND) {
+  if (running === CLAUDE_BACKEND && target === CLAUDE_BACKEND) {
     const disabled = !isBetweenTurns(inst);
     return { kind: 'live', disabled, title: disabled ? BETWEEN_TURNS_TITLE : '' };
   }
   const busy = !isBetweenTurns(inst) || inst.displayStatus === 'running' || !!inst.modelSwitch;
-  return { kind: 'restart', disabled: busy, title: busy ? RESTART_BUSY_TITLE : 'Restarts the session on this model — the conversation is kept' };
+  const title = busy ? RESTART_BUSY_TITLE
+    : target === running ? 'Restarts the session on this model — the conversation is kept'
+    : `Restarts the session on ${getBackendLabel(target)} — the conversation is kept`;
+  return { kind: 'restart', disabled: busy, title };
 }
 
 export function installHeader({
@@ -235,7 +247,9 @@ export function installHeader({
     const ctxWindow = inst.contextWindowTokens;
     // Mid-switch the server already names the target it is launching; the
     // session is still on `from` until the switch is confirmed.
-    const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(default)';
+    // No known model: the CLI runs the account default — the server's name for
+    // it too, so a switch from such a session reads the same.
+    const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(account default)';
     const meta = document.createElement('div');
     meta.className = 'ih-usage-meta';
     // Mid-switch `contextWindowTokens` is already the target's, so it would be
@@ -312,15 +326,14 @@ export function installHeader({
   // getActiveTierEnabled, .quick-spawn-models/.qs-model) so switching a live
   // session's model stays visually consistent with spawning one. Selecting a
   // tier sends only the TIER NAME over WS (`t:'model'`) — a substitution
-  // session's registered-model entry sends its MODEL id instead, which the
-  // server validates against that backend; the server resolves
-  // that tier's CURRENT binding and issues the control_request (subtype:
-  // set_model, via Instance.setModel) — no optimistic mutation of inst.model
-  // here; the status broadcast (wsRouter.js) is what actually flips it once
-  // the CLI acks. getActiveTierBackend/backendIdOf below are read for DISPLAY
-  // only (grouping, modelEntryState and the .qs-selected highlight) — the
-  // cache they read can be stale, but the server refuses (`BACKEND_LOCKED`)
-  // rather than switching to whatever it's stale about.
+  // registered-model entry sends its {model, backend} pair instead, which the
+  // server validates as a binding; for a tier the server resolves that tier's
+  // CURRENT binding. Either way Instance.switchModel goes live or restarts —
+  // no optimistic mutation of inst.model here; the status broadcast
+  // (wsRouter.js) is what actually flips it. getActiveTierBackend/backendIdOf
+  // below are read for DISPLAY only (grouping, modelEntryState and the
+  // .qs-selected highlight) — the cache they read can be stale, but the server
+  // switches to its own current binding, never the client's.
   function closePicker() {
     if (!openPicker) return;
     const { node, anchor, ctl } = openPicker;
@@ -380,33 +393,35 @@ export function installHeader({
 
   // The picker's entries: tiers grouped by backend, the session's own first,
   // each with its modelEntryState and highlight. Only enabled tiers are offered.
-  // A substitution session's own group also lists every model registered on its
-  // backend that no offered tier there already binds. Each entry's `target` is
-  // what its click sends: `{tier}` or `{model}`.
+  // Then every substitution backend's registered models that no offered tier
+  // on that backend already binds. Each entry's `target` is what its click
+  // sends: `{tier}` or `{model, backend}`.
   function modelPickerGroups(inst) {
-    const runningBackend = inst.backend || CLAUDE_BACKEND;
+    const runningBackend = runningBackendOf(inst);
     const runningModel = inst.modelSwitch?.from ?? inst.model;
     // The `[1m]`/`[200k]` launch tag is Claude catalog policy; a substitution
     // backend's id is compared exactly.
     const curModel = typeof runningModel !== 'string' ? null
       : runningBackend === CLAUDE_BACKEND ? runningModel.replace(/\[(200k|1m)\]$/, '') : runningModel;
+    const isRunning = (backend, model) => backend === runningBackend && model === curModel;
     const groups = new Map([[runningBackend, []]]);
     for (const tier of getTierList()) {
       if (!getActiveTierEnabled(tier)) continue;
       const binding = getActiveTierBackend(tier); // {backend, model}
       const id = backendIdOf(binding);
-      const state = modelEntryState(inst, binding);
       if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push({ target: { tier }, label: getTierLabel(tier), state,
-        selected: state.kind !== 'cross' && binding.model === curModel, model: binding.model });
+      groups.get(id).push({ target: { tier }, label: getTierLabel(tier), state: modelEntryState(inst, binding),
+        selected: isRunning(id, binding.model), model: binding.model });
     }
-    if (runningBackend !== CLAUDE_BACKEND) {
-      const own = groups.get(runningBackend);
-      const tierModels = new Set(own.map(e => e.model));
-      for (const { model, label } of getBackendModels(runningBackend)) {
+    for (const { id } of getBackends()) {
+      if (id === CLAUDE_BACKEND) continue;
+      if (!groups.has(id)) groups.set(id, []);
+      const group = groups.get(id);
+      const tierModels = new Set(group.map(e => e.model));
+      for (const { model, label } of getBackendModels(id)) {
         if (tierModels.has(model)) continue;
-        own.push({ target: { model }, label, state: modelEntryState(inst, { backend: runningBackend, model }),
-          selected: model === curModel, model });
+        const binding = { backend: id, model };
+        group.push({ target: binding, label, state: modelEntryState(inst, binding), selected: isRunning(id, model), model });
       }
     }
     return [...groups].filter(([, entries]) => entries.length);
@@ -429,8 +444,7 @@ export function installHeader({
     header.textContent = 'Change model';
     node.appendChild(header);
 
-    // Within its own backend an identity session switches live and a
-    // substitution session restarts (↻); every other group is disabled — see
+    // Claude→Claude switches live; every other entry restarts (↻) — see
     // modelEntryState.
     let restartShown = false;
     const groups = modelPickerGroups(inst);
@@ -446,7 +460,7 @@ export function installHeader({
         btn.type = 'button';
         btn.className = 'qs-model';
         if (target.tier) btn.dataset.tier = target.tier;
-        else btn.dataset.model = target.model;
+        else { btn.dataset.model = target.model; btn.dataset.backend = target.backend; }
         btn.dataset.kind = state.kind;
         btn.disabled = state.disabled;
         if (state.title) btn.title = state.title;
@@ -488,14 +502,12 @@ export function installHeader({
       }
       node.appendChild(row);
     }
-    // A substitution session whose own backend offers nothing but the model it
-    // already runs cannot switch at all — say so rather than only greying out.
-    const running = inst.backend || CLAUDE_BACKEND;
-    const own = groups.find(([id]) => id === running)?.[1] ?? [];
-    if (running !== CLAUDE_BACKEND && !own.some(e => !e.selected)) {
+    // A picker that offers nothing but the model the session already runs
+    // cannot switch at all — say so rather than only greying out.
+    if (!groups.some(([, entries]) => entries.some(e => !e.selected))) {
       const note = document.createElement('div');
       note.className = 'ih-usage-popover-note';
-      note.textContent = `No other model is registered on ${getBackendLabel(running)} — add one in Settings → Models`;
+      note.textContent = 'No other model is available — add one in Settings → Models';
       node.appendChild(note);
     }
     if (restartShown) {
@@ -922,15 +934,16 @@ export function installHeader({
     // A restart model switch wins over the transient exited/spawning it passes
     // through: the session is not stopping, it is coming back on a new model.
     if (inst.modelSwitch) {
-      mainLine.appendChild(chip('ih-status ih-status-restarting',
-        `Restarting · switching model ${inst.modelSwitch.from} → ${inst.modelSwitch.to}`));
+      mainLine.appendChild(chip('ih-status ih-status-restarting', `Restarting · switching model ${switchText(inst.modelSwitch)}`));
     } else if (inst.status === 'turn' && inst.interrupting) {
       mainLine.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
     } else if (inst.displayStatus !== 'idle') {
       mainLine.appendChild(chip(`ih-status ih-status-${inst.displayStatus}`, inst.displayStatus));
     }
     if (!inst.modelSwitch && inst.modelSwitchFailure) {
-      const fc = chip('ih-status ih-status-switch-failed', `Switch to ${inst.modelSwitchFailure.to} failed`);
+      const f = inst.modelSwitchFailure;
+      const fc = chip('ih-status ih-status-switch-failed',
+        `Switch to ${f.to}${crossed(f) ? ` on ${f.toBackend}` : ''} failed`);
       fc.title = inst.modelSwitchFailure.error;
       mainLine.appendChild(fc);
     }

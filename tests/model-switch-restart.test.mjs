@@ -1,10 +1,11 @@
-// "Change model" on a SUBSTITUTION-backend session: a same-backend switch kills
-// the CLI and resumes the same session on the new model (Instance.switchModel →
+// "Change model" by restart: every pair but Claude→Claude — within a
+// substitution backend, or across backends either way — kills the CLI and
+// resumes the same session on the target pair (Instance.switchModel →
 // _runRestartSwitch), confirmed by the relaunch outliving a grace window. Covers
 // the WS frame's dispatch and refusals, the relaunch argv/env/record, the
-// failure path (re-resumed on the old model), prompt refusal across the whole
-// switch, temp/conducted survival, the no-turn `--session-id` relaunch and the
-// graceful-restart drain.
+// failure path (re-resumed on the old pair), prompt refusal across the whole
+// switch, temp/conducted survival, the no-turn `--session-id` relaunch, the
+// graceful-restart drain, and the session record a cold resume reads.
 //
 // The fake CLI writes no transcript, so a "session with a turn" is seeded with a
 // jsonl the real CLI would have written (uuid'd user/assistant lines).
@@ -18,10 +19,11 @@ import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
-import { addCustomModel, setTierBackend, setTierEffort, addBackend } from '../src/appSettings.ts';
+import { addCustomModel, setTierBackend, setTierEffort, addBackend, setConductorCompactWindow } from '../src/appSettings.ts';
 import { getSessionBackend, getModelSwitchesForSegment, isTemp, isArchived, isConducted, settleSessionWrites, sessionsFile } from '../src/sessionStore.ts';
 import { withLock } from '../src/storeLock.ts';
-import { loadPersistedTranscript } from '../src/transcript.ts';
+import { loadPersistedTranscript, readLastSessionModel } from '../src/transcript.ts';
+import { costsPath } from '../src/costTracking.ts';
 import { sendPrompt, describeSession } from '../src/mcp/handlers.ts';
 import { drainToManifest } from '../src/resumeRestart.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
@@ -80,6 +82,41 @@ async function spawnSub(extra = {}) {
   return inst;
 }
 
+// An identity Claude session on Haiku, idle, with a short confirmation window.
+const HAIKU = 'claude-haiku-4-5';
+async function spawnClaude(extra = {}) {
+  return spawnSub({ model: HAIKU, backend: 'claude', ...extra });
+}
+
+// The Claude tier a cross switch lands on: Sonnet 4.6, whose catalog launch tag
+// (`[1m]`) shows the target is canonicalized against the TARGET backend.
+const SONNET = 'claude-sonnet-4-6';
+const SONNET_1M = 'claude-sonnet-4-6[1m]';
+async function bindFrontierToSonnet() {
+  await setTierBackend('frontier', { backend: 'claude', model: SONNET });
+  await setTierEffort('frontier', 'xhigh');
+}
+
+// A second substitution backend with one registered model.
+const MINE = 'mine:v2';
+const PROXY_TEMPLATE = ['proxyctl', 'exec', 'claude', '--model'];
+async function addProxy() {
+  await addBackend({ id: 'my-proxy', label: 'My Proxy', template: 'proxyctl exec claude --model {model} --' });
+  await addCustomModel({ label: 'Mine', model: MINE, backend: 'my-proxy', contextWindow: 200_000 });
+}
+
+// A cold resume through the REST surface: no instance left in memory, so every
+// fact comes from the session record and the jsonl.
+async function coldResume(sessionId) {
+  await settleSessionWrites();
+  await instances.shutdown();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', resume: sessionId });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  return inst;
+}
+
 // What the CLI would have persisted after one turn: anchor `a1` is the last line.
 const TURN = [
   { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hello' } },
@@ -100,9 +137,9 @@ async function frame(c, inst, tier, reqId) {
   return c.wait(m => m.t === 'ack' && m.reqId === reqId);
 }
 
-// The `{model}` form: a model registered on the session's own backend, by id.
-async function modelFrame(c, inst, model, reqId) {
-  c.send({ t: 'model', id: inst.id, model, reqId });
+// The `{model, backend}` form: a model by id, on the backend it is registered on.
+async function modelFrame(c, inst, model, backend, reqId) {
+  c.send({ t: 'model', id: inst.id, model, backend, reqId });
   return c.wait(m => m.t === 'ack' && m.reqId === reqId);
 }
 
@@ -200,7 +237,7 @@ test('a switch is refused while background agent tasks or bash jobs run', async 
   assert.equal(inst.effort, 'high');
 });
 
-test('a {model} frame restarts onto a registered model no tier binds, keeping the session\'s effort', async () => {
+test('a {model, backend} frame restarts onto a registered model no tier binds, keeping the session\'s effort', async () => {
   const G = 'gamma:cloud';
   await addCustomModel({ label: 'Gamma', model: G, backend: 'ollama', contextWindow: 200_000 });
   const inst = await spawnSub();
@@ -208,7 +245,7 @@ test('a {model} frame restarts onto a registered model no tier binds, keeping th
   const { id, sessionId, backingSessionId } = inst;
   const c = await wsClient(wsUrl);
   try {
-    const ack = await modelFrame(c, inst, G, 'g1');
+    const ack = await modelFrame(c, inst, G, 'ollama', 'g1');
     assert.equal(ack.ok, true, ack.error);
     await settled(inst);
     assert.equal(instances.get(id), inst);
@@ -223,26 +260,29 @@ test('a {model} frame restarts onto a registered model no tier binds, keeping th
   } finally { await c.close(); }
 });
 
-test('a {model} frame naming a curated ollama preset with no custom row is accepted', async () => {
+test('a {model, backend} frame naming a curated ollama preset with no custom row is accepted', async () => {
   const preset = OLLAMA_CLOUD_MODELS.at(-1).model;
   const inst = await spawnSub();
   await seedTurn(inst);
   const c = await wsClient(wsUrl);
   try {
-    const ack = await modelFrame(c, inst, preset, 'k1');
+    const ack = await modelFrame(c, inst, preset, 'ollama', 'k1');
     assert.equal(ack.ok, true, ack.error);
     await settled(inst);
     assert.equal(inst.model, preset);
   } finally { await c.close(); }
 });
 
-test('a model frame is refused, with nothing restarted, unless it names exactly one target registered on the session\'s own backend', async (t) => {
-  await addBackend({ id: 'my-proxy', label: 'My Proxy', template: 'proxyctl exec claude --model {model} --' });
-  await addCustomModel({ label: 'Mine', model: 'mine:v2', backend: 'my-proxy', contextWindow: 200_000 });
+test('a model frame is refused, with nothing restarted, unless it names exactly one valid target', async (t) => {
+  await addProxy();
   const cases = [
-    ['a model registered only on another backend', { model: 'mine:v2' }, /'mine:v2' is not registered on backend 'ollama'/],
-    ['an unknown model id', { model: 'ghost:v9' }, /'ghost:v9' is not registered on backend 'ollama'/],
-    ['both a tier and a model', { tier: 'balanced', model: B }, /exactly one/],
+    ['a model registered only on another backend', { model: 'mine:v2', backend: 'ollama' }, /'mine:v2' is not registered on backend 'ollama'/],
+    ['an unknown model id', { model: 'ghost:v9', backend: 'ollama' }, /'ghost:v9' is not registered on backend 'ollama'/],
+    ['a Claude id outside the catalog', { model: 'claude-nope', backend: 'claude' }, /'claude-nope' is not registered on backend 'claude'/],
+    ['a model with no backend', { model: B }, /a model pick names its backend/],
+    ['a tier with a backend', { tier: 'balanced', backend: 'ollama' }, /a tier pick names no backend/],
+    ['a removed backend', { model: B, backend: 'ghost' }, /backend 'ghost' no longer exists/],
+    ['both a tier and a model', { tier: 'balanced', model: B, backend: 'ollama' }, /exactly one/],
     ['neither a tier nor a model', {}, /exactly one/],
   ];
   for (const [name, target, error] of cases) {
@@ -261,23 +301,6 @@ test('a model frame is refused, with nothing restarted, unless it names exactly 
       } finally { await c.close(); await inst.kill(); }
     });
   }
-});
-
-test('a {model} frame on an identity Claude session is refused — it switches by tier', async () => {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
-  const inst = instances.get(r.body.id);
-  await waitFor(() => inst.status === 'idle');
-  const launches = launcher.count;
-  const model = inst.model;
-  const c = await wsClient(wsUrl);
-  try {
-    const ack = await modelFrame(c, inst, 'claude-opus-4-8', 'c1');
-    assert.equal(ack.ok, false);
-    assert.match(ack.error, /switches by tier/);
-    assert.equal(launcher.count, launches);
-    assert.equal(inst.model, model);
-    assert.equal(inst._mutating, null);
-  } finally { await c.close(); }
 });
 
 test('a live switch frame on a Claude session during a running turn is refused, and nothing reaches the CLI', async () => {
@@ -341,39 +364,6 @@ test('a second frame while a switch is in flight is refused — one restart only
   } finally { await c.close(); }
 });
 
-test('a switch to another backend — another substitution or claude — is refused BACKEND_LOCKED', async () => {
-  await addBackend({ id: 'my-proxy', label: 'My Proxy', template: 'proxyctl exec claude --model {model} --' });
-  await addCustomModel({ label: 'Mine', model: 'mine:v2', backend: 'my-proxy', contextWindow: 200_000 });
-  await setTierBackend('powerful', { backend: 'my-proxy', model: 'mine:v2' });
-  await setTierBackend('frontier', { backend: 'claude', model: 'claude-opus-4-8' });
-  const inst = await spawnSub();
-  const launches = launcher.count;
-  const c = await wsClient(wsUrl);
-  try {
-    for (const tier of ['powerful', 'frontier']) {
-      const ack = await frame(c, inst, tier, `x-${tier}`);
-      assert.equal(ack.ok, false, tier);
-      assert.match(ack.error, /non-Claude backend/, tier);
-    }
-    await assert.rejects(inst.switchModel({ model: 'mine:v2', backend: 'my-proxy', effort: 'low' }), e => e.code === 'BACKEND_LOCKED');
-    assert.equal(launcher.count, launches);
-    assert.equal(inst.model, A);
-  } finally { await c.close(); }
-});
-
-test('a legacy model/backend frame on a substitution session is still refused', async () => {
-  const inst = await spawnSub();
-  const c = await wsClient(wsUrl);
-  try {
-    c.send({ t: 'model', id: inst.id, model: B, backend: 'ollama', reqId: 'l1' });
-    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'l1');
-    assert.equal(ack.ok, false);
-    assert.match(ack.error, /reload/);
-    assert.equal(inst.model, A);
-    assert.equal(inst._mutating, null);
-  } finally { await c.close(); }
-});
-
 test('re-selecting the running model is a no-op: no restart, no ledger entry, no divider', async () => {
   const inst = await spawnSub();
   await seedTurn(inst);
@@ -402,9 +392,10 @@ test('the ack arrives once the switch is accepted, before it settles', async () 
     await c.wait(m => m.t === 'snapshot');
     const ack = await frame(c, inst, 'balanced', 'k1');
     assert.equal(ack.ok, true);
-    assert.deepEqual(inst.summary().modelSwitch, { from: A, to: B }, 'still switching when the ack lands');
+    const sw = { from: A, to: B, fromBackend: 'ollama', toBackend: 'ollama' };
+    assert.deepEqual(inst.summary().modelSwitch, sw, 'still switching when the ack lands');
     const statusMid = await c.wait(m => m.t === 'status' && m.id === inst.id && m.modelSwitch);
-    assert.deepEqual(statusMid.modelSwitch, { from: A, to: B });
+    assert.deepEqual(statusMid.modelSwitch, sw);
     await settled(inst);
   } finally { await c.close(); }
 });
@@ -435,7 +426,8 @@ test('a crash inside the grace window re-resumes on the old model with its effor
     assert.equal(failDividers(ring).length, 1, 'the failure divider exactly once');
     assert.equal(failDividers(ring)[0].data.error, `Error: model '${B}' not found`);
     assert.equal(restartDividers(ring).length, 0, 'no success divider');
-    assert.deepEqual(inst.summary().modelSwitchFailure, { from: A, to: B, error: `Error: model '${B}' not found` });
+    assert.deepEqual(inst.summary().modelSwitchFailure,
+      { from: A, to: B, fromBackend: 'ollama', toBackend: 'ollama', error: `Error: model '${B}' not found` });
     assert.equal(instances.exitCauseFor(inst.sessionId), null, 'the attempt\'s crash is not an exit cause');
     // Cleared at the next turn start.
     await inst.prompt('again');
@@ -922,4 +914,423 @@ test('a status listener throwing during the relaunch\'s replay tail is logged, n
   assert.deepEqual(rejections, [], 'no unhandled rejection');
   assert.ok(warnings.some(w => /status boom/.test(w)), `logged: ${JSON.stringify(warnings)}`);
   assert.equal(inst.model, B, 'the switch itself still confirmed');
+});
+
+// ── cross-backend switches ──────────────────────────────────────────────────
+
+const domainsOf = (inst) => [...instances.usageWindowDomainsOf(inst)];
+
+test('Claude→ollama by tier restarts the same session on ollama\'s template, env, record and usage domain, with the tier\'s effort', async () => {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  const { id, sessionId, backingSessionId } = inst;
+  assert.deepEqual(await getSessionBackend(sessionId), { backend: 'claude', model: HAIKU, contextWindowTokens: 200_000 },
+    'premise: a Claude spawn is recorded too');
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await frame(c, inst, 'fast', 'x1');
+    assert.equal(ack.ok, true, ack.error);
+    await settled(inst);
+  } finally { await c.close(); }
+  assert.equal(instances.get(id), inst, 'the same instance object');
+  assert.equal(inst.sessionId, sessionId);
+  const argv = inst._spawnArgv;
+  assert.equal(argOf(argv, '--resume'), backingSessionId, 'resumed under the same backing id');
+  assert.deepEqual(argv.slice(0, 6), ['ollama', 'launch', 'claude', '--model', A, '--yes'], 'ollama\'s launch template');
+  assert.equal(inst.backend, 'ollama');
+  assert.equal(inst.summary().backend, 'ollama');
+  assert.equal(inst.model, A);
+  assert.equal(inst.effort, 'medium', 'the tier\'s effort');
+  assert.equal(argOf(argv, '--effort'), 'medium');
+  assert.equal(inst.contextWindowTokens, 100_000);
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '100000');
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '100000');
+  assert.deepEqual(await getSessionBackend(sessionId), { backend: 'ollama', model: A, contextWindowTokens: 100_000 });
+  assert.deepEqual(domainsOf(inst), ['backend:ollama']);
+});
+
+test('ollama→Claude by tier lands on the tagged catalog model with no ollama launch, and a cold resume before any Claude turn comes back on it', async () => {
+  await bindFrontierToSonnet();
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const { sessionId, backingSessionId } = inst;
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await frame(c, inst, 'frontier', 'y1');
+    assert.equal(ack.ok, true, ack.error);
+    await settled(inst);
+  } finally { await c.close(); }
+  const argv = inst._spawnArgv;
+  assert.equal(argOf(argv, '--resume'), backingSessionId);
+  assert.equal(inst.backend, 'claude');
+  assert.equal(inst.model, SONNET_1M, 'canonicalized against the target backend');
+  assert.equal(argOf(argv, '--model'), SONNET_1M);
+  assert.equal(inst.effort, 'xhigh');
+  assert.equal(inst.contextWindowTokens, 1_000_000);
+  assert.notEqual(argv[0], 'ollama');
+  assert.ok(!argv.includes('launch') && !argv.includes(A), `no ollama template or model in ${JSON.stringify(argv)}`);
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined, 'no managed context env on claude');
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+  assert.deepEqual(await getSessionBackend(sessionId), { backend: 'claude', model: SONNET_1M, contextWindowTokens: 1_000_000 });
+  assert.deepEqual(domainsOf(inst), ['anthropic']);
+
+  // The gap: no turn has run on Claude, so the jsonl's newest assistant line
+  // still names the ollama model.
+  assert.equal(await readLastSessionModel({ place: inst.transcriptPlace, sessionId: backingSessionId }), A,
+    'fixture check: the jsonl names the old model');
+  const resumed = await coldResume(sessionId);
+  assert.notEqual(resumed, inst, 'a new instance, built from the store');
+  assert.equal(resumed.backend, 'claude');
+  assert.equal(resumed.model, SONNET_1M, 'the record, not the jsonl\'s ollama id');
+  assert.equal(argOf(resumed._spawnArgv, '--model'), SONNET_1M);
+  assert.equal(resumed.contextWindowTokens, 1_000_000);
+  assert.ok(!resumed._spawnArgv.includes('launch'));
+  assert.equal(resumed._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+});
+
+test('a live Claude→Claude switch rewrites the record, so a cold resume before the next turn comes back on the new model', async () => {
+  const inst = await spawnClaude();
+  // The jsonl a turn on Haiku left behind.
+  await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId,
+    [TURN[0], { ...TURN[1], message: { ...TURN[1].message, model: HAIKU } }]);
+  const launches = launcher.count;
+  assert.deepEqual(await inst.switchModel({ model: 'claude-opus-4-8', backend: 'claude', effort: 'low' }), { restart: false });
+  assert.equal(launcher.count, launches, 'premise: a live switch, no relaunch');
+  await waitFor(async () => (await getSessionBackend(inst.sessionId))?.model === 'claude-opus-4-8');
+  assert.deepEqual(await getSessionBackend(inst.sessionId), { backend: 'claude', model: 'claude-opus-4-8', contextWindowTokens: inst.contextWindowTokens });
+  const resumed = await coldResume(inst.sessionId);
+  assert.equal(resumed.model, 'claude-opus-4-8', 'the record, not the jsonl\'s Haiku');
+  assert.equal(argOf(resumed._spawnArgv, '--model'), 'claude-opus-4-8');
+});
+
+test('ollama→my-proxy by a {model, backend} frame restarts on the proxy\'s template and keeps the session\'s effort', async () => {
+  await addProxy();
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await modelFrame(c, inst, MINE, 'my-proxy', 'q1');
+    assert.equal(ack.ok, true, ack.error);
+    await settled(inst);
+  } finally { await c.close(); }
+  const argv = inst._spawnArgv;
+  assert.deepEqual(argv.slice(0, 5), [...PROXY_TEMPLATE, MINE]);
+  assert.equal(argOf(argv, '--resume'), inst.backingSessionId);
+  assert.equal(inst.backend, 'my-proxy');
+  assert.equal(inst.model, MINE);
+  assert.equal(inst.effort, 'high', 'no tier was picked');
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '200000');
+  assert.deepEqual(await getSessionBackend(inst.sessionId), { backend: 'my-proxy', model: MINE, contextWindowTokens: 200_000 });
+  assert.deepEqual(domainsOf(inst), ['backend:my-proxy']);
+});
+
+test('the same model id on a different backend is a switch, not a re-select', async () => {
+  await addProxy();
+  await addCustomModel({ label: 'Alpha proxied', model: A, backend: 'my-proxy', contextWindow: 150_000 });
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  assert.deepEqual(await inst.switchModel({ model: A, backend: 'my-proxy', effort: 'high' }), { restart: true });
+  await settled(inst);
+  assert.equal(inst.backend, 'my-proxy');
+  assert.equal(inst.model, A);
+  assert.equal(inst.contextWindowTokens, 150_000);
+  assert.deepEqual(inst._spawnArgv.slice(0, 5), [...PROXY_TEMPLATE, A]);
+});
+
+test('_trackModel after a cross switch: ignored on the substitution backend, adopted and recorded back on Claude', async () => {
+  await bindFrontierToSonnet();
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  const liveSwitches = () => ringOf(inst).filter(e => e.subtype === 'model_changed' && !e.data?.restart);
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  inst._trackModel('claude-opus-4-8');
+  assert.equal(inst.model, A, 'a substitution backend keeps its configured id');
+  assert.equal(liveSwitches().length, 0);
+
+  await inst.switchModel({ model: SONNET, backend: 'claude', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.model, SONNET_1M);
+  inst._trackModel('claude-opus-4-8');
+  assert.equal(inst.model, 'claude-opus-4-8', 'a Claude session adopts the CLI\'s report');
+  assert.deepEqual(liveSwitches().map(e => [e.data.from, e.data.to]), [[SONNET_1M, 'claude-opus-4-8']]);
+  await waitFor(async () => (await getSessionBackend(inst.sessionId))?.model === 'claude-opus-4-8');
+  assert.equal((await getSessionBackend(inst.sessionId)).backend, 'claude');
+});
+
+test('a failed Claude→ollama switch is back on Claude: pair, effort, window, steering, launch and record', async () => {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  const claudeCmd = inst._spawnArgv[0];
+  const before = { model: inst.model, effort: inst.effort, cw: inst.contextWindowTokens, steer: inst.acceptsMidTurnSteering };
+  launcher.plan.push({ crash: 'no ollama here' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.backend, 'claude');
+  assert.deepEqual({ model: inst.model, effort: inst.effort, cw: inst.contextWindowTokens, steer: inst.acceptsMidTurnSteering }, before);
+  assert.equal(inst.status, 'idle');
+  assert.ok(inst.proc, 'running on Claude again');
+  assert.equal(inst._spawnArgv[0], claudeCmd, 'the claude binary, not ollama');
+  assert.ok(!inst._spawnArgv.includes('launch'));
+  assert.equal(argOf(inst._spawnArgv, '--model'), HAIKU);
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+  assert.deepEqual(await getSessionBackend(inst.sessionId), { backend: 'claude', model: HAIKU, contextWindowTokens: 200_000 });
+  assert.deepEqual(inst.summary().modelSwitchFailure,
+    { from: HAIKU, to: A, fromBackend: 'claude', toBackend: 'ollama', error: 'no ollama here' });
+});
+
+test('a failed ollama→Claude switch is back on ollama: template, model, env and record', async () => {
+  await bindFrontierToSonnet();
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  launcher.plan.push({ crash: 'no claude here' });
+  await inst.switchModel({ model: SONNET, backend: 'claude', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.backend, 'ollama');
+  assert.equal(inst.model, A);
+  assert.equal(inst.effort, 'high');
+  assert.ok(inst.proc);
+  assert.deepEqual(inst._spawnArgv.slice(0, 6), ['ollama', 'launch', 'claude', '--model', A, '--yes']);
+  assert.equal(argOf(inst._spawnArgv, '--model'), A);
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '100000');
+  assert.deepEqual(await getSessionBackend(inst.sessionId), { backend: 'ollama', model: A, contextWindowTokens: 100_000 });
+});
+
+test('a cross switch whose re-resume also fails is left crashed and recorded on the previous pair', async () => {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  launcher.plan.push({ crash: 'boom on ollama' }, { crash: 'boom on claude' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.status, 'crashed');
+  assert.equal(inst.proc, null);
+  assert.equal(inst.backend, 'claude');
+  assert.equal(inst.model, HAIKU);
+  assert.deepEqual(await getSessionBackend(inst.sessionId), { backend: 'claude', model: HAIKU, contextWindowTokens: 200_000 });
+  const failure = inst.summary().modelSwitchFailure;
+  assert.equal(failure.fromBackend, 'claude');
+  assert.equal(failure.toBackend, 'ollama');
+  assert.match(failure.error, /^boom on ollama; resuming on claude-haiku-4-5 on claude also failed: boom on claude$/);
+});
+
+test('a cross switch\'s ledger entry and divider name both backends, live and replayed; a same-backend one names neither', async () => {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  const live = restartDividers(ringOf(inst));
+  assert.equal(live.length, 1);
+  assert.equal(live[0].replayed, undefined, 'fixture check: the live emit');
+  assert.deepEqual([live[0].data.from, live[0].data.to, live[0].data.fromBackend, live[0].data.toBackend], [HAIKU, A, 'claude', 'ollama']);
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => [e.from, e.to, e.fromBackend, e.toBackend]), [[HAIKU, A, 'claude', 'ollama'], [A, B, undefined, undefined]]);
+  assert.ok(!('fromBackend' in ledger[1]) && !('toBackend' in ledger[1]), 'a same-backend entry carries neither key');
+  const replay = (await loadPersistedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId })).lines.flatMap(l => l.events);
+  assert.deepEqual(restartDividers(replay).map(e => [e.data.fromBackend, e.data.toBackend]), [['claude', 'ollama'], [undefined, undefined]]);
+});
+
+test('a failed cross switch\'s divider and ledger entry name both backends', async () => {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  launcher.plan.push({ crash: 'nope' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  const [entry] = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual([entry.ok, entry.fromBackend, entry.toBackend], [false, 'claude', 'ollama']);
+  const failed = failDividers(ringOf(inst));
+  assert.equal(failed.length, 1);
+  assert.deepEqual([failed[0].data.fromBackend, failed[0].data.toBackend, failed[0].data.error], ['claude', 'ollama', 'nope']);
+});
+
+test('mid cross switch the summary names both backends, and a conductor sees the pair the session is still on', async () => {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  inst._modelSwitchGraceMs = 400;
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await waitFor(() => inst.proc && inst.status === 'idle' && inst.modelSwitch && inst.model === A);
+  assert.deepEqual(inst.summary().modelSwitch, { from: HAIKU, to: A, fromBackend: 'claude', toBackend: 'ollama' });
+  assert.equal(inst.summary().backend, 'ollama', 'premise: the summary already names the target backend');
+  const during = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  assert.match(during, /model claude\/claude-haiku-4-5\b/);
+  const refused = await sendPrompt({ sessionId: inst.sessionId, text: 'x' }, { instances });
+  assert.equal(refused.code, 'SESSION_SWITCHING_MODEL');
+  assert.deepEqual([refused.fromBackend, refused.toBackend], ['claude', 'ollama']);
+  assert.match(refused.reason, /switch model claude-haiku-4-5 on claude → alpha:cloud on ollama;/);
+  await settled(inst);
+  const after = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  assert.match(after, /model ollama\/alpha:cloud/);
+});
+
+test('a cross switch is refused with nothing claimed or relaunched', async (t) => {
+  const cases = [
+    ['during a running turn', async (inst) => {
+      await inst.prompt('one');
+      await waitFor(() => inst.status === 'idle' && ringOf(inst).some(e => e.kind === 'turn_end'));
+      await inst.prompt('two'); // never ends on its own
+      await waitFor(() => inst.status === 'turn');
+    }, { model: A, backend: 'ollama' }, e => e.statusCode === 409 && e.code === 'SESSION_BUSY'],
+    ['while background work runs', async (inst) => { inst._backgroundJobs.set('job-1', { id: 'job-1' }); },
+      { model: A, backend: 'ollama' }, e => e.statusCode === 409 && e.code === 'SESSION_BUSY'],
+    ['onto a removed backend', async () => {}, { model: B, backend: 'ghost' },
+      e => e.statusCode === 422 && e.code === 'BACKEND_GONE' && /backend 'ghost' no longer exists/.test(e.message)],
+  ];
+  for (const [name, arrange, target, refusal] of cases) {
+    await t.test(name, async () => {
+      const inst = await spawnClaude();
+      await arrange(inst);
+      const launches = launcher.count;
+      const proc = inst.proc;
+      await assert.rejects(inst.switchModel({ ...target, effort: 'low' }), refusal);
+      assert.equal(launcher.count, launches, 'no relaunch');
+      assert.equal(inst.proc, proc);
+      assert.equal(inst.backend, 'claude');
+      assert.equal(inst._mutating, null);
+      assert.equal(inst.modelSwitch, null);
+      inst._backgroundJobs.clear();
+      await inst.kill();
+    });
+  }
+});
+
+test('after a cross switch a fork and the restart manifest carry the new backend', async () => {
+  const inst = await spawnClaude();
+  await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId, [
+    ...TURN,
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'again' } },
+    { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', model: HAIKU, content: [{ type: 'text', text: 'ok' }] } },
+  ]);
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  const forked = await inst.forkAtUserMessage(1, 'again');
+  assert.deepEqual([forked.createArgs.backend, forked.createArgs.model, forked.createArgs.contextWindowTokens], ['ollama', A, 100_000]);
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: QUIET, graceMs: 5000 });
+  const entry = entries.find(e => e.sessionId === inst.sessionId);
+  assert.deepEqual([entry.backend, entry.model], ['ollama', A]);
+});
+
+test('a conductor switched Claude→ollama relaunches with the native window and keeps its compact-window override', async () => {
+  const { value } = await setConductorCompactWindow({ enabled: true, value: 100 });
+  const override = String(value * 1000);
+  assert.notEqual(override, '300000', 'fixture check: the override differs from the target\'s native window');
+  await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  const inst = await spawnClaude({ project: '.conduct' });
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW, override, 'premise: the override applies on Claude');
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+  await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.backend, 'ollama');
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
+  assert.equal(inst._spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW, override);
+});
+
+test('after Claude→ollama a turn\'s cost row carries no cost_usd', async () => {
+  const inst = await spawnClaude();
+  const rows = async () => (await fs.readFile(costsPath(), 'utf8').catch(() => '')).split('\n').filter(Boolean)
+    .map(l => JSON.parse(l)).filter(r => r.sessionId === inst.sessionId);
+  await inst.prompt('one');
+  await waitFor(async () => (await rows()).length === 1);
+  assert.equal(Object.hasOwn((await rows())[0], 'cost_usd'), true, 'control: the Claude turn is priced');
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.backend, 'ollama');
+  await inst.prompt('two');
+  await waitFor(async () => (await rows()).length === 2);
+  assert.equal(Object.hasOwn((await rows())[1], 'cost_usd'), false);
+});
+
+test('on a remote-system session a switch whose target launch command does not resolve is refused FUSE_BACKEND_UNRESOLVED, nothing claimed', async () => {
+  const BAD = 'cc-no-such-launcher-msr';
+  await addBackend({ id: 'unresolvable', label: 'Unresolvable', template: `${BAD} launch claude --model {model} --` });
+  await addCustomModel({ label: 'U', model: 'u:v1', backend: 'unresolvable', contextWindow: 128_000 });
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  const launches = launcher.count;
+  // The two facts the guard reads: a remote placement, and a launcher that
+  // execs the CLI (in a chroot) rather than running it in-process.
+  const realLauncher = inst._launcher;
+  inst._redirectPlacement = { project: 'p', systemId: 'remote-1', systemPath: inst.cwd, worktree: null, system: null };
+  inst._launcher = { inProcess: false, launch() { throw new Error('must not launch'); } };
+  try {
+    await assert.rejects(inst.switchModel({ model: 'u:v1', backend: 'unresolvable', effort: 'low' }),
+      e => e.statusCode === 501 && e.code === 'FUSE_BACKEND_UNRESOLVED'
+        && e.message.includes(`launches '${BAD}'`) && e.message.includes("system 'remote-1'"));
+    assert.equal(inst._mutating, null);
+    assert.equal(inst.modelSwitch, null);
+    assert.equal(inst.backend, 'claude');
+  } finally {
+    inst._launcher = realLauncher;
+    inst._redirectPlacement = null;
+  }
+  assert.equal(launcher.count, launches, 'no relaunch');
+  // Control: the same target on a local session is accepted.
+  assert.deepEqual(await inst.switchModel({ model: 'u:v1', backend: 'unresolvable', effort: 'low' }), { restart: true });
+  await settled(inst);
+  assert.equal(inst.backend, 'unresolvable');
+});
+
+test('_trackModel\'s silent adopt of a first-known model records it too', async () => {
+  const inst = await spawnClaude();
+  assert.equal((await getSessionBackend(inst.sessionId)).model, HAIKU, 'premise');
+  inst.model = null; // what a resume whose model could not be recovered starts with
+  inst._trackModel('claude-opus-4-8');
+  assert.equal(inst.model, 'claude-opus-4-8');
+  assert.equal(ringOf(inst).filter(e => e.subtype === 'model_changed').length, 0, 'discovery, not a switch');
+  await waitFor(async () => (await getSessionBackend(inst.sessionId))?.model === 'claude-opus-4-8');
+});
+
+// A Claude session whose model was never known (a resume with no record and no
+// model in its jsonl, before its first system/init) runs the account default.
+// Its switch names that side `(account default)` wherever the switch is
+// persisted or shown; only the rollback goes back to the real null.
+const ACCOUNT_DEFAULT = '(account default)';
+
+async function spawnModelLess() {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  inst.model = null; // the state such a resume starts in
+  return inst;
+}
+
+test('a model-less session\'s cross switch labels its from side, persisted and shown, and its divider survives replay', async () => {
+  const inst = await spawnModelLess();
+  inst._modelSwitchGraceMs = 300;
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  assert.deepEqual(inst.summary().modelSwitch, { from: ACCOUNT_DEFAULT, to: A, fromBackend: 'claude', toBackend: 'ollama' });
+  const refused = await sendPrompt({ sessionId: inst.sessionId, text: 'x' }, { instances });
+  assert.equal(refused.from, ACCOUNT_DEFAULT);
+  await settled(inst);
+  assert.deepEqual([inst.backend, inst.model], ['ollama', A], 'the restart itself is unaffected');
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => [e.from, e.to, e.ok]), [[ACCOUNT_DEFAULT, A, true]], 'the entry survives the store\'s parse');
+  assert.deepEqual(restartDividers(ringOf(inst)).map(e => e.data.from), [ACCOUNT_DEFAULT]);
+  const replay = (await loadPersistedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId })).lines.flatMap(l => l.events);
+  assert.deepEqual(restartDividers(replay).map(e => e.data.from), [ACCOUNT_DEFAULT], 'the divider survives replay');
+});
+
+test('a model-less session\'s failed cross switch rolls back to a null model, with the label only in what is shown', async () => {
+  const inst = await spawnModelLess();
+  launcher.plan.push({ crash: 'boom on ollama' }, { crash: 'boom on claude' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.backend, 'claude');
+  assert.equal(inst.model, null, 'restored to the real null, not the label');
+  assert.equal((await getSessionBackend(inst.sessionId)).model, null, 'recorded as unknown, not as the label');
+  const failure = inst.summary().modelSwitchFailure;
+  assert.equal(failure.from, ACCOUNT_DEFAULT);
+  assert.match(failure.error, /^boom on ollama; resuming on \(account default\) on claude also failed: boom on claude$/);
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => [e.from, e.ok]), [[ACCOUNT_DEFAULT, false]]);
+});
+
+test('a model-less session\'s re-resume after a failed switch launches with no --model, as before it', async () => {
+  const inst = await spawnModelLess();
+  launcher.plan.push({ crash: 'boom on ollama' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.ok(inst.proc, 'resumed');
+  assert.equal(inst.model, null);
+  assert.ok(!inst._spawnArgv.includes('--model'), `no --model: ${JSON.stringify(inst._spawnArgv)}`);
+  assert.ok(!inst._spawnArgv.includes(ACCOUNT_DEFAULT));
 });

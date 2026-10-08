@@ -854,7 +854,7 @@ test('rotation interlock: renew and prune refuse to interleave (SESSION_ROTATING
     assert.equal(pr.status, 409, `prune must be refused: ${JSON.stringify(pr.body)}`);
     assert.match(pr.body.error, /renewal is in progress/i);
     // The `code` is asserted at the throw site: the REST error handler forwards
-    // only `statusCode` + message (pre-existing — BACKEND_LOCKED behaves the same),
+    // only `statusCode` + message (setModel's SESSION_BUSY behaves the same),
     // while the code is what prune's future MCP surface will report.
     await assert.rejects(() => inst.pruneSession({ cutTurnIndex: 0 }),
       (e) => e.code === 'SESSION_ROTATING' && e.statusCode === 409);

@@ -708,3 +708,15 @@ test('R3: the status frame\'s model and switch fields reach the instance entry',
   assert.deepEqual(entry.modelSwitchFailure, failure);
   assert.equal(entry.model, M1);
 });
+
+// R3b — a cross-backend switch moves the backend mid-session, so the status
+// frame's `backend` reaches the entry at once (the picker, the chips and the
+// cost row read it) rather than at the next `instances` refetch.
+test('R3b: the status frame\'s backend reaches the instance entry', () => {
+  const entry = { id: 'inst-B', model: M1, backend: 'claude' };
+  routerFixture({ activeId: 'inst-B', instances: [entry] }, new UsageTracker());
+  bus.dispatchEvent(new CustomEvent('status', { detail: { id: 'inst-B', status: 'idle', mode: 'plan', sessionId: 's',
+    model: 'alpha:cloud', backend: 'ollama', modelSwitch: null, modelSwitchFailure: null } }));
+  assert.equal(entry.backend, 'ollama');
+  assert.equal(entry.model, 'alpha:cloud');
+});

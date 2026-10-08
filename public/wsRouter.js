@@ -216,6 +216,7 @@ export function installWsRouter({
       inst.status = m.status;
       inst.mode = m.mode;
       inst.model = m.model;
+      if (typeof m.backend === 'string') inst.backend = m.backend;
       inst.sessionId = m.sessionId;
       if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
       if (typeof m.playbookEnforcement === 'string') inst.playbookEnforcement = m.playbookEnforcement;

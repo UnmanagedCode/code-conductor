@@ -1300,13 +1300,16 @@ export class SystemBlock {
       if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
-      if (subtype === 'model_changed') {
-        return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}${data?.restart ? ' (session restarted)' : ''}`;
-      }
-      if (subtype === 'model_switch_failed') {
+      if (subtype === 'model_changed' || subtype === 'model_switch_failed') {
+        // A switch that crossed backends names each side's backend id (the
+        // divider is persisted, so ids rather than registry labels).
+        const crossed = !!(data?.fromBackend && data?.toBackend);
+        const from = `${data?.from ?? '?'}${crossed ? ` on ${data.fromBackend}` : ''}`;
+        const to = `${data?.to ?? '?'}${crossed ? ` on ${data.toBackend}` : ''}`;
+        if (subtype === 'model_changed') return `Model changed: ${from} → ${to}${data?.restart ? ' (session restarted)' : ''}`;
         // A Terminate that stopped the switch: the user's stop, not a failure.
-        if (data?.cancelled) return `Switch to ${data?.to ?? '?'} cancelled — session stopped`;
-        return `Switch to ${data?.to ?? '?'} failed — still on ${data?.from ?? '?'}`;
+        if (data?.cancelled) return `Switch to ${to} cancelled — session stopped`;
+        return `Switch to ${to} failed — still on ${from}`;
       }
       if (subtype === 'playbook_warn') {
         // Enforcement is `warn`: the call went through anyway. Name the target

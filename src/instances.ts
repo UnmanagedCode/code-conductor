@@ -116,7 +116,7 @@ import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform, type Platform } from './platform/index.ts';
-import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
+import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -868,8 +868,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   _forkPersistWaitMs: number;
   // A restart model switch in flight (switchModel), and the last one's failure —
   // both on summary(). The failure clears at the next turn start or switch.
-  _modelSwitch: { from: string; to: string } | null;
-  _modelSwitchFailure: { from: string; to: string; error: string } | null;
+  _modelSwitch: ModelSwitchState | null;
+  _modelSwitchFailure: (ModelSwitchState & { error: string }) | null;
   // The detached switch body, kept so a test can await it; never rejects.
   _modelSwitchRun: Promise<void> | null;
   // MODEL_SWITCH_GRACE_MS / MODEL_SWITCH_IDLE_DEADLINE_MS, per instance so a
@@ -1886,9 +1886,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // vars, and poisons the session's recorded backend (the authority for both
     // the id and the capacity) with a foreign model.
     //
-    // Unconditional is correct rather than merely safe: live model changes are
-    // already refused for these backends (`setModel` → 409 BACKEND_LOCKED), so
-    // the configured exact id is authoritative by construction and the inner
+    // Unconditional is correct rather than merely safe: these backends change
+    // model only by a restart onto a configured id (switchModel), never live,
+    // so the configured exact id is authoritative by construction and the inner
     // CLI's self-report carries no information we want. Matching more report
     // shapes would only shrink the hole; this closes the class.
     //
@@ -1901,9 +1901,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Returning here also skips `_prefixBaselineInvalid`, so if such a backend's
     // inner CLI really did switch model, the next turn reports a spurious
     // cross-turn cache miss instead of re-baselining. Accepted: that path is
-    // unsupported (a live switch on these backends is refused 409
-    // BACKEND_LOCKED), and a wrong cache-miss notice is strictly cheaper than a
-    // corrupted registry key.
+    // unsupported (cc never switches these backends live), and a wrong
+    // cache-miss notice is strictly cheaper than a corrupted registry key.
     if (this.backend !== CLAUDE_BACKEND_ID && this.model) return;
     if (this.model) {
       const from = this.model;
@@ -1916,6 +1915,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // the prefix; re-baseline next turn instead of flagging a cross-turn miss.
       this._prefixBaselineInvalid = true;
       this._announceModelSwitch(from, canonical);
+      this._recordBackend().catch(() => {});
       // summary() carries contextWindowTokens, so the client chip follows the
       // switch without waiting for an unrelated refetch.
       this.emit('status', this.summary());
@@ -1931,6 +1931,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // BACKEND_MODEL_MISSING (docs/models.md → Capability tiers & roles).
       this.model = canonical;
       this._refreshModelCapabilities();
+      this._recordBackend().catch(() => {});
       // But DO push the summary, like the sibling branch. This is the first
       // moment the server knows the model — and therefore its capacity — for a
       // session launched with no `--model`. Without the
@@ -2444,13 +2445,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.temp) writes.push(setSegmentTemp(backingId, true, { owner: this.sessionId }));
     // Persist the backend id + exact model durably (the things jsonl can't carry
     // — which backend ran it, and the full model id the inner CLI reports
-    // lossily) so every resume path re-acquires them. The capacity rides along
-    // as a last-known fallback for a resume after the custom-model row is
-    // deleted. Runs on every spawn/resume, so a model-unknown record self-heals
-    // once this.model holds a real id.
-    if (this.backend !== CLAUDE_BACKEND_ID) {
-      writes.push(setSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens));
-    }
+    // lossily) so every resume path re-acquires them. The record mirrors the
+    // running pair on EVERY backend, `claude` included (see _recordBackend).
+    // The capacity rides along as a last-known fallback for a resume after the
+    // custom-model row is deleted. Runs on every spawn/resume, so a
+    // model-unknown record self-heals once this.model holds a real id.
+    writes.push(this._recordBackend());
     // A conducted worker's spawn-time facts: who spawned it and where it runs.
     // Here, not at the first turn_end, so a worker killed mid-first-turn is
     // still recorded as conducted.
@@ -3498,7 +3498,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // The restart model switch in flight, or null (summary().modelSwitch).
-  get modelSwitch(): { from: string; to: string } | null { return this._modelSwitch; }
+  get modelSwitch(): ModelSwitchState | null { return this._modelSwitch; }
 
   // Which mechanism holds the window, or null. The refusal sites need the reason,
   // not just the boolean: a renewal re-arming over its own window is idempotent,
@@ -3602,6 +3602,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     return p;
   }
 
+  // Persist the {backend, model, window} a resume should come back up on —
+  // `claude` included: with no record a Claude resume recovers its model from
+  // the jsonl's newest assistant line, which names the PREVIOUS model until a
+  // turn runs on the new one (a foreign id after a switch off a substitution
+  // backend). spawn() collects the promise; every model change after it
+  // (setModel, _trackModel's adoption) kicks it fire-and-forget.
+  _recordBackend(): Promise<boolean> {
+    return setSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens);
+  }
+
   // Persist the mode a resume should come back up in. Best-effort and
   // fire-and-forget: a failed write is logged by the store and retried by the
   // next call (the store's precheck still sees the old value). Every `this.mode`
@@ -3622,34 +3632,27 @@ export class Instance extends EventEmitter implements InstanceLike {
     return this.mode;
   }
 
-  async setModel(model: string, backend: string = CLAUDE_BACKEND_ID): Promise<unknown> {
+  async setModel(model: string): Promise<unknown> {
     // Live "Change model" sends a set_model control_request to the RUNNING
-    // process, whose endpoint + auth are fixed at launch time. Any switch that
-    // involves a SUBSTITUTION backend on either side (including
-    // substitution↔substitution) can't be done live — refuse it with a clear
-    // message rather than a silently-broken switch that keeps hitting the old
-    // model. A same-backend switch on a substitution session restarts instead
-    // (switchModel); cross-backend stays refused here.
-    if (this.backend !== CLAUDE_BACKEND_ID || backend !== CLAUDE_BACKEND_ID) {
-      throw Object.assign(
-        new Error('Cannot change model live for a session on a non-Claude backend — kill and respawn on that tier.'),
-        { statusCode: 409, code: 'BACKEND_LOCKED' },
-      );
+    // process, whose endpoint + auth are fixed at launch time — so only a
+    // Claude session switching to a Claude model goes live. switchModel routes
+    // every other pair to a restart; reaching here off `claude` is a bug.
+    if (this.backend !== CLAUDE_BACKEND_ID) {
+      throw new Error('setModel is the live Claude path — switchModel restarts every other pair');
     }
     // Before any await, so a mid-turn frame writes no control_request.
     this._assertBetweenTurns('change model');
-    // A NAME-PREFIX test on purpose, not a catalog allow-list. An out-of-catalog
-    // `claude-*` id is accepted so a model Anthropic ships before this build's
-    // catalog learns it can still be switched to live, instead of forcing a
-    // kill-and-respawn — and so this matches `spawn_instance`, which already
-    // accepts such an id. Capacity is what makes that safe: an id the catalog
-    // can't price resolves to unknown, and the session keeps the window it
-    // already held (see _refreshModelCapabilities).
+    // Only a NAME-PREFIX test here, not a catalog allow-list: the one
+    // production surface (the WS `model` frame, via switchModel) already
+    // refused any Claude id outside the catalog (isKnownBinding). For a direct
+    // caller passing an out-of-catalog `claude-*` id, capacity is what keeps it
+    // safe: an id the catalog can't price resolves to unknown, and the session
+    // keeps the window it already held (see _refreshModelCapabilities).
     if (!model || !familyOf(model)) throw new Error('invalid model');
     // Canonicalize the incoming pick rather than trusting the client to have
     // baked the launch tag: the tag is catalog policy and the client now sends
-    // bare version ids. The backend is pinned to `claude` — the guard above
-    // already refused every other case.
+    // bare version ids. The backend is `claude` — the guard above refused
+    // every other.
     const canonical = canonicalizeModel(model, CLAUDE_BACKEND_ID) as string;
     await this._controlRequest({ subtype: 'set_model', model: canonical });
     // Read `from` AFTER the round-trip, not before it: a `message_start` (or a
@@ -3671,33 +3674,38 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A null `from` (the model was never known) skips the announce, consistent
     // with _trackModel's silent-adopt branch.
     if (from && from !== canonical) this._announceModelSwitch(from, canonical);
+    // The jsonl names the old model until a turn runs on this one, so a cold
+    // resume before that reads the record.
+    this._recordBackend().catch(() => {});
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.model;
   }
 
-  // The WS "Change model" entry point. An identity session switching to a Claude
-  // tier goes live through setModel; a substitution session switching within its
-  // own backend restarts the CLI on the new model (the model is baked into the
-  // wrapper's argv and the context env at launch, so no control_request can
-  // reach it). Every other pair falls to setModel's 409 BACKEND_LOCKED.
+  // The WS "Change model" entry point. Claude→Claude goes live through
+  // setModel. Every other pair — within a substitution backend, or onto another
+  // backend in either direction — restarts the CLI on the target backend's
+  // launch template and env (a substitution model is baked into the wrapper's
+  // argv and the context env at launch, so no control_request can reach it).
+  // cc does no transcript compatibility check across providers.
   // Resolves once a restart is ACCEPTED ({restart:true}); its outcome arrives as
-  // events. Refusals throw synchronously-checked 409s.
+  // events. Refusals throw synchronously-checked errors.
   async switchModel({ model, backend, effort }: { model: string; backend: string; effort: string | null }): Promise<{ restart: boolean }> {
+    // Same text and code as spawn()'s own refusal; a removal racing past this
+    // check fails there and takes the switch's rollback.
+    if (!getBackend(backend)) {
+      throw httpError(422, `backend '${backend}' no longer exists — re-add it in Settings → Backends`, { code: 'BACKEND_GONE' });
+    }
     if (this.backend === CLAUDE_BACKEND_ID && backend === CLAUDE_BACKEND_ID) {
-      await this.setModel(model, backend);
+      await this.setModel(model);
       return { restart: false };
     }
-    if (this.backend !== CLAUDE_BACKEND_ID && backend === this.backend) {
-      return this._beginRestartSwitch({ model, effort });
-    }
-    await this.setModel(model, backend);
-    return { restart: false };
+    return this._beginRestartSwitch({ model, backend, effort });
   }
 
   // Every check runs and `_mutating` is claimed with no await in between (fork's
   // discipline), so two frames cannot both start a restart.
-  _beginRestartSwitch({ model, effort }: { model: string; effort: string | null }): { restart: boolean } {
+  _beginRestartSwitch({ model, backend, effort }: { model: string; backend: string; effort: string | null }): { restart: boolean } {
     this._assertNoRotationInFlight();
     if (this._mutating) {
       throw httpError(409, 'another rewind/fork/prune/model switch is in progress');
@@ -3712,34 +3720,56 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._activeAgentTasks.size > 0 || this._backgroundJobs.size > 0) {
       throw busy('while background work is running (the restart would kill it)');
     }
-    const to = canonicalizeModel(model, this.backend) as string;
-    // Re-selecting the running model: nothing to restart, nothing to record.
-    if (!to || to === this.model) return { restart: false };
-    const from = this.model as string;
+    // Canonicalized against the TARGET backend: a Claude target gets its
+    // catalog launch tag, a substitution id stays byte-exact.
+    const to = canonicalizeModel(model, backend) as string;
+    // Re-selecting the running pair: nothing to restart, nothing to record.
+    if (!to || (to === this.model && backend === this.backend)) return { restart: false };
+    // A remote-system session relaunches inside its chroot, where an
+    // unresolvable launch command fails naming nothing — create()'s guard,
+    // applied to the target pair.
+    const placement = this._redirectPlacement;
+    if (placement && !this._launcher.inProcess) {
+      assertBackendLaunchResolvable({ backend, model: to, platform: this._platform, project: placement.project, systemId: placement.systemId });
+    }
+    // A Claude session whose model was never known (a resume with no record
+    // and no model in its jsonl, before its first system/init) runs the
+    // account default: name it so wherever the switch is persisted or shown —
+    // a null `from` would fail the ledger's parse and drop the divider. The
+    // rollback restores this.model itself, never this label.
+    const from = this.model ?? ACCOUNT_DEFAULT_MODEL_LABEL;
+    const fromBackend = this.backend;
     this._mutating = 'model_switch';
-    this._modelSwitch = { from, to };
+    this._modelSwitch = { from, to, fromBackend, toBackend: backend };
     this._modelSwitchFailure = null;
     this.emit('status', this.summary());
-    this._modelSwitchRun = this._runRestartSwitch({ from, to, effort });
+    this._modelSwitchRun = this._runRestartSwitch({ from, to, fromBackend, toBackend: backend, effort });
     return { restart: true };
   }
 
   // kill → relaunch on `to` → confirm, mirroring rewindToUserMessage's sequence.
-  // spawn() reads this.model for the argv, the context env and the session
-  // record, so setting it before launch() is what makes the new model both the
-  // one that runs and the one a cold resume comes back on. On failure the
-  // session is resumed again on `from` — it was idle and healthy there a moment
-  // ago — and the record is rewritten to it. Never rejects.
-  async _runRestartSwitch({ from, to, effort }: { from: string; to: string; effort: string | null }): Promise<void> {
+  // spawn() reads this.backend and this.model for the launch template, the
+  // argv, the context env and the session record, so setting them before
+  // launch() is what makes the new pair both the one that runs and the one a
+  // cold resume comes back on. On failure the session is resumed again on the
+  // previous pair — it was idle and healthy there a moment ago — and the
+  // record is rewritten to it. Never rejects.
+  async _runRestartSwitch({ from, to, fromBackend, toBackend, effort }: ModelSwitchState & { effort: string | null }): Promise<void> {
     const prev = {
-      model: this.model, effort: this.effort,
+      backend: this.backend, model: this.model, effort: this.effort,
       contextWindowTokens: this.contextWindowTokens, acceptsMidTurnSteering: this.acceptsMidTurnSteering,
     };
     const publicId = this.sessionId as string;
     const segment = this.backingSessionId as string;
+    const crossed = fromBackend !== toBackend;
+    const backends = crossed ? { fromBackend, toBackend } : {};
+    // How a log line names each side: the model alone, or `<model> on <backend>`
+    // when the switch crossed backends.
+    const fromName = crossed ? `${from} on ${fromBackend}` : from;
+    const toName = crossed ? `${to} on ${toBackend}` : to;
     const entry = (ok: boolean, afterUuid: string | null, { error, cancelled }: { error?: string; cancelled?: true } = {}): ModelSwitchEntry => ({
       id: randomUUID(), at: new Date().toISOString(), segment, afterUuid, from, to, ok,
-      ...(error ? { error } : {}), ...(cancelled ? { cancelled } : {}),
+      ...(error ? { error } : {}), ...(cancelled ? { cancelled } : {}), ...backends,
     });
     // `_suppressTempDelete` is held from the kill until the relaunch is
     // CONFIRMED: a temp session must not be archived by the attempt's own crash,
@@ -3760,8 +3790,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       afterUuid = resumable ? await readLastLineUuid({ place: this.transcriptPlace, sessionId: segment }) : null;
       try {
         await this.kill({ graceMs: 300 });
+        this.backend = toBackend;
         this.model = to;
         this.effort = effort;
+        // Window and mid-turn steering re-resolve for the new pair; nothing is
+        // carried from the old one.
         this._refreshModelCapabilities();
         // The jsonl's newest usage was measured on `from`; against `to`'s window
         // it is a known-wrong reading (prune's rule). Consumed by the relaunch's
@@ -3773,6 +3806,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         const cancelled = this._procEnded !== replacedLatch && this._killing;
         const error = err instanceof Error ? err.message : String(err);
         if (this.proc) await this.kill({ graceMs: 300 });
+        this.backend = prev.backend;
         this.model = prev.model;
         this.effort = prev.effort;
         this.contextWindowTokens = prev.contextWindowTokens;
@@ -3781,8 +3815,9 @@ export class Instance extends EventEmitter implements InstanceLike {
         // own reading is the right one to seed.
         this._skipUsageSeed = false;
         // A launch that failed after spawn() left `to` recorded; one that failed
-        // before it never rewrote the record. Either way the record names `from`.
-        await setSessionBackend(publicId, this.backend, prev.model, prev.contextWindowTokens);
+        // before it never rewrote the record. Either way the record names the
+        // previous pair, restored above.
+        await this._recordBackend();
         // The attempt's replay may still be running (spawn() does not await it):
         // let it finish before the outcome is recorded or emitted, so its divider
         // follows every replayed line and that replay's own ledger read predates
@@ -3798,7 +3833,7 @@ export class Instance extends EventEmitter implements InstanceLike {
           return;
         }
         await appendModelSwitch(publicId, entry(false, afterUuid, { error }));
-        this._modelSwitchFailure = { from, to, error };
+        this._modelSwitchFailure = { from, to, fromBackend, toBackend, error };
         try {
           // The ledger already holds the failure, so this replay splices its
           // divider exactly once — no live emit.
@@ -3807,7 +3842,8 @@ export class Instance extends EventEmitter implements InstanceLike {
         } catch (again) {
           if (this.proc) await this.kill({ graceMs: 300 }).catch(() => {});
           this._modelSwitchFailure = {
-            from, to, error: `${error}; resuming on ${from} also failed: ${again instanceof Error ? again.message : String(again)}`,
+            from, to, fromBackend, toBackend,
+            error: `${error}; resuming on ${fromName} also failed: ${again instanceof Error ? again.message : String(again)}`,
           };
         }
         return;
@@ -3821,7 +3857,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._suppressTempDelete = false;
       const ok = entry(true, afterUuid);
       const confirmedButFailed = (what: string, err: unknown): void => {
-        console.warn(`instances: model switch ${from} → ${to} on ${this.sessionId} is confirmed, but ${what} failed: `
+        console.warn(`instances: model switch ${fromName} → ${toName} on ${this.sessionId} is confirmed, but ${what} failed: `
           + `${err instanceof Error ? err.message : String(err)}`);
       };
       try {
@@ -3840,8 +3876,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // land here; the session's state is whatever the step before left, and the
       // failure is surfaced, not swallowed.
       const error = err instanceof Error ? err.message : String(err);
-      this._modelSwitchFailure = { from, to, error };
-      console.warn(`instances: model switch ${from} → ${to} on ${this.sessionId} failed: ${error}`);
+      this._modelSwitchFailure = { from, to, fromBackend, toBackend, error };
+      console.warn(`instances: model switch ${fromName} → ${toName} on ${this.sessionId} failed: ${error}`);
     } finally {
       // Still set ⇒ the attempt never got confirmed, so any exit it ended in was
       // suppressed: archive a temp session that ends without a process here,
@@ -4702,7 +4738,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // context and then lose the summary. Refuse instead of auditing interleavings
     // after the fact. Checked before the `_mutating` guard so the more specific
     // reason wins. This is the REST/internal path, so a throw is the convention
-    // here (matching BACKEND_LOCKED in setModel).
+    // here (matching setModel's SESSION_BUSY).
     this._assertNoRotationInFlight();
     if (this._mutating) {
       throw httpError(409, 'another rewind/fork/prune is in progress');
@@ -5559,10 +5595,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         }
         backend = rec.backend;
         // The record carries the FULL exact model id; the jsonl only holds the
-        // CLI's lossy (tag-stripped) report. Prefer the record's — this is what
-        // stops `deepseek-v4-flash:cloud` resuming as the unpullable tagless
-        // `deepseek-v4-flash`, and `gpt-5.6-sol[1m]` resuming as an id the
-        // registry doesn't know. A null (legacy) model falls through to the
+        // CLI's lossy (tag-stripped) report, and names the PREVIOUS model until
+        // a turn runs on a new one. Prefer the record's — this is what stops
+        // `deepseek-v4-flash:cloud` resuming as the unpullable tagless
+        // `deepseek-v4-flash`, `gpt-5.6-sol[1m]` resuming as an id the registry
+        // doesn't know, and a session just switched onto `claude` resuming with
+        // its old backend's id. A null (legacy) model falls through to the
         // readLastSessionModel jsonl recovery below.
         if (!finalModel && rec.model) finalModel = rec.model;
         // Last known capacity, used only if the custom-model row is gone by now.
@@ -5770,7 +5808,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     }
 
-    // On resume without an explicit model, recover the model the session
+    // On resume with neither an explicit nor a recorded model (a session
+    // never spawned since the record existed), recover the model the session
     // was last run with by reading the most-recent assistant line in the
     // jsonl. Otherwise `claude --resume <sid>` falls back to the account
     // default (often Opus) and silently switches the model out from under
@@ -5831,19 +5870,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // refused above — so this cannot double-fire in practice and needs no
     // special case for it.
     if (remote && !this._claudeLauncher.inProcess) {
-      const backendRec = getBackend(backend);
-      const launch = resolveBackendLaunch(backendRec, finalModel, resolveClaudeBin(this._platform), this._platform);
-      if (!resolveOnPath(launch.command)) {
-        throw Object.assign(
-          new Error(`FUSE_BACKEND_UNRESOLVED: cannot spawn a worker for project '${project}' on `
-            + `system '${proj.system.id}' — backend '${backend}' launches '${launch.command}', `
-            + `which does not resolve on cc's own PATH. Template: ${JSON.stringify(backendRec?.template ?? '')}. `
-            + `That command is the binary the chroot execs, and an exec failure inside setpriv names `
-            + `nothing — so it is refused here instead. Install it on cc's machine, or fix the `
-            + `backend's template in Settings → Backends.`),
-          { statusCode: 501, code: 'FUSE_BACKEND_UNRESOLVED' },
-        );
-      }
+      assertBackendLaunchResolvable({ backend, model: finalModel, platform: this._platform, project, systemId: proj.system.id });
     }
 
     // Resolve context capacity ONCE, from the concrete {backend, exact model}
@@ -7043,6 +7070,32 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       });
     }
     return out;
+  }
+}
+
+// How a restart switch names a `from` model that was never known — the CLI
+// launched with no `--model` runs the account default.
+const ACCOUNT_DEFAULT_MODEL_LABEL = '(account default)';
+
+// The FUSE_BACKEND_UNRESOLVED refusal (see its call site in
+// InstanceManager._doCreateResolved for why it exists): a remote-system
+// session's backend launch command must resolve on cc's own PATH. Also run by
+// Instance._beginRestartSwitch for the switch's target backend.
+function assertBackendLaunchResolvable({ backend, model, platform, project, systemId }: {
+  backend: string; model: string | null; platform: Platform; project: string; systemId: string;
+}): void {
+  const backendRec = getBackend(backend);
+  const launch = resolveBackendLaunch(backendRec, model, resolveClaudeBin(platform), platform);
+  if (!resolveOnPath(launch.command)) {
+    throw Object.assign(
+      new Error(`FUSE_BACKEND_UNRESOLVED: cannot spawn a worker for project '${project}' on `
+        + `system '${systemId}' — backend '${backend}' launches '${launch.command}', `
+        + `which does not resolve on cc's own PATH. Template: ${JSON.stringify(backendRec?.template ?? '')}. `
+        + `That command is the binary the chroot execs, and an exec failure inside setpriv names `
+        + `nothing — so it is refused here instead. Install it on cc's machine, or fix the `
+        + `backend's template in Settings → Backends.`),
+      { statusCode: 501, code: 'FUSE_BACKEND_UNRESOLVED' },
+    );
   }
 }
 

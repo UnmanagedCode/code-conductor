@@ -339,7 +339,12 @@ test('session facts and segment flags round-trip in the documented shape', async
   assert.equal(await isTemp(A), true);
   assert.equal(await isArchived(A), true);
   assert.equal(await isTemp(B), false, 'an unknown id carries no flag');
-  assert.equal(await getSessionBackend(B), null, 'absence means the claude backend');
+  assert.equal(await getSessionBackend(B), null, 'never recorded — a missing record reads as the claude backend');
+  // A `claude` record is a record like any other: it replaces, never clears.
+  await setSessionBackend(A, 'claude', 'claude-opus-4-8', 200_000);
+  assert.deepEqual(await getSessionBackend(A), { backend: 'claude', model: 'claude-opus-4-8', contextWindowTokens: 200_000 });
+  assert.deepEqual((await readJson(storeFile(root))).sessions[A].backend,
+    { backend: 'claude', model: 'claude-opus-4-8', contextWindowTokens: 200_000 });
 });
 
 test('a segment id reads and writes its session\'s facts', async () => {

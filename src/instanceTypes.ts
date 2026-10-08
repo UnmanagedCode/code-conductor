@@ -43,6 +43,16 @@ export interface ExitCause {
   stderrTail: string | null;
 }
 
+// A restart model switch: both models and both backends, equal backends for a
+// same-backend switch. In memory only (the ledger entry carries the backends
+// only when they differ).
+export interface ModelSwitchState {
+  from: string;
+  to: string;
+  fromBackend: string;
+  toBackend: string;
+}
+
 export interface InstanceSummary {
   id: string;
   project: string;
@@ -72,8 +82,8 @@ export interface InstanceSummary {
   backgroundJobs?: BackgroundJob[];
   // A restart model switch in flight, and the last one's failure
   // (Instance.switchModel).
-  modelSwitch?: { from: string; to: string } | null;
-  modelSwitchFailure?: { from: string; to: string; error: string } | null;
+  modelSwitch?: ModelSwitchState | null;
+  modelSwitchFailure?: (ModelSwitchState & { error: string }) | null;
   [key: string]: unknown;
 }
 
@@ -226,11 +236,10 @@ export interface InstanceLike {
   queueSteerAfterStop(text: string, opts?: { attachments?: unknown[] }): Promise<void>;
   promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
-  setModel(model: string, backend?: unknown): Promise<unknown>;
-  // The WS "Change model" dispatcher: live for identity, restart for a
-  // same-backend substitution switch, BACKEND_LOCKED otherwise.
+  // The WS "Change model" dispatcher: live for Claude→Claude, a restart onto
+  // the target backend for every other pair.
   switchModel(opts: { model: string; backend: string; effort: string | null }): Promise<{ restart: boolean }>;
-  readonly modelSwitch: { from: string; to: string } | null;
+  readonly modelSwitch: ModelSwitchState | null;
   // Synchronous on purpose: `/effort` is a CLI-LOCAL slash command written to
   // stdin, so there is no control_response to await. See src/instances.ts.
   setEffort(effort: string): string;
