@@ -121,6 +121,26 @@ test('truncate at N=0 empties the file, no metadata appended', async () => {
   assert.equal(txt, '', 'file is empty — no last-prompt metadata when there is no surviving leaf');
 });
 
+test('truncate at N=0 behind the CLI\'s leading records leaves a prefix that is not resumable', async () => {
+  const lines = [
+    { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-03T00:00:00.000Z', content: 'first' },
+    { type: 'queue-operation', operation: 'dequeue', timestamp: '2026-10-03T00:00:00.010Z' },
+    { type: 'ai-title', aiTitle: 'A title', sessionId: 'sid' },
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+    { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+      { type: 'text', text: 'reply' },
+    ] } },
+  ];
+  const { cwd, sid, file } = await makeFixture(lines);
+  const result = await truncateSessionAtUserMessage({
+    place: localPlace(cwd), sessionId: sid, userMessageIndex: 0, expectedText: 'first',
+    mode: 'bypassPermissions',
+  });
+  assert.equal(result.resumable, false);
+  assert.deepEqual(readJsonl(await fs.readFile(file, 'utf8')).map(l => l.type),
+    ['queue-operation', 'queue-operation', 'ai-title'], 'the leading records survive the cut');
+});
+
 test('truncate out-of-range throws 400', async () => {
   const lines = [
     { type: 'user', uuid: 'u1', message: { role: 'user', content: 'only' } },
@@ -535,7 +555,7 @@ test('a split before a command line drops its caveat too', async () => {
     place: localPlace(cwd), sessionId: sid, userMessageIndex: 1, mode: 'bypassPermissions', expectedText: '/effort high',
   });
   assert.equal(result.lastSurvivingUuid, 'a-t0', 'the leaf is the last line before the caveat');
-  assert.equal(result.remainingLineCount, 2);
+  assert.equal(result.resumable, true);
   assert.equal(result.droppedLineCount, 5, 'the caveat is dropped with its command');
   const after = readJsonl(await fs.readFile(file, 'utf8'));
   assert.deepEqual(after.map(l => l.uuid ?? l.type), ['u-t0', 'a-t0', 'last-prompt', 'permission-mode']);

@@ -163,13 +163,13 @@ The consequences of being a substitution backend:
     view's `model`; the usage popover uses the same name for such a session. A
     failed switch restores `this.model` to `null`, never the label.
   - **Confirmed** when the relaunch has come up idle and outlived
-    `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
+    `RELAUNCH_GRACE_MS` (`_relaunchGraceMs` per instance). Then the ledger
     entry is written and the divider emitted live. A failure to write the entry,
     or a throw while announcing it (an `event` listener), is NOT a failed switch:
     it is logged and the session stays on the new model with no failure chip — a
     failed write costs only the divider's durability.
   - **Failed** when the relaunch throws, ends inside that window, or has not come
-    up idle by `MODEL_SWITCH_IDLE_DEADLINE_MS` (`_modelSwitchIdleDeadlineMs`).
+    up idle by `RELAUNCH_IDLE_DEADLINE_MS` (`_relaunchIdleDeadlineMs`).
     Cause: its last stderr line, else its `spawn_error`, else `exited code=…
     signal=…`, else the deadline. The backend, model, effort and capabilities are
     restored, the record is rewritten to the old pair, a failure ledger entry is
@@ -186,7 +186,8 @@ The consequences of being a substitution backend:
     reclaim the instance), an exit delivers no EXITED wake to an owner, and REST
     respawn is refused `409`.
   - `_suppressTempDelete` is held from the kill until confirmation (a temp
-    session is not archived by the attempt; no exit cause is recorded). From
+    session is not archived by the attempt; no exit cause is recorded) — the
+    relaunch window rewind and prune share (architecture.md → "Relaunch window"). From
     confirmation on an exit records its cause and `launch_failed` as usual — it
     shows in `lastExit`, in `describe_session`, and in the next `send_prompt`'s
     `SESSION_NOT_LIVE` with the exit details — but, `_relaunching` being still

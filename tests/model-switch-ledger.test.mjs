@@ -98,7 +98,7 @@ async function switched(ok) {
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
-  inst._modelSwitchGraceMs = 30;
+  inst._relaunchGraceMs = 30;
   await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId, turns(0, 1));
   if (!ok) launcher.plan.push({ crash: 'no such model' });
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
@@ -434,7 +434,7 @@ test('L13: a failed no-turn switch\'s re-resume seeds its divider into the ring 
     return instances.get(r.body.id);
   });
   await waitFor(() => inst.status === 'idle');
-  inst._modelSwitchGraceMs = 30;
+  inst._relaunchGraceMs = 30;
   launcher.plan.push({ crash: 'no such model' });
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await inst._modelSwitchRun;

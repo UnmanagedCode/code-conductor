@@ -31,12 +31,21 @@
 // (success) emitted automatically — the scenario can layer on additional
 // events for the same input (e.g. a `result` after `interrupt`).
 //
+// `"strict_resume": true` makes `--resume <id>` behave like the real CLI's: the
+// transcript `<CLAUDE_PROJECTS_ROOT>/<encodeCwd(cwd)>/<id>.jsonl` (the root
+// resolved as claudeProjectsRoot does) must hold a `user`/`assistant` line, or
+// the fake writes `No conversation found with session ID: <id>` to stderr,
+// emits nothing and exits 1. Opt-in: the fake writes no transcript, so most
+// suites resume sessions they never seeded.
+//
 // Optional env vars:
 //   FAKE_CLAUDE_TRANSCRIPT  Path to append every received stdin line to
 //   FAKE_CLAUDE_ARGV_DUMP   Path to write the received argv to (one per line)
 //   FAKE_CLAUDE_ENV_DUMP    Path to write the received env to (k=v per line)
 
 import { promises as fs, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import readline from 'node:readline';
 
 function parseArgv(argv) {
@@ -80,6 +89,21 @@ export async function runFakeClaude({ argv, env, cwd, stdin, stdout, stderr, onR
     );
   }
 
+  // The real CLI's own check, written out here rather than imported: this fake
+  // stands in for the CLI, so it must not share production's predicate.
+  async function hasConversation(id) {
+    const { encodeCwd } = await import('../src/projects.ts');
+    const root = env.CLAUDE_PROJECTS_ROOT
+      ?? path.join(env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME ?? os.homedir(), '.claude'), 'projects');
+    let text;
+    try { text = await fs.readFile(path.join(root, encodeCwd(cwd), `${id}.jsonl`), 'utf8'); }
+    catch { return false; }
+    return text.split('\n').some((line) => {
+      try { const t = JSON.parse(line)?.type; return t === 'user' || t === 'assistant'; }
+      catch { return false; }
+    });
+  }
+
   const SID = args.resumeId ?? args.sessionId ?? '00000000-0000-0000-0000-000000000000';
   const MODE = args.mode;
   const CWD = cwd;
@@ -91,6 +115,10 @@ export async function runFakeClaude({ argv, env, cwd, stdin, stdout, stderr, onR
   }
 
   const scenario = JSON.parse(await fs.readFile(scenarioPath, 'utf8'));
+  if (scenario.strict_resume && args.resumeId && !await hasConversation(args.resumeId)) {
+    stderr.write(`No conversation found with session ID: ${args.resumeId}\n`);
+    return 1;
+  }
   const turns = [...(scenario.turns ?? [])];
 
   const transcriptPath = env.FAKE_CLAUDE_TRANSCRIPT;

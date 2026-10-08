@@ -91,6 +91,10 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   // CONDUCTOR_URL from it. (No pluginHost.init() here — it's lazy on first
   // use, and eager discovery would race tests that build projects later.)
   if (instances) instances.setServerPort(port);
+  // Every rewind/prune response waits out the relaunch confirmation; the fake
+  // CLI needs none of the production grace (a test probing the window sets
+  // `_relaunchGraceMs` on its instance).
+  if (instances && !useRealClaude) instances.relaunchGraceMs = 50;
   if (pluginHost) pluginHost.setServerPort(port);
   const baseUrl = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
