@@ -123,6 +123,7 @@ export interface InstanceLike {
   readonly backingSessionId: string | null;
   readonly model: string | null;
   readonly backend: string;
+  readonly effort: string | null;
   readonly callerInstanceId: string | null;
   readonly cwd: string;
   // WHERE THIS SESSION'S TRANSCRIPT LIVES — the cwd plus the machine coordinate
@@ -228,7 +229,7 @@ export interface InstanceLike {
   setModel(model: string, backend?: unknown): Promise<unknown>;
   // The WS "Change model" dispatcher: live for identity, restart for a
   // same-backend substitution switch, BACKEND_LOCKED otherwise.
-  switchModel(opts: { model: string; backend: string; effort: string }): Promise<{ restart: boolean }>;
+  switchModel(opts: { model: string; backend: string; effort: string | null }): Promise<{ restart: boolean }>;
   readonly modelSwitch: { from: string; to: string } | null;
   // Synchronous on purpose: `/effort` is a CLI-LOCAL slash command written to
   // stdin, so there is no control_response to await. See src/instances.ts.

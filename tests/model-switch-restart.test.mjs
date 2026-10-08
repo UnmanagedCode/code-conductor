@@ -24,6 +24,7 @@ import { withLock } from '../src/storeLock.ts';
 import { loadPersistedTranscript } from '../src/transcript.ts';
 import { sendPrompt, describeSession } from '../src/mcp/handlers.ts';
 import { drainToManifest } from '../src/resumeRestart.ts';
+import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Turn 1 completes; turn 2 streams and never ends on its own (a running turn).
@@ -96,6 +97,12 @@ const inGrace = (inst) => waitFor(() => inst.proc && inst.status === 'idle' && i
 
 async function frame(c, inst, tier, reqId) {
   c.send({ t: 'model', id: inst.id, tier, reqId });
+  return c.wait(m => m.t === 'ack' && m.reqId === reqId);
+}
+
+// The `{model}` form: a model registered on the session's own backend, by id.
+async function modelFrame(c, inst, model, reqId) {
+  c.send({ t: 'model', id: inst.id, model, reqId });
   return c.wait(m => m.t === 'ack' && m.reqId === reqId);
 }
 
@@ -191,6 +198,128 @@ test('a switch is refused while background agent tasks or bash jobs run', async 
   assert.equal(launcher.count, launches);
   assert.equal(inst.model, A);
   assert.equal(inst.effort, 'high');
+});
+
+test('a {model} frame restarts onto a registered model no tier binds, keeping the session\'s effort', async () => {
+  const G = 'gamma:cloud';
+  await addCustomModel({ label: 'Gamma', model: G, backend: 'ollama', contextWindow: 200_000 });
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const { id, sessionId, backingSessionId } = inst;
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await modelFrame(c, inst, G, 'g1');
+    assert.equal(ack.ok, true, ack.error);
+    await settled(inst);
+    assert.equal(instances.get(id), inst);
+    assert.equal(inst.sessionId, sessionId);
+    assert.equal(argOf(inst._spawnArgv, '--resume'), backingSessionId, 'the same session, resumed');
+    const modelArgs = inst._spawnArgv.flatMap((a, i) => (a === '--model' ? [inst._spawnArgv[i + 1]] : []));
+    assert.deepEqual(modelArgs, [G, G]);
+    assert.equal(inst.model, G);
+    assert.deepEqual(await getSessionBackend(sessionId), { backend: 'ollama', model: G, contextWindowTokens: 200_000 });
+    assert.equal(inst.effort, 'high', 'no tier was picked, so no tier\'s effort applies');
+    assert.equal(argOf(inst._spawnArgv, '--effort'), 'high');
+  } finally { await c.close(); }
+});
+
+test('a {model} frame naming a curated ollama preset with no custom row is accepted', async () => {
+  const preset = OLLAMA_CLOUD_MODELS.at(-1).model;
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await modelFrame(c, inst, preset, 'k1');
+    assert.equal(ack.ok, true, ack.error);
+    await settled(inst);
+    assert.equal(inst.model, preset);
+  } finally { await c.close(); }
+});
+
+test('a model frame is refused, with nothing restarted, unless it names exactly one target registered on the session\'s own backend', async (t) => {
+  await addBackend({ id: 'my-proxy', label: 'My Proxy', template: 'proxyctl exec claude --model {model} --' });
+  await addCustomModel({ label: 'Mine', model: 'mine:v2', backend: 'my-proxy', contextWindow: 200_000 });
+  const cases = [
+    ['a model registered only on another backend', { model: 'mine:v2' }, /'mine:v2' is not registered on backend 'ollama'/],
+    ['an unknown model id', { model: 'ghost:v9' }, /'ghost:v9' is not registered on backend 'ollama'/],
+    ['both a tier and a model', { tier: 'balanced', model: B }, /exactly one/],
+    ['neither a tier nor a model', {}, /exactly one/],
+  ];
+  for (const [name, target, error] of cases) {
+    await t.test(name, async () => {
+      const inst = await spawnSub();
+      const launches = launcher.count;
+      const c = await wsClient(wsUrl);
+      try {
+        c.send({ t: 'model', id: inst.id, ...target, reqId: 'r1' });
+        const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'r1');
+        assert.equal(ack.ok, false);
+        assert.match(ack.error, error);
+        assert.equal(launcher.count, launches, 'no relaunch');
+        assert.equal(inst.model, A);
+        assert.equal(inst._mutating, null);
+      } finally { await c.close(); await inst.kill(); }
+    });
+  }
+});
+
+test('a {model} frame on an identity Claude session is refused — it switches by tier', async () => {
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  const launches = launcher.count;
+  const model = inst.model;
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await modelFrame(c, inst, 'claude-opus-4-8', 'c1');
+    assert.equal(ack.ok, false);
+    assert.match(ack.error, /switches by tier/);
+    assert.equal(launcher.count, launches);
+    assert.equal(inst.model, model);
+    assert.equal(inst._mutating, null);
+  } finally { await c.close(); }
+});
+
+test('a live switch frame on a Claude session during a running turn is refused, and nothing reaches the CLI', async () => {
+  await setTierBackend('frontier', { backend: 'claude', model: 'claude-opus-4-8' });
+  // The fake engine appends every stdin line it receives here; set before launch.
+  const stdinLog = path.join(home, 'stdin.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = stdinLog;
+  let inst;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
+    inst = instances.get(r.body.id);
+  } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
+  const controlRequests = async () => {
+    let raw = '';
+    try { raw = await fs.readFile(stdinLog, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    return raw.split('\n').filter(Boolean).map(l => JSON.parse(l))
+      .filter(o => o.type === 'control_request').map(o => o.request?.subtype);
+  };
+  await waitFor(() => inst.status === 'idle');
+  await inst.prompt('one');
+  await waitFor(() => inst.status === 'idle' && ringOf(inst).some(e => e.kind === 'turn_end'));
+  await inst.prompt('two'); // never ends on its own
+  await waitFor(() => inst.status === 'turn');
+  const model = inst.model;
+  const proc = inst.proc;
+  const c = await wsClient(wsUrl);
+  try {
+    const ack = await frame(c, inst, 'frontier', 'lt1');
+    assert.equal(ack.ok, false);
+    assert.match(ack.error, /running turn/);
+    assert.equal(inst.model, model);
+    assert.equal(inst.proc, proc);
+    await assert.rejects(inst.setModel('claude-opus-4-8'), e => e.statusCode === 409 && e.code === 'SESSION_BUSY');
+    assert.equal(inst.model, model);
+    // Anchor the "nothing written" read on a control_request that DID go out
+    // after both refusals: stdin is one ordered stream, so a set_model written
+    // by either refusal would already be in the log ahead of it.
+    await inst.interrupt({ force: true });
+    await waitFor(async () => (await controlRequests()).includes('interrupt'));
+    assert.deepEqual((await controlRequests()).filter(st => st === 'set_model'), [],
+      'no set_model control_request reached the CLI');
+  } finally { await c.close(); }
 });
 
 test('a second frame while a switch is in flight is refused — one restart only', async () => {

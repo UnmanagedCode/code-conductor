@@ -42,8 +42,7 @@ import { installSessionStats } from './sessionStats.js';
 import { installPruneDialog } from './pruneDialog.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
-import { loadModelVersions,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setBackends } from './models.js';
+import { loadModelVersions, applyModelsPayload } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate, probeTtsStatus } from './tts.js';
 import { installViewedMarker } from './viewedMarker.js';
 import { createDraftStore, installComposerDrafts } from './drafts.js';
@@ -594,12 +593,7 @@ const settings = installSettings({
   // the previous account until refetched.
   onClaudeLogin: () => accountUsage.accountChanged(),
   onModelsChange: data => {
-    if (data.tierBackend) setActiveTierBackend(data.tierBackend);
-    setDefaultEffort(data.defaultEffort);
-    if (data.tierEffort) setActiveTierEffort(data.tierEffort);
-    if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
-    setActiveDefaultSpawnTier(data.defaultSpawnTier);
-    setBackends(data.backends);
+    applyModelsPayload(data);
     spawnHandles.syncTierModelLabels();
     spawnHandles.syncTierVisibility();
   },

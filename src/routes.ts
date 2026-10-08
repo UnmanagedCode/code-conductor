@@ -67,7 +67,7 @@ import {
   effectiveRoleBinding, setRoleBinding, resolveRoleBackend, isResolvableRole,
   getAllRoles, addCustomRole, removeCustomRole,
   getCustomModels, addCustomModel, updateCustomModel, removeCustomModel,
-  getBackends, addBackend, updateBackend, removeBackend,
+  getBackends, getSubstitutionBackends, backendModels, addBackend, updateBackend, removeBackend,
   getSystems, addSystem, updateSystem, removeSystem,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.ts';
@@ -1892,6 +1892,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       roleBackend,
       roleEffort,
       customModels: getCustomModels(),
+      // Every substitution backend's registered models ({model, label}), keyed
+      // by backend id — what Change model offers a session on that backend.
+      backendModels: Object.fromEntries(getSubstitutionBackends().map(b => [b.id, backendModels(b.id)])),
       ollamaCloudModels: OLLAMA_CLOUD_MODELS,
       ollamaCloudTierDefaults: OLLAMA_CLOUD_TIER_DEFAULTS,
       enabledTiers: getEnabledTiers(),

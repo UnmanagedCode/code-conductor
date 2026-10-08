@@ -49,7 +49,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getEffortLevels, CLAUDE_BACKEND } from './models.js';
+import { getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getBackendModels, getEffortLevels, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted, muteSession } from './notifications.js';
 import { MOBILE_LAYOUT_QUERY } from './layout.js';
 import { userActionsForStatus } from './conversation.js';
@@ -69,24 +69,34 @@ const CONDUCT_PROJECT = '.conduct';
 export function isEnforcing(level) { return level !== 'warn'; }
 export function nextEnforcementLevel(level) { return isEnforcing(level) ? 'warn' : 'enforce'; }
 
-// What a "Change model" entry for tier binding `binding` does on session `inst`:
-//   live    — an identity (Claude) session to a Claude tier: switched in place.
-//   restart — a substitution session to a tier on its OWN backend: the server
-//             restarts the CLI on the new model and resumes the conversation.
-//             Disabled while anything runs; the server's refusal stays the
-//             authority (it also sees background bash jobs, which the client
-//             does not).
+// Change model, Change effort and Prune are offered between turns only — the
+// server refuses each 409 mid-turn too.
+export function isBetweenTurns(inst) { return inst.status === 'idle'; }
+
+// What a "Change model" entry for `binding` ({backend, model}: a tier's binding,
+// or a model registered on the session's backend) does on session `inst`:
+//   live    — an identity (Claude) session to a Claude tier: switched in place,
+//             between turns.
+//   restart — a substitution session to a tier or registered model on its OWN
+//             backend: the server restarts the CLI on the new model and resumes
+//             the conversation. Disabled while anything runs; the server's
+//             refusal stays the authority (it also sees background bash jobs,
+//             which the client does not).
 //   cross   — any other backend: never switchable on this session.
-// Display only — the server re-resolves the tier and decides.
+// Display only — the server re-resolves the target and decides.
 export const RESTART_BUSY_TITLE = 'Switching restarts the session — wait for the running turn to finish';
+const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
 export function modelEntryState(inst, binding) {
   const running = inst.backend || CLAUDE_BACKEND;
   const target = backendIdOf(binding);
   if (target !== running) {
     return { kind: 'cross', disabled: true, title: `On ${getBackendLabel(target)} — a different backend needs a new session or a fork` };
   }
-  if (running === CLAUDE_BACKEND) return { kind: 'live', disabled: false, title: '' };
-  const busy = inst.status !== 'idle' || inst.displayStatus === 'running' || !!inst.modelSwitch;
+  if (running === CLAUDE_BACKEND) {
+    const disabled = !isBetweenTurns(inst);
+    return { kind: 'live', disabled, title: disabled ? BETWEEN_TURNS_TITLE : '' };
+  }
+  const busy = !isBetweenTurns(inst) || inst.displayStatus === 'running' || !!inst.modelSwitch;
   return { kind: 'restart', disabled: busy, title: busy ? RESTART_BUSY_TITLE : 'Restarts the session on this model — the conversation is kept' };
 }
 
@@ -301,7 +311,9 @@ export function installHeader({
   // reusing the exact catalog + markup the spawn dialog uses (getTierList,
   // getActiveTierEnabled, .quick-spawn-models/.qs-model) so switching a live
   // session's model stays visually consistent with spawning one. Selecting a
-  // tier sends only the TIER NAME over WS (`t:'model'`); the server resolves
+  // tier sends only the TIER NAME over WS (`t:'model'`) — a substitution
+  // session's registered-model entry sends its MODEL id instead, which the
+  // server validates against that backend; the server resolves
   // that tier's CURRENT binding and issues the control_request (subtype:
   // set_model, via Instance.setModel) — no optimistic mutation of inst.model
   // here; the status broadcast (wsRouter.js) is what actually flips it once
@@ -368,6 +380,9 @@ export function installHeader({
 
   // The picker's entries: tiers grouped by backend, the session's own first,
   // each with its modelEntryState and highlight. Only enabled tiers are offered.
+  // A substitution session's own group also lists every model registered on its
+  // backend that no offered tier there already binds. Each entry's `target` is
+  // what its click sends: `{tier}` or `{model}`.
   function modelPickerGroups(inst) {
     const runningBackend = inst.backend || CLAUDE_BACKEND;
     const runningModel = inst.modelSwitch?.from ?? inst.model;
@@ -382,7 +397,17 @@ export function installHeader({
       const id = backendIdOf(binding);
       const state = modelEntryState(inst, binding);
       if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push({ tier, state, selected: state.kind !== 'cross' && binding.model === curModel });
+      groups.get(id).push({ target: { tier }, label: getTierLabel(tier), state,
+        selected: state.kind !== 'cross' && binding.model === curModel, model: binding.model });
+    }
+    if (runningBackend !== CLAUDE_BACKEND) {
+      const own = groups.get(runningBackend);
+      const tierModels = new Set(own.map(e => e.model));
+      for (const { model, label } of getBackendModels(runningBackend)) {
+        if (tierModels.has(model)) continue;
+        own.push({ target: { model }, label, state: modelEntryState(inst, { backend: runningBackend, model }),
+          selected: model === curModel, model });
+      }
     }
     return [...groups].filter(([, entries]) => entries.length);
   }
@@ -390,7 +415,7 @@ export function installHeader({
   // Everything the rendered entries depend on, as one comparable string.
   function modelPickerKey(inst) {
     return JSON.stringify(modelPickerGroups(inst).map(([id, entries]) =>
-      [id, entries.map(e => [e.tier, getTierLabel(e.tier), e.state.kind, e.state.disabled, e.state.title, e.selected])]));
+      [id, entries.map(e => [e.target, e.label, e.state.kind, e.state.disabled, e.state.title, e.selected])]));
   }
 
   function buildModelPopover(inst, { warn = null } = {}) {
@@ -408,23 +433,25 @@ export function installHeader({
     // substitution session restarts (↻); every other group is disabled — see
     // modelEntryState.
     let restartShown = false;
-    for (const [backendId, entries] of modelPickerGroups(inst)) {
+    const groups = modelPickerGroups(inst);
+    for (const [backendId, entries] of groups) {
       const label = document.createElement('div');
       label.className = 'qs-backend-group';
       label.textContent = getBackendLabel(backendId);
       node.appendChild(label);
       const row = document.createElement('div');
       row.className = 'quick-spawn-models';
-      for (const { tier, state, selected } of entries) {
+      for (const { target, label: text, state, selected } of entries) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'qs-model';
-        btn.dataset.tier = tier;
+        if (target.tier) btn.dataset.tier = target.tier;
+        else btn.dataset.model = target.model;
         btn.dataset.kind = state.kind;
         btn.disabled = state.disabled;
         if (state.title) btn.title = state.title;
         btn.classList.toggle('qs-selected', selected);
-        btn.textContent = getTierLabel(tier);
+        btn.textContent = text;
         if (state.kind === 'restart') {
           restartShown = true;
           const badge = document.createElement('span');
@@ -435,7 +462,7 @@ export function installHeader({
         if (state.kind === 'live') {
           btn.addEventListener('click', async () => {
             try {
-              await send('model', { id: inst.id, tier }, { ack: true });
+              await send('model', { id: inst.id, ...target }, { ack: true });
               closePicker();
               closeOverflow();
             } catch (e) {
@@ -447,7 +474,7 @@ export function installHeader({
           // the status chip and transcript lines. A refusal stays in the picker.
           btn.addEventListener('click', async () => {
             try {
-              await send('model', { id: inst.id, tier }, { ack: true });
+              await send('model', { id: inst.id, ...target }, { ack: true });
               closePicker();
               closeOverflow();
             } catch (e) {
@@ -460,6 +487,16 @@ export function installHeader({
         row.appendChild(btn);
       }
       node.appendChild(row);
+    }
+    // A substitution session whose own backend offers nothing but the model it
+    // already runs cannot switch at all — say so rather than only greying out.
+    const running = inst.backend || CLAUDE_BACKEND;
+    const own = groups.find(([id]) => id === running)?.[1] ?? [];
+    if (running !== CLAUDE_BACKEND && !own.some(e => !e.selected)) {
+      const note = document.createElement('div');
+      note.className = 'ih-usage-popover-note';
+      note.textContent = `No other model is registered on ${getBackendLabel(running)} — add one in Settings → Models`;
+      node.appendChild(note);
     }
     if (restartShown) {
       const note = document.createElement('div');
@@ -948,14 +985,17 @@ export function installHeader({
     dom.renameSessionBtn.hidden = !canMenu;
     dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
     dom.changeModelBtn.hidden = !canMenu;
-    dom.changeModelBtn.disabled = !canMenu || !inst.sessionId || !!inst.modelSwitch;
+    dom.changeModelBtn.disabled = !canMenu || !inst.sessionId || !!inst.modelSwitch || !isBetweenTurns(inst);
+    dom.changeModelBtn.title = !isBetweenTurns(inst)
+      ? BETWEEN_TURNS_TITLE
+      : 'Switch this session to another model';
     dom.changeModelBtn.textContent = '🧠 Change model';
     // Idle-only for the same reason as Prune below: mid-turn the CLI folds the
     // `/effort` line into the running turn's input instead of running it as a
     // local slash command (server refuses it 409 too).
     dom.changeEffortBtn.hidden = !canMenu;
-    dom.changeEffortBtn.disabled = inst.status !== 'idle' || !inst.sessionId || !!inst.modelSwitch;
-    dom.changeEffortBtn.title = inst.status !== 'idle'
+    dom.changeEffortBtn.disabled = !isBetweenTurns(inst) || !inst.sessionId || !!inst.modelSwitch;
+    dom.changeEffortBtn.title = !isBetweenTurns(inst)
       ? 'Effort can only be changed between turns'
       : 'Change how hard this session reasons, without restarting';
     dom.sessionStatsBtn.hidden = !canMenu;
@@ -964,8 +1004,8 @@ export function installHeader({
     // it is idle-only — the server refuses it mid-turn (409) and the button
     // shouldn't pretend otherwise.
     dom.pruneSessionBtn.hidden = !canMenu;
-    dom.pruneSessionBtn.disabled = inst.status !== 'idle' || !inst.sessionId;
-    dom.pruneSessionBtn.title = inst.status !== 'idle'
+    dom.pruneSessionBtn.disabled = !isBetweenTurns(inst) || !inst.sessionId;
+    dom.pruneSessionBtn.title = !isBetweenTurns(inst)
       ? 'Prune is only available between turns'
       : "Shrink this session's context by stubbing out old tool payloads and thinking "
         + '— mechanical, no LLM pass, no token cost';

@@ -3636,6 +3636,8 @@ export class Instance extends EventEmitter implements InstanceLike {
         { statusCode: 409, code: 'BACKEND_LOCKED' },
       );
     }
+    // Before any await, so a mid-turn frame writes no control_request.
+    this._assertBetweenTurns('change model');
     // A NAME-PREFIX test on purpose, not a catalog allow-list. An out-of-catalog
     // `claude-*` id is accepted so a model Anthropic ships before this build's
     // catalog learns it can still be switched to live, instead of forcing a
@@ -3652,12 +3654,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     await this._controlRequest({ subtype: 'set_model', model: canonical });
     // Read `from` AFTER the round-trip, not before it: a `message_start` (or a
     // `system/init`) reporting a different model can land inside the await — a
-    // turn in flight, or the CLI's own `/model` — and _trackModel will already
-    // have announced THAT switch. A `from` captured before the await names a
-    // model the transcript has since moved off, so the notice either skips a
-    // step (an M1→M2 notice followed by M1→M3) or repeats one the CLI report
-    // already made. `from` is by definition the model immediately preceding the
-    // assignment below.
+    // turn started during the round-trip, or the CLI's own `/model` — and
+    // _trackModel will already have announced THAT switch. A `from` captured
+    // before the await names a model the transcript has since moved off, so the
+    // notice either skips a step (an M1→M2 notice followed by M1→M3) or repeats
+    // one the CLI report already made. `from` is by definition the model
+    // immediately preceding the assignment below.
     const from = this.model;
     this.model = canonical;
     // Capacity moves with the model.
@@ -3681,7 +3683,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // reach it). Every other pair falls to setModel's 409 BACKEND_LOCKED.
   // Resolves once a restart is ACCEPTED ({restart:true}); its outcome arrives as
   // events. Refusals throw synchronously-checked 409s.
-  async switchModel({ model, backend, effort }: { model: string; backend: string; effort: string }): Promise<{ restart: boolean }> {
+  async switchModel({ model, backend, effort }: { model: string; backend: string; effort: string | null }): Promise<{ restart: boolean }> {
     if (this.backend === CLAUDE_BACKEND_ID && backend === CLAUDE_BACKEND_ID) {
       await this.setModel(model, backend);
       return { restart: false };
@@ -3695,7 +3697,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // Every check runs and `_mutating` is claimed with no await in between (fork's
   // discipline), so two frames cannot both start a restart.
-  _beginRestartSwitch({ model, effort }: { model: string; effort: string }): { restart: boolean } {
+  _beginRestartSwitch({ model, effort }: { model: string; effort: string | null }): { restart: boolean } {
     this._assertNoRotationInFlight();
     if (this._mutating) {
       throw httpError(409, 'another rewind/fork/prune/model switch is in progress');
@@ -3728,7 +3730,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // one that runs and the one a cold resume comes back on. On failure the
   // session is resumed again on `from` — it was idle and healthy there a moment
   // ago — and the record is rewritten to it. Never rejects.
-  async _runRestartSwitch({ from, to, effort }: { from: string; to: string; effort: string }): Promise<void> {
+  async _runRestartSwitch({ from, to, effort }: { from: string; to: string; effort: string | null }): Promise<void> {
     const prev = {
       model: this.model, effort: this.effort,
       contextWindowTokens: this.contextWindowTokens, acceptsMidTurnSteering: this.acceptsMidTurnSteering,
@@ -3917,6 +3919,15 @@ export class Instance extends EventEmitter implements InstanceLike {
   // CLI handle it locally: no model turn, a `<synthetic>` confirmation reply, zero
   // tokens. Synchronous for that reason — there is no ack to await.
   //
+  // The between-turns refusal shared by Change effort and the live Change model:
+  // both are idle-only on every backend (the restart switch has its own,
+  // stricter SESSION_BUSY check in _beginRestartSwitch).
+  _assertBetweenTurns(action: string): void {
+    if (this.status === 'turn') {
+      throw httpError(409, `cannot ${action} during a running turn — interrupt first`, { code: 'SESSION_BUSY' });
+    }
+  }
+
   // IDLE-ONLY. Mid-turn the CLI queues an incoming line and flushes it combined
   // with the next turn's input, so it would stop being a lone message and land as
   // prose instead of running as a slash command.
@@ -3936,9 +3947,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._mutating === 'model_switch') {
       throw httpError(409, 'cannot change effort while the session is switching model');
     }
-    if (this.status === 'turn') {
-      throw httpError(409, 'cannot change effort during a running turn — interrupt first');
-    }
+    this._assertBetweenTurns('change effort');
     if (!this.proc || !this.proc.stdin || !this.proc.stdin.writable) throw new Error('not running');
     // The echo is load-bearing, not cosmetic: the CLI persists the command as a
     // `<command-name>` jsonl line, which isPureUserPromptLine counts (its caveat

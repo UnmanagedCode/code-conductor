@@ -12,7 +12,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
-  addCustomModel, getCustomModels, removeCustomModel, isKnownBackendModel,
+  addCustomModel, getCustomModels, removeCustomModel, isKnownBackendModel, backendModels,
   getTierBackend, setTierBackend, contextWindowForModel, backendsForModel, resolveMidTurnSteering, resolveContextWindowTokens,
   getRoleBinding, setRoleBinding, resolveRoleBackend, setPluginRolesProvider,
   getBackends, getBackend, isKnownBackend, getSubstitutionBackends,
@@ -446,6 +446,38 @@ describe('backend registry data model', () => {
     assert.equal(contextWindowForModel('ollama', ''), null);
   });
 
+  test('backendModels: the models registered on one backend — curated presets on ollama only, custom rows overriding them', async () => {
+    const presets = OLLAMA_CLOUD_MODELS.map(m => ({ model: m.model, label: m.label }));
+    assert.deepEqual(backendModels('ollama'), presets, 'with no custom row, ollama lists exactly the curated presets');
+    assert.deepEqual(backendModels('claude'), [], 'the identity backend registers no models here');
+    assert.deepEqual(backendModels('ghost'), [], 'an unknown backend lists nothing');
+
+    await addCustomModel({ label: 'Local', model: 'local:cloud', backend: 'ollama', contextWindow: 128_000 });
+    const preset = OLLAMA_CLOUD_MODELS[0];
+    await addCustomModel({ label: 'My Override', model: preset.model, backend: 'ollama', contextWindow: 1_000 });
+    const ollama = backendModels('ollama');
+    assert.deepEqual(ollama.filter(m => m.model === preset.model), [{ model: preset.model, label: 'My Override' }],
+      'a custom row of a preset id is ONE entry, carrying the custom row\'s label');
+    assert.deepEqual(ollama.find(m => m.model === 'local:cloud'), { model: 'local:cloud', label: 'Local' });
+    assert.equal(ollama.length, OLLAMA_CLOUD_MODELS.length + 1);
+
+    await addBackend({ id: 'p', label: 'P', template: 'p --model {model} --' });
+    await addCustomModel({ label: 'Mine', model: 'mine:v1', backend: 'p', contextWindow: 100_000 });
+    assert.deepEqual(backendModels('p'), [{ model: 'mine:v1', label: 'Mine' }],
+      'a user backend lists only its own rows — no curated preset, no other backend\'s row');
+
+    // isKnownBackendModel is the same set: every listed model is known, and a
+    // model listed on one backend only is unknown on the others.
+    for (const id of ['ollama', 'p', 'claude']) {
+      for (const m of backendModels(id)) assert.equal(isKnownBackendModel(id, m.model), true, `${id}/${m.model}`);
+    }
+    assert.equal(isKnownBackendModel('p', 'local:cloud'), false);
+    assert.equal(isKnownBackendModel('ollama', 'mine:v1'), false);
+    // An empty or non-string id is never registered.
+    assert.equal(isKnownBackendModel('ollama', ''), false);
+    assert.equal(isKnownBackendModel('ollama', null), false);
+  });
+
   test('backendsForModel lists every serving backend in registry order', async () => {
     // Every curated preset belongs to the built-in ollama row, and only to it.
     for (const preset of OLLAMA_CLOUD_MODELS) {
@@ -630,6 +662,11 @@ describe('models + backends settings routes', () => {
     assert.ok(r.body.claudeFamilies.some(f => f.family === 'sonnet'));
     assert.equal(r.body.tierBackend.powerful.backend, 'claude');
     assert.deepEqual(r.body.customModels, [{ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000, midTurnSteering: true }]);
+    // Every substitution backend's registered models, keyed by backend id; the
+    // identity backend has no entry.
+    assert.deepEqual(Object.keys(r.body.backendModels), ['ollama']);
+    assert.deepEqual(r.body.backendModels.ollama.find(m => m.model === 'gemma4:cloud'), { model: 'gemma4:cloud', label: 'Local' });
+    assert.equal(r.body.backendModels.ollama.length, OLLAMA_CLOUD_MODELS.length + 1);
     // Renamed away — the old key names must be gone, not aliased.
     assert.equal(r.body.providers, undefined);
     assert.equal(r.body.customBackends, undefined);

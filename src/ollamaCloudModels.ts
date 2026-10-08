@@ -48,7 +48,3 @@ export const OLLAMA_CLOUD_TIER_DEFAULTS: Record<string, string> = {
   balanced: 'deepseek-v4.1-flash:cloud',
   powerful: 'deepseek-v4.1-flash:cloud',
 };
-
-export function isKnownOllamaCloudModel(tag: unknown): boolean {
-  return OLLAMA_CLOUD_MODELS.some(m => m.model === tag);
-}
