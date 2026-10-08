@@ -20,6 +20,7 @@ import { localPlace } from '../src/projects.ts';
 import { RELAUNCH_FAILED } from '../src/instances.ts';
 import { ROUTE_ERROR_LOG_MAX } from '../src/routes.ts';
 import { httpError } from '../src/httpError.ts';
+import { PROMPT_MISMATCH } from '../src/sessionEdit.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume-strict.json');
@@ -135,6 +136,22 @@ test('a temp prune whose awaiting-user state flips stays registered across the r
   assert.equal(await isTemp(inst.backingSessionId), true);
   assert.equal(await isArchived(inst.backingSessionId), false);
   assert.notEqual(inst.backingSessionId, sid, 'running on the pruned copy');
+});
+
+test('a rewind refused before the window opens leaves a live temp session untouched', async () => {
+  const { inst, sid } = await resumeSeeded(TWO_TURNS, { temp: true });
+  const proc = inst.proc;
+  const launches = launcher.count;
+  const rew = await rewind(inst, 1, 'not the second prompt');
+  assert.equal(rew.status, 409, JSON.stringify(rew.body));
+  assert.ok(rew.body.error.startsWith(PROMPT_MISMATCH), rew.body.error);
+  assert.equal(inst.proc, proc, 'the same CLI is still attached');
+  assert.equal(proc.exitCode ?? null, null, 'and has not exited');
+  assert.equal(inst.status, 'idle');
+  assert.equal(instances.get(inst.id), inst, 'still registered');
+  assert.equal(launcher.count, launches, 'no relaunch');
+  assert.equal(await isTemp(sid), true);
+  assert.equal(await isArchived(sid), false);
 });
 
 test('a temp rewind whose relaunch dies at startup errors and drops the session', async () => {
