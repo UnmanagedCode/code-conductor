@@ -729,7 +729,7 @@ export function getCustomModels(): CustomModelRecord[] {
 // (bindable with no prior "Add" step). One entry per model id; a custom row
 // overrides a preset of the same id, the precedence contextWindowForModel uses.
 // Empty for the identity backend or an unknown id. The Change-model picker
-// offers this list on a substitution session (shipped by modelsSettingsState).
+// offers every backend's list on every session (shipped by modelsSettingsState).
 export function backendModels(backend: unknown): { model: string; label: string }[] {
   if (typeof backend !== 'string' || !isKnownBackend(backend) || backend === CLAUDE_BACKEND_ID) return [];
   const out = new Map<string, string>();

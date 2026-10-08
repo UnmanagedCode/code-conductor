@@ -237,7 +237,7 @@ test('a switch is refused while background agent tasks or bash jobs run', async 
   assert.equal(inst.effort, 'high');
 });
 
-test('a {model} frame restarts onto a registered model no tier binds, keeping the session\'s effort', async () => {
+test('a {model, backend} frame restarts onto a registered model no tier binds, keeping the session\'s effort', async () => {
   const G = 'gamma:cloud';
   await addCustomModel({ label: 'Gamma', model: G, backend: 'ollama', contextWindow: 200_000 });
   const inst = await spawnSub();
@@ -260,7 +260,7 @@ test('a {model} frame restarts onto a registered model no tier binds, keeping th
   } finally { await c.close(); }
 });
 
-test('a {model} frame naming a curated ollama preset with no custom row is accepted', async () => {
+test('a {model, backend} frame naming a curated ollama preset with no custom row is accepted', async () => {
   const preset = OLLAMA_CLOUD_MODELS.at(-1).model;
   const inst = await spawnSub();
   await seedTurn(inst);
@@ -1278,4 +1278,59 @@ test('_trackModel\'s silent adopt of a first-known model records it too', async 
   assert.equal(inst.model, 'claude-opus-4-8');
   assert.equal(ringOf(inst).filter(e => e.subtype === 'model_changed').length, 0, 'discovery, not a switch');
   await waitFor(async () => (await getSessionBackend(inst.sessionId))?.model === 'claude-opus-4-8');
+});
+
+// A Claude session whose model was never known (a resume with no record and no
+// model in its jsonl, before its first system/init) runs the account default.
+// Its switch names that side `(account default)` wherever the switch is
+// persisted or shown; only the rollback goes back to the real null.
+const ACCOUNT_DEFAULT = '(account default)';
+
+async function spawnModelLess() {
+  const inst = await spawnClaude();
+  await seedTurn(inst);
+  inst.model = null; // the state such a resume starts in
+  return inst;
+}
+
+test('a model-less session\'s cross switch labels its from side, persisted and shown, and its divider survives replay', async () => {
+  const inst = await spawnModelLess();
+  inst._modelSwitchGraceMs = 300;
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  assert.deepEqual(inst.summary().modelSwitch, { from: ACCOUNT_DEFAULT, to: A, fromBackend: 'claude', toBackend: 'ollama' });
+  const refused = await sendPrompt({ sessionId: inst.sessionId, text: 'x' }, { instances });
+  assert.equal(refused.from, ACCOUNT_DEFAULT);
+  await settled(inst);
+  assert.deepEqual([inst.backend, inst.model], ['ollama', A], 'the restart itself is unaffected');
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => [e.from, e.to, e.ok]), [[ACCOUNT_DEFAULT, A, true]], 'the entry survives the store\'s parse');
+  assert.deepEqual(restartDividers(ringOf(inst)).map(e => e.data.from), [ACCOUNT_DEFAULT]);
+  const replay = (await loadPersistedTranscript({ place: inst.transcriptPlace, sessionId: inst.backingSessionId })).lines.flatMap(l => l.events);
+  assert.deepEqual(restartDividers(replay).map(e => e.data.from), [ACCOUNT_DEFAULT], 'the divider survives replay');
+});
+
+test('a model-less session\'s failed cross switch rolls back to a null model, with the label only in what is shown', async () => {
+  const inst = await spawnModelLess();
+  launcher.plan.push({ crash: 'boom on ollama' }, { crash: 'boom on claude' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.equal(inst.backend, 'claude');
+  assert.equal(inst.model, null, 'restored to the real null, not the label');
+  assert.equal((await getSessionBackend(inst.sessionId)).model, null, 'recorded as unknown, not as the label');
+  const failure = inst.summary().modelSwitchFailure;
+  assert.equal(failure.from, ACCOUNT_DEFAULT);
+  assert.match(failure.error, /^boom on ollama; resuming on \(account default\) on claude also failed: boom on claude$/);
+  const ledger = await getModelSwitchesForSegment(inst.backingSessionId);
+  assert.deepEqual(ledger.map(e => [e.from, e.ok]), [[ACCOUNT_DEFAULT, false]]);
+});
+
+test('a model-less session\'s re-resume after a failed switch launches with no --model, as before it', async () => {
+  const inst = await spawnModelLess();
+  launcher.plan.push({ crash: 'boom on ollama' });
+  await inst.switchModel({ model: A, backend: 'ollama', effort: 'low' });
+  await settled(inst);
+  assert.ok(inst.proc, 'resumed');
+  assert.equal(inst.model, null);
+  assert.ok(!inst._spawnArgv.includes('--model'), `no --model: ${JSON.stringify(inst._spawnArgv)}`);
+  assert.ok(!inst._spawnArgv.includes(ACCOUNT_DEFAULT));
 });

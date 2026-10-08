@@ -530,11 +530,11 @@ test('mid-switch the usage popover names the confirmed model with no window clau
   assert.equal(meta(), 'beta:cloud · 300k context', 'control: settled, the window clause is back');
 });
 
-// ── a substitution session's registered models ───────────────────────────────
+// ── registered models ───────────────────────────────────────────────────────
 //
-// A non-Claude session is offered every model registered on its own backend
+// Every session is offered every model registered on each substitution backend
 // (public/models.js's backendModels cache, shipped by the server), after the
-// tiers bound there. The motivating install: every tier on Claude, and Ollama
+// tiers bound there; these tests drive a non-Claude session. The motivating install: every tier on Claude, and Ollama
 // sessions spawned from a role bound straight to a curated preset.
 
 const ALL_CLAUDE = {

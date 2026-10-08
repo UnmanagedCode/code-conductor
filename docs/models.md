@@ -155,6 +155,12 @@ The consequences of being a substitution backend:
   | no-op `{restart:false}` | the canonical target model AND its backend equal the running pair — no restart, ledger entry or divider; effort untouched. The same id on another backend is a switch |
   | `501 FUSE_BACKEND_UNRESOLVED` | a remote-system session (`_redirectPlacement`, off an in-process launcher) whose target backend's launch command does not resolve on cc's `PATH` — create's guard (`assertBackendLaunchResolvable`), run for the target pair |
 
+  - A session whose model was never known (`this.model` null — a Claude resume
+    with no record and no model in its jsonl, before its first `system/init`;
+    launched with no `--model`, so on the account default) names its `from`
+    `(account default)` (`ACCOUNT_DEFAULT_MODEL_LABEL`) in `modelSwitch`,
+    `modelSwitchFailure`, the ledger entry, the divider and `SESSION_SWITCHING_MODEL`;
+    a failed switch restores `this.model` to `null`, never the label.
   - **Confirmed** when the relaunch has come up idle and outlived
     `MODEL_SWITCH_GRACE_MS` (`_modelSwitchGraceMs` per instance). Then the ledger
     entry is written and the divider emitted live. A failure to write the entry,
@@ -468,7 +474,7 @@ so a changed default moves *new spawns*, never anything already running:
 | Restart manifest (`src/resumeRestart.ts`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
 | `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
-| Restart model switch (`Instance.switchModel`, substitution backend) | a picked tier: its Settings-row effort (`getTierEffort`); a picked registered model (`{model}` frame): the session's own `this.effort`. Set before the relaunch; restored on failure. The live identity switch leaves effort alone |
+| Restart model switch (`Instance.switchModel`, every pair but Claude→Claude) | a picked tier: its Settings-row effort (`getTierEffort`); a picked registered model (`{model, backend}` frame): the session's own `this.effort`. Set before the relaunch; restored on failure. The live Claude→Claude switch leaves effort alone |
 
 **A live "Change effort"** (⋮ menu → `⚡ Change effort`, `Instance.setEffort`) moves
 `this.effort` and nothing else — there is no on-disk store for effort. Every row

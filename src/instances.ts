@@ -3642,13 +3642,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     // Before any await, so a mid-turn frame writes no control_request.
     this._assertBetweenTurns('change model');
-    // A NAME-PREFIX test on purpose, not a catalog allow-list. An out-of-catalog
-    // `claude-*` id is accepted so a model Anthropic ships before this build's
-    // catalog learns it can still be switched to live, instead of forcing a
-    // kill-and-respawn — and so this matches `spawn_instance`, which already
-    // accepts such an id. Capacity is what makes that safe: an id the catalog
-    // can't price resolves to unknown, and the session keeps the window it
-    // already held (see _refreshModelCapabilities).
+    // Only a NAME-PREFIX test here, not a catalog allow-list: the one
+    // production surface (the WS `model` frame, via switchModel) already
+    // refused any Claude id outside the catalog (isKnownBinding). For a direct
+    // caller passing an out-of-catalog `claude-*` id, capacity is what keeps it
+    // safe: an id the catalog can't price resolves to unknown, and the session
+    // keeps the window it already held (see _refreshModelCapabilities).
     if (!model || !familyOf(model)) throw new Error('invalid model');
     // Canonicalize the incoming pick rather than trusting the client to have
     // baked the launch tag: the tag is catalog policy and the client now sends
@@ -3733,7 +3732,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (placement && !this._launcher.inProcess) {
       assertBackendLaunchResolvable({ backend, model: to, platform: this._platform, project: placement.project, systemId: placement.systemId });
     }
-    const from = this.model as string;
+    // A Claude session whose model was never known (a resume with no record
+    // and no model in its jsonl, before its first system/init) runs the
+    // account default: name it so wherever the switch is persisted or shown —
+    // a null `from` would fail the ledger's parse and drop the divider. The
+    // rollback restores this.model itself, never this label.
+    const from = this.model ?? ACCOUNT_DEFAULT_MODEL_LABEL;
     const fromBackend = this.backend;
     this._mutating = 'model_switch';
     this._modelSwitch = { from, to, fromBackend, toBackend: backend };
@@ -7068,6 +7072,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return out;
   }
 }
+
+// How a restart switch names a `from` model that was never known — the CLI
+// launched with no `--model` runs the account default.
+const ACCOUNT_DEFAULT_MODEL_LABEL = '(account default)';
 
 // The FUSE_BACKEND_UNRESOLVED refusal (see its call site in
 // InstanceManager._doCreateResolved for why it exists): a remote-system
