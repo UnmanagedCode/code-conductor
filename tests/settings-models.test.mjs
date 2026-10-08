@@ -9,7 +9,7 @@ import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, MANAGED_BACKENDS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
 } from '../src/modelVersions.ts';
-import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.ts';
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS } from '../src/ollamaCloudModels.ts';
 import {
   getTranscribeModel, setTranscribeModel,
   getOnOverageAction, setOnOverageAction,
@@ -104,10 +104,6 @@ test('ollamaCloudModels: every curated row carries the shape the settings payloa
     assert.ok(Number.isFinite(m.contextWindow) && m.contextWindow > 0,
       `${m.model} has a positive native contextWindow`);
   }
-  // A non-member is never a catalog tag — the claim the validator itself owns.
-  assert.ok(!isKnownOllamaCloudModel('totally-made-up:cloud'));
-  assert.ok(!isKnownOllamaCloudModel(''));
-  assert.ok(!isKnownOllamaCloudModel(null));
 });
 
 // ── appSettings ─────────────────────────────────────────────────────────

@@ -330,9 +330,6 @@ export function isKnownBackend(id: unknown): boolean {
   return typeof id === 'string' && getBackends().some(b => b.id === id);
 }
 
-// Test-only export: no production caller. Kept (rather than deleted with its
-// tests) because deleting it would move the `claude`-backend exclusion rule
-// into a test file.
 // Backends a custom model (and therefore a non-Claude binding) can name: every
 // SUBSTITUTION backend. The identity `claude` backend is excluded — its models
 // are the MODEL_FAMILIES catalog, not user rows.
@@ -745,7 +742,6 @@ export function backendModels(backend: unknown): { model: string; label: string 
 
 // True if `model` is bindable on `backend` — one of its backendModels.
 export function isKnownBackendModel(backend: unknown, model: unknown): boolean {
-  if (typeof model !== 'string' || !model) return false;
   return backendModels(backend).some(m => m.model === model);
 }
 

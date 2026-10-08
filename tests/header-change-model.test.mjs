@@ -644,3 +644,42 @@ test('a substitution session with nothing else registered on its backend says so
     assert.ok(![...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
   }));
 });
+
+// The registered-model list follows the server: seeded by the boot fetch, and
+// replaced by every Settings → Models response (public/app.js's onModelsChange
+// hands that payload to the same applyModelsPayload).
+
+test('a models payload replaces the picker\'s registered models: an added model appears, a removed one goes', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
+  const NOTE = 'No other model is registered on Ollama — add one in Settings → Models';
+  const t = await clickSetup();
+  t.setInstances([ROLE_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const read = () => {
+    const popover = openModelPicker(t);
+    const shown = {
+      models: [...popover.querySelectorAll('.qs-model[data-model]')].map(b => b.dataset.model),
+      note: [...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE),
+    };
+    t.dom.changeModelBtn.click(); // toggles the picker closed
+    return shown;
+  };
+  assert.deepEqual(read(), { models: ['deepseek-v4.1-flash:cloud'], note: true }, 'premise: only the running model');
+  const spawnTier = models.getActiveDefaultSpawnTier();
+  models.applyModelsPayload({ backendModels: { ollama: OLLAMA_MODELS }, defaultSpawnTier: spawnTier });
+  assert.deepEqual(read(), { models: OLLAMA_MODELS.map(m => m.model), note: false }, 'the added models are offered at once');
+  models.applyModelsPayload({ backendModels: { ollama: OLLAMA_MODELS.slice(0, 2) }, defaultSpawnTier: spawnTier });
+  assert.deepEqual(read().models, OLLAMA_MODELS.slice(0, 2).map(m => m.model), 'a removed model is no longer offered');
+}));
+
+test('the boot fetch seeds the registered models from the payload', () => withRegistry(ALL_CLAUDE, { ollama: [] }, async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /\/api\/settings\/models/);
+    return { ok: true, json: async () => ({ backendModels: { ollama: OLLAMA_MODELS }, defaultSpawnTier: models.getActiveDefaultSpawnTier() }) };
+  };
+  try {
+    await models.loadModelVersions();
+  } finally { globalThis.fetch = realFetch; }
+  assert.deepEqual(models.getBackendModels('ollama'), OLLAMA_MODELS);
+}));

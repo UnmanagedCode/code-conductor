@@ -122,29 +122,34 @@ export function setDefaultEffort(level) { if (level) defaultEffort = level; retu
 export function getEffortLevels() { return effortLevels; }
 export function setEffortLevels(list) { if (Array.isArray(list) && list.length) effortLevels = [...list]; return effortLevels; }
 
+// Applies a models payload (`GET /api/settings/models`, or the refreshed state
+// every Settings → Models mutation returns) to this cache. The boot fetch and
+// the Settings `onModelsChange` handler both go through it, so a Settings edit
+// refreshes everything the boot fetch seeded.
+export function applyModelsPayload(data) {
+  if (Array.isArray(data.claudeFamilies) && data.claudeFamilies.length) {
+    claudeVersionLabelById = Object.fromEntries(
+      data.claudeFamilies.flatMap(b => b.versions || []).map(v => [v.id, v.label]),
+    );
+  }
+  if (Array.isArray(data.tiers) && data.tiers.length) {
+    tierList = data.tiers.map(t => t.tier);
+    tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
+  }
+  setBackends(data.backends);
+  if (data.backendModels) setBackendModels(data.backendModels);
+  if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+  setDefaultEffort(data.defaultEffort);
+  setEffortLevels(data.efforts);
+  if (data.tierEffort) setActiveTierEffort(data.tierEffort);
+  if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
+  setActiveDefaultSpawnTier(data.defaultSpawnTier);
+}
+
 export async function loadModelVersions() {
   try {
     const r = await fetch('/api/settings/models', { cache: 'no-store' });
-    if (r.ok) {
-      const data = await r.json();
-      if (Array.isArray(data.claudeFamilies) && data.claudeFamilies.length) {
-        claudeVersionLabelById = Object.fromEntries(
-          data.claudeFamilies.flatMap(b => b.versions || []).map(v => [v.id, v.label]),
-        );
-      }
-      if (Array.isArray(data.tiers) && data.tiers.length) {
-        tierList = data.tiers.map(t => t.tier);
-        tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
-      }
-      setBackends(data.backends);
-      if (data.backendModels) setBackendModels(data.backendModels);
-      if (data.tierBackend) setActiveTierBackend(data.tierBackend);
-      setDefaultEffort(data.defaultEffort);
-      setEffortLevels(data.efforts);
-      if (data.tierEffort) setActiveTierEffort(data.tierEffort);
-      if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
-      setActiveDefaultSpawnTier(data.defaultSpawnTier);
-    }
+    if (r.ok) applyModelsPayload(await r.json());
   } catch { /* keep defaults */ }
   return activeTierBackend;
 }
