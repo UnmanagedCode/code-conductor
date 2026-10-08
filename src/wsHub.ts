@@ -27,8 +27,8 @@ import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
-import { isKnownTier } from './modelVersions.ts';
-import { getTierBackend, getTierEffort } from './appSettings.ts';
+import { isKnownTier, CLAUDE_BACKEND_ID } from './modelVersions.ts';
+import { getTierBackend, getTierEffort, isKnownBackendModel } from './appSettings.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
@@ -249,16 +249,32 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
           }
           case 'model': {
             if (!inst) { reply(false, 'unknown instance'); return; }
-            // The client names a TIER; the server resolves it against the CURRENT
-            // stored binding, and Instance.switchModel picks the path (live, restart
-            // with the tier's effort, or BACKEND_LOCKED). A restart acks once it is
-            // ACCEPTED; its outcome arrives as status/events. A frame still carrying the legacy `model`/
-            // `backend` shape comes from a page that was never reloaded after this
-            // change shipped — refuse it rather than switching to a stale pair, and
-            // rather than silently ignoring the fields (there'd be no tier to fall
-            // back to resolving).
-            if ('model' in msg || 'backend' in msg) {
+            // The client names exactly one target: a TIER, which the server
+            // resolves against the CURRENT stored binding (and applies its
+            // effort), or a MODEL registered on the session's own backend (a
+            // substitution session only; it keeps the session's effort).
+            // Instance.switchModel picks the path (live, restart, or
+            // BACKEND_LOCKED). A restart acks once it is ACCEPTED; its outcome
+            // arrives as status/events. A `backend` key only ever came with the
+            // legacy {model, backend} frame, from a page never reloaded since —
+            // refuse it rather than switching to a stale pair.
+            if ('backend' in msg) {
               reply(false, "the model frame names a tier; the server resolves its model — reload the page");
+              return;
+            }
+            if (('tier' in msg) === ('model' in msg)) {
+              reply(false, 'the model frame names exactly one of `tier` or `model`');
+              return;
+            }
+            if ('model' in msg) {
+              const model = typeof msg.model === 'string' ? msg.model.trim() : '';
+              if (inst.backend === CLAUDE_BACKEND_ID) { reply(false, 'a Claude session switches by tier'); return; }
+              if (!isKnownBackendModel(inst.backend, model)) {
+                reply(false, `model '${model}' is not registered on backend '${inst.backend}'`);
+                return;
+              }
+              await inst.switchModel({ model, backend: inst.backend, effort: inst.effort });
+              reply(true);
               return;
             }
             const tier = typeof msg.tier === 'string' ? msg.tier.trim() : '';

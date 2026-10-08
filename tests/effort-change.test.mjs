@@ -137,7 +137,7 @@ test('setEffort during a running turn is refused 409 and changes nothing', async
   const before = inst.effort;
   const linesBefore = (await stdinLines()).map(textOf);
   assert.deepEqual(linesBefore, ['first', 'hang'], 'sanity: the baseline is the two prompts');
-  assert.throws(() => inst.setEffort('low'), (e) => e.statusCode === 409);
+  assert.throws(() => inst.setEffort('low'), (e) => e.statusCode === 409 && e.code === 'SESSION_BUSY');
 
   assert.equal(inst.effort, before);
   assert.deepEqual((await stdinLines()).map(textOf), linesBefore,

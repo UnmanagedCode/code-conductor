@@ -272,12 +272,13 @@ test('a substitution session: its own backend\'s tiers restart (↻, footnote), 
 
 test('an identity session: Claude tiers switch live with no badge or footnote, other backends are disabled', () => withBindings(async () => {
   const t = await clickSetup();
-  t.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'turn', status: 'turn' }]);
+  t.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' }]);
   t.setActiveId('inst-1');
   t.header.update();
   const popover = openModelPicker(t);
   for (const tier of ['powerful', 'frontier']) {
-    assert.equal(entry(popover, tier).disabled, false, `${tier}: a live switch is allowed mid-turn, as before`);
+    assert.equal(entry(popover, tier).disabled, false, `${tier}: a live switch is offered between turns`);
+    assert.equal(entry(popover, tier).dataset.kind, 'live');
   }
   for (const tier of ['fast', 'balanced']) {
     assert.equal(entry(popover, tier).disabled, true);
@@ -285,8 +286,59 @@ test('an identity session: Claude tiers switch live with no badge or footnote, o
   }
   assertNull(popover.querySelector('.qs-restart-badge'), 'no restart badge on an identity session');
   assertNull(popover.querySelector('.ih-usage-popover-note'), 'no footnote on an identity session');
+  assertNull(popover.querySelector('.qs-model[data-model]'), 'an identity session is offered no model entries');
   assert.ok(entry(popover, 'powerful').classList.contains('qs-selected'));
 }));
+
+test('an identity session mid-turn: its live Claude tier entries are disabled until the turn ends', () => withBindings(async () => {
+  const t = await clickSetup();
+  const idle = { ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' };
+  t.setInstances([idle]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  t.setInstances([{ ...idle, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
+  assert.ok(popover.isConnected, 'the open picker stays open and greys in place');
+  for (const tier of ['powerful', 'frontier']) {
+    assert.equal(entry(popover, tier).disabled, true, tier);
+    assert.equal(entry(popover, tier).title, 'Model can only be changed between turns', tier);
+  }
+  t.setInstances([idle]);
+  t.header.update();
+  for (const tier of ['powerful', 'frontier']) {
+    assert.equal(entry(popover, tier).disabled, false, `${tier} re-enables at turn end`);
+  }
+}));
+
+test('modelEntryState: a live entry is enabled between turns and disabled during one', async () => {
+  const { modelEntryState } = await import(pathToFileURL(path.join(PUB, 'header.js')).href);
+  const binding = { backend: 'claude', model: 'claude-opus-4-8' };
+  const idle = modelEntryState({ ...LIVE_INSTANCE, status: 'idle' }, binding);
+  assert.deepEqual({ kind: idle.kind, disabled: idle.disabled }, { kind: 'live', disabled: false });
+  const turn = modelEntryState({ ...LIVE_INSTANCE, status: 'turn' }, binding);
+  assert.deepEqual(turn, { kind: 'live', disabled: true, title: 'Model can only be changed between turns' });
+});
+
+test('Change model is disabled during a turn and re-enabled at turn end, on every backend', async (t) => {
+  for (const [name, inst] of [['a Claude session', LIVE_INSTANCE], ['an Ollama session', SUB_INSTANCE]]) {
+    await t.test(name, async () => {
+      const h = await setup();
+      h.setInstances([{ ...inst, status: 'turn', displayStatus: 'turn' }]);
+      h.setActiveId('inst-1');
+      h.header.update();
+      assert.equal(h.dom.changeModelBtn.hidden, false, 'still listed in the menu');
+      assert.equal(h.dom.changeModelBtn.disabled, true);
+      assert.equal(h.dom.changeModelBtn.title, 'Model can only be changed between turns');
+      assert.equal(h.dom.changeEffortBtn.disabled, true, 'the same predicate gates Change effort');
+      h.setInstances([{ ...inst, status: 'idle', displayStatus: 'idle' }]);
+      h.header.update();
+      assert.equal(h.dom.changeModelBtn.disabled, false);
+      assert.equal(h.dom.changeModelBtn.title, 'Switch this session to another model');
+      assert.equal(h.dom.changeEffortBtn.disabled, false);
+    });
+  }
+});
 
 test('restart entries are disabled while busy: a turn, a running subagent, or a switch in flight', async () => {
   const { modelEntryState, RESTART_BUSY_TITLE } = await import(pathToFileURL(path.join(PUB, 'header.js')).href);
@@ -300,10 +352,13 @@ test('restart entries are disabled while busy: a turn, a running subagent, or a 
   }
   await withBindings(async () => {
     const t = await clickSetup();
-    t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+    t.setInstances([SUB_INSTANCE]);
     t.setActiveId('inst-1');
     t.header.update();
-    const b = entry(openModelPicker(t), 'balanced');
+    const popover = openModelPicker(t);
+    t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+    t.header.update();
+    const b = entry(popover, 'balanced');
     assert.equal(b.disabled, true);
     assert.equal(b.title, RESTART_BUSY_TITLE);
   });
@@ -311,10 +366,12 @@ test('restart entries are disabled while busy: a turn, a running subagent, or a 
 
 test('an open picker re-enables its restart entries when the session goes idle', () => withBindings(async () => {
   const t = await clickSetup();
-  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.setInstances([SUB_INSTANCE]);
   t.setActiveId('inst-1');
   t.header.update();
   const popover = openModelPicker(t);
+  t.setInstances([{ ...SUB_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
   assert.equal(entry(popover, 'balanced').disabled, true, 'premise: disabled mid-turn');
   t.setInstances([SUB_INSTANCE]);
   t.header.update();
@@ -457,4 +514,133 @@ test('mid-switch the usage popover names the confirmed model with no window clau
   t.setInstances([{ ...SUB_INSTANCE, model: 'beta:cloud', contextWindowTokens: 300_000 }]);
   t.header.update();
   assert.equal(meta(), 'beta:cloud · 300k context', 'control: settled, the window clause is back');
+});
+
+// ── a substitution session's registered models ───────────────────────────────
+//
+// A non-Claude session is offered every model registered on its own backend
+// (public/models.js's backendModels cache, shipped by the server), after the
+// tiers bound there. The motivating install: every tier on Claude, and Ollama
+// sessions spawned from a role bound straight to a curated preset.
+
+const ALL_CLAUDE = {
+  fast: { backend: 'claude', model: 'claude-haiku-4-5-20251001' },
+  balanced: { backend: 'claude', model: 'claude-sonnet-4-6' },
+  powerful: { backend: 'claude', model: 'claude-opus-4-8' },
+  frontier: { backend: 'claude', model: 'claude-fable-5-1' },
+};
+const OLLAMA_MODELS = [
+  { model: 'deepseek-v4.1-flash:cloud', label: 'DeepSeek V4.1 Flash' },
+  { model: 'glm-5.3:cloud', label: 'GLM-5.3' },
+  { model: 'glm-5.3-flash:cloud', label: 'GLM-5.3 Flash' },
+];
+const ROLE_INSTANCE = { ...SUB_INSTANCE, model: 'deepseek-v4.1-flash:cloud' };
+
+async function withRegistry(bindings, backendModels, fn) {
+  const savedTiers = Object.fromEntries(TIERS.map(t => [t, models.getActiveTierBackend(t)]));
+  const ids = Object.keys(backendModels);
+  const savedModels = Object.fromEntries(ids.map(id => [id, models.getBackendModels(id)]));
+  models.setActiveTierBackend(bindings);
+  models.setBackendModels(backendModels);
+  try { return await fn(); } finally {
+    models.setActiveTierBackend(savedTiers);
+    models.setBackendModels(savedModels);
+  }
+}
+const modelEntry = (popover, model) => popover.querySelector(`.qs-model[data-model="${model}"]`);
+
+test('an Ollama role session with every tier on Claude is offered its backend\'s registered models', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
+  const t = await clickSetup();
+  t.setInstances([ROLE_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  assert.deepEqual([...popover.querySelectorAll('.qs-backend-group')].map(n => n.textContent), ['Ollama', 'Claude']);
+  const [own, other] = [...popover.querySelectorAll('.quick-spawn-models')];
+  assert.deepEqual([...own.querySelectorAll('.qs-model')].map(b => b.dataset.model), OLLAMA_MODELS.map(m => m.model));
+  for (const { model, label } of OLLAMA_MODELS) {
+    const b = modelEntry(popover, model);
+    assert.equal(b.disabled, false, model);
+    assert.equal(b.dataset.kind, 'restart', model);
+    assert.equal(b.firstChild.textContent, label, `${model} is labelled from the registry`);
+    assert.equal(b.querySelector('.qs-restart-badge')?.textContent, '↻', model);
+    assert.equal(b.dataset.tier, undefined, `${model} is not a tier entry`);
+  }
+  assert.ok(modelEntry(popover, 'deepseek-v4.1-flash:cloud').classList.contains('qs-selected'), 'the running model is highlighted');
+  assert.ok(!modelEntry(popover, 'glm-5.3-flash:cloud').classList.contains('qs-selected'));
+  for (const tier of TIERS) {
+    const b = other.querySelector(`.qs-model[data-tier="${tier}"]`);
+    assert.equal(b.disabled, true, tier);
+    assert.match(b.title, /^On Claude — /);
+  }
+  assert.deepEqual([...popover.querySelectorAll('.ih-usage-popover-note')].map(n => n.textContent),
+    ['↻ restarts the session · conversation is kept']);
+
+  modelEntry(popover, 'glm-5.3-flash:cloud').click();
+  await new Promise(r => setImmediate(r));
+  assert.equal(t.modelFrames().length, 1);
+  const frame = t.modelFrames()[0];
+  assert.deepEqual(Object.keys(frame).sort(), ['id', 'model', 'reqId', 't'], 'exactly {t, id, model, reqId}: no tier, no backend');
+  assert.equal(frame.model, 'glm-5.3-flash:cloud');
+  assert.equal(frame.id, ROLE_INSTANCE.id);
+  assertNull(t.document.querySelector('.ih-usage-popover[aria-label="Change model"]'), 'the picker closed on the ack');
+}));
+
+test('a registered model that an offered tier on the session\'s backend binds is listed once, as the tier', () => withRegistry(SUB_BINDINGS,
+  { ollama: [{ model: 'alpha:cloud', label: 'Alpha' }, { model: 'gamma:cloud', label: 'Gamma' }] }, async () => {
+    const t = await clickSetup();
+    t.setInstances([SUB_INSTANCE]);
+    t.setActiveId('inst-1');
+    t.header.update();
+    const popover = openModelPicker(t);
+    const own = popover.querySelector('.quick-spawn-models');
+    assert.deepEqual([...own.querySelectorAll('.qs-model')].map(b => b.dataset.tier ?? b.dataset.model),
+      ['fast', 'balanced', 'gamma:cloud'], 'alpha:cloud is the fast tier, not a second entry');
+    assertNull(modelEntry(popover, 'alpha:cloud'));
+  }));
+
+test('registered-model entries are disabled with the restart-busy title while a turn runs', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
+  const { RESTART_BUSY_TITLE } = await import(pathToFileURL(path.join(PUB, 'header.js')).href);
+  const t = await clickSetup();
+  t.setInstances([ROLE_INSTANCE]);
+  t.setActiveId('inst-1');
+  t.header.update();
+  const popover = openModelPicker(t);
+  t.setInstances([{ ...ROLE_INSTANCE, status: 'turn', displayStatus: 'turn' }]);
+  t.header.update();
+  for (const { model } of OLLAMA_MODELS) {
+    assert.equal(modelEntry(popover, model).disabled, true, model);
+    assert.equal(modelEntry(popover, model).title, RESTART_BUSY_TITLE, model);
+  }
+}));
+
+test('a substitution session with nothing else registered on its backend says so', async (t) => {
+  const NOTE = 'No other model is registered on Ollama — add one in Settings → Models';
+  await t.test('nothing registered at all', () => withRegistry(ALL_CLAUDE, { ollama: [] }, async () => {
+    const h = await clickSetup();
+    h.setInstances([ROLE_INSTANCE]);
+    h.setActiveId('inst-1');
+    h.header.update();
+    const popover = openModelPicker(h);
+    assert.ok([...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
+    assert.equal(popover.querySelectorAll('.qs-model:not([disabled])').length, 0, 'no enabled entry');
+  }));
+  await t.test('only the running model registered', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS.slice(0, 1) }, async () => {
+    const h = await clickSetup();
+    h.setInstances([ROLE_INSTANCE]);
+    h.setActiveId('inst-1');
+    h.header.update();
+    const popover = openModelPicker(h);
+    assert.ok([...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
+    const enabled = [...popover.querySelectorAll('.qs-model:not([disabled])')];
+    assert.deepEqual(enabled.map(b => b.dataset.model), ['deepseek-v4.1-flash:cloud'], 'only the running model itself');
+  }));
+  await t.test('control: another model registered', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
+    const h = await clickSetup();
+    h.setInstances([ROLE_INSTANCE]);
+    h.setActiveId('inst-1');
+    h.header.update();
+    const popover = openModelPicker(h);
+    assert.ok(![...popover.querySelectorAll('.ih-usage-popover-note')].some(n => n.textContent === NOTE));
+  }));
 });

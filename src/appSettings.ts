@@ -17,7 +17,7 @@ import {
   MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID,
   type BackendRecord, type BackendBinding, type TierBinding, type TierName, type RoleName,
 } from './modelVersions.ts';
-import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.ts';
+import { OLLAMA_CLOUD_MODELS } from './ollamaCloudModels.ts';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort, type EffortLevel } from './effortLevels.ts';
 import { httpError } from './httpError.ts';
 import { isSlug, SLUG_RE, SLUG_MAX } from './identifiers.ts';
@@ -727,14 +727,26 @@ export function getCustomModels(): CustomModelRecord[] {
   return out;
 }
 
-// True if `model` is bindable on `backend`: the user added it there, or it's a
-// curated cloud preset of the built-in `ollama` backend (bindable with no prior
-// "Add" step). The curated catalog is scoped to that one backend by design.
+// Every model registered on a substitution backend: the user's custom rows there
+// plus, for the built-in `ollama` backend only, the curated cloud presets
+// (bindable with no prior "Add" step). One entry per model id; a custom row
+// overrides a preset of the same id, the precedence contextWindowForModel uses.
+// Empty for the identity backend or an unknown id. The Change-model picker
+// offers this list on a substitution session (shipped by modelsSettingsState).
+export function backendModels(backend: unknown): { model: string; label: string }[] {
+  if (typeof backend !== 'string' || !isKnownBackend(backend) || backend === CLAUDE_BACKEND_ID) return [];
+  const out = new Map<string, string>();
+  if (backend === 'ollama') for (const m of OLLAMA_CLOUD_MODELS) out.set(m.model, m.label);
+  for (const m of getCustomModels()) {
+    if (m.backend === backend) out.set(m.model, String(m.label));
+  }
+  return [...out].map(([model, label]) => ({ model, label }));
+}
+
+// True if `model` is bindable on `backend` — one of its backendModels.
 export function isKnownBackendModel(backend: unknown, model: unknown): boolean {
-  if (typeof backend !== 'string' || typeof model !== 'string' || !model) return false;
-  if (!isKnownBackend(backend) || backend === CLAUDE_BACKEND_ID) return false;
-  if (getCustomModels().some(m => m.backend === backend && m.model === model)) return true;
-  return backend === 'ollama' && isKnownOllamaCloudModel(model);
+  if (typeof model !== 'string' || !model) return false;
+  return backendModels(backend).some(m => m.model === model);
 }
 
 // Every backend a non-Claude model id is bindable on, in registry order; empty

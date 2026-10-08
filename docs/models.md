@@ -114,9 +114,16 @@ The consequences of being a substitution backend:
   template's argv, the cc-managed context env vars, and `_trackModel` ignoring the
   CLI's report — so no `set_model` control request can reach it. `Instance.switchModel`
   (the WS `model` frame's dispatcher) therefore:
-  - identity session → `claude` tier: live `setModel` (`set_model` control request), unchanged;
-  - substitution session → a tier on the **same** backend: **restart** —
-    kill → set `this.model`/`this.effort` (the tier's effort) → `_wipeForResume` →
+  - identity session → `claude` tier: live `setModel` (`set_model` control request),
+    **between turns only** — during a running turn it refuses `409 SESSION_BUSY`
+    (`_assertBetweenTurns`, shared with `setEffort`) before writing anything to the CLI;
+  - substitution session → a target on the **same** backend: **restart**. The target
+    is either a tier bound there (the switch applies that tier's effort) or any model
+    registered there — its custom-model rows plus, for `ollama`, the curated presets
+    (`backendModels` / `isKnownBackendModel`, `src/appSettings.ts`), which keeps the
+    session's own effort. A model registered only on another backend, or unknown,
+    is refused by the WS frame before any restart. The restart is
+    kill → set `this.model`/`this.effort` → `_wipeForResume` →
     `launch({resume})` (or `launch({})` under `--session-id` for a session with no
     conversation yet) → confirm. `spawn()` reads `this.model` for the argv, the
     context env and the session record, so the new model is both what runs and what
@@ -310,8 +317,9 @@ purpose: each closes a distinct route, and none subsumes another.
 native `contextWindow` — bindable with no "Add" step. A preset may also carry
 `midTurnSteering: false` (optional there — absent means steerable); no row declares
 it today. **Scoped to the built-in
-`ollama` backend only**: `isKnownBackendModel(backend, model)` accepts a preset just
-for that row, and the picker renders the optgroup only there. A user-defined backend
+`ollama` backend only**: `backendModels(backend)` (the backend's registered models,
+which `isKnownBackendModel(backend, model)` tests membership of) lists the presets
+just for that row, and the picker renders the optgroup only there. A user-defined backend
 has no curated catalog. `OLLAMA_CLOUD_TIER_DEFAULTS` (a per-tier UI pre-selection only — see the module for which tiers carry one) applies when a tier switches
 to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 
@@ -440,7 +448,7 @@ so a changed default moves *new spawns*, never anything already running:
 | Restart manifest (`src/resumeRestart.ts`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
 | `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
-| Restart model switch (`Instance.switchModel`, substitution backend) | the picked tier's Settings-row effort (`getTierEffort`), set before the relaunch; restored on failure. The live identity switch leaves effort alone |
+| Restart model switch (`Instance.switchModel`, substitution backend) | a picked tier: its Settings-row effort (`getTierEffort`); a picked registered model (`{model}` frame): the session's own `this.effort`. Set before the relaunch; restored on failure. The live identity switch leaves effort alone |
 
 **A live "Change effort"** (⋮ menu → `⚡ Change effort`, `Instance.setEffort`) moves
 `this.effort` and nothing else — there is no on-disk store for effort. Every row

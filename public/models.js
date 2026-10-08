@@ -68,11 +68,17 @@ let tierLabels = { ...DEFAULT_TIER_LABELS };
 // fallback only; the server's registry (which also carries user rows) replaces it
 // on the boot fetch.
 let backends = [{ id: CLAUDE_BACKEND, label: 'Claude', managed: true }, { id: 'ollama', label: 'Ollama', managed: true }];
+// Each substitution backend's registered models ({model, label}), keyed by
+// backend id, as shipped by the server (backendModels in src/appSettings.ts).
+// Empty until the boot fetch: no list means nothing is offered yet.
+let backendModels = {};
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
 export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
 export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
+export function getBackendModels(id) { return backendModels[id] || []; }
+export function setBackendModels(map) { backendModels = { ...(map || {}) }; }
 
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
 // src/modelVersions.ts. A naming heuristic for grouping the Settings picker —
@@ -131,6 +137,7 @@ export async function loadModelVersions() {
         tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
       }
       setBackends(data.backends);
+      if (data.backendModels) setBackendModels(data.backendModels);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
       setDefaultEffort(data.defaultEffort);
       setEffortLevels(data.efforts);
