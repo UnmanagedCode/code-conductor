@@ -635,6 +635,18 @@ test('a substitution session with nothing else registered on its backend says so
     const enabled = [...popover.querySelectorAll('.qs-model:not([disabled])')];
     assert.deepEqual(enabled.map(b => b.dataset.model), ['deepseek-v4.1-flash:cloud'], 'only the running model itself');
   }));
+  await t.test('never on an identity session, even with nothing else selectable', () => withRegistry(
+    Object.fromEntries(TIERS.map(tier => [tier, { backend: 'claude', model: 'claude-opus-4-8' }])), {}, async () => {
+      const h = await clickSetup();
+      h.setInstances([{ ...LIVE_INSTANCE, model: 'claude-opus-4-8', displayStatus: 'idle' }]);
+      h.setActiveId('inst-1');
+      h.header.update();
+      const popover = openModelPicker(h);
+      const entries = [...popover.querySelectorAll('.qs-model')];
+      assert.ok(entries.length > 0 && entries.every(b => b.classList.contains('qs-selected')),
+        'premise: every offered entry is the running model');
+      assertNull(popover.querySelector('.ih-usage-popover-note'), 'a Claude session switches by tier; no registry note');
+    }));
   await t.test('control: another model registered', () => withRegistry(ALL_CLAUDE, { ollama: OLLAMA_MODELS }, async () => {
     const h = await clickSetup();
     h.setInstances([ROLE_INSTANCE]);

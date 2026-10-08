@@ -282,8 +282,20 @@ test('a {model} frame on an identity Claude session is refused — it switches b
 
 test('a live switch frame on a Claude session during a running turn is refused, and nothing reaches the CLI', async () => {
   await setTierBackend('frontier', { backend: 'claude', model: 'claude-opus-4-8' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
-  const inst = instances.get(r.body.id);
+  // The fake engine appends every stdin line it receives here; set before launch.
+  const stdinLog = path.join(home, 'stdin.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = stdinLog;
+  let inst;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
+    inst = instances.get(r.body.id);
+  } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
+  const controlRequests = async () => {
+    let raw = '';
+    try { raw = await fs.readFile(stdinLog, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    return raw.split('\n').filter(Boolean).map(l => JSON.parse(l))
+      .filter(o => o.type === 'control_request').map(o => o.request?.subtype);
+  };
   await waitFor(() => inst.status === 'idle');
   await inst.prompt('one');
   await waitFor(() => inst.status === 'idle' && ringOf(inst).some(e => e.kind === 'turn_end'));
@@ -297,10 +309,16 @@ test('a live switch frame on a Claude session during a running turn is refused, 
     assert.equal(ack.ok, false);
     assert.match(ack.error, /running turn/);
     assert.equal(inst.model, model);
-    assert.equal(inst._pending.size, 0, 'no set_model control_request was written');
     assert.equal(inst.proc, proc);
     await assert.rejects(inst.setModel('claude-opus-4-8'), e => e.statusCode === 409 && e.code === 'SESSION_BUSY');
     assert.equal(inst.model, model);
+    // Anchor the "nothing written" read on a control_request that DID go out
+    // after both refusals: stdin is one ordered stream, so a set_model written
+    // by either refusal would already be in the log ahead of it.
+    await inst.interrupt({ force: true });
+    await waitFor(async () => (await controlRequests()).includes('interrupt'));
+    assert.deepEqual((await controlRequests()).filter(st => st === 'set_model'), [],
+      'no set_model control_request reached the CLI');
   } finally { await c.close(); }
 });
 
