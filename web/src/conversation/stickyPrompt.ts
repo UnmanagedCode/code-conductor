@@ -30,9 +30,9 @@ export function pickPinned(topAt: (i: number) => number, n: number, pinHeight: n
 export type PinState =
   | { kind: 'hidden' }
   | { kind: 'status'; text: string }
-  | { kind: 'pinned'; html: string; shift: number; overflowing: boolean };
+  | { kind: 'pinned'; html: string; shift: number; overflowing: boolean; pushedOff: boolean };
 
-export const pinStore = createStore<{ pin: PinState }>({ pin: { kind: 'hidden' } });
+export const pinStore = createStore<{ pin: PinState; gutter: number }>({ pin: { kind: 'hidden' }, gutter: 0 });
 
 type History = {
   status: { get: () => { visible: boolean; loading: boolean } };
@@ -71,6 +71,12 @@ export function createStickyPrompt({ isConducted, getActiveId, history, isHistor
     if (pinStore.get().pin.kind !== 'hidden') set({ kind: 'hidden' });
   };
   const textOf = (bubble: HTMLElement) => bubble.querySelector<HTMLElement>('[data-user-text]');
+  // < 1, not <= 0: sub-pixel scroll residue on a fractional device-pixel ratio must not leave a sliver showing.
+  const isPushedOff = (shift: number) => shift + pinHeight < 1;
+  const syncGutter = () => {
+    const g = Math.max(0, scrollEl!.offsetWidth - scrollEl!.clientWidth - 2 * scrollEl!.clientLeft);
+    if (pinStore.get().gutter !== g) pinStore.set({ gutter: g });
+  };
 
   const statusText = () => {
     const { visible } = history.status.get();
@@ -110,6 +116,7 @@ export function createStickyPrompt({ isConducted, getActiveId, history, isHistor
     if (!scrollEl || !listEl) return;
     if (revealed && getActiveId() !== revealedFor) stopRevealing();
     if (!revealed) { hide(); return; }
+    syncGutter();
     const conducted = isConducted();
     if (!eligible || eligibleFor !== conducted) {
       eligible = [...listEl.querySelectorAll<HTMLElement>(':scope > [data-item="user"][data-prompt-origin]')]
@@ -119,19 +126,22 @@ export function createStickyPrompt({ isConducted, getActiveId, history, isHistor
     const list = eligible;
     const top0 = scrollEl.getBoundingClientRect().top + scrollEl.clientTop;
     const topAt = (i: number) => list[i].getBoundingClientRect().top - top0;
-    if (pinEl && pinStore.get().pin.kind !== 'hidden') pinHeight = pinEl.offsetHeight;
+    const shown = pinStore.get().pin;
+    // A pushed-off pin is hidden and measures 0: it keeps its last height.
+    if (pinEl && (shown.kind === 'status' || (shown.kind === 'pinned' && !shown.pushedOff))) pinHeight = pinEl.offsetHeight;
     let pick = pickPinned(topAt, list.length, pinned ? pinHeight : 0);
     if (!pick) {
       if (!(scrollEl.clientHeight > 0)) { hide(); return; }
+      const text = statusText();
+      if (shown.kind !== 'status' || shown.text !== text) set({ kind: 'status', text });
       pinned = null;
-      set({ kind: 'status', text: statusText() });
       kick();
       return;
     }
     const bubble = list[pick.index];
     if (bubble !== pinned) {
       pinned = bubble;
-      set({ kind: 'pinned', html: textOf(bubble)!.innerHTML, shift: 0, overflowing: false });
+      set({ kind: 'pinned', html: textOf(bubble)!.innerHTML, shift: 0, overflowing: false, pushedOff: false });
       // Measure the freshly rendered pin before positioning it.
       requestAnimationFrame(() => {
         if (!pinEl) return;
@@ -139,13 +149,16 @@ export function createStickyPrompt({ isConducted, getActiveId, history, isHistor
         const p = pickPinned(topAt, list.length, pinHeight);
         const body = pinEl.querySelector<HTMLElement>('[data-pin-body]');
         const cur = pinStore.get().pin;
-        if (cur.kind === 'pinned' && p) set({ ...cur, shift: p.shift, overflowing: !!body && body.scrollHeight > body.clientHeight + 1 });
+        if (cur.kind === 'pinned' && p) set({ ...cur, shift: p.shift, overflowing: !!body && body.scrollHeight > body.clientHeight + 1, pushedOff: isPushedOff(p.shift) });
       });
       return;
     }
     const cur = pinStore.get().pin;
     pick = pickPinned(topAt, list.length, pinHeight);
-    if (cur.kind === 'pinned' && pick && cur.shift !== pick.shift) set({ ...cur, shift: pick.shift });
+    if (cur.kind === 'pinned' && pick) {
+      const pushedOff = isPushedOff(pick.shift);
+      if (cur.shift !== pick.shift || cur.pushedOff !== pushedOff) set({ ...cur, shift: pick.shift, pushedOff });
+    }
   }
 
   return {

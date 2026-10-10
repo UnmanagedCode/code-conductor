@@ -60,6 +60,18 @@ export interface Ui {
   submitAdd(dialog: Locator): Promise<void>;
   /** On the Add-project stale pane, Relocate. */
   relocate(dialog: Locator): Promise<void>;
+  /** The transcript's scroll root. */
+  transcript(page: Page): Locator;
+  userMessages(page: Page): Locator;
+  turnEnds(page: Page): Locator;
+  /** The sticky prompt's pin. */
+  pin(page: Page): Locator;
+  /** Its clamped text box. */
+  pinBody(page: Page): Locator;
+  /** The box drawing the pin's shadow. */
+  pinCard(page: Page): Locator;
+  /** The reveal swipe zones: the top bar and the pin. */
+  swipeZones(page: Page): Locator[];
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -261,6 +273,13 @@ export const legacy: Ui = {
   async relocate(dialog) {
     await dialog.locator('#apd-stale button[value="relocate"]').click();
   },
+  transcript: (page) => page.locator('#conversation'),
+  userMessages: (page) => page.locator('#conversation .msg.user'),
+  turnEnds: (page) => page.locator('#conversation .block.turn-end'),
+  pin: (page) => page.locator('#pinned-prompt'),
+  pinBody: (page) => page.locator('#pinned-prompt .pinned-prompt-body'),
+  pinCard: (page) => page.locator('#pinned-prompt'),
+  swipeZones: (page) => [page.locator('#instance-header'), page.locator('#pinned-prompt')],
 };
 
 /**
@@ -424,6 +443,13 @@ export const next: Ui = {
   async relocate(dialog) {
     await dialog.getByRole('button', { name: 'Relocate' }).click();
   },
+  transcript: (page) => page.locator('[data-conversation]'),
+  userMessages: (page) => page.locator('[data-item=user]'),
+  turnEnds: (page) => page.locator('[data-item=turn-end]'),
+  pin: (page) => page.locator('[data-pinned-prompt]'),
+  pinBody: (page) => page.locator('[data-pin-body]'),
+  pinCard: (page) => page.locator('[data-pin-body]').locator('..'),
+  swipeZones: (page) => [page.locator('[data-session-header]'), page.locator('[data-pinned-prompt]')],
 };
 
 export const UIS: Record<UiName, Ui> = { legacy, next };
