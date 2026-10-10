@@ -2,7 +2,7 @@ import { expect } from '../harness/fixtures.ts';
 import { createProject } from '../harness/api.ts';
 import { parity } from './parity.ts';
 import { bringTo, conceal, cssOf, offsetFromTop, reveal, sendAll, shadowLayers, tallPrompt } from './stickyPin.ts';
-import { px, sendWake, WAKE_PAYLOAD } from './foldedBubbles.ts';
+import { LONG_WAKE_STUB, overflowsX, px, sendWake, WAKE_PAYLOAD } from './foldedBubbles.ts';
 
 parity('sticky-prompt/R2', 'revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('pin-jump');
@@ -166,6 +166,20 @@ parity('wake-callback-bubble/R2', 'an expanded wake body keeps its raw view acro
   await toggle.click();
   await expect(ui.foldRaw(fold)).toBeVisible();
   expect(await ui.foldRaw(fold).evaluate((e) => e.textContent)).toBe(WAKE_PAYLOAD);
+
+  // Invariant: an unbroken meta-line token and an unbroken prose token wrap inside the fold body in both views, so neither the body nor the transcript scrolls sideways.
+  await sendWake(page, ui, 2, { stub: LONG_WAKE_STUB, folds: 2 });
+  const long = ui.wakeFold(page).nth(1);
+  await ui.foldToggle(long).click();
+  await expect(ui.wakeMeta(long)).toContainText('"hint":"mmm');
+  await expect(long.locator('.md p', { hasText: 'LONGPROSE-' })).toBeVisible();
+  expect(await overflowsX(ui.foldBody(long)), 'the rendered fold body overflows sideways').toBe(false);
+  expect(await overflowsX(ui.transcript(page)), 'the transcript overflows sideways (rendered)').toBe(false);
+  await ui.toggleFoldView(long);
+  await expect(ui.foldRaw(long)).toBeVisible();
+  expect(await overflowsX(ui.foldBody(long)), 'the raw fold body overflows sideways').toBe(false);
+  expect(await overflowsX(ui.foldRaw(long)), 'the raw view overflows sideways').toBe(false);
+  expect(await overflowsX(ui.transcript(page)), 'the transcript overflows sideways (raw)').toBe(false);
 });
 
 parity('user-bubble-markdown/R2', 'headings render at body size in a prompt and in a folded wake body, while an assistant heading stays larger', async ({ page, cc, ui, uniq }) => {
@@ -184,6 +198,12 @@ parity('user-bubble-markdown/R2', 'headings render at body size in a prompt and 
   const h2 = t.locator('.md h2', { hasText: 'What changed' });
   await expect(h2).toBeVisible();
   expect(await px(h2), 'an assistant heading stays larger than its prose').toBeGreaterThan(await px(t.locator('.md p', { hasText: 'token-bucket' })));
+
+  // Invariant: the prompt bubble's raw/copy row is hidden until hover on a hover device and always shown on a touch device.
+  const controls = ui.userControls(ui.userMessages(page).first());
+  await expect(controls).toHaveCount(1);
+  const touch = await page.evaluate(() => matchMedia('(hover: none)').matches);
+  await expect.poll(() => cssOf(controls, 'opacity'), `opacity with (hover: none) = ${touch}`).toBe(touch ? '1' : '0');
 
   await sendWake(page, ui, 2);
   const fold = ui.wakeFold(page);

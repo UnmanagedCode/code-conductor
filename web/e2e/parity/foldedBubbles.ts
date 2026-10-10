@@ -10,11 +10,20 @@ import type { Ui } from './ui.ts';
 export const WAKE_PAYLOAD = '{"sessionId":"wakeparity","source":"live"}\nWAKE-PROSE first paragraph with **bold** words\n\n# WAKE-HEAD plan\n\nWAKE-TAIL closing paragraph';
 const WAKE_STUB = buildWakeStub({ targetSessionId: 'wakeparity', payloadText: WAKE_PAYLOAD });
 
-/** Sends the wake stub and waits for its fold and for the session's `turns`-th turn end. */
-export async function sendWake(page: Page, ui: Ui, turns: number): Promise<void> {
-  await ui.sendPrompt(page, WAKE_STUB);
-  await expect(ui.wakeFold(page), 'the composer-sent stub renders as a wake fold').toHaveCount(1);
+/** A payload whose meta line and one prose word are each a single unbroken token, far wider than a phone. */
+export const LONG_WAKE_PAYLOAD = `{"sessionId":"wakeparity","hint":"${'m'.repeat(300)}"}\nLONGPROSE-${'p'.repeat(300)}\n\nWAKE-TAIL closing paragraph`;
+export const LONG_WAKE_STUB = buildWakeStub({ targetSessionId: 'wakeparity', payloadText: LONG_WAKE_PAYLOAD });
+
+/** Sends `stub` and waits until the transcript shows `folds` wake folds and `turns` turn ends. */
+export async function sendWake(page: Page, ui: Ui, turns: number, { stub = WAKE_STUB, folds = 1 } = {}): Promise<void> {
+  await ui.sendPrompt(page, stub);
+  await expect(ui.wakeFold(page), 'the composer-sent stub renders as a wake fold').toHaveCount(folds);
   await expect(ui.turnEnds(page)).toHaveCount(turns);
+}
+
+/** Whether `loc`'s content is wider than its box. */
+export function overflowsX(loc: Locator): Promise<boolean> {
+  return loc.evaluate((e) => e.scrollWidth > e.clientWidth + 1);
 }
 
 /** `loc`'s computed font size in px. */

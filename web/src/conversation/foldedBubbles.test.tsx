@@ -97,6 +97,8 @@ describe('wake-callback bubble lifecycle', () => {
     await toggleFold(fold);
     const meta = fold.querySelector('[data-wake-meta]')!;
     const md = fold.querySelector('.md')!;
+    // Invariant: the fold's controls row sits above its body.
+    expect(button(fold, 'Show raw text').parentElement!.compareDocumentPosition(meta)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     await toggleFold(fold);
     expect(fold.getAttribute('data-state')).toBe('closed');
     expect(contentOf(fold).hidden).toBe(true);
@@ -232,6 +234,8 @@ describe('skill-load bubble lifecycle', () => {
     await toggleFold(fold);
     const md = fold.querySelector('.md')!;
     expect(md.querySelector('h1')!.textContent).toBe('Keybindings');
+    // Invariant: the fold's controls row sits above its body.
+    expect(button(fold, 'Show raw text').parentElement!.compareDocumentPosition(md)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     await toggleFold(fold);
     expect(contentOf(fold).hidden).toBe(true);
     expect(fold.contains(md)).toBe(true);

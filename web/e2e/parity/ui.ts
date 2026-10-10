@@ -142,6 +142,8 @@ export interface Ui {
   foldRaw(fold: Locator): Locator;
   /** Flips the fold body between rendered and raw. */
   toggleFoldView(fold: Locator): Promise<void>;
+  /** A prompt bubble's hover-revealed raw/copy controls row. */
+  userControls(bubble: Locator): Locator;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -475,6 +477,7 @@ export const legacy: Ui = {
   async toggleFoldView(fold) {
     await fold.locator('.user-view-toggle').click();
   },
+  userControls: (bubble) => bubble.locator('.user-view-controls'),
 };
 
 /**
@@ -765,6 +768,7 @@ export const next: Ui = {
   async toggleFoldView(fold) {
     await fold.getByRole('button', { name: /^Show (raw text|rendered markdown)$/ }).click();
   },
+  userControls: (bubble) => bubble.getByRole('button', { name: 'Copy message', exact: true }).locator('xpath=..'),
 };
 
 // Sidebar B (card 2026-0628)
