@@ -9,6 +9,8 @@ export type Lens = 'conductors' | 'projects';
 /** The two dialogs that place a project: New project and Add (adopt) project. */
 export type PlacementDialog = 'new' | 'adopt';
 export type PlacementField = 'name' | 'system' | 'target' | 'path' | 'pathList' | 'suggestions';
+// Settings (card 2026-0625)
+export type SettingsSection = 'account' | 'archived' | 'about';
 
 export interface Ui {
   name: UiName;
@@ -72,6 +74,18 @@ export interface Ui {
   pinCard(page: Page): Locator;
   /** The reveal swipe zones: the top bar and the pin. */
   swipeZones(page: Page): Locator[];
+
+  // Settings (card 2026-0625)
+  settingsView(page: Page): Locator;
+  /** Opens Settings and switches to `section`. */
+  openSettingsSection(page: Page, section: SettingsSection): Promise<void>;
+  /** Account → Claude login's Log in button, sign-in link and code field. */
+  claudeLogin(page: Page): { login: Locator; signInLink: Locator; code: Locator };
+  /** Archived's project groups, in order. */
+  archivedGroups(page: Page): Locator;
+  expandArchivedGroup(page: Page, project: string): Promise<void>;
+  /** Deletes the archived row labelled `label`, confirming or declining the prompt. */
+  deleteArchived(page: Page, label: string, confirm: boolean): Promise<void>;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -280,6 +294,26 @@ export const legacy: Ui = {
   pinBody: (page) => page.locator('#pinned-prompt .pinned-prompt-body'),
   pinCard: (page) => page.locator('#pinned-prompt'),
   swipeZones: (page) => [page.locator('#instance-header'), page.locator('#pinned-prompt')],
+
+  // Settings (card 2026-0625)
+  settingsView: (page) => page.locator('#settings-view'),
+  async openSettingsSection(page, section) {
+    await legacy.openSettings(page);
+    await page.locator('#settings-group-select').selectOption(section);
+    await expect(page.locator(`#settings-${section}`)).toBeVisible();
+  },
+  claudeLogin: (page) => ({ login: page.locator('#ca-login'), signInLink: page.locator('#ca-url'), code: page.locator('#ca-code') }),
+  archivedGroups: (page) => page.locator('#ar-list details'),
+  async expandArchivedGroup(page, project) {
+    await legacy.archivedGroups(page).locator('summary', { hasText: new RegExp(`^${project.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(`) }).click();
+  },
+  async deleteArchived(page, label, confirm) {
+    // The old UI asks with the browser's native confirm().
+    page.once('dialog', (d) => void (confirm ? d.accept() : d.dismiss()));
+    await page.locator('#ar-list .archived-row')
+      .filter({ has: page.locator('.archived-row-title', { hasText: exactly(label) }) })
+      .locator('.archived-delete').click();
+  },
 };
 
 /**
@@ -450,6 +484,26 @@ export const next: Ui = {
   pinBody: (page) => page.locator('[data-pin-body]'),
   pinCard: (page) => page.locator('[data-pin-body]').locator('..'),
   swipeZones: (page) => [page.locator('[data-session-header]'), page.locator('[data-pinned-prompt]')],
+
+  // Settings (card 2026-0625)
+  settingsView: (page) => page.locator('[data-settings-view]'),
+  async openSettingsSection(page, section) {
+    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About' };
+    await next.openSettings(page);
+    await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: label[section], exact: true }).click();
+    await expect(page.locator(`[data-section="${section}"]`)).toBeVisible();
+  },
+  claudeLogin: (page) => ({ login: page.getByTestId('ca-login'), signInLink: page.getByTestId('ca-url'), code: page.getByLabel('Sign-in code') }),
+  archivedGroups: (page) => page.locator('[data-testid="archived-list"] [data-group]'),
+  async expandArchivedGroup(page, project) {
+    await page.locator(`[data-group="${project}"]`).getByRole('button').first().click();
+  },
+  async deleteArchived(page, label, confirm) {
+    await page.locator('[data-session]').filter({ has: page.getByText(label, { exact: true }) }).getByRole('button', { name: 'Delete' }).click();
+    const dialog = page.getByRole('dialog', { name: `Delete the transcript of “${label}”?` });
+    await dialog.getByRole('button', { name: confirm ? 'Delete permanently' : 'Cancel' }).click();
+    await expect(dialog).toBeHidden();
+  },
 };
 
 export const UIS: Record<UiName, Ui> = { legacy, next };

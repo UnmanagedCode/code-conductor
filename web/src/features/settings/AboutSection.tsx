@@ -3,6 +3,7 @@ import { ExternalLinkIcon, RefreshCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OctopusBadge } from '@/components/mascot/Octopus';
 import { performRestart } from '@/features/sidebar/restart';
+import { createStore, useStore } from '@/state/createStore';
 import { SettingsCard, Status, LogBox } from './ui';
 import { json, errText, streamAction, capLog, HttpError } from './api';
 
@@ -20,41 +21,43 @@ export function describeUpdate(d: SelfUpdateStatus): { text: string; canUpdate: 
   return { text: `${v} · up to date`, canUpdate: false };
 }
 
+type Line = { text: string; tone?: 'error' | 'ok' | 'muted' };
+
+// The running self-update lives at module scope, not in the section: the pull
+// keeps streaming after About is left, and a remounted section must show it and
+// offer no second Update.
+export const selfUpdateStore = createStore<{ line: Line; canUpdate: boolean; updating: boolean; label: string; log: string }>({
+  line: { text: 'Checking for updates…' }, canUpdate: false, updating: false, label: 'Update', log: '',
+});
+
 export function AboutSection() {
-  const [line, setLine] = React.useState<{ text: string; tone?: 'error' | 'ok' | 'muted' }>({ text: 'Checking for updates…' });
-  const [canUpdate, setCanUpdate] = React.useState(false);
-  const [updating, setUpdating] = React.useState(false);
-  const [label, setLabel] = React.useState('Update');
-  const [log, setLog] = React.useState('');
+  const { line, canUpdate, updating, label, log } = useStore(selfUpdateStore, (s) => s);
 
   React.useEffect(() => {
+    if (selfUpdateStore.get().updating) return;
+    selfUpdateStore.set({ line: { text: 'Checking for updates…' }, canUpdate: false, label: 'Update', log: '' });
     json<SelfUpdateStatus>('/api/settings/self-update')
-      .then((d) => { const r = describeUpdate(d); setLine({ text: r.text }); setCanUpdate(r.canUpdate); })
-      .catch((e) => setLine({ text: `Failed to check for updates: ${errText(e)}`, tone: 'error' }));
+      .then((d) => { const r = describeUpdate(d); selfUpdateStore.set({ line: { text: r.text }, canUpdate: r.canUpdate }); })
+      .catch((e) => selfUpdateStore.set({ line: { text: `Failed to check for updates: ${errText(e)}`, tone: 'error' } }));
   }, []);
 
   async function update() {
-    if (updating) return;
-    setUpdating(true);
-    setLabel('Updating…');
-    setLine({ text: 'Updating conductor…' });
-    setLog('');
+    if (selfUpdateStore.get().updating) return;
+    selfUpdateStore.set({ updating: true, label: 'Updating…', line: { text: 'Updating conductor…' }, log: '' });
     try {
-      const result = await streamAction('/api/settings/self-update', (t) => setLog((l) => capLog(l, t)));
+      const result = await streamAction('/api/settings/self-update', (t) => selfUpdateStore.set({ log: capLog(selfUpdateStore.get().log, t) }));
       if (result?.npm && !result.npm.ok) {
-        setLine({ text: 'The update was pulled but npm install failed. Resolve it before restarting.', tone: 'error' });
-        if (result.npm.tail) setLog(result.npm.tail);
-        setLabel('Retry');
-        setUpdating(false);
+        selfUpdateStore.set({ line: { text: 'The update was pulled but npm install failed. Resolve it before restarting.', tone: 'error' } });
+        if (result.npm.tail) selfUpdateStore.set({ log: result.npm.tail });
+        selfUpdateStore.set({ label: 'Retry', updating: false });
         return;
       }
-      setLine({ text: 'Update applied. Restarting…', tone: 'ok' });
+      selfUpdateStore.set({ line: { text: 'Update applied. Restarting…', tone: 'ok' } });
       void performRestart({ resume: true });
     } catch (e) {
-      setLine({ text: `Update failed: ${errText(e)}`, tone: 'error' });
-      if ((e as HttpError).tail) setLog((e as HttpError).tail!);
-      setLabel('Update');
-      setUpdating(false);
+      selfUpdateStore.set({ line: { text: `Update failed: ${errText(e)}`, tone: 'error' } });
+      if ((e as HttpError).tail) selfUpdateStore.set({ log: (e as HttpError).tail! });
+      selfUpdateStore.set({ label: 'Update', updating: false });
     }
   }
 

@@ -5,7 +5,8 @@ type Handler = (call: Call) => { status?: number; json?: unknown } | unknown;
 
 /**
  * Install a fetch stub routed by "METHOD path" (query ignored); an unrouted
- * request answers 404. Returns the recorded calls.
+ * request answers 404. A handler that returns a `Response` (a streamed answer)
+ * is passed through as-is. Returns the recorded calls.
  */
 export function mockFetch(routes: Record<string, Handler>) {
   const calls: Call[] = [];
@@ -20,6 +21,7 @@ export function mockFetch(routes: Record<string, Handler>) {
     const h = routes[key];
     if (!h) return new Response(JSON.stringify({ error: `unrouted ${key}` }), { status: 404, headers: { 'content-type': 'application/json' } });
     const out = h(call) as any;
+    if (out instanceof Response) return out;
     const isEnvelope = out && typeof out === 'object' && ('status' in out || 'json' in out) && Object.keys(out).every((k) => k === 'status' || k === 'json');
     const status = isEnvelope ? out.status ?? 200 : 200;
     const json = isEnvelope ? out.json : out;
