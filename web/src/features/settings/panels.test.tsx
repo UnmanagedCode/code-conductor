@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import * as React from 'react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { mockFetch } from './test/fetchMock';
+import { routeFetch, held, type RouteAnswer } from '@/test/routeFetch';
 
 vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}) }));
 vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}) }));
@@ -21,7 +22,7 @@ import { ArchivedSection } from './ArchivedSection';
 import { PluginsSection } from './PluginsSection';
 import { pluginsChangeStore, pluginsChangedSignal } from './pluginsSignal';
 import { on } from '@/app/events';
-import { ConfirmHost } from '@/ui/feedback';
+import { ConfirmHost, toast } from '@/ui/feedback';
 
 const wrap = (ui: React.ReactElement) => render(<TooltipProvider>{ui}</TooltipProvider>);
 
@@ -89,6 +90,23 @@ describe('Account → overage protection', () => {
     act(() => modelsSettingsStore.set({ data: models({ onOverage: 'stop-resume' }) as any }));
     expect(screen.getByRole('button', { name: 'Off', pressed: true })).toBeTruthy();
   });
+
+  // Apply commits the staged values, then the controls show what the server answered (not what was typed) and nothing stays staged.
+  it('Apply re-syncs the controls to the values the server returns and clears the staged state', async () => {
+    const calls = mockFetch({ 'POST /api/settings/models/prefs': (c) => models({ onOverage: c.body.onOverage, overageThreshold: { enabled: true, value: 99 } }) });
+    modelsSettingsStore.set({ data: models({ onOverage: 'none', overageThreshold: { enabled: false, value: 85 } }) as any });
+    wrap(<OverageCard />);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop & resume' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Also stop at a usage threshold' }));
+    fireEvent.change(screen.getByLabelText('Stop at'), { target: { value: '95' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await screen.findByText('Overage settings applied');
+    expect(calls[0].body).toEqual({ onOverage: 'stop-resume', overageThreshold: { enabled: true, value: 95 } });
+    expect((screen.getByLabelText('Stop at') as HTMLInputElement).value).toBe('99');
+    expect(screen.getByText('99%')).toBeTruthy();
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+  });
 });
 
 describe('Account → Claude login', () => {
@@ -143,6 +161,302 @@ describe('Account → Claude login', () => {
     await screen.findByText('Signed in');
     expect(screen.queryByTestId('ca-flow')).toBeNull();
     expect(onLoginSuccess).not.toHaveBeenCalled();
+  });
+
+  const URL_ = 'https://claude.com/cai/oauth/authorize?code=true&state=S';
+  const signedOut = { loggedIn: false, authMethod: 'none' };
+  const awaitingCode = { state: 'awaiting_code', url: URL_ };
+  const verifying = { state: 'verifying', url: URL_ };
+  afterEach(() => vi.useRealTimers());
+  const fakeTimers = () => vi.useFakeTimers({ shouldAdvanceTime: true });
+  const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+  /** A login server: GET answers `server.snap` (or a route's override); each action sets the next snapshot. */
+  function loginServer(start: object, routes: Record<string, (body: any) => RouteAnswer | Promise<RouteAnswer>> = {}) {
+    const server = { snap: start as any };
+    const calls = routeFetch({
+      'GET /api/claude-auth/status': () => ({ json: signedOut }),
+      'POST /api/claude-auth/login/code': () => ({ json: (server.snap = verifying) }),
+      'POST /api/claude-auth/login/cancel': () => ({ json: (server.snap = { state: 'cancelled' }) }),
+      'GET /api/claude-auth/login': () => ({ json: server.snap }),
+      ...routes,
+    });
+    const polls = () => calls.filter((c) => c.method === 'GET' && c.url === '/api/claude-auth/login').length;
+    const statusReads = () => calls.filter((c) => c.url === '/api/claude-auth/status').length;
+    const codeBodies = () => calls.filter((c) => c.url === '/api/claude-auth/login/code').map((c) => c.body);
+    return { server, calls, polls, statusReads, codeBodies };
+  }
+  const flowMsg = () => within(screen.getByTestId('ca-flow')).queryByRole('status')?.textContent ?? '';
+  const codeField = () => screen.getByLabelText('Sign-in code') as HTMLInputElement;
+  const loginBtn = () => screen.getByTestId('ca-login') as HTMLButtonElement;
+
+  // A signed-out CLI reads "Not signed in" and offers a first login, not a re-login.
+  it('signed out: "Not signed in" and a Log in button', async () => {
+    loginServer({ state: 'idle' });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Not signed in');
+    expect(loginBtn().textContent?.trim()).toBe('Log in');
+  });
+
+  // Starting the flow and reaching awaiting_code exposes the sign-in link (new tab, no opener), a copyable URL and the code field, and locks Log in while it runs.
+  it('Log in posts the start; the polled awaiting_code shows a new-tab link, a copyable URL field and an enabled code field, with Log in disabled and Cancel offered', async () => {
+    fakeTimers();
+    const { server, calls } = loginServer({ state: 'idle' }, {
+      'POST /api/claude-auth/login': () => { server.snap = awaitingCode; return { json: { state: 'starting' } }; },
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Not signed in');
+    fireEvent.click(loginBtn());
+    await advance(10);
+    const link = await screen.findByTestId('ca-url');
+    expect(calls.filter((c) => c.method === 'POST' && c.url === '/api/claude-auth/login')).toHaveLength(1);
+    expect(link.getAttribute('href')).toBe(URL_);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toMatch('noopener');
+    expect((screen.getByLabelText('Sign-in URL') as HTMLInputElement).value).toBe(URL_);
+    expect(screen.getByRole('button', { name: 'Copy sign-in URL' })).toBeTruthy();
+    expect(codeField().disabled).toBe(false);
+    expect(loginBtn().disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+  });
+
+  // The code is sent trimmed; a rejected code comes back as awaiting_code with an error, which is shown while the field re-enables with the typed text intact.
+  it('Submit posts the trimmed code; an awaiting_code answer carrying an error shows it and keeps the typed code', async () => {
+    fakeTimers();
+    const { server, codeBodies } = loginServer(awaitingCode);
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByLabelText('Sign-in code');
+    fireEvent.change(codeField(), { target: { value: '  abc#S  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(codeBodies()).toEqual([{ code: 'abc#S' }]));
+    server.snap = { ...awaitingCode, error: 'Invalid code, try again' };
+    await advance(10);
+    await waitFor(() => expect(flowMsg()).toBe('Invalid code, try again'));
+    expect(codeField().disabled).toBe(false);
+    expect(codeField().value).toBe('  abc#S  ');
+  });
+
+  // verifying locks the code entry; a watched success re-reads the status exactly once, re-enables Log in and stops the poll.
+  it('verifying disables the code field and Submit; succeeded re-reads the status once, says Signed in., and stops polling', async () => {
+    fakeTimers();
+    const { server, polls, statusReads } = loginServer(verifying);
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByLabelText('Sign-in code');
+    expect(codeField().disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Submit' })).toHaveProperty('disabled', true);
+    expect(flowMsg()).toBe('Verifying…');
+    const before = statusReads();
+    server.snap = { state: 'succeeded' };
+    await advance(10);
+    await waitFor(() => expect(flowMsg()).toBe('Signed in.'));
+    expect(screen.getByTestId('ca-flow')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(loginBtn().disabled).toBe(false);
+    await waitFor(() => expect(statusReads()).toBe(before + 1));
+    const n = polls();
+    await advance(100);
+    expect(polls()).toBe(n);
+    expect(statusReads()).toBe(before + 1);
+  });
+
+  // A failed flow shows the CLI's own error, frees Log in, and is not polled further.
+  it('failed shows the CLI error, re-enables Log in, and stops polling', async () => {
+    fakeTimers();
+    const { server, polls } = loginServer(verifying);
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Verifying…');
+    server.snap = { state: 'failed', error: 'Login failed: HTTP 400' };
+    await advance(10);
+    await waitFor(() => expect(flowMsg()).toBe('Login failed: HTTP 400'));
+    expect(loginBtn().disabled).toBe(false);
+    const n = polls();
+    await advance(100);
+    expect(polls()).toBe(n);
+  });
+
+  // Cancel is one POST; the cancelled flow hides code entry and frees Log in.
+  it('Cancel posts the cancel, shows Login cancelled., hides the code field and re-enables Log in', async () => {
+    fakeTimers();
+    const { calls } = loginServer(awaitingCode);
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByLabelText('Sign-in code');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(flowMsg()).toBe('Login cancelled.'));
+    expect(calls.filter((c) => c.url === '/api/claude-auth/login/cancel')).toHaveLength(1);
+    expect(screen.queryByLabelText('Sign-in code')).toBeNull();
+    expect(loginBtn().disabled).toBe(false);
+  });
+
+  // A flow the server already runs (another tab, a reopen) is shown on open and polled without any click.
+  it('a flow already active when the panel opens is shown and polled', async () => {
+    fakeTimers();
+    const { polls } = loginServer(awaitingCode);
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByTestId('ca-flow');
+    expect((screen.getByLabelText('Sign-in URL') as HTMLInputElement).value).toBe(URL_);
+    const n = polls();
+    await advance(50);
+    expect(polls()).toBeGreaterThan(n);
+  });
+
+  // A refused start opens the flow panel with the server's reason instead of failing silently.
+  it("a refused start shows the server's error in the flow panel", async () => {
+    fakeTimers();
+    loginServer({ state: 'idle' }, {
+      'POST /api/claude-auth/login': () => ({ status: 409, json: { error: 'a Claude login is already in progress' } }),
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Not signed in');
+    fireEvent.click(loginBtn());
+    await waitFor(() => expect(flowMsg()).toBe('a Claude login is already in progress'));
+  });
+
+  // A new login starts with an empty code field, so a code typed into a cancelled flow is never submitted.
+  it('a code typed before a Cancel is cleared when the next login starts', async () => {
+    fakeTimers();
+    const { server, codeBodies } = loginServer(awaitingCode, {
+      'POST /api/claude-auth/login': () => { server.snap = awaitingCode; return { json: { state: 'starting' } }; },
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByLabelText('Sign-in code');
+    fireEvent.change(codeField(), { target: { value: 'stale#S' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(flowMsg()).toBe('Login cancelled.'));
+    fireEvent.click(loginBtn());
+    await advance(10);
+    await screen.findByLabelText('Sign-in code');
+    expect(codeField().value).toBe('');
+    fireEvent.change(codeField(), { target: { value: 'fresh#S' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(codeBodies()).toEqual([{ code: 'fresh#S' }]));
+  });
+
+  // Cancel supersedes a poll in flight: its late answer neither re-opens code entry nor restarts the poll.
+  it('a poll still in flight when Cancel lands is dropped: the code field stays hidden and polling stays stopped', async () => {
+    fakeTimers();
+    const late = held<RouteAnswer>();
+    let gets = 0;
+    const { polls } = loginServer(awaitingCode, {
+      'GET /api/claude-auth/login': () => (++gets === 2 ? late.answer : { json: awaitingCode }),
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByLabelText('Sign-in code');
+    await advance(10);
+    await waitFor(() => expect(polls()).toBe(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(flowMsg()).toBe('Login cancelled.'));
+    await act(async () => late.release({ json: awaitingCode }));
+    expect(screen.queryByLabelText('Sign-in code')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(flowMsg()).toBe('Login cancelled.');
+    const n = polls();
+    await advance(100);
+    expect(polls()).toBe(n);
+  });
+
+  // A closed panel's in-flight poll is dead: it repaints nothing in the reopened panel, which shows the server's newer state and polls nothing.
+  it('a poll in flight when the panel closes is dropped, and the reopened panel keeps the newer state', async () => {
+    fakeTimers();
+    const late = held<RouteAnswer>();
+    let gets = 0;
+    const { server, polls } = loginServer(verifying, {
+      'GET /api/claude-auth/login': () => (++gets === 2 ? late.answer : { json: server.snap }),
+    });
+    const a = wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Verifying…');
+    await advance(10);
+    await waitFor(() => expect(polls()).toBe(2));
+    a.unmount();
+    server.snap = { state: 'failed', error: 'Login failed: HTTP 400' };
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Not signed in');
+    await waitFor(() => expect(polls()).toBe(3));
+    await act(async () => {});
+    expect(loginBtn().disabled).toBe(false);
+    expect(screen.queryByTestId('ca-flow')).toBeNull();
+    await act(async () => late.release({ json: verifying }));
+    expect(loginBtn().disabled).toBe(false);
+    expect(screen.queryByTestId('ca-flow')).toBeNull();
+    const n = polls();
+    await advance(100);
+    expect(polls()).toBe(n);
+  });
+
+  // When another tab's flow refuses the start, that flow is adopted: shown, cancellable, polled, and the refusal stays the message.
+  it("a start refused because another tab's flow is running shows that flow, cancellable and polled, with the refusal", async () => {
+    fakeTimers();
+    const refusal = 'a Claude login is already in progress';
+    let gets = 0;
+    const { polls } = loginServer({ state: 'idle' }, {
+      'GET /api/claude-auth/login': () => ({ json: ++gets === 1 ? { state: 'idle' } : awaitingCode }),
+      'POST /api/claude-auth/login': () => ({ status: 409, json: { error: refusal } }),
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Not signed in');
+    fireEvent.click(loginBtn());
+    await screen.findByLabelText('Sign-in URL');
+    expect(screen.getByTestId('ca-flow')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+    expect((screen.getByLabelText('Sign-in URL') as HTMLInputElement).value).toBe(URL_);
+    expect(flowMsg()).toBe(refusal);
+    const n = polls();
+    await advance(50);
+    expect(polls()).toBeGreaterThan(n);
+    expect(flowMsg()).toBe(refusal);
+  });
+
+  // The refusal outranks the adopted flow's own "Verifying…" wording.
+  it("a start refused while another tab's flow is verifying keeps the refusal on screen", async () => {
+    fakeTimers();
+    const refusal = 'a Claude login is already in progress';
+    let gets = 0;
+    loginServer({ state: 'idle' }, {
+      'GET /api/claude-auth/login': () => ({ json: ++gets === 1 ? { state: 'idle' } : verifying }),
+      'POST /api/claude-auth/login': () => ({ status: 409, json: { error: refusal } }),
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    await screen.findByText('Not signed in');
+    fireEvent.click(loginBtn());
+    await screen.findByRole('button', { name: 'Cancel' });
+    expect(flowMsg()).toBe(refusal);
+    await advance(30);
+    expect(flowMsg()).toBe(refusal);
+    expect(screen.queryByText('Verifying…')).toBeNull();
+  });
+
+  // A superseded status read is dropped: the account the newer read reported stays on screen.
+  it('an older status answer landing after a newer one does not repaint the previous account', async () => {
+    fakeTimers();
+    const first = held<RouteAnswer>();
+    let reads = 0;
+    const { server } = loginServer({ state: 'idle' }, {
+      'GET /api/claude-auth/status': () => (++reads === 1 ? first.answer : { json: { ...signedIn, email: 'new@example.com' } }),
+      'POST /api/claude-auth/login': () => { server.snap = { state: 'succeeded' }; return { json: verifying }; },
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    fireEvent.click(loginBtn());
+    await advance(10);
+    await screen.findByText(/new@example.com/);
+    await act(async () => first.release({ json: { ...signedIn, email: 'old@example.com' } }));
+    expect(screen.getByTestId('ca-status').textContent).toMatch('new@example.com');
+    expect(screen.getByTestId('ca-status').textContent).not.toMatch('old@example.com');
+  });
+
+  // A superseded status read that fails is dropped too: no error replaces the newer answer.
+  it('an older status failure landing after a newer answer does not replace it', async () => {
+    fakeTimers();
+    const first = held<RouteAnswer>();
+    let reads = 0;
+    const { server } = loginServer({ state: 'idle' }, {
+      'GET /api/claude-auth/status': () => (++reads === 1 ? first.answer : { json: { ...signedIn, email: 'new@example.com' } }),
+      'POST /api/claude-auth/login': () => { server.snap = { state: 'succeeded' }; return { json: verifying }; },
+    });
+    wrap(<ClaudeLogin pollMs={10} />);
+    fireEvent.click(loginBtn());
+    await advance(10);
+    await screen.findByText(/new@example.com/);
+    await act(async () => first.release(new Error('boom')));
+    expect(screen.getByText('Signed in')).toBeTruthy();
+    expect(screen.queryByText(/Could not read the Claude login state/)).toBeNull();
   });
 });
 
@@ -268,6 +582,18 @@ describe('Models', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ label: 'Mine 1', contextWindow: 1000000, midTurnSteering: true }));
     await screen.findByText('Saved.');
     expect((screen.getByLabelText('Model id') as HTMLInputElement).disabled).toBe(false);
+    // Cancel leaves edit mode without a request and unlocks the pair.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Mine 1' }));
+    expect((screen.getByLabelText('Model id') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Backend') as HTMLSelectElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect((screen.getByLabelText('Model id') as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByLabelText('Model id') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Backend') as HTMLSelectElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add model' })).toBeTruthy();
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
   });
 
   it('a custom model needs a parseable context', () => {
@@ -344,6 +670,71 @@ describe('Archived', () => {
       off();
     }
   });
+
+  const three = () => ({ groups: [{ project: 'p', sessions: [
+    { sessionId: 's1', title: 'T1', lastActivity: Date.now() - 5 * 60_000 },
+    { sessionId: 's2', firstPrompt: 'fp', worktreeName: 'wt1', lastActivity: Date.now() - 2 * 3600_000 },
+    { sessionId: 'abcdef0123456789' },
+  ] }] });
+  const row = (sid: string) => document.querySelector(`[data-session="${sid}"]`)?.textContent ?? '';
+
+  // Rows stay hidden until their group is expanded; a row is labelled by title, else first prompt, else short id, and carries its worktree and last activity.
+  it('groups start collapsed; an expanded row shows its title, else its first prompt, else its short id, with the worktree and last activity', async () => {
+    mockFetch({ 'GET /api/archived': () => three() });
+    wrap(<ArchivedSection />);
+    const trigger = await screen.findByRole('button', { name: /^p/ });
+    expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.textContent).toMatch('(3)');
+    fireEvent.click(trigger);
+    expect(await screen.findByText('T1')).toBeTruthy();
+    expect(screen.getByText('fp')).toBeTruthy();
+    expect(screen.getByText('abcdef01…')).toBeTruthy();
+    expect(row('s2')).toMatch('wt1 · last');
+    expect(row('s1')).toMatch('last 5m ago');
+    expect(row('abcdef0123456789')).toMatch('last never');
+  });
+
+  // Delete is gated on the confirmation: declining sends nothing; confirming deletes exactly that transcript and the reloaded list drops it.
+  it('Delete asks first: Cancel sends nothing; confirming deletes that transcript and reloads the list without it', async () => {
+    let data = three();
+    const calls = mockFetch({
+      'GET /api/archived': () => data,
+      'DELETE /api/projects/p/sessions/s1': () => { data = { groups: [{ project: 'p', sessions: data.groups[0].sessions.filter((x) => x.sessionId !== 's1') }] }; return { ok: true }; },
+    });
+    wrap(<><ArchivedSection /><ConfirmHost /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
+    const t1Delete = () => within(document.querySelector('[data-session="s1"]') as HTMLElement).getByRole('button', { name: 'Delete' });
+    fireEvent.click(await waitFor(t1Delete));
+    expect(await screen.findByRole('dialog', { name: 'Delete the transcript of “T1”?' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
+    fireEvent.click(t1Delete());
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete permanently' }));
+    await waitFor(() => expect(screen.queryByText('T1')).toBeNull());
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual(['/api/projects/p/sessions/s1']);
+    expect(calls.filter((c) => c.url === '/api/archived')).toHaveLength(2);
+  });
+
+  // A worktree session is deleted under its worktree's URL; a refused delete keeps the list as it was and reports the server's reason.
+  it('deleting a worktree session addresses it under its worktree; a failed delete keeps the row and says so', async () => {
+    const err = vi.spyOn(toast, 'error').mockImplementation(() => '' as any);
+    const calls = mockFetch({
+      'GET /api/archived': () => three(),
+      'DELETE /api/projects/p/worktrees/wt1/sessions/s2': () => ({ status: 500, json: { error: 'locked' } }),
+    });
+    wrap(<><ArchivedSection /><ConfirmHost /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
+    await screen.findByText('fp');
+    fireEvent.click(within(document.querySelector('[data-session="s2"]') as HTMLElement).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete permanently' }));
+    await waitFor(() => expect(err).toHaveBeenCalledWith('Delete failed', 'locked'));
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual(['/api/projects/p/worktrees/wt1/sessions/s2']);
+    expect(calls.filter((c) => c.url === '/api/archived')).toHaveLength(1);
+    expect(screen.getByText('fp')).toBeTruthy();
+    err.mockRestore();
+  });
 });
 
 describe('Plugins', () => {
@@ -377,6 +768,17 @@ describe('Plugins', () => {
   });
 
   it('library: Update all is disabled with nothing to update and counts updatable entries otherwise', async () => {
+    // With no installed entry behind its origin, Update all is offered disabled.
+    mockFetch({
+      'GET /api/plugins': () => ({ rows: [] }), 'GET /api/projects': () => [],
+      'GET /api/plugins/library': () => ({ entries: [
+        { id: 'a', name: 'A', repo: 'r', installed: true, installedAs: 'a', updateAvailable: false },
+        { id: 'b', name: 'B', repo: 'r', installed: false },
+      ] }),
+    });
+    const empty = wrap(<PluginsSection />);
+    expect(await screen.findByRole('button', { name: 'Update all' })).toHaveProperty('disabled', true);
+    empty.unmount();
     mockFetch({
       'GET /api/plugins': () => ({ rows: [] }), 'GET /api/projects': () => [],
       'GET /api/plugins/library': () => ({ entries: [
