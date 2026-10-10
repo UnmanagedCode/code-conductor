@@ -70,7 +70,7 @@ function parseLockRecord(raw: string): LockRecord | null {
 
 // Returns false only when the process definitely does not exist (ESRCH).
 // EPERM (process exists but we have no permission to signal it) → alive.
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (e) { return errCode(e) !== 'ESRCH'; }
 }

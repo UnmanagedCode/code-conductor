@@ -8,9 +8,10 @@
 // endpoint answer at once (the Termux widget and the Windows launcher poll
 // them). Output goes to a temp dir and is swapped in by rename-aside, so a
 // previous build keeps serving until the new one is in place, and a failed build
-// or a failed swap leaves it serving. Until any build exists, the UI route
-// answers a self-refreshing "building" page; a failure with no previous build
-// answers 503 naming the error. A failure never stops the server.
+// or a failed swap leaves it serving — unless the swap cannot put it back
+// either, which leaves no build. Until any build exists, the UI route answers a
+// self-refreshing "building" page; a failure with no build in place answers 503
+// naming the error. A failure never stops the server.
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -18,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WEB_BASE } from '../web/base.ts';
+import { isProcessAlive } from './storeLock.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WEB_ROOT = path.join(repoRoot, 'web');
@@ -46,15 +48,19 @@ function listFiles(dir: string, out: string[]): void {
   }
 }
 
-export function webSourceHash(): string {
+/** The build's inputs; injectable so a test can hash a fixture tree. Paths in the hash are relative to `root`. */
+export type WebInputs = { root: string; dirs: string[]; files: string[] };
+const DEFAULT_INPUTS: WebInputs = { root: repoRoot, dirs: INPUT_DIRS, files: INPUT_FILES };
+
+export function webSourceHash({ root, dirs, files: inputFiles }: WebInputs = DEFAULT_INPUTS): string {
   const files: string[] = [];
-  for (const d of INPUT_DIRS) listFiles(d, files);
-  files.push(...INPUT_FILES.filter((f) => fs.existsSync(f)));
+  for (const d of dirs) listFiles(d, files);
+  files.push(...inputFiles.filter((f) => fs.existsSync(f)));
   files.sort();
   const h = createHash('sha256');
   for (const f of files) {
     // Path relative + POSIX-separated so the hash is identical across hosts.
-    h.update(path.relative(repoRoot, f).split(path.sep).join('/'));
+    h.update(path.relative(root, f).split(path.sep).join('/'));
     h.update('\0');
     h.update(fs.readFileSync(f));
     h.update('\0');
@@ -69,20 +75,46 @@ function builtHash(distDir: string): string | null {
   } catch { return null; }
 }
 
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Removes `<dist>.tmp-<pid>` / `<dist>.old-<pid>` siblings a killed process left
+// behind. Only a pid that is no longer running: another live server's tmp may
+// be a build in flight. Best effort, one entry at a time.
+function sweepLeftovers(distDir: string, log: Pick<Console, 'error'>): void {
+  const parent = path.dirname(distDir);
+  const re = new RegExp(`^${path.basename(distDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(?:tmp|old)-(\\d+)$`);
+  let names: string[];
+  try { names = fs.readdirSync(parent); } catch { return; }
+  for (const name of names) {
+    const pid = Number(re.exec(name)?.[1]);
+    if (!pid || pid === process.pid || isProcessAlive(pid)) continue;
+    try { fs.rmSync(path.join(parent, name), { recursive: true, force: true }); }
+    catch (e) { log.error(`web: could not remove the leftover ${path.join(parent, name)}: ${errText(e)}`); }
+  }
+}
+
 // Rename-aside, so a failed swap never loses the previous build: dist moves to
-// dist.old-<pid>, the new build moves in, and only then is the old one removed.
-// If the new one cannot move in, the old one is moved back before rethrowing.
-function swapIn(tmp: string, distDir: string): void {
+// dist.old-<pid>, the new build moves in, and only then is the old one removed
+// (best effort: the new build is live by then). If the new one cannot move in,
+// the old one is moved back before rethrowing; if that fails too, both errors
+// are reported, the original first, and no build is in place.
+function swapIn(tmp: string, distDir: string, log: Pick<Console, 'error'>): void {
   const old = `${distDir}.old-${process.pid}`;
   fs.rmSync(old, { recursive: true, force: true });
   const hadPrevious = fs.existsSync(distDir);
   if (hadPrevious) fs.renameSync(distDir, old);
   try { fs.renameSync(tmp, distDir); }
   catch (e) {
-    if (hadPrevious) fs.renameSync(old, distDir);
+    if (hadPrevious) {
+      try { fs.renameSync(old, distDir); }
+      catch (restoreErr) {
+        throw new Error(`${errText(e)}; restoring the previous build also failed: ${errText(restoreErr)} (it is left at ${old})`, { cause: e });
+      }
+    }
     throw e;
   }
-  fs.rmSync(old, { recursive: true, force: true });
+  try { fs.rmSync(old, { recursive: true, force: true }); }
+  catch (e) { log.error(`web: the new build is live, but the previous one could not be removed from ${old}: ${errText(e)}`); }
 }
 
 export type WebState = { phase: 'idle' | 'building' | 'ready' | 'failed'; error: string | null };
@@ -96,6 +128,7 @@ export async function ensureWebBuild(
   // Everything, the input hash included, is inside the try: start() fires this
   // unawaited, so a rejection would be unhandled and take the server down.
   try {
+    sweepLeftovers(distDir, log);
     const hash = webSourceHash();
     if (builtHash(distDir) === hash) { Object.assign(state, { phase: 'ready', error: null }); return { ...state }; }
     state.phase = 'building';
@@ -103,12 +136,12 @@ export async function ensureWebBuild(
     const { build } = await import('vite');
     await build({ configFile: path.join(WEB_ROOT, 'vite.config.ts'), logLevel: 'warn', build: { outDir: tmp, emptyOutDir: true } });
     fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
-    swapIn(tmp, distDir);
+    swapIn(tmp, distDir, log);
     Object.assign(state, { phase: 'ready', error: null });
     log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort: the failure below is what gets reported */ }
-    Object.assign(state, { phase: 'failed', error: e instanceof Error ? e.message : String(e) });
+    Object.assign(state, { phase: 'failed', error: errText(e) });
     const stale = fs.existsSync(path.join(distDir, 'index.html'));
     log.error([
       '='.repeat(60),

@@ -94,7 +94,7 @@ First e2e run on a machine: `npx playwright install chromium` (the browser revis
 - **`import.meta.env.BASE_URL` is `/` under Vitest**, whatever `base` the Vite config sets. Code that needs the base path imports `WEB_BASE` from `web/base.ts`, which a test observes as `/next/`.
 - **Model-switch parity.** The Change-model cases in `features/session/header.test.tsx` each name the old-UI test in `tests/header-change-model.test.mjs` they mirror; a behaviour change to one picker updates both.
 - **Vitest is a devDependency.** `web/vite.config.ts` must never import it: the server's boot-time build loads that file under `npm install --omit=dev` (Docker). Test settings go in `web/vitest.config.ts`, which merges the Vite config.
-- **The real build** runs once, in `web/src/build.test.ts` (`// @vitest-environment node`), into an `os.tmpdir()` dir; see [architecture.md](architecture.md) → Testing.
+- **The real builds** run only in `web/src/build.test.ts` (`// @vitest-environment node`), under `NODE_ENV=production` (Vitest's `test` would build the development bundle), into `os.tmpdir()` dirs; nothing there writes under `web/`. See [architecture.md](architecture.md) → Testing.
 
 ### End-to-end suite
 

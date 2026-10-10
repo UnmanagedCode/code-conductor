@@ -1,7 +1,8 @@
 // @vitest-environment node
 // The only real Vite builds in a gated suite: src/webBuild.ts's ensureWebBuild,
 // built into temp dirs outside web/ (webSourceHash walks web/, so an output dir
-// there would change the hash between calls).
+// there would change the hash between calls). Nothing here writes under web/.
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -52,18 +53,16 @@ describe('ensureWebBuild', () => {
     expect(fs.statSync(index).mtimeMs).toBe(mtime);
   });
 
-  it('the input hash ignores build leftovers (dist.tmp-*, dist.old-*) but not a new source dir', () => {
-    const before = webSourceHash();
-    const tag = `${process.pid}-${Date.now()}`;
-    const probe = (name: string) => {
-      const dir = path.join(WEB_ROOT, name);
-      fs.mkdirSync(dir);
-      fs.writeFileSync(path.join(dir, 'a.js'), 'x');
-      try { return webSourceHash(); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-    };
-    expect(probe(`dist.tmp-${tag}`)).toBe(before);
-    expect(probe(`dist.old-${tag}`)).toBe(before);
-    expect(probe(`probe-${tag}`)).not.toBe(before);
+  it('sweeps <dist>.tmp-<pid> / .old-<pid> leftovers of dead processes, never a live one\'s', async () => {
+    const dead = spawnSync(process.execPath, ['-e', '']).pid!;
+    const sibling = (suffix: string) => { const d = `${distDir}${suffix}`; fs.mkdirSync(d); fs.writeFileSync(path.join(d, 'x'), 'x'); return d; };
+    const swept = [sibling(`.tmp-${dead}`), sibling(`.old-${dead}`)];
+    const kept = [sibling(`.tmp-${process.ppid}`), sibling(`.old-${process.ppid}`), sibling(`.tmp-${process.pid}`), sibling('.tmp-notapid')];
+    try {
+      expect(await ensureWebBuild({ log, distDir })).toEqual({ phase: 'ready', error: null });
+      expect(swept.filter((d) => fs.existsSync(d))).toEqual([]);
+      expect(kept.filter((d) => !fs.existsSync(d))).toEqual([]);
+    } finally { for (const d of [...swept, ...kept]) fs.rmSync(d, { recursive: true, force: true }); }
   });
 
   it('builds the production bundle the server ships: no chunk over chunkSizeWarningLimit, no size warning', () => {
@@ -91,12 +90,47 @@ describe('ensureWebBuild', () => {
   });
 });
 
+describe('webSourceHash over a fixture root', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webhash-'));
+  const web = path.join(root, 'web');
+  const inputs = { root, dirs: [web], files: [path.join(root, 'package-lock.json')] };
+  fs.mkdirSync(web);
+  fs.writeFileSync(path.join(web, 'main.ts'), 'export {};');
+  fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+  const withDir = (name: string) => {
+    const dir = path.join(web, name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'a.js'), 'x');
+    try { return webSourceHash(inputs); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  };
+
+  it.each(['dist', 'node_modules', 'test-results', 'playwright-report', 'dist.tmp-123', 'dist.old-123'])('ignores %s', (name) => {
+    expect(withDir(name)).toBe(webSourceHash(inputs));
+  });
+
+  it('control: a new source dir, or a changed input file, changes it', () => {
+    const before = webSourceHash(inputs);
+    expect(withDir('probe')).not.toBe(before);
+    fs.writeFileSync(path.join(root, 'package-lock.json'), '{"x":1}');
+    expect(webSourceHash(inputs)).not.toBe(before);
+  });
+});
+
 describe('ensureWebBuild failures resolve `failed`, never reject (start() fires it unawaited)', () => {
   const quiet = () => ({ log: vi.fn(), error: vi.fn() });
   const dirs: string[] = [];
   const freshDir = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-fail-')); dirs.push(d); return d; };
   afterEach(() => vi.restoreAllMocks());
-  afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+  afterAll(() => {
+    for (const d of dirs) for (const p of [d, `${d}.old-${process.pid}`, `${d}.tmp-${process.pid}`]) fs.rmSync(p, { recursive: true, force: true });
+  });
+  const previousBuild = () => {
+    const dist = freshDir();
+    fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><p>previous-build</p>');
+    fs.writeFileSync(path.join(dist, '.source-hash'), 'stale\n');
+    return dist;
+  };
 
   it('an input that cannot be read', async () => {
     const realRead = fs.readFileSync;
@@ -111,9 +145,7 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
   });
 
   it('a swap that fails keeps the previous build in place and served', async () => {
-    const dist = freshDir();
-    fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><p>previous-build</p>');
-    fs.writeFileSync(path.join(dist, '.source-hash'), 'stale\n');
+    const dist = previousBuild();
     const realRename = fs.renameSync;
     vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
       if (String(from).startsWith(`${dist}.tmp-`)) throw Object.assign(new Error('EXDEV: injected rename failure'), { code: 'EXDEV' });
@@ -137,5 +169,45 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
       expect(r.status).toBe(200);
       expect(await r.text()).toContain('previous-build');
     } finally { await new Promise((resolve) => server.close(resolve)); }
+  }, 120_000);
+
+  it('a swap whose restore fails too reports both errors, the original first, and says no build is served', async () => {
+    const dist = previousBuild();
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from).startsWith(`${dist}.tmp-`)) throw Object.assign(new Error('EXDEV: injected move-in failure'), { code: 'EXDEV' });
+      if (String(from).startsWith(`${dist}.old-`)) throw Object.assign(new Error('EBUSY: injected restore failure'), { code: 'EBUSY' });
+      return realRename(from, to);
+    });
+    const log = quiet();
+    const result = await productionBuild({ log, distDir: dist });
+    expect(result.phase).toBe('failed');
+    const error = result.error!;
+    expect(error).toContain('EXDEV: injected move-in failure');
+    expect(error).toContain('EBUSY: injected restore failure');
+    expect(error.indexOf('EXDEV')).toBeLessThan(error.indexOf('EBUSY'));
+    expect(String(log.error.mock.calls[0][0])).toContain('the UI is unavailable');
+    expect(fs.existsSync(path.join(dist, 'index.html'))).toBe(false);
+  }, 120_000);
+
+  it('a previous build that cannot be removed after the swap leaves the new build live and `ready`', async () => {
+    const dist = previousBuild();
+    const old = `${dist}.old-${process.pid}`;
+    let movedIn = false;
+    const realRename = fs.renameSync;
+    const realRm = fs.rmSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      realRename(from, to);
+      if (String(from).startsWith(`${dist}.tmp-`)) movedIn = true;
+    });
+    vi.spyOn(fs, 'rmSync').mockImplementation((p, opts) => {
+      if (movedIn && String(p) === old) throw Object.assign(new Error('EBUSY: injected removal failure'), { code: 'EBUSY' });
+      return realRm(p, opts);
+    });
+    const log = quiet();
+    const result = await productionBuild({ log, distDir: dist });
+    expect(result).toEqual({ phase: 'ready', error: null });
+    expect(fs.readFileSync(path.join(dist, 'index.html'), 'utf8')).not.toContain('previous-build');
+    expect(log.error.mock.calls.map((c) => String(c[0]))).toEqual([expect.stringContaining('EBUSY: injected removal failure')]);
   }, 120_000);
 });
