@@ -157,6 +157,26 @@ export interface Ui {
   removeSystem(page: Page, id: string): Promise<void>;
   /** The Systems add/edit form; `save` is its submit button (Add in add mode, Save in edit mode). */
   systemForm(page: Page): { id: Locator; label: Locator; launch: Locator; save: Locator; cancel: Locator };
+
+  // Sidebar B2 (card 2026-0638)
+  /** Selects the Projects lens and opens `project`'s Worktrees group. */
+  openWorktrees(page: Page, project: string): Promise<void>;
+  /** Selects the Projects lens and reads whether `project`'s Worktrees group is open, without touching it. */
+  worktreesOpen(page: Page, project: string): Promise<boolean>;
+  /** Selects the Projects lens, opens `project`'s Worktrees group and returns `worktree`'s head row. */
+  worktreeHead(page: Page, project: string, worktree: string): Promise<Locator>;
+  /** The computed colour of the 3px owner bar `el` draws, or null when it draws none. */
+  ownerBar(el: Locator): Promise<string | null>;
+  /** Selects the Projects lens and returns the listed project names, in order. */
+  projectNames(page: Page): Promise<string[]>;
+  /** Selects the Projects lens and sets the conductor filter: '' is All, else an owner session id shown as `label`. */
+  filterTo(page: Page, value: string, label: string): Promise<void>;
+  /** Selects the Projects lens and returns the filter root's owner bar colour, or null. */
+  filterBar(page: Page): Promise<string | null>;
+  /** Whether a session row is the selected one. */
+  sessionRowActive(row: Locator): Promise<boolean>;
+  /** A session row's label weight, whether it draws a 1px selection frame, and its fill. */
+  sessionRowStyle(row: Locator): Promise<{ weight: string; framed: boolean; fill: string }>;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -467,11 +487,8 @@ export const legacy: Ui = {
     await legacy.lens(page, 'projects');
     const li = (await legacy.projectRow(page, project)).locator('xpath=..');
     if (worktree === null) return li.locator(':scope > details.sessions-group > summary');
+    await legacy.openWorktrees(page, project);
     const group = li.locator('details.worktree-group').first();
-    await expect(async () => {
-      if ((await group.getAttribute('open')) === null) await group.locator(':scope > summary').click();
-      await expect(group).toHaveAttribute('open', '', { timeout: 1_000 });
-    }).toPass({ timeout: 10_000 });
     return group.locator('.worktree-item')
       .filter({ has: page.locator('.worktree-name', { hasText: exactly(worktree) }) })
       .locator('details.sessions-group > summary')
@@ -509,6 +526,55 @@ export const legacy: Ui = {
     await legacy.systemRow(page, id).locator('.sy-row-actions button', { hasText: exactly('Remove') }).click();
   },
   systemForm: (page) => ({ id: page.locator('#sy-id'), label: page.locator('#sy-label'), launch: page.locator('#sy-launch'), save: page.locator('#sy-save'), cancel: page.locator('#sy-cancel') }),
+
+  // Sidebar B2 (card 2026-0638)
+  async openWorktrees(page, project) {
+    await legacy.lens(page, 'projects');
+    const group = (await legacy.projectRow(page, project)).locator('xpath=..').locator('details.worktree-group').first();
+    await expect(async () => {
+      if ((await group.getAttribute('open')) === null) await group.locator(':scope > summary').click();
+      await expect(group).toHaveAttribute('open', '', { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+  },
+  async worktreesOpen(page, project) {
+    await legacy.lens(page, 'projects');
+    const group = (await legacy.projectRow(page, project)).locator('xpath=..').locator('details.worktree-group').first();
+    return group.evaluate((e) => (e as HTMLDetailsElement).open);
+  },
+  async worktreeHead(page, project, worktree) {
+    await legacy.openWorktrees(page, project);
+    const li = (await legacy.projectRow(page, project)).locator('xpath=..');
+    return li.locator('.worktree-row').filter({ has: page.locator('.worktree-name', { hasText: exactly(worktree) }) }).first();
+  },
+  // A session row draws the bar as a border; a head and the filter draw it inset.
+  ownerBar: (el) => el.evaluate((e) => {
+    const cs = getComputedStyle(e);
+    if (cs.borderLeftStyle === 'solid' && cs.borderLeftWidth === '3px') return cs.borderLeftColor;
+    return /(rgba?\([^)]*\)) 3px 0px 0px 0px inset/.exec(cs.boxShadow)?.[1] ?? null;
+  }),
+  async projectNames(page) {
+    await legacy.lens(page, 'projects');
+    return page.locator('#project-list .project-name').allTextContents();
+  },
+  async filterTo(page, value, _label) {
+    await legacy.lens(page, 'projects');
+    const select = page.locator('#conductor-filter-select');
+    await select.selectOption(value);
+    await expect(select).toHaveValue(value);
+  },
+  async filterBar(page) {
+    await legacy.lens(page, 'projects');
+    return legacy.ownerBar(page.locator('#conductor-filter'));
+  },
+  sessionRowActive: (row) => row.evaluate((e) => e.classList.contains('active')),
+  sessionRowStyle: (row) => row.evaluate((e) => {
+    const cs = getComputedStyle(e);
+    return {
+      weight: getComputedStyle(e.querySelector('.session-preview')!).fontWeight,
+      framed: cs.outlineStyle === 'solid' && cs.outlineWidth === '1px',
+      fill: cs.backgroundColor,
+    };
+  }),
 };
 
 /**
@@ -779,11 +845,7 @@ export const next: Ui = {
   sessionRowLive: async (row) => (await row.locator('[data-dot]').getAttribute('data-dot')) !== 'offline',
   async sessionsSummary(page, project, worktree) {
     await next.lens(page, 'projects');
-    if (worktree) {
-      const toggle = sidebar(page).locator(`[data-worktrees="${project}"] > button`);
-      if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
-      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    }
+    if (worktree) await next.openWorktrees(page, project);
     return sidebar(page).locator(`[data-sessions-summary="${worktree ? `${project}:${worktree}` : project}"]`);
   },
   drawerOpen: async (page) => (await page.locator('[data-slot="sheet-content"][data-state="open"]').count()) > 0,
@@ -826,6 +888,48 @@ export const next: Ui = {
     const form = page.locator('[data-section="systems"] form');
     return { id: page.locator('#sy-id'), label: page.locator('#sy-label'), launch: page.locator('#sy-launch'), save: form.locator('button[type="submit"]'), cancel: form.getByRole('button', { name: 'Cancel', exact: true }) };
   },
+
+  // Sidebar B2 (card 2026-0638)
+  async openWorktrees(page, project) {
+    await next.lens(page, 'projects');
+    const toggle = sidebar(page).locator(`[data-worktrees="${project}"] > button`);
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  },
+  async worktreesOpen(page, project) {
+    await next.lens(page, 'projects');
+    const toggle = sidebar(page).locator(`[data-worktrees="${project}"] > button`);
+    return (await toggle.getAttribute('aria-expanded')) === 'true';
+  },
+  async worktreeHead(page, project, worktree) {
+    await next.openWorktrees(page, project);
+    return sidebar(page).locator(`[data-project="${project}"] [data-worktree-row="${worktree}"]`);
+  },
+  ownerBar: (el) => el.evaluate((e) => /(rgba?\([^)]*\)) 3px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow)?.[1] ?? null),
+  async projectNames(page) {
+    await next.lens(page, 'projects');
+    return sidebar(page).locator('[data-project-list] [data-project-row]').evaluateAll((es) => es.map((e) => e.getAttribute('data-project-row') ?? ''));
+  },
+  async filterTo(page, value, label) {
+    await next.lens(page, 'projects');
+    await sidebar(page).getByRole('combobox', { name: 'Filter by conductor' }).click();
+    await page.getByRole('option', { name: label, exact: true }).click();
+    await expect(sidebar(page).locator('[data-filter]')).toHaveAttribute('data-filter', value || 'all');
+  },
+  async filterBar(page) {
+    await next.lens(page, 'projects');
+    return next.ownerBar(sidebar(page).locator('[data-filter]'));
+  },
+  sessionRowActive: async (row) => (await row.getAttribute('data-active')) === 'true',
+  sessionRowStyle: (row) => row.evaluate((e) => {
+    const cs = getComputedStyle(e);
+    return {
+      weight: getComputedStyle(e.querySelector('span.truncate')!).fontWeight,
+      // By geometry, not colour: ring-border is --border, an oklch() Chrome serializes verbatim in box-shadow.
+      framed: cs.boxShadow.replace(/\s+/g, ' ').split(', ').some((p) => p.endsWith(' 0px 0px 0px 1px')),
+      fill: cs.backgroundColor,
+    };
+  }),
 };
 
 // Sidebar B (card 2026-0628)
