@@ -3,6 +3,7 @@ import { PencilIcon, PlusIcon, ServerIcon, Trash2Icon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { createStore, useStore } from '@/state/createStore';
 import { SectionIntro, SettingsCard, Status, Field } from './ui';
 import { json, post, patch, del, errText } from './api';
 import { launchFromText } from './models/logic';
@@ -14,12 +15,15 @@ type System = {
 
 const EMPTY = { id: '', label: '', launch: '', worktreesDir: '' };
 
+// An unsaved Add or Edit lives at module scope, not in the component: Settings remounts a section on every switch and on re-entry, and typed input must survive both.
+export const systemsDraftStore = createStore<{ editing: string | null; form: typeof EMPTY; formStatus: string | null }>({ editing: null, form: EMPTY, formStatus: null });
+
 export function SystemsSection() {
   const [systems, setSystems] = React.useState<System[] | null>(null);
   const [status, setStatus] = React.useState<string | null>(null);
-  const [editing, setEditing] = React.useState<string | null>(null);
-  const [form, setForm] = React.useState(EMPTY);
-  const [formStatus, setFormStatus] = React.useState<string | null>(null);
+  const { editing, form, formStatus } = useStore(systemsDraftStore, (s) => s);
+  const setForm = (patch: Partial<typeof EMPTY>) => systemsDraftStore.set((s) => ({ form: { ...s.form, ...patch } }));
+  const setFormStatus = (formStatus: string | null) => systemsDraftStore.set({ formStatus });
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
@@ -29,15 +33,15 @@ export function SystemsSection() {
   }, []);
 
   function closeForm() {
-    setEditing(null);
-    setForm(EMPTY);
-    setFormStatus(null);
+    systemsDraftStore.set({ editing: null, form: EMPTY, formStatus: null });
   }
 
   function openEdit(s: System) {
-    setEditing(s.id);
-    setForm({ id: s.id, label: s.label, launch: Array.isArray(s.launch) ? s.launch.join(' ') : '', worktreesDir: typeof s.worktreesDir === 'string' ? s.worktreesDir : '' });
-    setFormStatus(null);
+    systemsDraftStore.set({
+      editing: s.id,
+      form: { id: s.id, label: s.label, launch: Array.isArray(s.launch) ? s.launch.join(' ') : '', worktreesDir: typeof s.worktreesDir === 'string' ? s.worktreesDir : '' },
+      formStatus: null,
+    });
   }
 
   async function save() {
@@ -112,13 +116,13 @@ export function SystemsSection() {
       </div>
       <SettingsCard title={editing ? `Edit ${systems?.find((s) => s.id === editing)?.label ?? editing}` : 'Add a system'}>
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit system' : 'Add system'}>
-          <Field label="Id" htmlFor="sy-id"><Input id="sy-id" value={form.id} disabled={!!editing} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="e.g. prod-box" autoComplete="off" /></Field>
-          <Field label="Label" htmlFor="sy-label"><Input id="sy-label" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. Prod box" autoComplete="off" /></Field>
+          <Field label="Id" htmlFor="sy-id"><Input id="sy-id" value={form.id} disabled={!!editing} onChange={(e) => setForm({ id: e.target.value })} placeholder="e.g. prod-box" autoComplete="off" /></Field>
+          <Field label="Label" htmlFor="sy-label"><Input id="sy-label" value={form.label} onChange={(e) => setForm({ label: e.target.value })} placeholder="e.g. Prod box" autoComplete="off" /></Field>
           <Field label="Provider command" htmlFor="sy-launch" className="sm:col-span-2" hint="Run directly, never through a shell. Leave empty for a name-only system.">
-            <Input id="sy-launch" className="font-mono" value={form.launch} onChange={(e) => setForm({ ...form, launch: e.target.value })} placeholder="e.g. docker exec -i ctr cc-provider" autoComplete="off" />
+            <Input id="sy-launch" className="font-mono" value={form.launch} onChange={(e) => setForm({ launch: e.target.value })} placeholder="e.g. docker exec -i ctr cc-provider" autoComplete="off" />
           </Field>
           <Field label="Worktrees directory (optional)" htmlFor="sy-worktrees-dir" className="sm:col-span-2" hint="Absolute path on the system. Default: beside each project.">
-            <Input id="sy-worktrees-dir" className="font-mono" value={form.worktreesDir} onChange={(e) => setForm({ ...form, worktreesDir: e.target.value })} autoComplete="off" />
+            <Input id="sy-worktrees-dir" className="font-mono" value={form.worktreesDir} onChange={(e) => setForm({ worktreesDir: e.target.value })} autoComplete="off" />
           </Field>
           <div className="flex justify-end gap-2 sm:col-span-2">
             {editing && <Button type="button" variant="ghost" onClick={closeForm}>Cancel</Button>}

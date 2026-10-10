@@ -13,16 +13,19 @@ vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () =>
 import { resumeSession } from '@/app/sessionActions';
 import { applyModels } from '@/app/models';
 import { modelsSettingsStore, loadModelsSettings } from './models/store';
+import type { ModelsPayload } from './models/logic';
 import { OverageCard } from './AccountSection';
 import { ClaudeLogin } from './ClaudeLogin';
-import { BackendsSection } from './BackendsSection';
-import { SystemsSection } from './SystemsSection';
-import { ModelsSection, EffortPicker } from './models/ModelsSection';
+import { BackendsSection, backendsDraftStore } from './BackendsSection';
+import { SystemsSection, systemsDraftStore } from './SystemsSection';
+import { ModelsSection, EffortPicker, modelsDraftStore } from './models/ModelsSection';
 import { ArchivedSection } from './ArchivedSection';
 import { PluginsSection } from './PluginsSection';
 import { pluginsChangeStore, pluginsChangedSignal } from './pluginsSignal';
 import { on } from '@/app/events';
 import { ConfirmHost, toast } from '@/ui/feedback';
+
+const DRAFTS = [modelsDraftStore.get(), backendsDraftStore.get(), systemsDraftStore.get()] as const;
 
 const wrap = (ui: React.ReactElement) => render(<TooltipProvider>{ui}</TooltipProvider>);
 
@@ -53,6 +56,9 @@ const models = (over: object = {}) => ({
 
 beforeEach(() => {
   modelsSettingsStore.set({ data: null, error: null, status: null });
+  modelsDraftStore.set(DRAFTS[0]);
+  backendsDraftStore.set(DRAFTS[1]);
+  systemsDraftStore.set(DRAFTS[2]);
   vi.mocked(applyModels).mockClear();
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -503,6 +509,47 @@ describe('Backends', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove Mine' }));
     await screen.findByText('Remove failed: still used by m1');
   });
+
+  // A successful Remove renders the list from the DELETE answer, refreshes the catalog with it, and clears the earlier refusal.
+  it('a successful Remove re-renders the list from the answer and clears an earlier refusal', async () => {
+    const answer = models({ backends: models().backends.slice(0, 2) });
+    let deletes = 0;
+    mockFetch({ 'DELETE /api/settings/models/backends/mine': () => (deletes++ === 0 ? { status: 409, json: { error: 'still used by m1' } } : answer) });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<BackendsSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Mine' }));
+    await screen.findByText('Remove failed: still used by m1');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Mine' }));
+    await waitFor(() => expect([...document.querySelectorAll('[data-backend]')].map((e) => e.getAttribute('data-backend'))).toEqual(['claude', 'ollama']));
+    expect(screen.queryByText('Remove failed: still used by m1')).toBeNull();
+    expect(applyModels).toHaveBeenCalledWith(answer);
+  });
+
+  // Invariant: only a successful Remove of the edited backend ends edit mode; removing another user backend leaves the edit (id lock, typed values, edit title) intact.
+  it('removing a backend other than the one being edited keeps that edit open', async () => {
+    type BackendRow = NonNullable<ModelsPayload['backends']>[number];
+    const CLAUDE: BackendRow = { id: 'claude', label: 'Claude', template: '', env: [], managed: true };
+    const MINE: BackendRow = { id: 'mine', label: 'Mine', template: 'mine run {model}', env: [{ key: 'A', value: '1' }] };
+    const PX: BackendRow = { id: 'px', label: 'My Proxy', template: 'px {model}', env: [] };
+    const both: ModelsPayload = { backends: [CLAUDE, MINE, PX], customModels: [] };
+    const afterRemove: ModelsPayload = { backends: [CLAUDE, MINE], customModels: [] };
+    mockFetch({ 'DELETE /api/settings/models/backends/px': () => afterRemove });
+    modelsSettingsStore.set({ data: both });
+    wrap(<BackendsSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Mine' }));
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Mine draft' } });
+    fireEvent.change(screen.getByLabelText('Template'), { target: { value: 'mine2 run {model}' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove My Proxy' }));
+    await waitFor(() => expect([...document.querySelectorAll('[data-backend]')].map((e) => e.getAttribute('data-backend'))).toEqual(['claude', 'mine']));
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('mine');
+    expect((screen.getByLabelText('Id') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Mine draft');
+    expect((screen.getByLabelText('Template') as HTMLInputElement).value).toBe('mine2 run {model}');
+    expect((screen.getByLabelText('Env (optional)') as HTMLTextAreaElement).value).toBe('A=1');
+    expect(screen.getByText('Edit Mine', { selector: '[data-slot="card-title"]' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeNull();
+  });
 });
 
 describe('Systems', () => {
@@ -539,6 +586,80 @@ describe('Systems', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add system' }));
     await screen.findByText('Save failed: provider did not answer hello');
     expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('x');
+  });
+
+  const LOCAL = { id: 'local', label: 'This machine', managed: true, projects: [] };
+  const PROD = { id: 'prod-box', label: 'Prod box', launch: ['ssh', 'prod', 'cc-provider'], projects: [{ name: 'shipping', remoteId: 'ctr-7' }] };
+  const NAMED = { id: 'namedonly', label: 'Named only', launch: null, projects: [] };
+  const rich = { systems: [LOCAL, PROD, NAMED] };
+  const systemIds = () => [...document.querySelectorAll('[data-system]')].map((e) => e.getAttribute('data-system'));
+
+  // Edit loads the row with its id locked; Save PATCHes that id with the new label and the loaded provider command as argv, then the form is back in add mode.
+  it('editing a user row locks its id, PATCHes the new label with the provider command unchanged, and returns to add mode', async () => {
+    const calls = mockFetch({ 'GET /api/settings/systems': () => rich, 'PATCH /api/settings/systems/prod-box': () => rich });
+    wrap(<SystemsSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Prod box' }));
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('prod-box');
+    expect((screen.getByLabelText('Id') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Prod box');
+    expect((screen.getByLabelText('Provider command') as HTMLInputElement).value).toBe('ssh prod cc-provider');
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Production' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByRole('button', { name: 'Add system' });
+    const writes = calls.filter((c) => c.method !== 'GET');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ method: 'PATCH', url: '/api/settings/systems/prod-box', body: { label: 'Production', launch: ['ssh', 'prod', 'cc-provider'], worktreesDir: null } });
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Id') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  // A refused Remove shows the server's message (naming the project) in the status line and keeps the row; only that one DELETE is sent.
+  it('a refused Remove names the blocking project and keeps the row', async () => {
+    const msg = "system 'prod-box' is still named by 1 project (shipping) — move or remove it first";
+    const calls = mockFetch({ 'GET /api/settings/systems': () => rich, 'DELETE /api/settings/systems/prod-box': () => ({ status: 409, json: { error: msg } }) });
+    wrap(<SystemsSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Prod box' }));
+    expect((await screen.findByText(`Remove failed: ${msg}`)).textContent).toBe(`Remove failed: ${msg}`);
+    expect(document.querySelector('[data-system="prod-box"]')).not.toBeNull();
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual(['/api/settings/systems/prod-box']);
+  });
+
+  // A successful Remove renders the list from the DELETE answer.
+  it('a successful Remove re-renders the list from the answer', async () => {
+    mockFetch({ 'GET /api/settings/systems': () => rich, 'DELETE /api/settings/systems/prod-box': () => ({ systems: [LOCAL] }) });
+    wrap(<SystemsSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Prod box' }));
+    expect(systemIds()).toEqual(['local', 'prod-box', 'namedonly']);
+    await waitFor(() => expect(systemIds()).toEqual(['local']));
+  });
+
+  // A user row shows its provider command joined, a command-less user row says it is a name only, and the built-in row has no command line at all.
+  it('a row shows its provider command, a command-less row says it is a name only, and the built-in row shows neither', async () => {
+    mockFetch({ 'GET /api/settings/systems': () => rich });
+    wrap(<SystemsSection />);
+    await screen.findByText('Prod box');
+    expect(document.querySelector('[data-system="prod-box"] [data-launch]')?.textContent).toBe('ssh prod cc-provider');
+    expect(document.querySelector('[data-system="namedonly"] [data-launch]')?.textContent).toMatch(/name only/);
+    expect(document.querySelector('[data-system="local"] [data-launch]')).toBeNull();
+  });
+
+  // Invariant: only a successful Remove of the edited system ends edit mode; removing another user system leaves the edit (id lock, typed values, edit title) intact.
+  it('removing a system other than the one being edited keeps that edit open', async () => {
+    type SystemRow = { id: string; label: string; managed?: boolean; launch?: string[] | null; projects?: { name: string; remoteId?: string | null }[] };
+    const afterRemove: { systems: SystemRow[] } = { systems: [LOCAL, PROD] };
+    mockFetch({ 'GET /api/settings/systems': () => rich, 'DELETE /api/settings/systems/namedonly': () => afterRemove });
+    wrap(<SystemsSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Prod box' }));
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Draft' } });
+    fireEvent.change(screen.getByLabelText('Provider command'), { target: { value: 'ssh prod2 cc-provider' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Named only' }));
+    await waitFor(() => expect(systemIds()).toEqual(['local', 'prod-box']));
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('prod-box');
+    expect((screen.getByLabelText('Id') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Provider command') as HTMLInputElement).value).toBe('ssh prod2 cc-provider');
+    expect(screen.getByText('Edit Prod box', { selector: '[data-slot="card-title"]' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeNull();
   });
 });
 
