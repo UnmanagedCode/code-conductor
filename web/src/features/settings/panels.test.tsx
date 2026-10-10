@@ -20,6 +20,8 @@ import { ModelsSection, EffortPicker } from './models/ModelsSection';
 import { ArchivedSection } from './ArchivedSection';
 import { PluginsSection } from './PluginsSection';
 import { pluginsChangeStore, pluginsChangedSignal } from './pluginsSignal';
+import { on } from '@/app/events';
+import { ConfirmHost } from '@/ui/feedback';
 
 const wrap = (ui: React.ReactElement) => render(<TooltipProvider>{ui}</TooltipProvider>);
 
@@ -314,6 +316,33 @@ describe('Archived', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
     await new Promise((r) => setTimeout(r, 30));
     expect(resumeSession).not.toHaveBeenCalled();
+  });
+
+  it('an accepted Restore and an accepted Delete each mark every place\'s session list stale, exactly once', async () => {
+    vi.mocked(resumeSession).mockClear();
+    mockFetch({
+      'GET /api/archived': () => groups,
+      'POST /api/projects/p/sessions/s1/restore': () => ({ ok: true }),
+      'DELETE /api/projects/p/sessions/s1': () => ({ ok: true }),
+    });
+    const stale: unknown[] = [];
+    const off = on('sessionsStale', (p) => stale.push(p));
+    try {
+      wrap(<><ArchivedSection /><ConfirmHost /></>);
+      await screen.findByText(/archived sessions/);
+      fireEvent.click(screen.getByRole('button', { name: /^p/ }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+      await waitFor(() => expect(resumeSession).toHaveBeenCalled());
+      expect(stale).toEqual([null]);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete permanently' }));
+      await waitFor(() => expect(stale).toHaveLength(2));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(stale).toEqual([null, null]);
+    } finally {
+      off();
+    }
   });
 });
 

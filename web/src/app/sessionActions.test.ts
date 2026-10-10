@@ -87,6 +87,14 @@ describe('closing a session', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('a session with no instance is archived once the confirm is accepted: exactly the archive POST', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    await closeSession({ projectName: 'p', instanceId: null, sessionId: 's9' });
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0].title).toMatch(/^Archive session/);
+    expect(calls).toEqual([{ url: '/api/projects/p/sessions/s9/archive', method: 'POST', body: undefined }]);
+  });
+
   it('a busy stop asks once, naming the session and that its transcript is kept, then DELETEs — for every busy status', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     for (const status of ['turn', 'running', 'spawning']) {

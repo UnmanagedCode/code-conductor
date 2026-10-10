@@ -3415,6 +3415,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/app/sessionActions.test.ts::closing a session > a busy stop asks once, naming the session and that its transcript is kept, then DELETEs — for every busy status',
         'web/src/app/sessionActions.test.ts::closing a session > declining a busy stop sends nothing and leaves the selection, the lists and the session caches alone — for every busy status',
         'web/src/app/sessionActions.test.ts::closing a session > an exited or crashed instance is archived, never stopped',
+        'web/src/app/sessionActions.test.ts::closing a session > a session with no instance is archived once the confirm is accepted: exactly the archive POST',
       ] },
   },
   {
