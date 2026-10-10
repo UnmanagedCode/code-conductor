@@ -147,9 +147,10 @@ parity('project-remote-dialog/R3', 'Change target from the system pill: a refusa
   let gets = 0;
   await page.route('**/api/projects', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
-    gets++;
     const res = await route.fetch();
     await route.fulfill({ response: res, json: [...(await res.json()), fake] });
+    // Counted once served, so a poll on `gets` never ends the test mid-fetch.
+    gets++;
   });
   const puts: unknown[] = [];
   let answer: { status: number; json: unknown } = { status: 502, json: { error: "remote 'typo' of system 'prod-box', which does not serve it" } };
@@ -181,6 +182,8 @@ parity('project-remote-dialog/R3', 'Change target from the system pill: a refusa
   await expect.poll(() => puts.length).toBe(2);
   expect(puts[1]).toEqual({ remoteId: 'ctr-9' });
   await expect.poll(() => gets).toBeGreaterThan(before);
+  // A background list refresh may still be inside the route at teardown.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 parity('spawn-dialog-worktree/R1', "The worktree box follows the project's repo: disabled with a reason for a non-git directory and an unborn HEAD, tickable on a repo with a commit", async ({ page, cc, ui, uniq }) => {
@@ -244,6 +247,13 @@ parity('spawn-dialog-effort/R2', 'The spawn dialog hides disabled tiers, opens E
   await createProject(cc, name);
 
   await ui.open(page);
+  // The routed models must have landed before the open under test: the old UI
+  // writes the Default label only when the dialog opens, so an open that beat
+  // the boot fetch would keep the unrouted label. The tier cards show the
+  // routed enablement once it has landed; the dialog is then reopened.
+  const first = await ui.openSpawnDialog(page, name);
+  await expect.poll(() => ui.spawnTiers(first)).toEqual({ offered: ['balanced', 'powerful', 'frontier'], selected: 'powerful' });
+  await ui.cancelDialog(first);
   const d = await ui.openSpawnDialog(page, name);
   await expect.poll(() => ui.spawnTiers(d)).toEqual({ offered: ['balanced', 'powerful', 'frontier'], selected: 'powerful' });
   await ui.spawnAdvanced(d);

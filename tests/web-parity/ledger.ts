@@ -4822,6 +4822,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > the Debug box starts from the debug-by-default setting and sends its literal state either way',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a Debug tick made before the default arrives is kept and sent',
+        'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a Debug tick on one open does not stop the next open from taking the debug default',
         'web/src/features/dialogs/dialogs.test.tsx::spawn dialog > the debug default comes from the spawn settings',
         'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting > next',
       ] },

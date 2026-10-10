@@ -221,6 +221,26 @@ describe('spawn dialog options', () => {
     expect(await start(calls)).toHaveProperty('debug', false);
   });
 
+  it('a Debug tick on one open does not stop the next open from taking the debug default', async () => {
+    // The "user ticked Debug" mark belongs to one open: a fresh open applies the debug default again.
+    const late = held<RouteAnswer>();
+    let gets = 0;
+    const calls = routes(() => (++gets === 1 ? late.answer : { json: { debugByDefault: true } }));
+    render(<DialogsHost />);
+    act(() => openSpawnDialog('p'));
+    await openAdvanced();
+    await waitFor(() => expect(gets).toBe(1));
+    fireEvent.click(box('Debug mode'));
+    expect(box('Debug mode').getAttribute('aria-checked')).toBe('true');
+    act(() => closeDialog('spawn'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    late.release({ json: { debugByDefault: false } });
+    act(() => openSpawnDialog('p'));
+    await openAdvanced();
+    await settingsLanded(calls, 2);
+    expect(box('Debug mode').getAttribute('aria-checked')).toBe('true');
+  });
+
   it('a repo with a commit leaves the worktree box enabled and unticked, with the branched-off-HEAD hint', async () => {
     // A born git repo offers the worktree box enabled, unticked, with the branched-off-HEAD hint.
     routes();
