@@ -32,6 +32,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const listRef = React.useRef<HTMLDivElement>(null);
   const pinRef = React.useRef<HTMLDivElement>(null);
   const pin = useStore(pinStore, (s) => s.pin);
+  const gutter = useStore(pinStore, (s) => s.gutter);
   const sticky = React.useRef(true);
   const [atBottom, setAtBottom] = React.useState(true);
 
@@ -114,7 +115,8 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const isEmpty = conversation.items.length === 0;
 
   return (
-    <div className="relative min-h-0 flex-1">
+    // Clipped: a pin shifted up past the transcript's top must not cover the header.
+    <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -137,14 +139,14 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
       </div>
       <div
         ref={pinRef}
-        hidden={pin.kind === 'hidden'}
+        hidden={pin.kind === 'hidden' || (pin.kind === 'pinned' && pin.pushedOff)}
         role={pin.kind === 'pinned' ? 'button' : 'status'}
         tabIndex={pin.kind === 'pinned' ? 0 : undefined}
         title={pin.kind === 'pinned' ? 'Jump to this prompt' : undefined}
         onClick={() => stickyPrompt.jumpToPinned()}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stickyPrompt.jumpToPinned(); } }}
-        className="absolute inset-x-0 top-0 z-10 cursor-pointer touch-pan-x touch-pinch-zoom px-4 md:px-6"
-        style={pin.kind === 'pinned' && pin.shift ? { transform: `translateY(${pin.shift}px)` } : undefined}
+        className={cn('absolute left-0 top-0 z-10 touch-pan-x touch-pinch-zoom px-4 md:px-6', pin.kind === 'pinned' ? 'cursor-pointer' : 'cursor-default')}
+        style={{ right: gutter, ...(pin.kind === 'pinned' && pin.shift ? { transform: `translateY(${pin.shift}px)` } : {}) }}
         data-pinned-prompt
       >
         <div className="mx-auto max-w-3xl pt-2">
@@ -154,7 +156,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
             <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-background/90 shadow-md ring-1 ring-primary/20 backdrop-blur">
               <div
                 data-pin-body
-                className={cn('md max-h-24 overflow-hidden rounded-2xl rounded-br-md bg-primary/10 px-4 py-2.5', pin.overflowing && '[mask-image:linear-gradient(to_bottom,black_60%,transparent)]')}
+                className={cn('md max-h-[calc(5lh_+_1.25rem)] overflow-hidden rounded-2xl rounded-br-md bg-primary/10 px-4 py-2.5', pin.overflowing && '[mask-image:linear-gradient(to_bottom,black_calc(100%_-_1.5lh),transparent)]')}
                 dangerouslySetInnerHTML={{ __html: pin.html }}
               />
             </div>

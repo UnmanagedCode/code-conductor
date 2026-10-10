@@ -17,6 +17,8 @@ import { isSessionMuted, muteSession } from '@/features/notifications/mutes';
 import { closeDialog, dialogStore } from '@/features/dialogs/api';
 import { applyModels } from '@/app/models';
 import { ConfirmHost, toast } from '@/ui/feedback';
+import { stickyPrompt } from '@/app/controller';
+import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';
 import type { Instance } from '@/state/types';
 import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
@@ -748,5 +750,35 @@ describe('context + rate-limit chip', () => {
     const pop = screen.getByRole('dialog');
     expect(pop.textContent).toContain('Usage data unavailable.');
     expect(pop.textContent).not.toContain('Fable');
+  });
+});
+
+describe('reveal swipe', () => {
+  function touch(el: Element, type: string, points: { x: number; y: number }[]) {
+    const ev = new Event(type, { bubbles: true }) as any;
+    Object.defineProperty(ev, 'touches', { value: points.map((p) => ({ clientX: p.x, clientY: p.y })) });
+    el.dispatchEvent(ev);
+  }
+
+  it('a vertical swipe on the session header reveals (down) or conceals (up) the pinned prompt, including one that starts on a header button', () => {
+    const reveal = vi.spyOn(stickyPrompt, 'reveal').mockImplementation(() => {});
+    const conceal = vi.spyOn(stickyPrompt, 'conceal').mockImplementation(() => {});
+    try {
+      wrap(<SessionHeader inst={base()} onMenu={() => {}} />);
+      const header = document.querySelector('[data-session-header]')!;
+      touch(header, 'touchstart', [{ x: 0, y: 0 }]);
+      touch(header, 'touchmove', [{ x: 0, y: SWIPE_MIN_PX }]);
+      expect(reveal).toHaveBeenCalledTimes(1);
+      const button = screen.getByRole('button', { name: 'Session actions' });
+      touch(button, 'touchstart', [{ x: 0, y: 0 }]);
+      touch(button, 'touchmove', [{ x: 0, y: SWIPE_MIN_PX }]);
+      expect(reveal).toHaveBeenCalledTimes(2);
+      touch(header, 'touchstart', [{ x: 0, y: 100 }]);
+      touch(header, 'touchmove', [{ x: 0, y: 100 - SWIPE_MIN_PX }]);
+      expect(conceal).toHaveBeenCalledTimes(1);
+    } finally {
+      reveal.mockRestore();
+      conceal.mockRestore();
+    }
   });
 });

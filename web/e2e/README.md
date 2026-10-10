@@ -28,6 +28,8 @@ Real cc servers driven through Chromium: the web UI at `/next/`, the old UI's ch
 
 `workers: 1`, `fullyParallel: false`.
 
+- Headless Chromium runs with `--hide-scrollbars`, so no project lays out a classic scrollbar. A spec measuring a scrollbar gutter opts out with `test.use({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } })`, as `sticky-prompt.spec.ts` does; the option is worker-scoped, so that file boots its own cc.
+
 ## Fixtures (`harness/fixtures.ts`)
 
 ```ts

@@ -7,6 +7,7 @@ vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { voiceStore } from '@/features/voice/store';
 import { emit } from '@/app/events';
+import { stickyPrompt } from '@/app/controller';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
 import { createDraftStore, DRAFT_KEY_PREFIX, draftStore, joinDictation, prependTranscribedTag } from './drafts';
@@ -326,5 +327,76 @@ describe('prompt focus after a selection', () => {
     (document.getElementById('cb') as HTMLElement).focus();
     focusPromptAfterSelect(true, p, { win: touch });
     expect(document.activeElement).not.toBe(p);
+  });
+});
+
+describe('sticky prompt keys', () => {
+  let reveal: ReturnType<typeof vi.spyOn>;
+  let conceal: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    reveal = vi.spyOn(stickyPrompt, 'reveal').mockImplementation(() => {});
+    conceal = vi.spyOn(stickyPrompt, 'conceal').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    reveal.mockRestore();
+    conceal.mockRestore();
+  });
+  const press = (box: HTMLTextAreaElement, key: string, at: [number, number], init: object = {}) => {
+    box.setSelectionRange(at[0], at[1]);
+    return fireEvent.keyDown(box, { key, ...init });
+  };
+
+  it('Down reveals the pinned prompt only with the caret at the very end of the text', () => {
+    const c = mount(inst('s1'));
+    type(c.box(), 'hello');
+    press(c.box(), 'ArrowDown', [5, 5]);
+    expect(reveal).toHaveBeenCalledTimes(1);
+    press(c.box(), 'ArrowDown', [4, 4]);
+    expect(reveal).toHaveBeenCalledTimes(1);
+    press(c.box(), 'ArrowDown', [0, 0]);
+    expect(reveal).toHaveBeenCalledTimes(1);
+  });
+
+  it('Up conceals it only with the caret at the very start of the text', () => {
+    const c = mount(inst('s1'));
+    type(c.box(), 'hello');
+    press(c.box(), 'ArrowUp', [0, 0]);
+    expect(conceal).toHaveBeenCalledTimes(1);
+    press(c.box(), 'ArrowUp', [1, 1]);
+    expect(conceal).toHaveBeenCalledTimes(1);
+    press(c.box(), 'ArrowUp', [5, 5]);
+    expect(conceal).toHaveBeenCalledTimes(1);
+  });
+
+  it('an empty box satisfies both caret rules', () => {
+    const c = mount(inst('s1'));
+    type(c.box(), '');
+    press(c.box(), 'ArrowDown', [0, 0]);
+    expect(reveal).toHaveBeenCalledTimes(1);
+    press(c.box(), 'ArrowUp', [0, 0]);
+    expect(conceal).toHaveBeenCalledTimes(1);
+  });
+
+  it('a modifier, a non-collapsed selection or IME composition makes Down and Up do nothing', () => {
+    const c = mount(inst('s1'));
+    type(c.box(), '');
+    for (const flag of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey', 'isComposing']) {
+      press(c.box(), 'ArrowDown', [0, 0], { [flag]: true });
+      press(c.box(), 'ArrowUp', [0, 0], { [flag]: true });
+    }
+    type(c.box(), 'hello');
+    press(c.box(), 'ArrowDown', [0, 5]);
+    press(c.box(), 'ArrowUp', [0, 5]);
+    expect(reveal).not.toHaveBeenCalled();
+    expect(conceal).not.toHaveBeenCalled();
+  });
+
+  it('Down and Up are never prevented, whether or not they act', () => {
+    const c = mount(inst('s1'));
+    for (const [text, at] of [['', 0], ['hello', 5], ['hello', 0], ['hello', 2]] as const) {
+      type(c.box(), text);
+      for (const key of ['ArrowDown', 'ArrowUp']) expect(press(c.box(), key, [at, at]), `${key} in '${text}' at ${at}`).toBe(true);
+    }
+    expect(reveal.mock.calls.length + conceal.mock.calls.length).toBeGreaterThan(0);
   });
 });
