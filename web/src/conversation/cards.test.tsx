@@ -12,8 +12,8 @@ vi.mock('@/lib/core/ws.js', () => ({
   },
 }));
 
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.js';
-import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.js';
+import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
 import { appStore } from '@/state/app';
 import { ConversationModel, type QuestionNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';

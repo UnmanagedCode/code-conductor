@@ -14,7 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { QuestionAnswerCorrelator } from '../src/questionAnswerStamp.ts';
 import { Instance } from '../src/instances.ts';
-import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
+import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
 
 const ONE = [{ question: 'Pick a fruit', header: 'Fruit', multiSelect: false,
   options: [{ label: 'Apple' }, { label: 'Banana' }] }];

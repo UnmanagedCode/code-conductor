@@ -33,6 +33,7 @@ import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
 import { ensureWebBuild, webHandler, WEB_MOUNT } from './src/webBuild.ts';
+import { legacyPublicTs } from './src/legacyPublicTs.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -132,8 +133,10 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   // The React UI under /next/; the old UI at / and again under /legacy/ (its
-  // root-absolute asset URLs load the same module graph from /).
+  // root-absolute asset URLs load the same module graph from /), with its
+  // shared public/*.ts modules served type-stripped ahead of the static mounts.
   app.use(WEB_MOUNT, webHandler());
+  app.use(legacyPublicTs(PUBLIC_DIR));
   app.use('/legacy', express.static(PUBLIC_DIR));
   app.use(express.static(PUBLIC_DIR));
 

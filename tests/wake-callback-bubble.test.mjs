@@ -14,7 +14,7 @@ import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
+import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '../public/wakeCallback.ts';
 import { flattenPayload } from '../src/mcp/content.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { deriveAwaitingUser, chainEndingAt } from '../src/awaitingUserTranscript.ts';
 import { localPlace, sessionFilePath, listSessionsForCwdWithCounts } from '../src/projects.ts';
 import { setSegmentArchived, markConducted } from '../src/sessionStore.ts';
-import { buildWakeStub } from '../public/wakeCallback.js';
+import { buildWakeStub } from '../public/wakeCallback.ts';
 import { mintPublicId, recordRotation } from '../src/sessionLineage.ts';
 import { freshProjectsRoot, seedSessionJsonl, rmrf } from './helpers.mjs';
 

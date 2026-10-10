@@ -4,7 +4,7 @@
 // from sniffing the text. Returns { body, controls } like buildUserText.
 
 import { el } from './dom.js';
-import { parseCanonicalUserQuestionAnswers } from './userQuestionAnswers.js';
+import { parseCanonicalUserQuestionAnswers } from './userQuestionAnswers.ts';
 import { buildUserText } from './userText.js';
 
 function buildAnswerItem(q, a) {

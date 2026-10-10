@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, within } from '@testing-library/react';
-import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '../../../public/wakeCallback.js';
-import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../../../public/renewSeed.js';
-import { buildForwardFrame } from '../../../public/forwardFrame.js';
+import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '../../../public/wakeCallback.ts';
+import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../../../public/renewSeed.ts';
+import { buildForwardFrame } from '../../../public/forwardFrame.ts';
 import { ConversationModel, type UserNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 

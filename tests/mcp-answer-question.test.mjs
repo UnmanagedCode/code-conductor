@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn } from './helpers.mjs';
-import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../public/userQuestionAnswers.js';
+import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');

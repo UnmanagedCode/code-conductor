@@ -20,7 +20,7 @@ import { makeDismissable } from './dismissable.js';
 import { installLazyHistoryController } from './lazyHistory.js';
 import { installStickyPrompt } from './stickyPrompt.js';
 import { installPromptReveal } from './promptReveal.js';
-import { buildApprovePrompt, buildRejectPrompt } from './planApproval.js';
+import { buildApprovePrompt, buildRejectPrompt } from './planApproval.ts';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { installAppSwitcher } from './appSwitcher.js';

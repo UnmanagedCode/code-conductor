@@ -9,12 +9,12 @@
 // in-band (like the <transcribed> / soft-interrupt markers) means it survives
 // resume/replay: the persisted user turn re-emits the same text.
 //
-// Imported by src/idleSubscriptions.js (build) and public/conversation.js
-// (parse), mirroring public/userQuestionAnswers.js's cross-boundary sharing.
+// Imported by src/idleSubscriptions.ts (build) and public/conversation.js
+// (parse), mirroring public/userQuestionAnswers.ts's cross-boundary sharing.
 
-export const WAKE_CALLBACK_MARKER = '[[cc:wake-callback]]';
+export const WAKE_CALLBACK_MARKER: string = '[[cc:wake-callback]]';
 // Separates the always-visible summary line from the collapsible folded payload.
-export const WAKE_BODY_SEP = '\n[[cc:wake-body]]\n';
+export const WAKE_BODY_SEP: string = '\n[[cc:wake-body]]\n';
 
 // Build the folded wake stub sent to (and rendered for) the conductor. The
 // summary names the worker + says what happened and that the recent output is
@@ -24,7 +24,12 @@ export const WAKE_BODY_SEP = '\n[[cc:wake-body]]\n';
 // the collapsed body. An optional `jobsNote` (the worker's still-running
 // background jobs) is appended to the summary on its own lines, for the same
 // reason.
-export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsNote = null }) {
+export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsNote = null }: {
+  targetSessionId: string;
+  payloadText: string;
+  note?: string | null;
+  jobsNote?: string | null;
+}): string {
   const summary =
     (note ? `${note} ` : '') +
     `Worker \`${targetSessionId}\` finished its turn. ` +
@@ -44,13 +49,13 @@ export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsN
 // completion at a glance. parseWakeCallback
 // degrades the separator-less result to { summary, body:'' }, which the client
 // uses to pick a plain summary line over a <details>.
-export function markPlainStub(summary) {
+export function markPlainStub(summary: string): string {
   return `${WAKE_CALLBACK_MARKER}${summary}`;
 }
 
 // Parse a user-echo text into { summary, body } when it is a wake-callback stub,
 // else null. A stub without the body separator degrades to summary-only.
-export function parseWakeCallback(text) {
+export function parseWakeCallback(text: unknown): { summary: string; body: string } | null {
   if (typeof text !== 'string' || !text.startsWith(WAKE_CALLBACK_MARKER)) return null;
   const rest = text.slice(WAKE_CALLBACK_MARKER.length);
   const idx = rest.indexOf(WAKE_BODY_SEP);

@@ -6,14 +6,14 @@
 // the lazy build-on-first-expand mounting and the wake/renew/forward-specific
 // section splitting are concerns specific to these collapsible kinds, so they
 // live here instead of forking userText.js's single responsibility. Kept out
-// of wakeCallback.js/renewSeed.js/forwardFrame.js because the server imports
+// of wakeCallback.ts/renewSeed.ts/forwardFrame.ts because the server imports
 // those modules and they must stay free of DOM dependencies.
 
 import { el } from './dom.js';
 import { buildUserText } from './userText.js';
 import { renderMarkdownInto } from './markdown.js';
-import { parseRenewSeed, splitSummarySections } from './renewSeed.js';
-import { splitForwardedMessages } from './forwardFrame.js';
+import { parseRenewSeed, splitSummarySections } from './renewSeed.ts';
+import { splitForwardedMessages } from './forwardFrame.ts';
 
 // Mounts a lazily-built body + controls into `details` on its first
 // toggle-to-open. Gated on `details.open`, not merely the event: real

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { buildWakeStub } from '../public/wakeCallback.js';
+import { buildWakeStub } from '../public/wakeCallback.ts';
 import { AWAITING_INPUT_MESSAGE } from '../src/settings.ts';
 import { QuestionAnswerCorrelator } from '../src/questionAnswerStamp.ts';
 

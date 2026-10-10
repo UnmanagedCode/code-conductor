@@ -11,7 +11,7 @@
 //
 // Which bubbles pin is decided at pick time from each bubble's
 // `data-prompt-origin` (stamped by Conversation._renderUserEcho) and the live
-// session role — see public/promptOrigin.js.
+// session role — see public/promptOrigin.ts.
 //
 // The pin is summoned, not automatic: it stays hidden until reveal() (Down in
 // the composer, a swipe down on the top bar — public/promptReveal.js) and hides
@@ -24,7 +24,7 @@
 // shows, the pin is a `role="status"` region, not the jump button index.html
 // declares; the button attributes come back with the next prompt.
 
-import { isPinEligible } from './promptOrigin.js';
+import { isPinEligible } from './promptOrigin.ts';
 
 // A bubble whose top is this far above the viewport top counts as scrolled past.
 const SCROLLED_PAST = -1;
