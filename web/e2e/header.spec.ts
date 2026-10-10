@@ -7,8 +7,9 @@ import { api, createProject, mcpCall, spawnSession } from './harness/api.ts';
 test.use({ ccOptions: { server: 'header' } });
 
 // Wide glyphs, so the title overflows even the desktop header once the server
-// has cut it to its stored length (src/sessionTitles.ts → MAX_TITLE_LEN).
-const LONG_TITLE = 'W'.repeat(200);
+// has cut it to its stored length (src/sessionTitles.ts → MAX_TITLE_LEN); words,
+// so a title that lost `nowrap` could wrap.
+const LONG_TITLE = 'WWWWWWW '.repeat(25).trim();
 
 /** A live idle worktree session in a fresh project, titled `title`; returns its ids and the title as stored. */
 async function seed(cc: Cc, name: string, title: string) {
@@ -65,7 +66,7 @@ test('a long-titled worktree session: the controls share one row inside the view
     const t = h.querySelector('h1')!;
     return {
       buttons, innerWidth, scrollWidth: h.scrollWidth, clientWidth: h.clientWidth, height: box.height,
-      title: { scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: getComputedStyle(t).textOverflow },
+      title: { scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: getComputedStyle(t).textOverflow, whiteSpace: getComputedStyle(t).whiteSpace },
     };
   });
   expect(geometry.buttons.length).toBeGreaterThan(0);
@@ -76,6 +77,8 @@ test('a long-titled worktree session: the controls share one row inside the view
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
   expect(geometry.title.scrollWidth).toBeGreaterThan(geometry.title.clientWidth);
   expect(geometry.title.textOverflow).toBe('ellipsis');
+  expect(geometry.title.whiteSpace).toBe('nowrap');
+  expect(title, 'the stored title has break opportunities').toContain(' ');
 
   const r = await api(cc, 'PUT', `/api/sessions/${sessionId}/title`, { title: 't' });
   expect(r.status).toBeLessThan(300);
