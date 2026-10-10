@@ -13,6 +13,7 @@ vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () =>
 import { resumeSession } from '@/app/sessionActions';
 import { applyModels } from '@/app/models';
 import { modelsSettingsStore, loadModelsSettings } from './models/store';
+import type { ModelsPayload } from './models/logic';
 import { OverageCard } from './AccountSection';
 import { ClaudeLogin } from './ClaudeLogin';
 import { BackendsSection, backendsDraftStore } from './BackendsSection';
@@ -523,6 +524,32 @@ describe('Backends', () => {
     expect(screen.queryByText('Remove failed: still used by m1')).toBeNull();
     expect(applyModels).toHaveBeenCalledWith(answer);
   });
+
+  // Invariant: only a successful Remove of the edited backend ends edit mode; removing another user backend leaves the edit (id lock, typed values, edit title) intact.
+  it('removing a backend other than the one being edited keeps that edit open', async () => {
+    type BackendRow = NonNullable<ModelsPayload['backends']>[number];
+    const CLAUDE: BackendRow = { id: 'claude', label: 'Claude', template: '', env: [], managed: true };
+    const MINE: BackendRow = { id: 'mine', label: 'Mine', template: 'mine run {model}', env: [{ key: 'A', value: '1' }] };
+    const PX: BackendRow = { id: 'px', label: 'My Proxy', template: 'px {model}', env: [] };
+    const both: ModelsPayload = { backends: [CLAUDE, MINE, PX], customModels: [] };
+    const afterRemove: ModelsPayload = { backends: [CLAUDE, MINE], customModels: [] };
+    mockFetch({ 'DELETE /api/settings/models/backends/px': () => afterRemove });
+    modelsSettingsStore.set({ data: both });
+    wrap(<BackendsSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Mine' }));
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Mine draft' } });
+    fireEvent.change(screen.getByLabelText('Template'), { target: { value: 'mine2 run {model}' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove My Proxy' }));
+    await waitFor(() => expect([...document.querySelectorAll('[data-backend]')].map((e) => e.getAttribute('data-backend'))).toEqual(['claude', 'mine']));
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('mine');
+    expect((screen.getByLabelText('Id') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Mine draft');
+    expect((screen.getByLabelText('Template') as HTMLInputElement).value).toBe('mine2 run {model}');
+    expect((screen.getByLabelText('Env (optional)') as HTMLTextAreaElement).value).toBe('A=1');
+    expect(screen.getByText('Edit Mine', { selector: '[data-slot="card-title"]' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeNull();
+  });
 });
 
 describe('Systems', () => {
@@ -614,6 +641,25 @@ describe('Systems', () => {
     expect(document.querySelector('[data-system="prod-box"] [data-launch]')?.textContent).toBe('ssh prod cc-provider');
     expect(document.querySelector('[data-system="namedonly"] [data-launch]')?.textContent).toMatch(/name only/);
     expect(document.querySelector('[data-system="local"] [data-launch]')).toBeNull();
+  });
+
+  // Invariant: only a successful Remove of the edited system ends edit mode; removing another user system leaves the edit (id lock, typed values, edit title) intact.
+  it('removing a system other than the one being edited keeps that edit open', async () => {
+    type SystemRow = { id: string; label: string; managed?: boolean; launch?: string[] | null; projects?: { name: string; remoteId?: string | null }[] };
+    const afterRemove: { systems: SystemRow[] } = { systems: [LOCAL, PROD] };
+    mockFetch({ 'GET /api/settings/systems': () => rich, 'DELETE /api/settings/systems/namedonly': () => afterRemove });
+    wrap(<SystemsSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Prod box' }));
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Draft' } });
+    fireEvent.change(screen.getByLabelText('Provider command'), { target: { value: 'ssh prod2 cc-provider' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Named only' }));
+    await waitFor(() => expect(systemIds()).toEqual(['local', 'prod-box']));
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('prod-box');
+    expect((screen.getByLabelText('Id') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Provider command') as HTMLInputElement).value).toBe('ssh prod2 cc-provider');
+    expect(screen.getByText('Edit Prod box', { selector: '[data-slot="card-title"]' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeNull();
   });
 });
 

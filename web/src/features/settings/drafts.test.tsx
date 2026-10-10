@@ -218,6 +218,30 @@ describe('Settings edit drafts', () => {
     expect(hasButton('Add backend')).toBe(true);
   });
 
+  // Invariant: Cancel resets every backend field, Label included, and the cleared form stays cleared across a section remount.
+  it('Cancel on a backend edit clears every typed field, the label included, and it stays cleared after a section switch', async () => {
+    openAt('#settings/backends');
+    await screen.findByRole('button', { name: 'Edit My Proxy' });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Proxy' }));
+    type('Label', 'Typed');
+    type('Template', 'typed {model}');
+    type('Env (optional)', 'K=v');
+    expect(input('Label').value).toBe('Typed');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const expectCleared = () => {
+      expect(input('Label').value).toBe('');
+      expect(input('Id').value).toBe('');
+      expect(input('Template').value).toBe('');
+      expect(input('Env (optional)').value).toBe('');
+      expect(hasButton('Add backend')).toBe(true);
+    };
+    expectCleared();
+    await switchTo('models');
+    await switchTo('backends');
+    expectCleared();
+    expect(writes()).toEqual([]);
+  });
+
   // Add-mode typing (a custom model, a backend id, a role name) survives section remounts; a successful Add role clears only the role name, durably.
   it('typed Add forms and a typed role name survive a section switch; a successful add clears the role name', async () => {
     openAt('#settings/models');
