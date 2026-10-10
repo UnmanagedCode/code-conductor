@@ -126,6 +126,22 @@ export interface Ui {
   drawerOpen(page: Page): Promise<boolean>;
   /** The × of a session row returned by `sessionRow`. */
   sessionClose(row: Locator): Locator;
+
+  // Conversation part 2 (card 2026-0632)
+  /** The wake-callback bubble's fold. */
+  wakeFold(page: Page): Locator;
+  /** A fold's open/close control. */
+  foldToggle(fold: Locator): Locator;
+  /** A fold's body box: hidden while the fold is closed. */
+  foldBody(fold: Locator): Locator;
+  /** The bell on a wake fold. */
+  wakeBadge(fold: Locator): Locator;
+  /** The wake body's metadata line. */
+  wakeMeta(fold: Locator): Locator;
+  /** The fold body's raw view, present only while raw shows. */
+  foldRaw(fold: Locator): Locator;
+  /** Flips the fold body between rendered and raw. */
+  toggleFoldView(fold: Locator): Promise<void>;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -448,6 +464,17 @@ export const legacy: Ui = {
   },
   drawerOpen: (page) => page.locator('#sidebar').evaluate((e) => e.classList.contains('open')),
   sessionClose: (row) => row.locator('.session-delete'),
+
+  // Conversation part 2 (card 2026-0632)
+  wakeFold: (page) => page.locator('#conversation .msg.user.wake-callback details.block.wake'),
+  foldToggle: (fold) => fold.locator(':scope > summary'),
+  foldBody: (fold) => fold.locator(':scope > .user-text'),
+  wakeBadge: (fold) => fold.locator(':scope > summary .wake-badge'),
+  wakeMeta: (fold) => fold.locator('.wake-meta'),
+  foldRaw: (fold) => fold.locator('.user-text[data-view="raw"]'),
+  async toggleFoldView(fold) {
+    await fold.locator('.user-view-toggle').click();
+  },
 };
 
 /**
@@ -563,7 +590,7 @@ export const next: Ui = {
     await expect(page).toHaveURL(/#settings/);
   },
   async leaveSettings(page) {
-    await page.getByRole('button', { name: 'Back' }).filter({ visible: true }).first().click();
+    await page.getByRole('button', { name: 'Back', exact: true }).filter({ visible: true }).first().click();
     await expect(page).not.toHaveURL(/#settings/);
   },
   async openPlacementDialog(page, which) {
@@ -727,6 +754,17 @@ export const next: Ui = {
   },
   drawerOpen: async (page) => (await page.locator('[data-slot="sheet-content"][data-state="open"]').count()) > 0,
   sessionClose: (row) => row.getByRole('button', { name: /^(Stop session|Archive session \(keeps history\))$/ }),
+
+  // Conversation part 2 (card 2026-0632)
+  wakeFold: (page) => page.locator('[data-item=user][data-variant=wake] [data-fold=wake]'),
+  foldToggle: (fold) => fold.locator('[data-fold-trigger]'),
+  foldBody: (fold) => fold.locator('[data-slot="collapsible-content"]'),
+  wakeBadge: (fold) => fold.locator('[data-fold-trigger] svg.lucide-bell'),
+  wakeMeta: (fold) => fold.locator('[data-wake-meta]'),
+  foldRaw: (fold) => fold.locator('[data-view="raw"]'),
+  async toggleFoldView(fold) {
+    await fold.getByRole('button', { name: /^Show (raw text|rendered markdown)$/ }).click();
+  },
 };
 
 // Sidebar B (card 2026-0628)

@@ -2,6 +2,7 @@ import { expect } from '../harness/fixtures.ts';
 import { createProject } from '../harness/api.ts';
 import { parity } from './parity.ts';
 import { bringTo, conceal, cssOf, offsetFromTop, reveal, sendAll, shadowLayers, tallPrompt } from './stickyPin.ts';
+import { px, sendWake, WAKE_PAYLOAD } from './foldedBubbles.ts';
 
 parity('sticky-prompt/R2', 'revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('pin-jump');
@@ -110,4 +111,84 @@ parity('sticky-prompt/R3', 'the pin clamps a long prompt to five lines and fades
   await expect(pin).toContainText('PIN-SHORT');
   await expect.poll(() => cssOf(pinBody, 'mask-image')).toBe('none');
   expect(await pinBody.evaluate((e) => e.scrollHeight <= e.clientHeight + 1)).toBe(true);
+});
+
+parity('legacy-awaiting-wake-dot/R2', 'a wake-callback stub renders as a collapsed fold with the bell badge that opens to its payload and closes again', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the wake stub is a closed fold carrying the bell, whose body opens and closes with its toggle.
+  const project = uniq('wake-fold');
+  await createProject(cc, project);
+  await ui.open(page);
+  await ui.startSessionIn(page, project);
+  await sendWake(page, ui, 1);
+  const fold = ui.wakeFold(page);
+  const toggle = ui.foldToggle(fold);
+  const body = ui.foldBody(fold);
+
+  await expect(body).toBeHidden();
+  await expect(toggle).toContainText('finished its turn');
+  await expect(toggle).toContainText('wakeparity');
+  await expect(ui.wakeBadge(fold)).toBeVisible();
+
+  await toggle.click();
+  await expect(body).toBeVisible();
+  await expect(body).toContainText('WAKE-PROSE');
+
+  await toggle.click();
+  await expect(body).toBeHidden();
+  await expect(ui.wakeBadge(fold)).toBeVisible();
+  await expect(ui.userMessages(page).first()).not.toContainText('[[cc:');
+});
+
+parity('wake-callback-bubble/R2', 'an expanded wake body keeps its raw view across a collapse and reopen; its metadata line is muted monospace while the prose keeps the body font', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the expanded body and its raw view survive a collapse and reopen; the meta line is muted monospace, the prose is not monospace.
+  const project = uniq('wake-raw');
+  await createProject(cc, project);
+  await ui.open(page);
+  await ui.startSessionIn(page, project);
+  await sendWake(page, ui, 1);
+  const fold = ui.wakeFold(page);
+  const toggle = ui.foldToggle(fold);
+  await toggle.click();
+
+  const meta = ui.wakeMeta(fold);
+  const prose = fold.locator('.md p', { hasText: 'WAKE-PROSE' });
+  await expect(meta).toHaveText('{"sessionId":"wakeparity","source":"live"}');
+  await expect(prose).toBeVisible();
+  expect(await cssOf(meta, 'font-family')).toMatch(/mono/i);
+  expect(await cssOf(prose, 'font-family')).not.toMatch(/mono/i);
+  expect(await cssOf(meta, 'color')).not.toBe(await cssOf(prose, 'color'));
+
+  await ui.toggleFoldView(fold);
+  await expect(ui.foldRaw(fold)).toBeVisible();
+  expect(await ui.foldRaw(fold).evaluate((e) => e.textContent)).toBe(WAKE_PAYLOAD);
+  await toggle.click();
+  await expect(ui.foldBody(fold)).toBeHidden();
+  await toggle.click();
+  await expect(ui.foldRaw(fold)).toBeVisible();
+  expect(await ui.foldRaw(fold).evaluate((e) => e.textContent)).toBe(WAKE_PAYLOAD);
+});
+
+parity('user-bubble-markdown/R2', 'headings render at body size in a prompt and in a folded wake body, while an assistant heading stays larger', async ({ page, cc, ui, uniq }) => {
+  // Invariant: markdown headings render at body size in prompt text and in a fold body, while assistant markdown keeps its heading scale.
+  const project = uniq('heads');
+  await createProject(cc, project);
+  await ui.open(page);
+  await ui.startSessionIn(page, project);
+  await sendAll(page, ui, ['HEAD-PIN intro paragraph\n\n# HEAD-PIN heading\n\nHEAD-PIN body paragraph']);
+  const t = ui.transcript(page);
+
+  const h1 = t.locator('.md h1', { hasText: 'HEAD-PIN heading' });
+  await expect(h1).toBeVisible();
+  expect(await px(h1)).toBe(await px(t.locator('.md p', { hasText: 'HEAD-PIN body paragraph' })));
+  expect(parseFloat(await cssOf(h1, 'font-weight')), 'the prompt heading is still a heading').toBeGreaterThanOrEqual(600);
+  const h2 = t.locator('.md h2', { hasText: 'What changed' });
+  await expect(h2).toBeVisible();
+  expect(await px(h2), 'an assistant heading stays larger than its prose').toBeGreaterThan(await px(t.locator('.md p', { hasText: 'token-bucket' })));
+
+  await sendWake(page, ui, 2);
+  const fold = ui.wakeFold(page);
+  await ui.foldToggle(fold).click();
+  const foldHead = fold.locator('.md h1', { hasText: 'WAKE-HEAD' });
+  await expect(foldHead).toBeVisible();
+  expect(await px(foldHead)).toBe(await px(fold.locator('.md p', { hasText: 'WAKE-PROSE' })));
 });

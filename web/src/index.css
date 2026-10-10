@@ -189,5 +189,5 @@
 /* "Show mid-turn statistics" off: per-call usage lines stay rendered but hidden. */
 .hide-call-usage .call-usage { display: none; }
 
-/* A prompt's markdown headings stay body-size inside a user bubble. */
-[data-user-text] .md :is(h1, h2, h3, h4, h5, h6) { font-size: inherit; margin-top: 0.5rem; }
+/* Markdown headings stay body-size in a prompt and in every folded bubble body. */
+:is([data-user-text], [data-fold]) .md :is(h1, h2, h3, h4, h5, h6) { font-size: inherit; margin-top: 0.5rem; }
