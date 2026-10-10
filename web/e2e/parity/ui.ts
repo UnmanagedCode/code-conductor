@@ -25,9 +25,21 @@ export interface Ui {
   conduct(page: Page): Promise<void>;
   /** The project's row in the Projects lens. */
   projectRow(page: Page, name: string): Promise<Locator>;
-  /** Starts a session in `project` from its sidebar row with the dialog's defaults. */
-  startSessionIn(page: Page, project: string): Promise<void>;
+  /** Starts a session in `project` from its sidebar row with the dialog's defaults; `temp: false` unticks Temp session (under Advanced options) first. */
+  startSessionIn(page: Page, project: string, opts?: { temp?: boolean }): Promise<void>;
   sessionHeader(page: Page): Locator;
+  /** The active session's Terminate, from its overflow menu, answering the confirm with `accept`. */
+  terminate(page: Page, accept: boolean): Promise<void>;
+  /** The header's Resume button. */
+  resumeButton(page: Page): Locator;
+  /** Opens plugin `id` from the app switcher; the URL then names it. */
+  openPlugin(page: Page, id: string): Promise<void>;
+  /** Leaves a plugin view for the conductor through the app switcher. */
+  leavePlugin(page: Page): Promise<void>;
+  /** Opens the conductor whose session id is `sessionId` from its Conductors-lens row. */
+  openConductor(page: Page, sessionId: string): Promise<void>;
+  /** The open conductor's workers panel. */
+  workersPanel(page: Page): Locator;
   composer(page: Page): Locator;
   sendPrompt(page: Page, text: string): Promise<void>;
   lastUserMessage(page: Page): Locator;
@@ -134,7 +146,7 @@ export const legacy: Ui = {
     await openOldDrawer(page);
     return page.locator('#project-list .project-row').filter({ has: page.locator('.project-name', { hasText: exactly(name) }) });
   },
-  async startSessionIn(page, project) {
+  async startSessionIn(page, project, opts = {}) {
     await legacy.lens(page, 'projects');
     const row = await legacy.projectRow(page, project);
     const dialog = page.locator('#spawn-dialog');
@@ -142,11 +154,49 @@ export const legacy: Ui = {
       await row.locator('.add-instance').click({ timeout: 1_000 });
       await expect(dialog).toBeVisible({ timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
+    if (opts.temp === false) {
+      const advanced = page.locator('#sd-advanced');
+      if ((await advanced.getAttribute('open')) === null) await advanced.locator('summary').click();
+      await page.locator('#sd-temp').setChecked(false);
+    }
     await page.locator('#sd-spawn').click();
     await expect(dialog).toBeHidden();
   },
   // #main.settings-open hides #instance-title (the session's chips), never #instance-header.
   sessionHeader: (page) => page.locator('#instance-title'),
+  async terminate(page, accept) {
+    const kill = page.locator('#kill-btn');
+    await expect(async () => {
+      if (!(await kill.isVisible())) await page.locator('#overflow-toggle').click();
+      await expect(kill).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    // The old UI asks with the browser's confirm().
+    const answered = new Promise<void>((resolve) => {
+      page.once('dialog', (d) => { void (accept ? d.accept() : d.dismiss()).then(resolve); });
+    });
+    await kill.click();
+    await answered;
+  },
+  resumeButton: (page) => page.locator('#resume-btn'),
+  async openPlugin(page, id) {
+    await openOldDrawer(page);
+    await page.locator('#app-switcher-select').selectOption(id);
+    await expect(page).toHaveURL(new RegExp(`#plugin/${id}/`));
+  },
+  async leavePlugin(page) {
+    await openOldDrawer(page);
+    await page.locator('#app-switcher-select').selectOption('conductor');
+    await expect(page).not.toHaveURL(/#plugin\//);
+  },
+  async openConductor(page, sessionId) {
+    await legacy.lens(page, 'conductors');
+    const title = page.locator(`#conductor-list [data-key="conductor:${sessionId}"] .conductor-title`);
+    await expect(async () => {
+      await title.click({ timeout: 1_000 });
+      await expect(page).toHaveURL(new RegExp(`#session=${sessionId}`), { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+  },
+  workersPanel: (page) => page.locator('#subagent-panel'),
   composer: (page) => page.locator('#composer-input'),
   async sendPrompt(page, text) {
     await expect(legacy.composer(page)).toBeEnabled();
@@ -269,17 +319,47 @@ export const next: Ui = {
     await next.openSidebar(page);
     return sidebar(page).locator(`[data-project-row="${name}"]`);
   },
-  async startSessionIn(page, project) {
+  async startSessionIn(page, project, opts = {}) {
     await next.lens(page, 'projects');
     const row = await next.projectRow(page, project);
     await row.hover();
     await row.getByRole('button', { name: 'New session' }).click();
     const dialog = page.getByRole('dialog', { name: 'New session' });
     await expect(dialog).toBeVisible();
+    if (opts.temp === false) {
+      const temp = dialog.locator('#sd-temp');
+      if (!(await temp.isVisible())) await dialog.getByRole('button', { name: 'Advanced options' }).click();
+      await temp.setChecked(false);
+    }
     await dialog.getByRole('button', { name: 'Start session' }).click();
     await expect(dialog).toBeHidden();
   },
   sessionHeader: (page) => page.locator('[data-session-header]'),
+  async terminate(page, accept) {
+    await next.sessionHeader(page).getByRole('button', { name: 'Session actions' }).click();
+    await page.getByRole('menuitem', { name: 'Terminate' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Terminate this session?' });
+    await dialog.getByRole('button', { name: accept ? 'Terminate' : 'Cancel' }).click();
+    await expect(dialog).toBeHidden();
+  },
+  resumeButton: (page) => next.sessionHeader(page).getByRole('button', { name: 'Resume' }),
+  async openPlugin(page, id) {
+    await next.openSidebar(page);
+    await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
+    await page.locator(`[data-app-id="${id}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`#plugin/${id}/`));
+  },
+  async leavePlugin(page) {
+    await next.openSidebar(page);
+    await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
+    await page.getByRole('menuitem', { name: 'Conductor' }).click();
+    await expect(page).not.toHaveURL(/#plugin\//);
+  },
+  async openConductor(page, sessionId) {
+    await next.lens(page, 'conductors');
+    await sidebar(page).locator(`[data-conductor="${sessionId}"] > [role=button]`).click();
+  },
+  workersPanel: (page) => page.locator('[data-subagent-panel]'),
   composer: (page) => page.locator('#composer-input'),
   async sendPrompt(page, text) {
     await expect(next.composer(page)).toBeEnabled();

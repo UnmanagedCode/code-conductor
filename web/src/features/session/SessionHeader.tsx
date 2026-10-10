@@ -28,9 +28,13 @@ import { openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog }
 import { confirmDialog, toast } from '@/ui/feedback';
 import { StatusDot, type SessionStatus } from '@/components/app/StatusDot';
 import { cn } from '@/lib/utils';
+import { useMediaQuery } from '@/lib/useMediaQuery';
 
 const CONDUCT_PROJECT = '.conduct';
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
+// A second spelling of Tailwind's `md` breakpoint, where App.tsx turns the
+// drawer into a sidebar column; it must change with any `--breakpoint-md` override.
+const WIDE_QUERY = '(min-width: 48rem)';
 export const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the running turn to finish.';
 
 export const isEnforcing = (level?: string) => level !== 'warn';
@@ -152,6 +156,10 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   useSignal(mutesSignal);
   const worktree = (inst.worktree as any)?.worktreeName ? (inst.worktree as any) : null;
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
+  // Sync sits in the bar from md up and in ⋮ below it; the one query places it
+  // and decides whether a stopped worktree session has a ⋮ at all.
+  const wide = useMediaQuery(WIDE_QUERY);
+  const menu = canMenu || (!!worktree && !wide);
   const between = isBetweenTurns(inst);
   const muted = isSessionMuted(inst.sessionId);
   const enforcing = isEnforcing(inst.playbookEnforcement);
@@ -203,7 +211,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <StatusDot status={displayStatus(inst)} />
-          <h1 className="truncate text-sm font-semibold" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || inst.project}</h1>
+          <h1 className="min-w-0 overflow-clip text-sm font-semibold text-ellipsis whitespace-nowrap" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || inst.project}</h1>
           {inst.modelSwitch ? (
             <Badge variant="info" className="shrink-0"><RefreshCwIcon className="animate-spin" />Switching to {inst.modelSwitch.to}{crossed(inst.modelSwitch) ? ` on ${inst.modelSwitch.toBackend}` : ''}</Badge>
           ) : inst.status === 'turn' && inst.interrupting ? (
@@ -228,19 +236,19 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
         </div>
         {(inst.title || worktree) && (
           <div className="mt-0.5 flex min-w-0 items-center gap-2 pl-4 text-xs text-muted-foreground">
-            {inst.title && <span className="truncate">{inst.project}</span>}
-            {worktree && <span className="flex min-w-0 items-center gap-1 font-mono"><GitBranchIcon className="size-3 shrink-0" /><span className="truncate">{worktree.worktreeName}</span><span className="hidden shrink-0 sm:inline">← {worktree.baseBranch}</span></span>}
+            {inst.title && <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{inst.project}</span>}
+            {worktree && <span className="flex min-w-0 items-center gap-1 font-mono"><GitBranchIcon className="size-3 shrink-0" /><span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{worktree.worktreeName}</span><span className="hidden shrink-0 sm:inline">← {worktree.baseBranch}</span></span>}
           </div>
         )}
       </div>
 
       <div className="hidden items-center gap-1.5 lg:flex">
-        {inst.model && <Badge variant="outline" className="max-w-48 gap-1 font-normal"><CpuIcon /><span className="truncate">{inst.model}</span></Badge>}
+        {inst.model && <Badge variant="outline" className="max-w-48 gap-1 font-normal"><CpuIcon /><span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{inst.model}</span></Badge>}
         {inst.effort && <Badge variant="outline" className="font-normal"><GaugeIcon />{inst.effort}</Badge>}
       </div>
 
-      {worktree && (
-        <Button variant="outline" size="sm" className="hidden md:inline-flex" onClick={() => void syncWorktree()}>
+      {worktree && wide && (
+        <Button variant="outline" size="sm" onClick={() => void syncWorktree()}>
           <GitPullRequestArrowIcon /> Sync
         </Button>
       )}
@@ -252,7 +260,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
       )}
       <ModeToggle inst={inst} />
 
-      {(canMenu || worktree) && (
+      {menu && (
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label="Session actions"><MoreVerticalIcon /></Button>
@@ -266,7 +274,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                 <DropdownMenuCheckboxItem checked={showCallUsage} onCheckedChange={(v) => setCallUsageShown(inst.sessionId, !!v)}>Show mid-turn statistics</DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger disabled={!inst.sessionId || !!inst.modelSwitch || !between}><BrainIcon /> Change model</DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger disabled={!inst.sessionId || !!inst.modelSwitch || !between} title={between ? 'Switch this session to another model' : BETWEEN_TURNS_TITLE}><BrainIcon /> Change model</DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-64">
                     {groups.map(([backendId, entries]) => (
                       <React.Fragment key={backendId}>
@@ -292,7 +300,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger disabled={!between || !inst.sessionId || !!inst.modelSwitch}><GaugeIcon /> Change effort</DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger disabled={!between || !inst.sessionId || !!inst.modelSwitch} title={between ? 'Change how hard this session reasons, without restarting' : 'Effort can only be changed between turns'}><GaugeIcon /> Change effort</DropdownMenuSubTrigger>
                   <DropdownMenuSubContent>
                     {(getEffortLevels() as string[]).map((level) => (
                       <DropdownMenuItem key={level} onSelect={() => void pickEffort(level)}>
@@ -301,7 +309,11 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                     ))}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
-                <DropdownMenuItem disabled={!between || !inst.sessionId} onSelect={() => openPruneDialog(inst.id)}><ScissorsIcon /> Prune context…</DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!between || !inst.sessionId}
+                  title={between ? "Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost" : 'Prune is only available between turns'}
+                  onSelect={() => openPruneDialog(inst.id)}
+                ><ScissorsIcon /> Prune context…</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => muteSession(inst.sessionId, !muted)}>
                   {muted ? <><BellIcon /> Unmute notifications</> : <><BellOffIcon /> Mute notifications</>}
@@ -328,8 +340,8 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                 </DropdownMenuItem>
               </>
             )}
-            {worktree && (
-              <DropdownMenuItem className="md:hidden" onSelect={() => void syncWorktree()}><GitPullRequestArrowIcon /> Sync worktree</DropdownMenuItem>
+            {worktree && !wide && (
+              <DropdownMenuItem onSelect={() => void syncWorktree()}><GitPullRequestArrowIcon /> Sync worktree</DropdownMenuItem>
             )}
             {canMenu && (
               <>

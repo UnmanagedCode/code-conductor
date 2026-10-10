@@ -130,6 +130,20 @@ describe('routing session data', () => {
     expect(b.appStore.get().instances[0]).toMatchObject({ status: 'turn', mode: 'plan', model: M2, modelSwitch: sw, interrupting: true });
   });
 
+  it('R3 a failure frame clears the switch and reverts the model; no status frame touches a known context window (mirrors ctx-latch-model-switch R3)', async () => {
+    const b = await boot({ instances: [{ id: 'S', model: M1, contextWindowTokens: 200_000 }] });
+    const sw = { from: M1, to: M2 };
+    b.emit('status', { id: 'S', status: 'idle', mode: 'plan', model: M2, sessionId: 's', modelSwitch: sw, modelSwitchFailure: null });
+    expect(b.appStore.get().instances[0]).toMatchObject({ model: M2, modelSwitch: sw, modelSwitchFailure: null, contextWindowTokens: 200_000 });
+    const failure = { ...sw, error: 'boom' };
+    b.emit('status', { id: 'S', status: 'idle', mode: 'plan', model: M1, sessionId: 's', modelSwitch: null, modelSwitchFailure: failure });
+    const entry = b.appStore.get().instances[0];
+    expect(entry.modelSwitch).toBeNull();
+    expect(entry.modelSwitchFailure).toEqual(failure);
+    expect(entry.model).toBe(M1);
+    expect(entry.contextWindowTokens).toBe(200_000);
+  });
+
   it('R3b a status frame\'s backend reaches the instance entry; a frame without one leaves it (mirrors ctx-latch-model-switch R3b)', async () => {
     const b = await boot({ instances: [{ id: 'S', model: M1, backend: 'claude' }] });
     b.emit('status', { id: 'S', status: 'idle', mode: 'plan', model: 'alpha:cloud', backend: 'ollama', sessionId: 'sid', modelSwitch: null, modelSwitchFailure: null });

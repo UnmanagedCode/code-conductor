@@ -73,4 +73,37 @@ describe('account usage', () => {
     await changed;
     expect(accountUsageStore.get().usage).toEqual(GOOD.usage);
   });
+
+  it('a failed or null-usage fetch notifies nobody: no store write, no tracker repaint', async () => {
+    for (const [name, f] of [['!ok', reply({}, false)], ['usage: null', reply({ usage: null })]] as const) {
+      vi.stubGlobal('fetch', f);
+      let writes = 0;
+      const off = accountUsageStore.subscribe(() => { writes++; });
+      const before = trackerSignal.version();
+      await refreshAccountUsage();
+      off();
+      expect(f, name).toHaveBeenCalledTimes(1);
+      expect(writes, `${name}: store writes`).toBe(0);
+      expect(trackerSignal.version() - before, `${name}: tracker repaints`).toBe(0);
+    }
+  });
+
+  it('a Claude login repaints and fetches /api/usage at once; the new account\'s bucket replaces the old one', async () => {
+    vi.stubGlobal('fetch', reply(GOOD));
+    await refreshAccountUsage();
+    expect(rateLimits.info!.rateLimitType).toBe('five_hour');
+    let release!: () => void;
+    const NEXT = { usage: { seven_day: { utilization: 20 } }, stale: false };
+    const fetch = vi.fn(() => new Promise((r) => { release = () => r({ ok: true, json: async () => NEXT }); }));
+    vi.stubGlobal('fetch', fetch);
+    const before = trackerSignal.version();
+    const changed = accountChanged();
+    expect(trackerSignal.version() - before).toBe(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith('/api/usage', { cache: 'no-store' });
+    release();
+    await changed;
+    expect(rateLimits.info!.rateLimitType).toBe('seven_day');
+    expect(accountUsageStore.get()).toEqual({ usage: NEXT.usage, stale: false });
+  });
 });

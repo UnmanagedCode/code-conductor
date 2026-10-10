@@ -43,7 +43,7 @@ test('…', async ({ page, cc }) => { await page.goto('/next/'); /* cc.url, cc.d
   - `env` — extra server env, applied last.
   - `engine` — `'fake'` (default) or `'live'`.
 - **`baseURL`** — `cc.url`, so `page.goto('/next/')` and `request.get('/api/…')` reach this worker's server.
-- **`harness/api.ts`** — `api(cc, method, route, body)` → `{ status, body }`, `createProject`, `spawnSession(cc, project, extra)` (a live cc's worker runs on `LIVE_WORKER_MODEL`), `mcpCall(cc, tool, args, callerInstanceId?)`.
+- **`harness/api.ts`** — `api(cc, method, route, body)` → `{ status, body }`, `createProject`, `spawnSession(cc, project, extra)` (a live cc's worker runs on `LIVE_WORKER_MODEL`), `mcpCall(cc, tool, args, callerInstanceId?)`, `installFakePlugin(cc, name)` (`tests/fixtures/fake-plugin`, id `fake-plugin`, adopted as project `name` and enabled; idempotent per cc, so specs sharing a cc may each call it).
 - A spec that needs no server (`legacy/header-compact.spec.ts`) imports `test` from `@playwright/test` instead, and no cc boots.
 
 ## What a booted cc gets (`harness/boot.ts`, `env.ts`, `scratch.ts`)

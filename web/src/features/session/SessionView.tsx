@@ -62,7 +62,8 @@ export function SessionView() {
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
-      <SessionHeader inst={inst} onMenu={openSidebar} />
+      {/* Keyed: another session gets a fresh header, so an open ⋮ closes and swipe tracking re-attaches. */}
+      <SessionHeader key={inst.id} inst={inst} onMenu={openSidebar} />
       <ConversationView
         empty={
           <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">

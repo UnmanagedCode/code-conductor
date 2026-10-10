@@ -13,9 +13,10 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { applyModelsPayload } from '@/lib/core/models.js';
 import { getUsageTracker } from '@/app/trackers';
 import { accountUsageStore } from '@/app/accountUsage';
-import { isSessionMuted } from '@/features/notifications/mutes';
-import { dialogStore } from '@/features/dialogs/api';
-import { toast } from '@/ui/feedback';
+import { isSessionMuted, muteSession } from '@/features/notifications/mutes';
+import { closeDialog, dialogStore } from '@/features/dialogs/api';
+import { applyModels } from '@/app/models';
+import { ConfirmHost, toast } from '@/ui/feedback';
 import type { Instance } from '@/state/types';
 import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
@@ -25,16 +26,16 @@ const base = (extra: Partial<Instance> = {}): Instance => ({
   model: 'claude-opus-5-5', backend: 'claude', effort: 'high', contextWindowTokens: 200_000, ...extra,
 });
 
+const PAYLOAD = {
+  tiers: [{ tier: 'fast', label: 'Fast' }, { tier: 'powerful', label: 'Powerful' }, { tier: 'local', label: 'Local' }],
+  backends: [{ id: 'claude', label: 'Claude' }, { id: 'ollama', label: 'Ollama' }],
+  tierBackend: { fast: { backend: 'claude', model: 'claude-haiku-5-5' }, powerful: { backend: 'claude', model: 'claude-opus-5-5' }, local: { backend: 'ollama', model: 'qwen3:8b' } },
+  enabledTiers: { fast: true, powerful: true, local: true },
+  efforts: ['low', 'medium', 'high', 'max'],
+  backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }, { model: 'llama3:70b', label: 'Llama 70B' }] },
+};
 function catalog(extra: object = {}) {
-  applyModelsPayload({
-    tiers: [{ tier: 'fast', label: 'Fast' }, { tier: 'powerful', label: 'Powerful' }, { tier: 'local', label: 'Local' }],
-    backends: [{ id: 'claude', label: 'Claude' }, { id: 'ollama', label: 'Ollama' }],
-    tierBackend: { fast: { backend: 'claude', model: 'claude-haiku-5-5' }, powerful: { backend: 'claude', model: 'claude-opus-5-5' }, local: { backend: 'ollama', model: 'qwen3:8b' } },
-    enabledTiers: { fast: true, powerful: true, local: true },
-    efforts: ['low', 'medium', 'high', 'max'],
-    backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }, { model: 'llama3:70b', label: 'Llama 70B' }] },
-    ...extra,
-  });
+  applyModelsPayload({ ...PAYLOAD, ...extra });
 }
 
 const wrap = (ui: React.ReactNode) => render(<TooltipProvider>{ui}</TooltipProvider>);
@@ -46,6 +47,19 @@ async function openMenu(name = 'Session actions') {
     fireEvent.keyDown(trigger, { key: 'ArrowDown' });
   });
   return screen.getByRole('menu');
+}
+
+/** A header that stays mounted: `update` re-renders the same tree with new session data. */
+function mountHeader(inst: Instance) {
+  const r = wrap(<SessionHeader inst={inst} onMenu={() => {}} />);
+  return { ...r, update: (next: Instance) => r.rerender(<TooltipProvider><SessionHeader inst={next} onMenu={() => {}} /></TooltipProvider>) };
+}
+const menuItem = (menu: HTMLElement, name: RegExp) => within(menu).getByRole('menuitem', { name });
+const isDisabled = (el: HTMLElement) => el.hasAttribute('data-disabled');
+/** Opens the submenu under `trigger`; returns it. */
+async function openSub(trigger: HTMLElement) {
+  await act(async () => { fireEvent.keyDown(trigger, { key: 'ArrowRight' }); });
+  return screen.getAllByRole('menu').at(-1)!;
 }
 
 beforeEach(() => {
@@ -275,6 +289,81 @@ describe('change model', () => {
     const b = wrap(<SessionHeader inst={base({ modelSwitchFailure: { from: 'a', to: 'b-model', error: 'not found' } })} onMenu={() => {}} />);
     expect(b.container.textContent).toContain('Switch failed');
   });
+
+  it('the Change model label is static whatever the running model, and idle with a session it is enabled and titled "Switch this session to another model"', async () => {
+    for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5', null]) {
+      const r = wrap(<SessionHeader inst={base({ model })} onMenu={() => {}} />);
+      const trigger = menuItem(await openMenu(), /Change model/);
+      expect(trigger.textContent!.trim(), `model ${model}`).toBe('Change model');
+      expect(isDisabled(trigger), `model ${model}`).toBe(false);
+      expect(trigger.title, `model ${model}`).toBe('Switch this session to another model');
+      r.unmount();
+    }
+  });
+
+  it('Change model is disabled with the between-turns title during a turn and re-enabled at turn end, on a Claude and a substitution session', async () => {
+    for (const backend of ['claude', 'ollama']) {
+      const inst = base(backend === 'claude' ? {} : { backend, model: 'qwen3:8b' });
+      const h = mountHeader({ ...inst, status: 'turn', displayStatus: 'turn' });
+      const menu = await openMenu();
+      expect(isDisabled(menuItem(menu, /Change model/)), `${backend} turn`).toBe(true);
+      expect(menuItem(menu, /Change model/).title, `${backend} turn`).toBe('Model can only be changed between turns');
+      expect(isDisabled(menuItem(menu, /Change effort/)), `${backend} turn`).toBe(true);
+      h.update(inst);
+      expect(isDisabled(menuItem(menu, /Change model/)), `${backend} idle`).toBe(false);
+      expect(menuItem(menu, /Change model/).title, `${backend} idle`).toBe('Switch this session to another model');
+      h.unmount();
+    }
+  });
+
+  it('an open picker follows the session: a turn disables its restart and registered-model entries with the busy title, and idle re-enables them in the same open picker', async () => {
+    const h = mountHeader(base());
+    const sub = await openSub(menuItem(await openMenu(), /Change model/));
+    for (const name of [/Local/, /Llama 70B/]) expect(isDisabled(menuItem(sub, name))).toBe(false);
+    h.update(base({ status: 'turn', displayStatus: 'turn' }));
+    expect(sub.isConnected).toBe(true);
+    for (const name of [/Local/, /Llama 70B/]) {
+      expect(isDisabled(menuItem(sub, name)), String(name)).toBe(true);
+      expect(menuItem(sub, name).title, String(name)).toBe(RESTART_BUSY_TITLE);
+    }
+    h.update(base());
+    expect(sub.isConnected).toBe(true);
+    for (const name of [/Local/, /Llama 70B/]) expect(isDisabled(menuItem(sub, name)), String(name)).toBe(false);
+  });
+
+  it('a restart pick sends exactly {id, tier} and closes the picker and the menu', async () => {
+    const sub = await openModelPicker(base());
+    await act(async () => { fireEvent.click(menuItem(sub, /Local/)); });
+    expect(sent).toEqual([['model', { id: 'inst-1', tier: 'local' }, { ack: true }]]);
+    expect(screen.queryAllByRole('menu')).toEqual([]);
+  });
+
+  it('a re-render with unchanged entry states keeps the very same menu items', async () => {
+    const h = mountHeader(base());
+    const sub = await openSub(menuItem(await openMenu(), /Change model/));
+    const before = menuItem(sub, /Fast/);
+    h.update(base({ title: 'renamed' }));
+    expect(menuItem(sub, /Fast/)).toBe(before);
+  });
+
+  it('a registered model that a tier on its backend already binds is offered once, as the tier', async () => {
+    catalog({ backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }, { model: 'gamma', label: 'Gamma' }] } });
+    const ollama = new Map(modelGroups(base())).get('ollama')!;
+    expect(ollama.map((e) => e.label)).toEqual(['Local', 'Gamma']);
+    expect(ollama.filter((e) => e.model === 'qwen3:8b')).toHaveLength(1);
+    const sub = await openModelPicker(base());
+    expect(within(sub).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Fast', 'Powerful', 'Local', 'Gamma']);
+  });
+
+  it('a models payload applied while the picker is open replaces its registered models: an added one appears, a removed one goes', async () => {
+    const reg = (...names: string[]) => ({ ollama: names.map((n) => ({ model: n.toLowerCase(), label: n })) });
+    catalog({ tierBackend: ALL_CLAUDE, backendModels: reg('Alpha', 'Beta', 'Gamma') });
+    const sub = await openModelPicker(base());
+    const labels = () => within(sub).getAllByRole('menuitem').map((i) => i.textContent);
+    expect(labels()).toEqual(['Fast', 'Powerful', 'Local', 'Alpha', 'Beta', 'Gamma']);
+    act(() => applyModels({ ...PAYLOAD, tierBackend: ALL_CLAUDE, backendModels: reg('Beta', 'Delta') }));
+    expect(labels()).toEqual(['Fast', 'Powerful', 'Local', 'Beta', 'Delta']);
+  });
 });
 
 describe('change effort', () => {
@@ -288,6 +377,55 @@ describe('change effort', () => {
     expect(items[1].querySelector('svg')).toBeTruthy();
     await act(async () => { fireEvent.click(items[3]); });
     expect(sent).toEqual([['effort', { id: 'inst-1', effort: 'max' }, { ack: true }]]);
+  });
+
+  it('Change effort sits directly below Change model, and its label is static whatever the level', async () => {
+    for (const effort of ['low', 'medium', 'high', 'max', undefined]) {
+      const r = wrap(<SessionHeader inst={base({ effort })} onMenu={() => {}} />);
+      const items = within(await openMenu()).getAllByRole('menuitem');
+      const model = items.findIndex((i) => /Change model/.test(i.textContent!));
+      const effortAt = items.findIndex((i) => /Change effort/.test(i.textContent!));
+      expect(model, `effort ${effort}`).toBeGreaterThanOrEqual(0);
+      expect(effortAt, `effort ${effort}`).toBe(model + 1);
+      expect(items[effortAt].textContent!.trim(), `effort ${effort}`).toBe('Change effort');
+      r.unmount();
+    }
+  });
+
+  it('Change effort is enabled only idle with a session, titled for why; a turn or a spawn disables it with the between-turns title', async () => {
+    const effortItem = async (inst: Instance) => {
+      const r = wrap(<SessionHeader inst={inst} onMenu={() => {}} />);
+      const item = menuItem(await openMenu(), /Change effort/);
+      const got = { disabled: isDisabled(item), title: item.title };
+      r.unmount();
+      return got;
+    };
+    expect(await effortItem(base())).toEqual({ disabled: false, title: 'Change how hard this session reasons, without restarting' });
+    for (const status of ['turn', 'spawning']) {
+      expect(await effortItem(base({ status, displayStatus: status })), status).toEqual({ disabled: true, title: 'Effort can only be changed between turns' });
+    }
+    expect((await effortItem(base({ sessionId: null }))).disabled).toBe(true);
+  });
+
+  it('exactly one level carries the check: the running one', async () => {
+    for (const effort of ['low', 'medium', 'high', 'max']) {
+      const r = wrap(<SessionHeader inst={base({ effort })} onMenu={() => {}} />);
+      const sub = await openSub(menuItem(await openMenu(), /Change effort/));
+      const checked = within(sub).getAllByRole('menuitem').filter((i) => i.querySelector('svg')).map((i) => i.textContent);
+      expect(checked, `effort ${effort}`).toEqual([effort]);
+      r.unmount();
+    }
+  });
+
+  it('a substitution session is offered every level, with no backend note, and a pick sends one effort frame and closes the picker and the menu', async () => {
+    wrap(<SessionHeader inst={base({ backend: 'ollama', model: 'qwen3:8b' })} onMenu={() => {}} />);
+    const sub = await openSub(menuItem(await openMenu(), /Change effort/));
+    const items = within(sub).getAllByRole('menuitem');
+    expect(items.map((i) => [i.textContent, isDisabled(i)])).toEqual([['low', false], ['medium', false], ['high', false], ['max', false]]);
+    expect(sub.textContent).toBe('lowmediumhighmax');
+    await act(async () => { fireEvent.click(items[0]); });
+    expect(sent).toEqual([['effort', { id: 'inst-1', effort: 'low' }, { ack: true }]]);
+    expect(screen.queryAllByRole('menu')).toEqual([]);
   });
 });
 
@@ -307,6 +445,17 @@ describe('mode toggle', () => {
       expect((screen.getByRole('button', { name: 'Code' }) as HTMLButtonElement).disabled).toBe(disabled);
       r.unmount();
     }
+  });
+
+  it('a click on the other side sends one frame and does not flip the pressed side until the session reports the mode', async () => {
+    const h = mountHeader(base({ mode: 'bypassPermissions' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Plan' })); });
+    expect(sent).toEqual([['mode', { id: 'inst-1', mode: 'plan' }, { ack: true }]]);
+    expect(screen.getByRole('button', { name: 'Code' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Plan' }).getAttribute('aria-pressed')).toBe('false');
+    h.update(base({ mode: 'plan' }));
+    expect(screen.getByRole('button', { name: 'Plan' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Code' }).getAttribute('aria-pressed')).toBe('false');
   });
 });
 
@@ -348,6 +497,109 @@ describe('session menu', () => {
     wrap(<SessionHeader inst={base({ status: 'exited', displayStatus: 'exited' })} onMenu={() => {}} />);
     expect(screen.queryByRole('button', { name: 'Session actions' })).toBeNull();
     expect(screen.getByRole('button', { name: /Resume/ })).toBeTruthy();
+  });
+
+  it('while ⋮ stays open its items follow the session: a turn disables Prune with the between-turns title and makes Terminate Interrupt, and muting flips the label', async () => {
+    const h = mountHeader(base());
+    const menu = await openMenu();
+    const last = () => within(menu).getAllByRole('menuitem').at(-1)!.textContent!.trim();
+    try {
+      expect(menuItem(menu, /Prune/).title).toBe("Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost");
+      expect(last()).toBe('Terminate');
+      h.update(base({ status: 'turn', displayStatus: 'turn' }));
+      expect(menu.isConnected).toBe(true);
+      expect(isDisabled(menuItem(menu, /Prune/))).toBe(true);
+      expect(menuItem(menu, /Prune/).title).toBe('Prune is only available between turns');
+      expect(last()).toBe('Interrupt');
+      h.update(base());
+      expect(menu.isConnected).toBe(true);
+      expect(isDisabled(menuItem(menu, /Prune/))).toBe(false);
+      expect(menuItem(menu, /Prune/).title).toBe("Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost");
+      expect(last()).toBe('Terminate');
+      expect(menuItem(menu, /Mute notifications/).textContent!.trim()).toBe('Mute notifications');
+      act(() => muteSession('sess-1', true));
+      expect(menu.isConnected).toBe(true);
+      expect(menuItem(menu, /mute notifications/i).textContent!.trim()).toBe('Unmute notifications');
+    } finally { act(() => muteSession('sess-1', false)); }
+  });
+
+  it('playbook enforcement follows the conductor\'s level while the header stays mounted', async () => {
+    const conductor = (playbookEnforcement: string) => base({ project: '.conduct', playbookEnforcement });
+    const h = mountHeader(conductor('enforce'));
+    const menu = await openMenu();
+    const checked = () => within(menu).getByRole('menuitemcheckbox', { name: /Enforce playbooks/ }).getAttribute('aria-checked');
+    expect(checked()).toBe('true');
+    h.update(conductor('warn'));
+    expect(checked()).toBe('false');
+    h.update(conductor('enforce'));
+    expect(checked()).toBe('true');
+    expect(sent).toEqual([]);
+  });
+
+  it('the deliberate close paths close ⋮: Escape, the trigger again, an item pick, and a press outside', async () => {
+    closeDialog('summary');
+    wrap(<SessionHeader inst={base()} onMenu={() => {}} />);
+    const trigger = screen.getByRole('button', { name: 'Session actions' });
+    const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    const open = () => screen.queryAllByRole('menu');
+
+    let menu = await openMenu();
+    await act(async () => { fireEvent.keyDown(menu, { key: 'Escape' }); });
+    expect(open(), 'Escape').toEqual([]);
+
+    await openMenu();
+    await settle();
+    await act(async () => { fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false }); });
+    expect(open(), 'the trigger again').toEqual([]);
+
+    menu = await openMenu();
+    let writes = 0;
+    const off = dialogStore.subscribe(() => { writes++; });
+    await act(async () => { fireEvent.click(menuItem(menu, /Summarize/)); });
+    off();
+    expect(open(), 'an item pick').toEqual([]);
+    expect(writes).toBe(1);
+    expect(dialogStore.get().summary).toEqual({ sessionId: 'sess-1' });
+    closeDialog('summary');
+
+    await openMenu();
+    await settle();
+    await act(async () => { fireEvent.pointerDown(document.body); });
+    expect(open(), 'a press outside').toEqual([]);
+  });
+
+  it('Terminate, or Interrupt mid-turn, is the last ⋮ item and never a bar button', async () => {
+    for (const [status, label] of [['idle', 'Terminate'], ['turn', 'Interrupt']] as const) {
+      const r = wrap(<SessionHeader inst={base({ status, displayStatus: status })} onMenu={() => {}} />);
+      expect(screen.queryByRole('button', { name: /Terminate|Interrupt/ }), `${status}, closed`).toBeNull();
+      const menu = await openMenu();
+      expect(within(menu).getAllByRole('menuitem').at(-1)!.textContent!.trim(), status).toBe(label);
+      expect(screen.queryByRole('button', { name: /Terminate|Interrupt/ }), `${status}, open`).toBeNull();
+      r.unmount();
+    }
+  });
+
+  it('with no turn running, Terminate asks first: Cancel sends nothing, confirming sends one kill; mid-turn Interrupt sends interrupt without asking', async () => {
+    const r = wrap(<><SessionHeader inst={base()} onMenu={() => {}} /><ConfirmHost /></>);
+    const terminate = async () => {
+      await act(async () => { fireEvent.click(menuItem(await openMenu(), /Terminate/)); });
+      return screen.getByRole('dialog', { name: 'Terminate this session?' });
+    };
+    let dialog = await terminate();
+    expect(sent).toEqual([]);
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); });
+    expect(sent).toEqual([]);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    dialog = await terminate();
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Terminate' })); });
+    expect(sent).toEqual([['kill', { id: 'inst-1' }, {}]]);
+    r.unmount();
+
+    sent.length = 0;
+    wrap(<><SessionHeader inst={base({ status: 'turn', displayStatus: 'turn' })} onMenu={() => {}} /><ConfirmHost /></>);
+    await act(async () => { fireEvent.click(menuItem(await openMenu(), /Interrupt/)); });
+    expect(sent).toEqual([['interrupt', { id: 'inst-1' }, {}]]);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
 
@@ -412,5 +664,89 @@ describe('context + rate-limit chip', () => {
     expect(pop2.textContent).not.toContain('$0.2500');
     expect(pop2.textContent).not.toContain('Fable');
     accountUsageStore.set({ usage: null, stale: false });
+  });
+
+  it('a window of 1 is a known capacity: the tooltip names 250,000/1 and never "capacity unknown"', () => {
+    getUsageTracker('c7').reset();
+    getUsageTracker('c7').apply({ kind: 'message_start', usage: { input_tokens: 250_000 } });
+    wrap(<UsageChip inst={base({ id: 'c7', contextWindowTokens: 1 })} />);
+    expect(chip().title).toContain('Context: 250,000/1 tokens');
+    expect(chip().title).not.toContain('capacity unknown');
+    expect(chip().textContent).not.toMatch(/^ctx —/);
+  });
+
+  it('null usage blocks from message_start and context_usage leave `ctx —` and the first-turn tooltip', () => {
+    const t = getUsageTracker('c8');
+    t.reset();
+    t.apply({ kind: 'message_start', usage: null });
+    t.apply({ kind: 'context_usage', usage: null });
+    wrap(<UsageChip inst={base({ id: 'c8' })} />);
+    expect(chip().textContent).toMatch(/^ctx —/);
+    expect(chip().title.startsWith('Context usage appears after the first turn.')).toBe(true);
+  });
+
+  // The CLI's system/init names a Haiku session by its catalog id, the API's
+  // message_start by its dated snapshot id, every turn (mirrors ctx-latch-model-switch D3).
+  const HAIKU = 'claude-haiku-4-5';
+  const HAIKU_U1 = { input_tokens: 10, cache_creation_input_tokens: 27_000, cache_read_input_tokens: 0 };
+  const HAIKU_U2 = { input_tokens: 10, cache_creation_input_tokens: 229, cache_read_input_tokens: 27_040 };
+
+  it('a Haiku session\'s alias/snapshot spelling pair keeps the reading through turn end', () => {
+    const t = getUsageTracker('c9');
+    t.reset();
+    for (const usage of [HAIKU_U1, HAIKU_U2]) {
+      t.apply({ kind: 'system', subtype: 'init', data: { model: HAIKU } });
+      t.apply({ kind: 'message_start', model: 'claude-haiku-4-5-20251001', usage });
+      t.apply({ kind: 'turn_end', usage });
+    }
+    wrap(<UsageChip inst={base({ id: 'c9', model: HAIKU, contextWindowTokens: 200_000 })} />);
+    expect(chip().textContent).toMatch(/^14%/);
+    expect(chip().title).toContain('27,279/200,000');
+  });
+
+  it('after a switch to a model with no known window, the carried window and the next reading render a percentage, not `ctx —`', () => {
+    const t = getUsageTracker('c10');
+    t.reset();
+    t.apply({ kind: 'message_start', model: HAIKU, usage: HAIKU_U1 });
+    t.apply({ kind: 'system', subtype: 'model_changed', data: { from: HAIKU, to: 'claude-future-9' } });
+    t.apply({ kind: 'message_start', model: 'claude-future-9', usage: HAIKU_U2 });
+    wrap(<UsageChip inst={base({ id: 'c10', model: 'claude-future-9', contextWindowTokens: 200_000 })} />);
+    expect(chip().textContent).toMatch(/^14%/);
+  });
+
+  it('mid-switch the popover names the running model with no window clause; settled, it adds the window', async () => {
+    const subline = async (inst: Instance) => {
+      const r = wrap(<UsageChip inst={inst} />);
+      await act(async () => { fireEvent.click(chip()); });
+      const text = screen.getByRole('dialog').querySelector('section:first-child > .mt-1')!.textContent;
+      r.unmount();
+      return text;
+    };
+    getUsageTracker('c11').reset();
+    const sw = { from: 'alpha:cloud', to: 'beta:cloud', fromBackend: 'ollama', toBackend: 'ollama' };
+    expect(await subline(base({ id: 'c11', backend: 'ollama', model: 'beta:cloud', contextWindowTokens: 300_000, modelSwitch: sw }))).toBe('alpha:cloud');
+    expect(await subline(base({ id: 'c11', backend: 'ollama', model: 'beta:cloud', contextWindowTokens: 300_000 }))).toBe('beta:cloud · 300k context');
+  });
+
+  it('the popover shows no Fable row when limits hold no Fable-scoped entry', async () => {
+    getUsageTracker('c12').reset();
+    accountUsageStore.set({ usage: { five_hour: { utilization: 45 }, limits: [{ scope: { model: { display_name: 'Opus' } }, percent: 12 }] }, stale: false });
+    try {
+      wrap(<UsageChip inst={base({ id: 'c12' })} />);
+      await act(async () => { fireEvent.click(chip()); });
+      const pop = screen.getByRole('dialog');
+      expect(pop.textContent).toContain('5-hour');
+      expect(pop.textContent).not.toContain('Fable');
+    } finally { accountUsageStore.set({ usage: null, stale: false }); }
+  });
+
+  it('the popover says usage is unavailable, with no Fable row, when there is no account usage', async () => {
+    getUsageTracker('c13').reset();
+    accountUsageStore.set({ usage: null, stale: false });
+    wrap(<UsageChip inst={base({ id: 'c13' })} />);
+    await act(async () => { fireEvent.click(chip()); });
+    const pop = screen.getByRole('dialog');
+    expect(pop.textContent).toContain('Usage data unavailable.');
+    expect(pop.textContent).not.toContain('Fable');
   });
 });
