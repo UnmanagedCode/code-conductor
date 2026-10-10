@@ -84,7 +84,7 @@ test('…', async ({ page, cc }) => { await page.goto('/next/'); /* cc.url, cc.d
 
 ## Old-UI checks (`legacy/`)
 
-The old UI's browser checks, driving `/legacy/` (its stable address until the cutover deletes it), `desktop` project only: each sets the viewports it measures, so Pixel 7 emulation would be a different test. Each boots its own cc (`ccOptions.server`). The `/next/` counterparts are parity scenarios, not these.
+The old UI's browser checks, driving `/legacy/` (its stable address until the cutover deletes it), `desktop` project only: each sets the viewports it measures, so Pixel 7 emulation would be a different test. Each one that needs a server boots its own cc (`ccOptions.server`); `header-compact.spec.ts` boots none. The `/next/` counterparts are parity scenarios, not these.
 
 | Spec | What it asserts |
 |---|---|
