@@ -113,16 +113,27 @@ async function routeSystems(page: Page, answer: (w: Write) => { status?: number;
   return writes;
 }
 
+/** The /api/settings/models fields these scenarios read or reshape; every other field passes through untouched. */
+type ModelsBody = {
+  backends: { id: string; label: string; template?: string; env?: { key: string; value: string }[]; managed?: boolean }[];
+  customModels?: { label: string; model: string; backend: string; contextWindow: number }[];
+  enabledTiers?: Record<string, boolean>;
+  defaultSpawnTier?: string;
+  roleEffort?: Record<string, { effort?: string; inheritsTo?: string }>;
+  conductorCompactWindow?: { enabled: boolean; value: number };
+  [key: string]: unknown;
+};
+
 /**
  * The real models payload reshaped by `get`; each models write is recorded and
  * answered by `answer` (a whole payload).
  */
-async function routeModels(page: Page, opts: { get: (real: any) => any; answer: (w: Write) => unknown }): Promise<Write[]> {
+async function routeModels(page: Page, opts: { get: (real: ModelsBody) => ModelsBody; answer: (w: Write) => unknown }): Promise<Write[]> {
   const writes: Write[] = [];
   await page.route('**/api/settings/models', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     const res = await route.fetch();
-    await route.fulfill({ response: res, json: opts.get(await res.json()) });
+    await route.fulfill({ response: res, json: opts.get((await res.json()) as ModelsBody) });
   });
   await page.route('**/api/settings/models/**', (route) => {
     const req = route.request();
@@ -138,7 +149,7 @@ async function routeModels(page: Page, opts: { get: (real: any) => any; answer: 
 const control = (page: Page, ui: Ui, name: string): Locator => ui.settingsView(page).getByLabel(name, { exact: true });
 
 parity('settings-backends-panel/R4', "Models: the backend picker lists a user backend, switching a tier to it saves its first model, and a custom model's Remove addresses its pair", async ({ page, ui }) => {
-  const withProxy = (b: any) => ({
+  const withProxy = (b: ModelsBody): ModelsBody => ({
     ...b,
     backends: [...b.backends, { id: 'px', label: 'My Proxy', template: 'px {model}', env: [], managed: false }],
     customModels: [
@@ -162,7 +173,7 @@ parity('settings-backends-panel/R4', "Models: the backend picker lists a user ba
 });
 
 parity('settings-models-effort-panel/R2', "Models: a role's explicit effort shows and saves, and the Conduct session's compact-window override saves its window", async ({ page, ui }) => {
-  let state: any;
+  let state: ModelsBody;
   const writes = await routeModels(page, {
     get: (b) => (state = {
       ...b,
@@ -170,7 +181,7 @@ parity('settings-models-effort-panel/R2', "Models: a role's explicit effort show
       conductorCompactWindow: { enabled: false, value: 300 },
     }),
     answer: (w) => {
-      const posted = (w.body as { conductorCompactWindow?: unknown } | null)?.conductorCompactWindow;
+      const posted = (w.body as Pick<ModelsBody, 'conductorCompactWindow'> | null)?.conductorCompactWindow;
       if (posted) state = { ...state, conductorCompactWindow: posted };
       return state;
     },
@@ -199,12 +210,12 @@ parity('settings-models-effort-panel/R2', "Models: a role's explicit effort show
 parity('app-models-change-wiring/R1', 'A tier switched off in Settings → Models leaves the New session dialog at once', async ({ page, cc, ui, uniq }) => {
   // The GET always answers the original tiers: only the save's answer carries
   // the switch-off, so a UI that re-fetched instead of applying it offers Fast.
-  const original = (b: any) => ({
+  const original = (b: ModelsBody): ModelsBody => ({
     ...b,
     enabledTiers: { fast: true, balanced: true, powerful: true, frontier: true },
     defaultSpawnTier: 'powerful',
   });
-  let real: any;
+  let real: ModelsBody;
   const writes = await routeModels(page, {
     get: (b) => original((real = b)),
     answer: () => ({ ...original(real), enabledTiers: { fast: false, balanced: true, powerful: true, frontier: true } }),
