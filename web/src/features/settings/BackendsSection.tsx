@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { useStore } from '@/state/createStore';
+import { createStore, useStore } from '@/state/createStore';
 import { SectionIntro, SettingsCard, Status, Field } from './ui';
 import { post, patch, del, errText } from './api';
 import { modelsSettingsStore, applyModelsPayload } from './models/store';
@@ -14,26 +14,25 @@ type Backend = NonNullable<ModelsPayload['backends']>[number];
 
 const EMPTY = { id: '', label: '', template: '', env: '' };
 
+// An unsaved Add or Edit lives at module scope, not in the component: Settings remounts a section on every switch and on re-entry, and typed input must survive both.
+export const backendsDraftStore = createStore<{ editing: string | null; form: typeof EMPTY; formStatus: string | null }>({ editing: null, form: EMPTY, formStatus: null });
+
 export function BackendsSection() {
   const { data, error } = useStore(modelsSettingsStore, (s) => s);
-  const [editing, setEditing] = React.useState<string | null>(null);
-  const [form, setForm] = React.useState(EMPTY);
-  const [formStatus, setFormStatus] = React.useState<string | null>(null);
+  const { editing, form, formStatus } = useStore(backendsDraftStore, (s) => s);
+  const setForm = (patch: Partial<typeof EMPTY>) => backendsDraftStore.set((s) => ({ form: { ...s.form, ...patch } }));
+  const setFormStatus = (formStatus: string | null) => backendsDraftStore.set({ formStatus });
   const [listStatus, setListStatus] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const backends = data?.backends || [];
   const custom = data?.customModels || [];
 
   function closeForm() {
-    setEditing(null);
-    setForm(EMPTY);
-    setFormStatus(null);
+    backendsDraftStore.set({ editing: null, form: EMPTY, formStatus: null });
   }
 
   function openEdit(b: Backend) {
-    setEditing(b.id);
-    setForm({ id: b.id, label: b.label, template: b.template || '', env: envToText(b.env) });
-    setFormStatus(null);
+    backendsDraftStore.set({ editing: b.id, form: { id: b.id, label: b.label, template: b.template || '', env: envToText(b.env) }, formStatus: null });
   }
 
   async function save() {
@@ -100,13 +99,13 @@ export function BackendsSection() {
       </div>
       <SettingsCard title={editing ? `Edit ${backends.find((b) => b.id === editing)?.label ?? editing}` : 'Add a backend'}>
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit backend' : 'Add backend'}>
-          <Field label="Id" htmlFor="sb-id"><Input id="sb-id" value={form.id} disabled={!!editing} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="e.g. my-proxy" autoComplete="off" /></Field>
-          <Field label="Label" htmlFor="sb-label"><Input id="sb-label" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. My Proxy" autoComplete="off" /></Field>
+          <Field label="Id" htmlFor="sb-id"><Input id="sb-id" value={form.id} disabled={!!editing} onChange={(e) => setForm({ id: e.target.value })} placeholder="e.g. my-proxy" autoComplete="off" /></Field>
+          <Field label="Label" htmlFor="sb-label"><Input id="sb-label" value={form.label} onChange={(e) => setForm({ label: e.target.value })} placeholder="e.g. My Proxy" autoComplete="off" /></Field>
           <Field label="Template" htmlFor="sb-template" className="sm:col-span-2">
-            <Input id="sb-template" className="font-mono" value={form.template} onChange={(e) => setForm({ ...form, template: e.target.value })} placeholder="e.g. myproxy run claude --model {model} --" autoComplete="off" />
+            <Input id="sb-template" className="font-mono" value={form.template} onChange={(e) => setForm({ template: e.target.value })} placeholder="e.g. myproxy run claude --model {model} --" autoComplete="off" />
           </Field>
           <Field label="Env (optional)" htmlFor="sb-env" hint="One KEY=VALUE per line." className="sm:col-span-2">
-            <Textarea id="sb-env" className="font-mono" rows={3} value={form.env} onChange={(e) => setForm({ ...form, env: e.target.value })} />
+            <Textarea id="sb-env" className="font-mono" rows={3} value={form.env} onChange={(e) => setForm({ env: e.target.value })} />
           </Field>
           <div className="flex justify-end gap-2 sm:col-span-2">
             {editing && <Button type="button" variant="ghost" onClick={closeForm}>Cancel</Button>}

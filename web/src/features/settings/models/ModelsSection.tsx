@@ -7,7 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/native-select';
-import { useStore } from '@/state/createStore';
+import { createStore, useStore } from '@/state/createStore';
 import { openCosts } from '@/features/views/api';
 import { cn } from '@/lib/utils';
 import { SectionIntro, SettingsCard, Status, Field, RangeField } from '../ui';
@@ -17,6 +17,14 @@ import {
   CLAUDE_BACKEND, backendIdFor, backendLabel, claudeVersions, defaultClaudeModel, describeBinding, firstModelForBackend,
   fmtCtxTokens, modelsForBackend, parseCtxTokens, type Binding, type ModelsPayload,
 } from './logic';
+
+// An unsaved Add or Edit lives at module scope, not in the component: Settings remounts a section on every switch and on re-entry, and typed input must survive both.
+export const modelsDraftStore = createStore<{
+  editing: { backend: string; model: string } | null;
+  form: { label: string; backend: string; model: string; context: string; steer: boolean };
+  status: { text: string; tone: 'ok' | 'error' | 'muted' } | null;
+  roleName: string;
+}>({ editing: null, form: { label: '', backend: '', model: '', context: '', steer: true }, status: null, roleName: '' });
 
 // ── Pickers ──────────────────────────────────────────────────────────────
 
@@ -194,7 +202,8 @@ function TiersCard({ data }: { data: ModelsPayload }) {
 function RolesCard({ data }: { data: ModelsPayload }) {
   const tiers = data.tiers || [];
   const defaultTier = data.defaultSpawnTier ?? 'powerful';
-  const [name, setName] = React.useState('');
+  const name = useStore(modelsDraftStore, (s) => s.roleName);
+  const setName = (roleName: string) => modelsDraftStore.set({ roleName });
   const [status, setStatus] = React.useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
   const [busy, setBusy] = React.useState(false);
 
@@ -303,9 +312,7 @@ type CustomModel = NonNullable<ModelsPayload['customModels']>[number];
 function CustomModelsCard({ data }: { data: ModelsPayload }) {
   const list = data.customModels || [];
   const substitution = (data.backends || []).filter((b) => b.id !== CLAUDE_BACKEND);
-  const [editing, setEditing] = React.useState<{ backend: string; model: string } | null>(null);
-  const [form, setForm] = React.useState({ label: '', backend: '', model: '', context: '', steer: true });
-  const [status, setStatus] = React.useState<{ text: string; tone: 'ok' | 'error' | 'muted' } | null>(null);
+  const { editing, form, status } = useStore(modelsDraftStore, (s) => s);
   const [busy, setBusy] = React.useState(false);
 
   const backend = substitution.some((b) => b.id === form.backend) ? form.backend : substitution[0]?.id ?? '';
@@ -315,16 +322,19 @@ function CustomModelsCard({ data }: { data: ModelsPayload }) {
     if (editing && !list.some((c) => c.backend === editing.backend && c.model === editing.model)) closeForm();
   }, [list, editing]);
 
+  const setForm = (patch: Partial<typeof form>) => modelsDraftStore.set((s) => ({ form: { ...s.form, ...patch } }));
+  const setStatus = (status: { text: string; tone: 'ok' | 'error' | 'muted' } | null) => modelsDraftStore.set({ status });
+
   function closeForm() {
-    setEditing(null);
-    setForm((f) => ({ label: '', backend: f.backend, model: '', context: '', steer: true }));
-    setStatus(null);
+    modelsDraftStore.set((s) => ({ editing: null, form: { label: '', backend: s.form.backend, model: '', context: '', steer: true }, status: null }));
   }
 
   function openEdit(c: CustomModel) {
-    setEditing({ backend: c.backend, model: c.model });
-    setForm({ label: c.label, backend: c.backend, model: c.model, context: String(c.contextWindow), steer: c.midTurnSteering !== false });
-    setStatus({ text: `Editing ${c.label}. Backend and model id are fixed.`, tone: 'muted' });
+    modelsDraftStore.set({
+      editing: { backend: c.backend, model: c.model },
+      form: { label: c.label, backend: c.backend, model: c.model, context: String(c.contextWindow), steer: c.midTurnSteering !== false },
+      status: { text: `Editing ${c.label}. Backend and model id are fixed.`, tone: 'muted' },
+    });
   }
 
   async function save() {
@@ -340,8 +350,7 @@ function CustomModelsCard({ data }: { data: ModelsPayload }) {
         ? await patch<ModelsPayload>(`/api/settings/models/custom/${encodeURIComponent(editing.backend)}/${encodeURIComponent(editing.model)}`, { label, contextWindow: ctx, midTurnSteering: form.steer })
         : await post<ModelsPayload>('/api/settings/models/custom', { label, model, backend, contextWindow: ctx, midTurnSteering: form.steer });
       const wasEditing = !!editing;
-      setEditing(null);
-      setForm((f) => ({ label: '', backend: f.backend, model: '', context: '', steer: true }));
+      modelsDraftStore.set((s) => ({ editing: null, form: { label: '', backend: s.form.backend, model: '', context: '', steer: true } }));
       setStatus({ text: wasEditing ? 'Saved.' : 'Added.', tone: 'ok' });
       applyModelsPayload(out);
     } catch (e) {
@@ -383,16 +392,16 @@ function CustomModelsCard({ data }: { data: ModelsPayload }) {
         </ul>
       )}
       <form className="grid gap-3 rounded-lg border border-dashed p-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit custom model' : 'Add custom model'}>
-        <Field label="Label" htmlFor="cm-label"><Input id="cm-label" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. Local GPT" autoComplete="off" /></Field>
+        <Field label="Label" htmlFor="cm-label"><Input id="cm-label" value={form.label} onChange={(e) => setForm({ label: e.target.value })} placeholder="e.g. Local GPT" autoComplete="off" /></Field>
         <Field label="Backend" htmlFor="cm-backend">
-          <NativeSelect id="cm-backend" className="w-full" value={backend} disabled={!substitution.length || !!editing} onChange={(e) => setForm({ ...form, backend: e.target.value })}>
+          <NativeSelect id="cm-backend" className="w-full" value={backend} disabled={!substitution.length || !!editing} onChange={(e) => setForm({ backend: e.target.value })}>
             {substitution.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
           </NativeSelect>
         </Field>
-        <Field label="Model id" htmlFor="cm-model"><Input id="cm-model" value={form.model} disabled={!!editing} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="e.g. gemma4:cloud" autoComplete="off" /></Field>
-        <Field label="Context" htmlFor="cm-context"><Input id="cm-context" value={form.context} onChange={(e) => setForm({ ...form, context: e.target.value })} placeholder="e.g. 200k or 1m" autoComplete="off" /></Field>
+        <Field label="Model id" htmlFor="cm-model"><Input id="cm-model" value={form.model} disabled={!!editing} onChange={(e) => setForm({ model: e.target.value })} placeholder="e.g. gemma4:cloud" autoComplete="off" /></Field>
+        <Field label="Context" htmlFor="cm-context"><Input id="cm-context" value={form.context} onChange={(e) => setForm({ context: e.target.value })} placeholder="e.g. 200k or 1m" autoComplete="off" /></Field>
         <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
-          <Label className="font-normal"><Checkbox id="cm-steer" checked={form.steer} onCheckedChange={(v) => setForm({ ...form, steer: !!v })} /> Accepts mid-turn steering</Label>
+          <Label className="font-normal"><Checkbox id="cm-steer" checked={form.steer} onCheckedChange={(v) => setForm({ steer: !!v })} /> Accepts mid-turn steering</Label>
           <div className="ml-auto flex gap-2">
             {editing && <Button type="button" variant="ghost" onClick={closeForm}>Cancel</Button>}
             <Button type="submit" disabled={busy}>{editing ? 'Save' : <><PlusIcon /> Add model</>}</Button>

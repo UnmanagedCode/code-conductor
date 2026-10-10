@@ -10,7 +10,7 @@ export type Lens = 'conductors' | 'projects';
 export type PlacementDialog = 'new' | 'adopt';
 export type PlacementField = 'name' | 'system' | 'target' | 'path' | 'pathList' | 'suggestions';
 // Settings (card 2026-0625)
-export type SettingsSection = 'account' | 'archived' | 'about';
+export type SettingsSection = 'account' | 'archived' | 'about' | 'models' | 'backends' | 'systems';
 export type SpawnField = 'worktree' | 'worktreeHint' | 'debug';
 export type SpawnSelect = 'effort' | 'thinking';
 
@@ -144,6 +144,19 @@ export interface Ui {
   toggleFoldView(fold: Locator): Promise<void>;
   /** A prompt bubble's hover-revealed raw/copy controls row. */
   userControls(bubble: Locator): Locator;
+
+  // Settings part 2 (card 2026-0636)
+  /** Switches the open Settings view to `section` without reopening Settings. */
+  switchSettingsSection(page: Page, section: SettingsSection): Promise<void>;
+  /** Clicks Remove on the custom model whose row names `model`. */
+  removeCustomModel(page: Page, model: string): Promise<void>;
+  /** The Conduct session's compact-window override: its switch, slider and value readout. */
+  compactWindow(page: Page): { toggle: Locator; slider: Locator; readout: Locator };
+  systemRow(page: Page, id: string): Locator;
+  editSystem(page: Page, id: string): Promise<void>;
+  removeSystem(page: Page, id: string): Promise<void>;
+  /** The Systems add/edit form; `save` is its submit button (Add in add mode, Save in edit mode). */
+  systemForm(page: Page): { id: Locator; label: Locator; launch: Locator; save: Locator; cancel: Locator };
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -478,6 +491,24 @@ export const legacy: Ui = {
     await fold.locator('.user-view-toggle').click();
   },
   userControls: (bubble) => bubble.locator('.user-view-controls'),
+
+  // Settings part 2 (card 2026-0636)
+  async switchSettingsSection(page, section) {
+    await page.locator('#settings-group-select').selectOption(section);
+    await expect(page.locator(`#settings-${section}`)).toBeVisible();
+  },
+  async removeCustomModel(page, model) {
+    await page.locator('#sm-custom-list .sm-custom-item').filter({ hasText: model }).locator('.sm-custom-remove').click();
+  },
+  compactWindow: (page) => ({ toggle: page.locator('#sm-compact-window-enabled'), slider: page.locator('#sm-compact-window'), readout: page.locator('#sm-compact-window-val') }),
+  systemRow: (page, id) => page.locator('#sy-list .sy-row').filter({ has: page.locator('.sy-row-id', { hasText: exactly(id) }) }),
+  async editSystem(page, id) {
+    await legacy.systemRow(page, id).locator('.sy-row-actions button', { hasText: exactly('Edit') }).click();
+  },
+  async removeSystem(page, id) {
+    await legacy.systemRow(page, id).locator('.sy-row-actions button', { hasText: exactly('Remove') }).click();
+  },
+  systemForm: (page) => ({ id: page.locator('#sy-id'), label: page.locator('#sy-label'), launch: page.locator('#sy-launch'), save: page.locator('#sy-save'), cancel: page.locator('#sy-cancel') }),
 };
 
 /**
@@ -652,7 +683,7 @@ export const next: Ui = {
   // Settings (card 2026-0625)
   settingsView: (page) => page.locator('[data-settings-view]'),
   async openSettingsSection(page, section) {
-    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About' };
+    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About', models: 'Models', backends: 'Backends', systems: 'Systems' };
     await next.openSettings(page);
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: label[section], exact: true }).click();
     await expect(page.locator(`[data-section="${section}"]`)).toBeVisible();
@@ -769,6 +800,32 @@ export const next: Ui = {
     await fold.getByRole('button', { name: /^Show (raw text|rendered markdown)$/ }).click();
   },
   userControls: (bubble) => bubble.getByRole('button', { name: 'Copy message', exact: true }).locator('xpath=..'),
+
+  // Settings part 2 (card 2026-0636)
+  async switchSettingsSection(page, section) {
+    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About', models: 'Models', backends: 'Backends', systems: 'Systems' };
+    await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: label[section], exact: true }).click();
+    await expect(page.locator(`[data-section="${section}"]`)).toBeVisible();
+  },
+  async removeCustomModel(page, model) {
+    await page.locator('[data-testid="custom-list"] li').filter({ hasText: model }).getByRole('button', { name: /^Remove / }).click();
+  },
+  compactWindow: (page) => ({
+    toggle: page.getByRole('switch', { name: 'Override the compact window for the Conduct session', exact: true }),
+    slider: page.locator('#compact-window'),
+    readout: page.locator('#compact-window + span'),
+  }),
+  systemRow: (page, id) => page.locator(`[data-system="${id}"]`),
+  async editSystem(page, id) {
+    await next.systemRow(page, id).getByRole('button', { name: /^Edit / }).click();
+  },
+  async removeSystem(page, id) {
+    await next.systemRow(page, id).getByRole('button', { name: /^Remove / }).click();
+  },
+  systemForm: (page) => {
+    const form = page.locator('[data-section="systems"] form');
+    return { id: page.locator('#sy-id'), label: page.locator('#sy-label'), launch: page.locator('#sy-launch'), save: form.locator('button[type="submit"]'), cancel: form.getByRole('button', { name: 'Cancel', exact: true }) };
+  },
 };
 
 // Sidebar B (card 2026-0628)
