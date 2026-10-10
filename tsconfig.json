@@ -12,5 +12,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "server.ts", "public/*.ts", "migrations/index.d.mts"]
+  "include": ["src/**/*.ts", "server.ts", "public/*.ts", "migrations/index.d.mts", "harness/**/*.ts"]
 }

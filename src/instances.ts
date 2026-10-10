@@ -5,7 +5,8 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { claudeConfigDir } from './claudeConfigDir.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,

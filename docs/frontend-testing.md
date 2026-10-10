@@ -1,6 +1,6 @@
 # Frontend testing
 
-How `public/` is tested: the happy-dom suite, what happy-dom gets wrong, and what a hand pass through the running app (`harness/playwright/`, `tests/fake-claude.mjs`, headless Chromium) can and cannot reach. Runner, isolation and the DOM-assert guards are in [architecture.md](architecture.md) → Testing. Launching the headless harness is covered in `harness/playwright/README.md`.
+How `public/` is tested: the happy-dom suite, what happy-dom gets wrong, and what a headless pass through the running app (the Playwright suite `web/e2e/`, the fake CLI `tests/fake-claude.mjs`) can and cannot reach. Runner, isolation and the DOM-assert guards are in [architecture.md](architecture.md) → Testing. The Playwright harness, its fixtures and the ported old-UI checks are covered in `web/e2e/README.md`.
 
 The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-web-ui-web), at the end.
 
@@ -22,8 +22,8 @@ The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-
 |---|---|---|---|
 | UA stylesheet (`[hidden] { display: none }`) | present | **absent** | `getComputedStyle(el).display === 'none'` on a `[hidden]` element is vacuous either way |
 | `hashchange` after `history.pushState` / `replaceState` | never fires | **fires** (async, in order) | a view opened via `pushState` that nobody's `hashchange` listener hears still passes |
-| Iframe documents | loaded; a same-origin frame under a `display: none` ancestor keeps its timers, WebSocket, mic track and `AudioContext` running (headless Chromium; conditions in `harness/playwright/check-plugin-keepalive.mjs`) | **never loaded** (`disableIframePageLoading`); `contentWindow` is `null` | keep-alive survival is asserted as node identity + untouched `src` + no `/start`, with a fake `contentWindow` pinned on the node where a test needs one; whether the page keeps running is measured only by that check |
-| `matchMedia` | evaluates against the viewport and fires `change` on a real match flip | **evaluates width queries for real** (`new Window({ width })`, `window.happyDOM.setViewport({ width })`) and fires `change` on resize, but each listener starts from "did not match": the first resize from a matching (narrow) start to a non-matching one fires nothing | drive a breakpoint crossing by starting wide, narrowing, then widening (`tests/header-compact.test.mjs`); it computes no layout, so row counts and ellipsis need the headless pass (`tests/header-compact-browser.test.mjs`, `RUN_PLAYWRIGHT=1`) |
+| Iframe documents | loaded; a same-origin frame under a `display: none` ancestor keeps its timers, WebSocket, mic track and `AudioContext` running (headless Chromium; conditions in `web/e2e/legacy/plugin-keepalive.spec.ts`) | **never loaded** (`disableIframePageLoading`); `contentWindow` is `null` | keep-alive survival is asserted as node identity + untouched `src` + no `/start`, with a fake `contentWindow` pinned on the node where a test needs one; whether the page keeps running is measured only by that check |
+| `matchMedia` | evaluates against the viewport and fires `change` on a real match flip | **evaluates width queries for real** (`new Window({ width })`, `window.happyDOM.setViewport({ width })`) and fires `change` on resize, but each listener starts from "did not match": the first resize from a matching (narrow) start to a non-matching one fires nothing | drive a breakpoint crossing by starting wide, narrowing, then widening (`tests/header-compact.test.mjs`); it computes no layout, so row counts and ellipsis need the headless pass (`web/e2e/legacy/header-compact.spec.ts`) |
 | Layout reads (`getBoundingClientRect`, `scrollHeight`, `clientHeight`, `offsetHeight`) | real geometry | **all 0** | geometry logic takes injected rects (`tests/sticky-prompt.test.mjs` stubs a per-bubble top); whether a sticky/clamped element LOOKS right needs the headless pass |
 
 - **`[hidden]` is a CSS-origin invariant.** An author-origin declaration beats the UA rule at any specificity, so any author `display` on a selector that matches a `[hidden]`-bearing element un-hides it. Test it as a sweep over `public/styles.css` plus `public/index.html` and the JS-built elements listed in `JS_BUILT_HIDDEN`, not as a computed-style check:
@@ -31,7 +31,7 @@ The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-
   - It also sweeps the JS-built elements listed in `JS_BUILT_HIDDEN` ("the JS-built elements listed in JS_BUILT_HIDDEN do not lay out"), re-created in their real parent. A new JS-built element that carries `hidden` is covered only once it is added there.
   - Its stated gaps: dialog markup built in JS is not swept, and neither is any other JS-built element that toggles `hidden` outside `JS_BUILT_HIDDEN` (e.g. `.lightbox-backdrop`, `.costs-proj-detail`, `details.sub-conversation`).
 - **Hash routing needs browser semantics.** Install `installBrowserHashSemantics()` (`tests/browser-hash-semantics.mjs`). It suppresses history-API `hashchange` events by matching old/new URL, not by counting, so an interleaved `location.hash =` still delivers. Its positive control is "harness: pushState/replaceState fire no hashchange, location.hash does". This applies to any test of `public/hashView.js`, `public/mainViews.js` or a `hashchange` listener.
-- **Real layout (offsets, overlap) is measurable only in the headless harness:** `bootOrch({sandbox: true})` (`harness/playwright/boot-orch.mjs`), system Chromium, all state in a temp sandbox.
+- **Real layout (offsets, overlap) is measurable only in a browser:** a `web/e2e` spec, or `bootCc()` (`web/e2e/harness/boot.ts`) from an ad-hoc script; Playwright's Chromium, all state in a scratch root.
 
 ## Dialog tests
 
@@ -58,7 +58,7 @@ The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-
 - **A harness conductor that spawns unbound workers** needs `playbookEnforcement: 'warn'`.
 - **`awaitingUser`:**
   - Text ask: a scenario turn ending in `?` with `stop_reason: "end_turn"`, sent to a REST-spawned (non-conducted) session.
-  - Tool ask (`ExitPlanMode` / `AskUserQuestion`): a seeded jsonl plus kill + resume. That resume also stands in for a server restart (`harness/playwright/check-sidebar-strip.mjs`).
+  - Tool ask (`ExitPlanMode` / `AskUserQuestion`): a seeded jsonl plus kill + resume. That resume also stands in for a server restart (`web/e2e/legacy/sidebar-strip.spec.ts`).
 
 **Reachable directly:**
 - plan-approval card markdown and the conversation transcript, both through `renderMarkdownInto`, which also covers the summary body;
@@ -70,7 +70,7 @@ The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-
 
 Injecting a fixture at the network boundary still exercises the real module.
 
-**Headless checks carry no suite evidence.** `harness/playwright/check-*.mjs` never runs under `npm test`. A headless PASS with no in-suite counterpart pins nothing against regression. Where an invariant must hold, it needs a suite test.
+**Headless checks are not gated.** The ported old-UI checks (`web/e2e/legacy/`) run under `npm run test:e2e` with the rest of `web/e2e`, and a mutation run can score a mutant with any spec (`harness/mutation/README.md`), but no spec is part of `npm test` or `test:all`. A headless PASS with no in-suite counterpart pins nothing against regression. Where an invariant must hold, it needs a suite test.
 
 ## The web UI (`web/`)
 
@@ -80,10 +80,12 @@ Injecting a fixture at the network boundary still exercises the real module.
 |---|---|
 | `npm run test:web` | Vitest over `web/src/**/*.test.{ts,tsx}` (config: `web/vitest.config.ts`, environment `happy-dom`, setup `web/src/test/setup.ts`). Not part of `npm test` |
 | `npm run test:all` | `npm test && npm run test:web`: red if either suite is. The gate for work touching `web/` |
-| `npm run test:e2e` | Playwright over `web/e2e/*.spec.ts` (config: `web/playwright.config.ts`), projects `desktop` (1440×900) and `phone` (Pixel 7). Not gated |
-| `npm run typecheck` | `tsc --noEmit` (server) and `tsc -p web` (UI, strict); `pretest` runs it |
+| `npm run test:e2e` | Playwright over `web/e2e/**/*.spec.ts` (config: `web/playwright.config.ts`), projects `desktop`, `phone` and `android` (`web/e2e/README.md` → Projects). Not gated |
+| `npm run typecheck` | `tsc --noEmit` (server, `harness/**/*.ts`), `tsc -p web` (UI, strict) and `tsc -p web/e2e` (the Playwright suite and harness); `pretest` runs it |
 
-First e2e run on a machine: `npx playwright install chromium` (the browser revision `@playwright/test` pins). Termux cannot run the e2e suite.
+First e2e run on a machine: `npx playwright install chromium` (the browser revision `@playwright/test` pins).
+
+**Known limitation: Termux runs no Playwright spec.** `@playwright/test` has no browser there, and that includes the old-UI checks in `web/e2e/legacy/`, so no browser check of `public/` runs on Termux. The gap lasts until the cutover deletes the old UI, and those checks with it.
 
 ### Vitest suites
 
@@ -98,10 +100,12 @@ First e2e run on a machine: `npx playwright install chromium` (the browser revis
 
 ### End-to-end suite
 
-- `web/e2e/server.mjs` boots the real `server.ts` in a sandbox: temp `PROJECTS_ROOT` and `CLAUDE_PROJECTS_ROOT`, `CLAUDE_BIN` = `tests/fake-claude.mjs`, `FAKE_CLAUDE_SCENARIO` = `web/e2e/scenario.json`, port `E2E_PORT` (default 8799). It does not set `CC_SKIP_WEB_BUILD`: the server builds `web/dist` on start like any other start, so the suite also covers the build path, and leaves `web/dist` in the checkout (gitignored).
-- **Readiness waits for the build.** Playwright's `webServer.url` is `/next/`, which answers 503 until the build is done, so the first spec never meets the building page.
-- Specs navigate under the base: `page.goto('/next/')`, `/next/#session=<sid>`.
-- `web/e2e/switch.spec.ts` is the one spec that also drives the old UI: `/` → **Try the new UI** → `/next/` → **Classic UI** → `/legacy/`, opening each UI's drawer first on the phone project. It counts the old UI as running only once its JS answers (the Projects lens toggles `aria-pressed`), not when its HTML arrives.
-- `web/e2e/scenario.json` is a fake-CLI scenario: one reply with streamed tool calls (Read, Edit, Bash), thinking and markdown, then short replies. Fake-claude consumes one turn per prompt, per process.
-- Seed state through the REST API with Playwright's `request` fixture, then drive the page.
+The harness, fixtures, projects, live mode and every ported check are documented in `web/e2e/README.md`. What a spec author acts on:
+
+- **Each worker boots its own cc** (`cc` fixture, `web/e2e/harness/fixtures.ts`) in a scratch root under the temp dir: its own projects root, CLI config dir, HOME, git config and free port, an allowlisted env, and the fake CLI playing `web/e2e/fixtures/scenario.json`. `baseURL` is that server. A file's `test.use({ ccOptions })` (scenario, env, `server` name) gets a server of its own.
+- **`web/dist` is built once per run by globalSetup** with the server's own hash-gated `ensureWebBuild()`; a failed build fails the run. The booted servers run with `CC_SKIP_WEB_BUILD=1` and serve that build.
+- Specs navigate under the base: `page.goto('/next/')`, `/next/#session=<sid>`. The ported old-UI checks drive `/legacy/`.
+- `web/e2e/switch.spec.ts` drives both UIs: `/` → **Try the new UI** → `/next/` → **Classic UI** → `/legacy/`, opening each UI's drawer first on the phone project. It counts the old UI as running only once its JS answers (the Projects lens toggles `aria-pressed`), not when its HTML arrives.
+- `web/e2e/fixtures/scenario.json` is a fake-CLI scenario: one reply with streamed tool calls (Read, Edit, Bash), thinking and markdown, then short replies. Fake-claude consumes one turn per prompt, per process.
+- Seed state through the REST and MCP helpers in `web/e2e/harness/api.ts`, then drive the page.
 - What the fake CLI cannot reach is the same as for the old UI: [What the fake-CLI hand pass cannot reach](#what-the-fake-cli-hand-pass-cannot-reach).

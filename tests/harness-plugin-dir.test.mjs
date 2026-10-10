@@ -1,5 +1,5 @@
-// harness/pluginDir.mjs — the one resolver both harnesses (mutation, playwright)
-// use to find an installed plugin at `<projectsRoot>/.plugins/<name>`.
+// harness/pluginDir.mjs — the one resolver the mutation harness uses
+// to find an installed plugin at `<projectsRoot>/.plugins/<name>`.
 //
 // Every call passes `env` explicitly: the ambient CC_PROJECTS_ROOT is set in any
 // cc worker, so reading it would make the fallback tests pass or fail by where

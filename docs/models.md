@@ -676,7 +676,7 @@ has one.
 
 That overflow is not what sets the breakpoint — it clears at a lower width. The binding
 constraint is the `1fr` model column staying readable (≥100px, `SELECT_MIN_W` in
-`harness/playwright/check-models-responsive.mjs`), which needs a 484px row box
+`web/e2e/legacy/models-responsive.spec.ts`), which needs a 484px row box
 (`20+76+88+100+76+48` + 5 gaps + padding + border) → 546px content column → an **effective**
 width of 826px after the sidebar and column padding. Effective, because the gutter comes off
 too and its width belongs to the host, not to us: at `max-width: 850px` the grid's narrowest
@@ -691,5 +691,5 @@ form, the Cost dashboard button, and the two `.tt-toggle` checkbox labels. The e
 checkbox and default radio keep their intrinsic ~13px box — it is their `.sm-field`
 wrapper that is 44px and takes the tap.
 
-Verified by `harness/playwright/check-models-responsive.mjs` (geometry, in a browser) +
+Verified by `web/e2e/legacy/models-responsive.spec.ts` (geometry, in a browser) +
 `tests/settings-models-field-labels.test.mjs` (the DOM contract).

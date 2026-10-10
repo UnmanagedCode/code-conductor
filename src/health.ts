@@ -9,7 +9,7 @@ import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { resolveClaudeBin } from './claudeLauncher.ts';
 import type { Platform } from './platform/index.ts';
-import { claudeConfigDir } from './projects.ts';
+import { claudeConfigDir } from './claudeConfigDir.ts';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 

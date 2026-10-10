@@ -105,7 +105,7 @@ describe('webSourceHash over a fixture root', () => {
     try { return webSourceHash(inputs); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   };
 
-  it.each(['dist', 'node_modules', 'test-results', 'playwright-report', 'dist.tmp-123', 'dist.old-123'])('ignores %s', (name) => {
+  it.each(['dist', 'node_modules', 'test-results', 'playwright-report', 'e2e', 'dist.tmp-123', 'dist.old-123'])('ignores %s', (name) => {
     expect(withDir(name)).toBe(webSourceHash(inputs));
   });
 

@@ -5,7 +5,7 @@
 // Real index.html and real installHeader() in happy-dom at a chosen viewport
 // width (tests/headerCompactHarness.mjs). happy-dom's matchMedia really
 // evaluates the width query, but it computes no layout, so the one-row look
-// itself is in the gated tests/header-compact-browser.test.mjs.
+// itself is in web/e2e/legacy/header-compact.spec.ts.
 //
 // happy-dom quirk the resize tests route around: a MediaQueryList's `change`
 // listener starts from "did not match", so the FIRST resize from a narrow start

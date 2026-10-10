@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect } from './harness/fixtures.ts';
 
 // The two UIs link to each other from their sidebar footers: the old UI at / (and
 // /legacy/) offers "Try the new UI", the web UI at /next/ offers "Classic UI".

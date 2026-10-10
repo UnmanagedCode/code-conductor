@@ -1,4 +1,4 @@
-// The one resolver cc's harnesses (mutation/, playwright/) use to find an
+// The one resolver the mutation harness (run.mjs, parse.mjs) uses to find an
 // installed plugin: `<projectsRoot>/.plugins/<name>`.
 //
 // The projects root comes from CC_PROJECTS_ROOT, which cc exports to every
@@ -7,8 +7,8 @@
 // directory directly under the projects root, and `--git-common-dir` names it
 // from the main checkout and from any worktree alike.
 //
-// LEAF MODULE — node builtins ONLY. harness/playwright/paths.mjs imports this,
-// and that module must load under `npm test` on a machine with no plugins.
+// LEAF MODULE — node builtins ONLY: tests/harness-plugin-dir.test.mjs loads it
+// under `npm test`, on machines with no plugins.
 
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

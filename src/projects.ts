@@ -9,6 +9,7 @@ import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
+import { claudeConfigDir } from './claudeConfigDir.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, localSystem, placementOf, projectPlacement,
   resolveSystem, systemById,
@@ -138,19 +139,6 @@ export function worktreesStoreRoot(projectName: string): string {
 
 export function worktreeStoreDir(projectName: string, worktreeName: string): string {
   return path.join(worktreesStoreRoot(projectName), worktreeName);
-}
-
-// THE CLI'S OWN CONFIG DIRECTORY on this machine — `~/.claude` unless the host
-// overrode it. Every cc reader of the CLI's state resolves through here rather
-// than spelling `~/.claude`, because the CLI's own resolution honours the
-// variable and a reader that did not would be looking at a directory the CLI is
-// not writing.
-//
-// NOT the directory a remote-backed worker is pointed at: that one is cc-owned,
-// per remote, and comes from `remoteConfigDir()`. This is the SOURCE the farm
-// links into, and the directory a LOCAL session keeps using untouched.
-export function claudeConfigDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
 }
 
 // Where LOCAL places' transcripts live. A remote-backed place resolves its root

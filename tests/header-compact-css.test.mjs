@@ -1,6 +1,6 @@
 // The one-row phone header's CSS contract, read from public/styles.css (happy-dom
-// computes no layout; the real layout is in the gated
-// tests/header-compact-browser.test.mjs). The declarations of one rule, by exact
+// computes no layout; the real layout is in
+// web/e2e/legacy/header-compact.spec.ts). The declarations of one rule, by exact
 // selector, as tests/sticky-prompt.test.mjs's pinRule does.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

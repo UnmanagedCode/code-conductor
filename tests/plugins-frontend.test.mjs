@@ -262,7 +262,7 @@ test('pluginView: start failure shows the error + tail with a Retry button, not 
 // ── pluginView: keep-alive resident frames (frontend.keepAlive) ─────────
 // happy-dom never loads a frame document, so survival is asserted as node
 // identity + untouched src + no /start; whether the hidden page keeps running
-// is measured only by harness/playwright/check-plugin-keepalive.mjs. A frame's
+// is measured only by web/e2e/legacy/plugin-keepalive.spec.ts. A frame's
 // contentWindow is null here, so tests that need one pin a fake on the node.
 
 const kaRow = (over = {}) => ({ state: 'ready', enabled: true, frontendKeepAlive: true, ...over });

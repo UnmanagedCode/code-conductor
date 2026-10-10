@@ -1,14 +1,8 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect } from './harness/fixtures.ts';
+import { spawnSession } from './harness/api.ts';
 
-async function spawnSession(request: APIRequestContext, project: string) {
-  await request.post('/api/projects', { data: { name: project } });
-  const r = await request.post('/api/instances', { data: { project, mode: 'bypassPermissions' } });
-  expect(r.ok()).toBeTruthy();
-  return (await r.json()) as { id: string; sessionId: string };
-}
-
-test('a prompt streams a reply with tool calls, prose and a turn footer', async ({ page, request }) => {
-  const { sessionId } = await spawnSession(request, `e2e-chat-${test.info().project.name}`);
+test('a prompt streams a reply with tool calls, prose and a turn footer', async ({ page, cc }) => {
+  const { sessionId } = await spawnSession(cc, `e2e-chat-${test.info().project.name}`);
   await page.goto(`/next/#session=${sessionId}`);
   const composer = page.locator('#composer-input');
   await expect(composer).toBeEnabled();
@@ -24,8 +18,8 @@ test('a prompt streams a reply with tool calls, prose and a turn footer', async 
   await expect(composer).toHaveValue('');
 });
 
-test('the action group expands to show each tool call with its arguments', async ({ page, request }) => {
-  const { sessionId } = await spawnSession(request, `e2e-tools-${test.info().project.name}`);
+test('the action group expands to show each tool call with its arguments', async ({ page, cc }) => {
+  const { sessionId } = await spawnSession(cc, `e2e-tools-${test.info().project.name}`);
   await page.goto(`/next/#session=${sessionId}`);
   await page.locator('#composer-input').fill('go');
   await page.locator('#composer-input').press('Enter');
@@ -36,8 +30,8 @@ test('the action group expands to show each tool call with its arguments', async
   await expect(page.locator('pre', { hasText: 'npm test' }).first()).toBeVisible();
 });
 
-test('a reload restores the session named in the URL', async ({ page, request }) => {
-  const { sessionId } = await spawnSession(request, `e2e-reload-${test.info().project.name}`);
+test('a reload restores the session named in the URL', async ({ page, cc }) => {
+  const { sessionId } = await spawnSession(cc, `e2e-reload-${test.info().project.name}`);
   await page.goto(`/next/#session=${sessionId}`);
   await page.locator('#composer-input').fill('hello');
   await page.locator('#composer-input').press('Enter');
