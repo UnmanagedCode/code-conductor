@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const sent: [string, any][] = [];
 vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: (t: string, p: any) => { sent.push([t, p]); } }));
@@ -94,8 +94,7 @@ describe('send and mic modes', () => {
     await act(async () => { fireEvent.click(c.button()); });
     expect(c.button().getAttribute('aria-label')).toBe('Stop recording');
     await act(async () => { fireEvent.click(c.button()); });
-    await settle();
-    expect(c.box().value).toBe('dictated words');
+    await waitFor(() => expect(c.box().value).toBe('dictated words'));
     fireEvent.click(c.button());
     expect(sent).toEqual([['prompt', { id: 'i-s1', text: '<transcribed>\ndictated words' }]]);
     type(c.box(), 'typed only');
@@ -266,17 +265,20 @@ describe('attachments', () => {
 });
 
 describe('dictation routing', () => {
+  // Session ids no other test uses: a draft typed and not sent is saved by a
+  // debounce timer (DRAFT_SAVE_DEBOUNCE_MS) that outlives its composer, and the
+  // draft store's in-memory mirror survives localStorage.clear(), so a shared
+  // id could carry an earlier test's text into this one at any moment.
   it('a dictation is delivered to the session it was started in, never the one showing', async () => {
     let release!: () => void;
     transcribeGate = new Promise((r) => { release = r; });
-    const c = mount(inst('s1'));
+    const c = mount(inst('dictation-from'));
     await act(async () => { fireEvent.click(c.button()); });
     await act(async () => { fireEvent.click(c.button()); });
-    c.swap(inst('s2'));
+    c.swap(inst('dictation-to'));
     release();
-    await settle();
+    await waitFor(() => expect(draftStore.load('dictation-from')).toEqual({ text: 'dictated words', transcribed: true }));
     expect(c.box().value).toBe('');
-    expect(draftStore.load('s1')).toEqual({ text: 'dictated words', transcribed: true });
   });
 });
 
