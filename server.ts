@@ -196,7 +196,13 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
   catch (e) { console.warn('fuse sweep failed:', e); }
 }
 
-export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean } = {}) {
+// The entry block's reading of CC_SKIP_WEB_BUILD, which tests/run.mjs sets so
+// the `node server.ts` children the suite spawns never build web/dist.
+export function buildWebFromEnv(env: NodeJS.ProcessEnv): boolean {
+  return env.CC_SKIP_WEB_BUILD !== '1';
+}
+
+export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; webBuild?: () => Promise<unknown> } = {}) {
   warnIfNodeUnsupported();
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
@@ -302,7 +308,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   if (instances) instances._usageMonitor.start();
   // Build the web UI if its sources changed. Fire-and-forget: the API is
   // already answering, and /next/ serves a "building" page meanwhile.
-  if (buildWeb) void ensureWebBuild();
+  if (buildWeb) void webBuild();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can
   // connect while sessions re-spawn + get their resume notifications, staggered.
@@ -326,9 +332,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   process.title = 'code-conductor';
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? '127.0.0.1';
-  // Set by tests/run.mjs: servers the suite spawns must not build web/dist concurrently.
-  const buildWeb = process.env.CC_SKIP_WEB_BUILD !== '1';
-  start({ port, host, buildWeb }).then(({ port, host }) => {
+  start({ port, host, buildWeb: buildWebFromEnv(process.env) }).then(({ port, host }) => {
     console.log(`code-conductor listening on http://${host}:${port}`);
   }).catch(e => {
     console.error('failed to start:', e);
