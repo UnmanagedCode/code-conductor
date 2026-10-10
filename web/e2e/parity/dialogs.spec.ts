@@ -425,6 +425,7 @@ parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at ab
   expect(prunes).toHaveLength(0);
   await ui.applyPrune(d);
   await expect(d).toBeHidden();
+  await expect.poll(() => prunes.length).toBe(1);
   expect(prunes).toEqual([{ cutTurnIndex: 20, pruneThinking: false, inputMode: 'minimal' }]);
 });
 
@@ -513,6 +514,7 @@ parity('doc/A1', 'A workspace is created from the project menu, edited from its 
   await ui.workspaceMember(d, a).setChecked(true);
   await ui.saveWorkspace(d);
   await expect(d).toBeHidden();
+  await expect.poll(() => writes.length).toBe(1);
   expect(writes).toEqual([['PUT', `/api/projects/${a}/workspace`, { workspace: w1 }]]);
   await expect(await ui.workspaceHeader(page, w1)).toBeVisible();
 
@@ -582,6 +584,7 @@ parity('doc/B31', 'With live sessions the restart button asks first: dismissing 
   await ui.clickRestart(page);
   await ui.restartChoice(ui.restartDialog(page), 'only').click();
   await reloaded;
+  await expect.poll(() => restarts.length).toBe(1);
   expect(restarts).toEqual([{ resume: false }]);
 
   await ui.open(page);
@@ -590,6 +593,7 @@ parity('doc/B31', 'With live sessions the restart button asks first: dismissing 
   await ui.clickRestart(page);
   await ui.restartChoice(ui.restartDialog(page), 'resume').click();
   await reloaded;
+  await expect.poll(() => restarts.length).toBe(2);
   expect(restarts).toEqual([{ resume: false }, { resume: true }]);
 
   await page.route('**/api/instances', (route) => route.request().method() === 'GET' ? route.fulfill({ json: [] }) : route.fallback());
@@ -597,6 +601,7 @@ parity('doc/B31', 'With live sessions the restart button asks first: dismissing 
   reloaded = page.waitForEvent('load');
   await ui.clickRestart(page);
   await reloaded;
+  await expect.poll(() => restarts.length).toBe(3);
   expect(restarts).toEqual([{ resume: false }, { resume: true }, { resume: false }]);
   await page.unrouteAll({ behavior: 'wait' });
 });
