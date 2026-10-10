@@ -2,7 +2,7 @@
 // measure (geometry, computed overflow and touch-action, a real resize across md).
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
-import { api, createProject, spawnSession } from './harness/api.ts';
+import { api, createProject, mcpCall, spawnSession } from './harness/api.ts';
 
 test.use({ ccOptions: { server: 'header' } });
 
@@ -92,48 +92,66 @@ test('a long-titled worktree session: the controls share one row inside the view
 });
 
 test('the subline\'s project and worktree names, and the model badge on desktop, each clip with an ellipsis inside the header', async ({ page, cc }) => {
-  // Wide glyphs at each input's limit: project names have no length cap, worktree
-  // names are slugged and cut server-side (src/worktrees.ts → SLUG_MAX_LEN).
-  const project = `${'W'.repeat(80)}-${test.info().project.name}`;
+  // The header a short project and worktree name give, to compare heights against.
+  const short = await seed(cc, 'hdr-short', 't');
+  await page.goto(`/next/#session=${short.sessionId}`);
+  const header = sessionHeader(page);
+  await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
+  const shortHeight = await header.evaluate((h) => h.getBoundingClientRect().height);
+
+  // Wide glyphs, hyphenated so a name that lost `nowrap` could wrap. Project
+  // names have no length cap. POST /api/instances takes no worktree name, so the
+  // worktree is created by MCP create_worktree, which slugs and cuts the name
+  // (src/worktrees.ts → SLUG_MAX_LEN), and the session is spawned into it.
+  const project = `${'WWWW-'.repeat(16)}${test.info().project.name}`;
   const model = `claude-opus-${'w'.repeat(60)}`;
   await createProject(cc, project);
-  const { id, sessionId } = await spawnSession(cc, project, { worktree: true, name: 'w'.repeat(200), model, temp: false });
+  const created = await mcpCall(cc, 'create_worktree', { project, name: 'wwww-'.repeat(40) });
+  expect(created.isError, JSON.stringify(created.content)).toBeFalsy();
+  const listed = (await api(cc, 'GET', `/api/projects/${project}/worktrees`)).body as { worktreeName: string }[];
+  expect(listed).toHaveLength(1);
+  const worktreeName = listed[0].worktreeName;
+  expect(worktreeName.length, 'the slugged worktree name is long').toBeGreaterThan(30);
+  const { id, sessionId } = await spawnSession(cc, project, { worktree: worktreeName, model, temp: false });
   let row: { status: string; model: string | null; worktree: { worktreeName: string } | null } | undefined;
   await expect.poll(async () => {
     row = ((await api(cc, 'GET', '/api/instances')).body as ({ id: string } & NonNullable<typeof row>)[]).find((r) => r.id === id);
     return row?.status;
   }).toBe('idle');
   expect(row!.model, 'the spawn kept the long model id').toBe(model);
-  const worktreeName = row!.worktree!.worktreeName;
+  expect(row!.worktree!.worktreeName, 'the session runs in the named worktree').toBe(worktreeName);
   // The subline shows the project only under a custom title.
   expect((await api(cc, 'PUT', `/api/sessions/${sessionId}/title`, { title: 't' })).status).toBeLessThan(300);
   await page.goto(`/next/#session=${sessionId}`);
-  const header = sessionHeader(page);
   await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
+  await expect(header).toContainText(worktreeName);
 
   // The model badge is `lg:` only: display: none on a phone, so nothing there to overflow.
   const texts = isDesktop() ? [project, worktreeName, model] : [project, worktreeName];
   const measured = await header.evaluate((h, texts) => {
     const box = h.getBoundingClientRect();
     return {
-      scrollWidth: h.scrollWidth, clientWidth: h.clientWidth,
+      scrollWidth: h.scrollWidth, clientWidth: h.clientWidth, height: box.height,
       els: texts.map((text) => {
         // The innermost span holding exactly the text: the model badge's own textContent is the model too.
         const el = [...h.querySelectorAll('span')].filter((s) => s.textContent === text).at(-1);
         if (!el) return { text, found: false };
         const cs = getComputedStyle(el);
         return {
-          text, found: true, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+          text, found: true, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, whiteSpace: cs.whiteSpace,
           textOverflow: cs.textOverflow, overflowX: cs.overflowX, right: el.getBoundingClientRect().right, headerRight: box.right,
         };
       }),
     };
   }, texts);
   expect(measured.scrollWidth, 'the header does not overflow sideways').toBeLessThanOrEqual(measured.clientWidth);
+  expect(measured.height, 'long names do not make the header taller').toBe(shortHeight);
   for (const el of measured.els) {
     const name = el.text.slice(0, 24);
     expect(el.found, `${name}: rendered`).toBe(true);
+    expect(el.clientWidth!, `${name}: shows a clipped part, not squeezed away`).toBeGreaterThan(0);
     expect(el.scrollWidth!, `${name}: overflows its box`).toBeGreaterThan(el.clientWidth!);
+    expect(el.whiteSpace, `${name}: one line`).toBe('nowrap');
     expect(el.overflowX, `${name}: clipped`).toBe('clip');
     expect(el.textOverflow, `${name}: ellipsized`).toBe('ellipsis');
     expect(el.right!, `${name}: inside the header`).toBeLessThanOrEqual(el.headerRight!);
