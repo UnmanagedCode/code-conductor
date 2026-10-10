@@ -109,3 +109,80 @@ The harness, fixtures, projects, live mode and every ported check are documented
 - `web/e2e/fixtures/scenario.json` is a fake-CLI scenario: one reply with streamed tool calls (Read, Edit, Bash), thinking and markdown, then short replies. Fake-claude consumes one turn per prompt, per process.
 - Seed state through the REST and MCP helpers in `web/e2e/harness/api.ts`, then drive the page.
 - What the fake CLI cannot reach is the same as for the old UI: [What the fake-CLI hand pass cannot reach](#what-the-fake-cli-hand-pass-cannot-reach).
+
+## Parity ledger
+
+`tests/web-parity/ledger.ts` is the frontend-rework epic's migration ledger: one row per old-UI behaviour, each statused against the web UI as it stands. The cutover to the web UI deletes it together with the old UI and its tests.
+
+- **The gate:** `the ledger` in `web/src/parity/ledger.test.ts` (`// @vitest-environment node`), part of `npm run test:web`, so of `test:all`. Alone: `npx vitest run --config web/vitest.config.ts web/src/parity`. Its failure message prints one problem per line.
+- **The modules:** `tests/web-parity/inventory.ts` (what must be accounted for), `titles.ts` (static title resolution), `check.ts` (`buildWorld` reads the tree, `checkLedger` is pure). The fixture tests in the same test file pin each.
+
+### What must be accounted for
+
+`oldUiInventory` computes it from the tree; nothing lists it by hand.
+
+- **Old-UI-only `public/` files:** every file under `public/` minus the shared set. Shared = each `public/*.ts`, plus every `@/lib/core/<x>` module a string in `web/src/**/*.{ts,tsx}` names, plus, transitively, those modules' own relative imports.
+- **An old-UI test:** a top-level `tests/*.test.mjs` whose strings reference an old-UI-only file, in itself or in the `tests/*.mjs` helpers it imports (`import`, `export … from`, `import()`, transitively). A string `s` references file `X` when:
+  - `s` is `public/X` or ends with `/public/X`; or
+  - the same file has a string that is `public`, ends with `/public` or `/public/`, or contains `public/`, and `s` is `X` or ends with `/X` and contains no `web/` (this catches `path.join(ROOT, 'public', 'x.js')`).
+- Strings are the AST's string literals and template parts (Vite's `parseSync`), so a mention in a comment never counts.
+- **Plus** every `web/e2e/legacy/**/*.spec.ts`.
+- A helper (no `.test.mjs` suffix) is never a row; its tests are accounted through the files that import it.
+
+### Rows
+
+A `Row` has an `id`, an `old` source, a `behaviour`, the `viewports` it exists on, an `area` (one of `AREAS`; the follow-up work to close the gaps is split by area) and a `status`.
+
+- **`old`** is a test file with optional `tests`, or a `### ` heading of `docs/features.md` for a documented behaviour no old test guards.
+- **`old.tests`:** omitted = the whole file; a list = exact full titles; `'rest'` = every title of the file that no other row and no `SURVIVES` entry lists.
+- **`SURVIVES`:** titles in inventoried files that test no old-UI behaviour (server or shared-module code). The cutover keeps them, and moves them out of any file it deletes.
+
+| `status.kind` | Meaning |
+|---|---|
+| `ported` | `by` names existing new-UI tests that guard the same observable behaviour. Browser-level behaviour (real geometry, computed colour, iframe liveness, real scroll) is ported only by a Playwright spec on `/next/` |
+| `missing` | The default when unsure, including "the web UI has the feature but no test guards it" |
+| `regressed` | The web UI has the surface but behaves differently; `evidence` names the code |
+| `dropped` | The user ruled the behaviour gone. `ruling` names a `RULINGS` entry holding the date and the user's words; nothing else may drop a row |
+
+**Granularity:**
+- One row per behaviour. A file is split when its tests differ in coverage or area, or when part of it is ruled.
+- A `ported` row lists its titles explicitly, never whole-file or `'rest'`, so a test later added to its file is never counted as ported: it lands in the file's `'rest'` row if there is one, and otherwise in no row, which fails `partition`.
+- A file with an explicit-titles row, a `'rest'` row, several rows or a `SURVIVES` entry is partitioned exactly: rows plus `SURVIVES` cover every title, `SURVIVES` overlaps no row, and at most one row is `'rest'`.
+- **Legacy specs** hold one or two long tests, so several rows may name the same title. Each row then stands for the behaviour box its `behaviour` names, and the title is covered only once every row naming it is `ported` or `dropped`. The check cannot see a box:
+  - the reviewer of a change that flips a legacy row checks its `behaviour` against the test it cites;
+  - before deleting a legacy spec, the cutover confirms that every row naming its titles is `ported` or `dropped`.
+
+**Refs** (`TestRef`, `<repo-relative file>::<full title>`) name a `web/src/**/*.test.ts(x)`, a `web/e2e/**/*.spec.ts` outside `web/e2e/legacy/`, or a `tests/*.test.mjs` that is not inventoried. An inventoried `tests/` file is allowed only for a title in its `SURVIVES` entry. A parity scenario's `> legacy` half is never a ref.
+
+### Static title resolution
+
+`testTitles` reads a file's full titles from its AST; no suite runs. Full title = the enclosing titles and the test's own, joined by ` > `. Describe-level titles are titles too.
+
+- **A title node** is a call to `test`, `it`, `describe` or `suite`, with member modifiers (`MODIFIERS` in `titles.ts`) and `.each(…)`/`.for(…)` peeled, so `test.describe.serial` and node:test's `t.test` resolve. Its first argument is a string or template literal, and a later argument is a function or an identifier.
+- **A template title** is its raw source text, `${…}` included.
+- **One-hop wrappers:** a top-level function whose body calls a base callee with the function's own first parameter as the title is a callee too. A wrapper of a wrapper is not.
+- **Not seen: a non-literal title**, such as `test(label, …)` or `t.test(JSON.stringify(v), …)` in a loop. Its children resolve under the parent, so a row names the parent title.
+- **`parity('<row id>', '<title>', fn)`** contributes `<title> > legacy` and `<title> > next`, and links the scenario to its row.
+
+### Problems
+
+| `kind` | Reported when |
+|---|---|
+| `unaccounted` | An inventoried file has no row |
+| `stale-row` | A row's file is not inventoried |
+| `stale-survivor` | A `SURVIVES` entry's file is not inventoried |
+| `bad-ref` | A `by` ref has no `::`, names a non-test file, a legacy spec, an inventoried `tests/` title outside its `SURVIVES`, or a parity `> legacy` half |
+| `unresolved-ref` | A ref's file does not exist, or its title is not one the file declares |
+| `unruled-drop` | A `dropped` row's ruling is absent, has blank text, or has no real `YYYY-MM-DD` date |
+| `empty-id` | A row's `id` is empty; the subject is its position, `LEDGER[<index>]` |
+| `duplicate-id` | Two rows share a non-empty `id` |
+| `partition` | A split file breaks the granularity rule above (the detail names the titles in no row), or any `SURVIVES` entry lists a title its file does not declare |
+| `unknown-section` | A docs row's `section` is not a `### ` heading of `docs/features.md` |
+| `unknown-parity-row` | A `parity()` call names no ledger row |
+| `bad-parity-call` | A `parity()` call's row id or title is not a literal |
+
+### Flipping a row
+
+1. Fix the behaviour in `web/` if the web UI lacks it.
+2. Add a new-UI test that guards the row's behaviour: a Vitest test, or a parity scenario (`web/e2e/README.md` → Parity scenarios) for a behaviour both UIs share.
+3. Set the row's `status` to `ported`, its `by` naming that test (a scenario by its `> next` half), once every title in the row is guarded. If only part is guarded, split the row first.
