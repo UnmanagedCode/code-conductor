@@ -16,6 +16,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SW_PATH = path.resolve(__dirname, '..', 'public', 'sw.js');
+// The web UI's own worker, served under its base path (/next/).
+const WEB_SW_PATH = path.resolve(__dirname, '..', 'web', 'public', 'sw.js');
 
 function makeClient({ id, visible = false, focused = false, focusThrows = false, omitVisibilityState = false }) {
   const client = {
@@ -35,7 +37,7 @@ function makeClient({ id, visible = false, focused = false, focusThrows = false,
   return client;
 }
 
-async function loadFakeSw({ clients = [] } = {}) {
+async function loadFakeSw({ clients = [], swPath = SW_PATH } = {}) {
   const opened = [];
   const handlers = {};
   const fakeSelf = {
@@ -47,7 +49,7 @@ async function loadFakeSw({ clients = [] } = {}) {
     },
   };
   globalThis.self = fakeSelf;
-  await import(pathToFileURL(SW_PATH).href + `?t=${Math.random()}`);
+  await import(pathToFileURL(swPath).href + `?t=${Math.random()}`);
   return { handlers, opened };
 }
 
@@ -121,4 +123,11 @@ test('notificationclick: missing notification.data entirely does not throw', asy
   const { handlers, opened } = await loadFakeSw({ clients: [] });
   await assert.doesNotReject(fireClick(handlers, undefined));
   assert.deepEqual(opened, ['/']);
+});
+
+test('notificationclick (web/public/sw.js): openWindow URLs are relative, so they resolve under the base path', async () => {
+  const { handlers, opened } = await loadFakeSw({ clients: [], swPath: WEB_SW_PATH });
+  await fireClick(handlers, { instanceId: 'inst-1', sessionId: 'sess-1' });
+  await fireClick(handlers, { project: 'p' });
+  assert.deepEqual(opened, ['./#session=sess-1', './']);
 });

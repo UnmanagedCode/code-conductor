@@ -32,8 +32,10 @@ import { setPluginConductorConventionsProvider } from './src/conductorConvention
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
+import { ensureWebBuild, webHandler, WEB_MOUNT } from './src/webBuild.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // The shared mutable handle server.ts populates with the http server + wss once
 // they exist (route handlers read them at request time). Structural match for
@@ -129,7 +131,11 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
-  app.use(express.static(path.join(__dirname, 'public')));
+  // The React UI under /next/; the old UI at / and again under /legacy/ (its
+  // root-absolute asset URLs load the same module graph from /).
+  app.use(WEB_MOUNT, webHandler());
+  app.use('/legacy', express.static(PUBLIC_DIR));
+  app.use(express.static(PUBLIC_DIR));
 
   const server = http.createServer(app);
   // noServer + manual dispatch: the wsHub keeps /ws, plugin WebSockets pipe
@@ -190,7 +196,14 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
   catch (e) { console.warn('fuse sweep failed:', e); }
 }
 
-export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform }: { port?: number; host?: string; platform?: Platform } = {}) {
+// What the entry block passes to start(), read from the environment. Only
+// CC_SKIP_WEB_BUILD=1 turns the boot build off; tests/run.mjs sets it so the
+// `node server.ts` children the suite spawns never build web/dist.
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean } {
+  return { port: Number(env.PORT ?? 8787), host: env.HOST ?? '127.0.0.1', buildWeb: env.CC_SKIP_WEB_BUILD !== '1' };
+}
+
+export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; webBuild?: () => Promise<unknown> } = {}) {
   warnIfNodeUnsupported();
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
@@ -294,6 +307,9 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // monitor itself stays unit-testable without a server (tests call _tick()
   // directly). Stopped in both manager shutdown paths.
   if (instances) instances._usageMonitor.start();
+  // Build the web UI if its sources changed. Fire-and-forget: the API is
+  // already answering, and /next/ serves a "building" page meanwhile.
+  if (buildWeb) void webBuild();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can
   // connect while sessions re-spawn + get their resume notifications, staggered.
@@ -315,9 +331,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.title = 'code-conductor';
-  const port = Number(process.env.PORT ?? 8787);
-  const host = process.env.HOST ?? '127.0.0.1';
-  start({ port, host }).then(({ port, host }) => {
+  start(entryStartOptions(process.env)).then(({ port, host }) => {
     console.log(`code-conductor listening on http://${host}:${port}`);
   }).catch(e => {
     console.error('failed to start:', e);

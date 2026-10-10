@@ -1,0 +1,392 @@
+import * as React from 'react';
+import { ArrowUpIcon, ClockIcon, LoaderCircleIcon, MicIcon, PaperclipIcon, SquareIcon, XIcon, FileIcon } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useStore } from '@/state/createStore';
+import type { Instance } from '@/state/types';
+import { formatAutoResumeTime } from '@/lib/core/usage.js';
+import { send, stickyPrompt } from '@/app/controller';
+import { on } from '@/app/events';
+import { voiceStore } from '@/features/voice/store';
+import { cn } from '@/lib/utils';
+import { DRAFT_SAVE_DEBOUNCE_MS, EMPTY_DRAFT, draftStore, joinDictation, prependTranscribedTag } from './drafts';
+import { useDictation } from './useDictation';
+
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_HEIGHT = 240;
+const HOLD_TO_DICTATE_MS = 500;
+
+type Pending = {
+  id: number;
+  name: string;
+  size: number;
+  mediaType: string;
+  isImage: boolean;
+  objectUrl?: string;
+  dataBase64?: string;
+  error?: string;
+};
+
+let nextAttachmentId = 1;
+/** Attachments a session left behind when the user switched away. */
+const parkedAttachments = new Map<string, Pending[]>();
+
+const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+const isImageType = (mt: string) => /^image\/(png|jpeg|gif|webp)$/i.test(mt);
+
+async function fileToBase64(file: File) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000) as any);
+  return btoa(s);
+}
+
+export type ComposerHandle = { focus: () => void };
+
+export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null; usageSlot?: React.ReactNode }>(function Composer({ inst, usageSlot }, ref) {
+  const sid = inst?.sessionId ?? null;
+  const [text, setText] = React.useState('');
+  const [transcribed, setTranscribed] = React.useState(false);
+  const [pending, setPending] = React.useState<Pending[]>([]);
+  const [dragOver, setDragOver] = React.useState(false);
+  const taRef = React.useRef<HTMLTextAreaElement>(null);
+  const fileRef = React.useRef<HTMLInputElement>(null);
+  const sidRef = React.useRef<string | null>(null);
+  const saveTimer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
+  const holdTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdDidRecord = React.useRef(false);
+  const voice = useStore(voiceStore, (s) => s);
+  const dictation = useDictation();
+
+  React.useImperativeHandle(ref, () => ({ focus: () => taRef.current?.focus() }), []);
+
+  const status = inst?.status ?? null;
+  const canType = !!inst && ['idle', 'turn', 'spawning'].includes(status!);
+  const overageUnarmed = !!inst?.overageStoppedUnarmed;
+  const canSend = !!inst && ['idle', 'turn'].includes(status!) && !inst.modelSwitch && !overageUnarmed;
+  const overagePaused = !!(inst?.overageActive || inst?.autoResumeAt) && !overageUnarmed;
+  const resumeAt = (inst?.autoResumeAt ?? inst?.overageResetsAt ?? null) as number | null;
+  const voiceOn = voice.supported;
+  const hasContent = text.trim().length > 0 || pending.some((p) => !p.error);
+
+  const mode: 'recording' | 'transcribing' | 'send' | 'mic' =
+    dictation.state !== 'idle' ? dictation.state
+      : hasContent ? 'send'
+      : canType && voiceOn ? 'mic' : 'send';
+  const queueMode = mode === 'send' && overagePaused;
+
+  // ── Drafts follow the session ───────────────────────────────────────
+  const flush = React.useCallback(() => {
+    clearTimeout(saveTimer.current);
+    const cur = sidRef.current;
+    if (cur && taRef.current) draftStore.save(cur, { text: taRef.current.value, transcribed: transcribedRef.current });
+  }, []);
+  const transcribedRef = React.useRef(false);
+  transcribedRef.current = transcribed;
+  const pendingRef = React.useRef<Pending[]>([]);
+  pendingRef.current = pending;
+
+  React.useLayoutEffect(() => {
+    if (sid === sidRef.current) return;
+    flush();
+    const outgoing = pendingRef.current;
+    if (outgoing.length) {
+      if (sidRef.current) parkedAttachments.set(sidRef.current, outgoing);
+      else for (const a of outgoing) if (a.objectUrl) URL.revokeObjectURL(a.objectUrl);
+    }
+    const incoming = (sid && parkedAttachments.get(sid)) || [];
+    if (sid) parkedAttachments.delete(sid);
+    sidRef.current = sid;
+    const d = (sid && draftStore.load(sid)) || EMPTY_DRAFT;
+    setText(d.text);
+    setTranscribed(!!d.transcribed && !!d.text);
+    setPending(incoming);
+  }, [sid, flush]);
+
+  React.useEffect(() => {
+    const onHide = () => flush();
+    const onVis = () => { if (document.hidden) flush(); };
+    addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVis);
+    return () => { removeEventListener('pagehide', onHide); document.removeEventListener('visibilitychange', onVis); };
+  }, [flush]);
+
+  function noteChange(nextText: string, nextTranscribed: boolean) {
+    const cur = sidRef.current;
+    if (!cur) return;
+    clearTimeout(saveTimer.current);
+    if (!nextText) { draftStore.clear(cur); return; }
+    saveTimer.current = setTimeout(() => draftStore.save(cur, { text: nextText, transcribed: nextTranscribed }), DRAFT_SAVE_DEBOUNCE_MS);
+  }
+
+  // Rewind / fork drop their prompt back into the composer.
+  React.useEffect(() => on('prefill', ({ text: t }) => {
+    clearAttachments();
+    setTranscribed(false);
+    setText(t);
+    noteChange(t, false);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
+  }), []);
+
+  // Auto-grow up to a cap.
+  React.useLayoutEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.overflowY = ta.scrollHeight > MAX_HEIGHT ? 'auto' : 'hidden';
+    ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
+  }, [text]);
+
+  // ── Attachments ─────────────────────────────────────────────────────
+  function clearAttachments() {
+    for (const a of pendingRef.current) if (a.objectUrl) URL.revokeObjectURL(a.objectUrl);
+    setPending([]);
+  }
+
+  async function addFiles(files: File[]) {
+    const entries: [Pending, File][] = [];
+    const added: Pending[] = [];
+    for (const file of files) {
+      if (!file) continue;
+      const entry: Pending = { id: nextAttachmentId++, name: file.name || 'file', size: file.size, mediaType: file.type || 'application/octet-stream', isImage: false };
+      entry.isImage = isImageType(entry.mediaType);
+      if (file.size > MAX_ATTACHMENT_BYTES) entry.error = `too large (max ${fmtSize(MAX_ATTACHMENT_BYTES)})`;
+      else {
+        if (entry.isImage) { try { entry.objectUrl = URL.createObjectURL(file); } catch { /* no preview */ } }
+        entries.push([entry, file]);
+      }
+      added.push(entry);
+    }
+    setPending((p) => [...p, ...added]);
+    for (const [entry, file] of entries) {
+      try { entry.dataBase64 = await fileToBase64(file); } catch (e: any) { entry.error = `read failed: ${e?.message ?? e}`; }
+      setPending((p) => p.map((x) => (x.id === entry.id ? { ...entry } : x)));
+    }
+  }
+
+  function removeAttachment(id: number) {
+    setPending((p) => {
+      const a = p.find((x) => x.id === id);
+      if (a?.objectUrl) URL.revokeObjectURL(a.objectUrl);
+      return p.filter((x) => x.id !== id);
+    });
+  }
+
+  // ── Send ────────────────────────────────────────────────────────────
+  function submit() {
+    if (!inst || !canSend) return;
+    const t = text.trim();
+    const ready = pending.filter((p) => !p.error && typeof p.dataBase64 === 'string');
+    if (!t && !ready.length) return;
+    const payload: Record<string, unknown> = { id: inst.id, text: prependTranscribedTag(t, transcribed) };
+    if (ready.length) payload.attachments = ready.map((p) => ({ name: p.name, mediaType: p.mediaType, dataBase64: p.dataBase64 }));
+    send('prompt', payload);
+    setText('');
+    setTranscribed(false);
+    clearAttachments();
+    noteChange('', false);
+  }
+
+  // ── Dictation ───────────────────────────────────────────────────────
+  function startDictation() {
+    const startedIn = sidRef.current;
+    void dictation.start((t) => {
+      // Switched sessions while recording: the words belong to the session they were spoken to.
+      if (startedIn && startedIn !== sidRef.current) {
+        if (t?.trim()) {
+          const d = draftStore.load(startedIn) || EMPTY_DRAFT;
+          draftStore.save(startedIn, { text: joinDictation(d.text, t), transcribed: true });
+        }
+        return;
+      }
+      if (!t) return;
+      const ta = taRef.current;
+      const start = ta?.selectionStart ?? text.length;
+      const end = ta?.selectionEnd ?? text.length;
+      setText((cur) => {
+        const before = cur.slice(0, start);
+        const insert = joinDictation(before, t).slice(before.length);
+        const next = before + insert + cur.slice(end);
+        noteChange(next, true);
+        requestAnimationFrame(() => {
+          const caret = start + insert.length;
+          try { taRef.current?.setSelectionRange(caret, caret); taRef.current?.focus(); } catch { /* ignore */ }
+        });
+        return next;
+      });
+      if (t.trim()) setTranscribed(true);
+    });
+  }
+
+  function onSendPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    if (mode === 'mic' || mode === 'recording') { e.preventDefault(); return; }
+    if (mode === 'send' && voice.micAvailable && voiceOn) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      holdTimer.current = setTimeout(() => {
+        holdTimer.current = null;
+        holdDidRecord.current = true;
+        startDictation();
+      }, HOLD_TO_DICTATE_MS);
+    }
+  }
+  function onSendPointerUp() {
+    if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null; return; }
+    if (holdDidRecord.current) setTimeout(() => { holdDidRecord.current = false; }, 0);
+  }
+  function onSendClick() {
+    if (holdDidRecord.current) return;
+    if (mode === 'send') submit();
+    else if (mode === 'mic') startDictation();
+    else if (mode === 'recording') dictation.stop();
+  }
+
+  const sendDisabled = mode === 'transcribing' ? true
+    : mode === 'mic' ? !voice.micAvailable
+    : mode === 'recording' ? false
+    : !canSend || !hasContent;
+  const sendTitle = mode === 'recording' ? 'Recording · tap to stop and transcribe'
+    : mode === 'transcribing' ? 'Transcribing…'
+    : mode === 'mic' ? (voice.micAvailable ? 'Tap to dictate · tap again to stop' : 'Install Whisper in Settings → Voice to dictate')
+    : queueMode ? 'Queue message · delivered when the rate-limit window resets'
+    : voice.micAvailable && voiceOn ? 'Send (hold to dictate)' : 'Send';
+
+  const placeholder = !inst ? 'Select or start a session to chat'
+    : inst.modelSwitch ? 'Switching model · the session is restarting…'
+    : status === 'turn' ? 'Agent is working · type to steer the running turn'
+    : status === 'spawning' ? 'Starting the session…'
+    : status === 'crashed' || status === 'exited' ? 'The session is not running · resume it to continue'
+    : `Message ${inst.title || inst.project}…`;
+
+  const resumeClock = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('resumes at ', '') : null;
+
+  return (
+    <div
+      className={cn(
+        'rounded-2xl border bg-card shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-[3px] focus-within:ring-ring/40',
+        dragOver && 'ring-[3px] ring-primary/50',
+        !canType && 'opacity-80',
+      )}
+      onDragOver={(e) => {
+        if (!canType || !Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        setDragOver(false);
+        if (!canType) return;
+        const files = Array.from(e.dataTransfer?.files || []);
+        if (!files.length) return;
+        e.preventDefault();
+        void addFiles(files);
+      }}
+      data-composer
+    >
+      {(overageUnarmed || overagePaused) && (
+        <div className="flex items-center gap-2 rounded-t-2xl border-b bg-warning/10 px-4 py-2 text-xs text-warning">
+          <ClockIcon className="size-3.5" />
+          {overageUnarmed
+            ? "Stopped for account overage. Your conductor resumes this worker; messages can't be queued here."
+            : `Paused${resumeClock ? ` until ${resumeClock}` : ''}. New messages are queued.`}
+        </div>
+      )}
+      {pending.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-3 pt-3">
+          {pending.map((a) => (
+            <div key={a.id} className={cn('flex max-w-64 items-center gap-2 rounded-lg border bg-muted/40 py-1 pr-1 pl-1.5 text-xs', a.error && 'border-destructive/40 text-destructive')}>
+              {a.isImage && a.objectUrl ? <img src={a.objectUrl} alt={a.name} className="size-7 rounded object-cover" /> : <FileIcon className="size-4 text-muted-foreground" />}
+              <span className="min-w-0 truncate">{a.error ? `${a.name} · ${a.error}` : `${a.name} · ${fmtSize(a.size)}`}</span>
+              {!a.error && a.dataBase64 === undefined && <LoaderCircleIcon className="size-3 animate-spin" />}
+              <Button variant="ghost" size="icon-sm" className="size-6" aria-label={`Remove ${a.name}`} onClick={() => removeAttachment(a.id)}><XIcon className="size-3" /></Button>
+            </div>
+          ))}
+        </div>
+      )}
+      <textarea
+        ref={taRef}
+        id="composer-input"
+        rows={1}
+        value={text}
+        disabled={!canType}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const v = e.target.value;
+          setText(v);
+          const tr = v.trim() ? transcribed : false;
+          if (!v.trim()) setTranscribed(false);
+          noteChange(v, tr);
+        }}
+        onKeyDown={(e) => {
+          // ↓ at the very end reveals the sticky prompt; ↑ at the very start hides it.
+          if (!e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
+            const ta = e.currentTarget;
+            if (ta.selectionStart === ta.selectionEnd) {
+              if (e.key === 'ArrowDown' && ta.selectionEnd === ta.value.length) stickyPrompt.reveal();
+              else if (e.key === 'ArrowUp' && ta.selectionStart === 0) stickyPrompt.conceal();
+            }
+          }
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            if (!sendDisabled && mode === 'send') submit();
+          }
+        }}
+        onPaste={(e) => {
+          if (!canType) return;
+          const files = Array.from(e.clipboardData?.files || []);
+          if (!files.length) return;
+          e.preventDefault();
+          void addFiles(files);
+        }}
+        className="block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+        aria-label="Message"
+      />
+      <div className="flex items-center gap-1 px-2 pb-2">
+        <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const f = Array.from(e.target.files || []); e.target.value = ''; void addFiles(f); }} />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label="Attach files" className="text-muted-foreground" disabled={!canType} onClick={() => fileRef.current?.click()}>
+              <PaperclipIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Attach files (or paste / drop them)</TooltipContent>
+        </Tooltip>
+        {dictation.state === 'recording' && (
+          <span className="ml-1 flex items-center gap-1.5 text-xs text-destructive">
+            <span className="size-2 animate-pulse rounded-full bg-destructive" /> Recording
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => dictation.abort()}>Cancel</Button>
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-1">
+          {usageSlot}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size={queueMode ? 'sm' : 'icon-sm'}
+                variant={mode === 'recording' ? 'destructive' : mode === 'mic' ? 'secondary' : 'default'}
+                className={cn('rounded-full', queueMode && 'px-3')}
+                aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : queueMode ? 'Queue message' : 'Send'}
+                disabled={sendDisabled}
+                onPointerDown={onSendPointerDown}
+                onPointerUp={onSendPointerUp}
+                onPointerCancel={() => { if (holdTimer.current) clearTimeout(holdTimer.current); holdTimer.current = null; holdDidRecord.current = false; }}
+                onClick={onSendClick}
+              >
+                {mode === 'recording' ? <SquareIcon className="fill-current" />
+                  : mode === 'transcribing' ? <LoaderCircleIcon className="animate-spin" />
+                  : mode === 'mic' ? <MicIcon />
+                  : queueMode ? <><ClockIcon /> Queue</>
+                  : <ArrowUpIcon />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{sendTitle}</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+    </div>
+  );
+});

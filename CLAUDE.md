@@ -6,6 +6,7 @@ Always read `README.md` at the project root before exploring the codebase. It ha
 
 When `README.md` doesn't go deep enough, load the relevant detail file — every doc named below is a layer under `CONVENTIONS.md`'s "update the most specific file" rule:
 - **Feature / UI behavior** → `docs/features.md`
+- **The web UI** → `web/`, the React UI served at `/next/` beside the old `public/` UI; its shared client modules are `public/` files reached through the `@/lib/core/*` alias. Build, mounts and layout: `docs/architecture.md` → `src/webBuild.ts`, `web/`
 - **Backend registry (launch templates + env), custom models, tiers/roles, Claude context windows** → `docs/models.md`
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
@@ -24,12 +25,14 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 Where the `CONVENTIONS.md` rules land in this codebase. Rationale + examples in `docs/architecture.md` → "Conventions".
 
 - Thin wiring: feature logic lives in a `public/` `installX({...})` module (or a stateful class); app.js builds state + DOM, calls each installX once, injects live state via getters.
+- Thin wiring in `web/`: UI feature logic lives in `web/src/features/<area>/` (DOM-free logic in the `@/lib/core` modules, the transcript model in `web/src/conversation/`); `main.tsx`/`App.tsx` only mount and start features. Features reach each other only through the `open*` APIs (`features/dialogs/api.ts`, `features/views/api.ts`) and `app/events.ts`.
 - One implementation across surfaces: git/worktree/diff/session logic lives once in `src/worktrees.ts` + siblings, imported by both `routes.ts` and `mcp/handlers.ts`.
 - Single-source catalogs: `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side; the client fetches them.
 - Migrations go in `migrations/` (see `migrations/migrations.md`). cc has no external API clients, so the whole MCP/REST surface is unstable-by-design; the only read-time-tolerance exception is the Claude CLI's session jsonls.
 
 ## Testing
 
-- `npm test` is the gated command (runs the `pretest` typecheck); bare `node tests/run.mjs` skips it.
-- Built-in runner here is `node:test` + `node:assert`; no extra deps (Termux).
+- `npm test` is the gated command (runs the `pretest` typecheck, which also checks `web/`); bare `node tests/run.mjs` skips it.
+- `npm run test:web` is the Vitest suite for `web/`; it is not part of `npm test`. `npm run test:all` runs both and is the gate for any work touching `web/`.
+- The node suite's runner is `node:test` + `node:assert` and adds no dependency (Termux).
 - Fake-binary env var: `CLAUDE_BIN`. Real-binary smoke gate: `RUN_REAL_CLAUDE=1`.

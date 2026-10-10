@@ -2,6 +2,8 @@
 
 How `public/` is tested: the happy-dom suite, what happy-dom gets wrong, and what a hand pass through the running app (`harness/playwright/`, `tests/fake-claude.mjs`, headless Chromium) can and cannot reach. Runner, isolation and the DOM-assert guards are in [architecture.md](architecture.md) → Testing. Launching the headless harness is covered in `harness/playwright/README.md`.
 
+The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-web-ui-web), at the end.
+
 ## What the suite reaches
 
 - **Much of `public/` has happy-dom tests that drive the real module** (for the header, the real `installHeader()` against the real `public/index.html`). List them with `grep -l happy-dom tests/`. Before calling a frontend change "hand-verified only", check this list. A module that already has a test file gets an automated test for the change, with the hand pass on top.
@@ -69,3 +71,37 @@ How `public/` is tested: the happy-dom suite, what happy-dom gets wrong, and wha
 Injecting a fixture at the network boundary still exercises the real module.
 
 **Headless checks carry no suite evidence.** `harness/playwright/check-*.mjs` never runs under `npm test`. A headless PASS with no in-suite counterpart pins nothing against regression. Where an invariant must hold, it needs a suite test.
+
+## The web UI (`web/`)
+
+### Commands
+
+| Command | Runs |
+|---|---|
+| `npm run test:web` | Vitest over `web/src/**/*.test.{ts,tsx}` (config: `web/vitest.config.ts`, environment `happy-dom`, setup `web/src/test/setup.ts`). Not part of `npm test` |
+| `npm run test:all` | `npm test && npm run test:web`: red if either suite is. The gate for work touching `web/` |
+| `npm run test:e2e` | Playwright over `web/e2e/*.spec.ts` (config: `web/playwright.config.ts`), projects `desktop` (1440×900) and `phone` (Pixel 7). Not gated |
+| `npm run typecheck` | `tsc --noEmit` (server) and `tsc -p web` (UI, strict); `pretest` runs it |
+
+First e2e run on a machine: `npx playwright install chromium` (the browser revision `@playwright/test` pins). Termux cannot run the e2e suite.
+
+### Vitest suites
+
+- **Where tests live:** beside the code, `web/src/<dir>/*.test.ts(x)`. One directory's tests run with `npx vitest run --config web/vitest.config.ts web/src/<dir>`.
+- **The transcript model is tested without React.** `web/src/conversation/model.ts` is DOM-free; its tests feed UI events and assert on the node tree. Fixture transcripts in `tests/fixtures/` are replayed through the server's own `src/parser.ts` and `src/transcript.ts`, imported directly, so live and reload rendering are proved identical.
+- **Components** render with `@testing-library/react` under happy-dom. Mock the network at `fetch` and the socket with `vi.mock('@/lib/core/ws.js')`; never start a server in a unit test.
+- **`@/lib/core/*` is `public/*`** (the alias in [architecture.md](architecture.md) → `web/`). Those modules keep their `node:test` tests in `tests/`, which import them from `public/`; a Vitest test reaches them only through the alias.
+- **`import.meta.env.BASE_URL` is `/` under Vitest**, whatever `base` the Vite config sets. Code that needs the base path imports `WEB_BASE` from `web/base.ts`, which a test observes as `/next/`.
+- **Model-switch parity.** The Change-model cases in `features/session/header.test.tsx` each name the old-UI test in `tests/header-change-model.test.mjs` they mirror; a behaviour change to one picker updates both.
+- **Vitest is a devDependency.** `web/vite.config.ts` must never import it: the server's boot-time build loads that file under `npm install --omit=dev` (Docker). Test settings go in `web/vitest.config.ts`, which merges the Vite config.
+- **The real builds** run only in `web/src/build.test.ts` (`// @vitest-environment node`), under `NODE_ENV=production` (Vitest's `test` would build the development bundle), into `os.tmpdir()` dirs; nothing there writes under `web/`. See [architecture.md](architecture.md) → Testing.
+
+### End-to-end suite
+
+- `web/e2e/server.mjs` boots the real `server.ts` in a sandbox: temp `PROJECTS_ROOT` and `CLAUDE_PROJECTS_ROOT`, `CLAUDE_BIN` = `tests/fake-claude.mjs`, `FAKE_CLAUDE_SCENARIO` = `web/e2e/scenario.json`, port `E2E_PORT` (default 8799). It does not set `CC_SKIP_WEB_BUILD`: the server builds `web/dist` on start like any other start, so the suite also covers the build path, and leaves `web/dist` in the checkout (gitignored).
+- **Readiness waits for the build.** Playwright's `webServer.url` is `/next/`, which answers 503 until the build is done, so the first spec never meets the building page.
+- Specs navigate under the base: `page.goto('/next/')`, `/next/#session=<sid>`.
+- `web/e2e/switch.spec.ts` is the one spec that also drives the old UI: `/` → **Try the new UI** → `/next/` → **Classic UI** → `/legacy/`, opening each UI's drawer first on the phone project. It counts the old UI as running only once its JS answers (the Projects lens toggles `aria-pressed`), not when its HTML arrives.
+- `web/e2e/scenario.json` is a fake-CLI scenario: one reply with streamed tool calls (Read, Edit, Bash), thinking and markdown, then short replies. Fake-claude consumes one turn per prompt, per process.
+- Seed state through the REST API with Playwright's `request` fixture, then drive the page.
+- What the fake CLI cannot reach is the same as for the old UI: [What the fake-CLI hand pass cannot reach](#what-the-fake-cli-hand-pass-cannot-reach).
