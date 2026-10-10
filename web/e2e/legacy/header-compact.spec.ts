@@ -3,20 +3,34 @@
 // engaged on a long title, nothing past the viewport, Sync out of the bar; and
 // the desktop chip order and separator at 721/1280px.
 //
-// No server: public/ is served from disk through page.route on a fixed origin.
-// The page is index.html with app.js stripped plus a module script running the
-// REAL installHeader() with stub deps, so the real stylesheet cascade applies
-// to the real header DOM.
+// No cc: public/ is served on a fixed origin through page.route, from a local
+// server mounting what cc mounts for it — legacyPublicTs (the shared public/*.ts
+// modules, type-stripped) ahead of express.static. The page is index.html with
+// app.js stripped plus a module script running the REAL installHeader() with
+// stub deps, so the real stylesheet cascade applies to the real header DOM.
 
 import fs from 'node:fs/promises';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
+import express from 'express';
 import { test, expect, type Page } from '@playwright/test';
+import { legacyPublicTs } from '../../../src/legacyPublicTs.ts';
 import { REPO_ROOT } from '../harness/boot.ts';
 
 const PUB = path.join(REPO_ROOT, 'public');
 const ORIGIN = 'http://cc.test';
 
-const MIME: Record<string, string> = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.svg': 'image/svg+xml' };
+let server: Server;
+let publicBase = '';
+test.beforeAll(async () => {
+  const app = express();
+  app.use(legacyPublicTs(PUB));
+  app.use(express.static(PUB));
+  server = await new Promise<Server>((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+  publicBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+test.afterAll(async () => { await new Promise((resolve) => server.close(resolve)); });
 
 // Runs in the page: installs the real header and exposes __show(inst).
 const HARNESS = `<script type="module">
@@ -51,13 +65,8 @@ async function routePublic(page: Page): Promise<void> {
     .replace(/<script type="module" src="\/app\.js"><\/script>/, HARNESS);
   await page.route(`${ORIGIN}/**`, async (route) => {
     const { pathname } = new URL(route.request().url());
-    if (pathname === '/') return route.fulfill({ status: 200, contentType: MIME['.html'], body: indexHtml });
-    try {
-      const body = await fs.readFile(path.join(PUB, pathname));
-      return route.fulfill({ status: 200, contentType: MIME[path.extname(pathname)] ?? 'application/octet-stream', body });
-    } catch {
-      return route.fulfill({ status: 404, body: '' });
-    }
+    if (pathname === '/') return route.fulfill({ status: 200, contentType: 'text/html', body: indexHtml });
+    return route.fulfill({ response: await route.fetch({ url: publicBase + pathname }) });
   });
 }
 

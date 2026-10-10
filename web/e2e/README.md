@@ -97,7 +97,7 @@ The old UI's browser checks, driving `/legacy/` (its stable address until the cu
 | `main-bar-reset.spec.ts` | The main bar clears the session title and chips when Settings or a plugin view opens, and restores them on the way back (1280×800). Seeds `tests/fixtures/fake-plugin` through the API. |
 | `plugin-switch.spec.ts` | Picking a plugin from the app switcher lands on it, not the placeholder, on the first try from an active session (1280×800). Same plugin seeding. |
 | `plugin-version-select-width.spec.ts` | A `.pl-version` select stays inside its `.pl-actions` row, ellipsized and unfocused, whatever its options hold (a long worktree name), with no horizontal page scroll at 390×844. |
-| `header-compact.spec.ts` | The one-row phone header (height, vertical centring, nothing past the viewport, the long title ellipsized, Sync out of the bar) and the desktop chip order. No cc: `public/` is served from disk through `page.route` at `http://cc.test`. |
+| `header-compact.spec.ts` | The one-row phone header (height, vertical centring, nothing past the viewport, the long title ellipsized, Sync out of the bar) and the desktop chip order. No cc: `public/` is served at `http://cc.test` through `page.route`, from a local server mounting what cc mounts for it (`legacyPublicTs` ahead of `express.static`), so the shared `public/*.ts` modules arrive type-stripped. |
 
 The deterministic halves live in `tests/` (happy-dom), e.g. `models-responsive.spec.ts` ↔ `tests/settings-models-field-labels.test.mjs`, `awaiting-wake-dot.spec.ts` ↔ `tests/sidebar.test.mjs`, `header-compact.spec.ts` ↔ `tests/header-compact.test.mjs` + `tests/header-compact-css.test.mjs`.
 
