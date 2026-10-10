@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 const sent: [string, any, any][] = [];
 let ackReply: (t: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
@@ -16,7 +16,7 @@ import { accountUsageStore } from '@/app/accountUsage';
 import { isSessionMuted } from '@/features/notifications/mutes';
 import { dialogStore } from '@/features/dialogs/api';
 import type { Instance } from '@/state/types';
-import { ModeToggle, SessionHeader, modelEntryState, modelGroups } from './SessionHeader';
+import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
 
 const base = (extra: Partial<Instance> = {}): Instance => ({
@@ -53,30 +53,184 @@ beforeEach(() => {
   catalog();
 });
 
+// Each case below mirrors the named test in tests/header-change-model.test.mjs (the old UI's picker).
+const ON_CLAUDE = 'Restarts the session on Claude. The conversation is kept.';
+const ON_OLLAMA = 'Restarts the session on Ollama. The conversation is kept.';
+const ON_THIS_MODEL = 'Restarts the session on this model. The conversation is kept.';
+const RESTART_NOTE = '↻ restarts the session · the conversation is kept';
+const NONE_NOTE = 'No other model is available. Add one in Settings → Models.';
+const ALL_CLAUDE = { fast: { backend: 'claude', model: 'claude-haiku-5-5' }, powerful: { backend: 'claude', model: 'claude-opus-5-5' }, local: { backend: 'claude', model: 'claude-sonnet-5-5' } };
+const PROXY_BACKENDS = [{ id: 'claude', label: 'Claude' }, { id: 'ollama', label: 'Ollama' }, { id: 'my-proxy', label: 'My Proxy' }];
+
+async function openModelPicker(inst: Instance) {
+  wrap(<SessionHeader inst={inst} onMenu={() => {}} />);
+  const menu = await openMenu();
+  await act(async () => { fireEvent.keyDown(within(menu).getByRole('menuitem', { name: /Change model/ }), { key: 'ArrowRight' }); });
+  return screen.getAllByRole('menu').at(-1)!;
+}
+const restartIcon = (item: HTMLElement) => item.querySelector('.lucide-refresh-cw');
+
 describe('change model', () => {
-  it('an identity session: Claude tiers switch live between turns; other backends are disabled; the running model is marked', () => {
+  it('an identity session: Claude tiers switch live with no ↻; tiers on another backend restart onto it (mirrors "an identity session: Claude tiers switch live with no badge; tiers on another backend restart onto it")', async () => {
     const groups = modelGroups(base());
     expect(groups.map(([id]) => id)).toEqual(['claude', 'ollama']);
     const [claude, ollama] = groups;
     expect(claude[1].map((e) => [e.label, e.state.kind, e.state.disabled, e.selected])).toEqual([
       ['Fast', 'live', false, false], ['Powerful', 'live', false, true],
     ]);
-    expect(ollama[1].map((e) => [e.label, e.state.kind, e.state.disabled])).toEqual([['Local', 'cross', true]]);
-    expect(modelGroups(base({ status: 'turn' }))[0][1].every((e) => e.state.disabled)).toBe(true);
+    expect(ollama[1].map((e) => [e.label, e.state, e.selected, e.target])).toEqual([
+      ['Local', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { tier: 'local' }],
+      ['Llama 70B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { model: 'llama3:70b', backend: 'ollama' }],
+    ]);
+    const sub = await openModelPicker(base());
+    expect(restartIcon(within(sub).getByRole('menuitem', { name: /Powerful/ }))).toBeNull();
+    expect(restartIcon(within(sub).getByRole('menuitem', { name: /Local/ }))).not.toBeNull();
+    expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
-  it('a substitution session: its own backend restarts; registered models join; busy states disable restart entries', () => {
+  it('an identity session mid-turn: its live Claude entries are disabled (mirrors "an identity session mid-turn: its live Claude tier entries are disabled until the turn ends")', () => {
+    const claude = modelGroups(base({ status: 'turn' }))[0][1];
+    expect(claude.map((e) => [e.state.kind, e.state.disabled, e.state.title])).toEqual([
+      ['live', true, 'Model can only be changed between turns'], ['live', true, 'Model can only be changed between turns'],
+    ]);
+  });
+
+  it('a substitution session: every tier restarts (↻ footnote); one on another backend names that backend (mirrors the same-named test)', async () => {
     const inst = base({ backend: 'ollama', model: 'qwen3:8b' });
     const [own, claude] = modelGroups(inst);
     expect(own[0]).toBe('ollama');
-    expect(own[1].map((e) => [e.label, e.state.kind, e.selected, e.target])).toEqual([
-      ['Local', 'restart', true, { tier: 'local' }],
-      ['Llama 70B', 'restart', false, { model: 'llama3:70b' }],
+    expect(own[1].map((e) => [e.label, e.state.kind, e.state.title, e.selected, e.target])).toEqual([
+      ['Local', 'restart', ON_THIS_MODEL, true, { tier: 'local' }],
+      ['Llama 70B', 'restart', ON_THIS_MODEL, false, { model: 'llama3:70b', backend: 'ollama' }],
     ]);
-    expect(claude[1].every((e) => e.state.kind === 'cross')).toBe(true);
+    expect(claude[0]).toBe('claude');
+    expect(claude[1].map((e) => [e.label, e.state.kind, e.state.disabled, e.state.title])).toEqual([
+      ['Fast', 'restart', false, ON_CLAUDE], ['Powerful', 'restart', false, ON_CLAUDE],
+    ]);
+    const sub = await openModelPicker(inst);
+    for (const name of [/Local/, /Llama 70B/, /Fast/, /Powerful/]) expect(restartIcon(within(sub).getByRole('menuitem', { name }))).not.toBeNull();
+    expect(sub.textContent).toContain(RESTART_NOTE);
+  });
+
+  it('a restart click on a tier bound to another backend sends exactly {id, tier} (mirrors "… still sends only {t, id, tier, reqId}")', async () => {
+    const sub = await openModelPicker(base());
+    await act(async () => { fireEvent.click(within(sub).getByRole('menuitem', { name: /Local/ })); });
+    expect(sent).toEqual([['model', { id: 'inst-1', tier: 'local' }, { ack: true }]]);
+  });
+
+  it('an Ollama session with every tier on Claude is offered its backend\'s registered models and the Claude tiers (mirrors the same-named test)', () => {
+    catalog({ tierBackend: ALL_CLAUDE });
+    const [own, claude] = modelGroups(base({ backend: 'ollama', model: 'qwen3:8b' }));
+    expect(own[0]).toBe('ollama');
+    expect(own[1].map((e) => [e.label, e.state.kind, e.state.disabled, e.selected, e.target])).toEqual([
+      ['Qwen 8B', 'restart', false, true, { model: 'qwen3:8b', backend: 'ollama' }],
+      ['Llama 70B', 'restart', false, false, { model: 'llama3:70b', backend: 'ollama' }],
+    ]);
+    expect(claude[0]).toBe('claude');
+    expect(claude[1].map((e) => [e.label, e.state.kind, e.state.title])).toEqual([
+      ['Fast', 'restart', ON_CLAUDE], ['Powerful', 'restart', ON_CLAUDE], ['Local', 'restart', ON_CLAUDE],
+    ]);
+  });
+
+  it('a Claude session is offered other backends\' registered models; a click sends exactly {id, model, backend} (mirrors the same-named test)', async () => {
+    catalog({ tierBackend: ALL_CLAUDE });
+    const [claude, ollama] = modelGroups(base());
+    expect(claude[0]).toBe('claude');
+    expect(ollama[0]).toBe('ollama');
+    expect(ollama[1].map((e) => [e.label, e.state, e.selected])).toEqual([
+      ['Qwen 8B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false],
+      ['Llama 70B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false],
+    ]);
+    const sub = await openModelPicker(base());
+    await act(async () => { fireEvent.click(within(sub).getByRole('menuitem', { name: /Llama 70B/ })); });
+    expect(sent).toEqual([['model', { id: 'inst-1', model: 'llama3:70b', backend: 'ollama' }, { ack: true }]]);
+  });
+
+  it('every registered backend is listed, in registry order, after the tiers (mirrors the same-named test)', () => {
+    catalog({
+      backends: PROXY_BACKENDS, tierBackend: ALL_CLAUDE,
+      backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }], 'my-proxy': [{ model: 'mine:v2', label: 'Mine' }] },
+    });
+    const groups = modelGroups(base());
+    expect(groups.map(([id]) => id)).toEqual(['claude', 'ollama', 'my-proxy']);
+    expect(groups[2][1].map((e) => [e.label, e.state.title, e.target])).toEqual([
+      ['Mine', 'Restarts the session on My Proxy. The conversation is kept.', { model: 'mine:v2', backend: 'my-proxy' }],
+    ]);
+  });
+
+  it('cross entries are disabled while busy: a turn, a running subagent, or a switch in flight (mirrors the same-named test)', () => {
+    const cross = { backend: 'ollama', model: 'qwen3:8b' };
+    expect(modelEntryState(base(), cross)).toEqual({ kind: 'restart', disabled: false, title: ON_OLLAMA });
+    for (const busy of [{ status: 'turn', displayStatus: 'turn' }, { displayStatus: 'running' },
+      { modelSwitch: { from: 'claude-haiku-5-5', to: 'claude-opus-5-5', fromBackend: 'claude', toBackend: 'claude' } }]) {
+      expect(modelEntryState(base(busy as Partial<Instance>), cross)).toEqual({ kind: 'restart', disabled: true, title: RESTART_BUSY_TITLE });
+    }
+    const inst = base({ backend: 'ollama', model: 'qwen3:8b' });
     for (const busy of [{ status: 'turn' }, { displayStatus: 'running' }, { modelSwitch: { from: 'a', to: 'b' } }]) {
       expect(modelEntryState({ ...inst, ...busy } as Instance, { backend: 'ollama', model: 'x' })).toMatchObject({ kind: 'restart', disabled: true });
     }
+  });
+
+  it('the ✓ needs the running backend as well as the running model id (mirrors "the highlight needs …")', () => {
+    catalog({
+      backends: PROXY_BACKENDS, tierBackend: ALL_CLAUDE,
+      backendModels: { ollama: [{ model: 'alpha:cloud', label: 'Alpha' }], 'my-proxy': [{ model: 'alpha:cloud', label: 'Alpha proxied' }] },
+    });
+    const groups = new Map(modelGroups(base({ backend: 'ollama', model: 'alpha:cloud' })));
+    expect(groups.get('ollama')!.map((e) => [e.label, e.selected])).toEqual([['Alpha', true]]);
+    expect(groups.get('my-proxy')!.map((e) => [e.label, e.selected, e.state.disabled])).toEqual([['Alpha proxied', false, false]]);
+  });
+
+  it('mid cross switch the running backend is the one the session is still on (mirrors the same-named test)', () => {
+    const switching = base({ backend: 'ollama', model: 'alpha:cloud',
+      modelSwitch: { from: 'claude-opus-5-5', to: 'alpha:cloud', fromBackend: 'claude', toBackend: 'ollama' } });
+    expect(runningBackendOf(switching)).toBe('claude');
+    expect(runningBackendOf({ ...switching, modelSwitch: null })).toBe('ollama');
+    expect(runningBackendOf(base({ backend: undefined }))).toBe('claude');
+    const claudeTier = { backend: 'claude', model: 'claude-opus-5-5' };
+    expect(modelEntryState(switching, claudeTier).kind).toBe('live');
+    expect(modelEntryState({ ...switching, modelSwitch: null }, claudeTier).kind).toBe('restart');
+  });
+
+  it('a cross switch\'s switching badge and failure tooltip name the target backend; a same-backend one\'s do not (mirrors "a cross switch\'s restarting and failure chips name both backends")', async () => {
+    const cross = { from: 'claude-opus-5-5', to: 'alpha:cloud', fromBackend: 'claude', toBackend: 'ollama' };
+    const same = { from: 'alpha:cloud', to: 'beta:cloud', fromBackend: 'ollama', toBackend: 'ollama' };
+    const badge = (sw: typeof cross) => {
+      const r = wrap(<SessionHeader inst={base({ status: 'exited', displayStatus: 'exited', modelSwitch: sw })} onMenu={() => {}} />);
+      const text = [...r.container.querySelectorAll('[data-slot="badge"]')].map((n) => n.textContent);
+      r.unmount();
+      return text;
+    };
+    expect(badge(cross)).toContain('Switching to alpha:cloud on ollama');
+    expect(badge(same)).toContain('Switching to beta:cloud');
+    const tooltip = async (sw: typeof cross) => {
+      const r = wrap(<SessionHeader inst={base({ modelSwitchFailure: { ...sw, error: 'boom' } })} onMenu={() => {}} />);
+      await act(async () => { fireEvent.focus(screen.getByText('Switch failed')); });
+      const text = (await screen.findByRole('tooltip')).textContent;
+      r.unmount();
+      return text;
+    };
+    expect(await tooltip(cross)).toBe('Switch to alpha:cloud on ollama failed: boom');
+    expect(await tooltip(same)).toBe('Switch to beta:cloud failed: boom');
+  });
+
+  it('a picker with nothing but the running model says so, on any backend (mirrors "a picker with nothing but the running model says so — on any backend")', async () => {
+    const ALL_ON = (backend: string, model: string) => ({ fast: { backend, model }, powerful: { backend, model }, local: { backend, model } });
+    const note = async (inst: Instance) => {
+      const sub = await openModelPicker(inst);
+      const has = sub.textContent!.includes(NONE_NOTE);
+      cleanup();
+      return has;
+    };
+    catalog({ tierBackend: ALL_ON('ollama', 'qwen3:8b'), backendModels: { ollama: [] } });
+    expect(await note(base({ backend: 'ollama', model: 'qwen3:8b' }))).toBe(true);
+    catalog({ tierBackend: ALL_ON('claude', 'claude-opus-5-5'), backendModels: { ollama: [] } });
+    expect(await note(base())).toBe(true);
+    // Controls: one registered model on another backend, or a tier on another model, is a switch.
+    catalog({ tierBackend: ALL_ON('claude', 'claude-opus-5-5'), backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }] } });
+    expect(await note(base())).toBe(false);
+    catalog({ tierBackend: { ...ALL_ON('ollama', 'qwen3:8b'), powerful: { backend: 'claude', model: 'claude-opus-5-5' } }, backendModels: { ollama: [] } });
+    expect(await note(base({ backend: 'ollama', model: 'qwen3:8b' }))).toBe(false);
   });
 
   it('a disabled tier is not offered', () => {
@@ -217,6 +371,13 @@ describe('context + rate-limit chip', () => {
     t.apply({ kind: 'system', subtype: 'model_changed', data: { from: 'a', to: 'b' } });
     wrap(<UsageChip inst={base({ id: 'c4', contextWindowTokens: 1_000_000 })} />);
     expect(chip().textContent).toMatch(/^ctx —/);
+  });
+
+  it('the popover names a session with no known model `(account default)` (mirrors header-change-model "the usage popover names a session with no known model `(account default)`")', async () => {
+    getUsageTracker('c6').reset();
+    wrap(<UsageChip inst={base({ id: 'c6', model: null })} />);
+    await act(async () => { fireEvent.click(chip()); });
+    expect(screen.getByRole('dialog').textContent).toContain('(account default)');
   });
 
   it('the popover: totals, the Cost row suppressed for a substitution backend, usage limits tightest first, Fable only when scoped', async () => {

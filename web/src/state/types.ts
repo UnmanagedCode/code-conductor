@@ -37,8 +37,8 @@ export type Instance = {
   liveAsks?: number;
   backgroundJobs?: BackgroundJob[];
   activeAgentTasks?: number;
-  modelSwitch?: { from: string; to: string } | null;
-  modelSwitchFailure?: { from: string; to: string; error: string } | null;
+  modelSwitch?: { from: string; to: string; fromBackend?: string; toBackend?: string } | null;
+  modelSwitchFailure?: { from: string; to: string; fromBackend?: string; toBackend?: string; error: string } | null;
   firstPrompt?: string | null;
   title?: string | null;
   lastResponseAt?: number | null;

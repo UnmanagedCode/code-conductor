@@ -130,6 +130,14 @@ describe('routing session data', () => {
     expect(b.appStore.get().instances[0]).toMatchObject({ status: 'turn', mode: 'plan', model: M2, modelSwitch: sw, interrupting: true });
   });
 
+  it('R3b a status frame\'s backend reaches the instance entry; a frame without one leaves it (mirrors ctx-latch-model-switch R3b)', async () => {
+    const b = await boot({ instances: [{ id: 'S', model: M1, backend: 'claude' }] });
+    b.emit('status', { id: 'S', status: 'idle', mode: 'plan', model: 'alpha:cloud', backend: 'ollama', sessionId: 'sid', modelSwitch: null, modelSwitchFailure: null });
+    expect(b.appStore.get().instances[0]).toMatchObject({ model: 'alpha:cloud', backend: 'ollama' });
+    b.emit('status', { id: 'S', status: 'idle', mode: 'plan', model: 'alpha:cloud', sessionId: 'sid', modelSwitch: null, modelSwitchFailure: null });
+    expect(b.appStore.get().instances[0].backend).toBe('ollama');
+  });
+
   it('replayed history never feeds the account-wide rate-limit tracker; live events do', async () => {
     const b = await boot({ instances: [{ id: 'A' }] });
     b.rateLimits.apply({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.8 } } });

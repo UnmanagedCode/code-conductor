@@ -14,8 +14,8 @@ import {
 import { useSignal } from '@/state/createStore';
 import type { Instance } from '@/state/types';
 import {
-  getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getBackendModels,
-  getEffortLevels, CLAUDE_BACKEND,
+  getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackends, getBackendLabel,
+  getBackendModels, getEffortLevels, CLAUDE_BACKEND,
 } from '@/lib/core/models.js';
 import { autoResumeBadge, formatAutoResumeTime } from '@/lib/core/usage.js';
 import { send, stickyPrompt } from '@/app/controller';
@@ -31,46 +31,70 @@ import { cn } from '@/lib/utils';
 
 const CONDUCT_PROJECT = '.conduct';
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
-const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the running turn to finish.';
+export const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the running turn to finish.';
 
 export const isEnforcing = (level?: string) => level !== 'warn';
 const isBetweenTurns = (inst: Instance) => inst.status === 'idle';
 
-/** How the picker offers a model: switch live, restart onto it, or not at all (another backend). */
+type ModelSwitch = NonNullable<Instance['modelSwitch']>;
+/** A restart switch (or its failure) that crossed backends: the badges then name the target's backend. */
+const crossed = (sw: ModelSwitch) => !!sw.fromBackend && !!sw.toBackend && sw.fromBackend !== sw.toBackend;
+
+/** The backend the session runs on. Mid restart switch `inst.backend` may already name the unconfirmed target, so the switch's `fromBackend` wins. */
+export function runningBackendOf(inst: Instance): string {
+  return inst.modelSwitch?.fromBackend ?? inst.backend ?? CLAUDE_BACKEND;
+}
+
+/**
+ * How the picker offers a model: `live` (a Claude session to a Claude model,
+ * switched in place between turns) or `restart` (every other pair: the server
+ * restarts the CLI on the target backend and model and keeps the conversation;
+ * disabled while anything runs). Display only: the server decides.
+ */
 export function modelEntryState(inst: Instance, binding: { backend?: string; model: string }) {
-  const running = inst.backend || CLAUDE_BACKEND;
+  const running = runningBackendOf(inst);
   const target = backendIdOf(binding);
-  if (target !== running) return { kind: 'cross' as const, disabled: true, title: `On ${getBackendLabel(target)}. A different backend needs a new session or a fork.` };
-  if (running === CLAUDE_BACKEND) {
+  if (running === CLAUDE_BACKEND && target === CLAUDE_BACKEND) {
     const disabled = !isBetweenTurns(inst);
     return { kind: 'live' as const, disabled, title: disabled ? BETWEEN_TURNS_TITLE : '' };
   }
   const busy = !isBetweenTurns(inst) || inst.displayStatus === 'running' || !!inst.modelSwitch;
-  return { kind: 'restart' as const, disabled: busy, title: busy ? RESTART_BUSY_TITLE : 'Restarts the session on this model. The conversation is kept.' };
+  const title = busy ? RESTART_BUSY_TITLE
+    : target === running ? 'Restarts the session on this model. The conversation is kept.'
+    : `Restarts the session on ${getBackendLabel(target)}. The conversation is kept.`;
+  return { kind: 'restart' as const, disabled: busy, title };
 }
 
-type Entry = { target: { tier?: string; model?: string }; label: string; state: ReturnType<typeof modelEntryState>; selected: boolean; model: string };
+type Entry = { target: { tier?: string; model?: string; backend?: string }; label: string; state: ReturnType<typeof modelEntryState>; selected: boolean; model: string };
 
+/**
+ * The picker's entries: enabled tiers grouped by backend, the session's own
+ * first, then every substitution backend's registered models that no tier on
+ * that backend already binds. `target` is what a click sends: `{tier}` or `{model, backend}`.
+ */
 export function modelGroups(inst: Instance): [string, Entry[]][] {
-  const runningBackend = inst.backend || CLAUDE_BACKEND;
+  const runningBackend = runningBackendOf(inst);
   const runningModel = inst.modelSwitch?.from ?? inst.model;
   const cur = typeof runningModel !== 'string' ? null
     : runningBackend === CLAUDE_BACKEND ? runningModel.replace(/\[(200k|1m)\]$/, '') : runningModel;
+  const isRunning = (backend: string, model: string) => backend === runningBackend && model === cur;
   const groups = new Map<string, Entry[]>([[runningBackend, []]]);
   for (const tier of getTierList() as string[]) {
     if (!getActiveTierEnabled(tier)) continue;
     const binding = getActiveTierBackend(tier);
     const id = backendIdOf(binding);
-    const state = modelEntryState(inst, binding);
     if (!groups.has(id)) groups.set(id, []);
-    groups.get(id)!.push({ target: { tier }, label: getTierLabel(tier), state, selected: state.kind !== 'cross' && binding.model === cur, model: binding.model });
+    groups.get(id)!.push({ target: { tier }, label: getTierLabel(tier), state: modelEntryState(inst, binding), selected: isRunning(id, binding.model), model: binding.model });
   }
-  if (runningBackend !== CLAUDE_BACKEND) {
-    const own = groups.get(runningBackend)!;
-    const tierModels = new Set(own.map((e) => e.model));
-    for (const { model, label } of getBackendModels(runningBackend) as { model: string; label: string }[]) {
+  for (const { id } of getBackends() as { id: string }[]) {
+    if (id === CLAUDE_BACKEND) continue;
+    if (!groups.has(id)) groups.set(id, []);
+    const group = groups.get(id)!;
+    const tierModels = new Set(group.map((e) => e.model));
+    for (const { model, label } of getBackendModels(id) as { model: string; label: string }[]) {
       if (tierModels.has(model)) continue;
-      own.push({ target: { model }, label, state: modelEntryState(inst, { backend: runningBackend, model }), selected: model === cur, model });
+      const binding = { backend: id, model };
+      group.push({ target: binding, label, state: modelEntryState(inst, binding), selected: isRunning(id, model), model });
     }
   }
   return [...groups].filter(([, e]) => e.length);
@@ -181,7 +205,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
           <StatusDot status={displayStatus(inst)} />
           <h1 className="truncate text-sm font-semibold" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || inst.project}</h1>
           {inst.modelSwitch ? (
-            <Badge variant="info" className="shrink-0"><RefreshCwIcon className="animate-spin" />Switching to {inst.modelSwitch.to}</Badge>
+            <Badge variant="info" className="shrink-0"><RefreshCwIcon className="animate-spin" />Switching to {inst.modelSwitch.to}{crossed(inst.modelSwitch) ? ` on ${inst.modelSwitch.toBackend}` : ''}</Badge>
           ) : inst.status === 'turn' && inst.interrupting ? (
             <Badge variant="warning" className="shrink-0">Stopping…</Badge>
           ) : inst.displayStatus && !['idle', 'turn'].includes(inst.displayStatus) ? (
@@ -190,7 +214,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
           {!inst.modelSwitch && inst.modelSwitchFailure && (
             <Tooltip>
               <TooltipTrigger asChild><Badge variant="destructive" className="shrink-0"><TriangleAlertIcon />Switch failed</Badge></TooltipTrigger>
-              <TooltipContent>Switch to {inst.modelSwitchFailure.to} failed: {inst.modelSwitchFailure.error}</TooltipContent>
+              <TooltipContent>Switch to {inst.modelSwitchFailure.to}{crossed(inst.modelSwitchFailure) ? ` on ${inst.modelSwitchFailure.toBackend}` : ''} failed: {inst.modelSwitchFailure.error}</TooltipContent>
             </Tooltip>
           )}
           {resumeBadge ? (
@@ -261,13 +285,9 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                         ))}
                       </React.Fragment>
                     ))}
-                    {(() => {
-                      const running = inst.backend || CLAUDE_BACKEND;
-                      const own = groups.find(([id]) => id === running)?.[1] ?? [];
-                      return running !== CLAUDE_BACKEND && !own.some((e) => !e.selected)
-                        ? <div className="px-2 py-1.5 text-[11px] text-muted-foreground">No other model is registered on {getBackendLabel(running)}. Add one in Settings → Models.</div>
-                        : null;
-                    })()}
+                    {!groups.some(([, es]) => es.some((e) => !e.selected)) && (
+                      <div className="px-2 py-1.5 text-[11px] text-muted-foreground">No other model is available. Add one in Settings → Models.</div>
+                    )}
                     {restartShown && <div className="px-2 py-1.5 text-[11px] text-muted-foreground">↻ restarts the session · the conversation is kept</div>}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>

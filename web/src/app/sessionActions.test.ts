@@ -167,6 +167,14 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(controller.selectInstance).toHaveBeenCalledWith('forked', { userGesture: true });
   });
 
+  it('a refused rewind surfaces the server\'s error as a toast (mirrors rewind-fork-client-text "rewindActiveSession surfaces a non-2xx …")', async () => {
+    const error = 'the transcript was rewound, but the session failed to relaunch: No conversation found';
+    stubFetch(() => ({ status: 500, body: { error, code: 'RELAUNCH_FAILED' } }));
+    appStore.set({ activeId: 'A' });
+    await rewindActiveSession(7, 'text');
+    expect(toasts).toEqual([['error', 'Rewind failed', error]]);
+  });
+
   it('deleting a project sends deleteDirectory as chosen and drops a selection inside it', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     appStore.set({ activeId: 'i1', instances: [{ id: 'i1', project: 'gone', sessionId: 's', status: 'idle', mode: 'x' }] });

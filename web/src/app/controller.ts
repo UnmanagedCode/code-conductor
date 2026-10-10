@@ -243,6 +243,7 @@ export function startController() {
       status: m.status,
       mode: m.mode,
       model: m.model,
+      ...(typeof m.backend === 'string' ? { backend: m.backend } : {}),
       sessionId: m.sessionId,
       ...(typeof m.autoApprovePlan === 'boolean' ? { autoApprovePlan: m.autoApprovePlan } : {}),
       ...(typeof m.playbookEnforcement === 'string' ? { playbookEnforcement: m.playbookEnforcement } : {}),

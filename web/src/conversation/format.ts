@@ -122,6 +122,11 @@ export function systemLine({ subtype, data }: UiEvent): SystemLine {
   const errorish = subtype === 'crashed' || subtype === 'spawn_error' || subtype === 'renew_error' || subtype === 'auto_stop_overage';
   const tone: SystemLine['tone'] = warn ? 'warn' : errorish ? 'error' : 'muted';
   const title = switchFailed ? data?.error || null : null;
+  // A model switch that crossed backends names each side's backend id (the
+  // divider is persisted, so ids rather than registry labels).
+  const crossed = !!(data?.fromBackend && data?.toBackend);
+  const from = `${data?.from ?? '?'}${crossed ? ` on ${data.fromBackend}` : ''}`;
+  const to = `${data?.to ?? '?'}${crossed ? ` on ${data.toBackend}` : ''}`;
   const text = (() => {
     switch (subtype) {
       case 'init': return `Session started · ${data?.model ?? '?'} · ${data?.session_id?.slice(0, 8) ?? '?'}`;
@@ -142,10 +147,10 @@ export function systemLine({ subtype, data }: UiEvent): SystemLine {
       case 'auto_resume_skipped': return `Auto-resume skipped: ${data?.reason ?? ''}.`;
       case 'soft_interrupted': return data?.text ? `Turn interrupted: ${data.text}` : 'Turn interrupted';
       case 'drain_abort': return `Drained queued turn after interrupt (${data?.count ?? 1})`;
-      case 'model_changed': return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}${data?.restart ? ' (session restarted)' : ''}`;
+      case 'model_changed': return `Model changed: ${from} → ${to}${data?.restart ? ' (session restarted)' : ''}`;
       case 'model_switch_failed':
-        if (data?.cancelled) return `Switch to ${data?.to ?? '?'} cancelled · session stopped`;
-        return `Switch to ${data?.to ?? '?'} failed · still on ${data?.from ?? '?'}`;
+        if (data?.cancelled) return `Switch to ${to} cancelled · session stopped`;
+        return `Switch to ${to} failed · still on ${from}`;
       case 'playbook_warn': {
         const target = data?.sessionId ? ` on ${data.sessionId.slice(0, 8)}` : '';
         return `${data?.tool ?? '?'}${target} would have been refused · ${data?.code ?? '?'}: ${data?.reason ?? ''}`;

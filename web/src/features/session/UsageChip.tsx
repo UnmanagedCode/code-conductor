@@ -43,7 +43,7 @@ export function UsageChip({ inst }: { inst: Instance }) {
   const used: number | null = usage.currentContextSize();
   const rl = rlChipSegment(rateLimits.info, account);
   const c = usage.cum!;
-  const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(default)';
+  const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(account default)';
 
   const title = [
     used == null ? 'Context usage appears after the first turn.'

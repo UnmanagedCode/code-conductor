@@ -180,6 +180,19 @@ describe('system lines', () => {
     });
   });
 
+  it('a cross-backend divider names both backends on every outcome (mirrors model-switch-bubble "a cross-backend divider names both backends on every outcome")', () => {
+    const backends = { from: 'claude-haiku-4-5', to: 'alpha:cloud', fromBackend: 'claude', toBackend: 'ollama' };
+    expect(systemLine({ kind: 'system', subtype: 'model_changed', data: { ...backends, restart: true } }).text)
+      .toBe('Model changed: claude-haiku-4-5 on claude → alpha:cloud on ollama (session restarted)');
+    expect(systemLine({ kind: 'system', subtype: 'model_switch_failed', data: { ...backends, error: 'boom' } }).text)
+      .toBe('Switch to alpha:cloud on ollama failed · still on claude-haiku-4-5 on claude');
+    expect(systemLine({ kind: 'system', subtype: 'model_switch_failed', data: { ...backends, cancelled: true } }).text)
+      .toBe('Switch to alpha:cloud on ollama cancelled · session stopped');
+    // One side alone is not a crossing: the text stays as it was.
+    expect(systemLine({ kind: 'system', subtype: 'model_changed', data: { from: 'a', to: 'b', toBackend: 'ollama' } }).text)
+      .toBe('Model changed: a → b');
+  });
+
   it('a playbook warning names tool, target (8 chars), code and reason once, as prose', () => {
     const l = systemLine({ kind: 'system', subtype: 'playbook_warn', data: { tool: 'send_prompt', code: 'TRANSITION_ILLEGAL', reason: 'plan cannot reach implement directly', sessionId: 'abc12345-dead-beef' } });
     expect(l.tone).toBe('warn');
