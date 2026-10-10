@@ -1,5 +1,5 @@
 // Tests for the renew_session reseed bubble: a user_echo whose text is a
-// renew-seed (public/renewSeed.js's parseRenewSeed recognises it) renders as
+// renew-seed (public/renewSeed.ts's parseRenewSeed recognises it) renders as
 // a collapsed <details class="block renew-seed"> — summary line always
 // visible, body built lazily on first expand into one labelled section per
 // summary heading, then the conductor's follow-up directive and the
@@ -13,9 +13,9 @@ import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.js';
-import { buildWakeStub } from '../public/wakeCallback.js';
-import { buildForwardFrame } from '../public/forwardFrame.js';
+import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.ts';
+import { buildWakeStub } from '../public/wakeCallback.ts';
+import { buildForwardFrame } from '../public/forwardFrame.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');

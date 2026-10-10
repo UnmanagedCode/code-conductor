@@ -42,11 +42,11 @@ import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
-import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.js';
+import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
-// submit — one canonical function, no fork. See public/userQuestionAnswers.js.
-import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.js';
+// submit — one canonical function, no fork. See public/userQuestionAnswers.ts.
+import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.ts';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
 import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
@@ -76,7 +76,7 @@ import { isDeadStatus } from '../instances.ts';
 import { publicIdFor } from '../sessionLineage.ts';
 import { applySessionTitle } from '../sessionTitles.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
-import { buildForwardFrame } from '../../public/forwardFrame.js';
+import { buildForwardFrame } from '../../public/forwardFrame.ts';
 import { contextReading } from '../sessionPrune.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
@@ -1680,7 +1680,7 @@ interface AnswerEntry {
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
 // question card's submit (public/app.js onUserQuestionSubmit → formatUserQuestionAnswers):
 // the consolidated answer goes out as a normal user turn, byte-identical to a UI
-// answer because both call the same public/userQuestionAnswers.js formatter.
+// answer because both call the same public/userQuestionAnswers.ts formatter.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
 // so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
@@ -2341,7 +2341,7 @@ function forwardTruncationMarker(planPath: string | undefined): string {
 }
 
 // Compose a send_prompt({forward}) prompt. The frame layout (header, footer,
-// boundary lines, blank-line joins) is owned by public/forwardFrame.js, which
+// boundary lines, blank-line joins) is owned by public/forwardFrame.ts, which
 // the conversation view parses back to render the forward bubble; this
 // function only renders the per-message bodies. They reuse renderMessageBody
 // — the SAME renderer get_recent_messages uses — so a forwarded plan/questions

@@ -24,7 +24,7 @@ import { bootServer, api, waitFor, userStdinLines } from './helpers.mjs';
 import { promises as fs } from 'node:fs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 import { addCustomModel } from '../src/appSettings.ts';
-import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.js';
+import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-canusetool-question-continues.json');

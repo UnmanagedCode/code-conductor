@@ -22,8 +22,8 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { pickPinned, STATUS_LOADING, STATUS_FAILED, STATUS_NONE } from '../public/stickyPrompt.js';
-import { buildApprovePrompt } from '../public/planApproval.js';
-import { buildWakeStub } from '../public/wakeCallback.js';
+import { buildApprovePrompt } from '../public/planApproval.ts';
+import { buildWakeStub } from '../public/wakeCallback.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -210,7 +210,7 @@ test('an attachment-only bubble is stamped synthetic: it has no text to pin', as
 });
 
 test('a bubble with no user-text block is stamped synthetic even when promptOrigin reads the event as typed, and never pins', async () => {
-  const { promptOrigin } = await importFresh('promptOrigin.js');
+  const { promptOrigin } = await importFresh('promptOrigin.ts');
   const bare = { kind: 'user_echo', text: '<transcribed>\n', parentToolUseId: null };
   assert.equal(promptOrigin(bare), 'typed', 'the event alone reads typed: only the bubble shape can tell');
 
@@ -224,7 +224,7 @@ test('a bubble with no user-text block is stamped synthetic even when promptOrig
 });
 
 test('a stamped question-answer bubble is synthetic, faithful or raw-fallback, and never pins even in a worker session', async (t) => {
-  const { formatUserQuestionAnswers } = await importFresh('userQuestionAnswers.js');
+  const { formatUserQuestionAnswers } = await importFresh('userQuestionAnswers.ts');
   const questions = [{ question: 'Pick', header: 'P', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] }];
   const faithful = formatUserQuestionAnswers(questions, [{ kind: 'option', label: 'A' }]);
   // Old-format/unparseable text fails the round trip, so the bubble falls back to a

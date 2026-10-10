@@ -7,12 +7,12 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
   shouldRenderSystem,
   createActionGroup, appendToActionGroup, closeActionGroup, refreshActionGroupSummary } from './blocks.js';
 import { el } from './dom.js';
-import { parseWakeCallback } from './wakeCallback.js';
+import { parseWakeCallback } from './wakeCallback.ts';
 import { buildQuestionAnswer } from './questionAnswerBubble.js';
-import { parseCanonicalUserQuestionAnswers } from './userQuestionAnswers.js';
-import { parseRenewSeed } from './renewSeed.js';
-import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.js';
-import { promptOrigin } from './promptOrigin.js';
+import { parseCanonicalUserQuestionAnswers } from './userQuestionAnswers.ts';
+import { parseRenewSeed } from './renewSeed.ts';
+import { parseForwardFrame, splitForwardedMessages } from './forwardFrame.ts';
+import { promptOrigin } from './promptOrigin.ts';
 import { buildUserText } from './userText.js';
 import { syncAssistantBubble } from './assistantBubble.js';
 import { CompactionBlock, isCompactCommandText, isLocalCommandStdoutText } from './compactionBlock.js';

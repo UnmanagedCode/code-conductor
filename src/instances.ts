@@ -106,7 +106,7 @@ import { completeLinesOf, forkSessionAtUserMessage, truncateSessionAtUserMessage
 import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
 import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
-import { buildApprovePrompt } from '../public/planApproval.js';
+import { buildApprovePrompt } from '../public/planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';

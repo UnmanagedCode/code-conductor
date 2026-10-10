@@ -64,7 +64,7 @@ import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
 import { humanizeDuration } from './duration.ts';
 import { backgroundJobsNote } from './backgroundJobs.ts';
-import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
+import { buildWakeStub, markPlainStub } from '../public/wakeCallback.ts';
 import { askFactsOfEvent } from './awaitingUser.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';

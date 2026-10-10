@@ -121,7 +121,7 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 //   AskUserQuestion: the question card is rebuilt entirely from
 //   `input.questions` on replay (transcript.ts), and the answer is recovered by
 //   STRING-MATCHING the question text and option labels against the user echo
-//   that follows (public/userQuestionAnswers.js, driven from
+//   that follows (public/userQuestionAnswers.ts, driven from
 //   public/conversation.js). Squeezing either side leaves the human with an
 //   unreadable question and silently drops the answer off the card.
 //

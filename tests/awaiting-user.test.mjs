@@ -15,14 +15,14 @@ import {
   isTextAsk, classifyUserTurn, reduceAsk, summaryOfFact, composeSummaries, applySummary,
   IDENTITY_SUMMARY, LiveAskFacts, askFactsOfEvent,
 } from '../src/awaitingUser.ts';
-import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
-import { buildRenewSeed } from '../public/renewSeed.js';
-import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.js';
+import { buildWakeStub, markPlainStub } from '../public/wakeCallback.ts';
+import { buildRenewSeed } from '../public/renewSeed.ts';
+import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
 import { RESUME_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';
-import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.js';
-import { buildApprovePrompt, buildRejectPrompt } from '../public/planApproval.js';
+import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../public/planApproval.ts';
 import { buildRebasePrompt } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -246,7 +246,7 @@ test('LiveAskFacts: only the last text block of the last message is the final te
 // ── Acceptance 4: no playbook / stage / kanban logic ─────────────────────
 
 test('the new modules read no playbook, stage, ledger or kanban fact', async () => {
-  for (const f of ['src/awaitingUser.ts', 'src/awaitingUserTranscript.ts', 'public/injectedTurns.js', 'public/promptOrigin.js']) {
+  for (const f of ['src/awaitingUser.ts', 'src/awaitingUserTranscript.ts', 'public/injectedTurns.ts', 'public/promptOrigin.ts']) {
     const src = await fs.readFile(path.join(__dirname, '..', f), 'utf8');
     assert.doesNotMatch(src, /playbook|stage|ledger|kanban/i, `${f} must not name a playbook/stage/ledger/kanban fact`);
   }

@@ -1,4 +1,4 @@
-// Pure-node tests for public/renewSeed.js — the DOM-free module shared by
+// Pure-node tests for public/renewSeed.ts — the DOM-free module shared by
 // src/sessionRenew.ts (build) and public/conversation.js + foldedText.js
 // (parse) for the renew_session reseed text. No DOM involved: this pins the
 // parsing/splitting logic in isolation from the bubble it feeds.
@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import {
   buildRenewSeed, parseRenewSeed, splitSummarySections, RENEW_SUMMARY_SECTIONS,
   MECHANICAL_STATE_HEADER,
-} from '../public/renewSeed.js';
-import { buildWakeStub } from '../public/wakeCallback.js';
-import { buildForwardFrame } from '../public/forwardFrame.js';
+} from '../public/renewSeed.ts';
+import { buildWakeStub } from '../public/wakeCallback.ts';
+import { buildForwardFrame } from '../public/forwardFrame.ts';
 import { RENEW_SUMMARY_TEMPLATE } from '../src/sessionRenew.ts';
 
 const S = RENEW_SUMMARY_SECTIONS;
@@ -99,7 +99,7 @@ test('parseRenewSeed splits on the last mechanical-state header so a summary quo
 // real followUp and still gets split off — every position a match could
 // occur at is equally consistent with buildRenewSeed's own output, so no
 // text-only check can tell them apart. That residual case is accepted, not
-// pinned by a test — see public/renewSeed.js's parseRenewSeed comment.
+// pinned by a test — see public/renewSeed.ts's parseRenewSeed comment.
 test('parseRenewSeed splits the follow-up at the LAST fence, not the first, when the summary also quotes it', () => {
   const stateBlock = '--- MECHANICAL STATE (server-generated at renewal; safety net — if this '
     + 'disagrees with your summary above, this list wins for EXISTENCE, the summary wins for '

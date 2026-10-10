@@ -1,5 +1,5 @@
 // Tests for the send_prompt({forward}) bubble: a user_echo whose text is a
-// forward frame (public/forwardFrame.js's parseForwardFrame recognises it)
+// forward frame (public/forwardFrame.ts's parseForwardFrame recognises it)
 // renders the forwarded payload as a collapsed <details class="block
 // forward-frame"> — built lazily on first expand into one labelled markdown
 // section per forwarded message — and the conductor's instruction below it as
@@ -13,7 +13,7 @@ import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.js';
+import { FORWARD_FRAME_HEADER, buildForwardFrame } from '../public/forwardFrame.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');

@@ -1,4 +1,4 @@
-// promptOrigin / isPinEligible (public/promptOrigin.js): which user turns the
+// promptOrigin / isPinEligible (public/promptOrigin.ts): which user turns the
 // sticky prompt header may pin. Pure — no DOM.
 //
 // Every input comes from the REAL builder of that turn, never a hand-typed copy,
@@ -8,17 +8,17 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { promptOrigin, isPinEligible, isInjectedUserTurn } from '../public/promptOrigin.js';
+import { promptOrigin, isPinEligible, isInjectedUserTurn } from '../public/promptOrigin.ts';
 import { classifyUserTurn } from '../src/awaitingUser.ts';
-import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
-import { buildRenewSeed } from '../public/renewSeed.js';
-import { formatUserQuestionAnswers, isQuestionAnswerShape } from '../public/userQuestionAnswers.js';
-import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../public/forwardFrame.js';
-import { buildApprovePrompt, buildRejectPrompt, parsePlanDecision } from '../public/planApproval.js';
+import { buildWakeStub, markPlainStub } from '../public/wakeCallback.ts';
+import { buildRenewSeed } from '../public/renewSeed.ts';
+import { formatUserQuestionAnswers, isQuestionAnswerShape } from '../public/userQuestionAnswers.ts';
+import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../public/forwardFrame.ts';
+import { buildApprovePrompt, buildRejectPrompt, parsePlanDecision } from '../public/planApproval.ts';
 import {
   RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK, REBASE_PROMPT_LEAD,
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT,
-} from '../public/injectedTurns.js';
+} from '../public/injectedTurns.ts';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
 import { RESUME_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';

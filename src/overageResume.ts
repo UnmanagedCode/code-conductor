@@ -20,9 +20,9 @@ import { usageOverThreshold } from './appSettings.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import {
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
-} from '../public/injectedTurns.js';
+} from '../public/injectedTurns.ts';
 
-// The three preambles live in public/injectedTurns.js, where the awaiting-user
+// The three preambles live in public/injectedTurns.ts, where the awaiting-user
 // classifier recognises the same bytes.
 export { AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT };
 
