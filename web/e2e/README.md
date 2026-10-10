@@ -123,6 +123,7 @@ parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
 - **Fake engine only.** `/next/` can ignore a `#session=…` anchor on first load, so a scenario never navigates to one; it opens a session by starting it through the UI.
 - **The row link:** `parity()`'s row id must name a ledger row. Once the `> next` half guards the row's behaviour, the row's `ported.by` names `web/e2e/parity/<area>.spec.ts::<title> > next`; the `> legacy` half is never a ref.
 - **Adding one:** add the `parity()` call to its area's spec, and any `Ui` methods it needs to **both** drivers. Get both halves green on `desktop`, `phone` and `android`, then add the `> next` ref to the row. A behaviour the web UI lacks is fixed in `web/` first; a scenario is never committed red.
+- **A remote system:** the scratch cc has no reachable provider, so a scenario that needs one answers `/api/settings/systems`, `/api/systems/<id>/remotes` and `/api/fs/dirs` itself through `page.route`, registered before `ui.open` (`routeRemoteSystem` in `parity/dialogs.spec.ts`).
 - **Running them:** from `web/`, one project per invocation, each with its own output dir: `npx playwright test --config playwright.config.ts --project=<desktop|phone|android> e2e/parity/ --output <dir>`.
 
 ## The android seam

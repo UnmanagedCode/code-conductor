@@ -126,6 +126,17 @@ describe('dialog text helpers', () => {
     expect(splitPath('/x')).toEqual({ dir: '/', dirSlash: '/', prefix: 'x' });
     expect(splitPath('rel/x')).toBeNull();
   });
+
+  // The root and a trailing slash name a directory with an empty prefix; only an absolute POSIX path splits at all.
+  it('splitPath keeps the root and a trailing slash as directories, and refuses an empty, relative or Windows path', () => {
+    expect(splitPath('/')).toEqual({ dir: '/', dirSlash: '/', prefix: '' });
+    expect(splitPath('/a')).toEqual({ dir: '/', dirSlash: '/', prefix: 'a' });
+    expect(splitPath('/a/')).toEqual({ dir: '/a', dirSlash: '/a/', prefix: '' });
+    expect(splitPath('/a/b/pre')).toEqual({ dir: '/a/b', dirSlash: '/a/b/', prefix: 'pre' });
+    expect(splitPath('')).toBeNull();
+    expect(splitPath('rel/dir')).toBeNull();
+    expect(splitPath('C:\\Users\\x')).toBeNull();
+  });
 });
 
 describe('saving a workspace', () => {

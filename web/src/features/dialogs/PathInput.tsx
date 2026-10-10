@@ -177,9 +177,26 @@ export function PathInput({ id, value, onChange, placement, resetKey, placeholde
   }
 
   const open = !!shown && shown.names.length > 0;
+
+  // An Escape that closes the open list must not also close the dialog around
+  // it. Radix dismisses a dialog from a capture-phase keydown listener on
+  // document, which runs before any handler on the field, unless the event is
+  // already defaultPrevented. A capture listener on window runs before that one.
+  // onKeyDown still closes the list.
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const claim = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && e.target === inputRef.current) e.preventDefault();
+    };
+    window.addEventListener('keydown', claim, true);
+    return () => window.removeEventListener('keydown', claim, true);
+  }, [open]);
+
   return (
     <div className="relative">
       <Input
+        ref={inputRef}
         id={id}
         value={value}
         onChange={(e) => onValue(e.target.value)}
