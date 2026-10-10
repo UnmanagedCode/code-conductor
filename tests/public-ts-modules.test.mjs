@@ -87,6 +87,7 @@ test('the handler alone: a top-level .ts strips, everything else falls through o
   await fs.mkdir(path.join(dir, 'sub'));
   await fs.writeFile(path.join(dir, 'sub', 'b.ts'), 'export const b: number = 2;\n');
   await fs.writeFile(path.join(dir, 'bad.ts'), 'export enum E { A }\n');
+  await fs.writeFile(path.join(dir, 'x.y.ts'), 'export const x: number = 3;\n');
 
   const app = express();
   app.use(legacyPublicTs(dir));
@@ -103,6 +104,22 @@ test('the handler alone: a top-level .ts strips, everything else falls through o
       assert.match(body, /export const a\s*=\s*1;/);
       assert.ok(!body.includes(': number'), body);
     });
+    await t.test('HEAD /a.ts is answered by the handler, without a body', async () => {
+      const r = await get(`${baseUrl}/a.ts`, { method: 'HEAD' });
+      assert.equal(r.status, 200);
+      assert.match(r.headers.get('content-type') ?? '', /^text\/javascript/);
+      assert.equal(await r.text(), '');
+    });
+    await t.test('GET /x.y.ts is not served: a dot in the name never matches', async () => {
+      assert.equal((await get(`${baseUrl}/x.y.ts`)).status, 404);
+    });
+    for (const url of ['/a.ts/extra', '/a.ts.bak']) {
+      await t.test(`GET ${url} is not served: the match is the whole path`, async () => {
+        const r = await get(baseUrl + url);
+        assert.equal(r.status, 404);
+        assert.ok(!(await r.text()).includes('export const a'), `${url} answered with a.ts`);
+      });
+    }
     await t.test('GET /sub/b.ts is not served', async () => {
       assert.equal((await get(`${baseUrl}/sub/b.ts`)).status, 404);
     });

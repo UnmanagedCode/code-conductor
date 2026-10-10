@@ -131,6 +131,10 @@ test('splitForwardedMessages scans backwards and falls back to one body on incon
     const payload = '--- message 1/2 ---\nlooks like a boundary but is the whole message';
     assert.deepEqual(splitForwardedMessages(payload), [payload]);
   });
+  await t.test('a payload opening with a 1/1 boundary is returned byte-identical', () => {
+    const payload = '--- message 1/1 ---\nthe only message';
+    assert.deepEqual(splitForwardedMessages(payload), [payload]);
+  });
   await t.test('a payload with no boundary is one body', () => {
     assert.deepEqual(splitForwardedMessages('just one'), ['just one']);
   });
