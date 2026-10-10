@@ -94,6 +94,8 @@ export interface Ui {
   openDeleteProject(page: Page, name: string): Promise<Locator>;
   /** The delete dialog's directory opt-in checkbox and its label. */
   deleteDirOptIn(dialog: Locator): { box: Locator; label: Locator };
+  /** The delete dialog's line saying where the project lives. */
+  deleteDescription(dialog: Locator): Locator;
   /** Types a name that does not match and attempts the delete as far as the UI allows. */
   tryDeleteWithMismatch(page: Page, dialog: Locator, name: string): Promise<void>;
   /** Cancels a dialog and waits until it is hidden. */
@@ -353,6 +355,7 @@ export const legacy: Ui = {
     return dialog;
   },
   deleteDirOptIn: (dialog) => ({ box: dialog.locator('#dpd-delete-dir'), label: dialog.locator('#dpd-dir-label') }),
+  deleteDescription: (dialog) => dialog.locator('#dpd-summary'),
   async tryDeleteWithMismatch(_page, dialog, name) {
     await dialog.locator('#dpd-confirm').fill(name + 'x');
     // The old dialog closes on the click and reopens itself with the refusal.
@@ -613,6 +616,7 @@ export const next: Ui = {
   },
   // By `for`, never `#dpd-delete-dir + label`: a hidden Radix bubble input sits between them.
   deleteDirOptIn: (dialog) => ({ box: dialog.locator('#dpd-delete-dir'), label: dialog.locator('label[for="dpd-delete-dir"]') }),
+  deleteDescription: (dialog) => dialog.locator('[data-slot="dialog-description"]'),
   async tryDeleteWithMismatch(_page, dialog, name) {
     await dialog.locator('#dpd-confirm').fill(name + 'x');
     await expect(dialog.getByRole('button', { name: 'Delete', exact: true })).toBeDisabled();

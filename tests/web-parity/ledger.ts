@@ -4292,6 +4292,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/deleteProject.test.tsx::delete-project confirmation > the sidebar\'s Delete project hands the dialog this project\'s live instance count',
         'web/src/app/sessionActions.test.ts::promote, resume, rewind, fork, delete > deleting a project sends deleteDirectory as chosen and drops a selection inside it',
         'web/e2e/parity/dialogs.spec.ts::Deleting a local project offers the directory opt-in unticked, its box inline before a label naming the directory, and Cancel keeps the project > next',
+        'web/e2e/parity/dialogs.spec.ts::Deleting a project on a system names its path, target and system, and Cancel keeps the project > next',
       ] },
   },
   {

@@ -141,6 +141,28 @@ parity('delete-project-confirm/R3', 'A mismatched name in the delete dialog dele
   expect(deletes).toHaveLength(0);
 });
 
+parity('delete-project-confirm/R4', 'Deleting a project on a system names its path, target and system, and Cancel keeps the project', async ({ page, ui, uniq }) => {
+  // The delete dialog of a project on a system says which path, target and system it leaves alone.
+  const name = uniq('delremote');
+  const fake = { name, path: '/app', system: 'prod-box', remoteId: 'c1', systemUnreachable: null, workspace: null, isGitRepo: true, unbornHead: false, worktrees: [] };
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: [...(await res.json()), fake] });
+  });
+
+  await ui.open(page);
+  const d = await ui.openDeleteProject(page, name);
+  // The wording differs by UI ("remote" became "target"); the exact new text is pinned in vitest.
+  const description = ui.deleteDescription(d);
+  await expect(description).toContainText('/app');
+  await expect(description).toContainText("'c1'");
+  await expect(description).toContainText("'prod-box'");
+  await ui.cancelDialog(d);
+  await expect(await ui.projectRow(page, name)).toBeVisible();
+  await page.unrouteAll({ behavior: 'wait' });
+});
+
 parity('project-remote-dialog/R3', 'Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list', async ({ page, ui, uniq }) => {
   const name = uniq('remote');
   const fake = { name, path: '/app', system: 'prod-box', remoteId: 'ctr-7', systemUnreachable: null, workspace: null, isGitRepo: true, unbornHead: false, worktrees: [] };
@@ -182,8 +204,8 @@ parity('project-remote-dialog/R3', 'Change target from the system pill: a refusa
   await expect.poll(() => puts.length).toBe(2);
   expect(puts[1]).toEqual({ remoteId: 'ctr-9' });
   await expect.poll(() => gets).toBeGreaterThan(before);
-  // A background list refresh may still be inside the route at teardown.
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  // The PUT's project broadcast drives a second list refresh that may still be inside the route.
+  await page.unrouteAll({ behavior: 'wait' });
 });
 
 parity('spawn-dialog-worktree/R1', "The worktree box follows the project's repo: disabled with a reason for a non-git directory and an unborn HEAD, tickable on a repo with a commit", async ({ page, cc, ui, uniq }) => {
@@ -242,7 +264,10 @@ parity('spawn-dialog-effort/R2', 'The spawn dialog hides disabled tiers, opens E
       },
     });
   });
-  await page.route('**/api/settings/spawn', (route) => route.fulfill({ json: { debugByDefault: true } }));
+  await page.route('**/api/settings/spawn', (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({ json: { debugByDefault: true } });
+  });
   const name = uniq('spawn');
   await createProject(cc, name);
 
