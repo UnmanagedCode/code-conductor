@@ -146,7 +146,7 @@ A `Row` has an `id`, an `old` source, a `behaviour`, the `viewports` it exists o
 
 **Granularity:**
 - One row per behaviour. A file is split when its tests differ in coverage or area, or when part of it is ruled.
-- A `ported` row lists its titles explicitly, never whole-file or `'rest'`, so a test later added to its file lands in no row and fails the check.
+- A `ported` row lists its titles explicitly, never whole-file or `'rest'`, so a test later added to its file is never counted as ported: it lands in the file's `'rest'` row if there is one, and otherwise in no row, which fails `partition`.
 - A file with an explicit-titles row, a `'rest'` row, several rows or a `SURVIVES` entry is partitioned exactly: rows plus `SURVIVES` cover every title, `SURVIVES` overlaps no row, and at most one row is `'rest'`.
 - **Legacy specs** hold one or two long tests, so several rows may name the same title. Each row then stands for the behaviour box its `behaviour` names, and the title is covered only once every row naming it is `ported` or `dropped`. The check cannot see a box:
   - the reviewer of a change that flips a legacy row checks its `behaviour` against the test it cites;
@@ -170,11 +170,13 @@ A `Row` has an `id`, an `old` source, a `behaviour`, the `viewports` it exists o
 |---|---|
 | `unaccounted` | An inventoried file has no row |
 | `stale-row` | A row's file is not inventoried |
+| `stale-survivor` | A `SURVIVES` entry's file is not inventoried |
 | `bad-ref` | A `by` ref has no `::`, names a non-test file, a legacy spec, an inventoried `tests/` title outside its `SURVIVES`, or a parity `> legacy` half |
 | `unresolved-ref` | A ref's file does not exist, or its title is not one the file declares |
 | `unruled-drop` | A `dropped` row's ruling is absent, has blank text, or has no real `YYYY-MM-DD` date |
-| `duplicate-id` | Two rows share an `id` |
-| `partition` | A split file breaks the granularity rule above; the detail names the titles in no row |
+| `empty-id` | A row's `id` is empty; the subject is its position, `LEDGER[<index>]` |
+| `duplicate-id` | Two rows share a non-empty `id` |
+| `partition` | A split file breaks the granularity rule above (the detail names the titles in no row), or any `SURVIVES` entry lists a title its file does not declare |
 | `unknown-section` | A docs row's `section` is not a `### ` heading of `docs/features.md` |
 | `unknown-parity-row` | A `parity()` call names no ledger row |
 | `bad-parity-call` | A `parity()` call's row id or title is not a literal |

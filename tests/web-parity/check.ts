@@ -7,8 +7,8 @@ import { oldUiInventory } from './inventory.ts';
 import { parityLinks, testTitles } from './titles.ts';
 import type { Row, Ruling, Survivor } from './ledger.ts';
 
-export type ProblemKind = 'unaccounted' | 'stale-row' | 'bad-ref' | 'unresolved-ref' | 'unruled-drop' | 'duplicate-id'
-  | 'partition' | 'unknown-section' | 'unknown-parity-row' | 'bad-parity-call';
+export type ProblemKind = 'unaccounted' | 'stale-row' | 'stale-survivor' | 'bad-ref' | 'unresolved-ref' | 'unruled-drop'
+  | 'empty-id' | 'duplicate-id' | 'partition' | 'unknown-section' | 'unknown-parity-row' | 'bad-parity-call';
 export type Problem = { kind: ProblemKind; subject: string; detail: string };
 
 export type LedgerData = {
@@ -86,8 +86,10 @@ export function checkLedger(data: LedgerData, world: World): Problem[] {
   const problems: Problem[] = [];
   const push = (kind: Problem['kind'], subject: string, detail: string) => problems.push({ kind, subject, detail });
 
+  // An empty id names nothing, so it is reported by its position.
+  data.ledger.forEach((r, i) => { if (r.id === '') push('empty-id', `LEDGER[${i}]`, 'the row id is empty'); });
   const ids = new Map<string, number>();
-  for (const r of data.ledger) ids.set(r.id, (ids.get(r.id) ?? 0) + 1);
+  for (const r of data.ledger) if (r.id !== '') ids.set(r.id, (ids.get(r.id) ?? 0) + 1);
   for (const [id, n] of ids) if (n > 1) push('duplicate-id', id, `${n} rows share this id`);
 
   for (const row of data.ledger) {
@@ -146,7 +148,6 @@ export function checkLedger(data: LedgerData, world: World): Problem[] {
     }
     for (const s of survivors) {
       for (const t of s.tests) {
-        if (!titles.includes(t)) push('partition', file, `SURVIVES lists "${t}", which is not a title of this file`);
         const owner = rows.find((r) => { const tests = fileOf(r)!.tests; return Array.isArray(tests) && tests.includes(t); });
         if (owner) push('partition', file, `"${t}" is in SURVIVES and in ${owner.id}`);
         listed.add(t);
@@ -155,6 +156,18 @@ export function checkLedger(data: LedgerData, world: World): Problem[] {
     const coversAll = rest.length > 0 || rows.some((r) => fileOf(r)!.tests === undefined);
     const missing = titles.filter((t) => !listed.has(t));
     if (!coversAll && missing.length) push('partition', file, `titles in no row: ${missing.map((t) => `"${t}"`).join(', ')}`);
+  }
+
+  // Every SURVIVES entry, whether or not its file has a row.
+  for (const s of data.survives) {
+    if (!world.inventory.includes(s.file)) {
+      push('stale-survivor', s.file, 'SURVIVES names a file that is not an old-UI test file');
+      continue;
+    }
+    const titles = world.titlesOf(s.file);
+    for (const t of s.tests) {
+      if (titles && !titles.includes(t)) push('partition', s.file, `SURVIVES lists "${t}", which is not a title of this file`);
+    }
   }
 
   const rowIds = new Set(data.ledger.map((r) => r.id));

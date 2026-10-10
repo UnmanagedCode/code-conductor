@@ -322,6 +322,29 @@ describe('checkLedger', () => {
     expect(checkLedger(d, world())).toEqual([{ kind: 'duplicate-id', subject: 'old/R1', detail: '2 rows share this id' }]);
   });
 
+  it('a row with an empty id is reported by its position, and is no duplicate of another empty id', () => {
+    const d = data();
+    d.ledger = [...d.ledger, { ...d.ledger[4], id: '' }, { ...d.ledger[4], id: '' }];
+    expect(checkLedger(d, world())).toEqual([
+      { kind: 'empty-id', subject: 'LEDGER[5]', detail: 'the row id is empty' },
+      { kind: 'empty-id', subject: 'LEDGER[6]', detail: 'the row id is empty' },
+    ]);
+  });
+
+  it('every SURVIVES entry is validated, whether or not its file has a row', () => {
+    const lone = 'tests/lone.test.mjs';
+    const titles = (f: string) => (f === lone ? ['l1'] : TITLES[f] ?? null);
+    const missingTitle = { ...data(), survives: [...data().survives, { file: lone, tests: ['l1', 'zz'], note: 'n' }] };
+    expect(checkLedger(missingTitle, world({ inventory: [lone, MIXED, OLD, SPLIT], titlesOf: titles }))).toEqual([
+      { kind: 'unaccounted', subject: lone, detail: 'no ledger row names this old-UI test file' },
+      { kind: 'partition', subject: lone, detail: 'SURVIVES lists "zz", which is not a title of this file' },
+    ]);
+    const stale = { ...data(), survives: [...data().survives, { file: 'tests/gone.test.mjs', tests: ['g'], note: 'n' }] };
+    expect(checkLedger(stale, world())).toEqual([
+      { kind: 'stale-survivor', subject: 'tests/gone.test.mjs', detail: 'SURVIVES names a file that is not an old-UI test file' },
+    ]);
+  });
+
   it('partition: each break of the granularity rule is reported, one case each; a rest row completes the cover', () => {
     const cases: [string, LedgerData, Problem][] = [
       ['a row of a split file omits tests',

@@ -101,7 +101,7 @@ The old UI's browser checks, driving `/legacy/` (its stable address until the cu
 
 The deterministic halves live in `tests/` (happy-dom), e.g. `models-responsive.spec.ts` ↔ `tests/settings-models-field-labels.test.mjs`, `awaiting-wake-dot.spec.ts` ↔ `tests/sidebar.test.mjs`, `header-compact.spec.ts` ↔ `tests/header-compact.test.mjs` + `tests/header-compact-css.test.mjs`.
 
-## Parity scenarios (`parity/`)
+## Parity scenarios
 
 One behaviour driven against both UIs, `/legacy/` and `/next/`, on all three projects. Each proves a row of the parity ledger (`docs/frontend-testing.md` → Parity ledger) holds identically in both.
 
