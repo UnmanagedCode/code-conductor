@@ -105,7 +105,7 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
     return workers.every((sid) => all.find((i) => i.sessionId === sid)?.ownerSessionId);
   }, { message: 'every worker reports its owner', timeout: 20_000 }).toBe(true);
 
-  return { P, O, aSid: a.sessionId, bSid: b.sessionId, aLabel, colA, colB, aSolo, aSolo2, aMixed, bMixed, aMain, bMain, hand };
+  return { P, O, aSid: a.sessionId, aLabel, colA, colB, aSolo, aSolo2, aMixed, bMixed, aMain, bMain, hand };
 }
 
 parity('legacy-sidebar-lenses/R7', 'the Projects lens lists no .conduct row while a conductor is live and .conduct has a disk row', async ({ page, cc, ui, uniq }) => {
@@ -150,6 +150,9 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
   });
 
   await test.step('filter to A', async () => {
+    // Closed first, so an open group after filtering can only be the filter's force-open.
+    await ui.closeWorktrees(page, f.P);
+    expect(await ui.worktreesOpen(page, f.P)).toBe(false);
     await ui.filterTo(page, f.aSid, f.aLabel);
     await expect.poll(() => ui.projectNames(page)).toContain(f.P);
     await expect.poll(() => ui.projectNames(page)).not.toContain(f.O);
@@ -190,6 +193,7 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
   await test.step('selected row', async () => {
     let r = await row(f.aMain.sessionId);
     const before = await ui.sessionRowStyle(r);
+    expect(before.framed).toBe(false);
     expect(Number(before.weight)).toBeLessThan(700);
     await r.click();
     await expect(ui.sessionHeader(page).locator(`[title="session ${f.aMain.sessionId}"]`)).toBeVisible();

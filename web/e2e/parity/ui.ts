@@ -161,6 +161,8 @@ export interface Ui {
   // Sidebar B2 (card 2026-0638)
   /** Selects the Projects lens and opens `project`'s Worktrees group. */
   openWorktrees(page: Page, project: string): Promise<void>;
+  /** Selects the Projects lens and closes `project`'s Worktrees group. */
+  closeWorktrees(page: Page, project: string): Promise<void>;
   /** Selects the Projects lens and reads whether `project`'s Worktrees group is open, without touching it. */
   worktreesOpen(page: Page, project: string): Promise<boolean>;
   /** Selects the Projects lens, opens `project`'s Worktrees group and returns `worktree`'s head row. */
@@ -536,6 +538,14 @@ export const legacy: Ui = {
       await expect(group).toHaveAttribute('open', '', { timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
   },
+  async closeWorktrees(page, project) {
+    await legacy.lens(page, 'projects');
+    const group = (await legacy.projectRow(page, project)).locator('xpath=..').locator('details.worktree-group').first();
+    await expect(async () => {
+      if ((await group.getAttribute('open')) !== null) await group.locator(':scope > summary').click();
+      await expect(group).not.toHaveAttribute('open', { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+  },
   async worktreesOpen(page, project) {
     await legacy.lens(page, 'projects');
     const group = (await legacy.projectRow(page, project)).locator('xpath=..').locator('details.worktree-group').first();
@@ -895,6 +905,12 @@ export const next: Ui = {
     const toggle = sidebar(page).locator(`[data-worktrees="${project}"] > button`);
     if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  },
+  async closeWorktrees(page, project) {
+    await next.lens(page, 'projects');
+    const toggle = sidebar(page).locator(`[data-worktrees="${project}"] > button`);
+    if ((await toggle.getAttribute('aria-expanded')) === 'true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   },
   async worktreesOpen(page, project) {
     await next.lens(page, 'projects');
