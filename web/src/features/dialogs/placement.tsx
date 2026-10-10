@@ -8,7 +8,7 @@ import * as React from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { loadCapabilities } from '@/lib/core/capabilities.js';
+import { capabilities, loadCapabilities } from '@/lib/core/capabilities.js';
 
 export const REMOTE_OTHER = '__other__';
 const REMOTE_NONE = '__none__';
@@ -18,7 +18,11 @@ type SystemRow = { id: string; label: string; managed?: boolean; launch?: string
 export type PlacementState = ReturnType<typeof usePlacement>;
 
 export function usePlacement() {
-  const [enabled, setEnabled] = React.useState(true);
+  // null until the capabilities are known: no System row is offered before then.
+  const [enabled, setEnabled] = React.useState<boolean | null>(() => {
+    const c = capabilities();
+    return c ? !!c.remoteSystems : null;
+  });
   const [systems, setSystems] = React.useState<{ id: string; label: string }[]>([{ id: 'local', label: 'This machine' }]);
   const [systemsNote, setSystemsNote] = React.useState('');
   const [system, setSystemValue] = React.useState('local');
@@ -115,7 +119,7 @@ export function usePlacement() {
 }
 
 export function PlacementFields({ p, idPrefix }: { p: PlacementState; idPrefix: string }) {
-  if (!p.enabled) return null;
+  if (p.enabled !== true) return null;
   return (
     <>
       <div className="grid gap-1.5">

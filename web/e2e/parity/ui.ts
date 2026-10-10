@@ -6,6 +6,9 @@ import { test, expect } from '../harness/fixtures.ts';
 import type { UiName } from './uis.ts';
 
 export type Lens = 'conductors' | 'projects';
+/** The two dialogs that place a project: New project and Add (adopt) project. */
+export type PlacementDialog = 'new' | 'adopt';
+export type PlacementField = 'name' | 'system' | 'target' | 'path' | 'pathList' | 'suggestions';
 
 export interface Ui {
   name: UiName;
@@ -32,6 +35,19 @@ export interface Ui {
   turnEnded(page: Page): Locator;
   openSettings(page: Page): Promise<void>;
   leaveSettings(page: Page): Promise<void>;
+  /** Selects the Projects lens, opens the dialog from the project-actions menu, and returns the dialog. */
+  openPlacementDialog(page: Page, which: PlacementDialog): Promise<Locator>;
+  /** The open project-actions menu. */
+  projectActionsMenu(page: Page): Locator;
+  placementField(dialog: Locator, which: PlacementDialog, field: PlacementField): Locator;
+  /** The System picker's option labels, in order. */
+  systemOptions(page: Page, dialog: Locator, which: PlacementDialog): Promise<string[]>;
+  chooseSystem(page: Page, dialog: Locator, which: PlacementDialog, label: string): Promise<void>;
+  /** Clicks the Add-project suggestion listing `relPath`. */
+  pickSuggestion(dialog: Locator, relPath: string): Promise<void>;
+  submitAdd(dialog: Locator): Promise<void>;
+  /** On the Add-project stale pane, Relocate. */
+  relocate(dialog: Locator): Promise<void>;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -152,6 +168,48 @@ export const legacy: Ui = {
     await page.locator('#settings-btn').click();
     await expect(page.locator('#main')).not.toHaveClass(/\bsettings-open\b/);
   },
+  async openPlacementDialog(page, which) {
+    // The ≡ menu sits in the Projects lens row, hidden in the default Conductors lens.
+    await legacy.lens(page, 'projects');
+    const dialog = page.locator(which === 'new' ? '#new-project-dialog' : '#adopt-project-dialog');
+    const item = page.locator(which === 'new' ? '#new-project-btn' : '#adopt-project-btn');
+    await expect(async () => {
+      if (!(await item.isVisible())) await page.locator('#sidebar-overflow-toggle').click();
+      await item.click({ timeout: 1_000 });
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  projectActionsMenu: (page) => page.locator('#sidebar-overflow-panel'),
+  placementField(dialog, which, field) {
+    const p = which === 'new' ? 'np' : 'apd';
+    const ids: Record<PlacementField, string> = {
+      name: `${p}-name`,
+      system: `${p}-system`,
+      target: `${p}-remote`,
+      path: which === 'new' ? 'np-system-path' : 'apd-path',
+      pathList: which === 'new' ? 'np-system-path-completions' : 'apd-path-completions',
+      suggestions: 'apd-suggestions',
+    };
+    return dialog.locator(`#${ids[field]}`);
+  },
+  async systemOptions(_page, dialog, which) {
+    return legacy.placementField(dialog, which, 'system').locator('option').allTextContents();
+  },
+  async chooseSystem(_page, dialog, which, label) {
+    await legacy.placementField(dialog, which, 'system').selectOption({ label });
+  },
+  async pickSuggestion(dialog, relPath) {
+    await dialog.locator('#apd-suggestions .apd-suggestion')
+      .filter({ has: dialog.page().locator('.apd-suggestion-path', { hasText: exactly(relPath) }) })
+      .click();
+  },
+  async submitAdd(dialog) {
+    await dialog.locator('#apd-adopt').click();
+  },
+  async relocate(dialog) {
+    await dialog.locator('#apd-stale button[value="relocate"]').click();
+  },
 };
 
 /**
@@ -239,6 +297,51 @@ export const next: Ui = {
   async leaveSettings(page) {
     await page.getByRole('button', { name: 'Back' }).filter({ visible: true }).first().click();
     await expect(page).not.toHaveURL(/#settings/);
+  },
+  async openPlacementDialog(page, which) {
+    // The menu is not lens-gated here; the Projects lens keeps both drivers in one state (projectRow reads that list).
+    await next.lens(page, 'projects');
+    await sidebar(page).getByRole('button', { name: 'Project actions' }).click();
+    await page.getByRole('menuitem', { name: which === 'new' ? 'New project' : 'Add existing directory' }).click();
+    await expect(page.getByRole('dialog', { name: which === 'new' ? 'New project' : 'Add a project' })).toBeVisible();
+    // By its slot, not its title: the stale pane retitles the Add-project dialog.
+    return page.locator(`[role="dialog"][data-dialog="${which === 'new' ? 'new-project' : 'adopt-project'}"]`);
+  },
+  projectActionsMenu: (page) => page.getByRole('menu'),
+  placementField(dialog, which, field) {
+    switch (field) {
+      case 'name': return dialog.getByLabel('Name', { exact: true });
+      case 'system': return dialog.getByRole('combobox', { name: 'System', exact: true });
+      case 'target': return dialog.getByRole('textbox', { name: 'Target', exact: true });
+      case 'path': return dialog.getByRole('combobox', { name: which === 'new' ? 'Path on that system' : 'Directory', exact: true });
+      case 'pathList': return dialog.getByRole('listbox');
+      case 'suggestions': return dialog.locator('[data-suggestions]');
+    }
+  },
+  async systemOptions(page, dialog, which) {
+    await next.placementField(dialog, which, 'system').click();
+    const options = page.getByRole('option');
+    await expect(options.first()).toBeVisible();
+    const labels = await options.allTextContents();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox')).toBeHidden();
+    return labels;
+  },
+  async chooseSystem(page, dialog, which, label) {
+    await next.placementField(dialog, which, 'system').click();
+    await page.getByRole('option', { name: label, exact: true }).click();
+    await expect(page.getByRole('option')).toHaveCount(0);
+  },
+  async pickSuggestion(dialog, relPath) {
+    await dialog.locator('[data-suggestions] button')
+      .filter({ has: dialog.page().locator('span', { hasText: exactly(relPath) }) })
+      .click();
+  },
+  async submitAdd(dialog) {
+    await dialog.getByRole('button', { name: 'Add project' }).click();
+  },
+  async relocate(dialog) {
+    await dialog.getByRole('button', { name: 'Relocate' }).click();
   },
 };
 
