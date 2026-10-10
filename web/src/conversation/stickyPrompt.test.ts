@@ -531,9 +531,11 @@ describe('sticky prompt', () => {
 
     rig.detach();
     document.body.innerHTML = '';
+    // Concealed, a nonzero gutter against the stored 0 is still not written.
     rig = makeRig();
-    noGutter(rig);
-    rig.sticky.refresh();
+    stubWidths(rig, 1000, 985, 0);
+    expect(Math.max(0, rig.scroll.offsetWidth - rig.scroll.clientWidth - 2 * rig.scroll.clientLeft)).toBe(15);
+    pinStore.set({ pin: { kind: 'hidden' }, gutter: 0 });
     before = pinStore.get();
     w = writes();
     for (let i = 0; i < 5; i++) rig.sticky.refresh();
@@ -541,6 +543,9 @@ describe('sticky prompt', () => {
     expect(w.list).toHaveLength(0);
     expect(pinStore.get() === before).toBe(true);
     w.off();
+    // The stubs are live: revealing writes that gutter.
+    rig.sticky.reveal();
+    expect(pinStore.get().gutter).toBe(15);
   });
 
   it('the overflow flag is set only when the pinned text overflows the clamp; one pixel of rounding is not overflow', async () => {
