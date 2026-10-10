@@ -114,6 +114,18 @@ export interface Ui {
   /** The options of the Effort or Thinking select and the one selected; leaves the select closed. */
   spawnSelect(page: Page, dialog: Locator, which: SpawnSelect): Promise<{ options: string[]; selected: string }>;
   spawnField(dialog: Locator, field: SpawnField): Locator;
+
+  // Sidebar B (card 2026-0628)
+  /** Selects the Projects lens and returns the clickable row of `sessionId` in `project`'s Sessions lists. */
+  sessionRow(page: Page, project: string, sessionId: string): Promise<Locator>;
+  /** Whether that row is overlaid by a live instance. */
+  sessionRowLive(row: Locator): Promise<boolean>;
+  /** Selects the Projects lens and returns the summary heading the Sessions list of `project`'s main checkout (worktree null) or of that worktree, opening its Worktrees group first. */
+  sessionsSummary(page: Page, project: string, worktree: string | null): Promise<Locator>;
+  /** Whether the sidebar drawer is open (always false on desktop, which has no drawer). */
+  drawerOpen(page: Page): Promise<boolean>;
+  /** The × of a session row returned by `sessionRow`. */
+  sessionClose(row: Locator): Locator;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -413,6 +425,29 @@ export const legacy: Ui = {
     const ids: Record<SpawnField, string> = { worktree: 'sd-worktree', worktreeHint: 'sd-worktree-hint', debug: 'sd-debug' };
     return dialog.locator(`#${ids[field]}`);
   },
+  // Sidebar B (card 2026-0628)
+  async sessionRow(page, project, sessionId) {
+    await legacy.lens(page, 'projects');
+    // A row's title starts with its session id.
+    return (await legacy.projectRow(page, project)).locator('xpath=..').locator(`.session-row[title^="${sessionId}"]`);
+  },
+  sessionRowLive: (row) => row.evaluate((e) => e.classList.contains('live')),
+  async sessionsSummary(page, project, worktree) {
+    await legacy.lens(page, 'projects');
+    const li = (await legacy.projectRow(page, project)).locator('xpath=..');
+    if (worktree === null) return li.locator(':scope > details.sessions-group > summary');
+    const group = li.locator('details.worktree-group').first();
+    await expect(async () => {
+      if ((await group.getAttribute('open')) === null) await group.locator(':scope > summary').click();
+      await expect(group).toHaveAttribute('open', '', { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return group.locator('.worktree-item')
+      .filter({ has: page.locator('.worktree-name', { hasText: exactly(worktree) }) })
+      .locator('details.sessions-group > summary')
+      .first();
+  },
+  drawerOpen: (page) => page.locator('#sidebar').evaluate((e) => e.classList.contains('open')),
+  sessionClose: (row) => row.locator('.session-delete'),
 };
 
 /**
@@ -675,6 +710,27 @@ export const next: Ui = {
       case 'debug': return dialog.locator('#sd-debug');
     }
   },
+  // Sidebar B (card 2026-0628)
+  async sessionRow(page, project, sessionId) {
+    await next.lens(page, 'projects');
+    return sidebar(page).locator(`[data-project="${project}"] [data-session-row="${sessionId}"] > [role="button"]`);
+  },
+  sessionRowLive: async (row) => (await row.locator('[data-dot]').getAttribute('data-dot')) !== 'offline',
+  async sessionsSummary(page, project, worktree) {
+    await next.lens(page, 'projects');
+    if (worktree) {
+      const toggle = sidebar(page).locator(`[data-worktrees="${project}"] > button`);
+      if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    }
+    return sidebar(page).locator(`[data-sessions-summary="${worktree ? `${project}:${worktree}` : project}"]`);
+  },
+  drawerOpen: async (page) => (await page.locator('[data-slot="sheet-content"][data-state="open"]').count()) > 0,
+  sessionClose: (row) => row.getByRole('button', { name: /^(Stop session|Archive session \(keeps history\))$/ }),
 };
+
+// Sidebar B (card 2026-0628)
+/** The web UI's sidebar, for /next/-only specs. */
+export const nextSidebar = sidebar;
 
 export const UIS: Record<UiName, Ui> = { legacy, next };

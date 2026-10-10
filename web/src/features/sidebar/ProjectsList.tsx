@@ -35,9 +35,19 @@ export const ChevronSpacer = () => <span className="size-6 shrink-0" />;
 
 type Ctx = { m: SidebarModel; ui: ReturnType<typeof useSidebarUi> };
 
+type SessionsSummary = { total: number; live: number; last?: number };
+/** `Sessions (N) · K live · last <ago>`: the Sessions list's summary. */
+const summaryText = ({ total, live, last }: SessionsSummary) =>
+  `Sessions (${total})${live > 0 ? ` · ${live} live` : ''}${last ? ` · last ${formatAgo(last)}` : ''}`;
+
+function SummaryLine({ summary, placeKey }: { summary: SessionsSummary; placeKey: string }) {
+  useAgoTick();
+  return <div className="px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary)}</div>;
+}
+
 /** A place's session rows: the cached disk list overlaid with live instances, narrowed by the filter. */
-export function SessionsList({ ctx, project, worktreeName, liveInstances, showOwner }: {
-  ctx: Ctx; project: string; worktreeName: string | null; liveInstances: Instance[]; showOwner: boolean;
+export function SessionsList({ ctx, project, worktreeName, liveInstances, showOwner, summary }: {
+  ctx: Ctx; project: string; worktreeName: string | null; liveInstances: Instance[]; showOwner: boolean; summary: SessionsSummary;
 }) {
   useSignal(sessionsSignal);
   const key = placeKeyOf(project, worktreeName);
@@ -63,27 +73,29 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
     <li className="px-2 pt-2 pb-0.5 text-[10px] font-semibold tracking-wider text-muted-foreground/70 uppercase">{label}</li>
   );
   return (
-    <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5" data-sessions={key}>
-      {rows.length === 0 && (
-        <li className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground italic">
-          {status === 'loading' ? <><LoaderCircleIcon className="size-3 animate-spin" /> Loading…</>
-            : status === 'error' ? `Couldn't load sessions: ${sessionsError(key)}`
-            : 'No sessions'}
-        </li>
-      )}
-      {normal.map(row)}
-      {temp.length > 0 && <>{sep('Temp')}{temp.map(row)}</>}
-      {conducted.length > 0 && <>{sep('Conducted')}{conducted.map(row)}</>}
-    </ul>
+    <div className="ml-3 border-l border-sidebar-border pl-1.5">
+      <SummaryLine summary={summary} placeKey={key} />
+      <ul className="space-y-px" data-sessions={key}>
+        {rows.length === 0 && (
+          <li className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground italic">
+            {status === 'loading' ? <><LoaderCircleIcon className="size-3 animate-spin" /> Loading…</>
+              : status === 'error' ? `Couldn't load sessions: ${sessionsError(key)}`
+              : 'No sessions'}
+          </li>
+        )}
+        {normal.map(row)}
+        {temp.length > 0 && <>{sep('Temp')}{temp.map(row)}</>}
+        {conducted.length > 0 && <>{sep('Conducted')}{conducted.map(row)}</>}
+      </ul>
+    </div>
   );
 }
 
-function SessionsMeta({ total, live, last }: { total: number; live: number; last?: number }) {
+function SessionsMeta({ summary }: { summary: SessionsSummary }) {
   useAgoTick();
-  const text = `Sessions (${total})${live > 0 ? ` · ${live} live` : ''}${last ? ` · last ${formatAgo(last)}` : ''}`;
   return (
-    <Hint label={text}>
-      <span className="shrink-0 rounded-full px-1.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-count>{total}</span>
+    <Hint label={summaryText(summary)}>
+      <span className="shrink-0 rounded-full px-1.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-count>{summary.total}</span>
     </Hint>
   );
 }
@@ -104,7 +116,14 @@ function WorktreeItem({ ctx, project, wt }: { ctx: Ctx; project: Project; wt: an
         chevron={total > 0 ? <Chevron open={open} label="Sessions" onToggle={() => setSessionsOpen(key, !open)} /> : <ChevronSpacer />}
       />
       {total > 0 && open && (
-        <SessionsList ctx={ctx} project={project.name} worktreeName={wt.worktreeName} liveInstances={live} showOwner={own.kind !== 'single'} />
+        <SessionsList
+          ctx={ctx}
+          project={project.name}
+          worktreeName={wt.worktreeName}
+          liveInstances={live}
+          showOwner={own.kind !== 'single'}
+          summary={{ total, live: live.length, last: wt.sessions?.lastActivity }}
+        />
       )}
     </li>
   );
@@ -149,6 +168,7 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
     showSessions = hasHandSession({ liveInstances: direct, summary: p.sessions });
     showWorktrees = worktrees.some((wt) => hasHandSession({ liveInstances: ctx.m.byWorktree.get(placeKeyOf(p.name, wt.worktreeName)) ?? [], summary: wt.sessions }));
   }
+  const summary = { total, live: direct.length, last: p.sessions?.lastActivity };
   const open = !ctx.ui.collapsedSessions.includes(p.name);
   const allInstances = ctx.m.instances.filter((i) => i.project === p.name);
   return (
@@ -158,9 +178,9 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
         liveCount={direct.length}
         instanceCount={allInstances.length}
         chevron={showSessions ? <Chevron open={open} label="Sessions" onToggle={() => setSessionsOpen(p.name, !open)} /> : <ChevronSpacer />}
-        meta={showSessions ? <SessionsMeta total={total} live={direct.length} last={p.sessions?.lastActivity} /> : null}
+        meta={showSessions ? <SessionsMeta summary={summary} /> : null}
       />
-      {showSessions && open && <SessionsList ctx={ctx} project={p.name} worktreeName={null} liveInstances={direct} showOwner />}
+      {showSessions && open && <SessionsList ctx={ctx} project={p.name} worktreeName={null} liveInstances={direct} showOwner summary={summary} />}
       {!showSessions && worktrees.length === 0 && !owner && (
         <div className="ml-9 py-0.5 text-xs text-muted-foreground/80 italic">No sessions yet · tap + to start</div>
       )}
@@ -215,8 +235,8 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
       {unassigned.length > 0 && (
         <section data-workspace="">
           {groups.length > 0 && (
-            <div className="flex h-7 items-center gap-2 px-2 text-[11px] font-semibold tracking-wider text-muted-foreground/80 uppercase">
-              Other projects <span className="h-px flex-1 border-t border-dashed border-sidebar-border" />
+            <div className="flex h-7 items-center gap-2 pr-2 pl-6 text-[11px] font-semibold tracking-wider text-muted-foreground/80 uppercase" data-unassigned-header>
+              <span>Other projects</span> <span className="h-px flex-1 border-t border-dashed border-sidebar-border" data-section-rule />
             </div>
           )}
           <ul className="space-y-0.5">{unassigned.map((p) => <ProjectItem key={p.name} ctx={ctx} project={p} />)}</ul>
