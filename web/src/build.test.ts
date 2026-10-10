@@ -9,7 +9,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
-import viteConfig from '../vite.config.ts';
 import { ensureWebBuild, webHandler, webSourceHash, WEB_MOUNT, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
@@ -65,8 +64,9 @@ describe('ensureWebBuild', () => {
     } finally { for (const d of [...swept, ...kept]) fs.rmSync(d, { recursive: true, force: true }); }
   });
 
-  it('builds the production bundle the server ships: no chunk over chunkSizeWarningLimit, no size warning', () => {
-    const limitBytes = viteConfig.build!.chunkSizeWarningLimit! * 1000;
+  it('builds the production bundle the server ships: no chunk over 800 kB, no size warning', () => {
+    // Pinned here, not read from the config this guards: raising chunkSizeWarningLimit must not disarm it.
+    const limitBytes = 800 * 1000;
     const assets = path.join(distDir, 'assets');
     const sizes = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).map((f) => fs.statSync(path.join(assets, f)).size);
     expect(sizes.length).toBeGreaterThan(0);

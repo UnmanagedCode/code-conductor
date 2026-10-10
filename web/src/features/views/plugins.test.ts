@@ -146,8 +146,9 @@ describe('plugin frames', () => {
 });
 
 // The bridge runs inside plugin frames as a classic script; drive it against a scripted fake window.
+// Plugin pages load the root /pluginBridge.js, served from the repo's public/.
 describe('pluginBridge.js', () => {
-  const src = fs.readFileSync(path.join(__dirname, '../../../public/pluginBridge.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '../../../../public/pluginBridge.js'), 'utf8');
   function run({ top = false, pathname = '/plugins/hub/a', origin = 'http://h' } = {}) {
     const posted: any[] = [];
     const listeners: Record<string, ((e: any) => void)[]> = {};

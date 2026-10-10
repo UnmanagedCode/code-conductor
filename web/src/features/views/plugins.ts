@@ -16,7 +16,7 @@
 //     background on re-entry and by `reconcile()` after a Settings → Plugins
 //     action) or when that action put new code under it (EVICTING_ACTIONS).
 //
-// Parent side of the bridge (web/public/pluginBridge.js runs in the frame):
+// Parent side of the bridge (the root /pluginBridge.js, served from public/, runs in the frame):
 // child `route` messages mirror into the hash via replaceState (no hashchange,
 // no reload loop); an outside subpath change is forwarded as `navigate`.
 import { createSignal, createStore } from '@/state/createStore';
