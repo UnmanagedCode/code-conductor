@@ -101,6 +101,7 @@ First e2e run on a machine: `npx playwright install chromium` (the browser revis
 - `web/e2e/server.mjs` boots the real `server.ts` in a sandbox: temp `PROJECTS_ROOT` and `CLAUDE_PROJECTS_ROOT`, `CLAUDE_BIN` = `tests/fake-claude.mjs`, `FAKE_CLAUDE_SCENARIO` = `web/e2e/scenario.json`, port `E2E_PORT` (default 8799). It does not set `CC_SKIP_WEB_BUILD`: the server builds `web/dist` on start like any other start, so the suite also covers the build path, and leaves `web/dist` in the checkout (gitignored).
 - **Readiness waits for the build.** Playwright's `webServer.url` is `/next/`, which answers 503 until the build is done, so the first spec never meets the building page.
 - Specs navigate under the base: `page.goto('/next/')`, `/next/#session=<sid>`.
+- `web/e2e/switch.spec.ts` is the one spec that also drives the old UI: `/` → **Try the new UI** → `/next/` → **Classic UI** → `/legacy/`, opening each UI's drawer first on the phone project. It counts the old UI as running only once its JS answers (the Projects lens toggles `aria-pressed`), not when its HTML arrives.
 - `web/e2e/scenario.json` is a fake-CLI scenario: one reply with streamed tool calls (Read, Edit, Bash), thinking and markdown, then short replies. Fake-claude consumes one turn per prompt, per process.
 - Seed state through the REST API with Playwright's `request` fixture, then drive the page.
 - What the fake CLI cannot reach is the same as for the old UI: [What the fake-CLI hand pass cannot reach](#what-the-fake-cli-hand-pass-cannot-reach).
