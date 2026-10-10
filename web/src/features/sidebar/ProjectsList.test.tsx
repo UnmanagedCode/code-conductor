@@ -451,7 +451,7 @@ describe('Projects tree', () => {
   });
 
   it('a synthetic row dates from the instance lastResponseAt, else its createdAt, and keeps counting across re-renders', async () => {
-    // Invariant: a synthetic row's activity is the instance's lastResponseAt ?? createdAt, stable across renders, never a per-render now.
+    // Invariant: a synthetic row's activity is the instance's lastResponseAt ?? createdAt (lastResponseAt wins when both are set), stable across renders, never a per-render now.
     let now = 1_000_000_000_000;
     const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
@@ -459,6 +459,7 @@ describe('Projects tree', () => {
         inst({ sessionId: 'sid-r', project: 'demo', temp: true, lastResponseAt: now - 5_000 }),
         inst({ sessionId: 'sid-a', project: 'demo', temp: true, lastResponseAt: null, createdAt: now - 10_000 }),
         inst({ sessionId: 'sid-b', project: 'demo', temp: true, lastResponseAt: null, createdAt: now - 300_000 }),
+        inst({ sessionId: 'sid-both', project: 'demo', temp: true, lastResponseAt: now - 7_000, createdAt: now - 600_000 }),
       ];
       seed({ projects: [proj('demo')], instances });
       renderSidebar();
@@ -467,12 +468,14 @@ describe('Projects tree', () => {
       expect(ago('sid-r')).toBe('5s ago');
       expect(ago('sid-a')).toBe('10s ago');
       expect(ago('sid-b')).toBe('5m ago');
+      expect(ago('sid-both')).toBe('7s ago');
       now += 30_000;
       act(() => appStore.set({ instances: instances.map((i) => ({ ...i })) }));
       act(() => appStore.set({ instances: instances.map((i) => ({ ...i })) }));
       expect(ago('sid-r')).toBe('35s ago');
       expect(ago('sid-a')).toBe('40s ago');
       expect(ago('sid-b')).toBe('5m ago');
+      expect(ago('sid-both')).toBe('37s ago');
     } finally {
       spy.mockRestore();
     }
@@ -530,7 +533,7 @@ describe('Projects tree', () => {
 
 describe('Sessions summary line', () => {
   it('the open Sessions list of the main checkout and of each worktree starts with Sessions (N) · K live · last <ago>', async () => {
-    // Invariant: every open Sessions list, main checkout and worktree, is headed by its summary, its count including live sessions not yet on disk.
+    // Invariant: every open Sessions list, main checkout and worktree, is headed by its summary; each place counts its own live sessions, and its total includes live sessions not yet on disk.
     const now = 1_000_000_000_000;
     const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
@@ -541,13 +544,16 @@ describe('Sessions summary line', () => {
           sessions: { count: 2, archivedCount: 0, handCount: 2, lastActivity: now - 120_000 },
           worktrees: [wt('wt', { sessions: { count: 1, lastActivity: now - 30_000 } })],
         })],
-        instances: [inst({ sessionId: 'sid-new', project: 'demo' })],
+        instances: [
+          inst({ sessionId: 'sid-new', project: 'demo' }),
+          inst({ sessionId: 'w-live', project: 'demo', worktree: { worktreeName: 'wt' } }),
+        ],
       });
       renderSidebar();
       await settle();
       expect(summaryOf('demo').textContent).toBe('Sessions (3) · 1 live · last 2m ago');
       expect(summaryOf('demo').nextElementSibling === list('demo')).toBe(true);
-      expect(summaryOf('demo:wt').textContent).toBe('Sessions (1) · last 30s ago');
+      expect(summaryOf('demo:wt').textContent).toBe('Sessions (2) · 1 live · last 30s ago');
       expect(summaryOf('demo:wt').nextElementSibling === list('demo:wt')).toBe(true);
     } finally {
       spy.mockRestore();
