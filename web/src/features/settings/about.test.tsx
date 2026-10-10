@@ -78,6 +78,8 @@ describe('About', () => {
     await waitFor(() => expect(line()).toBe('Update applied. Restarting…'));
     expect(performRestart).toHaveBeenCalledTimes(1);
     expect(performRestart).toHaveBeenCalledWith({ resume: true });
+    // After a successful update nothing re-arms Update while the restart is in flight.
+    expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
   });
 
   // A pulled tree whose npm install failed is never booted: no restart, the npm tail replaces the log, and the button re-arms as Retry.
@@ -153,5 +155,6 @@ describe('About', () => {
     act(() => { stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
     await waitFor(() => expect(line()).toBe('Update applied. Restarting…'));
     expect(performRestart).toHaveBeenCalledTimes(1);
+    expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
   });
 });

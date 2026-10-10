@@ -111,4 +111,58 @@ describe('Settings view', () => {
     expect(document.querySelector('[data-settings-view]')).toBeNull();
     expect(screen.getByTestId('elsewhere')).toBeTruthy();
   });
+
+  // An Escape another handler already consumed never closes Settings; the same Escape unconsumed does.
+  it('an Escape another handler already prevented leaves Settings open', async () => {
+    vi.mocked(loadCapabilities).mockResolvedValue({ remoteSystems: true, voice: true });
+    openAt('#settings');
+    await screen.findByRole('heading', { level: 2, name: 'Models' });
+    const consume = (e: KeyboardEvent) => e.preventDefault();
+    document.body.addEventListener('keydown', consume);
+    try {
+      expect(fireEvent.keyDown(document.body, { key: 'Escape' })).toBe(false);
+      expect(document.querySelector('[data-settings-view]')).toBeTruthy();
+    } finally {
+      document.body.removeEventListener('keydown', consume);
+    }
+    expect(fireEvent.keyDown(document.body, { key: 'Escape' })).toBe(true);
+    expect(document.querySelector('[data-settings-view]')).toBeNull();
+  });
+
+  // Escape belongs to an open dialog first and never also closes Settings underneath it.
+  it('Escape with a dialog open leaves Settings open', async () => {
+    vi.mocked(loadCapabilities).mockResolvedValue({ remoteSystems: true, voice: true });
+    openAt('#settings');
+    await screen.findByRole('heading', { level: 2, name: 'Models' });
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('data-state', 'open');
+    document.body.appendChild(dialog);
+    try {
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(document.querySelector('[data-settings-view]')).toBeTruthy();
+    } finally {
+      dialog.remove();
+    }
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(document.querySelector('[data-settings-view]')).toBeNull();
+  });
+
+  // Escape belongs to an open menu first and never also closes Settings underneath it.
+  it('Escape with a menu open leaves Settings open', async () => {
+    vi.mocked(loadCapabilities).mockResolvedValue({ remoteSystems: true, voice: true });
+    openAt('#settings');
+    await screen.findByRole('heading', { level: 2, name: 'Models' });
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
+    document.body.appendChild(menu);
+    try {
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(document.querySelector('[data-settings-view]')).toBeTruthy();
+    } finally {
+      menu.remove();
+    }
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(document.querySelector('[data-settings-view]')).toBeNull();
+  });
 });

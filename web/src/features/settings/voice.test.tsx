@@ -148,6 +148,26 @@ describe('Voice → Dictation', () => {
     expect(gets(calls, '/api/settings/transcribe/install/status')).toBe(0);
   });
 
+  // After an install, mic availability comes from the reloaded catalog's own answer, never assumed.
+  it('an install that ends without whisper available keeps the mic hidden', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/transcribe': () => transcribe({ available: false, activeModel: null }),
+      'GET /api/settings/tts': () => tts(),
+      'POST /api/settings/transcribe/install': () => ({ ok: true }),
+      'GET /api/settings/transcribe/install/status': () => ({ running: false, log: 'build failed' }),
+    });
+    show();
+    await waitFor(() => expect(badge('Dictation', 'large')).toBe('not installed'));
+    fireEvent.click(card('Dictation').querySelector('[data-item="large"]')!);
+    fireEvent.click(within(card('Dictation')).getByRole('button', { name: 'Install Large (1.1 GB)' }));
+    await waitFor(() => expect(gets(calls, '/api/settings/transcribe')).toBe(2));
+    await waitFor(() => expect(within(card('Dictation')).queryByText('Installing…')).toBeNull());
+    await act(async () => {});
+    expect(gets(calls, '/api/settings/transcribe/install/status')).toBe(1);
+    expect(statusLine('Dictation')).toBe('Whisper not installed. Pick a model and install it.');
+    expect(voiceStore.get().micAvailable).toBe(false);
+  });
+
   // An install already running server-side is picked up on open: polled without a click, its log shown, and the catalog reloaded when it ends.
   it('opening the panel while an install runs shows its log and polls it to the end', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -224,6 +244,27 @@ describe('Voice → Speech', () => {
     expect(posts(calls, '/api/settings/tts/voice').map((c) => c.body)).toEqual([{ voice: 'ryan' }]);
     expect(badge('Speech', 'amy')).toBe('installed');
     expect(voiceStore.get().ttsAvailable).toBe(true);
+  });
+
+  // After an install, TTS availability comes from the reloaded catalog's own answer, never assumed.
+  it('an install that ends without Piper available keeps read-aloud hidden', async () => {
+    const none = VOICES.map((v) => ({ ...v, installed: false }));
+    const calls = mockFetch({
+      'GET /api/settings/transcribe': () => transcribe(),
+      'GET /api/settings/tts': () => tts({ available: false, activeVoice: null, voices: none }),
+      'POST /api/settings/tts/install': () => ({ ok: true }),
+      'GET /api/settings/tts/install/status': () => ({ running: false, log: 'build failed' }),
+    });
+    show(<SpeakButton text="hi" nodeId="n1" />);
+    await waitFor(() => expect(badge('Speech', 'lessac')).toBe('not installed'));
+    fireEvent.click(card('Speech').querySelector('[data-item="lessac"]')!);
+    fireEvent.click(within(card('Speech')).getByRole('button', { name: 'Install Lessac (63 MB)' }));
+    await waitFor(() => expect(gets(calls, '/api/settings/tts')).toBe(2));
+    await waitFor(() => expect(within(card('Speech')).queryByText('Installing…')).toBeNull());
+    await act(async () => {});
+    expect(gets(calls, '/api/settings/tts/install/status')).toBe(1);
+    expect(voiceStore.get().ttsAvailable).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Read aloud' })).toBeNull();
   });
 
   // The read-aloud button appears only once a finished install's reload reports Piper available.

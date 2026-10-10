@@ -5123,6 +5123,9 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/settings/SettingsView.test.tsx::Settings view > Escape leaves Settings',
         'web/src/features/settings/SettingsView.test.tsx::Settings view > Escape leaves Settings even after the hash drifted to a session without a route sync',
+        'web/src/features/settings/SettingsView.test.tsx::Settings view > an Escape another handler already prevented leaves Settings open',
+        'web/src/features/settings/SettingsView.test.tsx::Settings view > Escape with a dialog open leaves Settings open',
+        'web/src/features/settings/SettingsView.test.tsx::Settings view > Escape with a menu open leaves Settings open',
         'web/e2e/parity/settings.spec.ts::Escape leaves Settings, even after the hash drifted to a session > next',
       ] },
   },
@@ -5399,6 +5402,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/voice.test.tsx::Voice → Dictation > picking a missing model offers its Install with the build note and sends nothing',
         'web/src/features/settings/voice.test.tsx::Voice → Dictation > Install streams the server log while it runs, then reloads: the installed model is active and the mic is revealed',
         'web/src/features/settings/voice.test.tsx::Voice → Dictation > an install the server refuses to start says why and polls nothing',
+        'web/src/features/settings/voice.test.tsx::Voice → Dictation > an install that ends without whisper available keeps the mic hidden',
         'web/src/features/settings/voice.test.tsx::Voice → Dictation > opening the panel while an install runs shows its log and polls it to the end',
       ] },
   },
@@ -5413,6 +5417,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/voice.test.tsx::Voice → Speech > auto-speak and the rate save to the speech prefs and reach the voice store; a failed save says so',
         'web/src/features/settings/voice.test.tsx::Voice → Speech > picking an installed voice switches it at once',
         'web/src/features/settings/voice.test.tsx::Voice → Speech > a clean Piper install reveals the read-aloud button',
+        'web/src/features/settings/voice.test.tsx::Voice → Speech > an install that ends without Piper available keeps read-aloud hidden',
       ] },
   },
   {
