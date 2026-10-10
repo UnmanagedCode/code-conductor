@@ -92,6 +92,12 @@ parity('sticky-prompt/R3', 'the pin clamps a long prompt to five lines and fades
   });
   expect(lines).toBeCloseTo(5, 1);
   await expect.poll(() => cssOf(pinBody, 'mask-image')).toMatch(/calc\(100% - [\d.]+(px|lh)\)/);
+  // The fade covers the last line and a half: the stop's offset is 1.5 line-heights,
+  // whether the browser serializes it resolved (px) or as written (lh).
+  const stop = /calc\(100% - ([\d.]+)(px|lh)\)/.exec(await cssOf(pinBody, 'mask-image'))!;
+  const lineHeight = parseFloat(await cssOf(pinBody, 'line-height'));
+  const fadeLines = stop[2] === 'lh' ? parseFloat(stop[1]) : parseFloat(stop[1]) / lineHeight;
+  expect(fadeLines, `the fade stop ${stop[0]} at line-height ${lineHeight}px`).toBeCloseTo(1.5, 1);
   const layers = shadowLayers(await cssOf(pinCard, 'box-shadow'));
   expect(layers.some((l) => l.inset), 'no inset layer').toBe(false);
   expect(layers.some((l) => l.blur > 0), 'a drop shadow').toBe(true);

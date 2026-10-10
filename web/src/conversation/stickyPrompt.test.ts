@@ -476,6 +476,24 @@ describe('sticky prompt', () => {
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: false, shift: -39 });
   });
 
+  it('a pin left with under one pixel showing, sub-pixel scroll residue included, is pushed off; a full pixel showing, it shows', async () => {
+    rig = makeRig();
+    addAt(rig, 'P1', 0);
+    addAt(rig, 'P2', 400.3);
+    scrollTo(rig, 300);
+    rig.sticky.reveal();
+    await frame();
+    expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: false });
+    // P2 sits 0.3px below the top: 0.3px of the 40px pin is left showing.
+    scrollTo(rig, 400);
+    expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: true });
+    // P2 a full pixel below the top: 1px of the pin shows.
+    scrollTo(rig, 399.3);
+    const shown = pin();
+    expect(shown).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: false });
+    expect(shown.kind === 'pinned' && shown.shift).toBeCloseTo(-39, 6);
+  });
+
   it('nothing left to pin after a jump drops the held prompt for the status line', async () => {
     rig = makeRig();
     addAt(rig, 'P1', 0);

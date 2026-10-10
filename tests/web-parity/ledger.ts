@@ -2330,6 +2330,7 @@ export const LEDGER: readonly Row[] = [
         'web/e2e/sticky-prompt.spec.ts::after a jump the held prompt is pushed off by the one now at the top, so the pin hides until the transcript scrolls on',
         "web/e2e/sticky-prompt.spec.ts::a pin peeking back past the transcript's top edge is clipped to the transcript, so the session header above it still takes taps",
         'web/src/conversation/stickyPrompt.test.ts::sticky prompt > re-attaching to a fresh transcript after a detach re-reads its prompts: the pin never holds a detached prompt, and a jump scrolls the fresh one',
+        'web/src/conversation/stickyPrompt.test.ts::sticky prompt > a pin left with under one pixel showing, sub-pixel scroll residue included, is pushed off; a full pixel showing, it shows',
       ] },
   },
   {
