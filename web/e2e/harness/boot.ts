@@ -30,9 +30,10 @@ const LOG_TAIL_BYTES = 8 * 1024;
 export type Engine = 'fake' | 'live';
 export type CcOptions = {
   /**
-   * A spec file that seeds server state names a server of its own here. Spec
-   * files with equal options share one worker, so one cc; a distinct value
-   * starts a new worker and a fresh cc. bootCc reads nothing from it.
+   * A name for a spec file's own server. A file that sets ccOptions at all gets
+   * a worker, so a cc, of its own; files that set none share one. A file that
+   * seeds server state and has nothing else to set sets this. bootCc reads
+   * nothing from it.
    */
   server?: string;
   /** Fake engine only: the fake CLI's scenario file (default fixtures/scenario.json). */

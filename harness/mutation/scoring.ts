@@ -193,6 +193,43 @@ export function listingSelects(report: PwReport | null, repoRoot: string, file: 
   return other ? null : false;
 }
 
+/**
+ * The refusal for a requested Vitest file the run did not report, or null.
+ * Unrefused, such a file contributes nothing, and a mutant only it kills would
+ * read SURVIVED.
+ */
+export function vitestScopeRefusal(reduced: ReducedVitest, requested: string[] | null): string | null {
+  const seen = new Set(reduced.files.map((f) => f.file));
+  const missing = (requested ?? []).filter((f) => !seen.has(f));
+  return missing.length ? `Vitest ran no file ${missing.join(', ')} (web/vitest.config.ts include: src/**/*.test.{ts,tsx})` : null;
+}
+
+/**
+ * The refusal for a requested Playwright spec the run did not report, or null.
+ * A load, config or globalSetup error runs no file at all, and so does a
+ * project that does not select the spec; `list(project, file)` (a `--list`
+ * report) tells them apart, and only the second — or a selected spec missing
+ * from an error-free run — is a refusal.
+ */
+export async function playwrightScopeRefusal(
+  { requested, report, repoRoot, project, projects, list }:
+  { requested: string[] | null; report: PwReport; repoRoot: string; project: string; projects: string[];
+    list: (project: string, file: string) => Promise<PwReport | null> },
+): Promise<string | null> {
+  const ran = playwrightReportFiles(report, repoRoot);
+  for (const f of requested ?? []) {
+    if (ran.includes(f)) continue;
+    const listed = listingSelects(await list(project, f), repoRoot, f);
+    if (listed === false) {
+      const others: string[] = [];
+      for (const p of projects) if (p !== project && listingSelects(await list(p, f), repoRoot, f)) others.push(p);
+      return `${f} is not in project ${project}; set CC_MUTATION_PW_PROJECT=${others.length ? others.join(' or ') : '<a project that runs it>'}`;
+    }
+    if (listed === true && report.errors.length === 0) return `Playwright ran no test of ${f} under project ${project}`;
+  }
+  return null;
+}
+
 export function reducePlaywrightReport(
   report: PwReport, repoRoot: string, requested: string[] | null, project: string,
 ): ReducedPlaywright {

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   route, planCommands, reduceVitestReport, reducePlaywrightReport, playwrightReportFiles, parseSuiteOutput,
-  canaryFor, listingSelects, frame, pwProject, DEFAULT_PW_PROJECT, TEST_FILE_PATTERNS,
+  canaryFor, listingSelects, vitestScopeRefusal, playwrightScopeRefusal, frame, pwProject, DEFAULT_PW_PROJECT, TEST_FILE_PATTERNS,
 } from '../harness/mutation/scoring.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -212,6 +212,56 @@ test('a --list report tells a project that does not select a spec from a spec th
   await t.test('load error: undecided, so the compile-error reading stands', () =>
     assert.equal(listingSelects(load('pw-list-load.json'), '/repo', 'web/e2e/zz-load.spec.ts'), null));
   await t.test('no report: undecided', () => assert.equal(listingSelects(null, '/repo', 'web/e2e/switch.spec.ts'), null));
+});
+
+test('Vitest: a requested file the run did not report is refused, not read as zero kills', () => {
+  // Without the refusal the file contributes nothing and a mutant only it kills reads SURVIVED.
+  const reduced = reduceVitestReport(load('vitest-mixed.json'), '/repo', ['web/src/logic.test.ts', 'web/src/absent.test.ts']);
+  assert.match(vitestScopeRefusal(reduced, ['web/src/logic.test.ts', 'web/src/absent.test.ts']), /Vitest ran no file web\/src\/absent\.test\.ts\b/);
+  const both = ['web/src/logic.test.ts', 'web/src/nested/load.test.ts'];
+  assert.equal(vitestScopeRefusal(reduceVitestReport(load('vitest-mixed.json'), '/repo', both), both), null);
+  assert.equal(vitestScopeRefusal(reduceVitestReport(load('vitest-mixed.json'), '/repo', null), null), null);
+});
+
+test('Playwright: a requested spec missing from the run is refused unless the run had a load error', async (t) => {
+  const SPEC = 'web/e2e/switch.spec.ts';
+  const PROJECTS = ['desktop', 'phone', 'android'];
+  // `list(project, file)` stands in for `playwright test --list`, answering with captured listings.
+  const lister = (selectedBy) => {
+    const calls = [];
+    const list = async (project, file) => {
+      calls.push(`${project}:${file}`);
+      if (selectedBy === 'load') return load('pw-list-load.json');
+      return load(selectedBy.includes(project) ? 'pw-list-selected.json' : 'pw-list-not-selected.json');
+    };
+    return { list, calls };
+  };
+  const ran = load('pw-desktop-pass.json');       // ran legacy/deep.spec.ts only, errors 0
+  const loadErr = load('pw-desktop-load.json');   // errors > 0, ran no file
+
+  await t.test('a spec the run reported needs no listing', async () => {
+    const l = lister(['desktop']);
+    assert.equal(await playwrightScopeRefusal({ requested: ['web/e2e/legacy/deep.spec.ts'], report: ran, repoRoot: '/repo', project: 'desktop', projects: PROJECTS, list: l.list }), null);
+    assert.deepEqual(l.calls, []);
+  });
+  await t.test('not selected by the project: refused, naming the projects that select it', async () => {
+    const l = lister(['desktop', 'phone']);
+    const r = await playwrightScopeRefusal({ requested: [SPEC], report: ran, repoRoot: '/repo', project: 'android', projects: PROJECTS, list: l.list });
+    assert.equal(r, `${SPEC} is not in project android; set CC_MUTATION_PW_PROJECT=desktop or phone`);
+  });
+  await t.test('selected, yet absent from an error-free run: refused (would read SURVIVED)', async () => {
+    const l = lister(['desktop']);
+    assert.equal(await playwrightScopeRefusal({ requested: [SPEC], report: ran, repoRoot: '/repo', project: 'desktop', projects: PROJECTS, list: l.list }),
+      `Playwright ran no test of ${SPEC} under project desktop`);
+  });
+  await t.test('selected, absent from a run with errors: no refusal (the compile-error reading stands)', async () => {
+    const l = lister(['desktop']);
+    assert.equal(await playwrightScopeRefusal({ requested: [SPEC], report: loadErr, repoRoot: '/repo', project: 'desktop', projects: PROJECTS, list: l.list }), null);
+  });
+  await t.test('the listing itself fails to load: no refusal', async () => {
+    const l = lister('load');
+    assert.equal(await playwrightScopeRefusal({ requested: [SPEC], report: loadErr, repoRoot: '/repo', project: 'desktop', projects: PROJECTS, list: l.list }), null);
+  });
 });
 
 test('sections merge: node via the injected parser, summed with Vitest and Playwright', () => {

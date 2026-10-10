@@ -147,6 +147,11 @@ test.describe('desktop', () => {
     // dies".)
     const bMain = await spawnWorker(cc, b.id, { project: 'uipass' });
     await seedTranscript(cc, bMain.id, 'bravo: main-checkout chore');
+    // B's spawn record in uiother with no live worker there: its idle chip
+    // (docs/features.md). uiother stays outside A's filter (step 11).
+    const bGone = await spawnWorker(cc, b.id, { project: 'uiother' });
+    await api(cc, 'DELETE', `/api/instances/${bGone.id}`);
+    await until(async () => !(await insts(cc)).some((i) => i.id === bGone.id), 10_000, 'B\'s uiother worker gone');
     const handRes = (await api(cc, 'POST', '/api/instances', { project: 'uipass', worktree: 'mixed', mode: 'bypassPermissions' })).body;
     await idle(cc, (i) => i.id === handRes.id, 'hand-spawned session idle');
     const handSid = (await insts(cc)).find((i) => i.id === handRes.id)!.sessionId;
@@ -206,6 +211,7 @@ test.describe('desktop', () => {
     // owned worker now) is "solid, brighter" — --text on a --muted border; an
     // idle chip is "dashed, dimmed"; every other chip keeps --muted on --border.
     await test.step('3 conductor rows: titled bold, untitled italic muted, chips live vs idle (docs/features.md)', async () => {
+      await expect(page.locator(`${conductorSel(bSid)} .conductor-chip.idle`), 'B\'s idle uiother chip').toHaveCount(1);
       const r = await page.evaluate(([aS, bS]) => {
         const toRgb = (v: string) => { const i = document.createElement('i'); i.style.color = v; document.body.appendChild(i); const c = getComputedStyle(i).color; i.remove(); return c; };
         const root = getComputedStyle(document.documentElement);
@@ -230,6 +236,7 @@ test.describe('desktop', () => {
       expect(r.chips.length).toBeGreaterThan(0);
       // A and B each have a live worker in uipass, so the live rule is never vacuous here.
       expect(r.chips.filter((c) => c.kind === 'live').length, JSON.stringify(r.chips)).toBeGreaterThan(0);
+      expect(r.chips.filter((c) => c.kind === 'idle').length, JSON.stringify(r.chips)).toBeGreaterThan(0);
       for (const { kind, text, color, border, style } of r.chips) {
         const want = kind === 'live'
           ? { color: r.text, border: r.muted, style: 'solid' }

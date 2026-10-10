@@ -17,7 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  frame, listingSelects, planCommands, playwrightReportFiles, pwProject, reducePlaywrightReport, reduceVitestReport, route,
+  frame, planCommands, playwrightReportFiles, playwrightScopeRefusal, pwProject, reducePlaywrightReport, reduceVitestReport, route,
+  vitestScopeRefusal,
   type Command, type Group,
 } from './scoring.ts';
 
@@ -62,12 +63,14 @@ async function playwrightProjects(): Promise<string[]> {
 
 type PwReport = Parameters<typeof playwrightReportFiles>[0];
 
-/** Whether `project` selects `file`, asked of Playwright itself (scoring.ts listingSelects). */
-async function listedIn(project: string, file: string, tmpDir: string): Promise<boolean | null> {
+/** `playwright test --list` for one project and file: the report scoring.ts reads, or null. */
+async function listReport(project: string, file: string, tmpDir: string): Promise<PwReport | null> {
   const report = path.join(tmpDir, `list-${project}.json`);
   await run('npx', ['playwright', 'test', '--config', 'web/playwright.config.ts', `--project=${project}`, '--list', '--reporter=json', file],
     { PLAYWRIGHT_JSON_OUTPUT_FILE: report, NO_COLOR: '1' });
-  return listingSelects(readReport<PwReport>(report), REPO_ROOT, file);
+  const r = readReport<PwReport>(report);
+  fs.rmSync(report, { force: true });
+  return r;
 }
 
 async function section(c: Command, r: Run, project: string, projects: string[], tmpDir: string): Promise<string> {
@@ -78,29 +81,21 @@ async function section(c: Command, r: Run, project: string, projects: string[], 
     const report = readReport<Parameters<typeof reduceVitestReport>[0]>(c.report);
     if (!report) return frame(`vitest-stderr-tail exit=${r.code}`, tail(r.stderr));
     const reduced = reduceVitestReport(report, REPO_ROOT, c.files);
-    const seen = new Set(reduced.files.map((f) => f.file));
-    const missing = (c.files ?? []).filter((f) => !seen.has(f));
-    if (missing.length) throw new Refusal(`Vitest ran no file ${missing.join(', ')} (web/vitest.config.ts include: src/**/*.test.{ts,tsx})`);
+    const refusal = vitestScopeRefusal(reduced, c.files);
+    if (refusal) throw new Refusal(refusal);
     return frame(`vitest exit=${r.code}`, JSON.stringify(reduced));
   }
 
   const report = readReport<Parameters<typeof reducePlaywrightReport>[0]>(c.report);
   if (!report) return frame(`playwright-stderr-tail project=${project} exit=${r.code}`, tail(r.stderr));
   const reduced = reducePlaywrightReport(report, REPO_ROOT, c.files, project);
-  const ran = playwrightReportFiles(report, REPO_ROOT);
-  for (const f of ran) if (!fs.existsSync(path.join(REPO_ROOT, f))) throw new Refusal(`Playwright reported ${f}, which does not exist`);
-  for (const f of c.files ?? []) {
-    if (ran.includes(f)) continue;
-    // A load, config or globalSetup error runs no file at all, and so does a
-    // project that does not select the file; only the second is a refusal.
-    const listed = await listedIn(project, f, tmpDir);
-    if (listed === false) {
-      const others: string[] = [];
-      for (const p of projects) if (p !== project && await listedIn(p, f, tmpDir)) others.push(p);
-      throw new Refusal(`${f} is not in project ${project}; set CC_MUTATION_PW_PROJECT=${others.length ? others.join(' or ') : '<a project that runs it>'}`);
-    }
-    if (listed === true && reduced.errors === 0) throw new Refusal(`Playwright ran no test of ${f} under project ${project}`);
+  for (const f of playwrightReportFiles(report, REPO_ROOT)) {
+    if (!fs.existsSync(path.join(REPO_ROOT, f))) throw new Refusal(`Playwright reported ${f}, which does not exist`);
   }
+  const refusal = await playwrightScopeRefusal({
+    requested: c.files, report, repoRoot: REPO_ROOT, project, projects, list: (p, f) => listReport(p, f, tmpDir),
+  });
+  if (refusal) throw new Refusal(refusal);
   return frame(`playwright project=${project} exit=${r.code}`, JSON.stringify(reduced));
 }
 

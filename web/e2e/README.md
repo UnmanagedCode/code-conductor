@@ -16,7 +16,7 @@ Real cc servers driven through Chromium: the web UI at `/next/`, the old UI's ch
 - File filters are **regexes over the path**: `live.spec.ts` also matches `legacy/plugin-keepalive.spec.ts`. Name a spec by its path from the repo root.
 - The browser is the revision `@playwright/test` pins: first run on a machine, `npx playwright install chromium`. Termux has none, so no spec runs there.
 - `globalSetup` (`harness/global-setup.ts`) runs once per invocation: it removes the scratch roots of dead runs, then builds `web/dist` with the server's own hash-gated `ensureWebBuild()` and **fails the run if the build fails** (a stale bundle would otherwise keep serving). `web: built in …` in the output means it rebuilt.
-- Output (traces, attachments) goes to `web/test-results/` (gitignored), wiped per run; pass `--output <dir>` to keep runs apart.
+- Output (traces, attachments) goes to `web/test-results/` (gitignored), wiped per run. **Two Playwright invocations in one checkout — a mutation probe scoring a spec alongside `npm run test:e2e` included — clobber each other's `test-results/`**; give a hand-run invocation its own `--output <dir>`.
 
 ## Projects
 
@@ -38,7 +38,7 @@ test('…', async ({ page, cc }) => { await page.goto('/next/'); /* cc.url, cc.d
 
 - **`cc`** — worker-scoped: one booted cc per worker. `{ url, port, engine, dirs, logPath, close() }`; `dirs` = `root`, `projects` (`PROJECTS_ROOT`), `claudeConfig` (`CLAUDE_CONFIG_DIR`), `claudeProjects` (`CLAUDE_PROJECTS_ROOT`), `home` (`HOME`), `gitconfig` (`GIT_CONFIG_GLOBAL`), `log` (the server's stdout + stderr), `workerEnv` (`FAKE_CLAUDE_ENV_DUMP`: the env the last fake worker got). The store's `sessions.json` is `dirs.projects/.code-conductor/sessions.json`.
 - **`ccOptions`** — worker option, `{ server?, scenario?, env?, engine? }`:
-  - `server` — a name. Spec files with equal options share one worker, so one cc; **a spec that seeds server state names a server of its own**. Every `legacy/` spec does.
+  - `server` — a name for the file's own server. **A file that sets `ccOptions` at all gets a worker, so a cc, of its own** — even with values equal to another file's (Playwright keys a worker on where worker options are set); files that set none share one cc. A spec that seeds server state and has nothing else to set uses `{ server: '<name>' }`; every `legacy/` spec that boots a cc sets one. Pinned by `server-key/z-check.spec.ts`.
   - `scenario` — the fake CLI's scenario file; default `fixtures/scenario.json`.
   - `env` — extra server env, applied last.
   - `engine` — `'fake'` (default) or `'live'`.

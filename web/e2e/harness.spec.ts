@@ -5,10 +5,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { webSourceHash, WEB_DIST } from '../../src/webBuild.ts';
 import { test, expect } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { bootCc } from './harness/boot.ts';
+import { bootCc, FIXTURES } from './harness/boot.ts';
 
 const under = (root: string, p: string) => p === root || p.startsWith(root + path.sep);
 
@@ -70,3 +71,40 @@ test('bootCc() then close() leaves no scratch root behind', async () => {
   await cc.close();
   expect(fs.existsSync(root)).toBe(false);
 });
+
+/** Alive and not a zombie (a reaped-late zombie is already dead). */
+function running(pid: number): boolean {
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  return ps.status === 0 && ps.stdout.trim() !== '' && !ps.stdout.trim().startsWith('Z');
+}
+
+test('close() kills every descendant of the booted cc, a detached SIGTERM-deaf one included', async ({}, testInfo) => {
+  const pidFile = testInfo.outputPath('orphan-pids.txt');
+  fs.mkdirSync(path.dirname(pidFile), { recursive: true });
+  fs.writeFileSync(pidFile, '');
+  const cc = await bootCc({ env: {
+    CLAUDE_BIN: `${process.execPath} ${path.join(FIXTURES, 'claude-leaves-orphan.mjs')}`,
+    E2E_ORPHAN_PIDS: pidFile,
+  } });
+  let pid = 0;
+  try {
+    await spawnSession(cc, 'e2e-orphan');
+    await expect.poll(() => fs.readFileSync(pidFile, 'utf8').trim(), { message: 'the worker recorded its grandchild' }).not.toBe('');
+    const pids = fs.readFileSync(pidFile, 'utf8').trim().split('\n');
+    expect(pids, 'one session worker, one orphan').toHaveLength(1);
+    pid = Number(pids[0]);
+    // Controls: the grandchild is alive, leads its own process group (so no
+    // group kill of cc or of its worker reaches it), and survives a SIGTERM.
+    expect(running(pid)).toBe(true);
+    expect(spawnSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim()).toBe(String(pid));
+    process.kill(pid, 'SIGTERM');
+    await new Promise((r) => setTimeout(r, 200));
+    expect(running(pid), 'the grandchild ignores SIGTERM').toBe(true);
+  } finally {
+    await cc.close();
+  }
+  const survived = running(pid);
+  if (survived) process.kill(pid, 'SIGKILL');
+  expect(survived, `descendant ${pid} outlived close()`).toBe(false);
+});
+
