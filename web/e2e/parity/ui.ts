@@ -16,6 +16,10 @@ export interface Ui {
   lens(page: Page, which: Lens): Promise<void>;
   selectedLens(page: Page): Promise<string | null>;
   newProject(page: Page, name: string): Promise<void>;
+  /** Opens the sidebar ≡ menu's add-existing-directory entry; returns the dialog. */
+  openAddProject(page: Page): Promise<Locator>;
+  /** Clicks Conduct once. Not idempotent: every click spawns a conductor. */
+  conduct(page: Page): Promise<void>;
   /** The project's row in the Projects lens. */
   projectRow(page: Page, name: string): Promise<Locator>;
   /** Starts a session in `project` from its sidebar row with the dialog's defaults. */
@@ -93,6 +97,22 @@ export const legacy: Ui = {
       if (await done.isVisible()) await done.click();
       await expect(dialog).toBeHidden({ timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
+  },
+  async openAddProject(page) {
+    // The ≡ row is hidden in the Conductors lens, where a fresh profile opens.
+    await legacy.lens(page, 'projects');
+    const dialog = page.locator('#adopt-project-dialog');
+    await expect(async () => {
+      if (!(await page.locator('#adopt-project-btn').isVisible())) await page.locator('#sidebar-overflow-toggle').click();
+      await page.locator('#adopt-project-btn').click({ timeout: 1_000 });
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  async conduct(page) {
+    await openOldDrawer(page);
+    // open() waited for the sidebar's first render, after the Conduct listener is attached.
+    await page.locator('#conduct-btn').click();
   },
   async projectRow(page, name) {
     await openOldDrawer(page);
@@ -176,6 +196,16 @@ export const next: Ui = {
     await dialog.getByLabel('Name').fill(name);
     await dialog.getByRole('button', { name: 'Create project' }).click();
     await expect(dialog).toBeHidden();
+  },
+  async openAddProject(page) {
+    await next.openSidebar(page);
+    await sidebar(page).getByRole('button', { name: 'Project actions' }).click();
+    await page.getByRole('menuitem', { name: 'Add existing directory' }).click();
+    return page.getByRole('dialog', { name: 'Add a project' });
+  },
+  async conduct(page) {
+    await next.openSidebar(page);
+    await sidebar(page).locator('[data-conduct]').click();
   },
   async projectRow(page, name) {
     await next.openSidebar(page);

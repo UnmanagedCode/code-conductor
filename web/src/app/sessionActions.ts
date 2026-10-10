@@ -6,14 +6,11 @@ import { appStore } from '@/state/app';
 import type { Instance, Project } from '@/state/types';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { refreshInstances, refreshProjects, selectInstance, send } from './controller';
-import { createSignal } from '@/state/createStore';
+import { emit } from './events';
 
 const instances = () => appStore.get().instances;
 const activeId = () => appStore.get().activeId;
 const clearActive = () => appStore.set({ activeId: null });
-
-/** Bumped whenever a cached per-scope session list must be refetched. */
-export const sessionsCacheSignal = createSignal();
 
 export async function promoteSession({ projectName, instanceId, preview }: { projectName: string; instanceId: string; preview?: string | null }) {
   if (!instanceId) return;
@@ -141,7 +138,7 @@ export function closeSession(args: CloseArgs) {
   return closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, temp: !!args.temp }) === 'stop' ? stopSession(args) : archiveSession(args);
 }
 
-export async function stopSession({ instanceId, preview, sessionId, status }: CloseArgs) {
+export async function stopSession({ projectName, worktreeName, instanceId, preview, sessionId, status }: CloseArgs) {
   if (!instanceId) return;
   if (stopNeedsConfirm(status) && !(await confirmDialog({
     title: `Stop session ${sessionLabel(preview, sessionId)}?`,
@@ -152,7 +149,7 @@ export async function stopSession({ instanceId, preview, sessionId, status }: Cl
   try {
     await apiFetch(`/api/instances/${encodeURIComponent(instanceId)}`, { method: 'DELETE' });
     if (activeId() === instanceId) clearActive();
-    sessionsCacheSignal.bump();
+    emit('sessionsStale', { project: projectName, worktree: worktreeName ?? null });
     await refreshProjects();
     await refreshInstances();
   } catch (e: any) {
@@ -172,7 +169,7 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
       const inst = instances().find((i) => i.sessionId === sessionId);
       if (inst) await fetch(`/api/instances/${encodeURIComponent(inst.id)}`, { method: 'DELETE' });
       if (inst && activeId() === inst.id) clearActive();
-      sessionsCacheSignal.bump();
+      emit('sessionsStale', { project: projectName, worktree: worktreeName ?? null });
       await refreshProjects();
       await refreshInstances();
     } catch (e: any) {
@@ -193,7 +190,7 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
     }
     const inst = instances().find((i) => i.sessionId === sessionId);
     if (inst && activeId() === inst.id) clearActive();
-    sessionsCacheSignal.bump();
+    emit('sessionsStale', { project: projectName, worktree: worktreeName ?? null });
     await refreshProjects();
     await refreshInstances();
   } catch (e: any) {

@@ -8,6 +8,8 @@ type Events = {
   prefill: { text: string };
   /** An outer assistant text block finalized (TTS auto-speak). */
   assistantText: { text: string; nodeId: string };
+  /** Cached per-place session lists are stale: one place's, or every place's when null. */
+  sessionsStale: { project: string; worktree: string | null } | null;
 };
 
 type Handler<T> = (payload: T) => void;

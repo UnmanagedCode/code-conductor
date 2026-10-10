@@ -22,8 +22,9 @@ vi.mock('./controller', () => ({
 import { CLOSE_TITLES, closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
 import { appStore } from '@/state/app';
 import * as controller from './controller';
+import { on } from './events';
 import {
-  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, resumeSession, rewindActiveSession, sessionsCacheSignal,
+  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, resumeSession, rewindActiveSession,
 } from './sessionActions';
 
 type Call = { url: string; method: string; body: any };
@@ -61,18 +62,20 @@ describe('closing a session', () => {
   it('a live persistent idle session: one DELETE, no confirm, refreshes and drops the scope cache; deselects only that one', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     appStore.set({ activeId: 'i1' });
-    const v = sessionsCacheSignal.version();
+    const stale: unknown[] = [];
+    const off = on('sessionsStale', (p) => stale.push(p));
     await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle' });
     expect(calls).toEqual([{ url: '/api/instances/i1', method: 'DELETE', body: undefined }]);
     expect(confirms).toHaveLength(0);
     expect(appStore.get().activeId).toBeNull();
-    expect(sessionsCacheSignal.version()).toBeGreaterThan(v);
+    expect(stale).toEqual([{ project: 'p', worktree: null }]);
     expect(controller.refreshProjects).toHaveBeenCalled();
     expect(controller.refreshInstances).toHaveBeenCalled();
 
     appStore.set({ activeId: 'other' });
     await closeSession({ projectName: 'p', instanceId: 'i2', sessionId: 's2', status: 'idle' });
     expect(appStore.get().activeId).toBe('other');
+    off();
   });
 
   it('a busy session asks once; declining sends nothing', async () => {
@@ -82,6 +85,56 @@ describe('closing a session', () => {
     expect(confirms).toHaveLength(1);
     expect(confirms[0].title).toMatch(/Stop session “Fix the bug”/);
     expect(calls).toHaveLength(0);
+  });
+
+  it('a session with no instance is archived once the confirm is accepted: exactly the archive POST', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    await closeSession({ projectName: 'p', instanceId: null, sessionId: 's9' });
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0].title).toMatch(/^Archive session/);
+    expect(calls).toEqual([{ url: '/api/projects/p/sessions/s9/archive', method: 'POST', body: undefined }]);
+  });
+
+  it('a busy stop asks once, naming the session and that its transcript is kept, then DELETEs — for every busy status', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    for (const status of ['turn', 'running', 'spawning']) {
+      calls = [];
+      confirms.length = 0;
+      await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
+      expect(confirms, status).toHaveLength(1);
+      expect(confirms[0].title, status).toMatch(/^Stop session “Alpha”\?/);
+      expect(confirms[0].description, status).toMatch(/transcript is kept/);
+      expect(calls, status).toEqual([{ url: '/api/instances/i1', method: 'DELETE', body: undefined }]);
+    }
+  });
+
+  it('declining a busy stop sends nothing and leaves the selection, the lists and the session caches alone — for every busy status', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    confirmAnswer.value = false;
+    appStore.set({ activeId: 'i1' });
+    const stale: unknown[] = [];
+    const off = on('sessionsStale', (p) => stale.push(p));
+    for (const status of ['turn', 'running', 'spawning']) {
+      confirms.length = 0;
+      await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
+      expect(confirms, status).toHaveLength(1);
+      expect(calls, status).toEqual([]);
+      expect(appStore.get().activeId, status).toBe('i1');
+      expect(controller.refreshProjects, status).not.toHaveBeenCalled();
+      expect(controller.refreshInstances, status).not.toHaveBeenCalled();
+      expect(stale, status).toEqual([]);
+    }
+    off();
+  });
+
+  it('an exited or crashed instance is archived, never stopped', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    for (const status of ['exited', 'crashed']) {
+      calls = [];
+      await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
+      expect(confirms.at(-1).title, status).toMatch(/^Archive session/);
+      expect(calls, status).toEqual([{ url: '/api/projects/p/sessions/s1/archive', method: 'POST', body: undefined }]);
+    }
   });
 
   it('a failed stop reports the error and refreshes nothing', async () => {
@@ -136,6 +189,26 @@ describe('promote, resume, rewind, fork, delete', () => {
     calls = [];
     await promoteSession({ projectName: 'p', instanceId: 'w1' });
     expect(calls).toHaveLength(0);
+  });
+
+  it('declining the conductor promote sends nothing and refreshes nothing', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    confirmAnswer.value = false;
+    await promoteSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Alpha' });
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0].title).toBe('Make this conductor persistent?');
+    expect(calls).toEqual([]);
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
+  });
+
+  it('a failed promote reports the error and refreshes nothing', async () => {
+    stubFetch(() => ({ status: 500, body: { error: 'boom' } }));
+    await promoteSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Alpha' });
+    expect(calls).toEqual([{ url: '/api/instances/c1/promote', method: 'POST', body: undefined }]);
+    expect(toasts).toEqual([['error', 'Could not make the session persistent', 'boom']]);
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
   it('a user resume selects with a gesture; a silent one without; a silent 409 selects the owner', async () => {

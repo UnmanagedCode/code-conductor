@@ -3,7 +3,8 @@
 import { createSignal, createStore, useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
-import { loadSessions, sessionsCacheSignal } from '@/app/sessionActions';
+import { on } from '@/app/events';
+import { loadSessions } from '@/app/sessionActions';
 import { placeKeyOf, wtName, type Filter } from './derive';
 
 const WORKSPACES_EXPANDED_KEY = 'code-conductor:workspaces-expanded';
@@ -118,7 +119,7 @@ export function ensureSessions(project: string, worktree: string | null): Promis
 }
 
 // Cache invalidation from the outside world.
-sessionsCacheSignal.subscribe(() => invalidateSessions());
+on('sessionsStale', (place) => invalidateSessions(place ? placeKeyOf(place.project, place.worktree) : undefined));
 
 let prevSids = new Set<string | null>();
 let prevStatus = new Map<string, string>();

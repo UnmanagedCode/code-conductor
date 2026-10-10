@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
@@ -14,23 +14,20 @@ vi.mock('@/app/controller', () => ({
 const loadSessions = vi.fn(async () => [] as any[]);
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
-vi.mock('@/app/sessionActions', async () => {
-  const { createSignal } = await import('@/state/createStore');
-  return {
-    loadSessions: (...a: unknown[]) => loadSessions(...(a as [])),
-    closeSession: (...a: unknown[]) => closeSession(...a),
-    resumeSession: (...a: unknown[]) => resumeSession(...a),
-    promoteSession: vi.fn(),
-    removeWorktree: vi.fn(),
-    sessionsCacheSignal: createSignal(),
-  };
-});
+const removeWorktree = vi.fn();
+vi.mock('@/app/sessionActions', () => ({
+  loadSessions: (...a: unknown[]) => loadSessions(...(a as [])),
+  closeSession: (...a: unknown[]) => closeSession(...a),
+  resumeSession: (...a: unknown[]) => resumeSession(...a),
+  promoteSession: vi.fn(),
+  removeWorktree: (...a: unknown[]) => removeWorktree(...a),
+}));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
 vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => null }));
 
 const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore } = await import('./state');
-const { dialogStore } = await import('@/features/dialogs/api');
+const { closeDialog, dialogStore } = await import('@/features/dialogs/api');
 
 const inst = (o: Record<string, any>) => ({ id: `i-${o.sessionId}`, status: 'idle', mode: 'plan', ...o });
 
@@ -43,12 +40,15 @@ function seed(over: Partial<ReturnType<typeof appStore.get>> = {}) {
 }
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
+const farRow = () => document.querySelector('[data-project-row="far"]') as HTMLElement;
+const LOCAL = { name: 'far', path: '/p/far', workspace: null, system: 'local', remoteId: null, systemUnreachable: null, isGitRepo: true, worktrees: [] };
 
 beforeEach(() => {
   localStorage.clear();
   selectInstance.mockReset();
   closeSession.mockReset();
   resumeSession.mockReset();
+  removeWorktree.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   sidebarStore.set({ collapsedSessions: [], expandedWorktrees: [], expandedWorkspaces: [], expandedConductors: [], inactiveOpen: false, filter: '' });
   uiStore.set({ lens: 'conductors' });
@@ -165,6 +165,10 @@ describe('AppSidebar', () => {
     expect(within(row).getByText('box')).toBeTruthy();
     expect(within(row).queryByRole('button', { name: 'New session' })).toBeNull();
     expect(within(row).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+    // The reason is the title of the pill that names the system.
+    const pill = within(row).getByTitle('box is down');
+    expect(pill.textContent).toContain('box');
+    expect(within(row).queryByRole('button', { name: 'Commit history' })).toBeNull();
   });
 
   it('a reachable remote project\'s system pill opens the change-target dialog', () => {
@@ -174,6 +178,115 @@ describe('AppSidebar', () => {
     renderSidebar();
     fireEvent.click(screen.getByText('box/c1'));
     expect(dialogStore.get().projectRemote?.project.name).toBe('far');
+  });
+
+  it('a local project shows no system pill and keeps commit history, + and delete', () => {
+    uiStore.set({ lens: 'projects' });
+    seed({ projects: [LOCAL] as any });
+    renderSidebar();
+    const row = farRow();
+    expect(row.querySelector('[data-system-pill]')).toBeNull();
+    expect(within(row).getByRole('button', { name: 'Commit history' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'New session' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+  });
+
+  it('a reachable remote project keeps commit history, + and delete, and its pill tooltip names the system and its path', async () => {
+    uiStore.set({ lens: 'projects' });
+    seed({ projects: [{ name: 'far', path: '/app', workspace: null, system: 'box', remoteId: null, isGitRepo: true, worktrees: [] }] as any });
+    renderSidebar();
+    const row = farRow();
+    const pill = row.querySelector('[data-system-pill]') as HTMLElement;
+    expect(pill.tagName).toBe('BUTTON');
+    expect(pill.textContent).toBe('box');
+    expect(within(row).getByRole('button', { name: 'Commit history' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'New session' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+    await act(async () => { fireEvent.focus(pill); });
+    const tip = (await screen.findByRole('tooltip')).textContent;
+    expect(tip).toContain("system 'box' at /app");
+    expect(tip).toContain('Click to change which target it is on.');
+  });
+
+  it('an unreachable system\'s pill is a reason, not a control: clicking it opens no change-target dialog', () => {
+    closeDialog('projectRemote');
+    uiStore.set({ lens: 'projects' });
+    seed({ projects: [{ name: 'far', path: '/x', workspace: null, system: 'box', remoteId: 'c1', systemUnreachable: 'down', worktrees: [] }] as any });
+    renderSidebar();
+    const row = farRow();
+    expect(within(row).queryByRole('button', { name: /box\/c1/ })).toBeNull();
+    fireEvent.click(row.querySelector('[data-system-pill]') as HTMLElement);
+    expect(dialogStore.get().projectRemote).toBeNull();
+  });
+
+  it('a system coming back clears the pill and restores the + on the same row element', () => {
+    uiStore.set({ lens: 'projects' });
+    seed({ projects: [{ name: 'far', path: '/p/far', workspace: null, system: 'box', remoteId: null, systemUnreachable: 'down', worktrees: [] }] as any });
+    renderSidebar();
+    const before = farRow();
+    act(() => appStore.set({ projects: [LOCAL] as any }));
+    expect(document.querySelector('[data-project-row="far"]') === before).toBe(true);
+    expect(before.querySelector('[data-system-pill]')).toBeNull();
+    expect(within(before).getByRole('button', { name: 'New session' })).toBeTruthy();
+  });
+
+  it('a git ownership refusal shows its own pill carrying the refusal, keeps the +, and conjures no system pill', () => {
+    uiStore.set({ lens: 'projects' });
+    const refusal = "git on system 'local' refused the repository at '/p/far': detected dubious ownership";
+    const same = { name: 'far', path: '/p/far', workspace: null, system: 'local', remoteId: null, systemUnreachable: null, gitRefusal: refusal, worktrees: [] };
+    seed({ projects: [same] as any });
+    renderSidebar();
+    const row = farRow();
+    expect(within(row).getByText('dubious ownership').getAttribute('title')).toBe(refusal);
+    expect(within(row).getByRole('button', { name: 'New session' })).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: 'Commit history' })).toBeNull();
+    expect(row.querySelector('[data-system-pill]')).toBeNull();
+    act(() => appStore.set({ projects: [{ ...same, gitRefusal: null }] as any }));
+    expect(within(farRow()).queryByText('dubious ownership')).toBeNull();
+  });
+
+  it('a worktree\'s × removes that worktree', () => {
+    uiStore.set({ lens: 'projects' });
+    sidebarStore.set({ expandedWorktrees: ['api'] });
+    seed({ projects: [{ name: 'api', path: '/p/api', workspace: null, system: 'local', remoteId: null, worktrees: [{ worktreeName: 'wt1', baseBranch: 'main' }] }] as any });
+    renderSidebar();
+    const wtRow = document.querySelector('[data-worktree-row="wt1"]') as HTMLElement;
+    fireEvent.click(within(wtRow).getByRole('button', { name: 'Remove worktree' }));
+    expect(removeWorktree).toHaveBeenCalledWith('api', 'wt1');
+  });
+
+  it('the Conduct button ensures .conduct, POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture', async () => {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push({ url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined });
+      const body = url === '/api/instances' ? { id: 'c-new' } : { ok: true };
+      return { ok: true, status: 200, json: async () => body };
+    }));
+    try {
+      renderSidebar();
+      fireEvent.click(document.querySelector('[data-conduct]') as HTMLElement);
+      await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('c-new', { userGesture: true }));
+      expect(selectInstance).toHaveBeenCalledTimes(1);
+      expect(calls.filter((c) => c.method === 'POST')).toEqual([
+        { url: '/api/projects/.conduct/ensure', method: 'POST', body: undefined },
+        { url: '/api/instances', method: 'POST', body: { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' } },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('the ≡ menu\'s Add existing directory opens the add-project dialog', async () => {
+    closeDialog('adoptProject');
+    renderSidebar();
+    const trigger = screen.getByRole('button', { name: 'Project actions' });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20)); // let a previous close settle
+      trigger.focus();
+      fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: /Add existing directory/ }));
+    expect(dialogStore.get().adoptProject).toBe(true);
   });
 
   it('reveal on select opens the session\'s workspace and switches a filter that hides it to its owner', () => {
