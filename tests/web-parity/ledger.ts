@@ -1626,11 +1626,15 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'compaction-bubble/R2',
-    old: { file: 'tests/compaction-bubble.test.mjs', tests: 'rest' },
+    old: { file: 'tests/compaction-bubble.test.mjs', tests: [
+        'the summary is collapsed and expands lazily into the markdown body',
+      ] },
     behaviour: 'the summary sits collapsed, is built on first expand, and has raw/copy',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/foldedBubbles.test.tsx::compaction fold > the summary sits collapsed, expands lazily into the markdown body, and its raw view and copy are the exact summary',
+      ] },
   },
   {
     id: 'conversation-call-usage/R1',
@@ -1711,11 +1715,17 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'forward-frame-bubble/R2',
-    old: { file: 'tests/forward-frame-bubble.test.mjs', tests: 'rest' },
+    old: { file: 'tests/forward-frame-bubble.test.mjs', tests: [
+        'each copy yields the exact bytes its view shows: the payload in the fold, the instruction on the role row',
+        'non-frames stay plain user bubbles',
+      ] },
     behaviour: 'copy returns the exact payload bytes; near-miss non-frames stay plain',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/foldedBubbles.test.tsx::forward-frame bubble copies > each copy yields the exact bytes its view shows: the payload in the fold, the instruction on the bubble',
+        'web/src/conversation/foldedBubbles.test.tsx::forward-frame bubble copies > near-miss frames stay plain user bubbles: the header line alone, or a frame cut off before its footer',
+      ] },
   },
   {
     id: 'lazy-autoload/R1',
@@ -2187,11 +2197,17 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'skill-load-bubble/R2',
-    old: { file: 'tests/skill-load-bubble.test.mjs', tests: 'rest' },
+    old: { file: 'tests/skill-load-bubble.test.mjs', tests: [
+        'render on expand, reused afterwards (build-once, same node across collapse/reopen)',
+        'controls survive segment retirement and running turns; clicks are contained and do not collapse',
+      ] },
     behaviour: 'built once and reused; controls survive retirement and running turns; clicks don\'t collapse the fold',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/foldedBubbles.test.tsx::skill-load bubble lifecycle > the body is built on the first expand and reused afterwards: the same node across a collapse and reopen',
+        'web/src/conversation/foldedBubbles.test.tsx::skill-load bubble lifecycle > its fold controls survive segment retirement and a running turn; their clicks stay inside and never collapse the fold',
+      ] },
   },
   {
     id: 'sticky-prompt/R1',
@@ -2525,11 +2541,21 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'user-bubble-markdown/R2',
-    old: { file: 'tests/user-bubble-markdown.test.mjs', tests: 'rest' },
+    old: { file: 'tests/user-bubble-markdown.test.mjs', tests: [
+        'clicks on the toggle and copy buttons never propagate out of the button',
+        'controls survive segment retirement and stay enabled during a running turn',
+        'headings render subdued inside a user bubble (CSS pin)',
+      ] },
     behaviour: 'control clicks don\'t propagate; controls survive retirement and running turns; subdued headings',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/foldedBubbles.test.tsx::plain user bubble controls > clicks on the toggle and copy buttons never leave the button, in either view',
+        'web/src/conversation/foldedBubbles.test.tsx::plain user bubble controls > toggle and copy survive segment retirement and stay enabled during a running turn',
+        'web/src/conversation/foldedBubbles.test.tsx::heading size > headings stay body size in the prompt text and in every folded body (CSS pin)',
+        'web/src/conversation/foldedBubbles.test.tsx::heading size > every folded user-bubble kind, renew included, carries the data-fold attribute the heading rule matches',
+        'web/e2e/parity/conversation.spec.ts::headings render at body size in a prompt and in a folded wake body, while an assistant heading stays larger > next',
+      ] },
   },
   {
     id: 'user-question-idle-callback/R1',
@@ -2596,7 +2622,18 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'toggle while closed builds nothing; build once; whole text as meta with no newline; framing paragraphs; md view meta; copy both views; controls through retirement; CSS rules',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > a toggle event or a focus landing on a closed fold builds nothing; only opening it builds the body',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > the body is built on the first expand and reused afterwards: the same nodes and the raw view survive a collapse and reopen',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > a wake body with no newline renders its whole text as the meta line, with no markdown after it, and copy returns it exactly',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > framing lines stay paragraphs and the plan heading stays a heading: the payload goes through the shared markdown renderer',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > raw shows the whole body literally, meta line included; switching back restores the meta line and the markdown',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > copy returns the exact payload in both views, never the summary or the markers',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > its fold controls survive segment retirement and a running turn, and their clicks stay inside the fold',
+        'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > the metadata line is muted monospace, and nothing between the fold and its markdown forces a font',
+        'web/src/conversation/userBubbles.test.tsx::wake-callback bubbles > raw view and copy of the expanded body yield the exact payload',
+        'web/e2e/parity/conversation.spec.ts::an expanded wake body keeps its raw view across a collapse and reopen; its metadata line is muted monospace while the prose keeps the body font > next',
+      ] },
   },
   {
     id: 'wake-callback-bubble/R3',
@@ -2614,7 +2651,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the wake-callback bubble is folded, collapsible, with the 🔔 badge, in a real browser',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/parity/conversation.spec.ts::a wake-callback stub renders as a collapsed fold with the bell badge that opens to its payload and closes again > next',
+      ] },
   },
   {
     id: 'doc/A11',

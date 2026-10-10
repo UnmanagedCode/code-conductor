@@ -84,16 +84,19 @@ function UserText({ text, view }: { text: string; view: 'rendered' | 'raw' }) {
 function Folded({ icon, title, children, tone = 'muted', kind, multiline = false }: {
   icon: React.ReactNode; title: React.ReactNode; children: () => React.ReactNode; tone?: 'muted' | 'info'; kind: string; multiline?: boolean;
 }) {
-  // The body is built on first expand and kept afterwards.
+  // The body is built on first expand and kept afterwards: Radix renders no
+  // children while closed, so forceMount keeps the built body (and its view)
+  // mounted and `hidden` hides it.
+  const [open, setOpen] = React.useState(false);
   const [opened, setOpened] = React.useState(false);
   return (
-    <Collapsible onOpenChange={(o) => o && setOpened(true)} className={cn('rounded-xl border bg-card', tone === 'info' && 'border-info/30')} data-fold={kind}>
+    <Collapsible open={open} onOpenChange={(o) => { setOpen(o); if (o) setOpened(true); }} className={cn('rounded-xl border bg-card', tone === 'info' && 'border-info/30')} data-fold={kind}>
       <CollapsibleTrigger className="group/fold flex w-full items-center gap-2 px-3 py-2 text-left text-sm" data-fold-trigger>
         <span className="shrink-0 text-muted-foreground">{icon}</span>
         <span className={cn('min-w-0 flex-1', multiline ? 'whitespace-pre-line wrap-anywhere' : 'truncate')} data-fold-title>{title}</span>
         <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/fold:rotate-90" />
       </CollapsibleTrigger>
-      <CollapsibleContent className="border-t px-3 py-3">{opened && children()}</CollapsibleContent>
+      <CollapsibleContent forceMount hidden={!open} className="border-t px-3 py-3">{opened && children()}</CollapsibleContent>
     </Collapsible>
   );
 }
