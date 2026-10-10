@@ -3983,6 +3983,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/adopt.test.tsx::Add project dialog > without remote systems there is no System row and the adopt posts no system',
         'web/src/features/dialogs/newProject.test.tsx::New project dialog > without remote systems there is no System row and the create posts no system',
         'web/src/features/dialogs/placement.test.tsx::placement > renders no System row until the capabilities answer, and none at all without remote systems, never reading the registry',
+        'web/src/features/dialogs/placement.test.tsx::placement > with the capabilities already known to lack remote systems, the first paint has no System row and the registry is not read',
+        'web/src/features/dialogs/placement.test.tsx::placement > with the capabilities already known to offer remote systems, the System row is there on first paint, before they are reloaded',
       ] },
   },
   {

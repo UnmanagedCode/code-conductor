@@ -13,7 +13,7 @@ vi.mock('@/lib/core/capabilities.js', () => ({
   capabilities: vi.fn(() => null),
 }));
 
-import { loadCapabilities } from '@/lib/core/capabilities.js';
+import { capabilities, loadCapabilities } from '@/lib/core/capabilities.js';
 import { PlacementFields, usePlacement } from './placement';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import { chooseOption, selectOptions } from '@/test/radixSelect';
@@ -43,6 +43,7 @@ const remotesAsks = (calls: { url: string }[]) => calls.filter((c) => c.url.ends
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.mocked(capabilities).mockImplementation(() => null);
 });
 
 describe('placement', () => {
@@ -262,5 +263,26 @@ describe('placement', () => {
     await flush();
     expect(screen.queryByRole('combobox', { name: 'System' })).toBeNull();
     expect(calls.some((c) => c.url === '/api/settings/systems')).toBe(false);
+  });
+
+  // Capabilities already known to lack remote systems decide the first paint: no System row, before any reload answers.
+  it('with the capabilities already known to lack remote systems, the first paint has no System row and the registry is not read', () => {
+    vi.mocked(capabilities).mockImplementation(() => ({ remoteSystems: false, voice: true, fuseUnion: true }) as any);
+    vi.mocked(loadCapabilities).mockReturnValueOnce(held().answer as any);
+    const calls = routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }) });
+    render(<Harness />);
+    expect(capabilities).toHaveBeenCalled();
+    expect(screen.queryByRole('combobox', { name: 'System' })).toBeNull();
+    expect(calls.some((c) => c.url === '/api/settings/systems')).toBe(false);
+  });
+
+  // Capabilities already known to offer remote systems put the System row on the first paint, without waiting for a reload.
+  it('with the capabilities already known to offer remote systems, the System row is there on first paint, before they are reloaded', () => {
+    vi.mocked(capabilities).mockImplementation(() => ({ remoteSystems: true, voice: true, fuseUnion: true }) as any);
+    vi.mocked(loadCapabilities).mockReturnValueOnce(held().answer as any);
+    routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }) });
+    render(<Harness />);
+    expect(loadCapabilities).toHaveBeenCalled();
+    expect(screen.getByRole('combobox', { name: 'System' })).toBeTruthy();
   });
 });
