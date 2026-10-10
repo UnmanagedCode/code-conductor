@@ -11,6 +11,8 @@ export type PlacementDialog = 'new' | 'adopt';
 export type PlacementField = 'name' | 'system' | 'target' | 'path' | 'pathList' | 'suggestions';
 // Settings (card 2026-0625)
 export type SettingsSection = 'account' | 'archived' | 'about';
+export type SpawnField = 'worktree' | 'worktreeHint' | 'debug';
+export type SpawnSelect = 'effort' | 'thinking';
 
 export interface Ui {
   name: UiName;
@@ -86,6 +88,30 @@ export interface Ui {
   expandArchivedGroup(page: Page, project: string): Promise<void>;
   /** Deletes the archived row labelled `label`, confirming or declining the prompt. */
   deleteArchived(page: Page, label: string, confirm: boolean): Promise<void>;
+
+  // Dialogs part 2 (card 2026-0631)
+  /** Opens the project's delete dialog from its Projects-lens row and returns the dialog. */
+  openDeleteProject(page: Page, name: string): Promise<Locator>;
+  /** The delete dialog's directory opt-in checkbox and its label. */
+  deleteDirOptIn(dialog: Locator): { box: Locator; label: Locator };
+  /** Types a name that does not match and attempts the delete as far as the UI allows. */
+  tryDeleteWithMismatch(page: Page, dialog: Locator, name: string): Promise<void>;
+  /** Cancels a dialog and waits until it is hidden. */
+  cancelDialog(dialog: Locator): Promise<void>;
+  /** Opens Change target from the project's system pill and returns the dialog. */
+  openChangeTarget(page: Page, name: string): Promise<Locator>;
+  changeTarget(dialog: Locator): { target: Locator; error: Locator };
+  saveTarget(dialog: Locator): Promise<void>;
+  /** Opens the New session dialog from the project's row and returns it; spawns nothing. */
+  openSpawnDialog(page: Page, project: string): Promise<Locator>;
+  /** Expands the spawn dialog's Advanced options; idempotent. */
+  spawnAdvanced(dialog: Locator): Promise<void>;
+  /** One read of the tier cards offered and the selected one. */
+  spawnTiers(dialog: Locator): Promise<{ offered: string[]; selected: string | null }>;
+  pickTier(dialog: Locator, tier: string): Promise<void>;
+  /** The options of the Effort or Thinking select and the one selected; leaves the select closed. */
+  spawnSelect(page: Page, dialog: Locator, which: SpawnSelect): Promise<{ options: string[]; selected: string }>;
+  spawnField(dialog: Locator, field: SpawnField): Locator;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -314,6 +340,76 @@ export const legacy: Ui = {
       .filter({ has: page.locator('.archived-row-title', { hasText: exactly(label) }) })
       .locator('.archived-delete').click();
   },
+
+  // Dialogs part 2 (card 2026-0631)
+  async openDeleteProject(page, name) {
+    await legacy.lens(page, 'projects');
+    const row = await legacy.projectRow(page, name);
+    const dialog = page.locator('#delete-project-dialog');
+    await expect(async () => {
+      await row.locator('.delete-project').click({ timeout: 1_000 });
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  deleteDirOptIn: (dialog) => ({ box: dialog.locator('#dpd-delete-dir'), label: dialog.locator('#dpd-dir-label') }),
+  async tryDeleteWithMismatch(_page, dialog, name) {
+    await dialog.locator('#dpd-confirm').fill(name + 'x');
+    // The old dialog closes on the click and reopens itself with the refusal.
+    await dialog.locator('button[value="delete"]').click();
+    await expect(dialog.locator('#dpd-error')).toHaveText(/\S/);
+  },
+  async cancelDialog(dialog) {
+    await dialog.locator('button[value="cancel"]').click();
+    await expect(dialog).toBeHidden();
+  },
+  async openChangeTarget(page, name) {
+    await legacy.lens(page, 'projects');
+    const row = await legacy.projectRow(page, name);
+    const dialog = page.locator('#project-remote-dialog');
+    await expect(async () => {
+      await row.locator('.system-pill[role="button"]').click({ timeout: 1_000 });
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  changeTarget: (dialog) => ({ target: dialog.locator('#pr-remote'), error: dialog.locator('#pr-error') }),
+  async saveTarget(dialog) {
+    await dialog.locator('#pr-save').click();
+  },
+  async openSpawnDialog(page, project) {
+    await legacy.lens(page, 'projects');
+    const row = await legacy.projectRow(page, project);
+    const dialog = page.locator('#spawn-dialog');
+    await expect(async () => {
+      await row.locator('.add-instance').click({ timeout: 1_000 });
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  async spawnAdvanced(dialog) {
+    const advanced = dialog.locator('#sd-advanced');
+    if ((await advanced.getAttribute('open')) === null) await advanced.locator('summary').click();
+  },
+  async spawnTiers(dialog) {
+    const tiers = (sel: string) => dialog.locator(sel).evaluateAll((els) => els.map((e) => e.getAttribute('data-tier') ?? ''));
+    const offered = await tiers('.qs-model:not([hidden])');
+    const selected = await tiers('.qs-model.qs-selected');
+    return { offered, selected: selected[0] ?? null };
+  },
+  async pickTier(dialog, tier) {
+    await dialog.locator(`.qs-model[data-tier="${tier}"]`).click();
+  },
+  async spawnSelect(_page, dialog, which) {
+    const select = dialog.locator(which === 'effort' ? '#sd-effort' : '#sd-thinking');
+    const options = (await select.locator('option').allTextContents()).map((t) => t.trim());
+    const selected = (await select.locator('option:checked').textContent())?.trim() ?? '';
+    return { options, selected };
+  },
+  spawnField(dialog, field) {
+    const ids: Record<SpawnField, string> = { worktree: 'sd-worktree', worktreeHint: 'sd-worktree-hint', debug: 'sd-debug' };
+    return dialog.locator(`#${ids[field]}`);
+  },
 };
 
 /**
@@ -503,6 +599,77 @@ export const next: Ui = {
     const dialog = page.getByRole('dialog', { name: `Delete the transcript of “${label}”?` });
     await dialog.getByRole('button', { name: confirm ? 'Delete permanently' : 'Cancel' }).click();
     await expect(dialog).toBeHidden();
+  },
+
+  // Dialogs part 2 (card 2026-0631)
+  async openDeleteProject(page, name) {
+    await next.lens(page, 'projects');
+    const row = await next.projectRow(page, name);
+    await row.hover();
+    await row.getByRole('button', { name: 'Delete project' }).click();
+    const dialog = page.locator('[role="dialog"][data-dialog="delete-project"]');
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  // By `for`, never `#dpd-delete-dir + label`: a hidden Radix bubble input sits between them.
+  deleteDirOptIn: (dialog) => ({ box: dialog.locator('#dpd-delete-dir'), label: dialog.locator('label[for="dpd-delete-dir"]') }),
+  async tryDeleteWithMismatch(_page, dialog, name) {
+    await dialog.locator('#dpd-confirm').fill(name + 'x');
+    await expect(dialog.getByRole('button', { name: 'Delete', exact: true })).toBeDisabled();
+  },
+  async cancelDialog(dialog) {
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toBeHidden();
+  },
+  async openChangeTarget(page, name) {
+    await next.lens(page, 'projects');
+    const row = await next.projectRow(page, name);
+    await row.locator('[data-system-pill]').click();
+    const dialog = page.locator('[role="dialog"][data-dialog="project-remote"]');
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  changeTarget: (dialog) => ({ target: dialog.getByRole('textbox', { name: 'Target', exact: true }), error: dialog.getByRole('alert') }),
+  async saveTarget(dialog) {
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  },
+  async openSpawnDialog(page, project) {
+    await next.lens(page, 'projects');
+    const row = await next.projectRow(page, project);
+    await row.hover();
+    await row.getByRole('button', { name: 'New session' }).click();
+    const dialog = page.locator('[role="dialog"][data-dialog="spawn"]');
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  async spawnAdvanced(dialog) {
+    if (!(await dialog.locator('#sd-temp').isVisible())) await dialog.getByRole('button', { name: 'Advanced options' }).click();
+  },
+  async spawnTiers(dialog) {
+    const offered = await dialog.locator('[role="radio"][data-tier]').evaluateAll((els) => els.map((e) => e.getAttribute('data-tier') ?? ''));
+    const selected = await dialog.locator('[role="radio"][data-tier][aria-checked="true"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-tier') ?? ''));
+    return { offered, selected: selected[0] ?? null };
+  },
+  async pickTier(dialog, tier) {
+    await dialog.locator(`[role="radio"][data-tier="${tier}"]`).click();
+  },
+  async spawnSelect(page, dialog, which) {
+    const trigger = dialog.getByRole('combobox', { name: which === 'effort' ? 'Effort' : 'Thinking', exact: true });
+    const selected = (await trigger.textContent())?.trim() ?? '';
+    await trigger.click();
+    const options = page.getByRole('option');
+    await expect(options.first()).toBeVisible();
+    const labels = (await options.allTextContents()).map((t) => t.trim());
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox')).toBeHidden();
+    return { options: labels, selected };
+  },
+  spawnField(dialog, field) {
+    switch (field) {
+      case 'worktree': return dialog.locator('#sd-worktree');
+      case 'worktreeHint': return dialog.locator('label[for="sd-worktree"] + p');
+      case 'debug': return dialog.locator('#sd-debug');
+    }
   },
 };
 

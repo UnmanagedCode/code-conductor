@@ -58,6 +58,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
   const [worktree, setWorktree] = React.useState(!!worktreeIntent);
   const [temp, setTemp] = React.useState(!worktreeIntent);
   const [debug, setDebug] = React.useState(false);
+  const debugTouched = React.useRef(false);
   const [advanced, setAdvanced] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -73,7 +74,8 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
     let live = true;
     fetch('/api/settings/spawn', { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => { if (live) setDebug(!!d.debugByDefault); })
+      // A tick made before the default arrives is the user's answer; the late default must not overwrite it.
+      .then((d) => { if (live && !debugTouched.current) setDebug(!!d.debugByDefault); })
       .catch(() => { /* leave unchecked */ });
     return () => { live = false; };
   }, []);
@@ -212,7 +214,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
           </div>
           <CheckRow id="sd-worktree" checked={worktree} disabled={!!worktreeIntent || !isGit || unborn} onChange={setWorktree} label="Run in an isolated git worktree" hint={worktreeHint} />
           <CheckRow id="sd-temp" checked={temp} onChange={setTemp} label="Temp session" hint="The transcript is removed when the session ends." />
-          <CheckRow id="sd-debug" checked={debug} onChange={setDebug} label="Debug mode" hint={<>Captures stdin, stdout and stderr to <code className="font-mono">&lt;cwd&gt;/.code-conductor/debug/&lt;instance-id&gt;/</code></>} />
+          <CheckRow id="sd-debug" checked={debug} onChange={(v) => { debugTouched.current = true; setDebug(v); }} label="Debug mode" hint={<>Captures stdin, stdout and stderr to <code className="font-mono">&lt;cwd&gt;/.code-conductor/debug/&lt;instance-id&gt;/</code></>} />
         </CollapsibleContent>
       </Collapsible>
 
