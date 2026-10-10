@@ -80,6 +80,23 @@ test('the access token is registered with redact()', (t) => {
   assert.equal(redact(`log line Bearer ${ACCESS} end`), 'log line Bearer <redacted> end');
 });
 
+test('a token read before a refusal is registered with redact() all the same', async (t) => {
+  // A caller that prints after a refusal still prints no token. Each case has
+  // its own token: the registry is per process and other tests register theirs.
+  await t.test('expiry inside the budget', (t) => {
+    const token = 'ACCESS-EXPIRING-SENTINEL-5c1a';
+    const f = fixture(t, { accessToken: token, expiresAt: NOW + 30 * 60_000 });
+    assert.throws(() => prepareLiveCredentials({ source: f.source, dest: f.dest, now: NOW, budgetMs: HOUR }), /budget/);
+    assert.equal(redact(`tail: ${token}`), 'tail: <redacted>');
+  });
+  await t.test('a token with no numeric expiry', (t) => {
+    const token = 'ACCESS-NO-EXPIRY-SENTINEL-8e2f';
+    const f = fixture(t, { accessToken: token, expiresAt: 'soon' });
+    assert.throws(() => prepareLiveCredentials({ source: f.source, dest: f.dest, now: NOW, budgetMs: HOUR }), /no access token/);
+    assert.equal(redact(`tail: ${token}`), 'tail: <redacted>');
+  });
+});
+
 test('refusals name the path or the expiry, never a credential', async (t) => {
   await t.test('missing source file', (t) => {
     const f = fixture(t);

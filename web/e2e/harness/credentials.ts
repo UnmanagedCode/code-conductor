@@ -45,10 +45,12 @@ export function prepareLiveCredentials(
   catch { throw new Error(`live mode: ${source} is not JSON`); }
   const token = oauth?.accessToken;
   const expiresAt = oauth?.expiresAt;
+  // Registered the moment it is read, before any refusal: a caller that prints
+  // after one must still print no token.
+  if (typeof token === 'string') registerSecret(token);
   if (typeof token !== 'string' || token === '' || typeof expiresAt !== 'number') {
     throw new Error(`live mode: credentials file has no access token (${source})`);
   }
-  registerSecret(token);
   if (expiresAt < now + budgetMs) {
     throw new Error(`live mode: the access token expires at ${new Date(expiresAt).toISOString()}, inside the `
       + `${budgetMs / 60_000} min budget (CC_E2E_LIVE_BUDGET_MIN); refresh it by using the CLI, then re-run`);

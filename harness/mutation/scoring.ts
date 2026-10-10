@@ -158,7 +158,7 @@ type PwSuite = {
 type PwReport = { config: { rootDir: string }; suites: PwSuite[]; errors: Array<{ message?: string; value?: string; stack?: string }> };
 export type ReducedPlaywright = { project: string; errors: number; firstError: string | null; tests: Array<{ id: string; status: string }> };
 
-const FIRST_ERROR_MAX_BYTES = 2048;
+export const FIRST_ERROR_MAX_BYTES = 2048;
 
 function truncateBytes(text: string, max: number): string {
   let out = text.slice(0, max);

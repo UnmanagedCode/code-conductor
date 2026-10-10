@@ -308,7 +308,13 @@ test.describe('desktop', () => {
       });
       // docs/features.md → Temp session: in the Conductors lens the ↑ Make
       // persistent button sits on live temp conductor rows and live temp worker
-      // rows. Within the lens it is on exactly those rows, once each.
+      // rows. Within the lens it is on exactly those rows, once each. The
+      // worker-row half here sees only temp workers (every conducted worker is
+      // spawned temp), so "no ↑ on a non-temp worker row" is NOT pinned by this
+      // box. tests/sidebar-conductors.test.mjs pins it for these worker rows ("a
+      // live temp worker row ends in the ↑ promote button; a non-temp worker has
+      // none"), tests/sidebar.test.mjs for session rows ("Regular (non-temp)
+      // session rows do NOT show the promote button").
       await test.step('5a′ ↑ promote: exactly the live temp conductor and worker rows of the lens (docs/features.md)', async () => {
         const live = (await insts(cc)).filter((i) => i.status !== 'exited' && i.status !== 'crashed');
         const liveTemp = new Set(live.filter((i) => i.temp === true).map((i) => i.sessionId));

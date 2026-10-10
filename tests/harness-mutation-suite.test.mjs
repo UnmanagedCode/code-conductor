@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   route, planCommands, reduceVitestReport, reducePlaywrightReport, playwrightReportFiles, parseSuiteOutput,
-  canaryFor, listingSelects, vitestScopeRefusal, playwrightScopeRefusal, frame, pwProject, DEFAULT_PW_PROJECT, TEST_FILE_PATTERNS,
+  canaryFor, listingSelects, vitestScopeRefusal, playwrightScopeRefusal, FIRST_ERROR_MAX_BYTES, frame, pwProject, DEFAULT_PW_PROJECT, TEST_FILE_PATTERNS,
 } from '../harness/mutation/scoring.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -198,7 +198,7 @@ test('Playwright: parse counts, failed ids, and a load error as a compile error'
   const loadErr = reducePlaywrightReport(load('pw-desktop-load.json'), '/repo', ['web/e2e/load.spec.ts', 'web/e2e/mixed.spec.ts'], 'desktop');
   assert.equal(loadErr.errors, 1);
   assert.match(loadErr.firstError, /Cannot find module '\.\/does-not-exist\.ts'/);
-  assert.ok(Buffer.byteLength(loadErr.firstError) <= 2048);
+  assert.ok(Buffer.byteLength(loadErr.firstError) <= FIRST_ERROR_MAX_BYTES);
   const e = parseSuiteOutput(frame('playwright project=desktop exit=1', JSON.stringify(loadErr)), '', 1, { nodeTest: stubNodeTest });
   assert.equal(e.compileError, true);
   assert.equal(e.ran, 0);
@@ -261,6 +261,29 @@ test('Playwright: a requested spec missing from the run is refused unless the ru
   await t.test('the listing itself fails to load: no refusal', async () => {
     const l = lister('load');
     assert.equal(await playwrightScopeRefusal({ requested: [SPEC], report: loadErr, repoRoot: '/repo', project: 'desktop', projects: PROJECTS, list: l.list }), null);
+  });
+});
+
+test('Playwright: firstError is the first FIRST_ERROR_MAX_BYTES bytes of an over-long error, exactly', async (t) => {
+  const withError = (message) => {
+    const report = load('pw-desktop-load.json');
+    report.errors = [{ message }, ...report.errors];
+    return reducePlaywrightReport(report, '/repo', null, 'desktop').firstError;
+  };
+  await t.test('one-byte characters', () => {
+    const message = 'E'.repeat(FIRST_ERROR_MAX_BYTES * 3);
+    const first = withError(message);
+    assert.equal(Buffer.byteLength(first), FIRST_ERROR_MAX_BYTES);
+    assert.ok(message.startsWith(first));
+  });
+  await t.test('two-byte characters are cut on a character boundary at the byte cap', () => {
+    const message = 'é'.repeat(FIRST_ERROR_MAX_BYTES * 3);
+    const first = withError(message);
+    assert.equal(Buffer.byteLength(first), FIRST_ERROR_MAX_BYTES);
+    assert.equal(first, 'é'.repeat(FIRST_ERROR_MAX_BYTES / 2));
+  });
+  await t.test('an error under the cap is kept whole', () => {
+    assert.equal(withError('short error'), 'short error');
   });
 });
 
