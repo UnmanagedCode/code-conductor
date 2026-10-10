@@ -1,14 +1,14 @@
-// The fake CLI, plus — when it runs as a session worker, not as a one-shot
-// probe (`--version`, `auth status`) — a grandchild it leaves behind: detached
-// (its own process group) and deaf to SIGTERM, so neither cc's shutdown nor its
-// worker's death reaches it. Its pid is appended to $E2E_ORPHAN_PIDS.
-// harness.spec.ts uses it to prove close() kills every descendant of the
-// booted cc.
+// The fake CLI, plus — only when it runs as a session worker (cc starts every
+// worker with `--input-format=stream-json`, in its launch args in
+// src/instances.ts; a one-shot probe such as `--version` never carries it) — a
+// grandchild it leaves behind: detached (its own process group) and deaf to
+// SIGTERM, so neither cc's shutdown nor its worker's death reaches it. Its pid
+// is appended to $E2E_ORPHAN_PIDS. harness.spec.ts uses it to prove close()
+// kills every descendant of the booted cc.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 
-const probe = process.argv.includes('--version') || process.argv.includes('auth');
-if (!probe) {
+if (process.argv.includes('--input-format=stream-json')) {
   const orphan = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"], {
     detached: true, stdio: 'ignore',
   });

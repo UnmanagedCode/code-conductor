@@ -16,7 +16,7 @@ Real cc servers driven through Chromium: the web UI at `/next/`, the old UI's ch
 - File filters are **regexes over the path**: `live.spec.ts` also matches `legacy/plugin-keepalive.spec.ts`. Name a spec by its path from the repo root.
 - The browser is the revision `@playwright/test` pins: first run on a machine, `npx playwright install chromium`. Termux has none, so no spec runs there.
 - `globalSetup` (`harness/global-setup.ts`) runs once per invocation: it removes the scratch roots of dead runs, then builds `web/dist` with the server's own hash-gated `ensureWebBuild()` and **fails the run if the build fails** (a stale bundle would otherwise keep serving). `web: built in …` in the output means it rebuilt.
-- Output (traces, attachments) goes to `web/test-results/` (gitignored), wiped per run. **Two Playwright invocations in one checkout — a mutation probe scoring a spec alongside `npm run test:e2e` included — clobber each other's `test-results/`**; give a hand-run invocation its own `--output <dir>`.
+- Output (traces, attachments) goes to `test-results/` at the repo root (gitignored; `web/` has no `package.json`, so Playwright's default `outputDir` resolves there), wiped per run. **Two Playwright invocations in one checkout — a mutation probe scoring a spec alongside `npm run test:e2e` included — clobber each other's `test-results/`**; give a hand-run invocation its own `--output <dir>`.
 
 ## Projects
 
