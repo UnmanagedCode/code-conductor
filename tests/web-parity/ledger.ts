@@ -29,6 +29,10 @@ export const RULINGS = {
     date: '2026-10-10',
     ruling: "V3 is intentional: the model-switch chip reads 'Switching to X' / 'Switch failed'.",
   },
+  'phone-two-line-header': {
+    date: '2026-10-10',
+    ruling: 'User ruling. Port the rest of the row on Pixel 7 under /next/: controls on one row, nothing past the viewport, a long title gets an ellipsis without making the header taller, and no Sync in the bar. The 48px bound is dropped by user ruling.',
+  },
   'v5-markdown-zoom': {
     date: '2026-10-10',
     ruling: 'V5 is intentional: images inside rendered markdown no longer open the zoom overlay.',
@@ -245,11 +249,20 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'client-account-usage/R2',
-    old: { file: 'tests/client-account-usage.test.mjs', tests: 'rest' },
+    old: { file: 'tests/client-account-usage.test.mjs', tests: [
+        'headerUpdate fires only when an instance is active',
+        'headerUpdate does not fire on the !ok or null-usage early returns',
+        'accountChanged drops the last-good value and the tracker, repaints, and refetches at once',
+      ] },
     behaviour: 'the header repaints only with an active session and not on early returns; an account change repaints',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/SessionView.test.tsx::SessionView > the usage chip exists only with an active session; a fetch landing without one stores the value and renders no chip',
+        'web/src/app/accountUsage.test.ts::account usage > a failed or null-usage fetch notifies nobody: no store write, no tracker repaint',
+        'web/src/app/accountUsage.test.ts::account usage > a Claude login repaints and fetches /api/usage at once; the new account\'s bucket replaces the old one',
+        'web/src/app/accountUsage.test.ts::account usage > a Claude login drops the old account\'s reading and tracker, refetches, and a refresh in flight is discarded',
+      ] },
   },
   {
     id: 'rate-limit-global/R1',
@@ -308,11 +321,15 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-ctx-chip/R2',
-    old: { file: 'tests/header-ctx-chip.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-ctx-chip.test.mjs', tests: [
+        'the smallest positive window is still a known capacity (the boundary is not off by one)',
+      ] },
     behaviour: 'a window of 1 is still a known capacity',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > a window of 1 is a known capacity: the tooltip names 250,000/1 and never "capacity unknown"',
+      ] },
   },
   {
     id: 'header-mode-toggle/R1',
@@ -332,11 +349,19 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-mode-toggle/R2',
-    old: { file: 'tests/header-mode-toggle.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-mode-toggle.test.mjs', tests: [
+        'clicking the other side sends one `mode` frame and does not flip optimistically',
+        'disabled in turn / crashed / exited and with no instance; enabled when idle',
+        'disabled in turn / crashed / exited and with no instance; enabled when idle > disabled and unpressed with no instance',
+      ] },
     behaviour: 'no optimistic flip on click; disabled and unpressed with no instance',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::mode toggle > a click on the other side sends one frame and does not flip the pressed side until the session reports the mode',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent',
+        'web/src/features/session/header.test.tsx::mode toggle > is disabled in a turn, crashed or exited; enabled when idle',
+      ] },
   },
   {
     id: 'header-mute/R1',
@@ -361,11 +386,25 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-mute/R3',
-    old: { file: 'tests/header-mute.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-mute.test.mjs', tests: [
+        'when the active id has no backing instance, the ⋮ menu (and Mute) is hidden',
+        'T1: an open ⋮ panel survives update() driven by message_start-style events',
+        'T2: items keep refreshing live while the ⋮ panel stays open',
+        'T3: the ⋮ menu closes when the session stops being menu-eligible',
+        'T4: switching the active session under an open menu closes it',
+        'T5: the deliberate close paths still close the ⋮ menu',
+      ] },
     behaviour: 'no-instance hiding; the open ⋮ survives re-renders and refreshes live; closes on eligibility loss, session switch and the deliberate close paths',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/SessionView.test.tsx::SessionView > an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an open ⋮ survives session-data updates for the same session',
+        'web/src/features/session/header.test.tsx::session menu > while ⋮ stays open its items follow the session: a turn disables Prune with the between-turns title and makes Terminate Interrupt, and muting flips the label',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an open ⋮ closes when its session stops being menu-eligible, and opens fresh afterwards',
+        'web/src/features/session/SessionView.test.tsx::SessionView > switching the active session under an open ⋮ closes it; the new session\'s ⋮ opens and survives updates',
+        'web/src/features/session/header.test.tsx::session menu > the deliberate close paths close ⋮: Escape, the trigger again, an item pick, and a press outside',
+      ] },
   },
   {
     id: 'header-playbook-enforcement/R1',
@@ -400,11 +439,19 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-playbook-enforcement/R4',
-    old: { file: 'tests/header-playbook-enforcement.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-playbook-enforcement.test.mjs', tests: [
+        'the toggle renders the conductor\'s current level, and re-renders when it changes',
+        'a dead conductor cannot have its enforcement changed',
+        'a click with no active instance sends nothing AND throws nothing',
+      ] },
     behaviour: 're-render on a live level change; a dead conductor cannot change it; no-instance click is inert',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::session menu > playbook enforcement follows the conductor\'s level while the header stays mounted',
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > a dead conductor has no enforcement control at any width',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent',
+      ] },
   },
   {
     id: 'header-usage-popover/R1',
@@ -424,11 +471,19 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-usage-popover/R2',
-    old: { file: 'tests/header-usage-popover.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-usage-popover.test.mjs', tests: [
+        'Fable line does not render when limits has no Fable-scoped entry',
+        'Fable line does not render when account usage is entirely unavailable',
+        'usage limits: an absent bucket gets no placeholder row',
+      ] },
     behaviour: 'no Fable line for non-Fable limits or with no account usage; no placeholder for an absent bucket',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > the popover shows no Fable row when limits hold no Fable-scoped entry',
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > the popover says usage is unavailable, with no Fable row, when there is no account usage',
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > the popover: totals, the Cost row suppressed for a substitution backend, usage limits tightest first, Fable only when scoped',
+      ] },
   },
   {
     id: 'header-change-effort/R1',
@@ -445,11 +500,27 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-change-effort/R2',
-    old: { file: 'tests/header-change-effort.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-change-effort.test.mjs', tests: [
+        'the item sits in the ⋮ panel directly below Change model',
+        'the label is static — it never leaks the current level',
+        'the item is enabled only between turns',
+        'when the active id has no backing instance, the ⋮ menu is hidden — not left stale-clickable',
+        'exactly one level is highlighted: the one the session is running at',
+        'picking a level sends one effort frame and dismisses both the picker and the menu',
+        'a click with no active instance sends nothing AND throws nothing',
+        'no level is refused on a substitution backend, and no backend note is shown',
+      ] },
     behaviour: 'placement below Change model, static label, between-turns gating, no-instance guards, a single highlight, dismiss on pick, no refusal on a substitution backend',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::change effort > Change effort sits directly below Change model, and its label is static whatever the level',
+        'web/src/features/session/header.test.tsx::change effort > Change effort is enabled only idle with a session, titled for why; a turn or a spawn disables it with the between-turns title',
+        'web/src/features/session/header.test.tsx::change effort > exactly one level carries the check: the running one',
+        'web/src/features/session/header.test.tsx::change effort > a substitution session is offered every level, with no backend note, and a pick sends one effort frame and closes the picker and the menu',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent',
+        'web/src/features/session/header.test.tsx::change effort > offers the server\'s level catalog in order, marks the running one, and sends one effort frame',
+      ] },
   },
   {
     id: 'header-change-model/R1',
@@ -516,11 +587,45 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-change-model/R4',
-    old: { file: 'tests/header-change-model.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-change-model.test.mjs', tests: [
+        'Change-model button label is always static, regardless of the instance model family',
+        'a live session shows the ⋮ menu with Change-model enabled',
+        'when the active id has no backing instance, the ⋮ menu is hidden — not left stale-clickable',
+        'reselecting a live instance after a no-instance render re-enables the menu',
+        'the picker groups tiers by backend, the session\'s own first',
+        'modelEntryState: a live entry is enabled between turns and disabled during one',
+        'Change model is disabled during a turn and re-enabled at turn end, on every backend',
+        'restart entries are disabled while busy: a turn, a running subagent, or a switch in flight',
+        'an open picker re-enables its restart entries when the session goes idle',
+        'a restart click sends exactly {t, id, tier, reqId} and closes the picker on the ack',
+        'a re-render with unchanged entry states keeps the very same buttons (a click in progress is not detached)',
+        'mid-switch the usage popover names the confirmed model with no window clause',
+        'a registered model that an offered tier on the session\'s backend binds is listed once, as the tier',
+        'registered-model entries are disabled with the restart-busy title while a turn runs',
+        'a models payload replaces the picker\'s registered models: an added model appears, a removed one goes',
+        'the boot fetch seeds the registered models from the payload',
+      ] },
     behaviour: 'static label; no-instance hiding and re-enable; re-enable at turn end on every backend; an open picker re-enables when idle; closing on ack; stable buttons; mid-switch popover model; payload replacement and boot seeding; picker grouping by backend, own first; restart and registered-model busy gating',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::change model > the Change model label is static whatever the running model, and idle with a session it is enabled and titled "Switch this session to another model"',
+        'web/src/features/session/header.test.tsx::change model > Change model is disabled with the between-turns title during a turn and re-enabled at turn end, on a Claude and a substitution session',
+        'web/src/features/session/header.test.tsx::change model > an open picker follows the session: a turn disables its restart and registered-model entries with the busy title, and idle re-enables them in the same open picker',
+        'web/src/features/session/header.test.tsx::change model > a restart pick sends exactly {id, tier} and closes the picker and the menu',
+        'web/src/features/session/header.test.tsx::change model > a re-render with unchanged entry states keeps the very same menu items',
+        'web/src/features/session/header.test.tsx::change model > a registered model that a tier on its backend already binds is offered once, as the tier',
+        'web/src/features/session/header.test.tsx::change model > a models payload applied while the picker is open replaces its registered models: an added one appears, a removed one goes',
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > mid-switch the popover names the running model with no window clause; settled, it adds the window',
+        'web/src/app/models.test.ts::models catalog > loadModels fetches /api/settings/models without the cache, seeds the registered models and bumps modelsSignal',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent',
+        'web/src/features/session/SessionView.test.tsx::SessionView > selecting the live instance again brings the header back with an enabled ⋮ and Change model',
+        'web/src/features/session/header.test.tsx::change model > a substitution session: every tier restarts (↻ footnote); one on another backend names that backend (mirrors the same-named test)',
+        'web/src/features/session/header.test.tsx::change model > an identity session: Claude tiers switch live with no ↻; tiers on another backend restart onto it (mirrors "an identity session: Claude tiers switch live with no badge; tiers on another backend restart onto it")',
+        'web/src/features/session/header.test.tsx::change model > an identity session mid-turn: its live Claude entries are disabled (mirrors "an identity session mid-turn: its live Claude tier entries are disabled until the turn ends")',
+        'web/src/features/session/header.test.tsx::change model > cross entries are disabled while busy: a turn, a running subagent, or a switch in flight (mirrors the same-named test)',
+        'web/src/features/session/header.test.tsx::change model > a refused pick shows the server\'s reason in a "Change model failed" toast (mirrors "a refused restart is shown inside the open picker — no alert()")',
+      ] },
   },
   {
     id: 'header-compact/R1',
@@ -542,7 +647,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'at desktop width a dead worktree session shows no ⋮',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'regressed', evidence: 'the ⋮ trigger renders when `canMenu || worktree` at every width; its only item is `md:hidden`, so desktop opens an empty menu' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > a stopped worktree session: below md ⋮ holds only Sync worktree; from md up there is no ⋮; without a worktree there is none at any width',
+        'web/e2e/header.spec.ts::a stopped worktree session: ⋮ holds only Sync worktree on a phone and is absent on desktop',
+      ] },
   },
   {
     id: 'header-compact/R3',
@@ -557,27 +665,85 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'header-compact/R4',
-    old: { file: 'tests/header-compact.test.mjs', tests: 'rest' },
+    old: { file: 'tests/header-compact.test.mjs', tests: [
+        'the ⋮ Sync item is shown and disabled exactly as the bar button is at desktop width',
+        'the ⋮ Sync item is shown and disabled exactly as the bar button is at desktop width > ${status}, ${worktree ? \'worktree\' : \'no worktree\'}',
+        'Merge is nowhere in the session header at any width, and Sync is still reachable',
+        'Merge is nowhere in the session header at any width, and Sync is still reachable > ${width}px',
+        'the ⋮ Sync item runs the same worktree action and closes the menu',
+        'crossing the breakpoint re-places Sync without a status frame',
+        'crossing the breakpoint re-places Sync without a status frame > widening with a dead worktree session open in ⋮ closes the menu',
+        'on narrow an open ⋮ on a crashed worktree session survives a re-render',
+        'no TEMP or DEBUG badge in the header at any width',
+        'no TEMP or DEBUG badge in the header at any width > ${width}px',
+        'title line leads with the custom title (or the project) and its status chips; the subline holds project/worktree',
+        'title line leads with the custom title (or the project) and its status chips; the subline holds project/worktree > title + worktree',
+        'title line leads with the custom title (or the project) and its status chips; the subline holds project/worktree > no title + worktree',
+        'title line leads with the custom title (or the project) and its status chips; the subline holds project/worktree > no title, no worktree: no subline at all',
+        'title line leads with the custom title (or the project) and its status chips; the subline holds project/worktree > title, no worktree: the subline is the secondary project alone',
+        'title line leads with the custom title (or the project) and its status chips; the subline holds project/worktree > stopping… and the overage auto-resume chip follow the status on line 1',
+        'an armed session shows the auto-resume chip with its queued count; clearing the resume removes it',
+        'the header chip keeps the full auto-resume wording while the needs-you strip entry shows the compact form',
+        'the title DOM is identical at 720 and 1024',
+        'deselecting a worktree session hides Sync in the bar and in ⋮',
+        'deselecting a worktree session hides Sync in the bar and in ⋮ > ${width}px',
+      ] },
     behaviour: 'the ⋮ Sync item mirrors and runs the bar action; Merge absent; menu persistence; no TEMP/DEBUG; the title/subline content; auto-resume chips; identical DOM across widths; hiding on deselect',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > Sync is offered exactly once and never disabled, for every status: in the bar from md up, in ⋮ below, and nowhere without a worktree',
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > no Merge in the header or ⋮ at either width, and Sync runs the worktree sync; from ⋮ it also closes the menu',
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > crossing md moves Sync between the bar and ⋮ with no new session data',
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > widening past md with a stopped worktree session\'s ⋮ open closes it',
+        'web/src/features/session/headerLayout.test.tsx::Sync and ⋮ across md > below md an open ⋮ on a crashed worktree session survives a re-render',
+        'web/src/features/session/headerLayout.test.tsx::title block > no TEMP or DEBUG badge at either width; debug capture shows only as the ⋮ item',
+        'web/src/features/session/headerLayout.test.tsx::title block > line 1 leads with the title, else the project, and its status badges; the subline holds the project only when titled, and the worktree; no subline without either',
+        'web/src/features/session/headerLayout.test.tsx::title block > Stopping… and the overage auto-resume badge follow on line 1',
+        'web/src/features/session/headerLayout.test.tsx::title block > an armed session\'s badge reads its full resume time and queued count with its tooltip; clearing the resume removes it',
+        'web/src/features/session/headerLayout.test.tsx::title block > the title block\'s DOM is identical below and above md',
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > a paused conductor\'s strip entry shows the compact auto-resume form, its tooltip leading with the full wording',
+        'web/src/features/session/SessionView.test.tsx::SessionView > an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent',
+        'web/e2e/header.spec.ts::resizing across md moves Sync between the bar and ⋮ and closes a stopped worktree session\'s open ⋮',
+      ] },
   },
   {
     id: 'header-compact-css/R1',
-    old: { file: 'tests/header-compact-css.test.mjs' },
+    old: { file: 'tests/header-compact-css.test.mjs', tests: [
+        'the narrow header rules sit in the @media block whose query is MOBILE_LAYOUT_QUERY',
+        'narrow header: no wrap on the bar or controls; ellipsis on the title lead and subline',
+        'header clipping uses overflow: clip, never hidden/auto/scroll, and nothing re-declares touch-action inside the header',
+        'desktop: .ih-line is display: contents, status chips are order 1, the separator is on .ih-secondary; no .ih-temp/.ih-debug rules',
+      ] },
     behaviour: 'styles.css invariants for the compact and desktop header (media query, no-wrap/ellipsis, overflow clip, touch-action, desktop one-row)',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/header.spec.ts::a long-titled worktree session: the controls share one row inside the viewport, the title ends in an ellipsis without growing the header, and Sync is in the bar only from md up',
+        'web/e2e/header.spec.ts::the subline\'s project and worktree names, and the model badge on desktop, each clip with an ellipsis inside the header',
+        'web/e2e/header.spec.ts::nothing in the session header is a scroll container, so the header keeps vertical swipes to itself',
+        'web/e2e/header.spec.ts::resizing across md moves Sync between the bar and ⋮ and closes a stopped worktree session\'s open ⋮',
+        'web/src/features/session/headerLayout.test.tsx::title block > no TEMP or DEBUG badge at either width; debug capture shows only as the ⋮ item',
+      ] },
   },
   {
     id: 'header-compact-swipe/R1',
-    old: { file: 'tests/header-compact-swipe.test.mjs' },
+    old: { file: 'tests/header-compact-swipe.test.mjs', tests: [
+        'a swipe down/up starting anywhere on the one-row bar reveals/conceals',
+        'a swipe starting on the relocated ⋮ Sync item is ignored',
+        'a tap on a bar button neither reveals nor is blocked',
+        'with ⋮ open, a swipe starting outside the panel still reveals',
+      ] },
     behaviour: 'the real phone header is the sticky-prompt swipe zone: swipes from any bar element act; menu items and taps don\'t; an open ⋮ doesn\'t block',
     viewports: ['phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/headerLayout.test.tsx::swipe zone > a vertical swipe starting on any bar element reveals (down) or conceals (up)',
+        'web/src/features/session/headerLayout.test.tsx::swipe zone > a swipe starting on a ⋮ item never reaches the header',
+        'web/src/features/session/headerLayout.test.tsx::swipe zone > a tap on a bar button neither reveals nor is blocked',
+        'web/src/features/session/headerLayout.test.tsx::swipe zone > with ⋮ open, a swipe on the bar still reveals',
+        'web/e2e/header.spec.ts::nothing in the session header is a scroll container, so the header keeps vertical swipes to itself',
+      ] },
   },
   {
     id: 'static/R3',
@@ -595,7 +761,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'Interrupt/Terminate lives in the ⋮ menu',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::session menu > Terminate, or Interrupt mid-turn, is the last ⋮ item and never a bar button',
+      ] },
   },
   {
     id: 'ctx-delta-fallback/R1',
@@ -618,7 +786,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'null usage from both sources leaves `ctx —`',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > null usage blocks from message_start and context_usage leave `ctx —` and the first-turn tooltip',
+      ] },
   },
   {
     id: 'ctx-latch-model-switch/R1',
@@ -651,7 +821,12 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a Haiku session\'s chip at turn end; known→unknown keeps the denominator; the status frame\'s switch-failure field',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > a Haiku session\'s alias/snapshot spelling pair keeps the reading through turn end',
+        'web/src/features/session/header.test.tsx::context + rate-limit chip > after a switch to a model with no known window, the carried window and the next reading render a percentage, not `ctx —`',
+        'web/src/app/controller.test.ts::routing session data > R3 a failure frame clears the switch and reverts the model; no status frame touches a known context window (mirrors ctx-latch-model-switch R3)',
+        'tests/context-window.test.mjs::a live switch to an out-of-catalog id keeps the previous known window',
+      ] },
   },
   {
     id: 'rebase-prompt-consent/R1',
@@ -697,11 +872,23 @@ export const LEDGER: readonly Row[] = [
     old: { file: 'web/e2e/legacy/header-compact.spec.ts', tests: [
         'narrow: one row, nothing past the viewport, the long title ellipsized, Sync out of the bar',
       ], formerly: 'tests/header-compact-browser.test.mjs' },
-    behaviour: 'phone header: one row, nothing overflows, the long title ellipsized, Sync out of the bar (real geometry)',
+    behaviour: 'phone header: controls on one row, nothing past the viewport, the long title ellipsized without growing the header, Sync out of the bar (real geometry)',
     viewports: ['phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/header.spec.ts::a long-titled worktree session: the controls share one row inside the viewport, the title ends in an ellipsis without growing the header, and Sync is in the bar only from md up',
+      ] },
+  },  {
+    id: 'legacy-header-compact/R3',
+    old: { file: 'web/e2e/legacy/header-compact.spec.ts', tests: [
+        'narrow: one row, nothing past the viewport, the long title ellipsized, Sync out of the bar',
+      ] },
+    behaviour: 'phone header is a single row at most 48px tall',
+    viewports: ['phone'],
+    area: 'header',
+    status: { kind: 'dropped', ruling: 'phone-two-line-header' },
   },
+
   {
     id: 'legacy-header-compact/R2',
     old: { file: 'web/e2e/legacy/header-compact.spec.ts', tests: [
@@ -732,7 +919,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'opening a plugin view clears them; leaving restores them',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/parity/header.spec.ts::opening a plugin view clears the session from the main bar, and leaving restores it > next',
+      ] },
   },
   {
     id: 'legacy-sidebar-lenses/R10',
@@ -743,7 +932,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'opening a conductor from its sidebar row sets the session title and shows the workers panel',
     viewports: ['desktop'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/parity/header.spec.ts::opening a conductor from its sidebar row shows its title and its workers > next',
+      ] },
   },
   {
     id: 'doc/A13',
@@ -751,7 +942,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a crashed session\'s header offers Resume, which respawns with `--resume <sid>`',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/headerLayout.test.tsx::Resume > a crashed or exited session offers Resume, which calls respawnActive; a live or switching session does not',
+        'web/src/app/sessionActions.test.ts::resuming the active session > respawnActive POSTs the active instance\'s respawn route, refreshes and resubscribes; a refusal toasts Resume failed',
+        'tests/instances.test.mjs::crash + respawn preserves sessionId, ring buffer, and uses --resume',
+      ] },
   },
   {
     id: 'doc/B25',
@@ -759,7 +954,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the header offers Resume when the session exited or crashed',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/headerLayout.test.tsx::Resume > a crashed or exited session offers Resume, which calls respawnActive; a live or switching session does not',
+        'web/src/app/sessionActions.test.ts::resuming the active session > respawnActive POSTs the active instance\'s respawn route, refreshes and resubscribes; a refusal toasts Resume failed',
+        'web/e2e/parity/header.spec.ts::a stopped session offers Resume, which brings it back > next',
+      ] },
   },
   {
     id: 'doc/B26',
@@ -767,7 +966,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'with no turn running the ⋮ item is 🛑 Terminate, behind a confirm',
     viewports: ['desktop', 'phone'],
     area: 'header',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/header.test.tsx::session menu > with no turn running, Terminate asks first: Cancel sends nothing, confirming sends one kill; mid-turn Interrupt sends interrupt without asking',
+        'web/e2e/parity/header.spec.ts::with no turn running, Terminate asks first: declining keeps the session, confirming stops it > next',
+      ] },
   },
 
   // composer

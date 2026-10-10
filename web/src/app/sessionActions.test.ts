@@ -24,7 +24,7 @@ import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
 import {
-  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, resumeSession, rewindActiveSession,
+  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, respawnActive, resumeSession, rewindActiveSession,
 } from './sessionActions';
 
 type Call = { url: string; method: string; body: any };
@@ -46,6 +46,7 @@ beforeEach(() => {
   vi.mocked(controller.refreshProjects).mockClear();
   vi.mocked(controller.refreshInstances).mockClear();
   vi.mocked(controller.selectInstance).mockClear();
+  vi.mocked(controller.send).mockClear();
   appStore.set({ activeId: null, instances: [] });
 });
 
@@ -256,5 +257,34 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(appStore.get().activeId).toBeNull();
     await performProjectDelete({ name: 'other', deleteDirectory: true });
     expect(calls[1].body).toEqual({ deleteDirectory: true });
+  });
+});
+
+describe('resuming the active session', () => {
+  it('respawnActive POSTs the active instance\'s respawn route, refreshes and resubscribes; a refusal toasts Resume failed', async () => {
+    stubFetch(() => ({ body: { ok: true } }));
+    appStore.set({ activeId: 'A' });
+    await respawnActive();
+    expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
+    expect(controller.refreshInstances).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(controller.send).mock.calls).toEqual([['subscribe', { id: 'A' }]]);
+    expect(toasts).toEqual([]);
+
+    calls = [];
+    vi.mocked(controller.refreshInstances).mockClear();
+    vi.mocked(controller.send).mockClear();
+    stubFetch(() => ({ status: 409, body: { error: 'instance is already running' } }));
+    await respawnActive();
+    expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
+    expect(toasts).toEqual([['error', 'Resume failed', 'instance is already running']]);
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.send).not.toHaveBeenCalled();
+
+    calls = [];
+    toasts.length = 0;
+    appStore.set({ activeId: null });
+    await respawnActive();
+    expect(calls).toEqual([]);
+    expect(toasts).toEqual([]);
   });
 });

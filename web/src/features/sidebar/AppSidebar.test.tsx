@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
+import { formatAutoResumeTime } from '@/lib/core/usage.js';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -100,6 +101,17 @@ describe('AppSidebar', () => {
     expect(header().getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(header());
     expect((finished().querySelector('ul') as HTMLElement).hidden).toBe(false);
+  });
+
+  it('a paused conductor\'s strip entry shows the compact auto-resume form, its tooltip leading with the full wording', () => {
+    const T = 1_900_000_000;
+    seed({ instances: [inst({ sessionId: 'paused', project: '.conduct', firstPrompt: 'Orchestrate', autoResumeAt: T, queuedCount: 2 })] as any });
+    renderSidebar();
+    const strip = document.querySelector('[data-strip]') as HTMLElement;
+    const clock = formatAutoResumeTime(T)!.replace(/^resumes at /, '');
+    const badge = within(strip).getByText(`2 · ⏸ ${clock}`);
+    expect(badge.title.startsWith(`${formatAutoResumeTime(T)} · 2 queued\n`)).toBe(true);
+    expect(badge.title).toBe(`${formatAutoResumeTime(T)} · 2 queued\nauto-stopped on overage — 2 messages queued; will resume when the window resets`);
   });
 
   it('a live conductor row opens its session; an inactive one resumes in .conduct and can be archived', () => {

@@ -11,28 +11,15 @@
 // regression test lives in tests/anchor-autoresume.test.mjs; this one proves
 // the behavior against a real browser end-to-end.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from '../harness/fixtures.ts';
-import { api } from '../harness/api.ts';
+import { api, installFakePlugin } from '../harness/api.ts';
 import { REPO_ROOT } from '../harness/boot.ts';
 
 const SCENARIO = path.join(REPO_ROOT, 'tests', 'fixtures', 'scenario-basic.json');
-const FAKE_PLUGIN = path.join(REPO_ROOT, 'tests', 'fixtures', 'fake-plugin');
 
 test.use({ ccOptions: { server: 'plugin-switch', scenario: SCENARIO }, viewport: { width: 1280, height: 800 } });
-
-/** Copies the fixture plugin under the projects root, adopts it as project `name`, rescans and enables it. */
-async function installFakePlugin(cc: Cc, name: string): Promise<void> {
-  const dir = path.join(cc.dirs.projects, name);
-  fs.cpSync(FAKE_PLUGIN, dir, { recursive: true });
-  const adopt = await api(cc, 'POST', '/api/projects/external', { name, path: dir });
-  expect(adopt.body?.ok, `adopt ${name}: ${JSON.stringify(adopt.body)}`).toBe(true);
-  await api(cc, 'POST', '/api/plugins/rescan');
-  const enable = await api(cc, 'POST', '/api/plugins/fake-plugin/enable');
-  expect(enable.status, `enable fake-plugin: ${JSON.stringify(enable.body)}`).toBeLessThan(300);
-}
 
 async function spawnIdle(cc: Cc, project: string): Promise<void> {
   await api(cc, 'POST', '/api/projects', { name: project });
