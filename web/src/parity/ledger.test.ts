@@ -109,6 +109,36 @@ describe('inventory', () => {
     expect(oldUiInventory(root)).toEqual(['tests/join.test.mjs', 'tests/pub.test.mjs', 'tests/pubdir.test.mjs']);
   });
 
+  it('a .ts file nested under public/ is not shared: a test naming it is inventoried', () => {
+    const root = tree({
+      ...PUBLIC,
+      'public/sub/nested.ts': 'export const n = 1;\n',
+      'tests/nested.test.mjs': "const p = 'public/sub/nested.ts';\n",
+    });
+    expect(oldUiPublicFiles(root)).toEqual(['old.js', 'sub/nested.ts', 'vendor/lib.js']);
+    expect(oldUiInventory(root)).toEqual(['tests/nested.test.mjs']);
+  });
+
+  it("a string exactly 'public/X' inventories a test where no other form can: X under a web/ directory", () => {
+    // 'public/web/page.js' contains web/, so the bare-name form is excluded, and
+    // it has no leading slash, so it does not end with '/public/web/page.js'.
+    const root = tree({
+      ...PUBLIC,
+      'public/web/page.js': 'export const w = 1;\n',
+      'tests/direct.test.mjs': "const p = 'public/web/page.js';\n",
+    });
+    expect(oldUiInventory(root)).toEqual(['tests/direct.test.mjs']);
+  });
+
+  it("a string containing public/ counts as a mention of public for a bare name in another string", () => {
+    const root = tree({
+      ...PUBLIC,
+      'tests/mention.test.mjs': "const dir = 'public/assets-dir';\nconst p = 'old.js';\n",
+      'tests/bare.test.mjs': "const p = 'old.js';\n",
+    });
+    expect(oldUiInventory(root)).toEqual(['tests/mention.test.mjs']);
+  });
+
   it('every web/e2e/legacy/**/*.spec.ts is inventoried; other web/e2e specs are not', () => {
     const root = tree({
       ...PUBLIC,
@@ -161,6 +191,15 @@ describe('titles', () => {
       "commit('y', () => {});",
     ].join('\n');
     expect(testTitles('tests/x.test.mjs', code)).toEqual(['fixed', 'W', 'W > s', 'A', 'F', 'F > g']);
+  });
+
+  it("a function whose inner test call passes something other than its own first parameter is no wrapper", () => {
+    const code = [
+      'function f(name, fn) { test(other, fn); }',
+      "f('x', () => {});",
+      "test('t', () => {});",
+    ].join('\n');
+    expect(testTitles('tests/x.test.mjs', code)).toEqual(['t']);
   });
 
   it('a non-string first argument adds no level; test.describe.configure, test.use, test.step, test.skip(cond, msg) and test.todo add no title', () => {
@@ -342,6 +381,13 @@ describe('checkLedger', () => {
     const stale = { ...data(), survives: [...data().survives, { file: 'tests/gone.test.mjs', tests: ['g'], note: 'n' }] };
     expect(checkLedger(stale, world())).toEqual([
       { kind: 'stale-survivor', subject: 'tests/gone.test.mjs', detail: 'SURVIVES names a file that is not an old-UI test file' },
+    ]);
+  });
+
+  it('a file with one whole-file row and a SURVIVES entry is split, so the row omitting tests is a partition problem', () => {
+    const d = { ...data(), survives: [...data().survives, { file: OLD, tests: ['o1'], note: 'n' }] };
+    expect(checkLedger(d, world())).toEqual([
+      { kind: 'partition', subject: OLD, detail: 'old/R1 omits tests in a split file' },
     ]);
   });
 
