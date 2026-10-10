@@ -10,6 +10,7 @@
 // controller's notification-click handling: the SW posts a
 // `cc-notification-click` message, the page fallback dispatches the same-named
 // window event.
+import { WEB_BASE } from '../../../base.ts';
 import { askLabel } from '@/lib/core/needsYou.js';
 import { createAttentionTracker } from '@/lib/core/attention.js';
 import { createStore } from '@/state/createStore';
@@ -24,7 +25,7 @@ export const notificationStore = createStore<{ permission: Permission; globalEna
 
 let swRegistration: ServiceWorkerRegistration | null = null;
 
-export const NOTIFICATION_ICON = '/icon-192.png';
+export const NOTIFICATION_ICON = `${WEB_BASE}icon-192.png`;
 const SUMMARY_TAG = 'cc-summary';
 const SUMMARY_PROJECT_LIMIT = 3;
 
@@ -38,15 +39,16 @@ export function isNotificationAPIAvailable() {
 }
 
 /**
- * Register /sw.js once. Done eagerly at boot even without notification
- * permission: Chrome only offers "Install app" (a real PWA) once a service
- * worker is active.
+ * Register the UI's own `sw.js` (under the base path) once. Its scope is the
+ * base path, so it never replaces the old UI's root registration. Done eagerly
+ * at boot even without notification permission: Chrome only offers "Install
+ * app" (a real PWA) once a service worker is active.
  */
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (swRegistration) return swRegistration;
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
   try {
-    const reg = await navigator.serviceWorker.register('/sw.js');
+    const reg = await navigator.serviceWorker.register(`${WEB_BASE}sw.js`);
     await navigator.serviceWorker.ready;
     swRegistration = reg;
     return reg;

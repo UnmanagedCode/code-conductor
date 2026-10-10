@@ -9,7 +9,7 @@ async function spawnSession(request: APIRequestContext, project: string) {
 
 test('a prompt streams a reply with tool calls, prose and a turn footer', async ({ page, request }) => {
   const { sessionId } = await spawnSession(request, `e2e-chat-${test.info().project.name}`);
-  await page.goto(`/#session=${sessionId}`);
+  await page.goto(`/next/#session=${sessionId}`);
   const composer = page.locator('#composer-input');
   await expect(composer).toBeEnabled();
   await composer.fill('Add a rate limiter to the API');
@@ -26,7 +26,7 @@ test('a prompt streams a reply with tool calls, prose and a turn footer', async 
 
 test('the action group expands to show each tool call with its arguments', async ({ page, request }) => {
   const { sessionId } = await spawnSession(request, `e2e-tools-${test.info().project.name}`);
-  await page.goto(`/#session=${sessionId}`);
+  await page.goto(`/next/#session=${sessionId}`);
   await page.locator('#composer-input').fill('go');
   await page.locator('#composer-input').press('Enter');
   const group = page.locator('[data-item=assistant]').getByRole('button', { name: /4 actions/ });
@@ -38,7 +38,7 @@ test('the action group expands to show each tool call with its arguments', async
 
 test('a reload restores the session named in the URL', async ({ page, request }) => {
   const { sessionId } = await spawnSession(request, `e2e-reload-${test.info().project.name}`);
-  await page.goto(`/#session=${sessionId}`);
+  await page.goto(`/next/#session=${sessionId}`);
   await page.locator('#composer-input').fill('hello');
   await page.locator('#composer-input').press('Enter');
   await expect(page.locator('[data-item=turn-end]').first()).toBeVisible();
@@ -49,7 +49,7 @@ test('a reload restores the session named in the URL', async ({ page, request })
 
 test('the theme follows the system and can be forced dark', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
-  await page.goto('/');
+  await page.goto('/next/');
   await expect(page.locator('html')).toHaveClass(/dark/);
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(page.locator('html')).not.toHaveClass(/dark/);

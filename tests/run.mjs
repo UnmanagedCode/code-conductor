@@ -24,6 +24,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const safeRoot = createSafeRoot();
 process.env.PROJECTS_ROOT = safeRoot.projectsRoot;
 process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
+// Spawned `node server.ts` children must not build web/dist concurrently.
+process.env.CC_SKIP_WEB_BUILD = '1';
 
 // Run-unique marker, exported BEFORE any child forks so every descendant at any
 // depth inherits it. This is how a leaked process is identified EXACTLY rather

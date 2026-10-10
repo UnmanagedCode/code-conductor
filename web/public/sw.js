@@ -20,7 +20,7 @@ self.addEventListener('notificationclick', (event) => {
   // web/src/features/notifications/notifications.ts's
   // `fire`) — undefined/missing fields here just mean a notification fired
   // by pre-update code, and everything below degrades to the old
-  // focus-first-client / bare-'/' behavior for that case.
+  // focus-first-client / open-the-app behavior for that case.
   const data = event.notification.data;
   event.notification.close();
   event.waitUntil((async () => {
@@ -41,7 +41,9 @@ self.addEventListener('notificationclick', (event) => {
       } catch { /* fall through */ }
     }
     if (self.clients.openWindow) {
-      const url = data?.sessionId ? `/#session=${encodeURIComponent(data.sessionId)}` : '/';
+      // Relative: openWindow resolves against this script's URL, so the window
+      // opens under the base path the UI is served at.
+      const url = data?.sessionId ? `./#session=${encodeURIComponent(data.sessionId)}` : './';
       return self.clients.openWindow(url);
     }
   })());

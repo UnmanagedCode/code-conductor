@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __setSwRegistrationForTests, attentionNotification, createAttentionNotifier, fire, initNotifications,
-  notificationStore, shouldNotify, summarizeOpenNotifications, toggleNotifications, type AttentionTransition,
+  notificationStore, registerServiceWorker, shouldNotify, summarizeOpenNotifications, toggleNotifications,
+  type AttentionTransition,
 } from './notifications';
 import { isSessionMuted, muteSession } from './mutes';
 
@@ -174,6 +175,34 @@ describe('fire without a service worker', () => {
     expect(events.map((e) => e.detail)).toEqual([data]);
     expect(n.closed).toBe(true);
     focus.mockRestore();
+  });
+});
+
+describe('the base path', () => {
+  it('registers the service worker under it, so its scope never covers the old UI at /', async () => {
+    __setSwRegistrationForTests(null);
+    const reg = {} as ServiceWorkerRegistration;
+    const register = vi.fn(async () => reg);
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register, ready: Promise.resolve(reg) } });
+    try {
+      expect(await registerServiceWorker()).toBe(reg);
+      expect(register).toHaveBeenCalledWith('/next/sw.js');
+    } finally {
+      delete (navigator as any).serviceWorker;
+      __setSwRegistrationForTests(null);
+    }
+  });
+
+  it('a notification carries the icon from under it', () => {
+    __setSwRegistrationForTests(null);
+    const created: { opts: NotificationOptions }[] = [];
+    (globalThis as any).Notification = class {
+      static permission = 'granted';
+      constructor(_title: string, public opts: NotificationOptions) { created.push(this); }
+      close() {}
+    };
+    fire({ title: 't', body: 'b', tag: 'session:s', data: { project: 'p', instanceId: 'i', sessionId: 's' } });
+    expect(created.map((n) => n.opts.icon)).toEqual(['/next/icon-192.png']);
   });
 });
 

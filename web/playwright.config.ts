@@ -15,7 +15,10 @@ export default defineConfig({
   webServer: {
     command: 'node e2e/server.mjs',
     cwd: import.meta.dirname,
-    url: `http://127.0.0.1:${port}/api/health`,
+    // The UI route, not /api/health: the server builds web/dist at boot and
+    // answers /next/ with a 503 "building" page until it is done, which keeps
+    // Playwright polling instead of running the first spec against that page.
+    url: `http://127.0.0.1:${port}/next/`,
     timeout: 120_000,
     reuseExistingServer: false,
   },

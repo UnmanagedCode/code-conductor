@@ -16,24 +16,30 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import { WEB_BASE } from '../web/base.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WEB_ROOT = path.join(repoRoot, 'web');
 export const WEB_DIST = path.join(WEB_ROOT, 'dist');
+/** The Express mount for the web UI: WEB_BASE without its trailing slash. */
+export const WEB_MOUNT = WEB_BASE.slice(0, -1);
 const STAMP = '.source-hash';
 
 // Inputs: the web app itself, the shared modules it imports from public/, and
 // the lockfile (a dependency bump changes the bundle).
 const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'public')];
 const INPUT_FILES = [path.join(repoRoot, 'package-lock.json')];
-const SKIP_DIRS = new Set(['dist', 'node_modules']);
+// Build output, dependencies and Playwright output are not inputs; a killed
+// build leaves a `dist.tmp-<pid>` behind, which must not trigger a rebuild either.
+const SKIP_DIRS = new Set(['dist', 'node_modules', 'test-results', 'playwright-report']);
+const skipDir = (name: string): boolean => SKIP_DIRS.has(name) || name.startsWith('dist.tmp-');
 
 function listFiles(dir: string, out: string[]): void {
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) listFiles(p, out); }
+    if (e.isDirectory()) { if (!skipDir(e.name)) listFiles(p, out); }
     else if (e.isFile()) out.push(p);
   }
 }
@@ -54,35 +60,37 @@ export function webSourceHash(): string {
   return h.digest('hex');
 }
 
-function builtHash(): string | null {
+function builtHash(distDir: string): string | null {
   try {
-    if (!fs.existsSync(path.join(WEB_DIST, 'index.html'))) return null;
-    return fs.readFileSync(path.join(WEB_DIST, STAMP), 'utf8').trim();
+    if (!fs.existsSync(path.join(distDir, 'index.html'))) return null;
+    return fs.readFileSync(path.join(distDir, STAMP), 'utf8').trim();
   } catch { return null; }
 }
 
-type WebState = { phase: 'idle' | 'building' | 'ready' | 'failed'; error: string | null };
+export type WebState = { phase: 'idle' | 'building' | 'ready' | 'failed'; error: string | null };
 const state: WebState = { phase: 'idle', error: null };
 
-export async function ensureWebBuild({ log = console }: { log?: Pick<Console, 'log' | 'error'> } = {}): Promise<WebState> {
+export async function ensureWebBuild(
+  { log = console, distDir = WEB_DIST }: { log?: Pick<Console, 'log' | 'error'>; distDir?: string } = {},
+): Promise<WebState> {
   const hash = webSourceHash();
-  if (builtHash() === hash) { state.phase = 'ready'; return { ...state }; }
+  if (builtHash(distDir) === hash) { state.phase = 'ready'; return { ...state }; }
   const started = Date.now();
   state.phase = 'building';
   log.log('web: frontend sources changed — building web/dist …');
-  const tmp = `${WEB_DIST}.tmp-${process.pid}`;
+  const tmp = `${distDir}.tmp-${process.pid}`;
   try {
     const { build } = await import('vite');
     await build({ configFile: path.join(WEB_ROOT, 'vite.config.ts'), logLevel: 'warn', build: { outDir: tmp, emptyOutDir: true } });
     fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
-    fs.rmSync(WEB_DIST, { recursive: true, force: true });
-    fs.renameSync(tmp, WEB_DIST);
+    fs.rmSync(distDir, { recursive: true, force: true });
+    fs.renameSync(tmp, distDir);
     Object.assign(state, { phase: 'ready', error: null });
     log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {
     fs.rmSync(tmp, { recursive: true, force: true });
     Object.assign(state, { phase: 'failed', error: e instanceof Error ? e.message : String(e) });
-    const stale = fs.existsSync(path.join(WEB_DIST, 'index.html'));
+    const stale = fs.existsSync(path.join(distDir, 'index.html'));
     log.error([
       '='.repeat(60),
       `WARNING  web frontend build failed — ${stale ? 'serving the previous build' : 'the UI is unavailable (API still up)'}`,
@@ -99,13 +107,26 @@ const BUILDING_PAGE = `<!doctype html><meta charset="utf-8"><meta http-equiv="re
 <body style="font:16px system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#1c1917;color:#f5f5f4">
 <p>Building the interface&hellip; this page refreshes by itself.</p></body>`;
 
-/** Serves web/dist, or the building / failed page while there is none. */
-export function webHandler(): express.Router {
+/**
+ * Mounted at WEB_MOUNT: serves the built UI, or the building / failed page while
+ * there is none. `distDir` and `getState` are injectable for tests.
+ */
+export function webHandler(
+  { distDir = WEB_DIST, getState = () => state }: { distDir?: string; getState?: () => WebState } = {},
+): express.Router {
   const router = express.Router();
-  router.use(express.static(WEB_DIST));
+  // The document must sit inside the UI's service-worker scope (WEB_BASE), so
+  // the bare mount redirects. express.static only does that once a build exists.
+  router.use((req, res, next) => {
+    const q = req.originalUrl.indexOf('?');
+    if ((q === -1 ? req.originalUrl : req.originalUrl.slice(0, q)) !== WEB_MOUNT) return next();
+    res.redirect(301, WEB_BASE + (q === -1 ? '' : req.originalUrl.slice(q)));
+  });
+  router.use(express.static(distDir));
   router.get('/', (_req, res) => {
-    if (state.phase === 'failed') {
-      res.status(503).type('text/plain').send(`The web frontend failed to build:\n\n${state.error}\n\nThe server log has the details.`);
+    const { phase, error } = getState();
+    if (phase === 'failed') {
+      res.status(503).type('text/plain').send(`The web frontend failed to build:\n\n${error}\n\nThe server log has the details.`);
     } else {
       res.status(503).type('html').send(BUILDING_PAGE);
     }

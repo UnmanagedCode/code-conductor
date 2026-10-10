@@ -124,6 +124,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 0 0 auto;
 }
 .sidebar-footer-btn { width: 100%; font-size: 12px; }
+a.sidebar-footer-btn { display: block; text-align: center; text-decoration: none; color: inherit; }
 .sidebar-status {
   font-size: 11px; color: var(--muted);
   min-height: 14px;
