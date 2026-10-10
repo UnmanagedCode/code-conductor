@@ -28,6 +28,12 @@ npm start              # http://127.0.0.1:8787  (process title: code-conductor)
 npm run typecheck      # tsc --noEmit — strict; also runs before every npm test (pretest)
 npm test               # integration suite (node:test)
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
+npm run test:web       # web UI suite (Vitest, web/) — not part of npm test
+npm run test:all       # npm test && npm run test:web — the gate for work touching web/
+npm run test:e2e       # web UI end-to-end (Playwright; first: npx playwright install chromium)
+npm run dev:web        # Vite dev server for web/, proxying the API to a running cc (CC_DEV_SERVER)
+npm run build          # build web/ into web/dist/ by hand (the server also builds it at start)
+PORT=8790 npm run start:rework   # an isolated cc: scratch projects root + empty Claude config dir (CC_ISOLATED_ROOT), no Claude login
 ```
 
 Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — one host projects dir + this checkout.
@@ -45,6 +51,8 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 **Text-to-speech (optional).** Same shape: open **⚙ Settings → Voice → Speech** and Install a voice from the UI (runs `bin/install-piper.sh` server-side, streams the log, sets the voice active), or run that script manually (`PIPER_VOICE_NAME=<name>`; default `en_US-lessac-medium`). The conversation's 🔊 buttons appear once Piper is available. Override paths via `PIPER_PYTHON` / `PIPER_VENV` / `PIPER_VOICE` / `PIPER_SYNTH_SCRIPT` / `INSTALL_ROOT` env vars. Build internals: [docs/architecture.md](docs/architecture.md) → `tts.ts`.
 
 **Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses Web App Manifest (`public/manifest.webmanifest`) + SVG icon + Service Worker for standalone-mode launch.
+
+**Web UI (preview).** `web/` is a React UI served at `/next/` beside the old UI, which stays at `/` and `/legacy/`; each UI's sidebar footer links to the other. The server builds `web/` into `web/dist/` at start when its sources changed (`src/webBuild.ts`). Detail: [docs/features.md](docs/features.md) → Two UIs; build, mounts and layout: [docs/architecture.md](docs/architecture.md) → `src/webBuild.ts`, `web/`.
 
 **Visual debug.** Playwright + Termux Chromium harness in `harness/playwright/`, which is a thin wrapper over the **code-playwright plugin** — install it from Settings → Plugin Library (it lands at `<projectsRoot>/.plugins/code-playwright`); see [`harness/playwright/README.md`](harness/playwright/README.md). Not wired into the main test suite.
 
@@ -187,6 +195,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
   - **Upgrading strands existing remote transcripts.** Sessions already on disk for a project on a non-local system stay at `~/.claude/projects/<encodeCwd(systemPath)>/`, which cc no longer reads: they stop listing, locating, reading and resuming. Nothing is deleted — the jsonls remain, and the CLI prunes its own `projects/` after ~30 days. There is deliberately no migration.
 - **Remote Systems, the FUSE-union chroot and Voice are per-platform capabilities** (`Platform.capabilities`) — hidden in the UI and refused with a stable code on a platform that turns them off; table in [docs/architecture.md](docs/architecture.md) → `src/platform/`.
 - **Windows: a kill takes up to ~5 s** (an interrupted turn is given time to exit cleanly).
+- **The first start after a `web/` change rebuilds the web UI** — `/next/` shows "Building the interface…" (and refreshes itself) until the build finishes; the old UI at `/` is unaffected.
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
 - **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — you are woken when the worker's turn ends.
@@ -198,7 +207,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - [docs/models.md](docs/models.md) — the backend registry (launch templates + env), custom models, capability tiers & roles, Claude context-window policy, the Settings → Backends / → Models panels
 - [docs/protocol.md](docs/protocol.md) — subprocess protocol (CLI flags + hooks), WebSocket protocol, REST endpoints
 - [docs/architecture.md](docs/architecture.md) — stack, component layout, instance lifecycle, on-disk state, migrations, testing
-- [docs/frontend-testing.md](docs/frontend-testing.md) — testing `public/` under happy-dom (its UA-stylesheet and `hashchange` gaps, dialog reopen tests) and what the fake-CLI + headless-Chromium pass can and cannot reach
+- [docs/frontend-testing.md](docs/frontend-testing.md) — testing `public/` under happy-dom (its UA-stylesheet and `hashchange` gaps, dialog reopen tests) and what the fake-CLI + headless-Chromium pass can and cannot reach; the web UI's Vitest (`test:web`) and Playwright (`test:e2e`) suites
 - [docs/windows.md](docs/windows.md) — Windows runtime, launcher and installer contract
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [docs/systems-protocol.md](docs/systems-protocol.md) — the System provider wire protocol: frames, capabilities, the `exec` lifecycle, the derivations, the error taxonomy, and how to write or verify a provider
