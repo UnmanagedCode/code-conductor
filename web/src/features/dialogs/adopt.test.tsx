@@ -23,7 +23,7 @@ import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openAdoptProjectDialog } from './api';
 import { refreshProjects } from '@/app/controller';
 import { loadCapabilities } from '@/lib/core/capabilities.js';
-import { routeFetch, type Route, type RoutedCall } from '@/test/routeFetch';
+import { held, routeFetch, type Route, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
 
 const SCAN = {
@@ -226,6 +226,23 @@ describe('Add project dialog', () => {
     expect(scanNote()).toBe("Type an absolute path on target 'ctr7' of system 'prod-box'.");
   });
 
+  // A registry that cannot be read costs only the remote systems: this machine is still offered and a local adopt still posts.
+  it('an unreadable registry still offers this machine, and a local adopt still posts', async () => {
+    const calls = stub({
+      'GET /api/settings/systems': () => ({ status: 500, json: {} }),
+      'POST /api/projects/external': () => OK,
+    });
+    await renderAdopt();
+    await waitFor(() => expect(screen.getByText(/Could not read the systems registry \(HTTP 500\)/)).toBeTruthy());
+    expect(await system()).toBeTruthy();
+    typeName('api');
+    setPath('/root/api');
+    add();
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    expect(posts(calls)[0].body).toEqual({ name: 'api', path: '/root/api' });
+    await waitFor(() => expect(dialogStore.get().adoptProject).toBe(false));
+  });
+
   // A remote adopt sends the chosen system and the trimmed target beside name and path.
   it('a remote adopt posts the system and the trimmed target', async () => {
     const calls = stub({ 'POST /api/projects/external': () => OK });
@@ -276,16 +293,23 @@ describe('Add project dialog', () => {
     expect(posts(calls).map((c) => c.body)).toEqual([{ name: 'api', path: 'srv/api' }]);
   });
 
-  // The stale retry sends the first POST's whole placement (system and target) with onStaleRecord.
+  // The stale retry sends the first POST's whole target (name, path, system, target), never the form as it stands by then.
   it('the stale retry re-sends the placement the first POST carried', async () => {
+    const first = held<RouteAnswer>();
     let n = 0;
-    const calls = stub({ 'POST /api/projects/external': () => (++n === 1 ? STALE : OK) });
+    const calls = stub({ 'POST /api/projects/external': () => (++n === 1 ? first.answer : OK) });
     await renderAdopt();
     await chooseSystem('Prod box (prod-box)');
     await typeTarget('ctr7');
     typeName('api');
     setPath('/srv/api');
     add();
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    // While the first answer is pending, the form moves: this machine (which empties the path) and another name.
+    await chooseSystem('This machine');
+    typeName('other');
+    expect(pathField().value).toBe('');
+    await act(async () => { first.release(STALE); });
     fireEvent.click(await screen.findByRole('button', { name: 'Relocate' }));
     await waitFor(() => expect(posts(calls)).toHaveLength(2));
     expect(posts(calls)[1].body).toEqual({ name: 'api', path: '/srv/api', system: 'prod-box', remoteId: 'ctr7', onStaleRecord: 'relocate' });

@@ -91,7 +91,7 @@ describe('placement', () => {
     expect(placement().system).toBe('prod-box');
   });
 
-  // A listed system's dropdown is the placeholder, its ids in order, then Other…, with no free text; a picked id is the target.
+  // A listed system's dropdown is the placeholder, its ids in order, then Other…, with no free text and no note; a picked id is the target.
   it('a system that lists its targets offers them between the placeholder and Other…, and a picked one is the target', async () => {
     routeFetch({
       'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }),
@@ -100,12 +100,14 @@ describe('placement', () => {
     render(<Harness />);
     await flush();
     await chooseSystem('Prod box (prod-box)');
+    await findTargetSelect();
+    expect(targetNote()).toBeNull();
     expect(chooseOption(await findTargetSelect(), 'ctr-b')).toEqual(['Choose a target…', 'ctr-a', 'ctr-b', 'Other…']);
     expect(screen.queryByRole('textbox', { name: 'Target' })).toBeNull();
     expect(placement().remote).toBe('ctr-b');
   });
 
-  // A failed listing keeps free text and quotes the provider's reason in the note.
+  // A failed listing keeps free text, offers no dropdown, and quotes the provider's reason in the note.
   it('a failed listing keeps free text and names the reason', async () => {
     routeFetch({
       'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }),
@@ -116,9 +118,10 @@ describe('placement', () => {
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toBe("Could not list the targets of system 'prod-box' (the provider is down). Type one."));
+    expect(screen.queryByRole('combobox', { name: 'Target' })).toBeNull();
   });
 
-  // A non-OK listing response is a failure named by its HTTP status, with free text kept.
+  // A non-OK listing response is a failure named by its HTTP status, with free text kept and no dropdown.
   it('a non-OK listing response keeps free text and names its status', async () => {
     routeFetch({
       'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }),
@@ -129,6 +132,7 @@ describe('placement', () => {
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toContain('(HTTP 503)'));
+    expect(screen.queryByRole('combobox', { name: 'Target' })).toBeNull();
   });
 
   // An empty listing still offers the dropdown (placeholder and Other… only) and says the system lists nothing.

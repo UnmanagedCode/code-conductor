@@ -229,6 +229,9 @@ describe('New project dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(dialogStore.get().newProject).toBe(false));
     await openNew();
+    expect(queryPathField()).toBeNull();
+    expect(listed()).toEqual([]);
+    expect(pathNote()).toBe('');
     typeName('demo');
     await chooseSystem('Prod box (prod-box)');
     await typeTarget('r1');
@@ -437,7 +440,7 @@ describe('New project dialog', () => {
     expect(label.parentElement!.contains(order[3])).toBe(true);
   });
 
-  // Conventions are offered core-first then per plugin as independent boxes with no master toggle; the picks are posted as conventions only, and the scaffold shows after.
+  // Conventions are offered core-first then per plugin as independent boxes with no master toggle and no "sets up" tag; the picks are posted as conventions only, and the scaffold shows after.
   it('conventions are grouped core first then per plugin, each box picked on its own, and the picks are posted with the scaffold shown after', async () => {
     const calls = stub({
       'GET /api/settings/conventions/project': () => ({ json: { conventions: [
@@ -451,6 +454,7 @@ describe('New project dialog', () => {
     await waitFor(() => expect(document.querySelectorAll('legend')).toHaveLength(2));
     expect([...document.querySelectorAll('legend')].map((l) => l.textContent)).toEqual(['Project conventions', 'playwright-harness']);
     expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+    expect(document.querySelector('fieldset')!.parentElement!.textContent).not.toMatch(/sets up/);
     const box = (slug: string) => document.querySelector(`[data-convention="${slug}"]`) as HTMLElement;
     fireEvent.click(box('playwright-harness/vis-check'));
     expect(box('playwright-harness/vis-check').getAttribute('aria-checked')).toBe('true');

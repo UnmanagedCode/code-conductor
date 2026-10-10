@@ -260,6 +260,21 @@ describe('PathInput', () => {
     expect(note()).toBe('');
   });
 
+  // A reset closes the open list and empties the cache, so a directory listed before it is fetched again.
+  it('a new resetKey closes the open list and clears the cache: the same directory is fetched again', async () => {
+    answers['/h'] = { ok: true, entries: ['a'] };
+    const { rerender } = render(<Harness resetKey={1} />);
+    type('/h/');
+    await settle();
+    expect(options()).toEqual(['a']);
+    rerender(<Harness resetKey={2} />);
+    expect(options()).toEqual([]);
+    type('/h/a');
+    await settle();
+    expect(requests).toHaveLength(2);
+    expect(options()).toEqual(['a']);
+  });
+
   // The field opts out of the browser's own autocomplete and spellcheck and declares its list.
   it('the input opts out of browser autocomplete and spellcheck and declares a list', () => {
     render(<Harness />);
