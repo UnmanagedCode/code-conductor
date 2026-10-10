@@ -13,6 +13,11 @@ export type PlacementField = 'name' | 'system' | 'target' | 'path' | 'pathList' 
 export type SettingsSection = 'account' | 'archived' | 'about' | 'models' | 'backends' | 'systems';
 export type SpawnField = 'worktree' | 'worktreeHint' | 'debug';
 export type SpawnSelect = 'effort' | 'thinking';
+// Dialogs part 3 (card 2026-0639)
+export type SessionDialog = 'summary' | 'stats' | 'prune';
+export type SummaryTier = 'title' | 'short' | 'medium' | 'long';
+export type PruneField = 'cut' | 'cutLabel' | 'thinking' | 'minimal';
+export type RestartChoice = 'resume' | 'only';
 
 export interface Ui {
   name: UiName;
@@ -179,6 +184,48 @@ export interface Ui {
   sessionRowActive(row: Locator): Promise<boolean>;
   /** A session row's label weight, whether it draws a 1px selection frame, and its fill. */
   sessionRowStyle(row: Locator): Promise<{ weight: string; framed: boolean; fill: string }>;
+
+  // Dialogs part 3 (card 2026-0639)
+  /** Opens the active session's ⋮ item for `which` and returns its dialog. */
+  openSessionDialog(page: Page, which: SessionDialog): Promise<Locator>;
+  /** ⋮ → Rename: returns the prefilled title, then saves `answer` (null cancels) and waits until the prompt or dialog is gone. */
+  renameSession(page: Page, answer: string | null): Promise<string>;
+  /** Closes a Summary or Statistics dialog through its Close control and waits until it is hidden. */
+  closeSessionDialog(dialog: Locator): Promise<void>;
+  /** One read of the summary tiers in order and the selected one. */
+  summaryTiers(dialog: Locator): Promise<{ tiers: string[]; selected: string | null }>;
+  pickSummaryTier(dialog: Locator, tier: SummaryTier): Promise<void>;
+  summaryContent(dialog: Locator): Locator;
+  summaryStale(dialog: Locator): Locator;
+  summaryCost(dialog: Locator): Locator;
+  /** The Generate summary / Regenerate button. */
+  summaryGenerate(dialog: Locator): Locator;
+  summaryUseAsTitle(dialog: Locator): Locator;
+  statsTable(dialog: Locator): Locator;
+  /** The note shown when the session spawned no workers. */
+  statsNote(dialog: Locator): Locator;
+  pruneField(dialog: Locator, field: PruneField): Locator;
+  /** The savings table's rows, Thinking first. */
+  pruneSavingsRows(dialog: Locator): Locator;
+  applyPrune(dialog: Locator): Promise<void>;
+  /** Opens New workspace from the Projects-lens project menu and returns the dialog. */
+  openNewWorkspace(page: Page): Promise<Locator>;
+  /** Opens a workspace's editor from its header's pencil and returns the dialog. */
+  openEditWorkspace(page: Page, name: string): Promise<Locator>;
+  /** Selects the Projects lens and returns the workspace's header. */
+  workspaceHeader(page: Page, name: string): Promise<Locator>;
+  workspaceName(dialog: Locator): Locator;
+  /** The member box of `project` in the workspace dialog. */
+  workspaceMember(dialog: Locator, project: string): Locator;
+  saveWorkspace(dialog: Locator): Promise<void>;
+  /** Clicks Delete workspace and answers the confirm. */
+  deleteWorkspace(page: Page, dialog: Locator, confirm: boolean): Promise<void>;
+  /** Clicks the sidebar's restart button once. */
+  clickRestart(page: Page): Promise<void>;
+  restartDialog(page: Page): Locator;
+  restartChoice(dialog: Locator, which: RestartChoice): Locator;
+  /** Leaves the restart dialog without choosing and waits until it is hidden. */
+  dismissRestart(page: Page, dialog: Locator): Promise<void>;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -585,6 +632,117 @@ export const legacy: Ui = {
       fill: cs.backgroundColor,
     };
   }),
+
+  // Dialogs part 3 (card 2026-0639)
+  async openSessionDialog(page, which) {
+    const ids: Record<SessionDialog, [string, string]> = {
+      summary: ['summarize-session-btn', 'summary-dialog'], stats: ['session-stats-btn', 'stats-dialog'], prune: ['prune-session-btn', 'prune-dialog'],
+    };
+    const item = page.locator(`#${ids[which][0]}`);
+    const dialog = page.locator(`#${ids[which][1]}`);
+    // Clicked only while the dialog is closed: a second showModal() throws.
+    await expect(async () => {
+      if (!(await dialog.isVisible())) {
+        if (!(await item.isVisible())) await page.locator('#overflow-toggle').click();
+        await item.click({ timeout: 1_000 });
+      }
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  async renameSession(page, answer) {
+    const item = page.locator('#rename-session-btn');
+    await expect(async () => {
+      if (!(await item.isVisible())) await page.locator('#overflow-toggle').click();
+      await expect(item).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    // The old UI asks with the browser's prompt(), prefilled with the current title.
+    const asked = new Promise<string>((resolve) => {
+      page.once('dialog', (d) => {
+        const prefill = d.defaultValue();
+        void (answer === null ? d.dismiss() : d.accept(answer)).then(() => resolve(prefill));
+      });
+    });
+    await item.click();
+    return asked;
+  },
+  async closeSessionDialog(dialog) {
+    await dialog.locator('button[value="close"]').click();
+    await expect(dialog).toBeHidden();
+  },
+  async summaryTiers(dialog) {
+    const lens = (sel: string) => dialog.locator(sel).evaluateAll((els) => els.map((e) => e.getAttribute('data-len') ?? ''));
+    return { tiers: await lens('.summary-tier-selector button[data-len]'), selected: (await lens('.summary-tier-selector button[data-len].active'))[0] ?? null };
+  },
+  async pickSummaryTier(dialog, tier) {
+    await dialog.locator(`.summary-tier-selector button[data-len="${tier}"]`).click();
+  },
+  summaryContent: (dialog) => dialog.locator('#summary-content'),
+  summaryStale: (dialog) => dialog.locator('#summary-stale-badge'),
+  summaryCost: (dialog) => dialog.locator('#summary-cost'),
+  summaryGenerate: (dialog) => dialog.locator('#summary-generate-btn'),
+  summaryUseAsTitle: (dialog) => dialog.locator('#summary-apply-title-btn'),
+  statsTable: (dialog) => dialog.locator('#stats-content table.stats-table'),
+  statsNote: (dialog) => dialog.locator('#stats-content p.hint'),
+  pruneField(dialog, field) {
+    const ids: Record<PruneField, string> = { cut: 'pd-cut', cutLabel: 'pd-cut-label', thinking: 'pd-thinking', minimal: 'pd-minimal' };
+    return dialog.locator(`#${ids[field]}`);
+  },
+  pruneSavingsRows: (dialog) => dialog.locator('#pd-savings table tbody tr'),
+  async applyPrune(dialog) {
+    await dialog.locator('#pd-apply').click();
+  },
+  async openNewWorkspace(page) {
+    await legacy.lens(page, 'projects');
+    const dialog = page.locator('#workspace-dialog');
+    const item = page.locator('#new-workspace-btn');
+    await expect(async () => {
+      if (!(await dialog.isVisible())) {
+        if (!(await item.isVisible())) await page.locator('#sidebar-overflow-toggle').click();
+        await item.click({ timeout: 1_000 });
+      }
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  async openEditWorkspace(page, name) {
+    const header = await legacy.workspaceHeader(page, name);
+    const dialog = page.locator('#workspace-dialog');
+    await expect(async () => {
+      if (!(await dialog.isVisible())) await header.locator('.project-workspace-edit').click({ timeout: 1_000 });
+      await expect(dialog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return dialog;
+  },
+  async workspaceHeader(page, name) {
+    await legacy.lens(page, 'projects');
+    return page.locator('#project-list details.project-workspace > summary')
+      .filter({ has: page.locator('.project-workspace-name', { hasText: exactly(name) }) });
+  },
+  workspaceName: (dialog) => dialog.locator('#gd-name'),
+  workspaceMember: (dialog, project) => dialog.locator(`#gd-project-list input[type="checkbox"][value="${project}"]`),
+  async saveWorkspace(dialog) {
+    await dialog.locator('#gd-save').click();
+  },
+  async deleteWorkspace(page, dialog, confirm) {
+    // The old UI asks with the browser's native confirm().
+    const answered = new Promise<void>((resolve) => {
+      page.once('dialog', (d) => { void (confirm ? d.accept() : d.dismiss()).then(resolve); });
+    });
+    await dialog.locator('#gd-delete').click();
+    await answered;
+  },
+  async clickRestart(page) {
+    await openOldDrawer(page);
+    await page.locator('#restart-server-btn').click();
+  },
+  restartDialog: (page) => page.locator('#restart-dialog'),
+  restartChoice: (dialog, which) => dialog.locator(which === 'resume' ? '#rd-resume' : 'button[value="plain"]'),
+  async dismissRestart(page, dialog) {
+    // The old dialog has no Cancel button: Escape closes it with no choice.
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+  },
 };
 
 /**
@@ -946,6 +1104,99 @@ export const next: Ui = {
       fill: cs.backgroundColor,
     };
   }),
+
+  // Dialogs part 3 (card 2026-0639)
+  async openSessionDialog(page, which) {
+    const label: Record<SessionDialog, string> = { summary: 'Summarize session', stats: 'Statistics', prune: 'Prune context…' };
+    await next.sessionHeader(page).getByRole('button', { name: 'Session actions' }).click();
+    await page.getByRole('menuitem', { name: label[which], exact: true }).click();
+    const dialog = page.locator(`[role="dialog"][data-dialog="${which}"]`);
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  async renameSession(page, answer) {
+    await next.sessionHeader(page).getByRole('button', { name: 'Session actions' }).click();
+    await page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
+    const dialog = page.locator('[role="dialog"][data-dialog="rename"]');
+    await expect(dialog).toBeVisible();
+    const input = dialog.locator('#rename-title');
+    const prefill = await input.inputValue();
+    if (answer === null) await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    else {
+      await input.fill(answer);
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    }
+    await expect(dialog).toBeHidden();
+    return prefill;
+  },
+  // The footer's Close comes before the corner ×; either closes.
+  async closeSessionDialog(dialog) {
+    await dialog.getByRole('button', { name: 'Close', exact: true }).first().click();
+    await expect(dialog).toBeHidden();
+  },
+  async summaryTiers(dialog) {
+    const lens = (sel: string) => dialog.locator(sel).evaluateAll((els) => els.map((e) => e.getAttribute('data-len') ?? ''));
+    return { tiers: await lens('[data-len]'), selected: (await lens('[data-len][aria-pressed="true"]'))[0] ?? null };
+  },
+  async pickSummaryTier(dialog, tier) {
+    await dialog.locator(`[data-len="${tier}"]`).click();
+  },
+  summaryContent: (dialog) => dialog.locator('[data-summary-content]'),
+  summaryStale: (dialog) => dialog.locator('[data-stale]'),
+  summaryCost: (dialog) => dialog.locator('[data-cost]'),
+  summaryGenerate: (dialog) => dialog.getByRole('button', { name: /^(Generate summary|Regenerate|Generating…)$/ }),
+  summaryUseAsTitle: (dialog) => dialog.getByRole('button', { name: /^(Use as session title|Applied)$/ }),
+  statsTable: (dialog) => dialog.locator('[data-stats-table]'),
+  statsNote: (dialog) => dialog.locator('p').filter({ hasText: /^No worker sessions/ }),
+  pruneField(dialog, field) {
+    return dialog.locator(field === 'cutLabel' ? '[data-cut-label]' : `#pd-${field}`);
+  },
+  pruneSavingsRows: (dialog) => dialog.locator('[data-savings] tr'),
+  async applyPrune(dialog) {
+    await dialog.getByRole('button', { name: 'Prune', exact: true }).click();
+  },
+  async openNewWorkspace(page) {
+    await next.lens(page, 'projects');
+    await sidebar(page).getByRole('button', { name: 'Project actions' }).click();
+    await page.getByRole('menuitem', { name: 'New workspace', exact: true }).click();
+    const dialog = page.locator('[role="dialog"][data-dialog="workspace"]');
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  async openEditWorkspace(page, name) {
+    const header = await next.workspaceHeader(page, name);
+    await header.hover();
+    await header.getByRole('button', { name: `Edit workspace ${name}`, exact: true }).click();
+    const dialog = page.locator('[role="dialog"][data-dialog="workspace"]');
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  async workspaceHeader(page, name) {
+    await next.lens(page, 'projects');
+    return sidebar(page).locator(`section[data-workspace="${name}"]`);
+  },
+  workspaceName: (dialog) => dialog.locator('#gd-name'),
+  workspaceMember: (dialog, project) => dialog.locator(`button[role="checkbox"][data-project="${project}"]`),
+  async saveWorkspace(dialog) {
+    await dialog.locator('button[type="submit"]').click();
+  },
+  async deleteWorkspace(page, dialog, confirm) {
+    await dialog.getByRole('button', { name: 'Delete workspace', exact: true }).click();
+    const ask = page.getByRole('dialog', { name: /^Delete workspace .+\?$/ });
+    await expect(ask).toBeVisible();
+    await ask.getByRole('button', { name: confirm ? 'Delete workspace' : 'Cancel', exact: true }).click();
+    await expect(ask).toBeHidden();
+  },
+  async clickRestart(page) {
+    await next.openSidebar(page);
+    await sidebar(page).locator('[data-restart]').click();
+  },
+  restartDialog: (page) => page.locator('[role="dialog"][data-restart-dialog]'),
+  restartChoice: (dialog, which) => dialog.getByRole('button', { name: which === 'resume' ? 'Restart & resume' : 'Restart only', exact: true }),
+  async dismissRestart(_page, dialog) {
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toBeHidden();
+  },
 };
 
 // Sidebar B (card 2026-0628)
