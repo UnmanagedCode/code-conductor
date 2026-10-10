@@ -1,21 +1,34 @@
 // @vitest-environment node
-// The one real Vite build in a gated suite: src/webBuild.ts's ensureWebBuild,
-// built into a temp dir outside web/ (webSourceHash walks web/, so an output
-// dir there would change the hash between the two calls).
+// The only real Vite builds in a gated suite: src/webBuild.ts's ensureWebBuild,
+// built into temp dirs outside web/ (webSourceHash walks web/, so an output dir
+// there would change the hash between calls).
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
+import viteConfig from '../vite.config.ts';
 import { ensureWebBuild, webHandler, webSourceHash, WEB_MOUNT, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const log = { log: vi.fn(), error: vi.fn() };
 let first: WebState;
+const viteWarnings: string[] = [];
+
+// Vitest sets NODE_ENV=test, which makes Vite build the development bundle;
+// the server builds under production, so this build does too.
+async function productionBuild(opts: Parameters<typeof ensureWebBuild>[0]) {
+  const saved = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try { return await ensureWebBuild(opts); } finally {
+    if (saved === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved;
+  }
+}
 
 beforeAll(async () => {
-  first = await ensureWebBuild({ log, distDir });
+  const warn = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { viteWarnings.push(a.join(' ')); });
+  try { first = await productionBuild({ log, distDir }); } finally { warn.mockRestore(); }
 }, 120_000);
 
 afterAll(() => {
@@ -51,6 +64,15 @@ describe('ensureWebBuild', () => {
     expect(probe(`dist.tmp-${tag}`)).toBe(before);
     expect(probe(`dist.old-${tag}`)).toBe(before);
     expect(probe(`probe-${tag}`)).not.toBe(before);
+  });
+
+  it('builds the production bundle the server ships: no chunk over chunkSizeWarningLimit, no size warning', () => {
+    const limitBytes = viteConfig.build!.chunkSizeWarningLimit! * 1000;
+    const assets = path.join(distDir, 'assets');
+    const sizes = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).map((f) => fs.statSync(path.join(assets, f)).size);
+    expect(sizes.length).toBeGreaterThan(0);
+    expect(Math.max(...sizes)).toBeLessThan(limitBytes);
+    expect(viteWarnings.filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
   it('prefixes every URL in index.html with the /next/ base', () => {
@@ -98,7 +120,7 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
       return realRename(from, to);
     });
     const log = quiet();
-    const result = await ensureWebBuild({ log, distDir: dist });
+    const result = await productionBuild({ log, distDir: dist });
     expect(result).toEqual({ phase: 'failed', error: expect.stringContaining('EXDEV') });
     expect(String(log.error.mock.calls[0][0])).toContain('serving the previous build');
     expect(fs.readFileSync(path.join(dist, 'index.html'), 'utf8')).toContain('previous-build');
