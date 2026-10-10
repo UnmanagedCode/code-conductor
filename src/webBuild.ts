@@ -32,10 +32,10 @@ const STAMP = '.source-hash';
 // the lockfile (a dependency bump changes the bundle).
 const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'public')];
 const INPUT_FILES = [path.join(repoRoot, 'package-lock.json')];
-// Build output, dependencies and Playwright output are not inputs; a killed
-// build can leave a `dist.tmp-<pid>` or `dist.old-<pid>` behind, which must not
-// trigger a rebuild either.
-const SKIP_DIRS = new Set(['dist', 'node_modules', 'test-results', 'playwright-report']);
+// Build output, dependencies, Playwright output and the e2e specs + fixtures
+// are not inputs; a killed build can leave a `dist.tmp-<pid>` or
+// `dist.old-<pid>` behind, which must not trigger a rebuild either.
+const SKIP_DIRS = new Set(['dist', 'node_modules', 'test-results', 'playwright-report', 'e2e']);
 const skipDir = (name: string): boolean => SKIP_DIRS.has(name) || name.startsWith('dist.tmp-') || name.startsWith('dist.old-');
 
 function listFiles(dir: string, out: string[]): void {

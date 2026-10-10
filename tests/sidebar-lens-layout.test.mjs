@@ -1,7 +1,7 @@
 // The lens, selection and control-height rules, run through the real
 // public/index.html + public/styles.css cascade. happy-dom computes no layout,
 // so these assert computed styles; rendered geometry is the headless pass's
-// (harness/playwright/check-sidebar-lenses.mjs).
+// (web/e2e/legacy/sidebar-lenses.spec.ts).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

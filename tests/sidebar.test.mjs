@@ -92,8 +92,8 @@ test('Sessions subnode merges a live instance with its on-disk row (single combi
 // accent dot while an armed wake on a session it owns is pending, which is the only
 // thing on the row distinguishing "idle because I am waiting on a worker" from
 // "idle because I am done". The Playwright check
-// (harness/playwright/check-awaiting-wake-dot.mjs) covers the computed COLOUR and
-// the stays-lit-across-a-heartbeat behaviour end to end, but it is not wired into
+// (web/e2e/legacy/awaiting-wake-dot.spec.ts) covers the computed COLOUR and
+// the stays-lit-across-a-heartbeat behaviour end to end, but it is not part of
 // `npm test` — so the class and the tooltip are pinned here, where the suite
 // actually loads the render path.
 test('an idle row with awaitingWake renders the accent dot modifier and its tooltip', async () => {

@@ -54,7 +54,7 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 
 **Web UI (preview).** `web/` is a React UI served at `/next/` beside the old UI, which stays at `/` and `/legacy/`; each UI's sidebar footer links to the other. The server builds `web/` into `web/dist/` at start when its sources changed (`src/webBuild.ts`). Detail: [docs/features.md](docs/features.md) → Two UIs; build, mounts and layout: [docs/architecture.md](docs/architecture.md) → `src/webBuild.ts`, `web/`.
 
-**Visual debug.** Playwright + Termux Chromium harness in `harness/playwright/`, which is a thin wrapper over the **code-playwright plugin** — install it from Settings → Plugin Library (it lands at `<projectsRoot>/.plugins/code-playwright`); see [`harness/playwright/README.md`](harness/playwright/README.md). Not wired into the main test suite.
+**Browser tests and visual debug.** One Playwright harness in `web/e2e/` (`npm run test:e2e`): each worker boots a scratch-rooted cc with the fake CLI, opt-in live mode runs a real worker on an access-token-only credentials copy, and `node web/e2e/harness/snap.ts` screenshots a page; see [`web/e2e/README.md`](web/e2e/README.md). Not part of `npm test` or `test:all`. Mutation testing over the node, Vitest and Playwright suites: [`harness/mutation/README.md`](harness/mutation/README.md).
 
 ## Features
 

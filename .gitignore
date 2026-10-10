@@ -3,7 +3,6 @@ node_modules/
 .claude/
 server.log
 .mutation/
-harness/playwright/screenshots/
 __pycache__/
 .compile-cache/
 web/dist/

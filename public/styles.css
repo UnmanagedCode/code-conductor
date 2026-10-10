@@ -2077,7 +2077,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 
    The binding constraint is not that overflow — which clears at a lower width — but
    the `1fr` model column staying readable (>= 100px, `SELECT_MIN_W` in
-   harness/playwright/check-models-responsive.mjs). That needs a 484px row box (20+76+88+100+76+48
+   web/e2e/legacy/models-responsive.spec.ts). That needs a 484px row box (20+76+88+100+76+48
    + 5 gaps + padding + border), so 546px of content column, so an effective width of
    826px once the 280px sidebar and 32px of column padding are taken off. "Effective"
    because a classic scrollbar's gutter comes off too, and its width is the host's,
@@ -2721,7 +2721,9 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   white-space: pre-wrap; word-break: break-word;
 }
 .pl-actions { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-.pl-actions-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Capped at the column: under align-items: flex-start the row would otherwise
+   size to its content, and a long .pl-version option would push it past .pl-actions. */
+.pl-actions-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
 .pl-toggle-enable {
   color: var(--green);
   border-color: var(--green);

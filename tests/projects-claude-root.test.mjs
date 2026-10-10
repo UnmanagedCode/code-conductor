@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { claudeConfigDir, claudeProjectsRoot } from '../src/projects.ts';
+import { claudeConfigDir } from '../src/claudeConfigDir.ts';
+import { claudeProjectsRoot } from '../src/projects.ts';
 
 // Run a body with an exact env shape for the two overrides, restoring both.
 function withEnv({ configDir, projectsRoot }, body) {

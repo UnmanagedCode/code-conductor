@@ -28,7 +28,8 @@
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { claudeConfigDir, remoteConfigDir } from './projects.ts';
+import { claudeConfigDir } from './claudeConfigDir.ts';
+import { remoteConfigDir } from './projects.ts';
 
 // THE EXACT NAMES that are never linked. One further exclusion is a CLASS, not
 // a name, and is below.

@@ -1,0 +1,116 @@
+{
+  "config": {
+    "argv": [
+      "/usr/local/bin/node",
+      "/repo/node_modules/.bin/playwright",
+      "test",
+      "--config",
+      "web/playwright.config.ts",
+      "--reporter=json",
+      "--project=desktop",
+      "web/e2e/load.spec.ts",
+      "web/e2e/mixed.spec.ts"
+    ],
+    "configFile": "/repo/web/playwright.config.ts",
+    "rootDir": "/repo/web/e2e",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {},
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "desktop",
+        "name": "desktop",
+        "testDir": "/repo/web/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "phone",
+        "name": "phone",
+        "testDir": "/repo/web/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "filteredProjects": [
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "name": "desktop",
+        "testDir": "/repo/web/e2e",
+        "snapshotDir": "/repo/web/e2e",
+        "testIgnore": [],
+        "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+        "timeout": 30000,
+        "use": {},
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": "desktop"
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "default",
+    "updateSourceMethod": "patch",
+    "version": "1.64.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [],
+  "errors": [
+    {
+      "message": "Error: Cannot find module './does-not-exist.ts'\nRequire stack:\n- /repo/web/e2e/load.spec.ts\n- /repo/node_modules/playwright/lib/common/index.js\n- /repo/node_modules/playwright/lib/program.js\n- /repo/node_modules/@playwright/test/cli.js",
+      "stack": "Error: Cannot find module './does-not-exist.ts'\nRequire stack:\n- /repo/web/e2e/load.spec.ts\n- /repo/node_modules/playwright/lib/common/index.js\n- /repo/node_modules/playwright/lib/program.js\n- /repo/node_modules/@playwright/test/cli.js\n    at Object.<anonymous> (/repo/web/e2e/load.spec.ts:2:1)",
+      "location": {
+        "file": "/repo/web/e2e/load.spec.ts",
+        "column": 1,
+        "line": 2
+      },
+      "snippet": "\u001b[90m   at \u001b[39mload.spec.ts:2\n\n  1 | import { test } from '@playwright/test';\n> 2 | import { missing } from './does-not-exist.ts';\n    | ^\n  3 | test('never runs', () => { missing(); });\n  4 |"
+    }
+  ],
+  "stats": {
+    "startTime": "2026-10-10T11:12:25.584Z",
+    "duration": 73.72000000000003,
+    "expected": 0,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

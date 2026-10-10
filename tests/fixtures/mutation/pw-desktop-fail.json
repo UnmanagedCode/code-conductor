@@ -1,0 +1,355 @@
+{
+  "config": {
+    "argv": [
+      "/usr/local/bin/node",
+      "/repo/node_modules/.bin/playwright",
+      "test",
+      "--config",
+      "web/playwright.config.ts",
+      "--reporter=json",
+      "--project=desktop",
+      "web/e2e/mixed.spec.ts"
+    ],
+    "configFile": "/repo/web/playwright.config.ts",
+    "rootDir": "/repo/web/e2e",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "desktop",
+        "name": "desktop",
+        "testDir": "/repo/web/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "phone",
+        "name": "phone",
+        "testDir": "/repo/web/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "filteredProjects": [
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "desktop",
+        "testDir": "/repo/web/e2e",
+        "snapshotDir": "/repo/web/e2e",
+        "testIgnore": [],
+        "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+        "timeout": 30000,
+        "use": {},
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": "desktop"
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "default",
+    "updateSourceMethod": "patch",
+    "version": "1.64.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "mixed.spec.ts",
+      "file": "mixed.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "top passes",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-10T11:12:23.931Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a337a681bf7ec142666e-0b76476e76a56318365c",
+          "file": "mixed.spec.ts",
+          "line": 2,
+          "column": 5
+        },
+        {
+          "title": "top fails",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 1,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n    at /repo/web/e2e/mixed.spec.ts:3:37",
+                    "location": {
+                      "file": "/repo/web/e2e/mixed.spec.ts",
+                      "column": 37,
+                      "line": 3
+                    },
+                    "snippet": "  1 | import { test, expect } from '@playwright/test';\n  2 | test('top passes', () => { expect(1).toBe(1); });\n> 3 | test('top fails', () => { expect(1).toBe(2); });\n    |                                     ^\n  4 | test.describe('outer', () => {\n  5 |   test.describe('inner', () => {\n  6 |     test('deep fails', () => { expect('a').toBe('b'); });"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/repo/web/e2e/mixed.spec.ts",
+                        "column": 37,
+                        "line": 3
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n\n  1 | import { test, expect } from '@playwright/test';\n  2 | test('top passes', () => { expect(1).toBe(1); });\n> 3 | test('top fails', () => { expect(1).toBe(2); });\n    |                                     ^\n  4 | test.describe('outer', () => {\n  5 |   test.describe('inner', () => {\n  6 |     test('deep fails', () => { expect('a').toBe('b'); });\n    at /repo/web/e2e/mixed.spec.ts:3:37"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-10T11:12:23.959Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/repo/test-results/mixed-top-fails-desktop/error-context.md"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/repo/web/e2e/mixed.spec.ts",
+                    "column": 37,
+                    "line": 3
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "a337a681bf7ec142666e-e9f50bf3e5d8587cae2c",
+          "file": "mixed.spec.ts",
+          "line": 3,
+          "column": 5
+        }
+      ],
+      "suites": [
+        {
+          "title": "outer",
+          "file": "mixed.spec.ts",
+          "line": 4,
+          "column": 6,
+          "specs": [
+            {
+              "title": "skipped one",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "location": {
+                        "file": "/repo/web/e2e/mixed.spec.ts",
+                        "line": 8,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "desktop",
+                  "projectName": "desktop",
+                  "results": [
+                    {
+                      "workerIndex": -1,
+                      "parallelIndex": -1,
+                      "status": "skipped",
+                      "duration": 0,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-10T11:12:24.238Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "location": {
+                            "file": "/repo/web/e2e/mixed.spec.ts",
+                            "line": 8,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a337a681bf7ec142666e-81606fc4df9bbde702e3",
+              "file": "mixed.spec.ts",
+              "line": 8,
+              "column": 8
+            }
+          ],
+          "suites": [
+            {
+              "title": "inner",
+              "file": "mixed.spec.ts",
+              "line": 5,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "deep fails",
+                  "ok": false,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "desktop",
+                      "projectName": "desktop",
+                      "results": [
+                        {
+                          "workerIndex": 1,
+                          "parallelIndex": 0,
+                          "status": "failed",
+                          "duration": 4,
+                          "error": {
+                            "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m\"b\"\u001b[39m\nReceived: \u001b[31m\"a\"\u001b[39m",
+                            "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m\"b\"\u001b[39m\nReceived: \u001b[31m\"a\"\u001b[39m\n    at /repo/web/e2e/mixed.spec.ts:6:44",
+                            "location": {
+                              "file": "/repo/web/e2e/mixed.spec.ts",
+                              "column": 44,
+                              "line": 6
+                            },
+                            "snippet": "  4 | test.describe('outer', () => {\n  5 |   test.describe('inner', () => {\n> 6 |     test('deep fails', () => { expect('a').toBe('b'); });\n    |                                            ^\n  7 |   });\n  8 |   test.skip('skipped one', () => {});\n  9 | });"
+                          },
+                          "errors": [
+                            {
+                              "location": {
+                                "file": "/repo/web/e2e/mixed.spec.ts",
+                                "column": 44,
+                                "line": 6
+                              },
+                              "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m\"b\"\u001b[39m\nReceived: \u001b[31m\"a\"\u001b[39m\n\n  4 | test.describe('outer', () => {\n  5 |   test.describe('inner', () => {\n> 6 |     test('deep fails', () => { expect('a').toBe('b'); });\n    |                                            ^\n  7 |   });\n  8 |   test.skip('skipped one', () => {});\n  9 | });\n    at /repo/web/e2e/mixed.spec.ts:6:44"
+                            }
+                          ],
+                          "stdout": [],
+                          "stderr": [],
+                          "retry": 0,
+                          "startTime": "2026-10-10T11:12:24.209Z",
+                          "annotations": [],
+                          "attachments": [
+                            {
+                              "name": "error-context",
+                              "contentType": "text/markdown",
+                              "path": "/repo/test-results/mixed-outer-inner-deep-fails-desktop/error-context.md"
+                            }
+                          ],
+                          "errorLocation": {
+                            "file": "/repo/web/e2e/mixed.spec.ts",
+                            "column": 44,
+                            "line": 6
+                          }
+                        }
+                      ],
+                      "status": "unexpected"
+                    }
+                  ],
+                  "id": "a337a681bf7ec142666e-e870e8809dd272fea03b",
+                  "file": "mixed.spec.ts",
+                  "line": 6,
+                  "column": 9
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-10T11:12:23.669Z",
+    "duration": 583.336,
+    "expected": 1,
+    "skipped": 1,
+    "unexpected": 2,
+    "flaky": 0
+  }
+}
