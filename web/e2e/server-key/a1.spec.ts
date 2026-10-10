@@ -4,5 +4,5 @@ import { record } from './record.ts';
 test.use({ ccOptions: { server: 'key-a' } });
 
 test('server key-a, first file: records its cc', ({ cc }, testInfo) => {
-  record(testInfo, 'a1', cc, { first: true });
+  record(testInfo, 'a1', cc);
 });

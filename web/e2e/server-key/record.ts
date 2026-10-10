@@ -1,6 +1,9 @@
-// Which spec files share a booted cc. a1, a2, b, d1 and d2 run in path order
-// (workers: 1), each records the cc it got, and z-check reads the records.
-// Workers share no memory, hence the per-project file.
+// Which spec files share a booted cc. a1, a2, b, d1 and d2 each record the cc
+// they got, and z-check reads the records. Playwright dispatches a worker's
+// tests together, in order of the worker's first appearance (workers: 1), so
+// z-check sets ccOptions of its own to run after the others; it fails, never
+// passes, if a record is missing. Workers share no memory, hence the
+// per-project file in the run's output dir, which Playwright empties per run.
 import fs from 'node:fs';
 import path from 'node:path';
 import type { TestInfo } from '@playwright/test';
@@ -10,10 +13,10 @@ export type ServerRecord = { label: string; root: string; port: number; worker: 
 
 const logOf = (testInfo: TestInfo) => path.join(testInfo.project.outputDir, `server-key-${testInfo.project.name}.jsonl`);
 
-export function record(testInfo: TestInfo, label: string, cc: Cc, { first = false } = {}): void {
+export function record(testInfo: TestInfo, label: string, cc: Cc): void {
   const rec: ServerRecord = { label, root: cc.dirs.root, port: cc.port, worker: process.pid };
   fs.mkdirSync(path.dirname(logOf(testInfo)), { recursive: true });
-  (first ? fs.writeFileSync : fs.appendFileSync)(logOf(testInfo), JSON.stringify(rec) + '\n');
+  fs.appendFileSync(logOf(testInfo), JSON.stringify(rec) + '\n');
 }
 
 export function records(testInfo: TestInfo): Record<string, ServerRecord> {
