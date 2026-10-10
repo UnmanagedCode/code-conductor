@@ -167,7 +167,12 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
     await expect.poll(async () => ui.ownerBar(await row(f.bMain.sessionId))).toBe(f.colB);
     await api(cc, 'DELETE', `/api/instances/${f.bMain.id}`);
     await archived(cc, f.P, f.bMain.sessionId);
-    await expect(await row(f.bMain.sessionId)).toHaveCount(0);
+    // Legacy refetches its disk list on the instance broadcast, which can precede the archive, so the row may linger offline.
+    await expect.poll(async (): Promise<'gone' | 'offline-unbarred' | 'other'> => {
+      const r = await row(f.bMain.sessionId);
+      if ((await r.count()) === 0) return 'gone';
+      return !(await ui.sessionRowLive(r)) && (await ui.ownerBar(r)) === null ? 'offline-unbarred' : 'other';
+    }).not.toBe('other');
     await expect.poll(async () => ui.ownerBar(await row(f.aMain.sessionId))).toBe(f.colA);
 
     const head = await ui.worktreeHead(page, f.P, 'solo-a');
