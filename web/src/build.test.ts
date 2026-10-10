@@ -3,10 +3,12 @@
 // built into a temp dir outside web/ (webSourceHash walks web/, so an output
 // dir there would change the hash between the two calls).
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ensureWebBuild, webSourceHash, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
+import express from 'express';
+import { ensureWebBuild, webHandler, webSourceHash, WEB_MOUNT, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const log = { log: vi.fn(), error: vi.fn() };
@@ -35,6 +37,20 @@ describe('ensureWebBuild', () => {
     expect(await ensureWebBuild({ log, distDir })).toEqual({ phase: 'ready', error: null });
     expect(log.log).not.toHaveBeenCalled();
     expect(fs.statSync(index).mtimeMs).toBe(mtime);
+  });
+
+  it('the input hash ignores build leftovers (dist.tmp-*, dist.old-*) but not a new source dir', () => {
+    const before = webSourceHash();
+    const tag = `${process.pid}-${Date.now()}`;
+    const probe = (name: string) => {
+      const dir = path.join(WEB_ROOT, name);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'a.js'), 'x');
+      try { return webSourceHash(); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+    expect(probe(`dist.tmp-${tag}`)).toBe(before);
+    expect(probe(`dist.old-${tag}`)).toBe(before);
+    expect(probe(`probe-${tag}`)).not.toBe(before);
   });
 
   it('prefixes every URL in index.html with the /next/ base', () => {
@@ -71,4 +87,33 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
     await expect(ensureWebBuild({ log, distDir: freshDir() })).resolves.toEqual({ phase: 'failed', error: expect.stringContaining('EACCES') });
     expect(log.error).toHaveBeenCalledOnce();
   });
+
+  it('a swap that fails keeps the previous build in place and served', async () => {
+    const dist = freshDir();
+    fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><p>previous-build</p>');
+    fs.writeFileSync(path.join(dist, '.source-hash'), 'stale\n');
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from).startsWith(`${dist}.tmp-`)) throw Object.assign(new Error('EXDEV: injected rename failure'), { code: 'EXDEV' });
+      return realRename(from, to);
+    });
+    const log = quiet();
+    const result = await ensureWebBuild({ log, distDir: dist });
+    expect(result).toEqual({ phase: 'failed', error: expect.stringContaining('EXDEV') });
+    expect(String(log.error.mock.calls[0][0])).toContain('serving the previous build');
+    expect(fs.readFileSync(path.join(dist, 'index.html'), 'utf8')).toContain('previous-build');
+    const parent = path.dirname(dist);
+    expect(fs.readdirSync(parent).filter((n) => n.startsWith(`${path.basename(dist)}.`))).toEqual([]);
+
+    const app = express();
+    app.use(WEB_MOUNT, webHandler({ distDir: dist, getState: () => result }));
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as { port: number };
+      const r = await fetch(`http://127.0.0.1:${port}${WEB_MOUNT}/`);
+      expect(r.status).toBe(200);
+      expect(await r.text()).toContain('previous-build');
+    } finally { await new Promise((resolve) => server.close(resolve)); }
+  }, 120_000);
 });

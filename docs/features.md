@@ -4,7 +4,7 @@
 
 ### Two UIs, side by side
 - **The old UI** (`public/`) is served at `/` and again at `/legacy/`; this catalog describes it unless an entry names the web UI.
-- **The web UI** (`web/`, React) is served at `/next/` as a preview. `/next` redirects to `/next/`. Until the server's boot-time build has finished, `/next/` shows a self-refreshing "Building the interface…" page; a failed build shows its error (see [architecture.md](architecture.md) → `src/webBuild.ts`).
+- **The web UI** (`web/`, React) is served at `/next/` as a preview. `/next` redirects to `/next/`. Until the server's first build exists, `/next/` shows a self-refreshing "Building the interface…" page. A rebuild, or a failed one, keeps the previous build serving; a failure with no previous build shows its error (see [architecture.md](architecture.md) → `src/webBuild.ts`).
 - **Switching** — the old UI's sidebar footer has **Try the new UI** (`a#next-ui-link` → `/next/`); the web UI's sidebar footer has **Classic UI** (→ `/legacy/`). Neither link carries the open session: the target opens on its own last anchor.
 - **Shared browser state** — both UIs read and write the same `localStorage` keys (drafts, muted sessions, sidebar lens and width, workspaces expanded), so those carry across a switch.
 - **Separate PWA and service worker** — the web UI registers its own `sw.js` with scope `/next/` and has its own manifest (`start_url`/`scope` `/next/`), so installing it and its notifications never replace the old UI's root registration; a click on one of its notifications with no open tab opens `/next/#session=<sid>`.

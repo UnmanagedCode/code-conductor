@@ -6,10 +6,11 @@
 //
 // The build runs after the server is listening, so /api/health and the MCP
 // endpoint answer at once (the Termux widget and the Windows launcher poll
-// them). Output goes to a temp dir and is swapped in whole, so a previous build
-// keeps serving until the new one is complete. Until any build exists, the UI
-// route answers a self-refreshing "building" page; a failed build answers 503
-// naming the error. A failure never stops the server.
+// them). Output goes to a temp dir and is swapped in by rename-aside, so a
+// previous build keeps serving until the new one is in place, and a failed build
+// or a failed swap leaves it serving. Until any build exists, the UI route
+// answers a self-refreshing "building" page; a failure with no previous build
+// answers 503 naming the error. A failure never stops the server.
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -30,9 +31,10 @@ const STAMP = '.source-hash';
 const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'public')];
 const INPUT_FILES = [path.join(repoRoot, 'package-lock.json')];
 // Build output, dependencies and Playwright output are not inputs; a killed
-// build leaves a `dist.tmp-<pid>` behind, which must not trigger a rebuild either.
+// build can leave a `dist.tmp-<pid>` or `dist.old-<pid>` behind, which must not
+// trigger a rebuild either.
 const SKIP_DIRS = new Set(['dist', 'node_modules', 'test-results', 'playwright-report']);
-const skipDir = (name: string): boolean => SKIP_DIRS.has(name) || name.startsWith('dist.tmp-');
+const skipDir = (name: string): boolean => SKIP_DIRS.has(name) || name.startsWith('dist.tmp-') || name.startsWith('dist.old-');
 
 function listFiles(dir: string, out: string[]): void {
   let entries: fs.Dirent[];
@@ -67,6 +69,22 @@ function builtHash(distDir: string): string | null {
   } catch { return null; }
 }
 
+// Rename-aside, so a failed swap never loses the previous build: dist moves to
+// dist.old-<pid>, the new build moves in, and only then is the old one removed.
+// If the new one cannot move in, the old one is moved back before rethrowing.
+function swapIn(tmp: string, distDir: string): void {
+  const old = `${distDir}.old-${process.pid}`;
+  fs.rmSync(old, { recursive: true, force: true });
+  const hadPrevious = fs.existsSync(distDir);
+  if (hadPrevious) fs.renameSync(distDir, old);
+  try { fs.renameSync(tmp, distDir); }
+  catch (e) {
+    if (hadPrevious) fs.renameSync(old, distDir);
+    throw e;
+  }
+  fs.rmSync(old, { recursive: true, force: true });
+}
+
 export type WebState = { phase: 'idle' | 'building' | 'ready' | 'failed'; error: string | null };
 const state: WebState = { phase: 'idle', error: null };
 
@@ -85,8 +103,7 @@ export async function ensureWebBuild(
     const { build } = await import('vite');
     await build({ configFile: path.join(WEB_ROOT, 'vite.config.ts'), logLevel: 'warn', build: { outDir: tmp, emptyOutDir: true } });
     fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
-    fs.rmSync(distDir, { recursive: true, force: true });
-    fs.renameSync(tmp, distDir);
+    swapIn(tmp, distDir);
     Object.assign(state, { phase: 'ready', error: null });
     log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {

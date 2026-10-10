@@ -8,5 +8,6 @@ __pycache__/
 .compile-cache/
 web/dist/
 web/dist.tmp-*/
+web/dist.old-*/
 test-results/
 playwright-report/
