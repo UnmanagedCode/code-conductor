@@ -91,6 +91,55 @@ test('a long-titled worktree session: the controls share one row inside the view
   }
 });
 
+test('the subline\'s project and worktree names, and the model badge on desktop, each clip with an ellipsis inside the header', async ({ page, cc }) => {
+  // Wide glyphs at each input's limit: project names have no length cap, worktree
+  // names are slugged and cut server-side (src/worktrees.ts → SLUG_MAX_LEN).
+  const project = `${'W'.repeat(80)}-${test.info().project.name}`;
+  const model = `claude-opus-${'w'.repeat(60)}`;
+  await createProject(cc, project);
+  const { id, sessionId } = await spawnSession(cc, project, { worktree: true, name: 'w'.repeat(200), model, temp: false });
+  let row: { status: string; model: string | null; worktree: { worktreeName: string } | null } | undefined;
+  await expect.poll(async () => {
+    row = ((await api(cc, 'GET', '/api/instances')).body as ({ id: string } & NonNullable<typeof row>)[]).find((r) => r.id === id);
+    return row?.status;
+  }).toBe('idle');
+  expect(row!.model, 'the spawn kept the long model id').toBe(model);
+  const worktreeName = row!.worktree!.worktreeName;
+  // The subline shows the project only under a custom title.
+  expect((await api(cc, 'PUT', `/api/sessions/${sessionId}/title`, { title: 't' })).status).toBeLessThan(300);
+  await page.goto(`/next/#session=${sessionId}`);
+  const header = sessionHeader(page);
+  await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
+
+  // The model badge is `lg:` only: display: none on a phone, so nothing there to overflow.
+  const texts = isDesktop() ? [project, worktreeName, model] : [project, worktreeName];
+  const measured = await header.evaluate((h, texts) => {
+    const box = h.getBoundingClientRect();
+    return {
+      scrollWidth: h.scrollWidth, clientWidth: h.clientWidth,
+      els: texts.map((text) => {
+        // The innermost span holding exactly the text: the model badge's own textContent is the model too.
+        const el = [...h.querySelectorAll('span')].filter((s) => s.textContent === text).at(-1);
+        if (!el) return { text, found: false };
+        const cs = getComputedStyle(el);
+        return {
+          text, found: true, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+          textOverflow: cs.textOverflow, overflowX: cs.overflowX, right: el.getBoundingClientRect().right, headerRight: box.right,
+        };
+      }),
+    };
+  }, texts);
+  expect(measured.scrollWidth, 'the header does not overflow sideways').toBeLessThanOrEqual(measured.clientWidth);
+  for (const el of measured.els) {
+    const name = el.text.slice(0, 24);
+    expect(el.found, `${name}: rendered`).toBe(true);
+    expect(el.scrollWidth!, `${name}: overflows its box`).toBeGreaterThan(el.clientWidth!);
+    expect(el.overflowX, `${name}: clipped`).toBe('clip');
+    expect(el.textOverflow, `${name}: ellipsized`).toBe('ellipsis');
+    expect(el.right!, `${name}: inside the header`).toBeLessThanOrEqual(el.headerRight!);
+  }
+});
+
 test('nothing in the session header is a scroll container, so the header keeps vertical swipes to itself', async ({ page, cc }) => {
   const { sessionId, title } = await seed(cc, 'hdr-scroll', LONG_TITLE);
   await page.goto(`/next/#session=${sessionId}`);
@@ -123,24 +172,40 @@ test('a stopped worktree session: ⋮ holds only Sync worktree on a phone and is
 
 test('resizing across md moves Sync between the bar and ⋮ and closes a stopped worktree session\'s open ⋮', async ({ page, cc }) => {
   test.skip(!isDesktop(), 'resizes a desktop window');
+  // md is 768px: the header's Open sidebar button (the drawer's opener) shows
+  // below it, so Sync must leave the bar at exactly the same width.
+  const NARROW = 767;
+  const WIDE = 768;
   const { sessionId } = await seed(cc, 'hdr-resize', 'resize');
   const height = page.viewportSize()!.height;
-  await page.setViewportSize({ width: 1000, height });
+  const drawerOpener = sessionHeader(page).getByRole('button', { name: 'Open sidebar' });
+  const expectWide = async () => {
+    await expect(drawerOpener).toBeHidden();
+    await expect(barSync(page)).toBeVisible();
+  };
+  const expectNarrow = async () => {
+    await expect(drawerOpener).toBeVisible();
+    await expect(barSync(page)).toHaveCount(0);
+  };
+  await page.setViewportSize({ width: WIDE, height });
   await page.goto(`/next/#session=${sessionId}`);
   await expect(sessionHeader(page).getByRole('heading', { level: 1 })).toHaveText('resize');
-  await expect(barSync(page)).toBeVisible();
-  await page.setViewportSize({ width: 700, height });
-  await expect(barSync(page)).toHaveCount(0);
+  await expectWide();
+  expect(await menuItems(page)).not.toContain('Sync worktree');
+  await page.setViewportSize({ width: NARROW, height });
+  await expectNarrow();
   expect(await menuItems(page)).toContain('Sync worktree');
-  await page.setViewportSize({ width: 1000, height });
-  await expect(barSync(page)).toBeVisible();
+  await page.setViewportSize({ width: WIDE, height });
+  await expectWide();
   expect(await menuItems(page)).not.toContain('Sync worktree');
 
   await terminate(page);
-  await page.setViewportSize({ width: 700, height });
+  await page.setViewportSize({ width: NARROW, height });
+  await expectNarrow();
   await trigger(page).click();
   await expect(page.getByRole('menu')).toBeVisible();
-  await page.setViewportSize({ width: 1000, height });
+  await page.setViewportSize({ width: WIDE, height });
   await expect(page.getByRole('menu')).toHaveCount(0);
   await expect(trigger(page)).toHaveCount(0);
+  await expect(barSync(page)).toBeVisible();
 });

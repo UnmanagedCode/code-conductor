@@ -720,6 +720,7 @@ export const LEDGER: readonly Row[] = [
     area: 'header',
     status: { kind: 'ported', by: [
         'web/e2e/header.spec.ts::a long-titled worktree session: the controls share one row inside the viewport, the title ends in an ellipsis without growing the header, and Sync is in the bar only from md up',
+        'web/e2e/header.spec.ts::the subline\'s project and worktree names, and the model badge on desktop, each clip with an ellipsis inside the header',
         'web/e2e/header.spec.ts::nothing in the session header is a scroll container, so the header keeps vertical swipes to itself',
         'web/e2e/header.spec.ts::resizing across md moves Sync between the bar and ⋮ and closes a stopped worktree session\'s open ⋮',
         'web/src/features/session/headerLayout.test.tsx::title block > no TEMP or DEBUG badge at either width; debug capture shows only as the ⋮ item',

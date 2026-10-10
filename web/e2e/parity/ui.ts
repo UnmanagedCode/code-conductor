@@ -64,7 +64,8 @@ export interface Ui {
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
 const drawerViewport = () => test.info().project.name !== 'desktop';
-const exactly = (s: string) => new RegExp(`^${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const exactly = (s: string) => new RegExp(`^${escapeRe(s)}$`);
 
 // The old UI's controls are static HTML whose listeners public/app.js attaches
 // while its module evaluates, after the document has parsed: a click that lands
@@ -181,7 +182,7 @@ export const legacy: Ui = {
   async openPlugin(page, id) {
     await openOldDrawer(page);
     await page.locator('#app-switcher-select').selectOption(id);
-    await expect(page).toHaveURL(new RegExp(`#plugin/${id}/`));
+    await expect(page).toHaveURL(new RegExp(`#plugin/${escapeRe(id)}/`));
   },
   async leavePlugin(page) {
     await openOldDrawer(page);
@@ -193,7 +194,7 @@ export const legacy: Ui = {
     const title = page.locator(`#conductor-list [data-key="conductor:${sessionId}"] .conductor-title`);
     await expect(async () => {
       await title.click({ timeout: 1_000 });
-      await expect(page).toHaveURL(new RegExp(`#session=${sessionId}`), { timeout: 1_000 });
+      await expect(page).toHaveURL(new RegExp(`#session=${escapeRe(sessionId)}(?:$|&)`), { timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
   },
   workersPanel: (page) => page.locator('#subagent-panel'),
@@ -347,7 +348,7 @@ export const next: Ui = {
     await next.openSidebar(page);
     await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
     await page.locator(`[data-app-id="${id}"]`).click();
-    await expect(page).toHaveURL(new RegExp(`#plugin/${id}/`));
+    await expect(page).toHaveURL(new RegExp(`#plugin/${escapeRe(id)}/`));
   },
   async leavePlugin(page) {
     await next.openSidebar(page);
