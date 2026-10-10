@@ -1,0 +1,262 @@
+// Plugin frontends in same-origin iframes, owning the `#plugin/<id>/<subpath>`
+// hash space. Frames are managed imperatively inside one host element React
+// mounts once (moving an iframe in the DOM reloads it).
+//
+// Loading is REST-driven so an enabled-but-stopped plugin auto-starts with a
+// visible overlay: GET status → (POST start when not ready) → frame src; a
+// start failure shows the error + crash tail with Retry.
+//
+// Two frame tiers, by the status row's `frontendKeepAlive`:
+//   - a plain plugin loads into one shared frame, dropped when the view is left
+//     or another plugin shows, so a closed plugin costs nothing;
+//   - a keep-alive plugin gets its own resident frame on first show. Leaving
+//     only hides it (its page — a call, a stream — keeps running); re-entry
+//     reveals it with no /start and no src change. A resident frame is evicted
+//     only when its row stops passing `keepsResident` (checked in the
+//     background on re-entry and by `reconcile()` after a Settings → Plugins
+//     action) or when that action put new code under it (EVICTING_ACTIONS).
+//
+// Parent side of the bridge (web/public/pluginBridge.js runs in the frame):
+// child `route` messages mirror into the hash via replaceState (no hashchange,
+// no reload loop); an outside subpath change is forwarded as `navigate`.
+import { createSignal, createStore } from '@/state/createStore';
+
+export type PluginTarget = { id: string; subpath: string };
+type Record_ = { id: string; subpath: string; frame: HTMLIFrameElement };
+type Current = PluginTarget | Record_;
+
+export const RESIDENT_STATES = ['starting', 'ready', 'crashed', 'failed'];
+export const EVICTING_ACTIONS = ['restart', 'update', 'version'];
+export const RESIDENT_SUFFIX = ' (running)';
+
+export function keepsResident(row: { enabled?: boolean; frontendKeepAlive?: boolean; state?: string } | null) {
+  return !!row && row.enabled === true && row.frontendKeepAlive === true && RESIDENT_STATES.includes(row.state ?? '');
+}
+
+export type Overlay = { message: string; retry: PluginTarget | null } | null;
+export const overlayStore = createStore<{ overlay: Overlay }>({ overlay: null });
+/** Bumped whenever the resident set changes (the app switcher labels resident frames). */
+export const residentSignal = createSignal();
+
+const frameClass = 'absolute inset-0 h-full w-full border-0 bg-transparent';
+
+class PluginFrames {
+  private host: HTMLElement | null = null;
+  private shared: HTMLIFrameElement | null = null;
+  private current: Current | null = null;
+  private token = 0;
+  readonly resident = new Map<string, Record_>();
+
+  constructor() {
+    if (typeof window !== 'undefined') window.addEventListener('message', (ev) => this.onMessage(ev));
+  }
+
+  attach(host: HTMLElement | null) {
+    this.host = host;
+  }
+
+  residentIds() {
+    return [...this.resident.keys()];
+  }
+
+  currentId() {
+    return this.current?.id ?? null;
+  }
+
+  private activeFrame(): HTMLIFrameElement | null {
+    const c = this.current;
+    return c && 'frame' in c ? c.frame : this.shared;
+  }
+
+  private setOverlay(o: Overlay) {
+    overlayStore.set({ overlay: o });
+  }
+
+  // Until the plugin document loads, Safari paints an opaque light backdrop
+  // behind a frame whose colour scheme differs from the app's, so every frame
+  // stays visibility:hidden from its src until its own load. src is set before
+  // insertion so no initial about:blank load reveals it early, and each plain
+  // load gets a fresh frame: re-setting src to a URL differing only by fragment
+  // would fire no load and leave the frame hidden.
+  private mountShared(url: string) {
+    this.dropShared();
+    const f = document.createElement('iframe');
+    f.className = frameClass;
+    f.dataset.pluginFrame = 'shared';
+    f.title = 'Plugin';
+    f.addEventListener('load', () => {
+      f.style.visibility = '';
+      if (this.current && !('frame' in this.current)) this.setOverlay(null);
+    });
+    f.style.visibility = 'hidden';
+    f.src = url;
+    this.host?.appendChild(f);
+    this.shared = f;
+  }
+
+  // A fresh frame's initial document is transparent over the app background;
+  // navigating the old one to about:blank would paint opaque white in dark mode.
+  private dropShared() {
+    this.shared?.remove();
+    this.shared = null;
+  }
+
+  private async api(method: string, path: string) {
+    const r = await fetch(path, { method, cache: 'no-store' });
+    const data = await r.json().catch(() => null);
+    if (!r.ok) {
+      const e: any = new Error(data?.error || `HTTP ${r.status}`);
+      e.tail = data?.tail;
+      e.status = r.status;
+      throw e;
+    }
+    // A success whose body doesn't parse is a failed read, not an empty row.
+    if (data === null) throw new Error(`unreadable response (HTTP ${r.status})`);
+    return data;
+  }
+
+  private statusOf(id: string) {
+    return this.api('GET', `/api/plugins/${encodeURIComponent(id)}/status`);
+  }
+
+  /** Only a 404 (unknown id) evicts on a failed read: a blip must not end a call. */
+  private async stillResident(id: string) {
+    try { return keepsResident(await this.statusOf(id)); } catch (e: any) { return e.status !== 404; }
+  }
+
+  private evict(record: Record_) {
+    if (this.resident.get(record.id) !== record) return;
+    record.frame.remove();
+    this.resident.delete(record.id);
+    if (this.current === record) this.current = null;
+    residentSignal.bump();
+  }
+
+  private mountResident(target: PluginTarget) {
+    const frame = document.createElement('iframe');
+    frame.className = frameClass;
+    frame.dataset.pluginId = target.id;
+    frame.dataset.pluginFrame = 'resident';
+    frame.title = target.id;
+    const record: Record_ = { id: target.id, subpath: target.subpath, frame };
+    frame.addEventListener('load', () => {
+      frame.style.visibility = '';
+      if (this.current === record) this.setOverlay(null);
+    });
+    frame.style.visibility = 'hidden';
+    frame.src = `/plugins/${target.id}${target.subpath}`;
+    this.host?.appendChild(frame);
+    this.resident.set(target.id, record);
+    this.current = record;
+    this.dropShared();
+    residentSignal.bump();
+  }
+
+  private showResident(record: Record_, target: PluginTarget) {
+    const token = ++this.token;
+    this.setOverlay(null);
+    this.dropShared();
+    for (const r of this.resident.values()) r.frame.hidden = r !== record;
+    this.current = record;
+    if (target.subpath === '/' || target.subpath === record.subpath) {
+      const hash = `#plugin/${record.id}${record.subpath}`;
+      if (location.hash !== hash) history.replaceState(null, '', hash);
+    } else {
+      record.subpath = target.subpath;
+      record.frame.contentWindow?.postMessage({ cc: 1, type: 'navigate', path: target.subpath }, location.origin);
+    }
+    void this.stillResident(record.id).then((keep) => {
+      if (keep || token !== this.token) return;
+      this.evict(record);
+      void this.load(target);
+    });
+  }
+
+  async load(target: PluginTarget) {
+    const record = this.resident.get(target.id);
+    if (record) { this.showResident(record, target); return; }
+    for (const r of this.resident.values()) r.frame.hidden = true;
+    this.current = target;
+    this.setOverlay(null);
+    const token = ++this.token;
+    try {
+      const st = await this.statusOf(target.id);
+      if (token !== this.token) return;
+      if (st.state !== 'ready') {
+        // Lazy start: the explicit start doubles as the readiness wait.
+        this.setOverlay({ message: `Starting ${st.name || target.id}…`, retry: null });
+        await this.api('POST', `/api/plugins/${encodeURIComponent(target.id)}/start`);
+        if (token !== this.token) return;
+      }
+      if (st.frontendKeepAlive) this.mountResident(target);
+      else this.mountShared(`/plugins/${target.id}${target.subpath}`);
+    } catch (e: any) {
+      if (token !== this.token) return;
+      this.setOverlay({ message: `${target.id}: ${e.message}${e.tail ? `\n\n${e.tail}` : ''}`, retry: target });
+    }
+  }
+
+  /** Enter or move within the plugin space. */
+  enter(target: PluginTarget) {
+    const cur = this.current;
+    if (!cur || cur.id !== target.id) { void this.load(target); return; }
+    if (target.subpath !== cur.subpath) {
+      // Same plugin, new subpath from outside the frame: steer it, don't reload.
+      cur.subpath = target.subpath;
+      this.activeFrame()?.contentWindow?.postMessage({ cc: 1, type: 'navigate', path: target.subpath }, location.origin);
+    }
+  }
+
+  /** The view closed: plain frames end, resident frames only hide. */
+  leave() {
+    this.current = null;
+    this.token++;
+    this.setOverlay(null);
+    this.dropShared();
+    for (const r of this.resident.values()) r.frame.hidden = true;
+  }
+
+  /** After a Settings → Plugins action: evict what no longer qualifies, or got new code. Never reloads. */
+  async reconcile(change?: { action?: string; ids?: string[] } | null) {
+    const renewed = change?.action && EVICTING_ACTIONS.includes(change.action) ? change.ids ?? [] : [];
+    await Promise.all([...this.resident.values()].map(async (record) => {
+      if (!renewed.includes(record.id) && (await this.stillResident(record.id))) return;
+      this.evict(record);
+    }));
+  }
+
+  // Child → parent ({cc:1}; ready / route). A hidden resident frame's route is
+  // tracked on its record only — the user is somewhere else.
+  private onMessage(ev: MessageEvent) {
+    if (ev.origin !== location.origin) return;
+    const frame = this.activeFrame();
+    const active = !!this.current && !!frame && ev.source === frame.contentWindow;
+    const record: Current | undefined = active ? this.current! : [...this.resident.values()].find((r) => ev.source && ev.source === r.frame.contentWindow);
+    if (!record) return;
+    const d = ev.data;
+    if (!d || d.cc !== 1) return;
+    // A path without its leading slash would splice into the id part of the hash.
+    if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
+      record.subpath = d.path;
+      if (active) history.replaceState(null, '', `#plugin/${record.id}${d.path}`);
+    }
+  }
+}
+
+export const pluginFrames = new PluginFrames();
+
+export type PluginRow = { id: string; name: string; navLabel?: string | null; enabled?: boolean; hasFrontend?: boolean; frontendKeepAlive?: boolean; state?: string };
+
+/** Plugins that contribute a frontend the app switcher offers. */
+export const catalogStore = createStore<{ apps: PluginRow[] }>({ apps: [] });
+
+export async function refreshCatalog() {
+  try {
+    const r = await fetch('/api/plugins', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows: PluginRow[] = (await r.json()).rows ?? [];
+    catalogStore.set({ apps: rows.filter((p) => p.enabled && p.hasFrontend) });
+  } catch {
+    catalogStore.set({ apps: [] });
+  }
+}

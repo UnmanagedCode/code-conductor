@@ -34,10 +34,30 @@ test('C2: root files at the ref: string version, engines.node as >=N[.N[.N]], lo
   for (const f of ['package-lock.json', 'LICENSE']) assert.ok(fs.existsSync(path.join(repo, f)), f);
 });
 
-test('C3: npm ci needs only node + npm: no locked package has an install script', () => {
+// npm skips a locked package whose `os` field rules out win32 (e.g. macOS-only
+// `fsevents`, an optional dependency of vite), so its install script never runs
+// under the installer's `npm ci`.
+const installsOnWindows = (p) => {
+  if (!Array.isArray(p.os)) return true;
+  if (p.os.includes('!win32')) return false;
+  const allowed = p.os.filter((o) => !o.startsWith('!'));
+  return allowed.length === 0 || allowed.includes('win32');
+};
+
+test('C3: npm ci needs only node + npm: no locked package that installs on Windows has an install script', () => {
   const lock = JSON.parse(fs.readFileSync(path.join(repo, 'package-lock.json'), 'utf8'));
-  const scripted = Object.entries(lock.packages).filter(([, p]) => p.hasInstallScript).map(([k]) => k);
+  const scripted = Object.entries(lock.packages)
+    .filter(([, p]) => p.hasInstallScript && installsOnWindows(p))
+    .map(([k]) => k);
   assert.deepEqual(scripted, []);
+});
+
+test('C3: a package whose os field rules out win32 is skipped; any other is not', () => {
+  assert.equal(installsOnWindows({ os: ['darwin'] }), false);
+  assert.equal(installsOnWindows({ os: ['!win32'] }), false);
+  assert.equal(installsOnWindows({ os: ['darwin', 'win32'] }), true);
+  assert.equal(installsOnWindows({ os: ['!darwin'] }), true);
+  assert.equal(installsOnWindows({}), true);
 });
 
 test('C4: the launcher is bin/windows-launch.mjs and its install dir is the checkout\'s parent', () => {
