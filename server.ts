@@ -196,10 +196,11 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
   catch (e) { console.warn('fuse sweep failed:', e); }
 }
 
-// The entry block's reading of CC_SKIP_WEB_BUILD, which tests/run.mjs sets so
-// the `node server.ts` children the suite spawns never build web/dist.
-export function buildWebFromEnv(env: NodeJS.ProcessEnv): boolean {
-  return env.CC_SKIP_WEB_BUILD !== '1';
+// What the entry block passes to start(), read from the environment. Only
+// CC_SKIP_WEB_BUILD=1 turns the boot build off; tests/run.mjs sets it so the
+// `node server.ts` children the suite spawns never build web/dist.
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean } {
+  return { port: Number(env.PORT ?? 8787), host: env.HOST ?? '127.0.0.1', buildWeb: env.CC_SKIP_WEB_BUILD !== '1' };
 }
 
 export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; webBuild?: () => Promise<unknown> } = {}) {
@@ -330,9 +331,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.title = 'code-conductor';
-  const port = Number(process.env.PORT ?? 8787);
-  const host = process.env.HOST ?? '127.0.0.1';
-  start({ port, host, buildWeb: buildWebFromEnv(process.env) }).then(({ port, host }) => {
+  start(entryStartOptions(process.env)).then(({ port, host }) => {
     console.log(`code-conductor listening on http://${host}:${port}`);
   }).catch(e => {
     console.error('failed to start:', e);
