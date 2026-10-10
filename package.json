@@ -18,7 +18,7 @@
     "test:all": "npm test && npm run test:web",
     "test:e2e": "playwright test --config web/playwright.config.ts",
     "gate:systems": "node tests/systems-gate.mjs",
-    "start:rework": "bash scripts/run-isolated.sh"
+    "start:isolated": "bash scripts/run-isolated.sh"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

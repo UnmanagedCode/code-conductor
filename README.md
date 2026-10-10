@@ -33,7 +33,7 @@ npm run test:all       # npm test && npm run test:web — the gate for work touc
 npm run test:e2e       # web UI end-to-end (Playwright; first: npx playwright install chromium)
 npm run dev:web        # Vite dev server for web/, proxying the API to a running cc (CC_DEV_SERVER)
 npm run build          # build web/ into web/dist/ by hand (the server also builds it at start)
-PORT=8790 npm run start:rework   # an isolated cc: scratch projects root + empty Claude config dir (CC_ISOLATED_ROOT), no Claude login
+PORT=8790 npm run start:isolated   # an isolated cc: scratch projects root + empty Claude config dir (CC_ISOLATED_ROOT), no Claude login
 ```
 
 Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — one host projects dir + this checkout.
