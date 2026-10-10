@@ -27,7 +27,7 @@ export default defineConfig({
     {
       name: 'android',
       use: { ...devices['Pixel 7'], permissions: ['notifications'] },
-      testMatch: ['harness.spec.ts', '**/*.android.spec.ts'],
+      testMatch: ['harness.spec.ts', '**/*.android.spec.ts', 'parity/**/*.spec.ts'],
     },
   ],
 });
