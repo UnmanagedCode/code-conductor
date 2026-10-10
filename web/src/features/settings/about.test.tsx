@@ -67,7 +67,10 @@ describe('About', () => {
     render(<AboutSection />);
     fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
     act(() => stream.push({ type: 'chunk', text: 'Pulling 3 commits\n' }));
-    await waitFor(() => expect(log()).toContain('Pulling 3 commits'));
+    await waitFor(() => expect(log()).toBe('Pulling 3 commits\n'));
+    act(() => stream.push({ type: 'chunk', text: 'and one more\n' }));
+    // Each chunk is appended to the log, never replacing it.
+    await waitFor(() => expect(log()).toBe('Pulling 3 commits\nand one more\n'));
     expect(line()).toBe('Updating conductor…');
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
     expect(performRestart).not.toHaveBeenCalled();
@@ -94,6 +97,24 @@ describe('About', () => {
     expect(performRestart).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2));
+  });
+
+  // Reopening About after a finished or failed update starts a fresh check with clean state: no stale Retry, no stale log.
+  it('reopening About after an npm failure checks again and offers Update with an empty log', async () => {
+    const stream = ndjsonStream();
+    const calls = mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
+    const first = render(<AboutSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    act(() => { stream.push({ type: 'result', ok: true, result: { npm: { ok: false, tail: 'npm ERR! x' } } }); stream.end(); });
+    await waitFor(() => expect(buttons().map((b) => b.textContent?.trim())).toEqual(['Retry']));
+    expect(log()).toBe('npm ERR! x');
+    first.unmount();
+
+    render(<AboutSection />);
+    await waitFor(() => expect(line()).toBe('v1.0 · update available (3 commits behind origin/main)'));
+    expect(calls.filter((c) => c.method === 'GET' && c.url.startsWith('/api/settings/self-update'))).toHaveLength(2);
+    expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Update', false]]);
+    expect(log()).toBe('');
   });
 
   // An early (plain JSON) refusal surfaces its reason and tail, and Update is offered again rather than left locked.

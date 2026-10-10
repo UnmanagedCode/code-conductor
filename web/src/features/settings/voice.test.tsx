@@ -76,6 +76,11 @@ describe('Voice → Dictation', () => {
     expect(posts(calls, '/api/settings/transcribe/model').map((c) => c.body)).toEqual([{ model: 'small' }]);
     expect(badge('Dictation', 'base')).toBe('installed');
     expect(voiceStore.get().micAvailable).toBe(true);
+    // Re-picking the active model sends nothing.
+    fireEvent.click(card('Dictation').querySelector('[data-item="small"]')!);
+    await act(async () => {});
+    expect(posts(calls, '/api/settings/transcribe/model')).toHaveLength(1);
+    expect(badge('Dictation', 'small')).toBe('active');
     fail = true;
     fireEvent.click(card('Dictation').querySelector('[data-item="base"]')!);
     expect(await within(card('Dictation')).findByText('Switch failed: busy')).toBeTruthy();

@@ -5436,6 +5436,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/about.test.tsx::About > the version line names each update state, and only an available fast-forward offers Update',
         'web/src/features/settings/about.test.tsx::About > Update streams the log as it arrives, then hands off to restart with resume',
         'web/src/features/settings/about.test.tsx::About > an npm failure after the pull stops before the restart, shows its tail and offers Retry',
+        'web/src/features/settings/about.test.tsx::About > reopening About after an npm failure checks again and offers Update with an empty log',
         'web/src/features/settings/about.test.tsx::About > a refused or failed update says why, shows its tail and offers Update again',
         'web/src/features/settings/about.test.tsx::About > leaving About during an update and coming back shows the running update, offers no second Update, and still shows its outcome',
         'web/e2e/parity/settings.spec.ts::About shows the legal notice and the update state > next',
