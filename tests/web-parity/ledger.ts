@@ -2329,6 +2329,7 @@ export const LEDGER: readonly Row[] = [
         'web/e2e/parity/conversation.spec.ts::a status line is a status region with the default cursor; a pinned prompt is the jump button with the pointer > next',
         'web/e2e/sticky-prompt.spec.ts::after a jump the held prompt is pushed off by the one now at the top, so the pin hides until the transcript scrolls on',
         "web/e2e/sticky-prompt.spec.ts::a pin peeking back past the transcript's top edge is clipped to the transcript, so the session header above it still takes taps",
+        'web/src/conversation/stickyPrompt.test.ts::sticky prompt > re-attaching to a fresh transcript after a detach re-reads its prompts: the pin never holds a detached prompt, and a jump scrolls the fresh one',
       ] },
   },
   {

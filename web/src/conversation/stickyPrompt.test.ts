@@ -364,6 +364,38 @@ describe('sticky prompt', () => {
     expect(pin()).toEqual({ kind: 'status', text: STATUS_LOADING });
   });
 
+  it('re-attaching to a fresh transcript after a detach re-reads its prompts: the pin never holds a detached prompt, and a jump scrolls the fresh one', () => {
+    rig = makeRig();
+    rig.add('old', -300);
+    rig.sticky.reveal();
+    expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>old</p>' });
+    // A full-page view unmounts the transcript: React removes its root, so the
+    // list itself sees no childList change.
+    rig.detach();
+    rig.scroll.remove();
+    rig.pin.remove();
+    const scroll = document.createElement('div');
+    const list = document.createElement('div');
+    const pinEl = document.createElement('div');
+    scroll.appendChild(list);
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
+    scroll.getBoundingClientRect = () => ({ top: 0 } as DOMRect);
+    Object.defineProperty(pinEl, 'offsetHeight', { configurable: true, get: () => 40 });
+    const fresh = document.createElement('div');
+    fresh.dataset.item = 'user';
+    fresh.dataset.promptOrigin = 'typed';
+    fresh.innerHTML = '<div data-user-text=""><p>new</p></div>';
+    fresh.getBoundingClientRect = () => ({ top: -300 } as DOMRect);
+    list.appendChild(fresh);
+    document.body.append(scroll, pinEl);
+    rig.detach = rig.sticky.attach(scroll, list, pinEl);
+    rig.sticky.refresh();
+    expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>new</p>' });
+    scroll.scrollTop = 1000;
+    rig.sticky.jumpToPinned();
+    expect(scroll.scrollTop).toBe(700);
+  });
+
   it('a jump to the first prompt lands it at the top, and with no earlier prompt the status line replaces the pin', async () => {
     rig = makeRig();
     addAt(rig, 'first', 100);

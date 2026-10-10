@@ -166,6 +166,10 @@ export function createStickyPrompt({ isConducted, getActiveId, history, isHistor
       scrollEl = scroll;
       listEl = list;
       pinEl = pin;
+      // A new transcript: the cached prompts and the held one belong to the old,
+      // whose unmount the observer never saw. The reveal survives.
+      eligible = null;
+      pinned = null;
       observer = new MutationObserver(() => { eligible = null; refreshSoon(); });
       observer.observe(list, { childList: true });
       scroll.addEventListener('scroll', refreshSoon, { passive: true });
