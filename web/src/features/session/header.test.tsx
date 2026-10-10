@@ -15,6 +15,7 @@ import { getUsageTracker } from '@/app/trackers';
 import { accountUsageStore } from '@/app/accountUsage';
 import { isSessionMuted } from '@/features/notifications/mutes';
 import { dialogStore } from '@/features/dialogs/api';
+import { toast } from '@/ui/feedback';
 import type { Instance } from '@/state/types';
 import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
@@ -238,7 +239,7 @@ describe('change model', () => {
     expect(modelGroups(base())[0][1].map((e) => e.label)).toEqual(['Powerful']);
   });
 
-  it('picking a tier sends only {id, tier} with an ack; a refusal is reported', async () => {
+  it('picking a tier sends only {id, tier} with an ack', async () => {
     wrap(<SessionHeader inst={base()} onMenu={() => {}} />);
     const menu = await openMenu();
     expect(within(menu).getByRole('menuitem', { name: /Change model/ })).toBeTruthy();
@@ -246,6 +247,17 @@ describe('change model', () => {
     const sub = screen.getAllByRole('menu').at(-1)!;
     await act(async () => { fireEvent.click(within(sub).getByRole('menuitem', { name: /Fast/ })); });
     expect(sent).toEqual([['model', { id: 'inst-1', tier: 'fast' }, { ack: true }]]);
+  });
+
+  it('a refused pick shows the server\'s reason in a "Change model failed" toast (mirrors "a refused restart is shown inside the open picker — no alert()")', async () => {
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => '');
+    ackReply = () => Promise.reject(new Error('session is busy: a background job is running'));
+    try {
+      const sub = await openModelPicker(base({ backend: 'ollama', model: 'qwen3:8b' }));
+      await act(async () => { fireEvent.click(within(sub).getByRole('menuitem', { name: /Llama 70B/ })); });
+      expect(sent).toEqual([['model', { id: 'inst-1', model: 'llama3:70b', backend: 'ollama' }, { ack: true }]]);
+      expect(error.mock.calls).toEqual([['Change model failed', 'session is busy: a background job is running']]);
+    } finally { error.mockRestore(); }
   });
 
   it('Change model and effort are disabled during a turn', async () => {
