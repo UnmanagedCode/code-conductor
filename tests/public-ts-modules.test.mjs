@@ -98,6 +98,7 @@ test('the handler alone: a top-level .ts strips, everything else falls through o
       const r = await get(`${baseUrl}/a.ts`);
       assert.equal(r.status, 200);
       assert.match(r.headers.get('content-type') ?? '', /^text\/javascript/);
+      assert.equal(r.headers.get('cache-control'), 'no-cache');
       const body = await r.text();
       assert.match(body, /export const a\s*=\s*1;/);
       assert.ok(!body.includes(': number'), body);
