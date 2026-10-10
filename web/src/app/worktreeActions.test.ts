@@ -22,7 +22,7 @@ vi.mock('./controller', () => ({
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import * as controller from './controller';
-import { mergeWorktree, setWorktreeLock, syncWorktree } from './sessionActions';
+import { mergeWorktree, removeWorktree, setWorktreeLock, syncWorktree } from './sessionActions';
 
 type Call = { url: string; method?: string; body?: any };
 let calls: Call[] = [];
@@ -299,5 +299,56 @@ describe('merge and lock', () => {
     expect(toastText()).toMatch(/Cannot change the lock\nnope/);
     expect(result.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
+  });
+});
+
+describe('removing a worktree', () => {
+  it('the × asks first; declining sends nothing; accepting DELETEs that worktree and refreshes both lists', async () => {
+    vi.mocked(controller.refreshInstances).mockClear();
+    confirmAnswer.value = false;
+    await removeWorktree('demo', 'wt-a');
+    expect(calls).toEqual([]);
+    expect(confirms[0].startsWith('Remove worktree wt-a?')).toBe(true);
+
+    confirmAnswer.value = true;
+    await removeWorktree('demo', 'wt-a');
+    expect(calls).toEqual([{ url: '/api/projects/demo/worktrees/wt-a', method: 'DELETE' }]);
+    expect(controller.refreshProjects).toHaveBeenCalledTimes(1);
+    expect(controller.refreshInstances).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 409 offers force-remove with the server\'s reason; accepting retries with ?force=1, declining stops there', async () => {
+    const stub = (onRefusal: () => void) => {
+      let refused = false;
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+        calls.push({ url, method: init.method });
+        if (init.method === 'DELETE' && !refused) {
+          refused = true;
+          onRefusal();
+          return { ok: false, status: 409, json: async () => ({ error: 'wt-a has uncommitted changes' }) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      }));
+    };
+
+    vi.mocked(controller.refreshInstances).mockClear();
+    stub(() => {});
+    await removeWorktree('demo', 'wt-a');
+    expect(confirms[1]).toBe('Force remove?\nwt-a has uncommitted changes');
+    expect(calls.map((c) => c.url)).toEqual(['/api/projects/demo/worktrees/wt-a', '/api/projects/demo/worktrees/wt-a?force=1']);
+    expect(controller.refreshProjects).toHaveBeenCalledTimes(1);
+
+    calls = [];
+    confirms.length = 0;
+    toasts.length = 0;
+    vi.mocked(controller.refreshProjects).mockClear();
+    vi.mocked(controller.refreshInstances).mockClear();
+    stub(() => { confirmAnswer.value = false; });
+    await removeWorktree('demo', 'wt-a');
+    expect(confirms).toHaveLength(2);
+    expect(calls).toEqual([{ url: '/api/projects/demo/worktrees/wt-a', method: 'DELETE' }]);
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(toasts).toEqual([]);
   });
 });

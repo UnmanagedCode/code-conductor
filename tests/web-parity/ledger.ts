@@ -3027,11 +3027,14 @@ export const LEDGER: readonly Row[] = [
   // sidebar
   {
     id: 'app-refresh-projects-wiring/R1',
-    old: { file: 'tests/app-refresh-projects-wiring.test.mjs' },
+    old: { file: 'tests/app-refresh-projects-wiring.test.mjs', tests: ['refreshProjects hands GET /api/conductors/projects to sidebar.setConductorSpawns', 'a failed or non-ok conductors fetch hands setConductorSpawns an empty map'] },
     behaviour: 'refreshProjects feeds GET /api/conductors/projects to the Conductors lens\'s idle chips, `{}` on failure',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        "web/src/app/controller.test.ts::refreshing projects > GET /api/conductors/projects becomes appStore.conductorSpawns, the Conductors lens's idle-chip source",
+        'web/src/app/controller.test.ts::refreshing projects > a non-ok or rejected conductors fetch replaces the spawns with an empty map',
+      ] },
   },
   {
     id: 'adopt-dialog-markup/R1',
@@ -3042,7 +3045,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the Add-project dialog is reachable from the sidebar ≡ menu and wired into the page',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        "web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > the ≡ menu's Add existing directory opens the add-project dialog",
+        'web/e2e/parity/sidebar.spec.ts::the ≡ menu opens the Add-project dialog > next',
+      ] },
   },
   {
     id: 'sidebar/R1',
@@ -3312,11 +3318,25 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'sidebar-system-row/R3',
-    old: { file: 'tests/sidebar-system-row.test.mjs', tests: 'rest' },
+    old: { file: 'tests/sidebar-system-row.test.mjs', tests: [
+        'a local project keeps every affordance and shows no system pill',
+        'an unreachable system renders the reason on the row',
+        'a reachable remote project keeps every affordance, spawn included',
+        'an unreachable system offers no change-target affordance',
+        'a system coming back restores the row in place',
+        'a git ownership refusal renders its own pill carrying the fix, and nothing unreachable',
+      ] },
     behaviour: 'local projects have no pill; the unreachable reason is shown; remote projects keep all controls; no change-target when unreachable; recovery in place; git-ownership pill',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > a local project shows no system pill and keeps commit history, + and delete',
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > an unreachable system shows its reason and hides the + that would fail, keeping delete',
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > a reachable remote project keeps commit history, + and delete, and its pill tooltip names the system and its path',
+        "web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > an unreachable system's pill is a reason, not a control: clicking it opens no change-target dialog",
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > a system coming back clears the pill and restores the + on the same row element',
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > a git ownership refusal shows its own pill carrying the refusal, keeps the +, and conjures no system pill',
+      ] },
   },
   {
     id: 'sidebar-unassigned-section/R1',
@@ -3391,7 +3411,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a busy stop asks, then DELETEs, per busy status; an exited instance is archived',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/sessionActions.test.ts::closing a session > a busy stop asks once, naming the session and that its transcript is kept, then DELETEs — for every busy status',
+        'web/src/app/sessionActions.test.ts::closing a session > declining a busy stop sends nothing and leaves the selection, the lists and the session caches alone — for every busy status',
+        'web/src/app/sessionActions.test.ts::closing a session > an exited or crashed instance is archived, never stopped',
+      ] },
   },
   {
     id: 'session-actions-close/R4',
@@ -3403,7 +3427,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a stop drops only that project\'s/worktree\'s cached session list',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'regressed', evidence: 'sessionActions.ts bumps `sessionsCacheSignal` → sidebar `invalidateSessions()` with no key: every place\'s cache' },
+    status: { kind: 'ported', by: [
+        "web/src/features/sidebar/state.test.ts::session-list cache > a stop drops only its own place's cached session list — the project's, or the worktree's — and refreshes both lists once",
+        "web/src/features/sidebar/state.test.ts::session-list cache > an archive drops only its own place's list too; a null stale event drops every place",
+      ] },
   },
   {
     id: 'session-actions-promote/R1',
@@ -3420,11 +3447,14 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'session-actions-promote/R2',
-    old: { file: 'tests/session-actions-promote.test.mjs', tests: 'rest' },
+    old: { file: 'tests/session-actions-promote.test.mjs', tests: ['declining the conductor confirm sends nothing and refreshes nothing', 'a failed conductor promote alerts and refreshes nothing'] },
     behaviour: 'declining a conductor promote; a failed promote',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/sessionActions.test.ts::promote, resume, rewind, fork, delete > declining the conductor promote sends nothing and refreshes nothing',
+        'web/src/app/sessionActions.test.ts::promote, resume, rewind, fork, delete > a failed promote reports the error and refreshes nothing',
+      ] },
   },
   {
     id: 'session-actions-select/R1',
@@ -3446,7 +3476,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'Conduct selects the new conductor with a gesture',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > the Conduct button ensures .conduct, POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture',
+        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor > next',
+      ] },
   },
   {
     id: 'spawn-dialog-server-resolves/R2',
@@ -3454,7 +3487,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the Conduct POST body is exactly {project, role, temp, mode}',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > the Conduct button ensures .conduct, POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture',
+        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor > next',
+      ] },
   },
   {
     id: 'legacy-awaiting-wake-dot/R1',
@@ -3656,7 +3692,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the worktree × confirms removal; a 409 offers force-remove with the reason',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/worktreeActions.test.ts::removing a worktree > the × asks first; declining sends nothing; accepting DELETEs that worktree and refreshes both lists',
+        "web/src/app/worktreeActions.test.ts::removing a worktree > a 409 offers force-remove with the server's reason; accepting retries with ?force=1, declining stops there",
+        "web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > a worktree's × removes that worktree",
+      ] },
   },
   {
     id: 'doc/A6',

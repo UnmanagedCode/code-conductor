@@ -252,3 +252,54 @@ describe('notification clicks', () => {
     expect(location.hash).toBe('#session=sess-X');
   });
 });
+
+describe('refreshing projects', () => {
+  type Conductors = { body: unknown } | 'non-ok' | 'rejected';
+  let conductors: Conductors = { body: {} };
+
+  /** A fresh controller module (not started) whose conductors fetch answers per `conductors`. */
+  async function load() {
+    stopPrevious?.();
+    stopPrevious = null;
+    vi.resetModules();
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/conductors/projects') {
+        if (conductors === 'rejected') throw new Error('offline');
+        if (conductors === 'non-ok') return { ok: false, json: async () => ({ error: 'x' }) };
+        const { body } = conductors;
+        return { ok: true, json: async () => body };
+      }
+      if (url === '/api/projects') return { ok: true, json: async () => [{ name: 'p' }] };
+      return { ok: true, json: async () => [] };
+    }));
+    const c = await import('./controller');
+    const { appStore } = await import('@/state/app');
+    return { c, appStore };
+  }
+
+  it('GET /api/conductors/projects becomes appStore.conductorSpawns, the Conductors lens\'s idle-chip source', async () => {
+    const body = { C: [{ project: 'p', lastSpawnAt: 1 }] };
+    conductors = { body };
+    const { c, appStore } = await load();
+    await c.refreshProjects();
+    expect(appStore.get().conductorSpawns).toEqual(body);
+  });
+
+  it('a non-ok or rejected conductors fetch replaces the spawns with an empty map', async () => {
+    const body = { C: [{ project: 'p', lastSpawnAt: 1 }] };
+    const { c, appStore } = await load();
+    conductors = { body };
+    await c.refreshProjects();
+    expect(appStore.get().conductorSpawns).toEqual(body);
+    conductors = 'non-ok';
+    await c.refreshProjects();
+    expect(appStore.get().conductorSpawns).toEqual({});
+
+    conductors = { body };
+    await c.refreshProjects();
+    expect(appStore.get().conductorSpawns).toEqual(body);
+    conductors = 'rejected';
+    await c.refreshProjects();
+    expect(appStore.get().conductorSpawns).toEqual({});
+  });
+});

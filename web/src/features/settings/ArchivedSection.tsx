@@ -3,7 +3,8 @@ import { ArchiveRestoreIcon, ChevronRightIcon, GitBranchIcon, SparklesIcon, Tras
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { refreshInstances, refreshProjects } from '@/app/controller';
-import { resumeSession, sessionsCacheSignal } from '@/app/sessionActions';
+import { emit } from '@/app/events';
+import { resumeSession } from '@/app/sessionActions';
 import { formatAgo } from '@/lib/time';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { SectionIntro, Status } from './ui';
@@ -30,7 +31,7 @@ export function orderGroups(groups: ArchivedGroup[]) {
 
 /** The sidebar's cached per-scope session lists and the project/instance lists are stale after a restore or delete. */
 function archivedChanged() {
-  sessionsCacheSignal.bump();
+  emit('sessionsStale', null);
   void refreshProjects();
   void refreshInstances();
 }

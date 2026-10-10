@@ -4,7 +4,7 @@ import * as React from 'react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { mockFetch } from './test/fetchMock';
 
-vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}), sessionsCacheSignal: { bump: vi.fn() } }));
+vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}) }));
 vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}) }));
 vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
