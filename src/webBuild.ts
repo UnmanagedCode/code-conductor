@@ -73,13 +73,15 @@ const state: WebState = { phase: 'idle', error: null };
 export async function ensureWebBuild(
   { log = console, distDir = WEB_DIST }: { log?: Pick<Console, 'log' | 'error'>; distDir?: string } = {},
 ): Promise<WebState> {
-  const hash = webSourceHash();
-  if (builtHash(distDir) === hash) { state.phase = 'ready'; return { ...state }; }
   const started = Date.now();
-  state.phase = 'building';
-  log.log('web: frontend sources changed — building web/dist …');
   const tmp = `${distDir}.tmp-${process.pid}`;
+  // Everything, the input hash included, is inside the try: start() fires this
+  // unawaited, so a rejection would be unhandled and take the server down.
   try {
+    const hash = webSourceHash();
+    if (builtHash(distDir) === hash) { Object.assign(state, { phase: 'ready', error: null }); return { ...state }; }
+    state.phase = 'building';
+    log.log('web: frontend sources changed — building web/dist …');
     const { build } = await import('vite');
     await build({ configFile: path.join(WEB_ROOT, 'vite.config.ts'), logLevel: 'warn', build: { outDir: tmp, emptyOutDir: true } });
     fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
@@ -88,7 +90,7 @@ export async function ensureWebBuild(
     Object.assign(state, { phase: 'ready', error: null });
     log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort: the failure below is what gets reported */ }
     Object.assign(state, { phase: 'failed', error: e instanceof Error ? e.message : String(e) });
     const stale = fs.existsSync(path.join(distDir, 'index.html'));
     log.error([

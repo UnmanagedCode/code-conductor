@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ensureWebBuild, webSourceHash, type WebState } from '../../src/webBuild.ts';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { ensureWebBuild, webSourceHash, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const log = { log: vi.fn(), error: vi.fn() };
@@ -50,5 +50,25 @@ describe('ensureWebBuild', () => {
     expect(manifest.scope).toBe('./');
     expect(manifest.icons.length).toBeGreaterThan(0);
     expect(manifest.icons.filter((i: { src: string }) => i.src.startsWith('/'))).toEqual([]);
+  });
+});
+
+describe('ensureWebBuild failures resolve `failed`, never reject (start() fires it unawaited)', () => {
+  const quiet = () => ({ log: vi.fn(), error: vi.fn() });
+  const dirs: string[] = [];
+  const freshDir = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-fail-')); dirs.push(d); return d; };
+  afterEach(() => vi.restoreAllMocks());
+  afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+
+  it('an input that cannot be read', async () => {
+    const realRead = fs.readFileSync;
+    const input = path.join(WEB_ROOT, 'index.html');
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((p: any, ...rest: any[]) => {
+      if (p === input) throw Object.assign(new Error(`EACCES: permission denied, open '${input}'`), { code: 'EACCES' });
+      return (realRead as any)(p, ...rest);
+    }) as typeof fs.readFileSync);
+    const log = quiet();
+    await expect(ensureWebBuild({ log, distDir: freshDir() })).resolves.toEqual({ phase: 'failed', error: expect.stringContaining('EACCES') });
+    expect(log.error).toHaveBeenCalledOnce();
   });
 });
