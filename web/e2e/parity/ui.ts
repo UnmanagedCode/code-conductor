@@ -122,6 +122,10 @@ export interface Ui {
   sessionRowLive(row: Locator): Promise<boolean>;
   /** Selects the Projects lens and returns the summary heading the Sessions list of `project`'s main checkout (worktree null) or of that worktree, opening its Worktrees group first. */
   sessionsSummary(page: Page, project: string, worktree: string | null): Promise<Locator>;
+  /** Whether the sidebar drawer is open (always false on desktop, which has no drawer). */
+  drawerOpen(page: Page): Promise<boolean>;
+  /** The × of a session row returned by `sessionRow`. */
+  sessionClose(row: Locator): Locator;
 }
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
@@ -442,6 +446,8 @@ export const legacy: Ui = {
       .locator('details.sessions-group > summary')
       .first();
   },
+  drawerOpen: (page) => page.locator('#sidebar').evaluate((e) => e.classList.contains('open')),
+  sessionClose: (row) => row.locator('.session-delete'),
 };
 
 /**
@@ -719,6 +725,8 @@ export const next: Ui = {
     }
     return sidebar(page).locator(`[data-sessions-summary="${worktree ? `${project}:${worktree}` : project}"]`);
   },
+  drawerOpen: async (page) => (await page.locator('[data-slot="sheet-content"][data-state="open"]').count()) > 0,
+  sessionClose: (row) => row.getByRole('button', { name: /^(Stop session|Archive session \(keeps history\))$/ }),
 };
 
 // Sidebar B (card 2026-0628)

@@ -1,5 +1,6 @@
+import type { Locator } from '@playwright/test';
 import { api, createProject, spawnSession } from '../harness/api.ts';
-import { expect, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from '../harness/fixtures.ts';
 import { seedTranscript } from '../harness/transcript.ts';
 import { parity } from './parity.ts';
 
@@ -41,6 +42,15 @@ parity('adopt-dialog-markup/R1', 'the ≡ menu opens the Add-project dialog', as
 });
 
 // Sidebar B (card 2026-0628)
+/** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
+const drawerViewport = () => test.info().project.name !== 'desktop';
+/** Whether a summary line fits on one line: no horizontal overflow, content box under 1.5 line-heights. */
+const fitsOneLine = (summary: Locator) => summary.evaluate((e) => {
+  const cs = getComputedStyle(e);
+  const lineHeight = cs.lineHeight === 'normal' ? parseFloat(cs.fontSize) * 1.2 : parseFloat(cs.lineHeight);
+  const content = e.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  return { overflow: e.scrollWidth - e.clientWidth, content, lineHeight, fits: e.scrollWidth <= e.clientWidth + 1 && content < 1.5 * lineHeight };
+});
 type LiveInst = { id: string; status: string; sessionId: string | null; worktree?: { worktreeName: string } | null };
 /** Spawns a persistent session in `project`, waits for it to idle, seeds its transcript; returns the instance. */
 async function persistentSession(cc: Cc, project: string, text: string, extra: Record<string, unknown> = {}): Promise<LiveInst> {
@@ -62,13 +72,23 @@ parity('sidebar/R2', 'a live session row in the Projects lens opens it, and once
   const sid = inst.sessionId!;
   await ui.open(page);
   await expect.poll(async () => ui.sessionRowLive(await ui.sessionRow(page, project, sid))).toBe(true);
+  if (drawerViewport()) {
+    // Invariant: on touch, a live row's × shows with no hover and takes taps.
+    const close = ui.sessionClose(await ui.sessionRow(page, project, sid));
+    await expect(close).toBeVisible();
+    expect(await close.evaluate((e) => getComputedStyle(e).opacity)).toBe('1');
+    expect(await close.evaluate((e) => getComputedStyle(e).pointerEvents)).not.toBe('none');
+  }
   await (await ui.sessionRow(page, project, sid)).click();
+  // Invariant: on a drawer viewport, tapping a session row closes the drawer.
+  if (drawerViewport()) await expect.poll(() => ui.drawerOpen(page)).toBe(false);
   await expect(ui.sessionHeader(page).locator(`[title="session ${sid}"]`)).toBeVisible();
   await api(cc, 'DELETE', `/api/instances/${inst.id}`);
   await expect.poll(async () => ui.sessionRowLive(await ui.sessionRow(page, project, sid))).toBe(false);
   const resume = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/instances');
   await (await ui.sessionRow(page, project, sid)).click();
   expect((await resume).postDataJSON()).toEqual({ project, resume: sid });
+  if (drawerViewport()) await expect.poll(() => ui.drawerOpen(page)).toBe(false);
   await expect(ui.sessionHeader(page).locator(`[title="session ${sid}"]`)).toBeVisible();
 });
 
@@ -105,7 +125,12 @@ parity('doc/A6', 'the main checkout and a worktree each head their Sessions list
   const main = await ui.sessionsSummary(page, project, null);
   await expect(main).toBeVisible();
   await expect(main).toHaveText(SUMMARY);
+  // Invariant: the summary line fits on one line, neither overflowing nor wrapping.
+  const mainFit = await fitsOneLine(main);
+  expect(mainFit.fits, JSON.stringify(mainFit)).toBe(true);
   const wtSummary = await ui.sessionsSummary(page, project, worktree);
   await expect(wtSummary).toBeVisible();
   await expect(wtSummary).toHaveText(SUMMARY);
+  const wtFit = await fitsOneLine(wtSummary);
+  expect(wtFit.fits, JSON.stringify(wtFit)).toBe(true);
 });

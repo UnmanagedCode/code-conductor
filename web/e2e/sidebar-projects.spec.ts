@@ -75,12 +75,27 @@ test('the Other projects label starts at the workspace label x, and project name
   expect(Math.abs(secX - wsX), `Other projects label x ${secX} vs workspace label x ${wsX}`).toBeLessThan(0.5);
   await expect(sb.locator(`[data-project-row="sp-git-${p}"]`).getByRole('button', { name: 'Commit history', exact: true })).toBeVisible();
   await expect(sb.locator(`[data-project-row="sp-plain-${p}"]`).getByRole('button', { name: 'Commit history', exact: true })).toHaveCount(0);
-  const nameX = async (name: string) => (await sb.locator(`[data-project-row="${name}"]`).getByText(name, { exact: true }).boundingBox())!.x;
-  const member = await nameX(`sp-member-${p}`);
-  const git = await nameX(`sp-git-${p}`);
-  const plain = await nameX(`sp-plain-${p}`);
+  const nameOf = async (name: string) => (await sb.locator(`[data-project-row="${name}"]`).getByText(name, { exact: true }).boundingBox())!.x;
+  const member = await nameOf(`sp-member-${p}`);
+  const git = await nameOf(`sp-git-${p}`);
+  const plain = await nameOf(`sp-plain-${p}`);
   expect(Math.abs(git - member), `git ${git} vs member ${member}`).toBeLessThan(0.5);
   expect(Math.abs(plain - member), `plain ${plain} vs member ${member}`).toBeLessThan(0.5);
+  // Invariant: a project name sits right of the workspace label by the row's own lead columns (chevron, then
+  // commit column, each followed by the row gap) less the label's offset in its header; a collapsed column fails.
+  for (const name of [`sp-member-${p}`, `sp-git-${p}`, `sp-plain-${p}`]) {
+    const row = sb.locator(`[data-project-row="${name}"]`);
+    const rowX = (await row.boundingBox())!.x;
+    const chevron = (await row.locator(':scope > *').nth(0).boundingBox())!;
+    const commit = (await row.locator(':scope > *').nth(1).boundingBox())!;
+    const gap = await row.evaluate((e) => parseFloat(getComputedStyle(e).columnGap));
+    expect(chevron.width, `${name} chevron column`).toBeGreaterThan(0);
+    expect(commit.width, `${name} commit column`).toBeGreaterThan(0);
+    const inset = chevron.width + gap + commit.width + gap - (wsX - rowX);
+    expect(inset, `${name} inset`).toBeGreaterThan(0);
+    const nameX = await nameOf(name);
+    expect(Math.abs(nameX - wsX - inset), `${name}: name x ${nameX}, workspace label x ${wsX}, derived inset ${inset}`).toBeLessThan(0.5);
+  }
 });
 
 test('an unassigned git project shows its commit history button without hover, and it opens that project history', async ({ page }) => {

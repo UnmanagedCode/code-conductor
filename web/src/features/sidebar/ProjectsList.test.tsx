@@ -324,6 +324,8 @@ describe('Projects tree', () => {
       expect(labelOf(sid).classList.contains('text-info')).toBe(false);
     }
     expect(labelOf('sid-cond').classList.contains('text-info')).toBe(true);
+    // Invariant: a conducted row that is not temp never takes the temp colour.
+    expect(labelOf('sid-cond').classList.contains('text-primary')).toBe(false);
     expect(labelOf('sid-normal').classList.contains('text-primary')).toBe(false);
     expect(labelOf('sid-normal').classList.contains('text-info')).toBe(false);
   });
