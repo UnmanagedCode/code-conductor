@@ -287,6 +287,21 @@ describe('encodes', () => {
     fireEvent.click(sendButton());
     expect(sentAttachments(1), 'A ships both files, each encoded').toEqual([['one.png', btoa('ONE')], ['two.png', btoa('TWO')]]);
   });
+
+  it('a file that cannot be read shows the failure on its chip, is nothing to send, and is never shipped', async () => {
+    const unreadable = png('bad.png');
+    Object.defineProperty(unreadable, 'arrayBuffer', { value: async () => { throw new Error('disk gone'); } });
+    mount(inst('enc-fail'));
+    attach([unreadable]);
+    await settle();
+    expect(chips(), 'positive control: the file shows as a chip').toEqual(['Remove bad.png']);
+    expect(screen.queryByText('bad.png · read failed: disk gone'), 'the chip shows the read failure').not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Send' }), 'a failed file alone is nothing to send').toBeNull();
+    attach([png('good.png', 'GOOD')]);
+    await settle();
+    fireEvent.click(sendButton());
+    expect(sentAttachments(0), 'only the readable file is shipped').toEqual([['good.png', btoa('GOOD')]]);
+  });
 });
 
 describe('leaving the session view (the composer unmounts)', () => {
@@ -356,6 +371,21 @@ describe('dictation delivery', () => {
     expect(box().value).toBe('spoken');
     fireEvent.click(sendButton());
     expect(sent.map((s) => s.payload.text)).toEqual(['<transcribed>\nspoken']);
+  });
+
+  it("a transcript landing after a switch to B joins A's typed text and the words with one space in A's draft", async () => {
+    const c = mount(inst('join-away-a'));
+    await recordAndStop();
+    type('earlier');
+    c.swap(inst('join-away-b'));
+    expect(storedDraft('join-away-a'), 'positive control: leaving A stored its text').toEqual({ text: 'earlier', transcribed: false });
+    releaseTranscript();
+    await settle();
+    expect(storedDraft('join-away-a'), "A's draft is its text and the words, one space apart, flagged as dictated").toEqual({ text: 'earlier spoken', transcribed: true });
+    expect(box().value, "B's box stays empty").toBe('');
+    expect(storedDraft('join-away-b'), 'B has no draft').toBeNull();
+    c.swap(inst('join-away-a'));
+    expect(box().value).toBe('earlier spoken');
   });
 
   it('back in the starting session before the transcript lands, it goes into the box once, not into the stored draft', async () => {

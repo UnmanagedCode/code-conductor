@@ -1065,6 +1065,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composer.test.tsx::attachments > are per session: switching away hides them, back restores them; send ships only the showing session\'s',
         'web/src/features/composer/composer.test.tsx::drafts > prefill (rewind / fork) replaces the box and attachments and focuses the end',
         'web/src/features/composer/composer.test.tsx::dictation routing > a dictation is delivered to the session it was started in, never the one showing',
+        'web/src/features/composer/composerAttachments.test.tsx::dictation delivery > a transcript landing after a switch to B joins A\'s typed text and the words with one space in A\'s draft',
       ] },
   },
   {
