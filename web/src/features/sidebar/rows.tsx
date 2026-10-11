@@ -159,8 +159,8 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
           'flex min-h-8 cursor-pointer items-center gap-2 rounded-md py-1 pr-1 pl-2 text-sm text-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring',
           live && 'text-foreground/90',
           active && 'bg-sidebar-accent text-foreground ring-1 ring-border',
-          // Selected is bold and outranks the unread weight (docs/features.md → Selected session).
-          active ? 'font-bold' : unread > 0 && 'font-semibold text-foreground',
+          // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
+          unread > 0 && 'font-semibold text-foreground',
           owner && OWNER_BAR,
         )}
       >

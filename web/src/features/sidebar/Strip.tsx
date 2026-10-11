@@ -72,8 +72,8 @@ export function Strip({ m }: { m: SidebarModel }) {
                         'flex h-7 w-full items-center gap-2 rounded-md pr-7 pl-2 text-left text-[13px] transition-colors hover:bg-sidebar-accent md:h-6',
                         e.conductor && OWNER_BAR,
                         active && 'bg-sidebar-accent ring-1 ring-border',
-                        // Selected is bold and framed, and outranks the unread weight (docs/features.md → Selected session).
-                        active ? 'font-bold' : unread && 'font-semibold',
+                        // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
+                        unread && 'font-semibold',
                       )}
                     >
                       <Dot

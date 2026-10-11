@@ -74,8 +74,8 @@ parity('legacy-sidebar-lenses/R7', 'the Projects lens lists no .conduct row whil
   expect((await ui.projectNames(page)).filter((n) => /conduct/i.test(n))).toEqual([]);
 });
 
-parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row keeps its bar and reads bold', async ({ page, cc, ui, uniq }) => {
-  // Invariant: bars follow live ownership per place in each conductor's colour, the filter narrows to one owner, and selection keeps the bar and reads bold.
+parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar', async ({ page, cc, ui, uniq }) => {
+  // Invariant: bars follow live ownership per place in each conductor's colour, the filter narrows to one owner, and selection marks exactly the picked row, fills it unlike an unselected one, and keeps its bar.
   test.setTimeout(300_000);
   await ui.open(page);
   const f = await seedFleet(cc, page, uniq);
@@ -146,8 +146,8 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
   await test.step('selected row', async () => {
     let r = await row(f.aMain.sessionId);
     const before = await ui.sessionRowStyle(r);
-    expect(before.framed).toBe(false);
-    expect(Number(before.weight)).toBeLessThan(700);
+    expect(before.active).toBe(false);
+    expect(before.colour).toBe(f.colA);
     await r.click();
     await expect(ui.sessionHeader(page).locator(`[title="session ${f.aMain.sessionId}"]`)).toBeVisible();
     // Re-opens the phone drawer the selection closed.
@@ -156,10 +156,9 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
     await page.mouse.move(1, 1);
     await expect.poll(() => ui.sessionRowActive(r)).toBe(true);
     const after = await ui.sessionRowStyle(r);
-    expect(after.framed).toBe(true);
+    expect(after.active).toBe(true);
     expect(after.fill).not.toBe(before.fill);
-    expect(await ui.ownerBar(r)).toBe(f.colA);
-    expect(after.weight).toBe('700');
+    expect(after.colour).toBe(f.colA);
   });
 });
 

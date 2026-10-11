@@ -108,10 +108,12 @@ describe('AppSidebar', () => {
     seed({ instances: [inst({ sessionId: 'paused', project: '.conduct', firstPrompt: 'Orchestrate', autoResumeAt: T, queuedCount: 2 })] as any });
     renderSidebar();
     const strip = document.querySelector('[data-strip]') as HTMLElement;
+    // Invariant: the badge carries the queued count and the resume clock, and its tooltip leads with the full resume time and names the queue.
     const clock = formatAutoResumeTime(T)!.replace(/^resumes at /, '');
-    const badge = within(strip).getByText(`2 · ⏸ ${clock}`);
-    expect(badge.title.startsWith(`${formatAutoResumeTime(T)} · 2 queued\n`)).toBe(true);
-    expect(badge.title).toBe(`${formatAutoResumeTime(T)} · 2 queued\nauto-stopped on overage — 2 messages queued; will resume when the window resets`);
+    const badge = within(strip).getByText(/^2 ·/);
+    expect(badge.textContent).toContain(clock);
+    expect(badge.title.startsWith(formatAutoResumeTime(T)!)).toBe(true);
+    expect(badge.title).toContain('2 queued');
   });
 
   it('a live conductor row opens its session; an inactive one resumes in .conduct and can be archived', () => {

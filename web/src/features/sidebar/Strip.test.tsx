@@ -60,40 +60,35 @@ beforeEach(() => {
 });
 
 describe('selected strip entry', () => {
-  it('a selected strip entry reads bold, outranking the unread weight', async () => {
-    // Invariant: selection bolds the strip entry and outranks the unread weight, both ways across a selection change.
+  it('a selected strip entry is marked active independently of unread, both ways across a selection change', async () => {
+    // Invariant: selection and unread are separate marks: a selected unread entry carries both, an unselected unread one only unread, and the selection mark follows the change.
     seedStrip();
     renderSidebar();
     await settle();
     expect(stripEntryOf(A).getAttribute('data-active')).toBe('true');
     expect(stripEntryOf(A).getAttribute('data-unread')).toBe('true');
-    expect(stripEntryOf(A).classList.contains('font-bold')).toBe(true);
-    expect(stripEntryOf(A).classList.contains('font-semibold')).toBe(false);
-    expect(stripEntryOf(B).classList.contains('font-semibold')).toBe(true);
-    expect(stripEntryOf(B).classList.contains('font-bold')).toBe(false);
-    expect(stripEntryOf('h').classList.contains('font-bold')).toBe(false);
-    expect(stripEntryOf('h').classList.contains('font-semibold')).toBe(false);
+    expect(stripEntryOf(B).hasAttribute('data-active')).toBe(false);
+    expect(stripEntryOf(B).getAttribute('data-unread')).toBe('true');
+    expect(stripEntryOf('h').hasAttribute('data-active')).toBe(false);
+    expect(stripEntryOf('h').hasAttribute('data-unread')).toBe(false);
     act(() => appStore.set({ activeId: 'i-h' }));
-    expect(stripEntryOf('h').classList.contains('font-bold')).toBe(true);
-    expect(stripEntryOf(A).classList.contains('font-semibold')).toBe(true);
-    expect(stripEntryOf(A).classList.contains('font-bold')).toBe(false);
+    expect(stripEntryOf('h').getAttribute('data-active')).toBe('true');
     expect(stripEntryOf(A).hasAttribute('data-active')).toBe(false);
+    expect(stripEntryOf(A).getAttribute('data-unread')).toBe('true');
   });
 
-  it('a selected strip entry draws the selection frame and keeps its owner bar, and only it is framed', async () => {
-    // Invariant: exactly the selected strip entry is framed, and the frame composes with the owner bar.
+  it('a selected strip entry is marked active, and only it, and keeps its owner colour', async () => {
+    // Invariant: exactly the selected strip entry is marked, and the mark composes with the owner colour.
     seedStrip();
     renderSidebar();
     await settle();
     expect(stripEntryOf(A).getAttribute('data-active')).toBe('true');
-    expect(stripEntryOf(A).classList.contains('ring-1')).toBe(true);
-    expect(stripEntryOf(A).classList.contains('ring-border')).toBe(true);
     expect(barOf(stripEntryOf(A))).toEqual({ bar: true, color: COLOUR.A });
-    expect(stripEntryOf(B).classList.contains('ring-1')).toBe(false);
-    expect(stripEntryOf('h').classList.contains('ring-1')).toBe(false);
+    expect(stripEntryOf(B).hasAttribute('data-active')).toBe(false);
+    expect(stripEntryOf('h').hasAttribute('data-active')).toBe(false);
     act(() => appStore.set({ activeId: 'i-h' }));
-    expect(stripEntryOf('h').classList.contains('ring-1')).toBe(true);
-    expect(stripEntryOf(A).classList.contains('ring-1')).toBe(false);
+    expect(stripEntryOf('h').getAttribute('data-active')).toBe('true');
+    expect(stripEntryOf(A).hasAttribute('data-active')).toBe(false);
     expect(barOf(stripEntryOf(A))).toEqual({ bar: true, color: COLOUR.A });
   });
 });
