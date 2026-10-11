@@ -5933,7 +5933,21 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'Update all: disabled with nothing to update, one at a time then one reload, continues past failures, per-plugin warnings, locks other actions, survives a reload, re-arms after a failed reload, disarms on an empty library',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all is offered disabled when no installed library entry is behind its origin',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all updates each entry behind its origin one at a time, then reloads the list once and announces one change',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all continues past a failed update and names it in the summary beside a warning, with each output',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all reports a post-update warning per plugin without counting it as a failure',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > other plugin actions are locked while Update all runs, and free once it ends',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > a reload during Update all keeps it and every entry locked, with its progress line and live log',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all starts no update while another plugin action is in flight',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all re-arms its button when the reload after the run fails',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all disarms when a reload finds the library empty',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all keeps every plugin control locked through its closing reload',
+        'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all reads its targets when clicked: a caught-up entry is skipped, and with none left it starts nothing and takes no guard',
+        'web/e2e/parity/settings.spec.ts::Plugins: Update all updates one behind entry at a time with its progress in the header, and a section switch or a reopened Settings re-arms nothing until both are updated > next',
+        'web/e2e/parity/settings.spec.ts::Plugins: Update all continues past a failed update, names it in the summary with its output, and stays armed for the entry still behind > next',
+      ] },
   },
   {
     id: 'plugins-local-only-ui/R1',
@@ -5947,11 +5961,20 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'plugins-local-only-ui/R2',
-    old: { file: 'tests/plugins-local-only-ui.test.mjs', tests: 'rest' },
+    old: { file: 'tests/plugins-local-only-ui.test.mjs', tests: [
+        'a local plugin still offers Start',
+        'both local-only codes are reported when the manifest declares both',
+        'a conventions-only plugin on a system is not marked local-only',
+      ] },
     behaviour: 'local plugins still offer Start; both codes listed; a conventions-only plugin not marked',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/settings/plugins.test.tsx::Plugins → local-only > a plugin on this machine offers Start and carries no local-only note',
+        'web/src/features/settings/plugins.test.tsx::Plugins → local-only > a plugin on a system that declares both local-only capabilities names both codes on its note and hides Start',
+        'web/src/features/settings/plugins.test.tsx::Plugins → local-only > a conventions-only plugin on a system is not marked local-only and keeps Disable, and a disabled plugin there carries no note',
+        'web/e2e/parity/settings.spec.ts::Plugins: local-only capabilities: a plugin on this machine offers Start, one on a system declaring both names both codes and hides Start, and a conventions-only one there is not marked > next',
+      ] },
   },
   {
     id: 'legacy-plugin-version-select-width/R1',
@@ -5961,7 +5984,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the plugin row\'s version select stays compact whatever its options (real geometry)',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/parity/settings.spec.ts::Plugins: the version select stays inside its action row and the page whatever its options say: a stopped plugin on main beside a running one with a long worktree name > next',
+      ] },
   },
   {
     id: 'legacy-models-responsive/R1',

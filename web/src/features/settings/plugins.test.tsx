@@ -692,3 +692,417 @@ describe('Plugins → reloads', () => {
     expect(pluginsLine()).toBe('Failed to load plugins: library unavailable');
   });
 });
+
+// Settings part 3c (card 2026-0654)
+// Behind after its update: Behind's server state once an update landed.
+const CAUGHT_UP: LibraryEntry = { ...BEHIND, updateAvailable: false };
+// Flagged behind but not installed: it shows Install, so Update all neither counts nor updates it.
+const STRAY: LibraryEntry = { id: 'stray', name: 'Stray', repo: 'https://example.test/stray', installed: false, installedAs: null, updateAvailable: true };
+// The plugin of Behind's project: an update of Behind names it.
+const BEHIND_A: PluginRow = { ...SHARE_A, id: 'behind-a', name: 'Behind A', project: 'behind' };
+// The local-only note's subjects: a plugin here, one on a system declaring both capabilities,
+// a conventions-only one on a system, and a disabled one on a system that still carries a code.
+const HERE: PluginRow = { ...PL, id: 'here', name: 'Here', project: 'here', system: 'local' };
+const BOTH: PluginRow = { ...PL, id: 'both', name: 'Both', project: 'both', system: 'prod-box', localOnly: ['PLUGIN_BACKEND_LOCAL_ONLY', 'PLUGIN_DIR_LOCAL_ONLY'] };
+const CONV: PluginRow = { id: 'conv', name: 'Conv', project: 'conv', state: 'stopped', enabled: true, hasBackend: false, system: 'prod-box', localOnly: [] };
+const OFF_THERE: PluginRow = { ...OFF, id: 'off-there', name: 'Off There', project: 'off-there', system: 'prod-box', localOnly: ['PLUGIN_BACKEND_LOCAL_ONLY'] };
+
+/** Update all, whatever its label: `Update all`, `Update all (N)` or `Updating i/n…`. */
+const updateAllButton = () => screen.getByTitle('Update every installed library plugin that is behind its origin, one at a time') as HTMLButtonElement;
+const plugin = (id: string) => document.querySelector(`[data-plugin="${id}"]`) as HTMLElement;
+const pluginButtons = (id: string) => within(plugin(id)).queryAllByRole('button').map((b) => (b.textContent ?? '').trim());
+const localOnlyNote = (id: string) => plugin(id).querySelector('[data-local-only]') as HTMLElement | null;
+/** The index of the first recorded POST to `url`; -1 if none. */
+const postIndex = (url: string) => calls.findIndex((c) => c.method === 'POST' && c.url === url);
+/** The indexes of the library GETs recorded after call `from`. */
+const libraryGetsAfter = (from: number) => calls.flatMap((c, i) => (i > from && c.method === 'GET' && c.url === '/api/plugins/library' ? [i] : []));
+
+describe('Plugins → Update all', () => {
+  // Update all counts exactly the entries showing a per-entry Update: an up-to-date entry and an uninstalled one flagged behind leave it offered disabled and unnumbered.
+  it('Update all is offered disabled when no installed library entry is behind its origin', async () => {
+    library = [CURRENT, OTHER, STRAY];
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('3 available'));
+    expect(entryButtons('stray')).toEqual(['Install']);
+    expect(entryButtons('current')).toEqual([]);
+    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().disabled).toBe(true);
+  });
+
+  // Update all updates each entry behind its origin in list order, one at a time, with its progress in the header and the status line and every entry locked; then it reloads the list exactly once, drops the live logs, summarises muted and announces one change naming every plugin of the updated projects.
+  it('Update all updates each entry behind its origin one at a time, then reloads the list once and announces one change', async () => {
+    rows = [SHARE_A, BEHIND_A, ELSEWHERE];
+    library = [INSTALLED, CURRENT, STRAY, BEHIND];
+    serve({ 'POST /api/plugins/library/behind/update': newStream });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('4 available'));
+    expect(updateAllButton().textContent).toBe('Update all (2)');
+    expect(updateAllButton().disabled).toBe(false);
+    const v0 = pluginsChangedSignal.version();
+    const g = gets('/api/plugins/library');
+
+    fireEvent.click(updateAllButton());
+    const s0 = await streamAt(0);
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/2…'));
+    expect(updateAllButton().disabled).toBe(true);
+    expect(libLine()).toBe('Updating Code Share (1/2)…');
+    expect(libTone()).toBe('muted');
+    expect(entryButton('code-share', 'Updating…').disabled).toBe(true);
+    expect(entryButton('behind', 'Update').disabled).toBe(true);
+    expect(posts('/api/plugins/library/behind/update').length).toBe(0);
+    await feed(s0, 'Updating code-share...\n');
+    await waitFor(() => expect(live('code-share')).toContain('Updating code-share...'));
+
+    await finish(s0, ok({ id: 'code-share', name: 'code-share', project: 'code-share', postPull: null, restarted: null }));
+    const s1 = await streamAt(1);
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 2/2…'));
+    expect(libLine()).toBe('Updating Behind (2/2)…');
+    expect(entryButton('behind', 'Updating…').disabled).toBe(true);
+    expect(entryButton('code-share', 'Update').disabled).toBe(true);
+    expect(gets('/api/plugins/library')).toBe(g);
+
+    library = [UP_TO_DATE, CURRENT, STRAY, CAUGHT_UP];
+    await finish(s1, ok({ id: 'behind', name: 'behind', project: 'behind', postPull: null, restarted: null }));
+    await waitFor(() => expect(libLine()).toBe('Updated 2 of 2 plugins'));
+    expect(libTone()).toBe('muted');
+    expect(tail()).toBe('');
+    expect(installedAs('code-share')).toBe('installed as code-share · up to date');
+    expect(installedAs('behind')).toBe('installed as behind · up to date');
+    expect(live('code-share')).toBe('');
+    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().disabled).toBe(true);
+    const reloads = libraryGetsAfter(postIndex('/api/plugins/library/code-share/update'));
+    expect(reloads.length).toBe(1);
+    expect(reloads[0]).toBeGreaterThan(postIndex('/api/plugins/library/behind/update'));
+    expect(posts('/api/plugins/library/stray/update').length).toBe(0);
+    expect(posts('/api/plugins/library/current/update').length).toBe(0);
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+    expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'update', ids: ['share-a', 'behind-a'] });
+  });
+
+  // A failed update does not stop the run: the summary counts only the updates that landed and names the failure beside the other entry's warning, each output under its entry's name; the failed entry stays offered; only the updated project's plugins are announced. A run with nothing landing announces nothing, says "plugin" for one, and clears the previous output at its start.
+  it('Update all continues past a failed update and names it in the summary beside a warning, with each output', async () => {
+    rows = [SHARE_A, BEHIND_A, ELSEWHERE];
+    library = [INSTALLED, BEHIND];
+    serve({ 'POST /api/plugins/library/behind/update': newStream });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('2 available'));
+    const v0 = pluginsChangedSignal.version();
+
+    fireEvent.click(updateAllButton());
+    await finish(await streamAt(0), failed('git pull failed', 'fatal: diverged'));
+    const s1 = await streamAt(1);
+    library = [INSTALLED, CAUGHT_UP];
+    await finish(s1, ok({ id: 'behind', name: 'behind', project: 'behind', postPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! behind' }, restarted: null }));
+    await waitFor(() => expect(libLine()).toBe('Updated 1 of 2 plugins — Code Share failed: git pull failed; Updated Behind, but its post-update command failed'));
+    expect(libTone()).toBe('error');
+    expect(tail()).toBe('── Code Share ──\nfatal: diverged\n\n── Behind ──\nnpm ERR! behind');
+    expect(updateAllButton().textContent).toBe('Update all (1)');
+    expect(updateAllButton().disabled).toBe(false);
+    expect(entryButton('code-share', 'Update').disabled).toBe(false);
+    expect(installedAs('behind')).toBe('installed as behind · up to date');
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+    expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'update', ids: ['behind-a'] });
+
+    fireEvent.click(updateAllButton());
+    const s2 = await streamAt(2);
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/1…'));
+    expect(tail()).toBe('');
+    await finish(s2, failed('git pull failed'));
+    await waitFor(() => expect(libLine()).toBe('Updated 0 of 1 plugin — Code Share failed: git pull failed'));
+    expect(libTone()).toBe('error');
+    expect(tail()).toBe('');
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+    expect(updateAllButton().textContent).toBe('Update all (1)');
+  });
+
+  // A soft warning is not a failure: both updates count, the summary lists each warning in the single-update wording, only a warning with output adds to the output, and every updated plugin is announced.
+  it('Update all reports a post-update warning per plugin without counting it as a failure', async () => {
+    rows = [SHARE_A, BEHIND_A, ELSEWHERE];
+    library = [INSTALLED, BEHIND];
+    serve({ 'POST /api/plugins/library/behind/update': newStream });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('2 available'));
+    const v0 = pluginsChangedSignal.version();
+
+    fireEvent.click(updateAllButton());
+    await finish(await streamAt(0), ok({ id: 'code-share', name: 'code-share', project: 'code-share', postPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! share' }, restarted: null }));
+    const s1 = await streamAt(1);
+    library = [UP_TO_DATE, CAUGHT_UP];
+    await finish(s1, ok({ id: 'behind', name: 'behind', project: 'behind', postPull: { ran: true, ok: true, code: 0, tail: 'added 3 packages' }, restarted: { ids: ['behind-a'], ok: false, error: 'boom' } }));
+    await waitFor(() => expect(libLine()).toBe('Updated 2 of 2 plugins — Updated Code Share, but its post-update command failed; Updated Behind, but restarting its backend failed: boom'));
+    expect(libTone()).toBe('error');
+    expect(tail()).toBe('── Code Share ──\nnpm ERR! share');
+    expect(updateAllButton().textContent).toBe('Update all');
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+    expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'update', ids: ['share-a', 'behind-a'] });
+  });
+
+  // While Update all runs every other plugin control is disabled, Rescan and the installed list's included; once it ends they are enabled again.
+  it('other plugin actions are locked while Update all runs, and free once it ends', async () => {
+    rows = [PL, OFF];
+    library = [INSTALLED, BEHIND, OTHER];
+    serve({ 'POST /api/plugins/library/behind/update': newStream });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('3 available'));
+    fireEvent.click(updateAllButton());
+    const s0 = await streamAt(0);
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/2…'));
+    expect(button('Rescan').disabled).toBe(true);
+    expect(button('Start').disabled).toBe(true);
+    expect(button('Disable').disabled).toBe(true);
+    expect(button('Enable').disabled).toBe(true);
+    expect((screen.getByLabelText('Active version of Pl') as HTMLSelectElement).disabled).toBe(true);
+    expect(entryButton('other', 'Install').disabled).toBe(true);
+    expect(entryButton('behind', 'Update').disabled).toBe(true);
+
+    await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
+    const s1 = await streamAt(1);
+    library = [UP_TO_DATE, CAUGHT_UP, OTHER];
+    await finish(s1, ok({ project: 'behind', postPull: null, restarted: null }));
+    await waitFor(() => expect(libLine()).toBe('Updated 2 of 2 plugins'));
+    expect(button('Rescan').disabled).toBe(false);
+    expect(button('Start').disabled).toBe(false);
+    expect(button('Disable').disabled).toBe(false);
+    expect(button('Enable').disabled).toBe(false);
+    expect((screen.getByLabelText('Active version of Pl') as HTMLSelectElement).disabled).toBe(false);
+    expect(entryButton('other', 'Install').disabled).toBe(false);
+  });
+
+  // A section switch or a reopened Settings mid-run reloads the lists but re-arms neither Update all nor any entry; the progress line and the live log stay, and the run lands in the section shown.
+  it('a reload during Update all keeps it and every entry locked, with its progress line and live log', async () => {
+    library = [INSTALLED, BEHIND];
+    serve({ 'POST /api/plugins/library/behind/update': newStream });
+    openAt('#settings/plugins');
+    await waitFor(() => expect(entry('code-share')).not.toBeNull());
+    fireEvent.click(updateAllButton());
+    const s0 = await streamAt(0);
+    await feed(s0, 'Updating code-share...\n');
+
+    await switchTo('archived');
+    await switchTo('plugins');
+    await waitFor(() => expect(gets('/api/plugins/library')).toBe(2));
+    await waitFor(() => expect(entryButton('code-share', 'Updating…').disabled).toBe(true));
+    expect(updateAllButton().textContent).toBe('Updating 1/2…');
+    expect(updateAllButton().disabled).toBe(true);
+    expect(entryButton('behind', 'Update').disabled).toBe(true);
+    expect(libLine()).toBe('Updating Code Share (1/2)…');
+    expect(live('code-share')).toContain('Updating code-share...');
+
+    await leaveAndReenter('plugins');
+    await waitFor(() => expect(gets('/api/plugins/library')).toBe(3));
+    await waitFor(() => expect(entryButton('code-share', 'Updating…').disabled).toBe(true));
+    expect(updateAllButton().textContent).toBe('Updating 1/2…');
+    expect(updateAllButton().disabled).toBe(true);
+    expect(entryButton('behind', 'Update').disabled).toBe(true);
+    expect(libLine()).toBe('Updating Code Share (1/2)…');
+    expect(live('code-share')).toContain('Updating code-share...');
+
+    await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
+    const s1 = await streamAt(1);
+    library = [UP_TO_DATE, CAUGHT_UP];
+    await finish(s1, ok({ project: 'behind', postPull: null, restarted: null }));
+    await waitFor(() => expect(libLine()).toBe('Updated 2 of 2 plugins'));
+    expect(updateAllButton().textContent).toBe('Update all');
+  });
+
+  // Update all starts nothing while another action holds the guard: during a single Update it is disabled; during a plugin action it stays enabled, but its click starts no update; once the action ends it runs.
+  it('Update all starts no update while another plugin action is in flight', async () => {
+    rows = [PL];
+    library = [INSTALLED, BEHIND];
+    const h = heldJson();
+    serve({ 'POST /api/plugins/library/behind/update': newStream, 'POST /api/plugins/rescan': () => h.response });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('2 available'));
+
+    fireEvent.click(entryButton('code-share', 'Update'));
+    const s0 = await streamAt(0);
+    await waitFor(() => expect(entryButton('code-share', 'Updating…').disabled).toBe(true));
+    expect(updateAllButton().textContent).toBe('Update all (2)');
+    expect(updateAllButton().disabled).toBe(true);
+    library = [UP_TO_DATE, BEHIND];
+    await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Update all (1)'));
+    expect(posts('/api/plugins/library/behind/update').length).toBe(0);
+
+    fireEvent.click(button('Rescan'));
+    await waitFor(() => expect(pluginsLine()).toBe('Rescanning…'));
+    expect(updateAllButton().disabled).toBe(false);
+    fireEvent.click(updateAllButton());
+    await act(async () => {});
+    expect(posts('/api/plugins/library/behind/update').length).toBe(0);
+    expect(updateAllButton().textContent).toBe('Update all (1)');
+    expect(libLine()).toBe('2 available');
+
+    await act(async () => h.release({ ok: true }));
+    await waitFor(() => expect(pluginsLine()).toBe('1 plugin'));
+    fireEvent.click(updateAllButton());
+    const s1 = await streamAt(1);
+    library = [UP_TO_DATE, CAUGHT_UP];
+    await finish(s1, ok({ project: 'behind', postPull: null, restarted: null }));
+    await waitFor(() => expect(libLine()).toBe('Updated 1 of 1 plugin'));
+  });
+
+  // A closing reload that fails leaves the pre-run list: Update all re-arms for both entries, the plugin list's line says why, and the change still names the updated projects' plugins from the rows already loaded.
+  it('Update all re-arms its button when the reload after the run fails', async () => {
+    rows = [SHARE_A, BEHIND_A, ELSEWHERE];
+    library = [INSTALLED, BEHIND];
+    let libraryDown = false;
+    serve({
+      'GET /api/plugins/library': () => (libraryDown ? { status: 500, json: { error: 'library unavailable' } } : { entries: library, skipped }),
+      'POST /api/plugins/library/behind/update': newStream,
+    });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('2 available'));
+    libraryDown = true;
+    fireEvent.click(updateAllButton());
+    await finish(await streamAt(0), ok({ project: 'code-share', postPull: null, restarted: null }));
+    await finish(await streamAt(1), ok({ project: 'behind', postPull: null, restarted: null }));
+    await waitFor(() => expect(pluginsLine()).toBe('Failed to load plugins: library unavailable'));
+    expect(pluginsTone()).toBe('error');
+    await waitFor(() => expect(libLine()).toBe('Updated 2 of 2 plugins'));
+    expect(updateAllButton().textContent).toBe('Update all (2)');
+    expect(updateAllButton().disabled).toBe(false);
+    expect(entryButton('code-share', 'Update').disabled).toBe(false);
+    expect(entryButton('behind', 'Update').disabled).toBe(false);
+    expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'update', ids: ['share-a', 'behind-a'] });
+  });
+
+  // A reload that finds the library empty disarms an armed Update all.
+  it('Update all disarms when a reload finds the library empty', async () => {
+    rows = [PL];
+    library = [INSTALLED, BEHIND];
+    serve({ 'POST /api/plugins/rescan': () => ({ ok: true }) });
+    wrap();
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Update all (2)'));
+    expect(updateAllButton().disabled).toBe(false);
+    library = [];
+    fireEvent.click(button('Rescan'));
+    await waitFor(() => expect(libLine()).toBe('No library entries.'));
+    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().disabled).toBe(true);
+  });
+
+  // Update all holds the guard across its closing reload: with no entry running any more, every entry, Install and plugin action stays locked until that reload lands.
+  it('Update all keeps every plugin control locked through its closing reload', async () => {
+    rows = [PL];
+    library = [INSTALLED, BEHIND, OTHER];
+    const h = heldJson();
+    let holdNext = false;
+    serve({
+      'GET /api/plugins/library': () => {
+        if (!holdNext) return { entries: library, skipped };
+        holdNext = false;
+        return h.response;
+      },
+      'POST /api/plugins/library/behind/update': newStream,
+    });
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('3 available'));
+    const g = gets('/api/plugins/library');
+    fireEvent.click(updateAllButton());
+    await finish(await streamAt(0), ok({ project: 'code-share', postPull: null, restarted: null }));
+    const s1 = await streamAt(1);
+    holdNext = true;
+    library = [UP_TO_DATE, CAUGHT_UP, OTHER];
+    await finish(s1, ok({ project: 'behind', postPull: null, restarted: null }));
+    await waitFor(() => expect(gets('/api/plugins/library')).toBe(g + 1));
+    // Positive control: the run has cleared its running entry, so only Update all's own hold can lock anything now.
+    await waitFor(() => expect(entryButtons('behind')).toEqual(['Update']));
+    expect(updateAllButton().textContent).toBe('Updating 2/2…');
+    expect(updateAllButton().disabled).toBe(true);
+    expect(entryButton('code-share', 'Update').disabled).toBe(true);
+    expect(entryButton('behind', 'Update').disabled).toBe(true);
+    expect(entryButton('other', 'Install').disabled).toBe(true);
+    expect(button('Rescan').disabled).toBe(true);
+    expect(button('Start').disabled).toBe(true);
+
+    await act(async () => h.release({ entries: library, skipped: [] }));
+    await waitFor(() => expect(libLine()).toBe('Updated 2 of 2 plugins'));
+    expect(entryButton('other', 'Install').disabled).toBe(false);
+    expect(button('Rescan').disabled).toBe(false);
+    expect(button('Start').disabled).toBe(false);
+  });
+
+  // Update all updates what is behind when clicked, not what was last painted: an entry that caught up since is skipped, and with none left the click starts nothing, reloads nothing and leaves the guard free.
+  it('Update all reads its targets when clicked: a caught-up entry is skipped, and with none left it starts nothing and takes no guard', async () => {
+    rows = [PL];
+    library = [INSTALLED, BEHIND];
+    serve({ 'POST /api/plugins/library/behind/update': newStream, 'POST /api/plugins/rescan': () => ({ ok: true }) });
+    wrap();
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Update all (2)'));
+    const btn = updateAllButton();
+    // A reload lands after the paint, Behind caught up; React re-renders only when this act ends.
+    act(() => {
+      pluginsStore.set({ library: [INSTALLED, CAUGHT_UP] });
+      // Positive control: the click lands on the paint that still offers both.
+      expect(btn.textContent).toBe('Update all (2)');
+      expect(btn.disabled).toBe(false);
+      fireEvent.click(btn);
+    });
+    const s0 = await streamAt(0);
+    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/1…'));
+    library = [UP_TO_DATE, CAUGHT_UP];
+    await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
+    await waitFor(() => expect(libLine()).toBe('Updated 1 of 1 plugin'));
+    expect(posts('/api/plugins/library/behind/update').length).toBe(0);
+
+    library = [INSTALLED, BEHIND];
+    fireEvent.click(button('Rescan'));
+    await waitFor(() => {
+      expect(pluginsLine()).toBe('1 plugin');
+      expect(updateAllButton().textContent).toBe('Update all (2)');
+    });
+    const g = gets('/api/plugins/library');
+    const btn2 = updateAllButton();
+    act(() => {
+      pluginsStore.set({ library: [UP_TO_DATE, CAUGHT_UP] });
+      // Positive control, as above.
+      expect(btn2.textContent).toBe('Update all (2)');
+      expect(btn2.disabled).toBe(false);
+      fireEvent.click(btn2);
+    });
+    await act(async () => {});
+    // Sanity only: no extra update POST (1 either way; `gets` and `libLine` are what discriminate).
+    expect(posts('/api/plugins/library/code-share/update').length).toBe(1);
+    expect(gets('/api/plugins/library')).toBe(g);
+    expect(libLine()).toBe('2 available');
+    expect(updateAllButton().textContent).toBe('Update all');
+    fireEvent.click(button('Rescan'));
+    expect(posts('/api/plugins/rescan').length).toBe(2);
+    await waitFor(() => expect(pluginsLine()).toBe('1 plugin'));
+  });
+});
+
+describe('Plugins → local-only', () => {
+  // A plugin on the machine cc runs on keeps its backend controls and carries no local-only note.
+  it('a plugin on this machine offers Start and carries no local-only note', async () => {
+    rows = [HERE];
+    wrap();
+    await waitFor(() => expect(pluginButtons('here')).toEqual(['Start', 'Disable']));
+    expect(within(plugin('here')).getByLabelText('Active version of Here')).toBeTruthy();
+    expect(localOnlyNote('here')).toBeNull();
+  });
+
+  // A plugin on a system declaring both local-only capabilities names the system and both codes on one note, and offers neither Start nor a version; a local sibling keeps both and has no note.
+  it('a plugin on a system that declares both local-only capabilities names both codes on its note and hides Start', async () => {
+    rows = [HERE, BOTH];
+    wrap();
+    await waitFor(() => expect(localOnlyNote('both')?.textContent).toBe("on system 'prod-box': PLUGIN_BACKEND_LOCAL_ONLY, PLUGIN_DIR_LOCAL_ONLY"));
+    expect(localOnlyNote('both')!.getAttribute('title')).toBe('These plugin capabilities run only on the machine code-conductor runs on');
+    expect(pluginButtons('both')).toEqual(['Disable']);
+    expect(within(plugin('both')).queryByLabelText('Active version of Both')).toBeNull();
+    expect(pluginButtons('here')).toEqual(['Start', 'Disable']);
+    expect(localOnlyNote('here')).toBeNull();
+  });
+
+  // A plugin on a system that declares no local-only capability is not marked and keeps Disable; a disabled plugin there carries no note even with a code.
+  it('a conventions-only plugin on a system is not marked local-only and keeps Disable, and a disabled plugin there carries no note', async () => {
+    rows = [CONV, OFF_THERE];
+    wrap();
+    await waitFor(() => expect(pluginButtons('conv')).toEqual(['Disable']));
+    expect(localOnlyNote('conv')).toBeNull();
+    expect(pluginButtons('off-there')).toEqual(['Enable']);
+    expect(localOnlyNote('off-there')).toBeNull();
+  });
+});
