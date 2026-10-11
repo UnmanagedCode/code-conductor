@@ -295,7 +295,10 @@ describe('encodes', () => {
     attach([unreadable]);
     await settle();
     expect(chips(), 'positive control: the file shows as a chip').toEqual(['Remove bad.png']);
-    expect(screen.queryByText('bad.png · read failed: disk gone'), 'the chip shows the read failure').not.toBeNull();
+    const chipText = screen.getByRole('button', { name: 'Remove bad.png' }).parentElement!.textContent ?? '';
+    expect(chipText, 'the chip names its file').toContain('bad.png');
+    expect(chipText, 'the chip names the read failure').toMatch(/read failed/i);
+    expect(chipText, 'the chip carries the reason').toContain('disk gone');
     expect(screen.queryByRole('button', { name: 'Send' }), 'a failed file alone is nothing to send').toBeNull();
     attach([png('good.png', 'GOOD')]);
     await settle();
