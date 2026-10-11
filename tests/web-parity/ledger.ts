@@ -3130,11 +3130,18 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'notifications/R4',
-    old: { file: 'tests/notifications.test.mjs', tests: 'rest' },
+    old: { file: 'tests/notifications.test.mjs', tests: [
+        'resolveNotificationInstance: no match returns null',
+        'resolveNotificationInstance: missing/empty instances list returns null',
+        'resolveNotificationInstance: missing data returns null',
+      ] },
     behaviour: 'resolution with no match, an empty/missing list or missing data',
     viewports: ['desktop', 'phone', 'android'],
     area: 'android-shell',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/notificationClickNoMatch.test.ts::a notification click that matches nothing > selects and resumes nothing when neither id names a live or locatable session',
+        'web/src/app/notificationClickNoMatch.test.ts::a notification click that matches nothing > does nothing for missing data or an empty live list',
+      ] },
   },
   {
     id: 'prompt-focus/R1',
@@ -3161,11 +3168,19 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'prompt-focus/R2',
-    old: { file: 'tests/prompt-focus.test.mjs', tests: 'rest' },
+    old: { file: 'tests/prompt-focus.test.mjs', tests: [
+        'an open lightbox keeps focus',
+        'a closed lightbox does not block focus',
+        'a focused button does not block focus',
+      ] },
     behaviour: 'an open lightbox blocks focus, a hidden one doesn\'t; a focused button doesn\'t block',
     viewports: ['desktop', 'phone', 'android'],
     area: 'android-shell',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/composer/promptFocusBlockers.test.tsx::prompt focus and overlays > an open aria-modal overlay keeps focus where it was; a hidden one does not block',
+        'web/src/features/composer/promptFocusBlockers.test.tsx::prompt focus and overlays > a focused button does not block focusing the prompt',
+        'web/src/features/composer/promptFocusBlockers.test.tsx::prompt focus and overlays > the real image overlay blocks it while open and stops blocking once closed',
+      ] },
   },
   {
     id: 'doc/back-button',
@@ -3472,11 +3487,25 @@ export const LEDGER: readonly Row[] = [
   // cross-cutting
   {
     id: 'dismissable/R1',
-    old: { file: 'tests/dismissable.test.mjs' },
+    old: { file: 'tests/dismissable.test.mjs', tests: [
+        'makeDismissable: armed flips on arm()/disarm() and starts disarmed',
+        'makeDismissable: outside pointerdown dismisses, inside does not',
+        'makeDismissable: Escape dismisses, other keys do not',
+        'makeDismissable: disarm() removes both listeners (no further dismiss)',
+        'makeDismissable: disarm() is idempotent',
+      ] },
     behaviour: 'popovers dismiss on outside pointerdown and Escape, not inside',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a non-modal dropdown menu (the sidebar project-actions menu)',
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a non-modal dropdown menu (the session header actions menu)',
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a modal dropdown menu (the app switcher)',
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a popover (the usage details chip)',
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a select list (the conductor filter)',
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a dialog',
+        'web/src/components/dismissable.test.tsx::popovers and menus dismiss on an outside press and on Escape > a sheet (the phone drawer)',
+      ] },
   },
   {
     id: 'hidden-attribute-layout/R3',
@@ -3523,10 +3552,13 @@ export const LEDGER: readonly Row[] = [
   {
     id: 'viewed-marker/R2',
     old: { file: 'tests/viewed-marker.test.mjs', tests: ['install removes the legacy unread key and survives a throwing storage'] },
-    behaviour: 'install survives a throwing storage',
+    behaviour: 'install removes the legacy unread key and survives a throwing storage',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/viewedMarker.test.ts::viewed marker > removes the legacy unread key',
+        'web/src/app/viewedMarkerStorage.test.ts::viewed marker install with unusable storage > survives a throwing storage and still marks a seen turn',
+      ] },
   },
   {
     id: 'viewed-marker/R3',
@@ -3558,7 +3590,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'every UI asset is served non-empty',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/build.test.ts::serving the built UI > serves every shipped file under the mount, non-empty, with the index reachable at the mount root',
+      ] },
   },
   {
     id: 'static/R8',
@@ -3592,7 +3626,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'with reduced motion, the working dot and ellipsis stay visible but stop animating',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/reduced-motion.spec.ts::reduced motion keeps the working indicator visible but stops its animation',
+      ] },
   },
 
   // sidebar
@@ -3738,7 +3774,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the stored width is applied, clamped or ignored at startup',
     viewports: ['desktop'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/sidebar/chrome.test.tsx::the sidebar column width at startup > applies an in-range stored width and clamps an out-of-range one to the limits',
+        'web/src/features/sidebar/chrome.test.tsx::the sidebar column width at startup > falls back to the same default for garbage storage as for no storage',
+      ] },
   },
   {
     id: 'sidebar-chrome/R3',
@@ -3750,7 +3789,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'phone drawer: toggle, scrim click, close-on-mobile',
     viewports: ['phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/sidebar-chrome.spec.ts::the phone drawer opens from its toggle and closes from its scrim, Escape and navigating',
+        'web/src/app/closeSidebarOnMobile.test.ts::closeSidebarOnMobile > collapses an open drawer',
+      ] },
   },
   {
     id: 'sidebar-chrome/R4',
@@ -3758,15 +3800,30 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'close-on-mobile does nothing on desktop',
     viewports: ['desktop'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/sidebar-chrome.spec.ts::the desktop sidebar column has no drawer toggle and stays when a session is chosen',
+        'web/src/app/closeSidebarOnMobile.test.ts::closeSidebarOnMobile > does nothing when the drawer is closed, so a desktop column (which never opens it) is untouched',
+      ] },
   },
   {
     id: 'sidebar-chrome/R5',
-    old: { file: 'tests/sidebar-chrome.test.mjs', tests: 'rest' },
+    old: { file: 'tests/sidebar-chrome.test.mjs', tests: [
+        'the ≡ toggle un-hides the panel and sets aria-expanded, and a second click re-hides it',
+        'an outside pointerdown dismisses the ≡ overflow',
+        'a pointerdown INSIDE the panel does not dismiss it',
+        'Escape dismisses the ≡ overflow',
+        'closeSidebarOverflow on an unarmed controller is a no-op',
+        'closeSidebarOverflow closes an open menu and disarms it',
+      ] },
     behaviour: 'the ≡ overflow opens and dismisses (toggle, outside click, inside click, Escape, programmatic close)',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/sidebar/chrome.test.tsx::the ≡ project-actions menu > opens from its trigger and reports it through aria-expanded, and the trigger closes it again',
+        'web/src/features/sidebar/chrome.test.tsx::the ≡ project-actions menu > closes on a press outside and on Escape',
+        'web/src/features/sidebar/chrome.test.tsx::the ≡ project-actions menu > closes after an item is picked, and a press on the menu itself does not close it',
+        'web/src/features/sidebar/chrome.test.tsx::the ≡ project-actions menu > is dismissed by switching to the Conductors lens',
+      ] },
   },
   {
     id: 'sidebar-conductor-filter/R1',
@@ -4003,19 +4060,42 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'sidebar-lens/R1',
-    old: { file: 'tests/sidebar-lens.test.mjs' },
-    behaviour: 'lens default, persistence and read-back, garbage fallback, closing the overflow, sidebar body order',
+    old: { file: 'tests/sidebar-lens.test.mjs', tests: [
+        'a fresh profile defaults to Conductors',
+        'clicking Projects persists the choice; a re-install reads it back',
+        'a garbage stored value falls back to Conductors',
+        'switching to Conductors closes the ≡ overflow',
+        '#sidebar-body order: Conduct alone, strip slot, lens toggle, Projects row (filter + ≡ menu), then the lists',
+      ] },
+    behaviour: 'lens default, persistence and read-back, garbage fallback, closing the overflow (function only: the sidebar body order is not ported)',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/lens.test.ts::the sidebar lens > defaults to Conductors on a fresh profile',
+        'web/src/app/lens.test.ts::the sidebar lens > persists a choice and reads it back after a reload',
+        'web/src/app/lens.test.ts::the sidebar lens > falls back to Conductors for a garbage stored value',
+        'web/src/features/sidebar/chrome.test.tsx::the ≡ project-actions menu > is dismissed by switching to the Conductors lens',
+      ] },
   },
   {
     id: 'sidebar-lens-layout/R1',
-    old: { file: 'tests/sidebar-lens-layout.test.mjs' },
-    behaviour: 'computed lens visibility, selected-row and strip styling, ring colours, equal control heights',
+    old: { file: 'tests/sidebar-lens-layout.test.mjs', tests: [
+        'under data-lens=conductors the Projects-only row and list compute display:none and #conductor-list does not; under projects, the reverse',
+        '.session-row.active: panel-2 background, a 1px solid muted outline at -1px offset, and no accent border-left',
+        'an owned active row keeps its 3px owner border-left under the outline',
+        'the filter select and #sidebar-overflow-toggle resolve the same height',
+        '#sidebar-strip-slot is displayed under both lenses',
+        'the waiting-on-you ring: amber for idle, accent on a worker, green without the pulse in a turn',
+        '.strip-entry.active gets the selected fill, outline and bold label of .session-row.active',
+        'an owned strip entry draws the inset 3px owner bar, as a conductor block does',
+        '.strip-entry.unread: a 600 title and the waiting-on-you ring in accent, under the selection\'s 700',
+      ] },
+    behaviour: 'the chosen lens\'s lists are visible and reachable (function only: computed styling, ring colours and equal control heights are not ported)',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/sidebar-lens.spec.ts::each lens shows its own lists and they are reachable',
+      ] },
   },
   {
     id: 'sidebar-ownership-colour/R1',
@@ -4536,10 +4616,12 @@ export const LEDGER: readonly Row[] = [
         'phone',
         'phone > filter and ≡ share height and centre; no sideways overflow',
       ] },
-    behaviour: 'phone: filter and ≡ share height and centre; no sideways overflow',
+    behaviour: 'phone: the filter and ≡ controls are reachable and do not overflow the sidebar (function only: equal height and centring are not ported)',
     viewports: ['phone'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/sidebar-lens.spec.ts::the Projects lens filter and project-actions controls are reachable and do not overflow the sidebar',
+      ] },
   },
   {
     id: 'legacy-sidebar-strip/R1',
@@ -6516,7 +6598,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'entering, switching or leaving a plugin collapses the phone drawer',
     viewports: ['phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginDrawer.test.tsx::plugin navigation and the sidebar > collapses the phone drawer when entering a plugin, switching plugin to plugin, and returning to Conductor',
+      ] },
   },
   {
     id: 'plugins-frontend/R21',
@@ -6527,15 +6611,19 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'on desktop the sidebar stays open',
     viewports: ['desktop'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginDrawer.test.tsx::plugin navigation and the sidebar > leaves the desktop sidebar in place when entering a plugin or switching plugin to plugin',
+      ] },
   },
   {
     id: 'hidden-attribute-layout/R4',
     old: { file: 'tests/hidden-attribute-layout.test.mjs', tests: ['the JS-built elements listed in JS_BUILT_HIDDEN do not lay out'] },
-    behaviour: 'hidden plugin frames and overlays don\'t lay out',
+    behaviour: 'a plugin view left behind is not visible and doesn\'t intercept the pointer',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/plugin-hidden.spec.ts::a plugin view left behind is not visible and does not intercept the pointer',
+      ] },
   },
   {
     id: 'static/R6',
@@ -6543,7 +6631,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the plugin anchors: switcher in the sidebar header, plugin view in main, a Plugins settings section',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginAnchors.test.tsx::where the plugin surfaces live > puts the app switcher in the sidebar and the plugin view in the main area, not in the sidebar',
+        'web/src/features/views/pluginAnchors.test.tsx::where the plugin surfaces live > offers a Plugins section in Settings',
+      ] },
   },
   {
     id: 'legacy-plugin-keepalive/R1',
