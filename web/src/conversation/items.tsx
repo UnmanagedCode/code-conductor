@@ -409,9 +409,9 @@ function QueuedView({ node }: { node: QueuedNode }) {
   const d = node.ev.data ?? {};
   let clock = '';
   try { if (d.ts) clock = new Date(d.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { /* bad ts */ }
-  if (node.delivered) return null;
+  // Delivered, the ghost stays where it was queued, dimmed, above the turn that delivered it.
   return (
-    <div className="flex justify-end" data-item="queued">
+    <div className={cn('flex justify-end', node.delivered && 'opacity-40')} data-item="queued" data-delivered={node.delivered || undefined}>
       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-dashed px-4 py-2.5 text-muted-foreground">
         <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase">
           <ClockIcon className="size-3" /> Queued{clock && ` · ${clock}`}
