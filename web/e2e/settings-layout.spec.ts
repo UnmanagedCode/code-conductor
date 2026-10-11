@@ -42,7 +42,32 @@ test.beforeAll(async ({ cc }) => {
     await ok(`/api/settings/conventions/${scope}`, { slug: LONG_SLUG, name: LONG, description: `${LONG} ${LONG}`, body: 'x' });
   }
   await installFakePlugin(cc, 'layout-plugin');
+  // An ordinary user-added system (a realistic, longish label and a worktrees dir), beside the built-in one.
+  await ok('/api/settings/systems', { id: 'prod-box', label: 'Production build box (eu-west)', worktreesDir: `/srv/worktrees/${LONG}` });
 });
+
+// Rows the server cannot be made to hold in a scratch cc are served page-locally, worst-case: an archived group, an installed plugin that carries every optional line, and library entries.
+const ARCHIVED = { groups: [
+  { project: LONG, sessions: [{ sessionId: 'aaaaaaaa-1111', title: `${LONG} ${LONG}`, worktreeName: LONG, lastActivity: 1 }, { sessionId: 'bbbbbbbb-2222', firstPrompt: LONG, lastActivity: 1 }] },
+  { project: '.conduct', sessions: [{ sessionId: 'cccccccc-3333', title: 'A conductor session', lastActivity: 1 }] },
+] };
+const LIBRARY = { entries: [
+  { id: 'lib-long', name: LONG, description: `${LONG} ${LONG}`, repo: `https://example.test/${LONG}/${LONG}`, installed: true, installedAs: LONG, updateAvailable: true },
+  { id: 'lib-plain', name: 'Plain entry', description: 'A short description.', repo: 'https://example.test/plain', installed: false },
+], skipped: [] };
+
+async function serveWorstCaseRows(page: Page): Promise<void> {
+  await page.route('**/api/archived', (r) => r.fulfill({ json: ARCHIVED }));
+  await page.route('**/api/plugins/library', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: LIBRARY }) : r.fallback()));
+  await page.route('**/api/plugins', async (r) => {
+    if (r.request().method() !== 'GET') return r.fallback();
+    const res = await r.fetch();
+    const body = await res.json() as { rows: Record<string, unknown>[] };
+    const base = body.rows[0] ?? {};
+    const long = { ...base, id: 'long-plugin', name: LONG, project: LONG, errors: [`${LONG} ${LONG}`], conventions: [{ name: LONG, description: `${LONG} ${LONG}` }] };
+    return r.fulfill({ response: res, json: { ...body, rows: [...body.rows, long] } });
+  });
+}
 
 type Report = { violations: string[]; width: number; controls: number };
 
@@ -109,6 +134,8 @@ function measure(a: { id: string; eps: number }): Report {
     const h = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
     if (!h || !(h === c || c.contains(h) || h.contains(c))) v.push(`control ${name(c)} is covered at its centre`);
   });
+  // Positive control: a section whose body never rendered holds no control.
+  if (controls.length === 0) v.push('rendered no control: its body is missing');
   return { violations: v, width: s.width, controls: controls.length };
 }
 
@@ -127,8 +154,12 @@ async function settle(page: Page, inFlight: () => number): Promise<void> {
   await expect.poll(inFlight, { message: 'requests in flight after render' }).toBe(0);
 }
 
-/** Opens what Conventions keeps folded or behind an Add button, so its widest content is on screen. */
+/** Opens what Archived and Conventions keep folded or behind an Add button, so its widest content is on screen. */
 async function expand(page: Page, id: string): Promise<void> {
+  if (id === 'archived') {
+    const groups = page.locator('[data-section="archived"] button[aria-expanded="false"][data-state="closed"]');
+    while (await groups.count()) await groups.first().click();
+  }
   if (id !== 'conventions') return;
   const folded = page.locator('[data-section="conventions"] button[aria-expanded="false"][data-state="closed"]');
   while (await folded.count()) await folded.first().click();
@@ -142,6 +173,7 @@ test.describe('Settings layout', () => {
   // The invariant: no section overflows its column and every control stays reachable, at every swept viewport and sidebar width.
   test('no Settings section overflows its column, and every control in it stays on screen, uncovered and clear of its siblings, at every swept viewport and sidebar width', async ({ page }) => {
     const inFlight = trackRequests(page);
+    await serveWorstCaseRows(page);
     const height = page.viewportSize()!.height;
     await page.goto('/next/#settings');
     const nav = page.getByRole('navigation', { name: 'Settings sections' });

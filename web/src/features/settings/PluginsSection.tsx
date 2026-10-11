@@ -215,20 +215,20 @@ export function PluginsSection() {
             const localOnly = Array.isArray(row.localOnly) ? row.localOnly : [];
             const contribs = contributions(row);
             return (
-              <div key={row.id} data-plugin={row.id} className="rounded-xl border px-4 py-3">
+              <div key={row.id} data-plugin={row.id} className="min-w-0 rounded-xl border px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <PlugIcon className="size-4 text-muted-foreground" />
-                  <span className="font-medium">{row.name}</span>
+                  <span className="min-w-0 font-medium break-words">{row.name}</span>
                   <Badge variant={STATE_VARIANT[row.state] ?? 'secondary'}>{row.state}</Badge>
                 </div>
-                <div className="mt-1 text-xs text-muted-foreground">{metaBits(row).join(' · ')}</div>
+                <div className="mt-1 text-xs break-words text-muted-foreground">{metaBits(row).join(' · ')}</div>
                 {contribs.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1.5">{contribs.map((c) => <Badge key={c} variant="outline" className="font-normal">{c}</Badge>)}</div>
                 )}
                 {!!row.conventions?.length && (
                   <ul className="mt-2 space-y-0.5 text-xs">
                     {row.conventions.map((c) => (
-                      <li key={c.name}><span className="font-medium">{c.hasScaffold ? `${c.name} · scaffolds` : c.name}</span> <span className="text-muted-foreground">{c.description}</span></li>
+                      <li key={c.name} className="break-words"><span className="font-medium">{c.hasScaffold ? `${c.name} · scaffolds` : c.name}</span> <span className="text-muted-foreground">{c.description}</span></li>
                     ))}
                   </ul>
                 )}
@@ -297,21 +297,21 @@ export function PluginsSection() {
         }
       >
         <Status text={libStatus?.text} tone={libStatus?.error ? 'error' : 'muted'} />
-        <div className="grid gap-3 lg:grid-cols-2" data-testid="library-list">
+        <div className="grid gap-3 @3xl:grid-cols-2" data-testid="library-list">
           {(library || []).map((e) => (
             <div key={e.id} data-entry={e.id} className={cn('flex min-w-0 flex-col rounded-xl border px-4 py-3', e.installed && 'bg-muted/30')}>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">{e.name}</span>
+                <span className="min-w-0 font-medium break-words">{e.name}</span>
                 {e.installed && <Badge variant="success">installed</Badge>}
               </div>
-              {e.description && <p className="mt-1 text-sm text-muted-foreground">{e.description}</p>}
-              <div className="mt-1 truncate font-mono text-xs text-muted-foreground">{e.repo}</div>
+              {e.description && <p className="mt-1 text-sm break-words text-muted-foreground">{e.description}</p>}
+              <div className="mt-1 truncate font-mono text-xs text-muted-foreground" title={e.repo}>{e.repo}</div>
               <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
                 {busyEntry?.id === e.id ? (
                   <Button size="sm" disabled><LoaderCircleIcon className="animate-spin" /> {busyEntry.label}</Button>
                 ) : e.installed ? (
                   <>
-                    <span className="text-xs text-muted-foreground">installed as {e.installedAs}{!e.updateAvailable && ' · up to date'}</span>
+                    <span className="min-w-0 text-xs break-words text-muted-foreground">installed as {e.installedAs}{!e.updateAvailable && ' · up to date'}</span>
                     {e.updateAvailable && <Button size="sm" disabled={locked} onClick={() => void update(e)}><RefreshCwIcon /> Update</Button>}
                   </>
                 ) : (

@@ -84,14 +84,14 @@ export function SystemsSection() {
         {(systems || []).map((s) => {
           const projects = Array.isArray(s.projects) ? s.projects : [];
           return (
-            <div key={s.id} data-system={s.id} className="rounded-xl border bg-card px-4 py-3 shadow-xs">
+            <div key={s.id} data-system={s.id} className="min-w-0 rounded-xl border bg-card px-4 py-3 shadow-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <ServerIcon className="size-4 text-muted-foreground" />
-                <span className="font-medium">{s.label}</span>
-                <span className="font-mono text-xs text-muted-foreground">{s.id}</span>
+                <span className="min-w-0 font-medium break-words">{s.label}</span>
+                <span className="min-w-0 font-mono text-xs break-all text-muted-foreground">{s.id}</span>
                 {s.managed && <Badge variant="secondary">built in</Badge>}
                 {!s.managed && (
-                  <div className="ml-auto flex gap-1">
+                  <div className="ml-auto flex flex-wrap gap-1">
                     <Button variant="ghost" size="sm" onClick={() => openEdit(s)} aria-label={`Edit ${s.label}`}><PencilIcon /> Edit</Button>
                     <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void remove(s.id)} aria-label={`Remove ${s.label}`}><Trash2Icon /> Remove</Button>
                   </div>
@@ -103,10 +103,10 @@ export function SystemsSection() {
                 </div>
               )}
               {!s.managed && typeof s.worktreesDir === 'string' && s.worktreesDir && (
-                <div className="mt-1 font-mono text-xs text-muted-foreground">worktrees: {s.worktreesDir}</div>
+                <div className="mt-1 font-mono text-xs break-all text-muted-foreground">worktrees: {s.worktreesDir}</div>
               )}
               {projects.length > 0 && (
-                <div className="mt-1 text-xs text-muted-foreground">
+                <div className="mt-1 text-xs break-words text-muted-foreground">
                   projects: {projects.map((x) => (typeof x === 'object' && x ? (x.remoteId ? `${x.name} (${x.remoteId})` : x.name) : String(x))).join(', ')}
                 </div>
               )}
