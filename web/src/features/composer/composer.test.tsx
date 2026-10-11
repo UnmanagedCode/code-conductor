@@ -261,36 +261,38 @@ describe('drafts', () => {
 });
 
 describe('attachments', () => {
+  // Session ids no other test uses: a session's pending attachments live at module scope and
+  // outlive its composer, so a list left under a shared id would show up in a later test.
   it('are per session: switching away hides them, back restores them; send ships only the showing session\'s', async () => {
-    const c = mount(inst('s1'));
+    const c = mount(inst('attach-per-1'));
     await addFile(c.container, 'one.png');
     expect(c.container.textContent).toContain('one.png');
-    c.swap(inst('s2'));
+    c.swap(inst('attach-per-2'));
     expect(c.container.textContent).not.toContain('one.png');
     expect(revoked).toEqual([]);
     await addFile(c.container, 'two.txt', 'text/plain');
     fireEvent.click(c.button());
     expect(sent.at(-1)![1].attachments.map((a: any) => a.name)).toEqual(['two.txt']);
-    c.swap(inst('s1'));
+    c.swap(inst('attach-per-1'));
     expect(c.container.textContent).toContain('one.png');
   });
 
   it('removing a chip in one session leaves the other\'s; a list dropped at a null-session switch is revoked', async () => {
-    const c = mount(inst('s1'));
+    const c = mount(inst('attach-rm-1'));
     await addFile(c.container, 'keep.png');
-    c.swap(inst('s2'));
+    c.swap(inst('attach-rm-2'));
     await addFile(c.container, 'drop.png');
     fireEvent.click(screen.getByRole('button', { name: 'Remove drop.png' }));
-    c.swap(inst('s1'));
+    c.swap(inst('attach-rm-1'));
     expect(c.container.textContent).toContain('keep.png');
     const d = mount(null);
     await addFile(d.container, 'orphan.png');
-    d.swap(inst('s9'));
+    d.swap(inst('attach-rm-9'));
     expect(revoked.length).toBeGreaterThan(0);
   });
 
   it('a too-large file is refused inline and not sent', async () => {
-    const c = mount(inst('s1'));
+    const c = mount(inst('attach-big'));
     const input = c.container.querySelector('input[type="file"]') as HTMLInputElement;
     const big = new File(['x'], 'huge.bin');
     Object.defineProperty(big, 'size', { value: 11 * 1024 * 1024 });
