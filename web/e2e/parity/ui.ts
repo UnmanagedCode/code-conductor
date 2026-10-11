@@ -226,7 +226,69 @@ export interface Ui {
   restartChoice(dialog: Locator, which: RestartChoice): Locator;
   /** Leaves the restart dialog without choosing and waits until it is hidden. */
   dismissRestart(page: Page, dialog: Locator): Promise<void>;
+
+  // Sidebar C (card 2026-0629)
+  /** Selects the Conductors lens and returns the clickable header row of `sessionId`'s conductor block. */
+  conductorRow(page: Page, sessionId: string): Promise<Locator>;
+  /** Selects the Conductors lens and opens the Inactive group. */
+  openInactive(page: Page): Promise<void>;
+  /** A conductor row's selected state, label text, weight, italic and whether its colour is the UI's muted token, and the row's frame and fill. */
+  conductorRowStyle(row: Locator): Promise<{ active: boolean; text: string; weight: string; italic: boolean; muted: boolean; framed: boolean; fill: string }>;
+  /** Selects the Conductors lens and returns `sessionId`'s project chips in order, their text colour resolved against the UI's muted and foreground tokens. */
+  conductorChips(page: Page, sessionId: string): Promise<ConductorChip[]>;
+  /** Selects the Conductors lens and returns `sessionId`'s block bar (computed colour, width) and where its row box and its first control start, from the block's left edge. */
+  conductorGeometry(page: Page, sessionId: string): Promise<ConductorGeometry>;
+  /** Selects the Conductors lens, expands `conductor`'s tree and returns the worker row of `sessionId` in it. */
+  treeWorkerRow(page: Page, conductor: string, sessionId: string): Promise<Locator>;
+  /** A conductor, tree-worker or session row's label (floor, flex basis and grow, width, text height, truncated) and its ago / ↑ / × (flex-shrink, inside the row box). */
+  rowLayout(row: Locator): Promise<RowLayout>;
+  /** Opens the sidebar and returns `sessionId`'s needs-you strip entry. */
+  stripEntry(page: Page, sessionId: string): Promise<Locator>;
+  /** A strip entry's selected state, label weight, frame and fill. */
+  stripEntryStyle(entry: Locator): Promise<{ active: boolean; weight: string; framed: boolean; fill: string }>;
+  /** A row's status dot: its tooltip and computed fill. */
+  rowDot(row: Locator): Promise<{ title: string; fill: string }>;
 }
+
+// Sidebar C (card 2026-0629)
+export type ConductorGeometry = { bar: string | null; barWidth: number; rowLeft: number; contentLeft: number };
+/** A chip's project and kind, its border style, and whether its text colour is the UI's muted or foreground token. */
+export type ConductorChip = { project: string; kind: 'live' | 'idle'; dashed: boolean; muted: boolean; foreground: boolean };
+export type RowLayout = {
+  label: { minWidth: number; basis: number; grow: string; width: number; textHeight: number; truncated: boolean };
+  fixed: { part: 'ago' | 'promote' | 'close'; shrink: string; inside: boolean }[];
+};
+/** Reads `rowLayout` in the page: the label box is the first of `labels` that matches, its text the label's `text` descendant or else the label itself, and `fixed` the row's ago / ↑ / × by part. */
+const measureRow = (row: Locator, sel: { labels: string[]; text: string; fixed: Record<'ago' | 'promote' | 'close', string> }) =>
+  row.evaluate((e, s): RowLayout => {
+    const label = s.labels.map((l) => e.querySelector<HTMLElement>(l)).find((l) => l);
+    if (!label) throw new Error(`rowLayout: no label in the row matched any of ${JSON.stringify(s.labels)}`);
+    const text = label.querySelector<HTMLElement>(s.text) ?? label;
+    const ls = getComputedStyle(label);
+    const r = e.getBoundingClientRect();
+    const fixed: RowLayout['fixed'] = [];
+    for (const part of ['ago', 'promote', 'close'] as const) {
+      for (const f of e.querySelectorAll<HTMLElement>(s.fixed[part])) {
+        const fr = f.getBoundingClientRect();
+        fixed.push({
+          part,
+          shrink: getComputedStyle(f).flexShrink,
+          inside: fr.left >= r.left - 0.5 && fr.right <= r.right + 0.5 && fr.top >= r.top - 0.5 && fr.bottom <= r.bottom + 0.5,
+        });
+      }
+    }
+    return {
+      label: {
+        minWidth: parseFloat(ls.minWidth),
+        basis: parseFloat(ls.flexBasis),
+        grow: ls.flexGrow,
+        width: label.getBoundingClientRect().width,
+        textHeight: text.getBoundingClientRect().height,
+        truncated: text.scrollWidth > text.clientWidth,
+      },
+      fixed,
+    };
+  }, sel);
 
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
 const drawerViewport = () => test.info().project.name !== 'desktop';
@@ -743,6 +805,115 @@ export const legacy: Ui = {
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
   },
+
+  // Sidebar C (card 2026-0629)
+  async conductorRow(page, sessionId) {
+    await legacy.lens(page, 'conductors');
+    return page.locator(`#conductor-list [data-key="conductor:${sessionId}"] > .conductor-row`);
+  },
+  async openInactive(page) {
+    await legacy.lens(page, 'conductors');
+    const det = page.locator('#conductor-list details.conductor-inactive');
+    await expect(det).toBeAttached();
+    await expect(async () => {
+      if ((await det.getAttribute('open')) === null) await det.locator(':scope > summary').click();
+      await expect(det).toHaveAttribute('open', '', { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+  },
+  conductorRowStyle: (row) => row.evaluate((e) => {
+    const t = e.querySelector('.conductor-title')!;
+    const ts = getComputedStyle(t);
+    const p = document.createElement('i');
+    p.style.color = 'var(--muted)';
+    document.body.appendChild(p);
+    const muted = getComputedStyle(p).color;
+    p.remove();
+    const cs = getComputedStyle(e);
+    return {
+      active: e.classList.contains('active'),
+      text: t.textContent ?? '',
+      weight: ts.fontWeight,
+      italic: ts.fontStyle === 'italic',
+      muted: ts.color === muted,
+      framed: cs.outlineStyle === 'solid' && cs.outlineWidth === '1px',
+      fill: cs.backgroundColor,
+    };
+  }),
+  async conductorChips(page, sessionId) {
+    await legacy.lens(page, 'conductors');
+    const b = `#conductor-list [data-key="conductor:${sessionId}"]`;
+    return page.locator(`${b} .conductor-chip.live, ${b} .conductor-chip.idle`).evaluateAll((es) => {
+      const token = (v: string) => {
+        const p = document.createElement('i');
+        p.style.color = `var(${v})`;
+        document.body.appendChild(p);
+        const c = getComputedStyle(p).color;
+        p.remove();
+        return c;
+      };
+      const t = { foreground: token('--text'), muted: token('--muted') };
+      return es.map((c) => {
+        const cs = getComputedStyle(c);
+        return {
+          project: c.textContent ?? '',
+          kind: c.classList.contains('live') ? 'live' as const : 'idle' as const,
+          dashed: cs.borderTopStyle === 'dashed',
+          muted: cs.color === t.muted,
+          foreground: cs.color === t.foreground,
+        };
+      });
+    });
+  },
+  async conductorGeometry(page, sessionId) {
+    await legacy.lens(page, 'conductors');
+    return page.locator(`#conductor-list [data-key="conductor:${sessionId}"]`).evaluate((e) => {
+      const b = e.getBoundingClientRect();
+      // Any colour function: an inactive block's faded bar is a color-mix, which is no rgb().
+      const m = /([a-z-]+\([^)]*\)) (-?[\d.]+)px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow);
+      const row = e.querySelector(':scope > .conductor-row')!;
+      const caret = row.querySelector('.conductor-caret')!;
+      return {
+        bar: m?.[1] ?? null,
+        barWidth: m ? parseFloat(m[2]) : 0,
+        rowLeft: row.getBoundingClientRect().left - b.left,
+        contentLeft: caret.getBoundingClientRect().left - b.left,
+      };
+    });
+  },
+  async treeWorkerRow(page, conductor, sessionId) {
+    await legacy.lens(page, 'conductors');
+    const block = page.locator(`#conductor-list [data-key="conductor:${conductor}"]`);
+    await expect(async () => {
+      if (!/\bopen\b/.test((await block.getAttribute('class')) ?? '')) await block.locator(':scope > .conductor-row .conductor-caret').click();
+      await expect(block).toHaveClass(/\bopen\b/, { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    return block.locator(`.conductor-tree .session-row[title^="${sessionId}"]`);
+  },
+  rowLayout: async (row) => {
+    const conductor = await row.evaluate((e) => e.matches('.conductor-row'));
+    return measureRow(row, {
+      labels: conductor ? [':scope > .conductor-title'] : [':scope > .session-label-col', ':scope > .session-preview'],
+      text: '.session-preview',
+      fixed: { ago: ':scope > .session-ago', promote: ':scope > .session-promote', close: ':scope > .session-delete' },
+    });
+  },
+  async stripEntry(page, sessionId) {
+    await openOldDrawer(page);
+    return page.locator(`#sidebar-strip-slot .strip-list > li[data-key="entry:${sessionId}"] > .strip-entry`);
+  },
+  stripEntryStyle: (entry) => entry.evaluate((e) => {
+    const cs = getComputedStyle(e);
+    return {
+      active: e.classList.contains('active'),
+      weight: getComputedStyle(e.querySelector('.strip-title')!).fontWeight,
+      framed: cs.outlineStyle === 'solid' && cs.outlineWidth === '1px',
+      fill: cs.backgroundColor,
+    };
+  }),
+  rowDot: (row) => row.evaluate((e) => {
+    const d = e.querySelector<HTMLElement>('.dot')!;
+    return { title: d.title, fill: getComputedStyle(d).backgroundColor };
+  }),
 };
 
 /**
@@ -1197,6 +1368,114 @@ export const next: Ui = {
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).toBeHidden();
   },
+
+  // Sidebar C (card 2026-0629)
+  async conductorRow(page, sessionId) {
+    await next.lens(page, 'conductors');
+    return sidebar(page).locator(`[data-conductor="${sessionId}"] > [role="button"]`);
+  },
+  async openInactive(page) {
+    await next.lens(page, 'conductors');
+    const t = sidebar(page).getByRole('button', { name: /^Inactive \(\d+\)$/ });
+    await expect(t).toBeVisible();
+    if ((await t.getAttribute('aria-expanded')) !== 'true') await t.click();
+    await expect(t).toHaveAttribute('aria-expanded', 'true');
+  },
+  conductorRowStyle: (row) => row.evaluate((e) => {
+    const t = e.querySelector<HTMLElement>('span.truncate')!;
+    const ts = getComputedStyle(t);
+    const p = document.createElement('span');
+    p.className = 'text-muted-foreground';
+    e.appendChild(p);
+    const muted = getComputedStyle(p).color;
+    p.remove();
+    const cs = getComputedStyle(e);
+    return {
+      active: e.getAttribute('data-active') === 'true',
+      text: t.textContent ?? '',
+      weight: ts.fontWeight,
+      italic: ts.fontStyle === 'italic',
+      muted: ts.color === muted,
+      // By geometry, not colour: ring-border is --border, an oklch() Chrome serializes verbatim in box-shadow.
+      framed: cs.boxShadow.replace(/\s+/g, ' ').split(', ').some((x) => x.endsWith(' 0px 0px 0px 1px')),
+      fill: cs.backgroundColor,
+    };
+  }),
+  async conductorChips(page, sessionId) {
+    await next.lens(page, 'conductors');
+    return sidebar(page).locator(`[data-conductor="${sessionId}"] [data-chip]`).evaluateAll((es) => es.map((c) => {
+      // Probes in the chip's own subtree, so the sidebar's variables resolve as they do for the chip.
+      const token = (cls: string) => {
+        const p = document.createElement('span');
+        p.className = cls;
+        c.parentElement!.appendChild(p);
+        const v = getComputedStyle(p).color;
+        p.remove();
+        return v;
+      };
+      const t = { foreground: token('text-foreground'), muted: token('text-muted-foreground') };
+      const cs = getComputedStyle(c);
+      return {
+        project: c.textContent ?? '',
+        kind: c.getAttribute('data-chip') as 'live' | 'idle',
+        dashed: cs.borderTopStyle === 'dashed',
+        muted: cs.color === t.muted,
+        foreground: cs.color === t.foreground,
+      };
+    }));
+  },
+  async conductorGeometry(page, sessionId) {
+    await next.lens(page, 'conductors');
+    return sidebar(page).locator(`[data-conductor="${sessionId}"]`).evaluate((e) => {
+      const b = e.getBoundingClientRect();
+      const bar = e.firstElementChild as HTMLElement;
+      const row = e.querySelector(':scope > [role="button"]')!;
+      const caret = row.querySelector('button[aria-label="Show workers"]')!;
+      return {
+        bar: getComputedStyle(bar).backgroundColor,
+        barWidth: bar.getBoundingClientRect().width,
+        rowLeft: row.getBoundingClientRect().left - b.left,
+        contentLeft: caret.getBoundingClientRect().left - b.left,
+      };
+    });
+  },
+  async treeWorkerRow(page, conductor, sessionId) {
+    await next.lens(page, 'conductors');
+    const caret = sidebar(page).locator(`[data-conductor="${conductor}"] > [role="button"] button[aria-label="Show workers"]`);
+    if ((await caret.getAttribute('aria-expanded')) !== 'true') await caret.click();
+    await expect(caret).toHaveAttribute('aria-expanded', 'true');
+    return sidebar(page).locator(`[data-conductor="${conductor}"] [data-session-row="${sessionId}"] > [role="button"]`);
+  },
+  rowLayout: async (row) => {
+    const conductor = await row.evaluate((e) => !!e.parentElement?.hasAttribute('data-conductor'));
+    return measureRow(row, {
+      labels: [conductor ? ':scope > span.truncate' : ':scope > span.flex-col'],
+      text: 'span.truncate',
+      fixed: {
+        ago: ':scope > [data-ago]',
+        promote: ':scope > button[aria-label="Make persistent"]',
+        close: ':scope > button[aria-label="Stop session"], :scope > button[aria-label="Archive session (keeps history)"]',
+      },
+    });
+  },
+  async stripEntry(page, sessionId) {
+    await next.openSidebar(page);
+    return sidebar(page).locator(`[data-strip-entry="${sessionId}"] > button`);
+  },
+  stripEntryStyle: (entry) => entry.evaluate((e) => {
+    const cs = getComputedStyle(e);
+    return {
+      active: e.getAttribute('data-active') === 'true',
+      // The label is the first span.truncate; the resume badge comes after it.
+      weight: getComputedStyle(e.querySelector('span.truncate')!).fontWeight,
+      framed: cs.boxShadow.replace(/\s+/g, ' ').split(', ').some((x) => x.endsWith(' 0px 0px 0px 1px')),
+      fill: cs.backgroundColor,
+    };
+  }),
+  rowDot: (row) => row.evaluate((e) => {
+    const d = e.querySelector<HTMLElement>('[data-dot]')!;
+    return { title: d.title, fill: getComputedStyle(d).backgroundColor };
+  }),
 };
 
 // Sidebar B (card 2026-0628)
