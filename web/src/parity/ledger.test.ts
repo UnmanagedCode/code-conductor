@@ -467,5 +467,7 @@ describe('the ledger', () => {
     const root = fileURLToPath(new URL('../../../', import.meta.url));
     const problems = checkLedger({ ledger: LEDGER, survives: SURVIVES, rulings: RULINGS }, buildWorld(root));
     expect(problems, problems.map((p) => `${p.kind} ${p.subject}: ${p.detail}`).join('\n')).toEqual([]);
-  });
+    // One synchronous parse of the whole tree: a few seconds alone, far more
+    // under a loaded full run, so it outgrows vitest's default.
+  }, 30_000);
 });
