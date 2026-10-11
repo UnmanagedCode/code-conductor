@@ -56,6 +56,15 @@ describe('answer bubble', () => {
     expect(bubble.querySelector('.md')).toBeNull();
     expect(bubble.querySelector('[data-view="raw"]')).toBeNull();
   });
+
+  it('a structured canonical answer offers no raw-text or copy control', async () => {
+    const { root } = await show([CARD(), CARD_RESULT, TURN_END, banana()]);
+    const bubble = root.querySelector('[data-item="user"]') as HTMLElement;
+    expect(bubble.getAttribute('data-variant'), 'fixture check: an answer bubble').toBe('answer');
+    expect(bubble.querySelectorAll('[data-kind]').length, 'fixture check: structured rows').toBe(1);
+    expect(within(bubble).queryByRole('button', { name: 'Show raw text' })).toBeNull();
+    expect(within(bubble).queryByRole('button', { name: 'Copy message' })).toBeNull();
+  });
 });
 
 describe('question card locking', () => {
@@ -139,6 +148,22 @@ describe('question card locking', () => {
     m.apply(CARD([FRUIT], 'tu_gone'));
     const r = renderModel(m);
     await flush();
+    expectOpen(cardIn(r.root));
+  });
+
+  it('clearing the conversation forgets rendered cards, so the same card replayed after a clear renders again', async () => {
+    const m = new ConversationModel();
+    m.apply(CARD());
+    const r = renderModel(m);
+    await flush();
+    expect(r.root.querySelectorAll('[data-item="question"]').length, 'fixture check: the card renders').toBe(1);
+    m.clear();
+    await flush();
+    expect(r.root.querySelectorAll('[data-item="question"]').length, 'fixture check: clear empties the view').toBe(0);
+    m.apply(CARD());
+    await flush();
+    expect(m.items.filter((i) => i.type === 'question').length).toBe(1);
+    expect(r.root.querySelectorAll('[data-item="question"]').length).toBe(1);
     expectOpen(cardIn(r.root));
   });
 
@@ -271,6 +296,21 @@ describe('question card locking', () => {
         await flush();
         rawNoPick(r.root, cardIn(r.root), name);
         r.unmount();
+      }
+    });
+
+    it('a stamp the canonical parse rejects discards an unsubmitted local pick', async () => {
+      for (const [name, text] of Object.entries(NON_CANONICAL)) {
+        const { m, card } = await show([CARD(), CARD_RESULT, TURN_END]);
+        fireEvent.click(opt(card(), 'Apple'));
+        await flush();
+        expect(opt(card(), 'Apple').getAttribute('aria-pressed'), `${name}: fixture check: Apple is picked locally`).toBe('true');
+        expect(sent.length, `${name}: fixture check: nothing was submitted`).toBe(0);
+        m.apply(echoOf(text));
+        await flush();
+        expect(statusOf(card()), `${name}: the card is locked`).toBe('Answered');
+        expect(card().querySelectorAll('[aria-pressed="true"]').length, `${name}: the local pick is discarded`).toBe(0);
+        expect(input(card()).value, `${name}: no field text`).toBe('');
       }
     });
   });
