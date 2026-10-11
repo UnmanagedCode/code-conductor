@@ -90,6 +90,41 @@ describe('ensureWebBuild', () => {
   });
 });
 
+describe('serving the built UI', () => {
+  it('serves every shipped file under the mount, non-empty, with the index reachable at the mount root', async () => {
+    // Invariant: each file the build emits (document, manifest, icons, chunks) is answered 200 with a body, so nothing the page references is missing.
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (!e.name.startsWith('.')) files.push(path.relative(distDir, full).split(path.sep).join('/'));
+      }
+    };
+    walk(distDir);
+    expect(files).toContain('index.html');
+    expect(files.some((f) => f.startsWith('assets/') && f.endsWith('.js'))).toBe(true);
+    expect(files).toContain('manifest.webmanifest');
+
+    const app = express();
+    app.use(WEB_MOUNT, webHandler({ distDir, getState: () => first }));
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const base = `http://127.0.0.1:${(server.address() as { port: number }).port}${WEB_MOUNT}`;
+      const bad: string[] = [];
+      for (const f of ['', ...files]) {
+        const r = await fetch(`${base}/${f}`);
+        const body = await r.arrayBuffer();
+        if (r.status !== 200 || body.byteLength === 0) bad.push(`${f || '/'} -> ${r.status}, ${body.byteLength} bytes`);
+      }
+      expect(bad).toEqual([]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
 describe('webSourceHash over a fixture root', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webhash-'));
   const web = path.join(root, 'web');
