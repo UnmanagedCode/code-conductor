@@ -186,6 +186,21 @@ describe('Plugins → hook warnings', () => {
     });
   });
 
+  // A post-install command that ran and passed is no warning: the entry relabels installed, the library line is the load's own muted count, and no output tail shows.
+  it('an install whose post-install command ran and passed shows no warning and no command output', async () => {
+    wrap();
+    await waitFor(() => expect(libLine()).toBe('1 available'));
+    fireEvent.click(entryButton('code-share', 'Install'));
+    const s = await streamAt(0);
+    library = [INSTALLED];
+    await finish(s, ok({ id: 'code-share', name: 'code-share', postClone: { ran: true, ok: true, code: 0, tail: 'added 12 packages' } }));
+    await waitFor(() => expect(entryButtons('code-share')).toEqual(['Update']));
+    expect(installedAs('code-share')).toBe('installed as code-share');
+    expect(libLine()).toBe('1 available');
+    expect(libTone()).toBe('muted');
+    expect(tail()).toBe('');
+  });
+
   // A failed post-update command with no restart outcome warns about the command alone, with its output, and never claims the backend kept old code.
   it('an update whose post-update command failed still updates, and warns with the command output without claiming the backend kept old code', async () => {
     library = [INSTALLED];
