@@ -239,6 +239,31 @@ describe('Conductors-lens conductor rows', () => {
     expect((el('[data-conductor-list]').textContent ?? '').includes('⏸')).toBe(false);
     expect(stripEntryOf('ca').textContent).toContain(`2 · ⏸ ${clock}`);
   });
+  it('an unselected untitled conductor row with unread turns reads semi-bold and italic', async () => {
+    // Invariant: unread turns alone give an untitled row the semi-bold weight, beside its untitled italic.
+    seed({ instances: [conductor(B, { temp: false, firstPrompt: BRAVO, turnEndSeq: 3, viewedSeq: 1 })] });
+    renderSidebar();
+    await settle();
+    expect(conductorTitleOf(B).textContent).toBe(BRAVO);
+    expect(conductorRowOf(B).querySelector('[data-unread]')?.textContent).toBe('2');
+    expect(conductorRowOf(B).hasAttribute('data-active')).toBe(false);
+    expect(conductorTitleOf(B).classList.contains('font-semibold')).toBe(true);
+    expect(conductorTitleOf(B).classList.contains('italic')).toBe(true);
+    expect(conductorTitleOf(B).classList.contains('font-bold')).toBe(false);
+  });
+
+  it('an unselected titled conductor row with no unread turns reads semi-bold', async () => {
+    // Invariant: a title alone gives the row the semi-bold weight, with no unread turns to supply it.
+    seed({ instances: [conductor(A, { title: ALPHA, turnEndSeq: 2, viewedSeq: 2 })] });
+    renderSidebar();
+    await settle();
+    expect(conductorTitleOf(A).textContent).toBe(ALPHA);
+    expect(conductorRowOf(A).querySelector('[data-unread]')).toBeNull();
+    expect(conductorRowOf(A).hasAttribute('data-active')).toBe(false);
+    expect(conductorTitleOf(A).classList.contains('font-semibold')).toBe(true);
+    expect(conductorTitleOf(A).classList.contains('font-bold')).toBe(false);
+    expect(conductorTitleOf(A).classList.contains('italic')).toBe(false);
+  });
 });
 
 describe('selected conductor row', () => {
@@ -264,5 +289,17 @@ describe('selected conductor row', () => {
     expect(conductorTitleOf(A).classList.contains('font-semibold')).toBe(true);
     expect(conductorTitleOf(A).classList.contains('font-bold')).toBe(false);
     expect(conductorRowOf(A).hasAttribute('data-active')).toBe(false);
+  });
+
+  it("a selected untitled conductor row's label takes the foreground colour, not the muted one", async () => {
+    // Invariant: selection lifts an untitled label from the muted colour to the foreground colour (ruling R-c).
+    seed({ instances: [conductor(B, { temp: false, firstPrompt: BRAVO })], activeId: `i-${B}` });
+    renderSidebar();
+    await settle();
+    expect(conductorTitleOf(B).textContent).toBe(BRAVO);
+    expect(conductorRowOf(B).getAttribute('data-active')).toBe('true');
+    expect(conductorRowOf(B).querySelector('[data-unread]')).toBeNull();
+    expect(conductorTitleOf(B).classList.contains('text-foreground')).toBe(true);
+    expect(conductorTitleOf(B).classList.contains('text-muted-foreground')).toBe(false);
   });
 });

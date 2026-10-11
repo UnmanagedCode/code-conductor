@@ -3658,6 +3658,9 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > a conductor row pills its unread turn marks from a live instance or its .conduct row, and a read conductor has no pill',
         "web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > an armed conductor's auto-resume badge shows on its strip entry and on no Conductors-lens row, its worker's included",
         'web/src/features/sidebar/ConductorsList.test.tsx::selected conductor row > a selected conductor row reads bold, titled or untitled, outranking the titled and unread weights, and keeps its frame',
+        'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > an unselected untitled conductor row with unread turns reads semi-bold and italic',
+        'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > an unselected titled conductor row with no unread turns reads semi-bold',
+        "web/src/features/sidebar/ConductorsList.test.tsx::selected conductor row > a selected untitled conductor row's label takes the foreground colour, not the muted one",
         "web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled bold and untitled muted italic, live and idle chips, block bars in each conductor's colour with the highlight past them, and the selected row and its strip entry bold and framed > next",
       ] },
   },
@@ -4169,6 +4172,9 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         "web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled bold and untitled muted italic, live and idle chips, block bars in each conductor's colour with the highlight past them, and the selected row and its strip entry bold and framed > next",
         'web/src/features/sidebar/ConductorsList.test.tsx::selected conductor row > a selected conductor row reads bold, titled or untitled, outranking the titled and unread weights, and keeps its frame',
+        'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > an unselected untitled conductor row with unread turns reads semi-bold and italic',
+        'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > an unselected titled conductor row with no unread turns reads semi-bold',
+        "web/src/features/sidebar/ConductorsList.test.tsx::selected conductor row > a selected untitled conductor row's label takes the foreground colour, not the muted one",
       ] },
   },
   {
