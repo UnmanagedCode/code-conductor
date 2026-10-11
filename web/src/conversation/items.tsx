@@ -14,7 +14,7 @@ import { SpeakButton } from '@/features/voice/SpeakButton';
 import { cn } from '@/lib/utils';
 import { parseRenewSeed, splitSummarySections } from '../../../public/renewSeed.ts';
 import { splitForwardedMessages } from '../../../public/forwardFrame.ts';
-import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TurnEndNode, type UserNode } from './model';
+import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
 import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
 import { PlanCard, QuestionCard } from './cards';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
@@ -43,15 +43,15 @@ const RootItemView = React.memo(function RootItemView({ node, ctx, actions, curr
   node: RootItem; rev: number; ctx: RenderCtx; actions: BubbleActions | null; currentSegment: string | null;
 }) {
   switch (node.type) {
-    case 'user': return <UserBubble node={node} actions={actions} currentSegment={currentSegment} isSub={ctx.model.isSub} />;
+    case 'user': return <UserBubble node={node} model={ctx.model} actions={actions} currentSegment={currentSegment} />;
     case 'assistant': return <AssistantBubble node={node} ctx={ctx} />;
-    case 'system': return <SystemLineView node={node} />;
+    case 'system': return <SystemLineView node={node} model={ctx.model} />;
     case 'turn_end': return <TurnEndView node={node} />;
     case 'plan': return <div data-item="plan"><PlanCard node={node} model={ctx.model} /></div>;
     case 'question': return <div data-item="question"><QuestionCard node={node} model={ctx.model} /></div>;
     case 'task_completion': return <TaskCompletionView node={node} />;
     case 'queued': return <QueuedView node={node} />;
-    case 'compaction': return <CompactionView node={node} />;
+    case 'compaction': return <CompactionView node={node} model={ctx.model} />;
     case 'divider': return <DividerView node={node} />;
   }
 }, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx);
@@ -81,16 +81,16 @@ function UserText({ text, view }: { text: string; view: 'rendered' | 'raw' }) {
     : <Markdown text={text} className={MD_TEXT} />;
 }
 
-function Folded({ icon, title, children, tone = 'muted', kind, multiline = false }: {
+function Folded({ icon, title, children, tone = 'muted', kind, multiline = false, open, onOpenChange }: {
   icon: React.ReactNode; title: React.ReactNode; children: () => React.ReactNode; tone?: 'muted' | 'info'; kind: string; multiline?: boolean;
+  open: boolean; onOpenChange: (open: boolean) => void;
 }) {
   // The body is built on first expand and kept afterwards: Radix renders no
-  // children while closed, so forceMount keeps the built body (and its view)
-  // mounted and `hidden` hides it.
-  const [open, setOpen] = React.useState(false);
-  const [opened, setOpened] = React.useState(false);
+  // children while closed, so forceMount keeps the built body mounted and
+  // `hidden` hides it.
+  const [opened, setOpened] = React.useState(open);
   return (
-    <Collapsible open={open} onOpenChange={(o) => { setOpen(o); if (o) setOpened(true); }} className={cn('rounded-xl border bg-card', tone === 'info' && 'border-info/30')} data-fold={kind}>
+    <Collapsible open={open} onOpenChange={(o) => { onOpenChange(o); if (o) setOpened(true); }} className={cn('rounded-xl border bg-card', tone === 'info' && 'border-info/30')} data-fold={kind}>
       <CollapsibleTrigger className="group/fold flex w-full items-center gap-2 px-3 py-2 text-left text-sm" data-fold-trigger>
         <span className="shrink-0 text-muted-foreground">{icon}</span>
         <span className={cn('min-w-0 flex-1', multiline ? 'whitespace-pre-line wrap-anywhere' : 'truncate')} data-fold-title>{title}</span>
@@ -101,12 +101,11 @@ function Folded({ icon, title, children, tone = 'muted', kind, multiline = false
   );
 }
 
-function FoldedBody({ text, render }: { text: string; render?: () => React.ReactNode }) {
-  const [view, setView] = React.useState<'rendered' | 'raw'>('rendered');
+function FoldedBody({ text, render, view, onViewChange }: { text: string; render?: () => React.ReactNode; view: TextView; onViewChange: (view: TextView) => void }) {
   return (
     <div className="space-y-2">
       <div className="flex justify-end gap-0.5">
-        <ViewToggle view={view} onChange={setView} />
+        <ViewToggle view={view} onChange={onViewChange} />
         <CopyButton getText={() => text} label="Copy text" />
       </div>
       {view === 'raw' ? <pre className="text-sm whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</pre> : render ? render() : <Markdown text={text} className={MD_TEXT} />}
@@ -206,28 +205,31 @@ function AnswerSummary({ answer }: { answer: NonNullable<UserNode['answer']> }) 
   );
 }
 
-function UserBubble({ node, actions, currentSegment, isSub }: { node: UserNode; actions: BubbleActions | null; currentSegment: string | null; isSub: boolean }) {
-  const [view, setView] = React.useState<'rendered' | 'raw'>('rendered');
+function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; model: ConversationModel; actions: BubbleActions | null; currentSegment: string | null }) {
+  const view = node.reader.view;
+  const setView = (v: TextView) => model.setReader(node, { view: v });
+  const fold = { open: node.reader.foldOpen, onOpenChange: (o: boolean) => model.setReader(node, { foldOpen: o }) };
+  const body = { view: node.reader.foldView, onViewChange: (v: TextView) => model.setReader(node, { foldView: v }) };
   const hasTextControls = !!node.displayText && !(node.answer && node.answer.answers);
-  const canAct = !isSub && !!actions && node.userIndex != null && (currentSegment == null || node.segmentId === currentSegment);
+  const canAct = !model.isSub && !!actions && node.userIndex != null && (currentSegment == null || node.segmentId === currentSegment);
   const folded = (
     <>
       {node.skill && (
-        <Folded kind="skill" icon={<BookOpenIcon className="size-4" />} title={`Loading skill: ${node.skill.name}`}>
-          {() => <FoldedBody text={node.skill!.text} />}
+        <Folded kind="skill" icon={<BookOpenIcon className="size-4" />} title={`Loading skill: ${node.skill.name}`} {...fold}>
+          {() => <FoldedBody text={node.skill!.text} {...body} />}
         </Folded>
       )}
       {node.wake && (node.wake.body
-        ? <Folded kind="wake" multiline icon={<BellIcon className="size-4" />} title={node.wake.summary}>{() => <FoldedBody text={node.wake!.body!} render={() => <WakeBody body={node.wake!.body!} />} />}</Folded>
+        ? <Folded kind="wake" multiline icon={<BellIcon className="size-4" />} title={node.wake.summary} {...fold}>{() => <FoldedBody text={node.wake!.body!} render={() => <WakeBody body={node.wake!.body!} />} {...body} />}</Folded>
         : <div className="flex items-start gap-2 rounded-xl border bg-card px-3 py-2 text-sm whitespace-pre-line wrap-anywhere text-muted-foreground" data-wake-plain><BellIcon className="mt-0.5 size-4 shrink-0" />{node.wake.summary}</div>)}
       {node.renew && (
-        <Folded kind="renew" icon={<RecycleIcon className="size-4" />} title="Context renewed · handoff summary" tone="info">
-          {() => <FoldedBody text={node.renew!.text} render={() => <RenewBody text={node.renew!.text} />} />}
+        <Folded kind="renew" icon={<RecycleIcon className="size-4" />} title="Context renewed · handoff summary" tone="info" {...fold}>
+          {() => <FoldedBody text={node.renew!.text} render={() => <RenewBody text={node.renew!.text} />} {...body} />}
         </Folded>
       )}
       {node.forward && (
-        <Folded kind="forward" icon={<MailIcon className="size-4" />} title={`Forwarded worker output · ${node.forward.count} message${node.forward.count === 1 ? '' : 's'}`}>
-          {() => <FoldedBody text={node.forward!.payload} render={() => <ForwardBody payload={node.forward!.payload} />} />}
+        <Folded kind="forward" icon={<MailIcon className="size-4" />} title={`Forwarded worker output · ${node.forward.count} message${node.forward.count === 1 ? '' : 's'}`} {...fold}>
+          {() => <FoldedBody text={node.forward!.payload} render={() => <ForwardBody payload={node.forward!.payload} />} {...body} />}
         </Folded>
       )}
     </>
@@ -329,13 +331,16 @@ function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx })
 
 // ── Annotations ──────────────────────────────────────────────────────────
 
-function SystemLineView({ node }: { node: SystemNode }) {
+function SystemLineView({ node, model }: { node: SystemNode; model: ConversationModel }) {
   const ev = node.ev;
   if (ev.subtype === 'task_notification') {
     const d = ev.data ?? {};
     const failed = d.status === 'failed';
     return (
-      <details className={cn('group/tn rounded-lg border px-3 py-2 text-sm', failed ? 'border-warning/40 bg-warning/8' : 'bg-card')} data-subtype="task_notification" data-tone={failed ? 'warn' : 'muted'}>
+      <details
+        open={node.reader.open}
+        onToggle={(e) => { if (e.currentTarget.open !== node.reader.open) model.setReader(node, { open: e.currentTarget.open }); }}
+        className={cn('group/tn rounded-lg border px-3 py-2 text-sm', failed ? 'border-warning/40 bg-warning/8' : 'bg-card')} data-subtype="task_notification" data-tone={failed ? 'warn' : 'muted'}>
         <summary className="flex cursor-pointer items-center gap-2 select-none">
           <ListChecksIcon className={cn('size-4', failed ? 'text-warning' : 'text-muted-foreground')} />
           <span data-headline>{taskNotificationHeadline(d)}</span>
@@ -418,13 +423,17 @@ function QueuedView({ node }: { node: QueuedNode }) {
   );
 }
 
-function CompactionView({ node }: { node: CompactionNode }) {
+function CompactionView({ node, model }: { node: CompactionNode; model: ConversationModel }) {
   const label = compactionLabel(node);
   const icon = <ShrinkIcon className={cn('size-4', node.state === 'running' && 'animate-pulse', node.state === 'failed' && 'text-destructive')} />;
   if (node.summary == null) {
     return <div className="flex items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm text-muted-foreground">{icon}{label}</div>;
   }
-  return <Folded kind="compaction" icon={icon} title={label}>{() => <FoldedBody text={node.summary!} />}</Folded>;
+  return (
+    <Folded kind="compaction" icon={icon} title={label} open={node.reader.open} onOpenChange={(o) => model.setReader(node, { open: o })}>
+      {() => <FoldedBody text={node.summary!} view={node.reader.view} onViewChange={(v) => model.setReader(node, { view: v })} />}
+    </Folded>
+  );
 }
 
 function DividerView({ node }: { node: DividerNode }) {

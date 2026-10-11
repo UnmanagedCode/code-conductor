@@ -116,7 +116,7 @@ export const ActionGroup = React.memo(function ActionGroup({ node, ctx }: { node
       onOpenChange={(o) => ctx.model.setGroupOpen(node, o)}
       className="overflow-hidden rounded-xl border bg-card/60"
     >
-      <CollapsibleTrigger className="group/ag flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/50">
+      <CollapsibleTrigger data-group-trigger className="group/ag flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/50">
         <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ag:rotate-90" />
         <span className="shrink-0 font-medium whitespace-nowrap">{s.n} action{s.n === 1 ? '' : 's'}</span>
         <span className="hidden min-w-0 flex-1 flex-wrap gap-1 sm:flex">
@@ -144,8 +144,8 @@ export const ActionGroup = React.memo(function ActionGroup({ node, ctx }: { node
 export const GroupChildView = React.memo(function GroupChildView({ node, ctx }: { node: GroupChild; rev: number; ctx: RenderCtx }) {
   switch (node.type) {
     case 'tool': return <ToolBlock node={node} ctx={ctx} />;
-    case 'thinking': return <div className="px-3 py-2"><ThinkingBlock node={node} /></div>;
-    case 'result': return <div className="px-3 py-2"><ResultBlock node={node} /></div>;
+    case 'thinking': return <div className="px-3 py-2"><ThinkingBlock node={node} model={ctx.model} /></div>;
+    case 'result': return <div className="px-3 py-2"><ResultBlock node={node} model={ctx.model} /></div>;
     case 'call_usage': return <CallUsageLine node={node} />;
   }
 }, (a, b) => a.node === b.node && a.rev === b.rev);
@@ -167,7 +167,7 @@ export function thinkingLabel(node: ThinkingNode): string {
   return node.tokens > 0 ? `Thinking… ${node.tokens.toLocaleString()} tokens` : 'Thinking…';
 }
 
-export function ThinkingBlock({ node }: { node: ThinkingNode }) {
+export function ThinkingBlock({ node, model }: { node: ThinkingNode; model: ConversationModel }) {
   if (node.redacted) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-thinking="redacted">
@@ -177,7 +177,7 @@ export function ThinkingBlock({ node }: { node: ThinkingNode }) {
     );
   }
   return (
-    <Collapsible>
+    <Collapsible open={node.reader.open} onOpenChange={(o) => model.setReader(node, { open: o })}>
       <CollapsibleTrigger className="group/think flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground" data-thinking="summary">
         <BrainIcon className={cn('size-3.5', !node.finalized && 'animate-pulse text-plan')} />
         {thinkingLabel(node)}
@@ -208,10 +208,9 @@ function ToolBlock({ node, ctx }: { node: ToolNode; ctx: RenderCtx }) {
   const time = node.status === 'running' && node.startedAt
     ? formatElapsed(Date.now() - node.startedAt)
     : node.elapsedMs ? formatElapsed(node.elapsedMs) : null;
-  const args = renderArgs(node);
-  const [open, setOpen] = React.useState(false);
+  const args = renderArgs(node, ctx.model);
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="px-3 py-2">
+    <Collapsible open={node.reader.open} onOpenChange={(o) => ctx.model.setReader(node, { open: o })} className="px-3 py-2">
       <CollapsibleTrigger data-tool-trigger className="group/tool flex w-full min-w-0 items-center gap-2 text-left text-sm">
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
         <ToolName raw={node.name} />
@@ -228,10 +227,10 @@ function ToolBlock({ node, ctx }: { node: ToolNode; ctx: RenderCtx }) {
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-2 space-y-2">
         {args}
-        {node.result && <ResultBlock node={node.result} attached />}
+        {node.result && <ResultBlock node={node.result} model={ctx.model} />}
       </CollapsibleContent>
       {node.sub && (
-        <Collapsible defaultOpen className="mt-2 rounded-lg border border-dashed bg-background/60">
+        <Collapsible open={node.reader.subOpen} onOpenChange={(o) => ctx.model.setReader(node, { subOpen: o })} className="mt-2 rounded-lg border border-dashed bg-background/60">
           <CollapsibleTrigger data-sub-trigger className="group/sub flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">
             <CornerDownRightIcon className="size-3.5" /> Sub-agent
             <ChevronRightIcon className="ml-auto size-3 transition-transform group-data-[state=open]/sub:rotate-90" />
@@ -277,7 +276,7 @@ export function DiffTable({ head, stats, lines }: { head: string; stats: string;
 
 const opType = (op: string): DiffLine['type'] => (op === '+' ? 'add' : op === '-' ? 'del' : 'ctx');
 
-function renderArgs(node: ToolNode): React.ReactNode {
+function renderArgs(node: ToolNode, model: ConversationModel): React.ReactNode {
   const input = node.input;
   if (input) {
     const kind = renderKindFor(node.name);
@@ -301,15 +300,20 @@ function renderArgs(node: ToolNode): React.ReactNode {
     }
     let json = '';
     try { json = JSON.stringify(input, null, 2); } catch { json = node.partialJson; }
-    return <ArgsJson text={json} />;
+    return <ArgsJson text={json} node={node} model={model} />;
   }
-  if (node.partialJson) return <ArgsJson text={node.partialJson} />;
+  if (node.partialJson) return <ArgsJson text={node.partialJson} node={node} model={model} />;
   return null;
 }
 
-function ArgsJson({ text }: { text: string }) {
+function ArgsJson({ text, node, model }: { text: string; node: ToolNode; model: ConversationModel }) {
   return (
-    <details className="group/args">
+    <details
+      open={node.reader.argsOpen}
+      onToggle={(e) => { if (e.currentTarget.open !== node.reader.argsOpen) model.setReader(node, { argsOpen: e.currentTarget.open }); }}
+      className="group/args"
+      data-tool-args
+    >
       <summary className="cursor-pointer text-xs text-muted-foreground select-none hover:text-foreground">Arguments</summary>
       <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5">{text}</pre>
     </details>
@@ -320,17 +324,20 @@ function ArgsJson({ text }: { text: string }) {
 
 const RESULT_TRUNC = 4000;
 
-export function ResultBlock({ node, attached = false }: { node: ResultNode; attached?: boolean }) {
+export function ResultBlock({ node, model }: { node: ResultNode; model: ConversationModel }) {
   const { text, images } = React.useMemo(() => splitResultContent(node.content), [node.content]);
   const failed = node.isError && !node.yielded;
-  const [full, setFull] = React.useState(false);
-  const truncated = text.length > RESULT_TRUNC && !full;
+  const truncated = text.length > RESULT_TRUNC && !node.reader.full;
   const label = node.yielded ? 'Handed to user'
     : failed ? 'Error'
     : images.length ? `Result · ${images.length} image${images.length === 1 ? '' : 's'}` : 'Result';
-  const defaultOpen = !failed && !node.yielded && (images.length > 0 || text.length < 600);
   return (
-    <details open={attached ? true : defaultOpen} className="group/res">
+    <details
+      open={node.reader.open}
+      onToggle={(e) => { if (e.currentTarget.open !== node.reader.open) model.setReader(node, { open: e.currentTarget.open }); }}
+      className="group/res"
+      data-tool-result
+    >
       <summary className={cn(
         'flex cursor-pointer items-center gap-1.5 text-xs select-none',
         failed ? 'text-destructive' : node.yielded ? 'text-warning' : 'text-muted-foreground hover:text-foreground',
@@ -345,7 +352,7 @@ export function ResultBlock({ node, attached = false }: { node: ResultNode; atta
           </pre>
           {truncated && (
             <div className="border-t px-2 py-1">
-              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setFull(true)}>Show full output</Button>
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => model.setReader(node, { full: true })}>Show full output</Button>
             </div>
           )}
         </div>
