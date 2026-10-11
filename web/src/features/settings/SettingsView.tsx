@@ -13,7 +13,7 @@ import { ModelsSection } from './models/ModelsSection';
 import { loadModelsSettings } from './models/store';
 import { BackendsSection } from './BackendsSection';
 import { SystemsSection } from './SystemsSection';
-import { AccountSection } from './AccountSection';
+import { AccountSection, discardOverageDraft } from './AccountSection';
 import { VoiceSection } from './VoiceSection';
 import { ConventionsSection, clearConventionsListErrors } from './ConventionsSection';
 import { PluginsSection, resetPluginNotes } from './PluginsSection';
@@ -51,6 +51,8 @@ export function SettingsView() {
   const sections = visibleSections(caps);
   const requested = (route.section as SectionId | null) ?? 'models';
   const current = sections.find((s) => s.id === requested) ?? sections[0];
+  // An unapplied overage edit and its status are dropped before the section renders, so a stale status (a live region) and an enabled Apply never reach the DOM.
+  React.useState(discardOverageDraft);
   const navRef = React.useRef<HTMLElement>(null);
 
   React.useEffect(() => {

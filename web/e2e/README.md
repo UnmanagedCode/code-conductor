@@ -145,7 +145,7 @@ parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
 
 The `android` project (Pixel 7 + `notifications` permission) runs `harness.spec.ts`, every `**/*.android.spec.ts` and the parity scenarios; no other project runs the `*.android.spec.ts` files. Android-only behaviour lands there: the back button and the hash, external links, a notification click, and the on-screen keyboard opening.
 
-A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `composer-drafts`, `conversation-scroll`, `collapse-state`, `conversation-machinery`, `conversation-bubbles`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden`, `plugin-host` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
+A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `composer-drafts`, `conversation-scroll`, `collapse-state`, `conversation-machinery`, `conversation-bubbles`, `settings-overage`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden`, `plugin-host` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
 
 ## Mutation scoring
 

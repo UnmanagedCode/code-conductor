@@ -1,8 +1,7 @@
-import * as React from 'react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { useStore } from '@/state/createStore';
+import { createStore, useStore } from '@/state/createStore';
 import { accountChanged } from '@/app/accountUsage';
 import { cn } from '@/lib/utils';
 import { SectionIntro, SettingsCard, Status, RangeField } from './ui';
@@ -12,38 +11,42 @@ import type { ModelsPayload } from './models/logic';
 import { ClaudeLogin } from './ClaudeLogin';
 
 type Overage = 'none' | 'stop' | 'stop-resume';
+type Staged = { action: Overage; thEnabled: boolean; thValue: number };
 const OPTIONS: [Overage, string][] = [['none', 'Off'], ['stop', 'Stop'], ['stop-resume', 'Stop & resume']];
 
+// An unapplied overage edit and its status line live at module scope, not in the component: Settings remounts a section on every switch, and both must survive it.
+export const overageDraftStore = createStore<{ staged: Staged | null; status: { text: string; ok: boolean } | null }>({ staged: null, status: null });
+
+/** Opening Settings drops an unapplied overage edit and its status line, so the controls show the payload it reloads. */
+export function discardOverageDraft() {
+  overageDraftStore.set({ staged: null, status: null });
+}
+
+const committed = (data: ModelsPayload | null): Staged => {
+  const ot = data?.overageThreshold ?? { enabled: false, value: 85 };
+  return { action: data?.onOverage ?? 'none', thEnabled: ot.enabled, thValue: ot.value };
+};
+
 /**
- * Overage protection is staged: edits stay local until Apply, and a models
+ * Overage protection is staged: edits stay in the draft until Apply, and a models
  * payload arriving from elsewhere (a tier toggle) never clobbers an unapplied edit.
  */
 export function OverageCard() {
   const data = useStore(modelsSettingsStore, (s) => s.data);
-  const [dirty, setDirty] = React.useState(false);
-  const [action, setAction] = React.useState<Overage>('none');
-  const [thEnabled, setThEnabled] = React.useState(false);
-  const [thValue, setThValue] = React.useState(85);
-  const [status, setStatus] = React.useState<{ text: string; ok: boolean } | null>(null);
+  const { staged, status } = useStore(overageDraftStore, (s) => s);
+  const dirty = staged !== null;
+  const { action, thEnabled, thValue } = staged ?? committed(data);
 
-  React.useEffect(() => {
-    if (dirty || !data) return;
-    setAction(data.onOverage ?? 'none');
-    const ot = data.overageThreshold ?? { enabled: false, value: 85 };
-    setThEnabled(ot.enabled);
-    setThValue(ot.value);
-  }, [data, dirty]);
-
-  const edit = (fn: () => void) => { fn(); setDirty(true); setStatus(null); };
+  const edit = (patch: Partial<Staged>) =>
+    overageDraftStore.set((s) => ({ staged: { ...(s.staged ?? committed(modelsSettingsStore.get().data)), ...patch }, status: null }));
 
   async function apply() {
     try {
       const out = await post<ModelsPayload>('/api/settings/models/prefs', { onOverage: action, overageThreshold: { enabled: thEnabled, value: thValue } });
-      setDirty(false);
       applyModelsPayload(out, false);
-      setStatus({ text: 'Overage settings applied', ok: true });
+      overageDraftStore.set({ staged: null, status: { text: 'Overage settings applied', ok: true } });
     } catch (e) {
-      setStatus({ text: `Update failed: ${errText(e)}`, ok: false });
+      overageDraftStore.set({ status: { text: `Update failed: ${errText(e)}`, ok: false } });
     }
   }
 
@@ -58,7 +61,7 @@ export function OverageCard() {
             key={v}
             type="button"
             aria-pressed={action === v}
-            onClick={() => edit(() => setAction(v))}
+            onClick={() => edit({ action: v })}
             className={cn('min-h-8 rounded-md px-3 font-medium transition-colors', action === v ? 'bg-background text-foreground shadow-xs dark:bg-input/40' : 'text-muted-foreground hover:text-foreground')}
           >
             {label}
@@ -67,14 +70,14 @@ export function OverageCard() {
       </div>
       <div className="space-y-2">
         <Label className="font-normal">
-          <Switch checked={thEnabled} onCheckedChange={(v) => edit(() => setThEnabled(v))} aria-label="Also stop at a usage threshold" />
+          <Switch checked={thEnabled} onCheckedChange={(v) => edit({ thEnabled: v })} aria-label="Also stop at a usage threshold" />
           Also stop at a usage threshold (any rate-limit window)
         </Label>
         <p className="max-w-[70ch] text-xs leading-relaxed text-muted-foreground">
           The chosen action also fires once utilization crosses this percentage, before paid overage begins. It is checked against the live rate-limit stream and a periodic poll of the 5-hour window, so low thresholds trip too. No effect while the action is Off.
         </p>
         {thEnabled && (
-          <RangeField id="overage-threshold" label="Stop at" min={10} max={99} step={1} value={thValue} format={(v) => `${v}%`} onInput={(v) => edit(() => setThValue(v))} />
+          <RangeField id="overage-threshold" label="Stop at" min={10} max={99} step={1} value={thValue} format={(v) => `${v}%`} onInput={(v) => edit({ thValue: v })} />
         )}
       </div>
       <div className="flex flex-wrap items-center justify-end gap-3 border-t pt-4">
