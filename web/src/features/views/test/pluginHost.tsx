@@ -34,6 +34,8 @@ export const net = {
   heldStart: null as Promise<Response> | null,
   /** When set, POST /start refuses with a 409. */
   refuseStart: false,
+  /** A plugin's next status read answers with its entry here, once (see holdStatus). */
+  heldStatus: {} as Record<string, Promise<Response>>,
 };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -44,6 +46,8 @@ async function answer(url: string, method: string): Promise<Response> {
   const m = /^\/api\/plugins\/([^/]+)\/(status|start)$/.exec(url);
   if (!m) return json({});
   const row = net.status[m[1]];
+  const held = m[2] === 'status' ? net.heldStatus[m[1]] : undefined;
+  if (held) { delete net.heldStatus[m[1]]; return held; }
   if (row === undefined) return json({ error: 'unknown plugin' }, 404);
   if (row === 'network') throw new TypeError('Failed to fetch');
   if (row === 'unreadable') return new Response('', { status: 200 });
@@ -62,6 +66,7 @@ export function resetHost(url = '/') {
   net.calls = [];
   net.heldStart = null;
   net.refuseStart = false;
+  net.heldStatus = {};
   vi.stubGlobal('fetch', vi.fn((url: string, opts: RequestInit = {}) => answer(url, opts.method ?? 'GET')));
   history.replaceState(null, '', url);
   syncRoute();
@@ -86,6 +91,16 @@ export async function mountApp() {
   await settle();
 }
 
+/** Holds plugin `id`'s next status read until the returned release answers it with `row`. */
+export function holdStatus(id: string): (row: StatusRow) => Promise<void> {
+  let release!: (r: Response) => void;
+  net.heldStatus[id] = new Promise((r) => { release = r; });
+  return async (row) => {
+    await act(async () => { release(json({ name: id, ...row })); });
+    await settle();
+  };
+}
+
 /** Sets the hash as a link or the address bar does, and lets the host follow. */
 export async function go(hash: string) {
   location.hash = hash;
@@ -106,9 +121,12 @@ export function standInWindow(frame: HTMLIFrameElement): StandIn {
   return win;
 }
 
-/** The bridge in `from`'s frame reports its route, as a plugin page's own navigation does. */
-export function postRoute(from: StandIn, path: string) {
+/** `from`'s frame posts `data` to the app, as a same-origin page does. */
+export function postFrom(from: StandIn, data: unknown) {
   act(() => {
-    window.dispatchEvent(new MessageEvent('message', { data: { cc: 1, type: 'route', path }, origin: location.origin, source: from as unknown as Window }));
+    window.dispatchEvent(new MessageEvent('message', { data, origin: location.origin, source: from as unknown as Window }));
   });
 }
+
+/** The bridge in `from`'s frame reports its route, as a plugin page's own navigation does. */
+export const postRoute = (from: StandIn, path: string) => postFrom(from, { cc: 1, type: 'route', path });

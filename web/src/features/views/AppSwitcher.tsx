@@ -38,7 +38,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
   if (!apps.length) {
     return (
       <div className="ml-1 min-w-0 flex-1 leading-tight">
-        <div className="truncate text-sm font-semibold tracking-tight">{title}</div>
+        <h1 className="truncate text-sm font-semibold tracking-tight">{title}</h1>
         {subtitle && <div className="truncate text-[11px] text-muted-foreground">{subtitle}</div>}
       </div>
     );
@@ -61,8 +61,8 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Apps</DropdownMenuLabel>
-        {/* The current app is the checked entry; picking it again changes nothing. */}
-        <DropdownMenuRadioGroup value={currentId ?? CONDUCTOR}>
+        {/* The current app is the checked entry (Conductor while the route names no listed plugin); picking it again changes nothing. */}
+        <DropdownMenuRadioGroup value={current?.id ?? CONDUCTOR}>
           <DropdownMenuRadioItem value={CONDUCTOR} onSelect={() => { if (currentId) exitToConductor(); }}>
             <OctopusMark className="size-4 text-primary" />
             <span className="flex-1">Conductor</span>

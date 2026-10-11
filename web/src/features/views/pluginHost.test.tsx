@@ -20,8 +20,8 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 import { parseHash, routeStore, syncRoute } from '@/state/route';
 import { overlayStore, pluginFrames, residentSignal } from './plugins';
 import {
-  endHost, go, keepRow, mountApp, navigate, net, plainRow, pluginView, postRoute, resetHost, residentFrame,
-  settle, sharedFrame, shownFrames, standInWindow, viewOpen, type Answer,
+  endHost, go, holdStatus, keepRow, mountApp, navigate, net, plainRow, pluginView, postFrom, postRoute, resetHost, residentFrame,
+  settle, sharedFrame, shownFrames, standInWindow, viewOpen, type Answer, type StatusRow,
 } from './test/pluginHost';
 
 beforeEach(() => resetHost());
@@ -85,6 +85,27 @@ describe('the plugin view and its hash space', () => {
     await go('#');
     expect(viewOpen()).toBe(false);
     expect(pluginView().querySelectorAll('iframe').length).toBe(0);
+  });
+
+  it('a load event from the page being replaced leaves the entered plugin\'s Starting overlay up, and the entered plugin\'s own page load clears it', async () => {
+    net.status = { a: plainRow(), b: plainRow({ state: 'stopped' }) };
+    await mountApp();
+    await go('#plugin/a/');
+    const a = sharedFrame()!;
+    let release!: (r: Response) => void;
+    net.heldStart = new Promise((r) => { release = r; });
+    await go('#plugin/b/');
+    expect(overlayStore.get().overlay, 'precondition: b is starting behind the overlay').not.toBeNull();
+    expect(sharedFrame() === a, 'fixture check: a\'s page is still in the view').toBe(true);
+    act(() => { a.dispatchEvent(new Event('load')); });
+    expect(overlayStore.get().overlay, 'a\'s page loading again does not clear b\'s overlay').not.toBeNull();
+    await act(async () => { release(new Response(JSON.stringify({ state: 'ready' }))); });
+    await settle();
+    const b = sharedFrame()!;
+    expect(b !== a && b.getAttribute('src') === '/plugins/b/', 'fixture check: b\'s page is mounted').toBe(true);
+    expect(overlayStore.get().overlay, 'precondition: the overlay waits for b\'s page').not.toBeNull();
+    act(() => { b.dispatchEvent(new Event('load')); });
+    expect(overlayStore.get().overlay, 'positive control: b\'s own page load clears it').toBeNull();
   });
 
   it('booting directly on a plugin hash opens the view at that subpath', async () => {
@@ -197,6 +218,23 @@ describe('keep-alive routing', () => {
     });
   });
 
+  it('a route-shaped message without the bridge\'s {cc:1} envelope moves neither the hash nor the route store, nor is it tracked', async () => {
+    net.status = { ka: keepRow() };
+    await mountApp();
+    await go('#plugin/ka/');
+    const win = standInWindow(residentFrame('ka')!);
+    postRoute(win, '/call/1');
+    expect(location.hash, 'positive control: an enveloped route mirrors into the hash').toBe('#plugin/ka/call/1');
+    expect(routeStore.get().route.pluginPath, 'and into the route store').toBe('call/1');
+    postFrom(win, { type: 'route', path: '/bare' });
+    postFrom(win, { cc: 2, type: 'route', path: '/other' });
+    expect(location.hash, 'not mirrored into the hash').toBe('#plugin/ka/call/1');
+    expect(routeStore.get().route.pluginPath, 'nor into the route store').toBe('call/1');
+    await go('#');
+    await go('#plugin/ka/');
+    expect(location.hash, 'nor tracked').toBe('#plugin/ka/call/1');
+  });
+
   it('A (keep-alive) → B (plain) → A keeps A\'s frame and removes B\'s', async () => {
     net.status = { a: keepRow(), b: plainRow() };
     await mountApp();
@@ -299,6 +337,47 @@ describe('the hash and the frame stay in step', () => {
     await go('#plugin/ka/');
     expect(win.posted).toEqual([navigate('/')]);
     expect(routeStore.get().route.pluginPath).toBe('');
+  });
+
+  it('a route message from the page being replaced while another plugin loads moves neither the hash nor the route store, and the entered plugin loads where it was asked', async () => {
+    net.status = { a: plainRow(), b: plainRow({ state: 'stopped' }) };
+    await mountApp();
+    await go('#plugin/a/');
+    const a = sharedFrame()!;
+    const win = standInWindow(a);
+    postRoute(win, '/at-a');
+    expect(location.hash, 'positive control: the showing page\'s route mirrors into the hash').toBe('#plugin/a/at-a');
+    let release!: (r: Response) => void;
+    net.heldStart = new Promise((r) => { release = r; });
+    await go('#plugin/b/');
+    expect(overlayStore.get().overlay, 'precondition: b is starting').not.toBeNull();
+    expect(sharedFrame() === a, 'fixture check: a\'s page is still in the view').toBe(true);
+    postRoute(win, '/from-a');
+    expect(location.hash).toBe('#plugin/b/');
+    expect(routeStore.get().route).toMatchObject({ pluginId: 'b', pluginPath: '' });
+    await act(async () => { release(new Response(JSON.stringify({ state: 'ready' }))); });
+    await settle();
+    expect(sharedFrame()?.getAttribute('src'), 'b loads where it was asked').toBe('/plugins/b/');
+    expect(location.hash).toBe('#plugin/b/');
+  });
+
+  it('an outside subpath change while another plugin loads steers only the plugin being entered, never the page being replaced', async () => {
+    net.status = { a: plainRow(), b: plainRow({ state: 'stopped' }) };
+    await mountApp();
+    await go('#plugin/a/');
+    const a = sharedFrame()!;
+    const win = standInWindow(a);
+    await go('#plugin/a/sub');
+    expect(win.posted, 'positive control: a subpath change steers the showing page').toEqual([navigate('/sub')]);
+    let release!: (r: Response) => void;
+    net.heldStart = new Promise((r) => { release = r; });
+    await go('#plugin/b/');
+    expect(sharedFrame() === a, 'fixture check: a\'s page is still in the view').toBe(true);
+    await go('#plugin/b/x');
+    expect(win.posted, 'a\'s page is not steered').toEqual([navigate('/sub')]);
+    await act(async () => { release(new Response(JSON.stringify({ state: 'ready' }))); });
+    await settle();
+    expect(sharedFrame()?.getAttribute('src'), 'b loads at the subpath').toBe('/plugins/b/x');
   });
 });
 
@@ -458,6 +537,92 @@ describe('reconcile and the keep-alive edge cases', () => {
     await settle();
     expect(residentFrame('ka')).toBeNull();
     expect(pluginFrames.residentIds()).toEqual(['kb']);
+  });
+
+  it('leaving a plugin while its status read is pending mounts no frame and starts nothing, while a read left to finish loads it', async () => {
+    net.status = { ka: keepRow(), pl: plainRow(), st: keepRow({ state: 'stopped' }) };
+    await mountApp();
+    let release = holdStatus('pl');
+    await go('#plugin/pl/');
+    expect(sharedFrame(), 'precondition: nothing mounts while the read is pending').toBeNull();
+    await release(plainRow());
+    expect(sharedFrame()?.getAttribute('src'), 'positive control: a read left to finish loads the plugin').toBe('/plugins/pl/');
+    await go('#');
+    const cases: [string, StatusRow][] = [['ka', keepRow()], ['pl', plainRow()], ['st', keepRow({ state: 'stopped' })]];
+    for (const [id, row] of cases) {
+      release = holdStatus(id);
+      await go(`#plugin/${id}/`);
+      await go('#');
+      const before = net.calls.length;
+      await release(row);
+      expect(pluginView().querySelectorAll('iframe').length, `${id}: no frame`).toBe(0);
+      expect(pluginFrames.residentIds(), id).toEqual([]);
+      expect(net.calls.slice(before), `${id}: no /start`).toEqual([]);
+      expect(overlayStore.get().overlay, `${id}: no overlay`).toBeNull();
+    }
+  });
+
+  it('a re-entry left before its background check answers neither evicts the frame nor reloads it, even once the row reads disabled', async () => {
+    const disabled = keepRow({ enabled: false, state: 'disabled' });
+    net.status = { ka: keepRow(), pl: plainRow() };
+    net.refuseStart = true;
+    await mountApp();
+    await visit('ka');
+    const ka = residentFrame('ka')!;
+    for (const [how, away] of [['leaving the view', '#'], ['entering another plugin', '#plugin/pl/']]) {
+      const release = holdStatus('ka');
+      await go('#plugin/ka/');
+      expect(ka.hidden, `${how}: precondition: re-entry revealed the frame`).toBe(false);
+      await go(away);
+      net.status.ka = disabled;
+      const before = net.calls.length;
+      await release(disabled);
+      expect(residentFrame('ka') === ka && ka.isConnected, `${how}: not evicted`).toBe(true);
+      expect(ka.hidden, `${how}: still hidden`).toBe(true);
+      expect(pluginFrames.residentIds(), how).toEqual(['ka']);
+      expect(net.calls.slice(before), `${how}: no reload, no /start`).toEqual([]);
+      expect(overlayStore.get().overlay, `${how}: no overlay`).toBeNull();
+      net.status.ka = keepRow();
+      await go('#');
+    }
+    const release = holdStatus('ka');
+    await go('#plugin/ka/');
+    net.status.ka = disabled;
+    const before = net.calls.length;
+    await release(disabled);
+    expect(ka.isConnected, 'positive control: a re-entry still showing evicts on the same answer').toBe(false);
+    expect(net.calls.slice(before), 'and reloads the plain way').toContain('POST /api/plugins/ka/start');
+  });
+
+  it('a reconcile whose answer arrives after its frame was replaced leaves the replacement resident', async () => {
+    net.status = { ka: keepRow() };
+    await mountApp();
+    await visit('ka');
+    const first = residentFrame('ka')!;
+    let release = holdStatus('ka');
+    let pending!: Promise<void>;
+    act(() => { pending = pluginFrames.reconcile(undefined); });
+    await release(keepRow({ state: 'stopped' }));
+    await act(async () => { await pending; });
+    expect(first.isConnected, 'positive control: the held answer evicts the frame it was asked about').toBe(false);
+    await go('#plugin/ka/');
+    const old = residentFrame('ka')!;
+    await go('#');
+    release = holdStatus('ka');
+    act(() => { pending = pluginFrames.reconcile(undefined); });
+    await act(async () => { await pluginFrames.reconcile({ action: 'restart', ids: ['ka'] }); });
+    expect(old.isConnected, 'fixture check: an evicting action ended the old frame').toBe(false);
+    await go('#plugin/ka/');
+    const replacement = residentFrame('ka');
+    expect(!!replacement && replacement !== old, 'fixture check: a new frame for the same plugin').toBe(true);
+    let changes = 0;
+    const stop = residentSignal.subscribe(() => { changes++; });
+    await release(keepRow({ state: 'stopped' }));
+    await act(async () => { await pending; });
+    stop();
+    expect(pluginFrames.residentIds(), 'the replacement stays resident').toEqual(['ka']);
+    expect(replacement!.isConnected && !replacement!.hidden, 'and shown').toBe(true);
+    expect(changes, 'the resident set did not change').toBe(0);
   });
 });
 

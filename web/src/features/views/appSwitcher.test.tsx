@@ -30,6 +30,8 @@ const app = (id: string, name: string, extra: object = {}) => ({ id, name, enabl
 /** The sidebar column outside the phone drawer. */
 const sidebar = () => [...document.querySelectorAll('[data-sidebar]')].find((e) => !e.closest('[data-slot="sheet-content"]')) as HTMLElement;
 const switcher = () => within(sidebar()).queryByRole('button', { name: 'Switch app' });
+/** The sidebar's level-1 headings. */
+const titles = () => within(sidebar()).queryAllByRole('heading', { level: 1 });
 
 async function openMenu(): Promise<HTMLElement> {
   const trigger = switcher()!;
@@ -67,6 +69,7 @@ describe('the app switcher', () => {
     await mountApp();
     expect(net.calls, 'fixture check: the catalog was read').toContain('GET /api/plugins');
     expect(switcher()).toBeNull();
+    expect(titles().length, 'a plain title in its place').toBe(1);
     net.catalog = [app('y', 'Y')];
     await act(async () => { notifyPluginsChanged(undefined); });
     await settle();
@@ -75,6 +78,7 @@ describe('the app switcher', () => {
     await act(async () => { notifyPluginsChanged(undefined); });
     await settle();
     expect(switcher(), 'gone once none does').toBeNull();
+    expect(titles().length, 'and the plain title is back').toBe(1);
   });
 
   it('offers Conductor and each enabled plugin with a frontend, and marks exactly one entry current, following every switch both ways', async () => {
@@ -119,6 +123,25 @@ describe('the app switcher', () => {
     menu = await openMenu();
     expect(checked(menu), 'an outside hash change away from the plugin').toEqual(['conductor']);
     await closeMenu();
+  });
+
+  it('a plugin dropped from the switcher while its view is open leaves Conductor as the one current entry', async () => {
+    net.catalog = [app('ka', 'Keep'), app('pl', 'Plain')];
+    net.status = { ka: keepRow(), pl: plainRow() };
+    await mountApp();
+    await pick('ka');
+    let menu = await openMenu();
+    expect(checked(menu), 'precondition: the open plugin is current').toEqual(['ka']);
+    await closeMenu();
+    // Settings → Plugins → disable: the catalog drops the plugin and the change is announced, naming no action.
+    net.catalog = [app('pl', 'Plain')];
+    net.status.ka = keepRow({ enabled: false, state: 'disabled' });
+    await act(async () => { notifyPluginsChanged(undefined); });
+    await settle();
+    expect(location.hash, 'fixture check: the route still names the plugin').toBe('#plugin/ka/');
+    menu = await openMenu();
+    expect(entries(menu).map(entryId), 'fixture check: the plugin left the switcher').toEqual(['conductor', 'pl']);
+    expect(checked(menu)).toEqual(['conductor']);
   });
 
   it('another view taking the hash from a plugin closes the plugin view and makes Conductor current', async () => {
