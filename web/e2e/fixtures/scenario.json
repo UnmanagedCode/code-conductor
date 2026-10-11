@@ -152,6 +152,24 @@
   },
   {
    "on": {
+    "type": "prompt",
+    "text": "MIDTURN-HOLD"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_hold",
+       "role": "assistant"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "on": {
     "type": "prompt"
    },
    "delay_ms": 30,

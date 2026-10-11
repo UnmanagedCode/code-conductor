@@ -296,3 +296,57 @@ parity('user-question-idle-callback/R2', 'a mid-turn answer replayed from disk p
   // Last on purpose: the card and its lock above prove the replayed transcript is on screen, so this absence is not vacuous.
   await expect(ui.transcript(page)).not.toContainText('mid-turn');
 });
+
+// Conversation part 3b (card 2026-0652)
+parity('user-actions-midturn/R2', 'between turns a prompt offers Rewind and Fork; mid-turn Rewind is disabled while Fork stays enabled, on the earlier prompt and on the running one', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the bubble actions follow the instance's status: both enabled while idle; mid-turn, Rewind disabled and Fork enabled on every bubble, existing or new.
+  const project = uniq('midturn-actions');
+  await createProject(cc, project);
+  await ui.open(page);
+  await ui.startSessionIn(page, project);
+  const inst = await instanceIn(cc, project);
+  try {
+    await ui.sendPrompt(page, 'MIDTURN-FIRST an ordinary prompt');
+    await expect(ui.turnEnds(page)).toHaveCount(1);
+    const first = ui.userMessages(page).first();
+    await expect(ui.bubbleAction(first, 'rewind')).toBeEnabled();
+    await expect(ui.bubbleAction(first, 'fork')).toBeEnabled();
+    await ui.sendPrompt(page, 'MIDTURN-HOLD keep the turn running');
+    await expect(ui.userMessages(page)).toHaveCount(2);
+    await expect.poll(async () =>
+      (await api<{ id: string; status: string }[]>(cc, 'GET', '/api/instances')).body.find((i) => i.id === inst.id)?.status,
+    { message: 'fixture check: the held turn keeps the instance mid-turn' }).toBe('turn');
+    const held = ui.userMessages(page).nth(1);
+    await expect(ui.bubbleAction(first, 'rewind')).toBeDisabled();
+    await expect(ui.bubbleAction(first, 'fork')).toBeEnabled();
+    await expect(ui.bubbleAction(held, 'rewind')).toBeDisabled();
+    await expect(ui.bubbleAction(held, 'fork')).toBeEnabled();
+  } finally {
+    // Every send sits inside the try: a held turn, or a first turn that never ends, must not leak into the shared cc.
+    await api(cc, 'DELETE', `/api/instances/${inst.id}`);
+  }
+});
+
+parity('doc/A11', 'a refused fork shows the server\'s message and leaves the session where it was', async ({ page, cc, ui, uniq }) => {
+  // Invariant: a fork the server refuses reports the server's own message, and the UI stays on the session it forked from.
+  const project = uniq('fork-refused');
+  const refusal = uniq('prompt 0 has not been written to the session transcript yet');
+  await createProject(cc, project);
+  const forks: unknown[] = [];
+  // Page-local: the shared cc never sees the fork.
+  await page.route('**/api/instances/*/fork', async (route) => {
+    forks.push(route.request().postDataJSON());
+    await route.fulfill({ status: 409, json: { error: refusal, code: 'PROMPT_NOT_PERSISTED' } });
+  });
+  await ui.open(page);
+  await ui.startSessionIn(page, project);
+  const inst = await instanceIn(cc, project);
+  const prompt = 'FORK-REFUSED the prompt to fork from';
+  await ui.sendPrompt(page, prompt);
+  await expect(ui.turnEnds(page)).toHaveCount(1);
+  const shown = await ui.forkRefused(page, ui.userMessages(page).first());
+  expect(shown).toMatch(/fork failed/i);
+  expect(shown).toContain(refusal);
+  expect(forks).toEqual([{ userMessageIndex: 0, text: prompt }]);
+  await expect(ui.sessionHeader(page).locator(`[title="session ${inst.sessionId}"]`)).toBeVisible();
+});

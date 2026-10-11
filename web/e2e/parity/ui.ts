@@ -312,6 +312,12 @@ export interface Ui {
   libraryStatus(page: Page): Locator;
   /** The Plugin Library's install/update output: a failure's or a warning's tail. */
   libraryTail(page: Page): Locator;
+
+  // Conversation part 3b (card 2026-0652)
+  /** A prompt bubble's Rewind or Fork button. */
+  bubbleAction(bubble: Locator, which: 'rewind' | 'fork'): Locator;
+  /** Clicks the bubble's Fork, accepts the confirmation, and returns the refusal the UI then shows. */
+  forkRefused(page: Page, bubble: Locator): Promise<string>;
 }
 
 // Sidebar C (card 2026-0629)
@@ -1078,6 +1084,25 @@ export const legacy: Ui = {
   libraryLive: (entry) => entry.locator('.pll-live'),
   libraryStatus: (page) => page.locator('#pll-status'),
   libraryTail: (page) => page.locator('#pll-tail-pre'),
+
+  // Conversation part 3b (card 2026-0652)
+  bubbleAction: (bubble, which) => bubble.locator(`.user-msg-${which}`),
+  // The old UI confirms with the browser's confirm() and reports a refusal with alert().
+  async forkRefused(page, bubble) {
+    const confirmed = page.waitForEvent('dialog');
+    const click = legacy.bubbleAction(bubble, 'fork').click();
+    const confirm = await confirmed;
+    expect(confirm.type()).toBe('confirm');
+    expect(confirm.message()).toMatch(/^Fork from here\?/);
+    const alerted = page.waitForEvent('dialog');
+    await confirm.accept();
+    const alert = await alerted;
+    expect(alert.type()).toBe('alert');
+    const text = alert.message();
+    await alert.accept();
+    await click;
+    return text;
+  },
 };
 
 /**
@@ -1741,6 +1766,20 @@ export const next: Ui = {
   // The library's own status line is a direct child of its card content, beside the list.
   libraryStatus: (page) => page.locator('[data-testid="library-list"]').locator('xpath=../div[@role="status"]'),
   libraryTail: (page) => page.locator('details').filter({ has: page.locator('summary', { hasText: 'Install output' }) }).locator('pre'),
+
+  // Conversation part 3b (card 2026-0652)
+  bubbleAction: (bubble, which) => bubble.getByRole('button', {
+    name: which === 'rewind' ? 'Rewind to before this message' : 'Fork a new session from here', exact: true,
+  }),
+  async forkRefused(page, bubble) {
+    await next.bubbleAction(bubble, 'fork').click();
+    const dialog = page.getByRole('dialog', { name: 'Fork from here?' });
+    await dialog.getByRole('button', { name: 'Fork', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    const toast = page.locator('[data-sonner-toast][data-type="error"]').filter({ hasText: 'Fork failed' });
+    await expect(toast).toHaveCount(1);
+    return toast.innerText();
+  },
 };
 
 // Sidebar B (card 2026-0628)
