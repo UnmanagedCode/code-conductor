@@ -286,6 +286,18 @@ export interface Ui {
   answerBubble(page: Page): Locator;
   /** One entry per question row of an answer bubble. */
   answerRows(bubble: Locator): Promise<{ kind: string; choices: string[]; note: string | null; custom: string | null }[]>;
+
+  // Sidebar B3 (card 2026-0642)
+  /** Closes the sidebar drawer on a drawer viewport so the next driver call opens it afresh; a no-op on desktop. */
+  closeSidebar(page: Page): Promise<void>;
+  /** Selects the Projects lens and returns the conductor filter's value: '' (All), 'hand', or an owner session id. */
+  filterValue(page: Page): Promise<string>;
+  /** Selects the Projects lens and returns the conductor filter's option labels in order, leaving the menu closed. */
+  filterOptions(page: Page): Promise<string[]>;
+  /** Selects the Projects lens and reads what `project`'s entry holds below its row. */
+  projectParts(page: Page, project: string): Promise<ProjectParts>;
+  /** Selects the Projects lens and reads whether the Sessions list of `project`'s `worktree` shows the conducted separator. */
+  conductedSeparator(page: Page, project: string, worktree: string): Promise<boolean>;
 }
 
 // Sidebar C (card 2026-0629)
@@ -296,6 +308,10 @@ export type RowLayout = {
   label: { minWidth: number; basis: number; grow: string; width: number; textHeight: number; truncated: boolean };
   fixed: { part: 'ago' | 'promote' | 'close'; shrink: string; inside: boolean }[];
 };
+
+// Sidebar B3 (card 2026-0642)
+/** What a project's entry holds below its row: a main-checkout Sessions subnode, a Worktrees group, its session rows, the empty-project hint. */
+export type ProjectParts = { sessions: boolean; worktrees: boolean; rows: number; hint: boolean };
 /** Reads `rowLayout` in the page: the label box is the first of `labels` that matches, its text the label's `text` descendant or else the label itself, and `fixed` the row's ago / ↑ / × by part. */
 const measureRow = (row: Locator, sel: { labels: string[]; text: string; fixed: Record<'ago' | 'promote' | 'close', string> }) =>
   row.evaluate((e, s): RowLayout => {
@@ -1002,6 +1018,44 @@ export const legacy: Ui = {
     note: e.querySelector('.qa-note')?.textContent ?? null,
     custom: e.querySelector('.qa-custom')?.textContent ?? null,
   }))),
+
+  // Sidebar B3 (card 2026-0642)
+  async closeSidebar(page) {
+    if (!drawerViewport()) return;
+    const vp = page.viewportSize();
+    if (!vp) throw new Error('closeSidebar: the page has no viewport size');
+    // The scrim covers the viewport; the 80vw drawer leaves its right edge exposed.
+    await expect(async () => {
+      if (await page.locator('#sidebar').evaluate((e) => e.classList.contains('open'))) {
+        await page.locator('#sidebar-scrim').click({ position: { x: vp.width - 4, y: Math.round(vp.height / 2) }, timeout: 1_000 });
+      }
+      await expect(page.locator('#sidebar')).not.toHaveClass(/\bopen\b/, { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+  },
+  async filterValue(page) {
+    await legacy.lens(page, 'projects');
+    return page.locator('#conductor-filter-select').inputValue();
+  },
+  async filterOptions(page) {
+    await legacy.lens(page, 'projects');
+    return page.locator('#conductor-filter-select option').allTextContents();
+  },
+  async projectParts(page, project) {
+    await legacy.lens(page, 'projects');
+    return (await legacy.projectRow(page, project)).locator('xpath=..').evaluate((e) => ({
+      sessions: e.querySelector(':scope > details.sessions-group') !== null,
+      worktrees: e.querySelector(':scope > details.worktree-group') !== null,
+      rows: e.querySelectorAll('.session-row').length,
+      hint: e.querySelector(':scope > .empty-project-hint') !== null,
+    }));
+  },
+  async conductedSeparator(page, project, worktree) {
+    await legacy.lens(page, 'projects');
+    return (await legacy.projectRow(page, project)).locator('xpath=..').locator('.worktree-item')
+      .filter({ has: page.locator('.worktree-name', { hasText: exactly(worktree) }) })
+      .locator('.sessions-separator')
+      .evaluateAll((es) => es.some((e) => e.textContent === '— conducted —'));
+  },
 };
 
 /**
@@ -1619,6 +1673,43 @@ export const next: Ui = {
     note: e.querySelector('[data-note]')?.textContent ?? null,
     custom: e.querySelector('[data-custom]')?.textContent ?? null,
   }))),
+
+  // Sidebar B3 (card 2026-0642)
+  async closeSidebar(page) {
+    if (!drawerViewport()) return;
+    if (await sidebar(page).count()) await page.keyboard.press('Escape');
+    await expect(page.locator('[data-slot="sheet-content"]')).toHaveCount(0);
+  },
+  async filterValue(page) {
+    await next.lens(page, 'projects');
+    const v = await sidebar(page).locator('[data-filter]').getAttribute('data-filter');
+    return v === 'all' ? '' : (v ?? '');
+  },
+  async filterOptions(page) {
+    await next.lens(page, 'projects');
+    const trigger = sidebar(page).getByRole('combobox', { name: 'Filter by conductor' });
+    await trigger.click();
+    await expect(page.getByRole('listbox')).toBeVisible();
+    const labels = await page.getByRole('option').allTextContents();
+    // Escape closes the topmost layer only: the menu, never the phone drawer under it.
+    await page.keyboard.press('Escape');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    return labels;
+  },
+  async projectParts(page, project) {
+    await next.lens(page, 'projects');
+    return sidebar(page).locator(`li[data-project="${project}"]`).evaluate((e, p) => ({
+      sessions: e.querySelector(`[data-sessions="${p}"]`) !== null,
+      worktrees: e.querySelector(`[data-worktrees="${p}"]`) !== null,
+      rows: e.querySelectorAll('[data-session-row]').length,
+      hint: (e.textContent ?? '').includes('No sessions yet'),
+    }), project);
+  },
+  async conductedSeparator(page, project, worktree) {
+    await next.lens(page, 'projects');
+    return sidebar(page).locator(`ul[data-sessions="${project}:${worktree}"] > li:not([data-session-row])`)
+      .evaluateAll((es) => es.some((e) => e.textContent === 'Conducted'));
+  },
 };
 
 // Sidebar B (card 2026-0628)

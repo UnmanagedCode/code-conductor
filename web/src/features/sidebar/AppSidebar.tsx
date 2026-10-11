@@ -31,6 +31,7 @@ import { ConductorsList } from './ConductorsList';
 import { RestartButton } from './RestartButton';
 import { useSidebarWidth } from './useSidebarWidth';
 import './reveal';
+import './filterFallback';
 
 function HeaderButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -50,10 +51,6 @@ function liveSummary(n: number) {
 function FilterRow({ m }: { m: ReturnType<typeof useSidebarModel> }) {
   const ui = useSidebarUi();
   const owner = filterOwner(ui.filter);
-  // A selected owner that is no longer offered falls back to All.
-  React.useEffect(() => {
-    if (owner && !m.options.some((o) => o.value === owner)) setFilter('');
-  }, [owner, m.options]);
   return (
     <div className={cn('mx-3 mt-2 rounded-md', owner && OWNER_BAR, owner && 'pl-[3px]')} style={ownerStyle(owner)} data-filter={ui.filter || 'all'}>
       <Select value={ui.filter || 'all'} onValueChange={(v) => setFilter(v === 'all' ? '' : v)}>
