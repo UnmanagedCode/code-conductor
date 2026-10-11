@@ -234,10 +234,10 @@ export interface Ui {
   openInactive(page: Page): Promise<void>;
   /** A conductor row's selected state, label text, weight, italic and whether its colour is the UI's muted token, and the row's frame and fill. */
   conductorRowStyle(row: Locator): Promise<{ active: boolean; text: string; weight: string; italic: boolean; muted: boolean; framed: boolean; fill: string }>;
-  /** Selects the Conductors lens and returns `sessionId`'s project chips in order. */
-  conductorChips(page: Page, sessionId: string): Promise<{ project: string; kind: 'live' | 'idle'; dashed: boolean; muted: boolean }[]>;
+  /** Selects the Conductors lens and returns `sessionId`'s project chips in order, their text colour resolved against the UI's muted and foreground tokens. */
+  conductorChips(page: Page, sessionId: string): Promise<ConductorChip[]>;
   /** Selects the Conductors lens and returns `sessionId`'s block bar (computed colour, width) and where its row box and its first control start, from the block's left edge. */
-  conductorGeometry(page: Page, sessionId: string): Promise<{ bar: string | null; barWidth: number; rowLeft: number; contentLeft: number }>;
+  conductorGeometry(page: Page, sessionId: string): Promise<ConductorGeometry>;
   /** Selects the Conductors lens, expands `conductor`'s tree and returns the worker row of `sessionId` in it. */
   treeWorkerRow(page: Page, conductor: string, sessionId: string): Promise<Locator>;
   /** A conductor, tree-worker or session row's label (floor, flex basis and grow, width, text height, truncated) and its ago / ↑ / × (flex-shrink, inside the row box). */
@@ -251,6 +251,9 @@ export interface Ui {
 }
 
 // Sidebar C (card 2026-0629)
+export type ConductorGeometry = { bar: string | null; barWidth: number; rowLeft: number; contentLeft: number };
+/** A chip's project and kind, its border style, and whether its text colour is the UI's muted or foreground token. */
+export type ConductorChip = { project: string; kind: 'live' | 'idle'; dashed: boolean; muted: boolean; foreground: boolean };
 export type RowLayout = {
   label: { minWidth: number; basis: number; grow: string; width: number; textHeight: number; truncated: boolean };
   fixed: { part: 'ago' | 'promote' | 'close'; shrink: string; inside: boolean }[];
@@ -258,7 +261,8 @@ export type RowLayout = {
 /** Reads `rowLayout` in the page: the label box is the first of `labels` that matches, its text the label's `text` descendant or else the label itself, and `fixed` the row's ago / ↑ / × by part. */
 const measureRow = (row: Locator, sel: { labels: string[]; text: string; fixed: Record<'ago' | 'promote' | 'close', string> }) =>
   row.evaluate((e, s): RowLayout => {
-    const label = s.labels.map((l) => e.querySelector<HTMLElement>(l)).find((l) => l)!;
+    const label = s.labels.map((l) => e.querySelector<HTMLElement>(l)).find((l) => l);
+    if (!label) throw new Error(`rowLayout: no label in the row matched any of ${JSON.stringify(s.labels)}`);
     const text = label.querySelector<HTMLElement>(s.text) ?? label;
     const ls = getComputedStyle(label);
     const r = e.getBoundingClientRect();
@@ -839,18 +843,23 @@ export const legacy: Ui = {
     await legacy.lens(page, 'conductors');
     const b = `#conductor-list [data-key="conductor:${sessionId}"]`;
     return page.locator(`${b} .conductor-chip.live, ${b} .conductor-chip.idle`).evaluateAll((es) => {
-      const p = document.createElement('i');
-      p.style.color = 'var(--muted)';
-      document.body.appendChild(p);
-      const muted = getComputedStyle(p).color;
-      p.remove();
+      const token = (v: string) => {
+        const p = document.createElement('i');
+        p.style.color = `var(${v})`;
+        document.body.appendChild(p);
+        const c = getComputedStyle(p).color;
+        p.remove();
+        return c;
+      };
+      const t = { foreground: token('--text'), muted: token('--muted') };
       return es.map((c) => {
         const cs = getComputedStyle(c);
         return {
           project: c.textContent ?? '',
           kind: c.classList.contains('live') ? 'live' as const : 'idle' as const,
           dashed: cs.borderTopStyle === 'dashed',
-          muted: cs.color === muted,
+          muted: cs.color === t.muted,
+          foreground: cs.color === t.foreground,
         };
       });
     });
@@ -859,7 +868,8 @@ export const legacy: Ui = {
     await legacy.lens(page, 'conductors');
     return page.locator(`#conductor-list [data-key="conductor:${sessionId}"]`).evaluate((e) => {
       const b = e.getBoundingClientRect();
-      const m = /(rgba?\([^)]*\)) (-?[\d.]+)px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow);
+      // Any colour function: an inactive block's faded bar is a color-mix, which is no rgb().
+      const m = /([a-z-]+\([^)]*\)) (-?[\d.]+)px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow);
       const row = e.querySelector(':scope > .conductor-row')!;
       const caret = row.querySelector('.conductor-caret')!;
       return {
@@ -1394,17 +1404,23 @@ export const next: Ui = {
   async conductorChips(page, sessionId) {
     await next.lens(page, 'conductors');
     return sidebar(page).locator(`[data-conductor="${sessionId}"] [data-chip]`).evaluateAll((es) => es.map((c) => {
-      const p = document.createElement('span');
-      p.className = 'text-muted-foreground';
-      c.parentElement!.appendChild(p);
-      const muted = getComputedStyle(p).color;
-      p.remove();
+      // Probes in the chip's own subtree, so the sidebar's variables resolve as they do for the chip.
+      const token = (cls: string) => {
+        const p = document.createElement('span');
+        p.className = cls;
+        c.parentElement!.appendChild(p);
+        const v = getComputedStyle(p).color;
+        p.remove();
+        return v;
+      };
+      const t = { foreground: token('text-foreground'), muted: token('text-muted-foreground') };
       const cs = getComputedStyle(c);
       return {
         project: c.textContent ?? '',
         kind: c.getAttribute('data-chip') as 'live' | 'idle',
         dashed: cs.borderTopStyle === 'dashed',
-        muted: cs.color === muted,
+        muted: cs.color === t.muted,
+        foreground: cs.color === t.foreground,
       };
     }));
   },

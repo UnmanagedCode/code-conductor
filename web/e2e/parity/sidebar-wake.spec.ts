@@ -58,6 +58,8 @@ parity('legacy-awaiting-wake-dot/R1', "a session's dot lights while its worker i
     await expect.poll(() => userEchoes(cc, caller.id, 'did NOT finish'), { message: 'a heartbeat', timeout: HEARTBEAT_MS * 3 }).toBeGreaterThanOrEqual(1);
     // The heartbeat wakes the caller into a turn of its own; sample once it is back at idle, with its worker still mid-turn.
     await expect.poll(() => statusOf(cc, caller.id), { message: 'caller back at idle' }).toBe('idle');
+    // The sidebar may still show the heartbeat's turn: wait for the dot to leave it before the read.
+    await expect.poll(async () => (await dot(page, ui, P, caller.sessionId)).title, { message: 'dot out of the heartbeat turn' }).not.toBe('running');
     expect(await statusOf(cc, worker.id), 'fixture: worker still mid-turn').toBe('turn');
     expect(await dot(page, ui, P, caller.sessionId)).toEqual({ title: 'idle — waiting on a worker', fill: mid.fill });
   });

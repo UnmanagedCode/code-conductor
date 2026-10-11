@@ -4,6 +4,7 @@ import { expect, test, type Cc } from '../harness/fixtures.ts';
 import { seedTranscript } from '../harness/transcript.ts';
 import { colourOf, gone, idleInst, liveModel, spawnConductor, spawnWorker } from './fleet.ts';
 import { parity } from './parity.ts';
+import type { ConductorGeometry } from './ui.ts';
 
 test.use({ ccOptions: { server: 'sidebar-conductors' } });
 const desktop = () => test.info().project.name === 'desktop';
@@ -36,7 +37,7 @@ parity('legacy-sidebar-lenses/R3', "conductor rows: titled bold and untitled mut
   test.setTimeout(180_000);
   const s = await seedPair(cc, uniq);
   await ui.open(page);
-  let g0: { bar: string | null; barWidth: number; rowLeft: number; contentLeft: number };
+  let g0: ConductorGeometry;
 
   await test.step('labels and chips', async () => {
     const aRow = await ui.conductorRow(page, s.a.sessionId);
@@ -49,9 +50,10 @@ parity('legacy-sidebar-lenses/R3', "conductor rows: titled bold and untitled mut
     const bSt = await ui.conductorRowStyle(await ui.conductorRow(page, s.b.sessionId));
     expect({ italic: bSt.italic, muted: bSt.muted }).toEqual({ italic: true, muted: true });
     expect(Number(bSt.weight)).toBeLessThan(600);
+    // A live chip draws the foreground token's colour; an idle chip the muted token's, on a dashed border.
     await expect.poll(() => ui.conductorChips(page, s.a.sessionId)).toEqual([
-      { project: s.P, kind: 'live', dashed: false, muted: false },
-      { project: s.Q, kind: 'idle', dashed: true, muted: true },
+      { project: s.P, kind: 'live', dashed: false, muted: false, foreground: true },
+      { project: s.Q, kind: 'idle', dashed: true, muted: true, foreground: false },
     ]);
   });
 
@@ -132,13 +134,25 @@ parity('sidebar-conductors/R2', "a conductor row's × shows on hover, and each r
     const close = ui.sessionClose(row);
     await expect(close).toHaveCount(1);
     const op = () => close.evaluate((e) => getComputedStyle(e).opacity);
-    // Drawer viewports are touch, where both UIs' (hover: none) rules may show the × unhovered: only the shown-after-hover half is common.
     if (desktop()) {
       await page.mouse.move(1, 1);
       await expect.poll(op).toBe('0');
+      await row.hover();
+      await expect.poll(op).toBe('1');
+    } else {
+      // Drawer viewports are touch: (hover: none) shows the × with no hover at all, read before any hover.
+      await expect.poll(op, 'touch: the × shows unhovered').toBe('1');
     }
-    await row.hover();
-    await expect.poll(op).toBe('1');
+  });
+
+  await test.step('inactive row geometry', async () => {
+    // Invariant: an inactive block draws a bar as wide as a live one, its row box starts past it, and its content starts where a live row's does.
+    const live = await ui.conductorGeometry(page, a.sessionId);
+    const dG = await ui.conductorGeometry(page, d.sessionId);
+    expect(live.barWidth).toBeGreaterThan(0);
+    expect(dG.barWidth).toBeCloseTo(live.barWidth, 1);
+    expect(dG.rowLeft).toBeCloseTo(dG.barWidth, 1);
+    expect(dG.contentLeft).toBeCloseTo(live.contentLeft, 1);
   });
 
   await test.step('label floors', async () => {
