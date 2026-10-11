@@ -93,7 +93,7 @@ describe('session summary', () => {
   });
 
   it('Regenerate posts the selected tier and shows the returned cost, which a tier switch, a reopen or a null cost clears', async () => {
-    // Invariant: the cost shows only after a generation that returned a numeric cost, and is cleared by a tier click, a reopen, and a non-numeric cost.
+    // Invariant: the cost shows after a generation that returned a cost, and is cleared by a tier click, a reopen, and a null cost.
     const data = SUMMARY;
     let cost: number | null = 0.0123;
     const calls = routeFetch({
@@ -125,6 +125,34 @@ describe('session summary', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
     await waitFor(() => expect(writes(calls)).toHaveLength(3));
     await screen.findByRole('button', { name: 'Regenerate' });
+    expect(document.querySelector('[data-cost]')).toBeNull();
+  });
+
+  it('a Regenerate answer whose cost is not a number shows no cost line', async () => {
+    // Invariant: the cost line shows only for a numeric costUsd; a truthy non-number such as the string '0.5' shows none.
+    const data = SUMMARY;
+    let n = 0;
+    let cost: unknown = 0.0123;
+    const calls = routeFetch({
+      'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }),
+      'POST /api/sessions/s1/summary': () => {
+        n++;
+        return { json: { ok: true, data: { ...SUMMARY, short: { summary: `Gist ${n}.`, isStale: false } }, costUsd: cost } };
+      },
+    });
+    render(<DialogsHost />);
+    act(() => openSummaryDialog('s1'));
+    await screen.findByText('Recap');
+    fireEvent.click(tier('short'));
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
+    await screen.findByText('Gist 1.');
+    expect(document.querySelector('[data-cost]')?.textContent).toBe('Cost: $0.0123');
+
+    cost = '0.5';
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
+    await screen.findByText('Gist 2.');
+    await screen.findByRole('button', { name: 'Regenerate' });
+    expect(writes(calls)).toHaveLength(2);
     expect(document.querySelector('[data-cost]')).toBeNull();
   });
 
@@ -278,6 +306,32 @@ describe('prune context', () => {
     expect(thinkingCells()).toEqual(['Thinking', '~600 tokens']);
     fireEvent.click(thinking());
     expect(thinkingCells()).toEqual(['Thinking', 'n/a, stored encrypted (~500 in context, kept)']);
+  });
+
+  it('Prune is disabled while the selection saves nothing, and enabled again once it saves something', async () => {
+    // Invariant: with an analysis loaded, a selection whose estimated total saving is zero disables Prune and sends nothing; a non-zero saving enables it.
+    current = analysis(20);
+    const calls = route();
+    render(<DialogsHost />);
+    act(() => openPruneDialog('i1'));
+    await loaded();
+    expect(pruneBtn().disabled).toBe(false);
+    fireEvent.change(range(), { target: { value: '0' } });
+    fireEvent.click(thinking());
+    expect(document.querySelector('[data-cut-label]')?.textContent).toBe('0 of 20');
+    expect(thinking().getAttribute('aria-checked')).toBe('false');
+    const totals = [...document.querySelectorAll('[data-savings] tr')].at(-1)!;
+    expect([...totals.querySelectorAll('td')].map((td) => td.textContent)).toEqual(['Estimated total saved', '~0 tokens']);
+    expect(pruneBtn().disabled).toBe(true);
+    fireEvent.click(pruneBtn());
+    await act(async () => {});
+    expect(writes(calls)).toEqual([]);
+
+    fireEvent.click(thinking());
+    expect(pruneBtn().disabled).toBe(false);
+    fireEvent.click(pruneBtn());
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(writes(calls)[0].body).toEqual({ cutTurnIndex: 0, pruneThinking: true, inputMode: 'truncate' });
   });
 
   it('a session with no completed turns says so and cannot be pruned, while a one-turn session can', async () => {
