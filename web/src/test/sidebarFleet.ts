@@ -124,3 +124,13 @@ export const stripEntryOf = (sid: string) => el(`[data-strip-entry="${sid}"] > b
 // Conductors lens: a conductor's expanded tree and the Inactive group
 export const treeOf = (sid: string) => blockOf(sid).querySelector('[data-conductor-tree]') as HTMLElement | null;
 export const inactiveGroup = () => document.querySelector('[data-conductors-inactive]') as HTMLElement | null;
+
+// Needs-you strip: its groups and their entries in order, a group's head counts, an entry's label, × and auto-resume badge
+export const stripGroups = () => [...document.querySelectorAll('[data-strip-group]')].map((g) => g.getAttribute('data-strip-group'));
+export const stripSids = (group: string) => [...document.querySelectorAll(`[data-strip-group="${group}"] [data-strip-entry]`)].map((e) => e.getAttribute('data-strip-entry'));
+/** The numbers a group's head shows, in order: its entry count, then (Finished only) its unread count. */
+export const stripHeadCounts = (group: string) => (el(`[data-strip-group="${group}"] > button`).textContent?.match(/\d+/g) ?? []).map(Number);
+export const stripLabelOf = (sid: string) => stripEntryOf(sid).querySelector('[data-strip-label]') as HTMLElement | null;
+/** The buttons in a strip entry's row other than the entry itself: its × and nothing else. */
+export const stripClosesOf = (sid: string) => [...el(`[data-strip-entry="${sid}"]`).querySelectorAll('button')].filter((b) => b !== stripEntryOf(sid));
+export const stripBadgeOf = (sid: string) => stripEntryOf(sid).querySelector('[data-resume-badge]') as HTMLElement | null;

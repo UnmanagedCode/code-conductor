@@ -84,8 +84,8 @@ export function Strip({ m }: { m: SidebarModel }) {
                         awaitingUserSource={e.awaitingUserSource}
                         unreadRing={unread}
                       />
-                      <span className="min-w-[2em] flex-1 truncate">{e.label}</span>
-                      {badge && <span className="max-w-24 shrink truncate text-[11px] text-warning" title={badge.title}>{badge.text}</span>}
+                      <span className="min-w-[2em] flex-1 truncate" data-strip-label>{e.label}</span>
+                      {badge && <span className="max-w-24 shrink truncate text-[11px] text-warning" title={badge.title} data-resume-badge>{badge.text}</span>}
                     </button>
                     <span className="absolute top-1/2 right-1 -translate-y-1/2">
                       <CloseButton args={{
