@@ -55,7 +55,6 @@ appStore.subscribe(tryReveal);
 // A selection reveals even when it names the selected session: a click on the
 // selected row or its strip entry re-opens what the user collapsed on its path.
 on('select', ({ id }) => {
-  lastActive = id;
   pending = id;
   tryReveal();
 });

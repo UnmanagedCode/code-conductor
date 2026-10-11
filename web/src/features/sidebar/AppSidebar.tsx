@@ -31,6 +31,8 @@ import { ConductorsList } from './ConductorsList';
 import { RestartButton } from './RestartButton';
 import { useSidebarWidth } from './useSidebarWidth';
 import { scrollActiveIntoView } from './reveal';
+// Side-effect import: loading reveal installs its selection subscriptions, whether or not a binding above stays used.
+import './reveal';
 import './filterFallback';
 
 function HeaderButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
