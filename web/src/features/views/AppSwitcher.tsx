@@ -61,7 +61,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Apps</DropdownMenuLabel>
-        {/* The current app is the checked entry (Conductor while the route names no listed plugin); picking it again changes nothing. */}
+        {/* The current app is the checked entry (Conductor while the route names no listed plugin). Picking the open plugin, or Conductor from Conductor, changes nothing; picking Conductor while the route names an unlisted plugin leaves its view. */}
         <DropdownMenuRadioGroup value={current?.id ?? CONDUCTOR}>
           <DropdownMenuRadioItem value={CONDUCTOR} onSelect={() => { if (currentId) exitToConductor(); }}>
             <OctopusMark className="size-4 text-primary" />

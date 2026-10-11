@@ -6996,6 +6996,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/views/appSwitcher.test.tsx::the app switcher > is absent while no enabled plugin contributes a frontend, appears once one does, and goes again once none does',
         'web/src/features/views/appSwitcher.test.tsx::the app switcher > offers Conductor and each enabled plugin with a frontend, and marks exactly one entry current, following every switch both ways',
         'web/src/features/views/appSwitcher.test.tsx::the app switcher > a plugin dropped from the switcher while its view is open leaves Conductor as the one current entry',
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > picking Conductor while the route still names a plugin the switcher no longer lists leaves that plugin\'s view',
         'web/src/features/views/appSwitcher.test.tsx::the app switcher > another view taking the hash from a plugin closes the plugin view and makes Conductor current',
         'web/src/features/views/appSwitcher.test.tsx::the app switcher > a plugin whose frame stays resident reads differently in the menu from its first entry until it is evicted, and no other entry changes',
         'web/src/features/views/appSwitcher.test.tsx::the app switcher > a Settings → Plugins action evicts the resident frames of exactly the plugins it names',

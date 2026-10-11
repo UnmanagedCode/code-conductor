@@ -144,6 +144,24 @@ describe('the app switcher', () => {
     expect(checked(menu)).toEqual(['conductor']);
   });
 
+  it('picking Conductor while the route still names a plugin the switcher no longer lists leaves that plugin\'s view', async () => {
+    net.catalog = [app('ka', 'Keep'), app('pl', 'Plain')];
+    net.status = { ka: keepRow(), pl: plainRow() };
+    await mountApp();
+    await pick('ka');
+    net.catalog = [app('pl', 'Plain')];
+    net.status.ka = keepRow({ enabled: false, state: 'disabled' });
+    await act(async () => { notifyPluginsChanged(undefined); });
+    await settle();
+    expect(location.hash, 'fixture check: the route still names the plugin').toBe('#plugin/ka/');
+    const menu = await openMenu();
+    expect(checked(menu), 'precondition: Conductor is the one current entry').toEqual(['conductor']);
+    await closeMenu();
+    await pick('conductor');
+    expect(location.hash, 'back at the active session\'s anchor').toBe(`#session=${ACTIVE.sessionId}`);
+    expect(viewOpen(), 'the plugin view closed').toBe(false);
+  });
+
   it('another view taking the hash from a plugin closes the plugin view and makes Conductor current', async () => {
     net.catalog = [app('pl', 'Plain')];
     net.status = { pl: plainRow() };
