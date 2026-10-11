@@ -36,7 +36,7 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
   const workers = workersOf(sid, m.instances) as Instance[];
   const byName = new Map(m.projects.map((p) => [p.name, p]));
   return (
-    <ul className="space-y-0.5 py-1 pl-1">
+    <ul className="space-y-0.5 py-1 pl-1" data-conductor-tree>
       {chips.map((chip) => {
         const p: Project = byName.get(chip.project) ?? ({ name: chip.project, worktrees: [] } as unknown as Project);
         const mine = workers.filter((w) => w.project === chip.project);
@@ -171,7 +171,7 @@ export function ConductorsList({ m }: { m: SidebarModel }) {
         {live.map((c) => <ConductorBlock key={c.sessionId} m={m} c={c} open={ui.expandedConductors.includes(c.sessionId)} />)}
       </ul>
       {inactive.length > 0 && (
-        <div className="mt-2">
+        <div className="mt-2" data-conductors-inactive>
           <button
             type="button"
             aria-expanded={ui.inactiveOpen}

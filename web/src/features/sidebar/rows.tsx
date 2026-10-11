@@ -168,7 +168,7 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
         <span className="flex min-w-[2em] flex-1 flex-col">
           {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
           <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}>{label}</span>
-          {stage && <span className="truncate text-[11px] font-normal text-plan">{stage}</span>}
+          {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
         </span>
         <Ago ms={session.lastActivity} />
         <UnreadPill n={unread} />
