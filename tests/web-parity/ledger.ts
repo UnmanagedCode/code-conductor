@@ -1102,6 +1102,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composer.test.tsx::drafts > prune drops expired and malformed draft keys and nothing else; a throwing storage keeps drafts in memory',
         'web/src/features/composer/composer.test.tsx::dictation routing > a dictation is delivered to the session it was started in, never the one showing',
         'web/src/features/composer/composer.test.tsx::send and mic modes > tap the mic to record, tap again to transcribe; the text is inserted and sent with the transcribed tag',
+        'web/src/features/composer/composer.test.tsx::drafts > a dictation into the showing session is saved by the debounce with its transcribed flag, and an edit keeps the flag',
+        'web/src/features/composer/composer.test.tsx::drafts > clearing a dictated box by hand drops the transcribed flag, so fresh typed text sends untagged',
       ] },
   },
   {
