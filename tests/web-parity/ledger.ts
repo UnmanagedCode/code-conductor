@@ -41,6 +41,34 @@ export const RULINGS = {
     date: '2026-10-10',
     ruling: 'V7 is intentional: re-entering Settings opens Models.',
   },
+  'p6-next-playwright-layout': {
+    date: '2026-10-10',
+    ruling: "/next/ Playwright layout checks replace the old UI's stylesheet assertions; such rows are ported against /next/ checks, not dropped.",
+  },
+  'wording-only': {
+    date: '2026-10-11',
+    ruling: "Drop the wording-only parts of doc/B27, doc/B12 and blocks/R11. The visual rework's goal is that every feature still works and is accessible; keeping the wording and dimensions exactly the same is not a goal. The features stay (interrupt-armed shows Interrupt now, a dead session cannot send, the usage line shows), only the exact text and glyphs are dropped.",
+  },
+  'old-stylesheet-mechanisms': {
+    date: '2026-10-11',
+    ruling: "Drop rows that pin an old stylesheet rule, class name or design token, while the feature stays reachable in /next: action groups collapse, hidden things stay hidden, touch devices reach hover-only controls, plugin frames are readable. Replaces the earlier 'P6 stays as a /next/ Playwright check' plan for these rows only.",
+  },
+  'layout-order-and-geometry': {
+    date: '2026-10-11',
+    ruling: 'Drop rows that pin old layout order or pixel geometry: body order and full width, equal control heights, an empty slot\'s height, and narrow re-stacking. The controls stay visible, reachable and free of overflow; those functional checks live in legacy-sidebar-lenses/R11, legacy-sidebar-strip/R7 and legacy-models-responsive/R1.',
+  },
+  'partial-rows-function-only': {
+    date: '2026-10-11',
+    ruling: 'Visual-rework goal: every feature still works and is accessible; keeping wording and dimensions exactly the same is not a goal. Partially in-scope rows are ported for their function only; their exact wording, glyphs, colours, pulse, exact px, hover fill and box containment are dropped.',
+  },
+  'test-scaffolding': {
+    date: '2026-10-11',
+    ruling: "Test scaffolding with no product behaviour: the old spec's self-checks and its full-height screenshot.",
+  },
+  'server-output-guarded-elsewhere': {
+    date: '2026-10-11',
+    ruling: "Server output, guarded outside the frontend ledger by tests/mcp-text-render.test.mjs › list_sessions renders every allowlisted field > awaitingWake renders as a label, both ways.",
+  },
 } as const satisfies Record<string, Ruling>;
 export type RulingId = keyof typeof RULINGS;
 
@@ -1133,7 +1161,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the composer placeholder reflects session state',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'wording-only' },
   },
   {
     id: 'doc/B13',
@@ -1159,7 +1187,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'while an interrupt is armed the turn indicator reads Stopping… with ⏹ Interrupt now',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'wording-only' },
   },
 
   // conversation
@@ -1246,7 +1274,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'styles.css has no author `display` on a group; the group is a `<details>`/`<summary>` whose collapse is its open attribute',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'old-stylesheet-mechanisms' },
   },
   {
     id: 'anchor-autoresume/R1',
@@ -1574,7 +1602,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'plugin chips share the cc chip styling',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'old-stylesheet-mechanisms' },
   },
   {
     id: 'blocks/R11',
@@ -1582,7 +1610,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the turn prefix matches the per-call prefix for every growth magnitude, including five digits',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'wording-only' },
   },
   {
     id: 'compaction-bubble/R1',
@@ -3164,7 +3192,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'ahead-row and divider styling',
     viewports: ['desktop', 'phone'],
     area: 'views',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'old-stylesheet-mechanisms' },
   },
   {
     id: 'commits-view/R4',
@@ -3351,7 +3379,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'no `[hidden]` element lays out because of an author display rule (sweep + positive controls)',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'old-stylesheet-mechanisms' },
   },
   {
     id: 'touch-query-css/R1',
@@ -3359,7 +3387,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'every hover-sensing media query uses the single TOUCH_QUERY',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'old-stylesheet-mechanisms' },
   },
   {
     id: 'viewed-marker/R1',
@@ -3448,7 +3476,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: '`list_sessions` renders `awaiting-wake yes/no` (MCP text, not UI)',
     viewports: ['desktop'],
     area: 'cross-cutting',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'server-output-guarded-elsewhere' },
   },
   {
     id: 'doc/B8',
@@ -4270,7 +4298,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'sidebar body order Conduct, strip slot, toggle, lists; Conduct full width',
     viewports: ['desktop'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'layout-order-and-geometry' },
   },
   {
     id: 'legacy-sidebar-lenses/R3',
@@ -4323,7 +4351,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'filter select and ≡ share height and centre; the panel opens right-aligned',
     viewports: ['desktop'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'layout-order-and-geometry' },
   },
   {
     id: 'legacy-sidebar-lenses/R7',
@@ -4383,7 +4411,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'with nothing live the slot has no child and no height',
     viewports: ['desktop'],
     area: 'sidebar',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'layout-order-and-geometry' },
   },
   {
     id: 'legacy-sidebar-strip/R2',
@@ -6030,7 +6058,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'narrow re-stack with model+effort paired; wide rows don\'t stack; narrow rules don\'t leak',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'layout-order-and-geometry' },
   },
   {
     id: 'legacy-models-responsive/R5',
@@ -6041,7 +6069,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the spec\'s self-checks and full-height screenshot',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'test-scaffolding' },
   },
   {
     id: 'legacy-settings-group-restore/R1',
@@ -6304,7 +6332,7 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'plugin frames paint the shell background and colour scheme',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'dropped', ruling: 'old-stylesheet-mechanisms' },
   },
   {
     id: 'plugins-frontend/R18',
