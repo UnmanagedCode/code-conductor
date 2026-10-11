@@ -288,6 +288,23 @@ describe('encodes', () => {
     expect(sentAttachments(1), 'A ships both files, each encoded').toEqual([['one.png', btoa('ONE')], ['two.png', btoa('TWO')]]);
   });
 
+  it('a send while a file is still encoding ships only the finished files and drops the one in flight', async () => {
+    const slow = heldImage('slow.png', 'SLOW');
+    mount(inst('enc-inflight'));
+    attach([txt('done.txt')]);
+    await settle();
+    attach([slow.file]);
+    await settle();
+    expect(chips(), 'positive control: the file still encoding shows as a chip').toEqual(['Remove done.txt', 'Remove slow.png']);
+    fireEvent.click(sendButton());
+    expect(sentAttachments(0), 'only the finished file is shipped').toEqual([['done.txt', btoa('done.txt')]]);
+    expect(chips(), 'the send clears the list, the file in flight included').toEqual([]);
+    expect(revoked(), "the in-flight file's preview is revoked").toEqual(['blob:preview-1']);
+    slow.open();
+    await settle();
+    expect(chips(), 'its late encode does not bring it back').toEqual([]);
+  });
+
   it('a file that cannot be read shows the failure on its chip, is nothing to send, and is never shipped', async () => {
     const unreadable = png('bad.png');
     Object.defineProperty(unreadable, 'arrayBuffer', { value: async () => { throw new Error('disk gone'); } });

@@ -105,6 +105,29 @@ describe('attaching files', () => {
     expect(screen.queryByRole('button', { name: 'Remove ignored.txt' })).toBeNull();
   });
 
+  // Own session ids: pending attachments live at module scope and outlive the composer.
+  it('pasting files into the message box attaches them as removable chips; pasting text attaches nothing', async () => {
+    // Invariant: a paste carrying files on a typeable composer adds one chip per file; a text-only paste adds none.
+    voiceStore.set({ supported: true, micAvailable: true });
+    const c = mount(inst({ sessionId: 'sess-paste' }));
+    fireEvent.paste(c.box(), { clipboardData: { files: [], types: ['text/plain'], getData: () => 'just words' } });
+    await settle();
+    expect(screen.queryAllByRole('button', { name: /^Remove / }), 'control: a text-only paste attaches nothing').toEqual([]);
+    fireEvent.paste(c.box(), { clipboardData: { files: [new File(['pasted'], 'pasted.txt', { type: 'text/plain' })], types: ['Files'] } });
+    await settle();
+    expect(screen.queryByRole('button', { name: 'Remove pasted.txt' }), 'the pasted file is a chip').not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove pasted.txt' }));
+    expect(screen.queryByRole('button', { name: 'Remove pasted.txt' })).toBeNull();
+  });
+
+  it('control: a paste on a composer that cannot take input attaches nothing', async () => {
+    // Invariant: the paste handler is gated on canType, so an exited session ignores pasted files.
+    const c = mount(inst({ sessionId: 'sess-paste-exited', status: 'exited' }));
+    fireEvent.paste(c.box(), { clipboardData: { files: [new File(['z'], 'ignored-paste.txt', { type: 'text/plain' })], types: ['Files'] } });
+    await settle();
+    expect(screen.queryByRole('button', { name: 'Remove ignored-paste.txt' })).toBeNull();
+  });
+
   it('the Attach files button opens the file picker; it is disabled when the session cannot take input', () => {
     // Invariant: the paperclip button clicks the hidden file input (the picker) and is inert for a dead session.
     const click = vi.spyOn(HTMLInputElement.prototype, 'click');
