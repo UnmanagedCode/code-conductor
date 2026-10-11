@@ -2,7 +2,8 @@
 // on the fake engine's bubble scenario (fixtures/scenario-conversation-bubbles.json): copy,
 // raw and read-aloud on a bubble whose turn is still running, the same controls through a
 // raw switch, a full-page view and a reload, and queued messages that stay on screen,
-// marked delivered, when the usage window resets.
+// marked delivered, when the usage window resets, and a read-aloud of its own on every
+// finished text block of the bubble, which reads that block.
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Page, WebSocketRoute } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -29,6 +30,22 @@ const control = (page: Page, name: string) => bubble(page).getByRole('button', {
 /** The live region beside the bubble's copy button, in the row of its controls. */
 const copyAnnouncement = (page: Page) => control(page, 'Copy message').locator('xpath=..').locator('[aria-live]');
 const clipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText());
+/**
+ * The held bubble's own text blocks, in stream order, never those of a sub-agent bubble inside it. The nesting test runs
+ * from the page: inside a locator chain, `:not(…)` with combinators only sees the chain's own subtree.
+ */
+const textBlocks = (page: Page) =>
+  bubble(page).locator('[data-text-block]').and(page.locator('[data-text-block]:not([data-item=assistant] [data-item=assistant] [data-text-block])'));
+
+/** Collects what each read-aloud tap sends to be spoken (the `POST /api/tts` bodies), answered with no audio. */
+async function speechSeam(page: Page): Promise<string[]> {
+  const bodies: string[] = [];
+  await page.route('**/api/tts', (route) => {
+    bodies.push(route.request().postData() ?? '');
+    return route.fulfill({ status: 200, body: '' });
+  });
+  return bodies;
+}
 
 /** Empties the clipboard, then copies the bubble. */
 async function copy(page: Page): Promise<void> {
@@ -83,11 +100,11 @@ export async function controlsReturnFlow({ page, cc }: Args): Promise<void> {
   const s = await heldRun(page, cc, 'return');
   await release(page, cc, s);
   await expect(bubble(page), 'precondition: the bubble renders its markdown').not.toContainText('**');
-  await expect(control(page, 'Read aloud'), 'precondition: read-aloud is offered').toHaveCount(1);
+  await expect(control(page, 'Read aloud'), 'each of its two finished blocks offers read-aloud').toHaveCount(2);
 
   await control(page, 'Show raw text').click();
   await expect(bubble(page), 'fixture check: the bubble shows its source').toContainText('Streamed **so far** and done.');
-  await expect(control(page, 'Read aloud'), 'read-aloud, after switching to raw').toHaveCount(1);
+  await expect(control(page, 'Read aloud'), 'read-aloud on each block, after switching to raw').toHaveCount(2);
   await next.openSettings(page);
   await next.leaveSettings(page);
   await expect(next.turnEnds(page), 'fixture check: the transcript is back').toHaveCount(1);
@@ -95,7 +112,7 @@ export async function controlsReturnFlow({ page, cc }: Args): Promise<void> {
   await expect(bubble(page)).toContainText('Streamed **so far** and done.');
   await control(page, 'Show rendered markdown').click();
   await expect(bubble(page), 'back to the rendered view').not.toContainText('**');
-  await expect(control(page, 'Read aloud'), 'read-aloud, after switching back').toHaveCount(1);
+  await expect(control(page, 'Read aloud'), 'read-aloud on each block, after switching back').toHaveCount(2);
 
   await page.reload();
   await expect(next.turnEnds(page), 'fixture check: the replayed transcript').toHaveCount(1);
@@ -104,6 +121,35 @@ export async function controlsReturnFlow({ page, cc }: Args): Promise<void> {
   await control(page, 'Show raw text').click();
   await expect(bubble(page), "the replay's raw view").toContainText('Intro with **one**');
   await expect(bubble(page)).toContainText('Streamed **so far** and done.');
+}
+
+// ── blocks/R3 ────────────────────────────────────────────────────────────
+
+export async function blockReadAloudFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: every finished text block of the bubble has a read-aloud of its own, placed with that block, that sends that block's text to be spoken; a block still streaming has none.
+  fakeOnly(cc);
+  const bodies = await speechSeam(page);
+  const s = await heldRun(page, cc, 'speak');
+  await expect(control(page, 'Read aloud'), 'positive control: while the second block streams, only the finished first one offers read-aloud').toHaveCount(1);
+  await bubble(page).hover();
+  await control(page, 'Read aloud').click();
+  await expect.poll(() => bodies.length, { message: 'positive control: the tap reached the speech seam' }).toBe(1);
+  expect(bodies[0], 'it reads the finished block').toMatch(/Intro with/);
+  expect(bodies[0], 'and not the one still streaming').not.toMatch(/Streamed/);
+
+  await release(page, cc, s);
+  await expect(control(page, 'Read aloud'), 'each finished block has a read-aloud of its own').toHaveCount(2);
+  await expect(textBlocks(page), 'fixture check: the bubble holds its two text blocks').toHaveCount(2);
+  const reads: [RegExp, RegExp][] = [[/Intro with/, /Streamed/], [/Streamed so far and done/, /Intro with/]];
+  for (const [i, [own, other]] of reads.entries()) {
+    const button = textBlocks(page).nth(i).getByRole('button', { name: 'Read aloud', exact: true });
+    await expect(button, `block ${i + 1} holds its own read-aloud`).toHaveCount(1);
+    await bubble(page).hover();
+    await button.click();
+    await expect.poll(() => bodies.length, { message: `block ${i + 1}'s tap reached the speech seam` }).toBe(i + 2);
+    expect(bodies[i + 1], `block ${i + 1}'s control reads that block`).toMatch(own);
+    expect(bodies[i + 1], `and not the other`).not.toMatch(other);
+  }
 }
 
 // ── doc/B19 ──────────────────────────────────────────────────────────────
