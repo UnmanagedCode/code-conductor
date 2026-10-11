@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { mockFetch, type Call } from './test/fetchMock';
@@ -14,7 +15,7 @@ import { loadCapabilities } from '@/lib/core/capabilities.js';
 import { syncRoute, useRoute } from '@/state/route';
 import { ConfirmHost } from '@/ui/feedback';
 import { ConventionsSection, conventionsBlocksStore, conventionsDraftStore, type ConventionsPayload } from './ConventionsSection';
-import { notifyPluginsChanged } from './pluginsSignal';
+import { notifyPluginsChanged, pluginsChangedSignal } from './pluginsSignal';
 import { SettingsView } from './SettingsView';
 
 const WS: ConventionsPayload = {
@@ -92,6 +93,14 @@ function openAt(hash: string) {
   history.replaceState(null, '', `/${hash}`);
   syncRoute();
   return render(<TooltipProvider><Host /><ConfirmHost /></TooltipProvider>);
+}
+
+/** A refused Delete in `title`'s block, confirmed, waited for on its list status line. */
+async function refuseDelete(title: Title, name: string, slug: string) {
+  fireEvent.click(within(block(title)).getByRole('button', { name: `Delete ${name}` }));
+  const dialog = await screen.findByRole('dialog', { name: `Delete ${scopeOf(title)} convention “${slug}”?` });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+  await waitFor(() => expect(listStatus(title)).toBe('Delete failed: still in use'));
 }
 
 const renderSection = () => render(<TooltipProvider><ConventionsSection /><ConfirmHost /></TooltipProvider>);
@@ -589,5 +598,86 @@ describe('Conventions → drafts', () => {
     expect(expanded()).toEqual(['false', 'false', 'true']);
     await leaveAndReenter('conventions');
     expect(expanded()).toEqual(['false', 'false', 'true']);
+  });
+
+  // A plugin change clears every block's list refusal even when it lands while Conventions is unmounted (another section shown).
+  it("every block's refused Delete clears after a plugin change made while another section was shown", async () => {
+    let enabled = false;
+    const refused = () => ({ status: 409, json: { error: 'still in use' } });
+    serve({
+      'DELETE /api/settings/conventions/workspace/mine': refused,
+      'DELETE /api/settings/conventions/conductor/cmine': refused,
+      'GET /api/plugins': () => ({ rows: [{ id: 'demo', name: 'Demo', project: 'demoproj', state: 'stopped', enabled, hasBackend: false }] }),
+      'GET /api/plugins/library': () => ({ entries: [] }),
+      'GET /api/projects': () => [],
+      'POST /api/plugins/demo/enable': () => { enabled = true; return {}; },
+    });
+    openAt('#settings/conventions');
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    await expand('Conductor conventions');
+    await refuseDelete('Conductor conventions', 'C mine', 'cmine');
+
+    await switchTo('plugins');
+    const v = pluginsChangedSignal.version();
+    fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(pluginsChangedSignal.version()).toBe(v + 1));
+    expect(screen.queryByTestId('conventions-workspace')).toBeNull();
+
+    const g = [gets('workspace'), gets('conductor')];
+    await switchTo('conventions');
+    await waitFor(() => expect([gets('workspace'), gets('conductor')]).toEqual([g[0] + 1, g[1] + 1]));
+    await screen.findByTestId('conventions-workspace');
+    await screen.findByTestId('conventions-conductor');
+    await waitFor(() => expect([listStatus('Workspace conventions'), listStatus('Conductor conventions')]).toEqual(['', '']));
+    expect(writes().map((w) => `${w.method} ${w.url}`)).toEqual([
+      'DELETE /api/settings/conventions/workspace/mine',
+      'DELETE /api/settings/conventions/conductor/cmine',
+      'POST /api/plugins/demo/enable',
+    ]);
+  });
+
+  // A plugin change clears a block's list refusal even when it lands while that block is collapsed (its panel unmounted).
+  it("a refused Delete's message clears after a plugin change made while its block was collapsed", async () => {
+    serve({ 'DELETE /api/settings/conventions/workspace/mine': () => ({ status: 409, json: { error: 'still in use' } }) });
+    openAt('#settings/conventions');
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    fireEvent.click(trigger('Workspace conventions'));
+    expect(screen.queryByTestId('conventions-workspace')).toBeNull();
+    const g = gets('workspace');
+    act(() => notifyPluginsChanged(undefined));
+    expect(gets('workspace')).toBe(g);
+    await expand('Workspace conventions');
+    expect(gets('workspace')).toBe(g + 1);
+    await waitFor(() => expect(listStatus('Workspace conventions')).toBe(''));
+  });
+
+  // Under StrictMode's doubled mount effects a remount (collapse, section switch) still keeps a list refusal, and a plugin change still clears it.
+  it("under StrictMode a refused Delete's message survives a collapse and a section switch, and a plugin change clears it", async () => {
+    serve({ 'DELETE /api/settings/conventions/workspace/mine': () => ({ status: 409, json: { error: 'still in use' } }) });
+    history.replaceState(null, '', '/#settings/conventions');
+    syncRoute();
+    render(<StrictMode><TooltipProvider><Host /><ConfirmHost /></TooltipProvider></StrictMode>);
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+
+    let g = gets('workspace');
+    fireEvent.click(trigger('Workspace conventions'));
+    await expand('Workspace conventions');
+    expect(gets('workspace')).toBeGreaterThan(g);
+    expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use');
+
+    g = gets('workspace');
+    await switchTo('archived');
+    await switchTo('conventions');
+    await waitFor(() => expect(gets('workspace')).toBeGreaterThan(g));
+    await screen.findByTestId('conventions-workspace');
+    expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use');
+
+    g = gets('workspace');
+    act(() => notifyPluginsChanged(undefined));
+    await waitFor(() => expect(gets('workspace')).toBeGreaterThan(g));
+    await waitFor(() => expect(listStatus('Workspace conventions')).toBe(''));
   });
 });

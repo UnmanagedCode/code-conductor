@@ -262,6 +262,10 @@ export interface Ui {
   conventionForm(page: Page, scope: ConventionScope): { add: Locator; slug: Locator; name: Locator; description: Locator; body: Locator; save: Locator; cancel: Locator };
   /** The conductor block's preferred-playbook and enforcement selects and their status lines. */
   conductorPickers(page: Page): { playbook: Locator; enforcement: Locator; playbookStatus: Locator; enforcementStatus: Locator };
+  /** Deletes the custom convention `slug`, accepting the confirm prompt. */
+  deleteConvention(page: Page, scope: ConventionScope, slug: string): Promise<void>;
+  /** The block's list status line (load failures and refused actions). */
+  conventionStatus(page: Page, scope: ConventionScope): Locator;
 }
 
 // Sidebar C (card 2026-0629)
@@ -956,6 +960,11 @@ export const legacy: Ui = {
     };
   },
   conductorPickers: (page) => ({ playbook: page.locator('#dp-select'), enforcement: page.locator('#dpe-select'), playbookStatus: page.locator('#dp-status'), enforcementStatus: page.locator('#dpe-status') }),
+  async deleteConvention(page, scope, slug) {
+    page.once('dialog', (d) => void d.accept());
+    await legacy.conventionRow(page, scope, slug).locator('button', { hasText: exactly('Delete') }).click();
+  },
+  conventionStatus: (page, scope) => page.locator(`#${LEGACY_PREFIX[scope]}-status`),
 };
 
 /**
@@ -1549,6 +1558,14 @@ export const next: Ui = {
     playbookStatus: page.locator('div:has(> label[for="dp-select"]) [role="status"]'),
     enforcementStatus: page.locator('div:has(> label[for="dpe-select"]) [role="status"]'),
   }),
+  async deleteConvention(page, scope, slug) {
+    await next.conventionRow(page, scope, slug).getByRole('button', { name: /^Delete / }).click();
+    const dialog = page.getByRole('dialog', { name: `Delete ${scope} convention “${slug}”?` });
+    await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect(dialog).toBeHidden();
+  },
+  // The list's own status line is a direct child of the panel; the conductor pickers' status lines sit deeper.
+  conventionStatus: (page, scope) => next.conventionList(page, scope).locator('xpath=../div[@role="status"]'),
 };
 
 // Sidebar B (card 2026-0628)

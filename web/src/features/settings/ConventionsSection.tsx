@@ -125,6 +125,8 @@ const NO_DRAFT: Draft = { ...NO_FORM, listError: null };
 // An unsaved Add or Edit, and a refusal on the list's status line, live at module scope, not in the component: Settings remounts a section on every switch and on re-entry, and a block's panel on every collapse, and both must survive the remount.
 export const conventionsDraftStore = createStore<Record<ConventionScope, Draft>>({ workspace: NO_DRAFT, conductor: NO_DRAFT, project: NO_DRAFT });
 const patchDraft = (scope: ConventionScope, patch: Partial<Draft>) => conventionsDraftStore.set((s) => ({ ...s, [scope]: { ...s[scope], ...patch } }));
+// The plugins version each scope's panel last loaded at. It is module-scoped so that a remount can tell a plugin change that landed while the panel was unmounted (a section switch, a collapse) from a plain remount.
+const pluginsSeen: Partial<Record<ConventionScope, number>> = {};
 // Each block stays open or closed as the user left it until a page reload, as the old UI's <details> did.
 export const conventionsBlocksStore = createStore<Record<ConventionScope, boolean>>({ workspace: true, conductor: false, project: false });
 
@@ -157,10 +159,12 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
     if (afterAction) patchDraft(scope, { listError: null });
   }, [base, scope]);
 
-  // A plugin action can add or drop plugin-contributed conventions.
-  // A remount's load keeps a refusal on screen; a plugin change's load replaces it, as the old reload did.
-  const mountVersion = React.useRef(pluginsVersion);
-  React.useEffect(() => { void load(pluginsVersion !== mountVersion.current); }, [load, pluginsVersion]);
+  // A plugin action can add or drop plugin-contributed conventions. A plain remount's load keeps a refusal on screen; a load after a plugin change replaces it, as the old always-mounted panel's reload did, even when the change landed while this panel was unmounted. The first load ever is not a change.
+  React.useEffect(() => {
+    const changed = pluginsSeen[scope] !== undefined && pluginsSeen[scope] !== pluginsVersion;
+    pluginsSeen[scope] = pluginsVersion;
+    void load(changed);
+  }, [load, pluginsVersion, scope]);
 
   async function toggle(slug: string, on: boolean) {
     const next = new Set(enabled);

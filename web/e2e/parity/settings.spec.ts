@@ -408,7 +408,7 @@ parity('doc/B17', 'Conventions: each block shows its core row, read-only built-i
   expect(writes).toEqual([]);
 });
 
-parity('settings-toggle/R5', 'Conventions: enabling a plugin brings its conductor convention into the Conductor block', async ({ page, ui }) => {
+parity('settings-toggle/R5', 'Conventions: enabling a plugin from the Plugins section brings its conductor convention into the Conductor block and clears a refused Delete there', async ({ page, ui }) => {
   let enabled = false;
   let enables = 0;
   await page.route('**/api/plugins', (r) => (r.request().method() === 'GET'
@@ -423,17 +423,24 @@ parity('settings-toggle/R5', 'Conventions: enabling a plugin brings its conducto
   });
   await routeConventions(page, {
     conductor: () => ({ ...CD, conventions: [...CD.conventions, ...(enabled ? [{ slug: 'demo/rule', name: 'Demo rule', description: 'd', plugin: 'demo' }] : [])] }),
-  }, () => ({ status: 500, json: { error: 'no write is expected' } }));
+  }, (w) => (w.method === 'DELETE' && w.path === '/api/settings/conventions/conductor/cmine'
+    ? { status: 409, json: { error: 'still in use' } }
+    : { status: 500, json: { error: 'no write is expected' } }));
   await ui.open(page);
   await ui.openSettingsSection(page, 'conventions');
   await ui.expandConventionsBlock(page, 'conductor');
   await expect(ui.conventionRow(page, 'conductor', 'lean')).toBeVisible();
   await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toHaveCount(0);
+  await ui.deleteConvention(page, 'conductor', 'cmine');
+  await expect(ui.conventionStatus(page, 'conductor')).toHaveText('Delete failed: still in use');
+  // The plugin change lands while Conventions is not shown: the refusal must still be cleared on return.
   await ui.switchSettingsSection(page, 'plugins');
   await ui.settingsView(page).getByRole('button', { name: 'Enable', exact: true }).click();
   await expect.poll(() => enables).toBe(1);
+  await expect(ui.settingsView(page).getByRole('button', { name: 'Disable', exact: true })).toBeVisible();
   await ui.switchSettingsSection(page, 'conventions');
   await ui.expandConventionsBlock(page, 'conductor');
   await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toBeVisible();
   await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toContainText('plugin: demo');
+  await expect(page.getByText('Delete failed: still in use')).toHaveCount(0);
 });

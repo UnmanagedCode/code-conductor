@@ -5658,7 +5658,8 @@ export const LEDGER: readonly Row[] = [
     area: 'settings',
     status: { kind: 'ported', by: [
         'web/src/features/settings/conventions.test.tsx::Conventions → plugin changes > a plugin action that finishes after the switch to Conventions reloads every open block, and the Conductor block then lists the plugin\'s convention',
-        'web/e2e/parity/settings.spec.ts::Conventions: enabling a plugin brings its conductor convention into the Conductor block > next',
+        'web/src/features/settings/conventions.test.tsx::Conventions → drafts > every block\'s refused Delete clears after a plugin change made while another section was shown',
+        'web/e2e/parity/settings.spec.ts::Conventions: enabling a plugin from the Plugins section brings its conductor convention into the Conductor block and clears a refused Delete there > next',
       ] },
   },
   {
@@ -5930,6 +5931,9 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a refused save keeps the typed form and the server\'s message across a section switch',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a refused Delete\'s message survives collapsing its block and a section switch; a plugin change or reopening Settings replaces it',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > each block\'s open or closed state survives a section switch and leaving Settings',
+        'web/src/features/settings/conventions.test.tsx::Conventions → drafts > every block\'s refused Delete clears after a plugin change made while another section was shown',
+        'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a refused Delete\'s message clears after a plugin change made while its block was collapsed',
+        'web/src/features/settings/conventions.test.tsx::Conventions → drafts > under StrictMode a refused Delete\'s message survives a collapse and a section switch, and a plugin change clears it',
         'web/e2e/parity/settings.spec.ts::Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings > next',
       ] },
   },
