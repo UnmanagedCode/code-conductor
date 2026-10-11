@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { NativeSelect } from '@/components/ui/native-select';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { useSignal } from '@/state/createStore';
+import { createStore, useSignal, useStore } from '@/state/createStore';
 import { confirmDialog } from '@/ui/feedback';
 import { SectionIntro, Status, Field } from './ui';
 import { json, post, put, del, errText } from './api';
@@ -60,20 +60,21 @@ export const ENFORCEMENT_LABELS: Record<string, string> = {
 function ConductorPlaybookPrefs({ data }: { data: ConventionsPayload }) {
   const pb = playbookOptions(data);
   const [pbValue, setPbValue] = React.useState(pb.value);
-  const [pbErr, setPbErr] = React.useState<string | null>(null);
+  // null shows the payload's notes; '' (a successful pick) blanks the line until the next load.
+  const [pbStatus, setPbStatus] = React.useState<string | null>(null);
   const [enf, setEnf] = React.useState(data.defaultPlaybookEnforcement ?? '');
   const [enfErr, setEnfErr] = React.useState<string | null>(null);
-  React.useEffect(() => setPbValue(pb.value), [pb.value]);
-  React.useEffect(() => setEnf(data.defaultPlaybookEnforcement ?? ''), [data.defaultPlaybookEnforcement]);
+  // Every load re-selects both stored values and repaints the playbook line; the level's error stays until its next pick.
+  React.useEffect(() => { setPbValue(pb.value); setPbStatus(null); setEnf(data.defaultPlaybookEnforcement ?? ''); }, [data]);
 
   async function savePlaybook(v: string) {
     setPbValue(v);
     const defaultPlaybook = v.startsWith('playbook:') ? { mode: 'playbook', id: v.slice('playbook:'.length) } : { mode: v };
     try {
       await put(`${CONDUCTOR_BASE}/default-playbook`, { defaultPlaybook });
-      setPbErr(null);
+      setPbStatus('');
     } catch (e) {
-      setPbErr(`Save failed: ${errText(e)}`);
+      setPbStatus(`Save failed: ${errText(e)}`);
     }
   }
   async function saveEnforcement(mode: string) {
@@ -95,7 +96,7 @@ function ConductorPlaybookPrefs({ data }: { data: ConventionsPayload }) {
         <NativeSelect id="dp-select" className="w-full" value={pbValue} onChange={(e) => void savePlaybook(e.target.value)}>
           {pb.opts.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
         </NativeSelect>
-        <Status text={pbErr ?? pb.notes} tone={pbErr || pb.notes ? 'error' : 'muted'} />
+        <Status text={pbStatus ?? pb.notes} tone={pbStatus || pb.notes ? 'error' : 'muted'} />
       </Field>
       <Field
         label="Playbook enforcement"
@@ -116,31 +117,50 @@ function ConductorPlaybookPrefs({ data }: { data: ConventionsPayload }) {
 type Form = { slug: string; name: string; description: string; body: string };
 const EMPTY: Form = { slug: '', name: '', description: '', body: '' };
 
-export function ConventionsPanel({ base, hasToggle, hasCoreRow, noun, bodyPlaceholder, renderExtras }: {
-  base: string; hasToggle: boolean; hasCoreRow: boolean; noun: string; bodyPlaceholder: string;
+export type ConventionScope = 'workspace' | 'conductor' | 'project';
+type Draft = { form: Form | null; editingSlug: string | null; formError: string | null; listError: string | null };
+const NO_FORM = { form: null, editingSlug: null, formError: null };
+const NO_DRAFT: Draft = { ...NO_FORM, listError: null };
+
+// An unsaved Add or Edit, and a refusal on the list's status line, live at module scope, not in the component: Settings remounts a section on every switch and on re-entry, and a block's panel on every collapse, and both must survive the remount.
+export const conventionsDraftStore = createStore<Record<ConventionScope, Draft>>({ workspace: NO_DRAFT, conductor: NO_DRAFT, project: NO_DRAFT });
+const patchDraft = (scope: ConventionScope, patch: Partial<Draft>) => conventionsDraftStore.set((s) => ({ ...s, [scope]: { ...s[scope], ...patch } }));
+// Each block stays open or closed as the user left it until a page reload, as the old UI's <details> did.
+export const conventionsBlocksStore = createStore<Record<ConventionScope, boolean>>({ workspace: true, conductor: false, project: false });
+
+/** Opening Settings drops every list refusal, as the old UI's reload on open replaced it. */
+export function clearConventionsListErrors() {
+  conventionsDraftStore.set((s) => ({ workspace: { ...s.workspace, listError: null }, conductor: { ...s.conductor, listError: null }, project: { ...s.project, listError: null } }));
+}
+
+export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlaceholder, renderExtras }: {
+  scope: ConventionScope; hasToggle: boolean; hasCoreRow: boolean; noun: string; bodyPlaceholder: string;
   renderExtras?: (data: ConventionsPayload) => React.ReactNode;
 }) {
+  const base = `/api/settings/conventions/${scope}`;
   const pluginsVersion = useSignal(pluginsChangedSignal);
   const [data, setData] = React.useState<ConventionsPayload | null>(null);
-  const [status, setStatus] = React.useState<string | null>('Loading…');
+  const [loadStatus, setLoadStatus] = React.useState<string | null>('Loading…');
   const [enabled, setEnabled] = React.useState<Set<string>>(new Set());
-  const [form, setForm] = React.useState<Form | null>(null);
-  const [editingSlug, setEditingSlug] = React.useState<string | null>(null);
-  const [formError, setFormError] = React.useState<string | null>(null);
+  const { form, editingSlug, formError, listError } = useStore(conventionsDraftStore, (s) => s[scope]);
+  const setField = (patch: Partial<Form>) => conventionsDraftStore.set((s) => ({ ...s, [scope]: { ...s[scope], form: { ...(s[scope].form ?? EMPTY), ...patch } } }));
 
-  const load = React.useCallback(async () => {
+  const load = React.useCallback(async (afterAction: boolean) => {
     try {
       const d = await json<ConventionsPayload>(base);
       setData(d);
       setEnabled(new Set(d.enabled || []));
-      setStatus(null);
+      setLoadStatus(null);
     } catch (e) {
-      setStatus(`Failed: ${errText(e)}`);
+      setLoadStatus(`Failed: ${errText(e)}`);
     }
-  }, [base]);
+    if (afterAction) patchDraft(scope, { listError: null });
+  }, [base, scope]);
 
   // A plugin action can add or drop plugin-contributed conventions.
-  React.useEffect(() => { void load(); }, [load, pluginsVersion]);
+  // A remount's load keeps a refusal on screen; a plugin change's load replaces it, as the old reload did.
+  const mountVersion = React.useRef(pluginsVersion);
+  React.useEffect(() => { void load(pluginsVersion !== mountVersion.current); }, [load, pluginsVersion]);
 
   async function toggle(slug: string, on: boolean) {
     const next = new Set(enabled);
@@ -149,22 +169,21 @@ export function ConventionsPanel({ base, hasToggle, hasCoreRow, noun, bodyPlaceh
     try {
       await put(`${base}/selection`, { enabled: [...next] });
     } catch (e) {
-      setStatus(`Save failed: ${errText(e)}`);
-      void load();
+      patchDraft(scope, { listError: `Save failed: ${errText(e)}` });
+      void load(true);
     }
   }
 
   async function save() {
     if (!form) return;
-    setFormError(null);
+    patchDraft(scope, { formError: null });
     try {
       if (editingSlug) await put(`${base}/${encodeURIComponent(editingSlug)}`, { name: form.name.trim(), description: form.description.trim(), body: form.body });
       else await post(base, { slug: form.slug.trim(), name: form.name.trim(), description: form.description.trim(), body: form.body });
-      setForm(null);
-      setEditingSlug(null);
-      void load();
+      patchDraft(scope, NO_FORM);
+      void load(true);
     } catch (e) {
-      setFormError(errText(e));
+      patchDraft(scope, { formError: errText(e) });
     }
   }
 
@@ -172,18 +191,19 @@ export function ConventionsPanel({ base, hasToggle, hasCoreRow, noun, bodyPlaceh
     if (!(await confirmDialog({ title: `Delete ${noun} “${slug}”?`, confirmLabel: 'Delete', destructive: true }))) return;
     try {
       await del(`${base}/${encodeURIComponent(slug)}`);
-      void load();
+      void load(true);
     } catch (e) {
-      setStatus(`Delete failed: ${errText(e)}`);
+      patchDraft(scope, { listError: `Delete failed: ${errText(e)}` });
     }
   }
 
+  const listText = listError ?? loadStatus;
   return (
     <div className="space-y-3">
       {data && renderExtras?.(data)}
-      <Status text={status} tone={status && status !== 'Loading…' ? 'error' : 'muted'} />
+      <Status text={listText} tone={listText && listText !== 'Loading…' ? 'error' : 'muted'} />
       {data && (
-        <ul className="divide-y rounded-lg border" data-testid={`conventions-${base.split('/').pop()}`}>
+        <ul className="divide-y rounded-lg border" data-testid={`conventions-${scope}`}>
           {hasCoreRow && data.core && (
             <li className="flex items-start gap-3 px-3 py-2.5">
               <LockIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
@@ -208,7 +228,7 @@ export function ConventionsPanel({ base, hasToggle, hasCoreRow, noun, bodyPlaceh
               </div>
               {!c.plugin && !c.builtin && (
                 <div className="flex shrink-0 gap-0.5">
-                  <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => { setEditingSlug(c.slug); setForm({ slug: c.slug, name: c.name, description: c.description, body: c.body || '' }); setFormError(null); }}>
+                  <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => patchDraft(scope, { editingSlug: c.slug, form: { slug: c.slug, name: c.name, description: c.description, body: c.body || '' }, formError: null })}>
                     <PencilIcon className="size-3.5" />
                   </Button>
                   <Button variant="ghost" size="icon-sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${c.name}`} onClick={() => void remove(c.slug)}>
@@ -222,28 +242,29 @@ export function ConventionsPanel({ base, hasToggle, hasCoreRow, noun, bodyPlaceh
       )}
       {form ? (
         <form className="grid gap-3 rounded-lg border border-dashed p-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editingSlug ? `Edit ${noun}` : `Add ${noun}`}>
-          <Field label="Slug" htmlFor={`${base}-slug`}><Input id={`${base}-slug`} value={form.slug} disabled={!!editingSlug} placeholder="e.g. my-convention" onChange={(e) => setForm({ ...form, slug: e.target.value })} autoFocus={!editingSlug} /></Field>
-          <Field label="Name" htmlFor={`${base}-name`}><Input id={`${base}-name`} value={form.name} placeholder="Short name" onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus={!!editingSlug} /></Field>
-          <Field label="Description" htmlFor={`${base}-desc`} className="sm:col-span-2"><Input id={`${base}-desc`} value={form.description} placeholder="One-line description" onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+          <Field label="Slug" htmlFor={`${base}-slug`}><Input id={`${base}-slug`} value={form.slug} disabled={!!editingSlug} placeholder="e.g. my-convention" onChange={(e) => setField({ slug: e.target.value })} autoFocus={!editingSlug} /></Field>
+          <Field label="Name" htmlFor={`${base}-name`}><Input id={`${base}-name`} value={form.name} placeholder="Short name" onChange={(e) => setField({ name: e.target.value })} autoFocus={!!editingSlug} /></Field>
+          <Field label="Description" htmlFor={`${base}-desc`} className="sm:col-span-2"><Input id={`${base}-desc`} value={form.description} placeholder="One-line description" onChange={(e) => setField({ description: e.target.value })} /></Field>
           <Field label="Body (Markdown)" htmlFor={`${base}-body`} className="sm:col-span-2">
-            <Textarea id={`${base}-body`} className="min-h-32 font-mono text-[13px]" value={form.body} placeholder={bodyPlaceholder} onChange={(e) => setForm({ ...form, body: e.target.value })} />
+            <Textarea id={`${base}-body`} className="min-h-32 font-mono text-[13px]" value={form.body} placeholder={bodyPlaceholder} onChange={(e) => setField({ body: e.target.value })} />
           </Field>
           <Status text={formError} tone="error" className="sm:col-span-2" />
           <div className="flex justify-end gap-2 sm:col-span-2">
-            <Button type="button" variant="ghost" onClick={() => { setForm(null); setEditingSlug(null); setFormError(null); }}>Cancel</Button>
+            <Button type="button" variant="ghost" onClick={() => patchDraft(scope, NO_FORM)}>Cancel</Button>
             <Button type="submit">Save</Button>
           </div>
         </form>
       ) : (
-        <Button variant="outline" size="sm" onClick={() => { setEditingSlug(null); setForm(EMPTY); setFormError(null); }}><PlusIcon /> Add custom convention</Button>
+        <Button variant="outline" size="sm" onClick={() => patchDraft(scope, { editingSlug: null, form: EMPTY, formError: null })}><PlusIcon /> Add custom convention</Button>
       )}
     </div>
   );
 }
 
-function Block({ title, description, children, defaultOpen }: { title: string; description: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean }) {
+function Block({ scope, title, description, children }: { scope: ConventionScope; title: string; description: React.ReactNode; children: React.ReactNode }) {
+  const open = useStore(conventionsBlocksStore, (s) => s[scope]);
   return (
-    <Collapsible defaultOpen={defaultOpen} className="rounded-xl border bg-card shadow-xs">
+    <Collapsible open={open} onOpenChange={(o) => conventionsBlocksStore.set((s) => ({ ...s, [scope]: o }))} className="rounded-xl border bg-card shadow-xs">
       <CollapsibleTrigger className="group/cb flex w-full items-center gap-2 px-5 py-4 text-left">
         <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/cb:rotate-90" />
         <span className="font-semibold">{title}</span>
@@ -262,12 +283,12 @@ export function ConventionsSection() {
       <SectionIntro title="Conventions">
         Markdown guidance composed into Claude sessions at three scopes. <strong>Workspace</strong> and <strong>Conductor</strong> each have an always-on core plus built-in conventions you switch on or off; <strong>Project</strong> conventions are picked per project when it is created. Built-in bodies are read-only; every scope takes custom conventions you can add, edit and delete.
       </SectionIntro>
-      <Block title="Workspace conventions" defaultOpen description={<>Composed into every project's own <code>CONVENTIONS.md</code> (above the project's own conventions) and into the conductor's role doc. A change regenerates all of those files immediately.</>}>
-        <ConventionsPanel base="/api/settings/conventions/workspace" hasToggle hasCoreRow noun="workspace convention" bodyPlaceholder="Markdown composed into every project's CONVENTIONS.md" />
+      <Block scope="workspace" title="Workspace conventions" description={<>Composed into every project's own <code>CONVENTIONS.md</code> (above the project's own conventions) and into the conductor's role doc. A change regenerates all of those files immediately.</>}>
+        <ConventionsPanel scope="workspace" hasToggle hasCoreRow noun="workspace convention" bodyPlaceholder="Markdown composed into every project's CONVENTIONS.md" />
       </Block>
-      <Block title="Conductor conventions" description={<>Composed into the Conduct orchestrator's role doc (<code>.conduct/CONVENTIONS.md</code>) for every conductor, from its next spawn or context refresh. Keep the set lean: every convention costs tokens in every conductor session.</>}>
+      <Block scope="conductor" title="Conductor conventions" description={<>Composed into the Conduct orchestrator's role doc (<code>.conduct/CONVENTIONS.md</code>) for every conductor, from its next spawn or context refresh. Keep the set lean: every convention costs tokens in every conductor session.</>}>
         <ConventionsPanel
-          base={CONDUCTOR_BASE}
+          scope="conductor"
           hasToggle
           hasCoreRow
           noun="conductor convention"
@@ -275,8 +296,8 @@ export function ConventionsSection() {
           renderExtras={(d) => <ConductorPlaybookPrefs data={d} />}
         />
       </Block>
-      <Block title="Project conventions" description={<>Named sections picked per project at creation, composed into that project's <code>CONVENTIONS.md</code> and regenerated there.</>}>
-        <ConventionsPanel base="/api/settings/conventions/project" hasToggle={false} hasCoreRow={false} noun="project convention" bodyPlaceholder="Markdown composed into a project's CONVENTIONS.md" />
+      <Block scope="project" title="Project conventions" description={<>Named sections picked per project at creation, composed into that project's <code>CONVENTIONS.md</code> and regenerated there.</>}>
+        <ConventionsPanel scope="project" hasToggle={false} hasCoreRow={false} noun="project convention" bodyPlaceholder="Markdown composed into a project's CONVENTIONS.md" />
       </Block>
     </div>
   );

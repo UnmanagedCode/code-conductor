@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect } from '../harness/fixtures.ts';
 import { createProject } from '../harness/api.ts';
 import { parity } from './parity.ts';
-import type { Ui } from './ui.ts';
+import type { ConventionScope, Ui } from './ui.ts';
 
 // The web UI ignores Escape while a dialog is open, and on a phone the sidebar
 // drawer (a dialog) is still closing after Settings is opened from it.
@@ -288,4 +288,152 @@ parity('settings-systems-panel/R2', 'Systems: an unsaved edit survives a section
   await expect(f.id).toHaveValue('');
   await expect(f.save).toHaveText(/^\s*Add/);
   expect(writes).toEqual([]);
+});
+
+// Settings part 3 (card 2026-0637)
+// Every conventions write, and the plugin enable, is recorded and fulfilled
+// page-locally: the shared cc's own conventions and plugins are never written.
+
+/** Fakes the GET of each scope in `gets` (read per request); every write is recorded and answered by `answer`. */
+async function routeConventions(page: Page, gets: Partial<Record<ConventionScope, () => unknown>>, answer: (w: Write) => { status: number; json: unknown }): Promise<Write[]> {
+  const writes: Write[] = [];
+  await page.route('**/api/settings/conventions/**', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (req.method() === 'GET') {
+      const scope = path.replace('/api/settings/conventions/', '') as ConventionScope;
+      const get = gets[scope];
+      return get ? route.fulfill({ json: get() }) : route.fallback();
+    }
+    const w = { method: req.method(), path, body: req.postDataJSON() ?? null };
+    writes.push(w);
+    return route.fulfill(answer(w));
+  });
+  return writes;
+}
+
+const WS = {
+  core: { name: 'Workspace core', description: 'always applies' },
+  conventions: [
+    { slug: 'git', name: 'Git hygiene', description: 'commits', builtin: true },
+    { slug: 'mine', name: 'Mine', description: 'my rule', body: '## Mine' },
+    { slug: 'demo/rule', name: 'Demo rule', description: 'from demo', plugin: 'demo' },
+  ],
+  enabled: ['git', 'demo/rule'],
+};
+// None of these enforcement levels ships, so a client-side list cannot pass.
+const CD = {
+  core: { name: 'Conductor core', description: 'role' },
+  conventions: [
+    { slug: 'lean', name: 'Lean', description: 'l', builtin: true },
+    { slug: 'cmine', name: 'C mine', description: 'c', body: 'cb' },
+  ],
+  enabled: ['lean'],
+  playbooks: [{ id: 'solo', name: 'Solo' }, { id: 'relay', name: 'Relay' }],
+  playbookErrors: [],
+  defaultPlaybook: { mode: 'playbook', id: 'relay' },
+  defaultPlaybookFallback: 'freeform',
+  playbookEnforcementModes: ['lenient', 'strict', 'paranoid'],
+  defaultPlaybookEnforcement: 'strict',
+};
+// Carries a core and a selection, so "Project shows neither" is not vacuous.
+const PJ = {
+  core: { name: 'Project core', description: 'p' },
+  conventions: [
+    { slug: 'tdd', name: 'TDD', description: 't', builtin: true },
+    { slug: 'pmine', name: 'P mine', description: 'p', body: 'pb' },
+  ],
+  enabled: ['tdd'],
+};
+const optionValues = (select: Locator) => select.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+
+parity('default-enforcement-frontend/R2', "Conventions: the conductor's playbook and enforcement pickers list the payload's rows, save each pick to its own endpoint, and report a refused save", async ({ page, ui }) => {
+  const writes = await routeConventions(page, { conductor: () => CD }, (w) => (w.path.endsWith('default-playbook-enforcement')
+    ? { status: 400, json: { error: 'mode must be one of warn | enforce' } }
+    : { status: 200, json: {} }));
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'conventions');
+  await ui.expandConventionsBlock(page, 'conductor');
+  const p = ui.conductorPickers(page);
+  await expect.poll(() => optionValues(p.enforcement)).toEqual(['lenient', 'strict', 'paranoid']);
+  await expect(p.enforcement).toHaveValue('strict');
+  await expect.poll(() => optionValues(p.playbook)).toEqual(['unset', 'none', 'playbook:solo', 'playbook:relay']);
+  await expect(p.playbook).toHaveValue('playbook:relay');
+  await p.playbook.selectOption('none');
+  await expect.poll(() => writes).toEqual([
+    { method: 'PUT', path: '/api/settings/conventions/conductor/default-playbook', body: { defaultPlaybook: { mode: 'none' } } },
+  ]);
+  await p.enforcement.selectOption('lenient');
+  await expect.poll(() => writes[1]).toEqual({ method: 'PUT', path: '/api/settings/conventions/conductor/default-playbook-enforcement', body: { mode: 'lenient' } });
+  await expect(p.enforcementStatus).toContainText('mode must be one of warn | enforce');
+});
+
+parity('doc/B17', 'Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings', async ({ page, ui }) => {
+  const writes = await routeConventions(page, { workspace: () => WS, conductor: () => CD, project: () => PJ }, () => ({ status: 500, json: { error: 'no write is expected' } }));
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'conventions');
+  for (const scope of ['workspace', 'conductor', 'project'] as const) await ui.expandConventionsBlock(page, scope);
+  const core = ui.conventionList(page, 'workspace').locator('li').first();
+  await expect(core).toContainText('Workspace core');
+  await expect(core).toContainText('always on');
+  await expect(ui.conventionRow(page, 'workspace', 'git')).toContainText('built-in');
+  await expect(ui.conventionRow(page, 'workspace', 'git').getByRole('button')).toHaveCount(0);
+  await expect(ui.conventionRow(page, 'workspace', 'mine').getByRole('button', { name: /^Edit/ })).toBeVisible();
+  await expect(ui.conventionRow(page, 'workspace', 'mine').getByRole('button', { name: /^Delete/ })).toBeVisible();
+  await expect(ui.conventionToggles(page, 'workspace')).toHaveCount(3);
+  await expect(ui.conventionRow(page, 'project', 'pmine')).toBeVisible();
+  await expect(ui.conventionToggles(page, 'project')).toHaveCount(0);
+  await expect(ui.conventionList(page, 'project')).not.toContainText('Project core');
+
+  const f = ui.conventionForm(page, 'conductor');
+  await f.add.click();
+  await f.slug.fill('draft');
+  await f.name.fill('Draft');
+  // No expand after the switch: the block itself must stay open.
+  await ui.switchSettingsSection(page, 'archived');
+  await ui.switchSettingsSection(page, 'conventions');
+  await expect(f.slug).toHaveValue('draft');
+  await expect(f.name).toHaveValue('Draft');
+  await noDialog(page);
+  await page.keyboard.press('Escape');
+  await expect(ui.settingsView(page)).toBeHidden();
+  await ui.openSettingsSection(page, 'conventions');
+  await expect(f.slug).toHaveValue('draft');
+  await expect(f.name).toHaveValue('Draft');
+  await f.cancel.click();
+  await ui.switchSettingsSection(page, 'archived');
+  await ui.switchSettingsSection(page, 'conventions');
+  await expect(f.slug).toBeHidden();
+  await expect(f.add).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+parity('settings-toggle/R5', 'Conventions: enabling a plugin brings its conductor convention into the Conductor block', async ({ page, ui }) => {
+  let enabled = false;
+  let enables = 0;
+  await page.route('**/api/plugins', (r) => (r.request().method() === 'GET'
+    ? r.fulfill({ json: { rows: [{ id: 'demo', name: 'Demo', project: 'demoproj', state: 'stopped', enabled, hasBackend: false, localOnly: [], conventions: [] }], notices: [] } })
+    : r.fallback()));
+  await page.route('**/api/plugins/library', (r) => r.fulfill({ json: { entries: [] } }));
+  await page.route('**/api/plugins/demo/enable', (r) => {
+    if (r.request().method() !== 'POST') return r.fallback();
+    enabled = true;
+    enables++;
+    return r.fulfill({ json: {} });
+  });
+  await routeConventions(page, {
+    conductor: () => ({ ...CD, conventions: [...CD.conventions, ...(enabled ? [{ slug: 'demo/rule', name: 'Demo rule', description: 'd', plugin: 'demo' }] : [])] }),
+  }, () => ({ status: 500, json: { error: 'no write is expected' } }));
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'conventions');
+  await ui.expandConventionsBlock(page, 'conductor');
+  await expect(ui.conventionRow(page, 'conductor', 'lean')).toBeVisible();
+  await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toHaveCount(0);
+  await ui.switchSettingsSection(page, 'plugins');
+  await ui.settingsView(page).getByRole('button', { name: 'Enable', exact: true }).click();
+  await expect.poll(() => enables).toBe(1);
+  await ui.switchSettingsSection(page, 'conventions');
+  await ui.expandConventionsBlock(page, 'conductor');
+  await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toBeVisible();
+  await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toContainText('plugin: demo');
 });
