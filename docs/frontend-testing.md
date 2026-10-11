@@ -57,6 +57,7 @@ The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-
 **Reachable with seeding:**
 - **A session on disk after exit** (Inactive/archived rows, resume): seed a jsonl named by the session's **backing** id, read from the sandbox store's `sessions.json` → `.sessions[<publicId>].current`. A file named by the public id matches no archive marker, and a check can go green on it by accident.
 - **A harness conductor that spawns unbound workers** needs `playbookEnforcement: 'warn'`.
+- **An overage queue** (`overage_message_queued`, then `system`/`auto_resume`): send the server's frames into the page's own WebSocket with Playwright's `page.routeWebSocket` (`queuedGhostsFlow` in `web/e2e/conversation-bubbles.shared.ts`). A real queue needs the account-usage monitor, the Stop & resume policy and a reset deadline.
 - **`awaitingUser`:**
   - Text ask: a scenario turn ending in `?` with `stop_reason: "end_turn"`, sent to a REST-spawned (non-conducted) session.
   - Tool ask (`ExitPlanMode` / `AskUserQuestion`): a seeded jsonl plus kill + resume. That resume also stands in for a server restart (`web/e2e/legacy/sidebar-strip.spec.ts`).

@@ -31,8 +31,8 @@ async function heldRun(page: Page, cc: Cc, what: string, opts: { temp?: boolean 
   return { project, ...(await instanceIn(cc, project)) };
 }
 
-/** Lets the held run finish: the scenario answers the first permission-mode change with its results, a system_bash call and the reply. */
-async function release(page: Page, cc: Cc, s: Session): Promise<void> {
+/** Lets a held run finish: its scenario answers the session's first permission-mode change with the rest of the turn. */
+export async function release(page: Page, cc: Cc, s: Session): Promise<void> {
   const listed = (await api<{ id: string; mode: string }[]>(cc, 'GET', '/api/instances')).body.find((i) => i.id === s.id);
   await mcpCall(cc, 'set_mode', { sessionId: s.sessionId, mode: listed?.mode ?? 'default' });
   await expect(next.turnEnds(page), 'fixture check: the held run ended its turn').toHaveCount(1);

@@ -37,20 +37,26 @@ export function CopyButton({ getText, label = 'Copy', className }: { getText: ()
       });
   };
   const Icon = state === 'copied' ? CheckIcon : state === 'failed' ? XIcon : CopyIcon;
+  const outcome = state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : '';
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          onClick={onClick}
-          className={cn('size-7 text-muted-foreground', state === 'copied' && 'text-success', state === 'failed' && 'text-destructive', className)}
-        >
-          <Icon className="size-3.5" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : label}</TooltipContent>
-    </Tooltip>
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            onClick={onClick}
+            className={cn('size-7 text-muted-foreground', state === 'copied' && 'text-success', state === 'failed' && 'text-destructive', className)}
+          >
+            <Icon className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{outcome || label}</TooltipContent>
+      </Tooltip>
+      {/* Announces how the copy went while the button keeps naming its action. A live
+          region, not a status role: a panel reading its own status line must find only that. */}
+      <span className="sr-only" aria-live="polite" aria-atomic="true">{outcome}</span>
+    </>
   );
 }
