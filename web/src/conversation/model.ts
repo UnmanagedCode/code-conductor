@@ -15,14 +15,23 @@ import { parseForwardFrame, splitForwardedMessages } from '../../../public/forwa
 import { promptOrigin } from '../../../public/promptOrigin.ts';
 import { parseCanonicalUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
 import type { UiEvent } from '@/state/types';
+import { splitResultContent } from './format';
 
 // ── Node types ───────────────────────────────────────────────────────────
 
 type Base = { id: string; rev: number; parent: ParentRef };
 type ParentRef = NodeT | ConversationModel | null;
 
+// Collapse state: a node's `reader` holds the open/closed and rendered/raw choices the
+// reader makes on it. It lives on the node, so it outlives the view's remounts and a
+// closed card's unmounted content; a transcript replaced in place builds new nodes,
+// which start at the defaults their creation sets.
+
+/** A text's two views: markdown rendered, or its literal source. */
+export type TextView = 'rendered' | 'raw';
+
 export type TextNode = Base & { type: 'text'; buffer: string; finalized: boolean };
-export type ThinkingNode = Base & { type: 'thinking'; buffer: string; finalized: boolean; redacted: boolean; tokens: number };
+export type ThinkingNode = Base & { type: 'thinking'; buffer: string; finalized: boolean; redacted: boolean; tokens: number; reader: { open: boolean } };
 export type ResultNode = Base & {
   type: 'result';
   toolUseId: string | null;
@@ -30,6 +39,8 @@ export type ResultNode = Base & {
   isError: boolean;
   yielded: boolean;
   agentUsage: { tokens: number; toolUses: number | null } | null;
+  /** `full`: the reader asked for the whole of a truncated output. */
+  reader: { open: boolean; full: boolean };
 };
 export type ToolStatus = 'streaming' | 'running' | 'done' | 'errored' | 'handed to user' | 'incomplete';
 export type ToolNode = Base & {
@@ -44,6 +55,8 @@ export type ToolNode = Base & {
   agentUsage: { tokens: number; toolUses: number | null } | null;
   result: ResultNode | null;
   sub: ConversationModel | null;
+  /** The card, its sub-agent section, and its Arguments. */
+  reader: { open: boolean; subOpen: boolean; argsOpen: boolean };
 };
 export type CallUsageNode = Base & { type: 'call_usage'; ev: UiEvent };
 export type GroupChild = ThinkingNode | ToolNode | ResultNode | CallUsageNode;
@@ -75,8 +88,11 @@ export type UserNode = Base & {
   userIndex: number | null;
   segmentId: string | null;
   origin: string;
+  /** The prompt's view, and its fold (skill, wake, renew or forward) with the fold body's view. */
+  reader: { view: TextView; foldOpen: boolean; foldView: TextView };
 };
-export type SystemNode = Base & { type: 'system'; ev: UiEvent };
+/** `reader.open`: a task notification's fold. */
+export type SystemNode = Base & { type: 'system'; ev: UiEvent; reader: { open: boolean } };
 export type TurnEndNode = Base & { type: 'turn_end'; ev: UiEvent };
 export type PlanNode = Base & {
   type: 'plan';
@@ -110,6 +126,8 @@ export type CompactionNode = Base & {
   postTokens: number | null;
   error: string | null;
   summary: string | null;
+  /** The summary's fold and its view. */
+  reader: { open: boolean; view: TextView };
 };
 export type DividerNode = Base & { type: 'divider'; kind: 'gap' | 'seam' | 'replayed'; segmentId?: string | null; count?: number };
 
@@ -117,6 +135,8 @@ export type RootItem =
   | UserNode | AssistantNode | SystemNode | TurnEndNode | PlanNode | QuestionNode
   | TaskCompletionNode | QueuedNode | CompactionNode | DividerNode;
 export type NodeT = RootItem | AssistantChild | GroupChild;
+/** The nodes that carry a `reader`. */
+export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | SystemNode | CompactionNode;
 
 // ── Rules shared with the old renderer ───────────────────────────────────
 
@@ -125,6 +145,8 @@ const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
 // Content that ends the window in which a compaction's own command output is absorbed.
 const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end']);
 const TRANSCRIBED_PREFIX = '<transcribed>\n';
+// A result outside its call's card longer than this many characters starts collapsed.
+const LOOSE_RESULT_OPEN_MAX = 600;
 
 const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
@@ -152,6 +174,13 @@ export const isLocalCommandStdoutText = (t: string) => /^<local-command-stdout>[
 /** Which user-bubble actions an instance in `status` takes. Rewind needs idle; fork works mid-turn. */
 export function userActionsForStatus(status: string | null | undefined) {
   return { rewind: status === 'idle', fork: status === 'idle' || status === 'turn' };
+}
+
+/** Whether a result outside its call's card starts open: short or showing an image, and neither failed nor handed to the user. */
+function looseResultOpens(ev: UiEvent): boolean {
+  if (ev.isError || ev.yielded) return false;
+  const { text, images } = splitResultContent(ev.content);
+  return images.length > 0 || text.length < LOOSE_RESULT_OPEN_MAX;
 }
 
 function answersToLock(questions: any[], text: string): AnswerState[] {
@@ -266,19 +295,27 @@ export class ConversationModel {
     for (const fn of this.listeners) fn();
   }
 
-  /** Bump a node and every ancestor up to the model (and through a sub-model's host). */
-  touch(node: NodeT | null) {
+  /**
+   * Bump a node and every ancestor up to the model (and through a sub-model's host), then
+   * notify the outermost model the walk reached: a sub-agent that arrived on an older page
+   * keeps its page as its root, while the page's items now hang under the live model.
+   * Returns that model.
+   */
+  touch(node: NodeT | null): ConversationModel {
     let n: ParentRef = node;
+    let top: ConversationModel = this;
     while (n) {
       if (n instanceof ConversationModel) {
         n.rev++;
+        top = n;
         n = n.host;
         continue;
       }
       n.rev++;
       n = n.parent;
     }
-    this.changed();
+    top.changed();
+    return top;
   }
 
   private make<T extends NodeT>(fields: Omit<T, 'id' | 'rev' | 'parent'>, parent: ParentRef): T {
@@ -439,6 +476,12 @@ export class ConversationModel {
     this.touch(node);
   }
 
+  /** Records the reader's toggle on its node and renders it at once, as a click on a local toggle would. */
+  setReader<N extends ReaderNode>(node: N, patch: Partial<N['reader']>) {
+    Object.assign(node.reader, patch);
+    this.touch(node).root.flush();
+  }
+
   setAssistantView(node: AssistantNode, view: 'rendered' | 'raw') {
     node.view = view;
     this.touch(node);
@@ -528,7 +571,7 @@ export class ConversationModel {
         if (this.isSub) this.reconcileAssistantMessage(ev);
         return;
       case 'raw':
-        return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } } }, this));
+        return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } }, reader: { open: false } }, this));
       default:
         return;
     }
@@ -561,7 +604,7 @@ export class ConversationModel {
       }
     }
     if (!shouldRenderSystem(ev)) return;
-    this.pushRoot(this.make<SystemNode>({ type: 'system', ev }, this));
+    this.pushRoot(this.make<SystemNode>({ type: 'system', ev, reader: { open: false } }, this));
   }
 
   // ── Assistant envelopes and action groups ─────────────────────────────
@@ -626,7 +669,7 @@ export class ConversationModel {
     if (!block) {
       block = type === 'text'
         ? this.make<TextNode>({ type: 'text', buffer: '', finalized: false }, null)
-        : this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0 }, null);
+        : this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0, reader: { open: false } }, null);
       this.blocksByKey.set(key, block);
       const wrap = this.ensureMessageWrap(ev.msgId);
       this.appendToWrap(wrap, block, type !== 'text');
@@ -656,7 +699,7 @@ export class ConversationModel {
   private renderThinkingStart(ev: UiEvent) {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:thinking`;
     if (this.blocksByKey.has(key)) return;
-    const block = this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0 }, null);
+    const block = this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0, reader: { open: false } }, null);
     this.blocksByKey.set(key, block);
     this.appendToWrap(this.ensureMessageWrap(ev.msgId), block, true);
     this.activeThinkingKey = key;
@@ -666,7 +709,7 @@ export class ConversationModel {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:thinking`;
     let block = this.blocksByKey.get(key) as ThinkingNode | undefined;
     if (!block) {
-      block = this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0 }, null);
+      block = this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0, reader: { open: false } }, null);
       this.blocksByKey.set(key, block);
       this.appendToWrap(this.ensureMessageWrap(ev.msgId), block, true);
     }
@@ -684,6 +727,7 @@ export class ConversationModel {
     const block = this.make<ToolNode>({
       type: 'tool', name: ev.name ?? 'tool', toolUseId: ev.toolUseId ?? null, partialJson: '', input: null,
       status: 'streaming', startedAt: null, elapsedMs: null, agentUsage: null, result: null, sub: null,
+      reader: { open: false, subOpen: true, argsOpen: false },
     }, null);
     this.blocksByKey.set(`${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);
@@ -725,6 +769,7 @@ export class ConversationModel {
       : null;
     const result = this.make<ResultNode>({
       type: 'result', toolUseId: ev.toolUseId ?? null, content: ev.content, isError: !!ev.isError, yielded: !!ev.yielded, agentUsage,
+      reader: { open: !!block || looseResultOpens(ev), full: false },
     }, null);
     if (block) {
       result.parent = block;
@@ -891,6 +936,7 @@ export class ConversationModel {
       userIndex: Number.isInteger(ev.userIndex) ? ev.userIndex : null,
       segmentId: this.segmentId,
       origin: this.isSub ? 'synthetic' : hasUserText ? promptOrigin(ev as any) : 'synthetic',
+      reader: { view: 'rendered', foldOpen: false, foldView: 'rendered' },
     }, this);
     this.pushRoot(node);
     if (compactionBelow) {
@@ -906,6 +952,7 @@ export class ConversationModel {
     this.closeAssistantSegment();
     const node = this.make<CompactionNode>({
       type: 'compaction', state: 'running', trigger: null, preTokens: null, postTokens: null, error: null, summary: null,
+      reader: { open: false, view: 'rendered' },
     }, this);
     this.pushRoot(node);
     return node;

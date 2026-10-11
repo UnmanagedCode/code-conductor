@@ -1754,6 +1754,35 @@ export const LEDGER: readonly Row[] = [
       ] },
   },
   {
+    id: 'conversation-view-return/R2',
+    old: { doc: 'docs/features.md', section: 'Live conversation' },
+    behaviour: 'leaving a full-page view keeps the tool cards and thinking blocks the reader opened',
+    viewports: ['desktop', 'phone'],
+    area: 'conversation',
+    status: { kind: 'ported', by: [
+        'web/src/conversation/remountState.test.tsx::a full-page view round trip > keeps the tool cards and thinking blocks the reader set: the card, its sub-agent section, Arguments, Result and full output, and the thinking',
+        'web/src/conversation/remountState.test.tsx::a transcript replaced in place > a reconnect\'s snapshot starts every toggle at its default',
+        'web/src/conversation/remountState.test.tsx::a transcript replaced in place > another session selected starts every toggle at its default, and so does coming back',
+        'web/src/conversation/remountState.test.tsx::a transcript replaced in place > a rewind starts every toggle of the replayed transcript at its default',
+        'web/e2e/collapse-state.spec.ts::leaving a full-page view brings back the tool card and thinking block the reader opened, on the prompt being read',
+      ] },
+  },
+  {
+    id: 'conversation-view-return/R3',
+    old: { doc: 'docs/features.md', section: 'Live conversation' },
+    behaviour: 'leaving a full-page view keeps the folds and raw views the reader set',
+    viewports: ['desktop', 'phone'],
+    area: 'conversation',
+    status: { kind: 'ported', by: [
+        'web/src/conversation/remountState.test.tsx::a full-page view round trip > keeps the folds and raw views the reader set: a prompt, a forwarded output and its instruction, a wake, a task notification, a compaction summary',
+        'web/src/conversation/remountState.test.tsx::the folds and raw views > each toggle changes only its own surface',
+        'web/src/conversation/remountState.test.tsx::a transcript replaced in place > a reconnect\'s snapshot starts every toggle at its default',
+        'web/src/conversation/remountState.test.tsx::a transcript replaced in place > another session selected starts every toggle at its default, and so does coming back',
+        'web/src/conversation/remountState.test.tsx::a transcript replaced in place > a rewind starts every toggle of the replayed transcript at its default',
+        'web/e2e/collapse-state.spec.ts::leaving a full-page view brings back the fold and raw views the reader set, on the prompt being read',
+      ] },
+  },
+  {
     id: 'forward-frame-bubble/R1',
     old: { file: 'tests/forward-frame-bubble.test.mjs', tests: [
         'a forward echo renders a collapsed forward-frame bubble with a message count',
@@ -2557,11 +2586,17 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'subagent-nesting/R2',
-    old: { file: 'tests/subagent-nesting.test.mjs', tests: 'rest' },
+    old: { file: 'tests/subagent-nesting.test.mjs', tests: [
+        'T4: the four collapse surfaces are independent and all sticky',
+      ] },
     behaviour: 'the four collapse surfaces are independent and sticky',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/collapseSurfaces.test.tsx::an Agent card\'s four collapse surfaces > each toggles alone: changing one leaves the other three as they were',
+        'web/src/conversation/collapseSurfaces.test.tsx::an Agent card\'s four collapse surfaces > each keeps what the reader set through later sub-agent events, and closing and reopening the card keeps the three inside it',
+        'web/e2e/collapse-state.spec.ts::an opened tool card keeps its Arguments and Result through closing and reopening it',
+      ] },
   },
   {
     id: 'subagent-panel-dom/R1',
