@@ -10,7 +10,7 @@ export type Lens = 'conductors' | 'projects';
 export type PlacementDialog = 'new' | 'adopt';
 export type PlacementField = 'name' | 'system' | 'target' | 'path' | 'pathList' | 'suggestions';
 // Settings (card 2026-0625)
-export type SettingsSection = 'account' | 'archived' | 'about' | 'models' | 'backends' | 'systems';
+export type SettingsSection = 'account' | 'archived' | 'about' | 'models' | 'backends' | 'systems' | 'conventions' | 'plugins';
 export type SpawnField = 'worktree' | 'worktreeHint' | 'debug';
 export type SpawnSelect = 'effort' | 'thinking';
 // Dialogs part 3 (card 2026-0639)
@@ -18,6 +18,8 @@ export type SessionDialog = 'summary' | 'stats' | 'prune';
 export type SummaryTier = 'title' | 'short' | 'medium' | 'long';
 export type PruneField = 'cut' | 'cutLabel' | 'thinking' | 'minimal';
 export type RestartChoice = 'resume' | 'only';
+// Settings part 3 (card 2026-0637)
+export type ConventionScope = 'workspace' | 'conductor' | 'project';
 
 export interface Ui {
   name: UiName;
@@ -248,6 +250,22 @@ export interface Ui {
   stripEntryStyle(entry: Locator): Promise<{ active: boolean; weight: string; framed: boolean; fill: string }>;
   /** A row's status dot: its tooltip and computed fill. */
   rowDot(row: Locator): Promise<{ title: string; fill: string }>;
+
+  // Settings part 3 (card 2026-0637)
+  /** Opens a Conventions block if it is closed; idempotent. */
+  expandConventionsBlock(page: Page, scope: ConventionScope): Promise<void>;
+  conventionList(page: Page, scope: ConventionScope): Locator;
+  conventionRow(page: Page, scope: ConventionScope, slug: string): Locator;
+  /** The block's per-convention enable controls. */
+  conventionToggles(page: Page, scope: ConventionScope): Locator;
+  /** The block's Add button and its add/edit form's fields, Save and Cancel. */
+  conventionForm(page: Page, scope: ConventionScope): { add: Locator; slug: Locator; name: Locator; description: Locator; body: Locator; save: Locator; cancel: Locator };
+  /** The conductor block's preferred-playbook and enforcement selects and their status lines. */
+  conductorPickers(page: Page): { playbook: Locator; enforcement: Locator; playbookStatus: Locator; enforcementStatus: Locator };
+  /** Deletes the custom convention `slug`, accepting the confirm prompt. */
+  deleteConvention(page: Page, scope: ConventionScope, slug: string): Promise<void>;
+  /** The block's list status line (load failures and refused actions). */
+  conventionStatus(page: Page, scope: ConventionScope): Locator;
 }
 
 // Sidebar C (card 2026-0629)
@@ -315,6 +333,11 @@ export async function expectOldUiRunning(page: Page) {
   await openOldDrawer(page);
   await legacy.lens(page, 'projects');
 }
+
+// Settings part 3 (card 2026-0637)
+const LEGACY_PREFIX: Record<ConventionScope, string> = { workspace: 'wk', conductor: 'cc', project: 'pc' };
+const conventionsBase = (scope: ConventionScope) => `/api/settings/conventions/${scope}`;
+const conventionsTitle = (scope: ConventionScope) => `${scope[0].toUpperCase()}${scope.slice(1)} conventions`;
 
 export const legacy: Ui = {
   name: 'legacy',
@@ -914,6 +937,34 @@ export const legacy: Ui = {
     const d = e.querySelector<HTMLElement>('.dot')!;
     return { title: d.title, fill: getComputedStyle(d).backgroundColor };
   }),
+
+  // Settings part 3 (card 2026-0637)
+  async expandConventionsBlock(page, scope) {
+    const block = page.locator('#settings-conventions details.conventions-block').filter({ has: page.locator('summary', { hasText: exactly(conventionsTitle(scope)) }) });
+    if (!(await block.evaluate((d) => (d as HTMLDetailsElement).open))) await block.locator('summary').click();
+    await expect(block).toHaveAttribute('open', '');
+  },
+  conventionList: (page, scope) => page.locator(`#${LEGACY_PREFIX[scope]}-convention-list`),
+  conventionRow: (page, scope, slug) => page.locator(`#${LEGACY_PREFIX[scope]}-convention-list li`).filter({ has: page.locator('.or-rule-slug', { hasText: exactly(slug) }) }),
+  conventionToggles: (page, scope) => page.locator(`#${LEGACY_PREFIX[scope]}-convention-list input.cc-convention-toggle`),
+  conventionForm: (page, scope) => {
+    const p = LEGACY_PREFIX[scope];
+    return {
+      add: page.locator(`#${p}-add-btn`),
+      slug: page.locator(`#${p}-add-slug`),
+      name: page.locator(`#${p}-add-name`),
+      description: page.locator(`#${p}-add-desc`),
+      body: page.locator(`#${p}-add-body`),
+      save: page.locator(`#${p}-add-save`),
+      cancel: page.locator(`#${p}-add-cancel`),
+    };
+  },
+  conductorPickers: (page) => ({ playbook: page.locator('#dp-select'), enforcement: page.locator('#dpe-select'), playbookStatus: page.locator('#dp-status'), enforcementStatus: page.locator('#dpe-status') }),
+  async deleteConvention(page, scope, slug) {
+    page.once('dialog', (d) => void d.accept());
+    await legacy.conventionRow(page, scope, slug).locator('button', { hasText: exactly('Delete') }).click();
+  },
+  conventionStatus: (page, scope) => page.locator(`#${LEGACY_PREFIX[scope]}-status`),
 };
 
 /**
@@ -1088,7 +1139,7 @@ export const next: Ui = {
   // Settings (card 2026-0625)
   settingsView: (page) => page.locator('[data-settings-view]'),
   async openSettingsSection(page, section) {
-    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About', models: 'Models', backends: 'Backends', systems: 'Systems' };
+    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About', models: 'Models', backends: 'Backends', systems: 'Systems', conventions: 'Conventions', plugins: 'Plugins' };
     await next.openSettings(page);
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: label[section], exact: true }).click();
     await expect(page.locator(`[data-section="${section}"]`)).toBeVisible();
@@ -1204,7 +1255,7 @@ export const next: Ui = {
 
   // Settings part 2 (card 2026-0636)
   async switchSettingsSection(page, section) {
-    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About', models: 'Models', backends: 'Backends', systems: 'Systems' };
+    const label: Record<SettingsSection, string> = { account: 'Account', archived: 'Archived', about: 'About', models: 'Models', backends: 'Backends', systems: 'Systems', conventions: 'Conventions', plugins: 'Plugins' };
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: label[section], exact: true }).click();
     await expect(page.locator(`[data-section="${section}"]`)).toBeVisible();
   },
@@ -1476,6 +1527,45 @@ export const next: Ui = {
     const d = e.querySelector<HTMLElement>('[data-dot]')!;
     return { title: d.title, fill: getComputedStyle(d).backgroundColor };
   }),
+
+  // Settings part 3 (card 2026-0637)
+  async expandConventionsBlock(page, scope) {
+    const trigger = page.locator('[data-section="conventions"]').getByRole('button', { name: conventionsTitle(scope), exact: true });
+    if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(next.conventionList(page, scope)).toBeVisible();
+  },
+  conventionList: (page, scope) => page.locator(`[data-testid="conventions-${scope}"]`),
+  conventionRow: (page, scope, slug) => page.locator(`[data-testid="conventions-${scope}"] li[data-slug="${slug}"]`),
+  conventionToggles: (page, scope) => page.locator(`[data-testid="conventions-${scope}"] [role="switch"]`),
+  conventionForm: (page, scope) => {
+    const block = page.locator('[data-slot="collapsible"]').filter({ has: page.getByRole('button', { name: conventionsTitle(scope), exact: true }) });
+    const slug = page.locator(`[id="${conventionsBase(scope)}-slug"]`);
+    const form = page.locator('form').filter({ has: slug });
+    return {
+      add: block.getByRole('button', { name: 'Add custom convention', exact: true }),
+      slug,
+      name: page.locator(`[id="${conventionsBase(scope)}-name"]`),
+      description: page.locator(`[id="${conventionsBase(scope)}-desc"]`),
+      body: page.locator(`[id="${conventionsBase(scope)}-body"]`),
+      save: form.locator('button[type="submit"]'),
+      cancel: form.getByRole('button', { name: 'Cancel', exact: true }),
+    };
+  },
+  conductorPickers: (page) => ({
+    playbook: page.locator('#dp-select'),
+    enforcement: page.locator('#dpe-select'),
+    playbookStatus: page.locator('div:has(> label[for="dp-select"]) [role="status"]'),
+    enforcementStatus: page.locator('div:has(> label[for="dpe-select"]) [role="status"]'),
+  }),
+  async deleteConvention(page, scope, slug) {
+    await next.conventionRow(page, scope, slug).getByRole('button', { name: /^Delete / }).click();
+    const dialog = page.getByRole('dialog', { name: `Delete ${scope} convention “${slug}”?` });
+    await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect(dialog).toBeHidden();
+  },
+  // The list's own status line is a direct child of the panel; the conductor pickers' status lines sit deeper.
+  conventionStatus: (page, scope) => next.conventionList(page, scope).locator('xpath=../div[@role="status"]'),
 };
 
 // Sidebar B (card 2026-0628)
