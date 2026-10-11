@@ -84,14 +84,14 @@ export function SystemsSection() {
         {(systems || []).map((s) => {
           const projects = Array.isArray(s.projects) ? s.projects : [];
           return (
-            <div key={s.id} data-system={s.id} className="rounded-xl border bg-card px-4 py-3 shadow-xs">
+            <div key={s.id} data-system={s.id} className="min-w-0 rounded-xl border bg-card px-4 py-3 shadow-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <ServerIcon className="size-4 text-muted-foreground" />
-                <span className="font-medium">{s.label}</span>
-                <span className="font-mono text-xs text-muted-foreground">{s.id}</span>
+                <span className="min-w-0 font-medium break-words">{s.label}</span>
+                <span className="min-w-0 font-mono text-xs break-all text-muted-foreground">{s.id}</span>
                 {s.managed && <Badge variant="secondary">built in</Badge>}
                 {!s.managed && (
-                  <div className="ml-auto flex gap-1">
+                  <div className="ml-auto flex flex-wrap gap-1">
                     <Button variant="ghost" size="sm" onClick={() => openEdit(s)} aria-label={`Edit ${s.label}`}><PencilIcon /> Edit</Button>
                     <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void remove(s.id)} aria-label={`Remove ${s.label}`}><Trash2Icon /> Remove</Button>
                   </div>
@@ -103,10 +103,10 @@ export function SystemsSection() {
                 </div>
               )}
               {!s.managed && typeof s.worktreesDir === 'string' && s.worktreesDir && (
-                <div className="mt-1 font-mono text-xs text-muted-foreground">worktrees: {s.worktreesDir}</div>
+                <div className="mt-1 font-mono text-xs break-all text-muted-foreground">worktrees: {s.worktreesDir}</div>
               )}
               {projects.length > 0 && (
-                <div className="mt-1 text-xs text-muted-foreground">
+                <div className="mt-1 text-xs break-words text-muted-foreground">
                   projects: {projects.map((x) => (typeof x === 'object' && x ? (x.remoteId ? `${x.name} (${x.remoteId})` : x.name) : String(x))).join(', ')}
                 </div>
               )}
@@ -115,16 +115,16 @@ export function SystemsSection() {
         })}
       </div>
       <SettingsCard title={editing ? `Edit ${systems?.find((s) => s.id === editing)?.label ?? editing}` : 'Add a system'}>
-        <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit system' : 'Add system'}>
+        <form className="grid gap-3 @xl:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit system' : 'Add system'}>
           <Field label="Id" htmlFor="sy-id"><Input id="sy-id" value={form.id} disabled={!!editing} onChange={(e) => setForm({ id: e.target.value })} placeholder="e.g. prod-box" autoComplete="off" /></Field>
           <Field label="Label" htmlFor="sy-label"><Input id="sy-label" value={form.label} onChange={(e) => setForm({ label: e.target.value })} placeholder="e.g. Prod box" autoComplete="off" /></Field>
-          <Field label="Provider command" htmlFor="sy-launch" className="sm:col-span-2" hint="Run directly, never through a shell. Leave empty for a name-only system.">
+          <Field label="Provider command" htmlFor="sy-launch" className="@xl:col-span-2" hint="Run directly, never through a shell. Leave empty for a name-only system.">
             <Input id="sy-launch" className="font-mono" value={form.launch} onChange={(e) => setForm({ launch: e.target.value })} placeholder="e.g. docker exec -i ctr cc-provider" autoComplete="off" />
           </Field>
-          <Field label="Worktrees directory (optional)" htmlFor="sy-worktrees-dir" className="sm:col-span-2" hint="Absolute path on the system. Default: beside each project.">
+          <Field label="Worktrees directory (optional)" htmlFor="sy-worktrees-dir" className="@xl:col-span-2" hint="Absolute path on the system. Default: beside each project.">
             <Input id="sy-worktrees-dir" className="font-mono" value={form.worktreesDir} onChange={(e) => setForm({ worktreesDir: e.target.value })} autoComplete="off" />
           </Field>
-          <div className="flex justify-end gap-2 sm:col-span-2">
+          <div className="flex flex-wrap justify-end gap-2 @xl:col-span-2">
             {editing && <Button type="button" variant="ghost" onClick={closeForm}>Cancel</Button>}
             <Button type="submit" disabled={busy}>{editing ? 'Save' : <><PlusIcon /> Add system</>}</Button>
           </div>

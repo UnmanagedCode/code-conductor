@@ -151,11 +151,11 @@ export function InstallableCatalog({ kind, onAvailability, onData, children }: {
       )}
       {children}
       {cat && (
-        <ul className="grid gap-2 sm:grid-cols-2" role="listbox" aria-label={`${kind.activeNoun} catalog`}>
+        <ul className="grid gap-2 @3xl:grid-cols-2" role="listbox" aria-label={`${kind.activeNoun} catalog`}>
           {cat.items.map((m) => {
             const isActive = m.name === cat.active && m.installed;
             return (
-              <li key={m.name}>
+              <li key={m.name} className="min-w-0">
                 <button
                   type="button"
                   role="option"
@@ -170,7 +170,7 @@ export function InstallableCatalog({ kind, onAvailability, onData, children }: {
                   )}
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{m.label}</div>
+                    <div className="text-sm font-medium break-words">{m.label}</div>
                     <div className="text-xs text-muted-foreground">{m.sizeLabel}</div>
                   </div>
                   {isActive ? <Badge><CheckIcon /> active</Badge>

@@ -6403,6 +6403,7 @@ export const LEDGER: readonly Row[] = [
         'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > nothing overflows the page, the Settings column or the Models section at any swept viewport and sidebar width',
         'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > the Settings nav sits beside the content where the column has room and above it where it has not, and every section link is reachable in both forms',
         'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+        'web/e2e/settings-layout.spec.ts::Settings layout > no Settings section overflows its column, and every control in it stays on screen, uncovered and clear of its siblings, at every swept viewport and sidebar width',
       ] },
   },
   {

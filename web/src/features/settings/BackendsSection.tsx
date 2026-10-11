@@ -76,13 +76,13 @@ export function BackendsSection() {
         {backends.map((b) => {
           const bound = custom.filter((m) => m.backend === b.id);
           return (
-            <div key={b.id} data-backend={b.id} className="rounded-xl border bg-card px-4 py-3 shadow-xs">
+            <div key={b.id} data-backend={b.id} className="min-w-0 rounded-xl border bg-card px-4 py-3 shadow-xs">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">{b.label}</span>
-                <span className="font-mono text-xs text-muted-foreground">{b.id}</span>
+                <span className="min-w-0 font-medium break-words">{b.label}</span>
+                <span className="min-w-0 font-mono text-xs break-all text-muted-foreground">{b.id}</span>
                 {b.managed && <Badge variant="secondary">built in</Badge>}
                 {!b.managed && (
-                  <div className="ml-auto flex gap-1">
+                  <div className="ml-auto flex flex-wrap gap-1">
                     <Button variant="ghost" size="sm" onClick={() => openEdit(b)} aria-label={`Edit ${b.label}`}><PencilIcon /> Edit</Button>
                     <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void remove(b.id)} aria-label={`Remove ${b.label}`}><Trash2Icon /> Remove</Button>
                   </div>
@@ -92,22 +92,22 @@ export function BackendsSection() {
               {Array.isArray(b.env) && b.env.length > 0 && (
                 <div className="mt-1 font-mono text-xs break-all text-muted-foreground">{b.env.map((e) => `${e.key}=${e.value}`).join('  ')}</div>
               )}
-              {bound.length > 0 && <div className="mt-1 text-xs text-muted-foreground">models: {bound.map((m) => m.model).join(', ')}</div>}
+              {bound.length > 0 && <div className="mt-1 text-xs break-words text-muted-foreground">models: {bound.map((m) => m.model).join(', ')}</div>}
             </div>
           );
         })}
       </div>
       <SettingsCard title={editing ? `Edit ${backends.find((b) => b.id === editing)?.label ?? editing}` : 'Add a backend'}>
-        <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit backend' : 'Add backend'}>
+        <form className="grid gap-3 @xl:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editing ? 'Edit backend' : 'Add backend'}>
           <Field label="Id" htmlFor="sb-id"><Input id="sb-id" value={form.id} disabled={!!editing} onChange={(e) => setForm({ id: e.target.value })} placeholder="e.g. my-proxy" autoComplete="off" /></Field>
           <Field label="Label" htmlFor="sb-label"><Input id="sb-label" value={form.label} onChange={(e) => setForm({ label: e.target.value })} placeholder="e.g. My Proxy" autoComplete="off" /></Field>
-          <Field label="Template" htmlFor="sb-template" className="sm:col-span-2">
+          <Field label="Template" htmlFor="sb-template" className="@xl:col-span-2">
             <Input id="sb-template" className="font-mono" value={form.template} onChange={(e) => setForm({ template: e.target.value })} placeholder="e.g. myproxy run claude --model {model} --" autoComplete="off" />
           </Field>
-          <Field label="Env (optional)" htmlFor="sb-env" hint="One KEY=VALUE per line." className="sm:col-span-2">
+          <Field label="Env (optional)" htmlFor="sb-env" hint="One KEY=VALUE per line." className="@xl:col-span-2">
             <Textarea id="sb-env" className="font-mono" rows={3} value={form.env} onChange={(e) => setForm({ env: e.target.value })} />
           </Field>
-          <div className="flex justify-end gap-2 sm:col-span-2">
+          <div className="flex flex-wrap justify-end gap-2 @xl:col-span-2">
             {editing && <Button type="button" variant="ghost" onClick={closeForm}>Cancel</Button>}
             <Button type="submit" disabled={busy}>{editing ? 'Save' : <><PlusIcon /> Add backend</>}</Button>
           </div>

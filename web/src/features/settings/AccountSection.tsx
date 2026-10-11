@@ -52,14 +52,14 @@ export function OverageCard() {
       title="Overage protection"
       description="What happens the moment a session starts using paid overage credits. Stop soft-interrupts the turn; the session stays idle and can be resumed by hand. Stop & resume also resumes it a few seconds after the rate-limit window resets. Off by default."
     >
-      <div className="flex h-9 w-fit items-center rounded-lg bg-muted p-0.5 text-sm" role="group" aria-label="Action on overage">
+      <div className="flex w-fit max-w-full flex-wrap items-center rounded-lg bg-muted p-0.5 text-sm" role="group" aria-label="Action on overage">
         {OPTIONS.map(([v, label]) => (
           <button
             key={v}
             type="button"
             aria-pressed={action === v}
             onClick={() => edit(() => setAction(v))}
-            className={cn('h-full rounded-md px-3 font-medium transition-colors', action === v ? 'bg-background text-foreground shadow-xs dark:bg-input/40' : 'text-muted-foreground hover:text-foreground')}
+            className={cn('min-h-8 rounded-md px-3 font-medium transition-colors', action === v ? 'bg-background text-foreground shadow-xs dark:bg-input/40' : 'text-muted-foreground hover:text-foreground')}
           >
             {label}
           </button>

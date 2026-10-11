@@ -97,7 +97,7 @@ export function ArchivedSection() {
           <Collapsible key={g.project} className="rounded-xl border bg-card shadow-xs" data-group={g.project}>
             <CollapsibleTrigger className="group/ag flex w-full items-center gap-2 px-4 py-3 text-left">
               <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/ag:rotate-90" />
-              {g.project === '.conduct' ? <><SparklesIcon className="size-4 text-primary" /><span className="font-medium">Conductor</span></> : <span className="font-medium">{g.project}</span>}
+              {g.project === '.conduct' ? <><SparklesIcon className="size-4 text-primary" /><span className="font-medium">Conductor</span></> : <span className="min-w-0 font-medium break-words">{g.project}</span>}
               <span className="text-sm text-muted-foreground">({g.sessions.length})</span>
             </CollapsibleTrigger>
             <CollapsibleContent className="divide-y border-t">
@@ -106,9 +106,9 @@ export function ArchivedSection() {
                 return (
                   <div key={s.sessionId} className="flex flex-wrap items-center gap-2 px-4 py-2.5" data-session={s.sessionId}>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm" title={s.sessionId}>{label}</div>
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        {s.worktreeName && <><GitBranchIcon className="size-3" />{s.worktreeName} · </>}last {formatAgo(s.lastActivity)}
+                      <div className="truncate text-sm" title={label}>{label}</div>
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs [overflow-wrap:anywhere] text-muted-foreground" title={s.sessionId}>
+                        {s.worktreeName && <><GitBranchIcon className="size-3 shrink-0" />{s.worktreeName} · </>}last {formatAgo(s.lastActivity)}
                       </div>
                     </div>
                     <Button size="sm" variant="outline" onClick={() => void restore(g.project, s)}><ArchiveRestoreIcon /> Restore</Button>
