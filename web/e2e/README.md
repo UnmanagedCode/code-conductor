@@ -108,7 +108,7 @@ The deterministic halves live in `tests/` (happy-dom), e.g. `models-responsive.s
 One behaviour driven against both UIs, `/legacy/` and `/next/`, on all three projects. Each proves a row of the parity ledger (`docs/frontend-testing.md` → Parity ledger) holds identically in both.
 
 ```ts
-// parity/<area>.spec.ts: one file per ledger area; never import `test` directly
+// parity/<area>.spec.ts: one file per ledger area, plus any that boot their own cc; never import `test` directly
 import { expect } from '../harness/fixtures.ts';
 import { parity } from './parity.ts';
 parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
@@ -121,9 +121,10 @@ parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
 - **`parity(rowId, title, body)`** (`parity/parity.ts`) registers `test.describe(title)` with one test per UI in `UI_NAMES` (`parity/uis.ts`): `<title> > legacy` and `<title> > next`, each annotated `ledger-row: <rowId>`.
 - **`ui`** is that half's driver (`parity/ui.ts`, `legacy` and `next`, both implementing `Ui`). Each method is one user-level operation through that UI's own controls. A method that reaches the sidebar opens the drawer itself on the Pixel 7 projects, so a scenario has no viewport branches.
 - **The `legacy` driver retries its actions until their state shows:** the old UI drops clicks that land before `public/app.js` attaches its listeners. `open` waits for the sidebar's first render (the conductor filter's options), which changes no state. `switch.spec.ts` reuses its `openOldDrawer` and `expectOldUiRunning`.
-- **`uniq(s)`** is `<s>-<ui>-<project>`. Parity files set no `ccOptions`, so they share one cc with every other option-less spec: every name a scenario creates goes through `uniq`.
+- **One shared cc, unless a file boots its own.** A parity file that sets no `ccOptions` shares one cc with every other option-less spec. A file whose scenarios seed server state that would leak into that shared cc, such as live conductors, boots its own with `test.use({ ccOptions: { server: '<name>' } })` (`parity/sidebar-fleet.spec.ts`), so a ledger area may hold more than one parity file.
+- **`uniq(s)`** is `<s>-<ui>-<project>`. Both halves of a scenario share a cc, whichever it is, so every name a scenario creates goes through `uniq`.
 - **Fake engine only.** `/next/` can ignore a `#session=…` anchor on first load, so a scenario never navigates to one; it opens a session by starting it through the UI.
-- **The row link:** `parity()`'s row id must name a ledger row. Once the `> next` half guards the row's behaviour, the row's `ported.by` names `web/e2e/parity/<area>.spec.ts::<title> > next`; the `> legacy` half is never a ref.
+- **The row link:** `parity()`'s row id must name a ledger row. Once the `> next` half guards the row's behaviour, the row's `ported.by` names `web/e2e/parity/<file>.spec.ts::<title> > next`; the `> legacy` half is never a ref.
 - **Adding one:** add the `parity()` call to its area's spec, and any `Ui` methods it needs to **both** drivers. Get both halves green on `desktop`, `phone` and `android`, then add the `> next` ref to the row. A behaviour the web UI lacks is fixed in `web/` first; a scenario is never committed red.
 - **A remote system:** the scratch cc has no reachable provider, so a scenario that needs one answers `/api/settings/systems`, `/api/systems/<id>/remotes` and `/api/fs/dirs` itself through `page.route`, registered before `ui.open` (`routeRemoteSystem` in `parity/dialogs.spec.ts`).
 - **A settings state or an unregistrable project:** a scenario that needs a settings state (tier enablement, tier efforts, the debug default) or a project the scratch cc cannot register (a remote one) rewrites `GET /api/settings/models`, `/api/settings/spawn` or `/api/projects` through `page.route` (`route.fetch()` plus a modified body, or a fixed `fulfill`), page-local and registered before `ui.open`. It never writes the shared cc's settings, which other scenarios depend on.
