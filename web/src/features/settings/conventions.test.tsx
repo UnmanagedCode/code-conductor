@@ -104,6 +104,18 @@ async function refuseDelete(title: Title, name: string, slug: string) {
   await waitFor(() => expect(listStatus(title)).toBe('Delete failed: still in use'));
 }
 
+/** A block's list status line: the panel's own status, not a picker's or the form's (those sit deeper). */
+const listLineEl = (title: Title) => block(title).querySelector('[data-slot="collapsible-content"] > div > [role="status"]') as HTMLElement | null;
+const listLine = (title: Title) => listLineEl(title)?.textContent ?? '';
+/** A rendered Status's tone, read from what it emits: the error tone's colour class plus its alert icon, the muted tone's colour class and no icon. */
+const toneOf = (el: HTMLElement) => {
+  const icon = el.querySelector('svg.lucide-circle-alert') !== null;
+  if (el.classList.contains('text-destructive') && icon) return 'error';
+  if (el.classList.contains('text-muted-foreground') && !icon) return 'muted';
+  return 'other';
+};
+const pickerStatusEl = (label: 'Preferred playbook' | 'Playbook enforcement') => within(screen.getByText(label, { selector: 'label' }).parentElement as HTMLElement).getByRole('status');
+
 const renderSection = () => render(<TooltipProvider><ConventionsSection /><ConfirmHost /></TooltipProvider>);
 
 const heading = (name: string) => screen.findByRole('heading', { level: 2, name });
@@ -417,6 +429,32 @@ describe('Conventions → conductor pickers', () => {
     expect(select('dp-select').value).toBe('playbook:relay');
     expect(pickerStatus('Preferred playbook')).toBe('1 playbook definition(s) rejected at load: mine: bad');
   });
+
+  // Every picker status line that renders is in the error tone: a refused playbook or enforcement pick, the not-loaded reason, and the load-error notes alike (the playbook line has no muted text, since it renders only when there is something to report).
+  it('every picker status line renders in the error tone: a refused pick, the not-loaded reason and the load-error notes alike', async () => {
+    cd = { ...CD, playbookErrors: [{ id: 'mine', message: 'bad' }] };
+    serve({
+      'PUT /api/settings/conventions/conductor/default-playbook': () => ({ status: 400, json: { error: 'unknown playbook id' } }),
+      'PUT /api/settings/conventions/conductor/default-playbook-enforcement': () => ({ status: 400, json: { error: 'mode must be one of warn | enforce' } }),
+    });
+    const view = renderSection();
+    await expand('Conductor conventions');
+    expect(pickerStatusEl('Preferred playbook').textContent).toBe('1 playbook definition(s) rejected at load: mine: bad');
+    expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
+    pick('dp-select', 'playbook:solo');
+    pick('dpe-select', 'lenient');
+    await waitFor(() => expect(pickerStatusEl('Preferred playbook').textContent).toBe('Save failed: unknown playbook id'));
+    await waitFor(() => expect(pickerStatusEl('Playbook enforcement').textContent).toBe('Save failed: mode must be one of warn | enforce'));
+    expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
+    expect(toneOf(pickerStatusEl('Playbook enforcement'))).toBe('error');
+    view.unmount();
+
+    cd = { ...MISSING, playbookErrors: [] };
+    renderSection();
+    await expand('Conductor conventions');
+    expect(pickerStatusEl('Preferred playbook').textContent).toBe(R);
+    expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
+  });
 });
 
 describe('Conventions → plugin changes', () => {
@@ -711,5 +749,133 @@ describe('Conventions → drafts', () => {
     expect(listLine()).toBe('Delete failed: still in use');
     expect(gets('workspace')).toBe(loads);
     expect(writes().map((w) => w.method)).toEqual(['DELETE', 'PUT', 'POST']);
+  });
+
+  // Cancel ends only the form: a list refusal stays on the line while an Add or Edit form is open and after Cancel closes it, with no reload.
+  it('Cancel on an Add or an Edit form leaves a list refusal in place', async () => {
+    serve({ 'DELETE /api/settings/conventions/workspace/mine': () => ({ status: 409, json: { error: 'still in use' } }) });
+    openAt('#settings/conventions');
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    const loads = gets('workspace');
+    const b = () => block('Workspace conventions');
+
+    fireEvent.click(within(b()).getByRole('button', { name: 'Add custom convention' }));
+    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    fireEvent.click(within(b()).getByRole('button', { name: 'Cancel' }));
+    expect(within(b()).queryByRole('form')).toBeNull();
+    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+
+    fireEvent.click(within(b()).getByRole('button', { name: 'Edit Mine' }));
+    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    fireEvent.click(within(b()).getByRole('button', { name: 'Cancel' }));
+    expect(within(b()).queryByRole('form')).toBeNull();
+    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(gets('workspace')).toBe(loads);
+  });
+
+  // Reopening Settings clears the list refusal of every scope, Project included, even though the remount's own loads do not.
+  it("reopening Settings clears every block's list refusal, Project included", async () => {
+    const refused = () => ({ status: 409, json: { error: 'still in use' } });
+    serve({
+      'DELETE /api/settings/conventions/workspace/mine': refused,
+      'DELETE /api/settings/conventions/conductor/cmine': refused,
+      'DELETE /api/settings/conventions/project/pmine': refused,
+    });
+    openAt('#settings/conventions');
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    await expand('Conductor conventions');
+    await refuseDelete('Conductor conventions', 'C mine', 'cmine');
+    await expand('Project conventions');
+    await refuseDelete('Project conventions', 'P mine', 'pmine');
+    const titles = ['Workspace conventions', 'Conductor conventions', 'Project conventions'] as const;
+    expect(titles.map(listLine)).toEqual(['Delete failed: still in use', 'Delete failed: still in use', 'Delete failed: still in use']);
+
+    const g = [gets('workspace'), gets('conductor'), gets('project')];
+    await leaveAndReenter('conventions');
+    await waitFor(() => expect([gets('workspace'), gets('conductor'), gets('project')]).toEqual([g[0] + 1, g[1] + 1, g[2] + 1]));
+    await screen.findByTestId('conventions-workspace');
+    await screen.findByTestId('conventions-conductor');
+    await screen.findByTestId('conventions-project');
+    expect(titles.map(listLine)).toEqual(['', '', '']);
+  });
+
+  // A refused selection flip reports "Save failed: <server error>" on the list's own status line (no form exists), shown while its resync reload is in flight.
+  it("a refused switch flip reports on the list's status line while its reload is in flight", async () => {
+    let n = 0;
+    const reload = held<RouteAnswer>();
+    routeFetch({
+      'GET /api/settings/conventions/workspace': () => (++n === 1 ? { json: WS } : reload.answer),
+      'PUT /api/settings/conventions/workspace/selection': () => ({ status: 409, json: { error: 'selection refused' } }),
+    });
+    renderSection();
+    await screen.findByTestId('conventions-workspace');
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable Mine' }));
+    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Save failed: selection refused'));
+    expect(n).toBe(2);
+    expect(screen.queryByRole('form')).toBeNull();
+    expect(statusText(block('Workspace conventions'))).toBe('Save failed: selection refused');
+    await act(async () => reload.release({ json: WS }));
+  });
+
+  // A refused flip reloads the scope, so the optimistically flipped switch snaps back to the payload's stored selection once that reload lands.
+  it('a refused switch flip reloads the scope and the switch snaps back to the stored selection', async () => {
+    let n = 0;
+    const reload = held<RouteAnswer>();
+    routeFetch({
+      'GET /api/settings/conventions/workspace': () => (++n === 1 ? { json: WS } : reload.answer),
+      'PUT /api/settings/conventions/workspace/selection': () => ({ status: 409, json: { error: 'selection refused' } }),
+    });
+    renderSection();
+    await screen.findByTestId('conventions-workspace');
+    const sw = () => screen.getByRole('switch', { name: 'Enable Mine' });
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(sw());
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+    await waitFor(() => expect(n).toBe(2));
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+    await act(async () => reload.release({ json: WS }));
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('false'));
+    expect(screen.getByRole('switch', { name: 'Enable Git hygiene' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  // When a refusal and a load failure are both set, the line shows the refusal, not "Failed: …".
+  it("a list refusal outranks a load failure on the list's status line", async () => {
+    let fail = false;
+    serve({
+      'GET /api/settings/conventions/workspace': () => (fail ? { status: 500, json: { error: 'boom' } } : ws),
+      'DELETE /api/settings/conventions/workspace/mine': () => ({ status: 409, json: { error: 'still in use' } }),
+    });
+    openAt('#settings/conventions');
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    fail = true;
+    act(() => notifyPluginsChanged(undefined));
+    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Failed: boom'));
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+  });
+
+  // The list line is muted only while it reads "Loading…"; a refusal and a load failure both render in the error tone.
+  it("the list status line is muted only while loading; a refusal and a load failure render in the error tone", async () => {
+    let n = 0;
+    const first = held<RouteAnswer>();
+    routeFetch({
+      'GET /api/settings/conventions/workspace': () => (++n === 1 ? first.answer : n === 2 ? { status: 500, json: { error: 'boom' } } : { json: WS }),
+      'DELETE /api/settings/conventions/workspace/mine': () => ({ status: 409, json: { error: 'still in use' } }),
+    });
+    renderSection();
+    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Loading…'));
+    expect(toneOf(listLineEl('Workspace conventions') as HTMLElement)).toBe('muted');
+    await act(async () => first.release({ json: WS }));
+    await screen.findByTestId('conventions-workspace');
+    expect(listLineEl('Workspace conventions')).toBeNull();
+
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    expect(toneOf(listLineEl('Workspace conventions') as HTMLElement)).toBe('error');
+
+    act(() => notifyPluginsChanged(undefined));
+    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Failed: boom'));
+    expect(toneOf(listLineEl('Workspace conventions') as HTMLElement)).toBe('error');
   });
 });
