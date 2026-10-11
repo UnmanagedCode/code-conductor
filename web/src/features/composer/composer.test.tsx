@@ -10,7 +10,7 @@ import { emit } from '@/app/events';
 import { stickyPrompt } from '@/app/controller';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
-import { createDraftStore, DRAFT_KEY_PREFIX, draftStore, joinDictation, prependTranscribedTag } from './drafts';
+import { createDraftStore, DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
 
 const inst = (sessionId: string | null, extra: Partial<Instance> = {}): Instance => ({ id: `i-${sessionId}`, project: 'demo', status: 'idle', sessionId, mode: 'x', ...extra });
@@ -218,6 +218,45 @@ describe('drafts', () => {
     expect(prependTranscribedTag('hi', true)).toBe('<transcribed>\nhi');
     expect(prependTranscribedTag('hi', false)).toBe('hi');
     expect(prependTranscribedTag('', true)).toBe('');
+  });
+  // Only setTimeout is faked: the debounce must fire on demand, while the recorder → fetch → deliver chain runs on microtasks.
+  const dictateIntoBox = async (c: ReturnType<typeof mount>) => {
+    await act(async () => { fireEvent.click(c.button()); });
+    await act(async () => { fireEvent.click(c.button()); });
+    await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); });
+  };
+  const storedDraft = (sid: string) => {
+    const raw = localStorage.getItem(`${DRAFT_KEY_PREFIX}${sid}`);
+    return raw === null ? null : (JSON.parse(raw) as { text: string; transcribed: boolean; savedAt: number });
+  };
+
+  it("a dictation into the showing session is saved by the debounce with its transcribed flag, and an edit keeps the flag", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const c = mount(inst('dictated-draft'));
+    await dictateIntoBox(c);
+    expect(c.box().value, 'positive control: the dictation landed in the box').toBe('dictated words');
+    expect(storedDraft('dictated-draft'), 'nothing is written before the debounce').toBeNull();
+    // Date is real here, and the module's draftStore stamps with Date.now: bracket the write.
+    const before = Date.now();
+    vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS);
+    const after = Date.now();
+    const written = storedDraft('dictated-draft');
+    expect(written).toMatchObject({ text: 'dictated words', transcribed: true });
+    expect(written!.savedAt >= before && written!.savedAt <= after, `savedAt ${written!.savedAt} is the time of the write, within [${before}, ${after}]`).toBe(true);
+    type(c.box(), 'dictated words, edited');
+    vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS);
+    expect(storedDraft('dictated-draft'), 'typing into a dictated draft keeps its flag').toMatchObject({ text: 'dictated words, edited', transcribed: true });
+  });
+
+  it('clearing a dictated box by hand drops the transcribed flag, so fresh typed text sends untagged', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const c = mount(inst('dictated-cleared'));
+    await dictateIntoBox(c);
+    expect(c.box().value, 'positive control: the dictation landed in the box').toBe('dictated words');
+    type(c.box(), '');
+    type(c.box(), 'fresh text');
+    fireEvent.click(c.button());
+    expect(sent).toEqual([['prompt', { id: 'i-dictated-cleared', text: 'fresh text' }]]);
   });
 });
 

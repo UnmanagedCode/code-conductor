@@ -78,6 +78,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   // ── Drafts follow the session ───────────────────────────────────────
   const flush = React.useCallback(() => {
     clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
     const cur = sidRef.current;
     if (cur && taRef.current) draftStore.save(cur, { text: taRef.current.value, transcribed: transcribedRef.current });
   }, []);
@@ -111,12 +112,20 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     return () => { removeEventListener('pagehide', onHide); document.removeEventListener('visibilitychange', onVis); };
   }, [flush]);
 
+  // Leaving the session view unmounts the composer: write a pending save now, not from a timer the
+  // page may not live to fire. With nothing pending nothing is written, so a restored draft stays as stored.
+  React.useLayoutEffect(() => () => { if (saveTimer.current !== undefined) flush(); }, [flush]);
+
   function noteChange(nextText: string, nextTranscribed: boolean) {
     const cur = sidRef.current;
     if (!cur) return;
     clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
     if (!nextText) { draftStore.clear(cur); return; }
-    saveTimer.current = setTimeout(() => draftStore.save(cur, { text: nextText, transcribed: nextTranscribed }), DRAFT_SAVE_DEBOUNCE_MS);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = undefined;
+      draftStore.save(cur, { text: nextText, transcribed: nextTranscribed });
+    }, DRAFT_SAVE_DEBOUNCE_MS);
   }
 
   // Rewind / fork drop their prompt back into the composer.
