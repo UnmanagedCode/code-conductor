@@ -105,6 +105,8 @@ The old UI's browser checks, driving `/legacy/` (its stable address until the cu
 
 The deterministic halves live in `tests/` (happy-dom), e.g. `models-responsive.spec.ts` ↔ `tests/settings-models-field-labels.test.mjs`, `awaiting-wake-dot.spec.ts` ↔ `tests/sidebar.test.mjs`, `header-compact.spec.ts` ↔ `tests/header-compact.test.mjs` + `tests/header-compact-css.test.mjs`.
 
+`models-responsive.spec.ts`'s web-UI counterpart is `web/e2e/settings-models-layout.spec.ts` (`desktop` and `phone`, its own cc, the same worst-case seeds plus a user role on a Claude model). Across a viewport sweep and the sidebar's min, default and max widths it checks that nothing overflows the page, the Settings column or the Models section; that each Claude model's name fits its select wherever the column is at least a 320px phone's; that every tier and role select and every default radio shows a caption its name contains; that every control is on screen, inside the section, uncovered at its centre and clear of its row's others; and that the Settings nav sits beside or above the content with every link reachable. Its deterministic half is `web/src/features/settings/models/fieldLabels.test.tsx`; the parity scenario "Models: every tier and role select names its row, …" in `parity/settings.spec.ts` carries the shared part to `android`.
+
 ## Parity scenarios
 
 One behaviour driven against both UIs, `/legacy/` and `/next/`, on all three projects. Each proves a row of the parity ledger (`docs/frontend-testing.md` → Parity ledger) holds identically in both.

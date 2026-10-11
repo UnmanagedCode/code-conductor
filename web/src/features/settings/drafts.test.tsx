@@ -125,8 +125,8 @@ describe('Settings edit drafts', () => {
     expect(steer().getAttribute('aria-checked')).toBe('true');
     const expectDraft = () => {
       expect(input('Label').value).toBe('Draft');
-      expect((screen.getByLabelText('Backend') as HTMLSelectElement).value).toBe('ollama');
-      expect((screen.getByLabelText('Backend') as HTMLSelectElement).disabled).toBe(true);
+      expect((screen.getByLabelText('Backend', { selector: '#cm-backend' }) as HTMLSelectElement).value).toBe('ollama');
+      expect((screen.getByLabelText('Backend', { selector: '#cm-backend' }) as HTMLSelectElement).disabled).toBe(true);
       expect(input('Model id').value).toBe('mine:v1');
       expect(input('Model id').disabled).toBe(true);
       expect(input('Context').value).toBe('64k');

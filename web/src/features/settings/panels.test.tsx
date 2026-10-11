@@ -697,7 +697,7 @@ describe('Models', () => {
     wrap(<ModelsSection />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit Mine 1' }));
     expect((screen.getByLabelText('Model id') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Backend') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Backend', { selector: '#cm-backend' }) as HTMLSelectElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Context'), { target: { value: '1m' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ label: 'Mine 1', contextWindow: 1000000, midTurnSteering: true }));
@@ -706,12 +706,12 @@ describe('Models', () => {
     // Cancel leaves edit mode without a request and unlocks the pair.
     fireEvent.click(screen.getByRole('button', { name: 'Edit Mine 1' }));
     expect((screen.getByLabelText('Model id') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Backend') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Backend', { selector: '#cm-backend' }) as HTMLSelectElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect((screen.getByLabelText('Model id') as HTMLInputElement).disabled).toBe(false);
     expect((screen.getByLabelText('Model id') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('');
-    expect((screen.getByLabelText('Backend') as HTMLSelectElement).disabled).toBe(false);
+    expect((screen.getByLabelText('Backend', { selector: '#cm-backend' }) as HTMLSelectElement).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Add model' })).toBeTruthy();
     expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);

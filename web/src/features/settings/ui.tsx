@@ -47,10 +47,10 @@ export function Status({ text, tone = 'muted', className }: { text?: React.React
 }
 
 /** A captioned control (label above). */
-export function Field({ label, htmlFor, hint, children, className }: { label: React.ReactNode; htmlFor?: string; hint?: React.ReactNode; children: React.ReactNode; className?: string }) {
+export function Field({ label, htmlFor, hint, children, className, labelClassName }: { label: React.ReactNode; htmlFor?: string; hint?: React.ReactNode; children: React.ReactNode; className?: string; labelClassName?: string }) {
   return (
     <div className={cn('grid min-w-0 content-start gap-1.5', className)}>
-      <label htmlFor={htmlFor} className="text-xs font-medium text-muted-foreground">{label}</label>
+      <label htmlFor={htmlFor} className={cn('text-xs font-medium text-muted-foreground', labelClassName)}>{label}</label>
       {children}
       {hint && <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
