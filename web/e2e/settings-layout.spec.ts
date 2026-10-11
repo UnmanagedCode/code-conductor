@@ -7,7 +7,8 @@ import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api, installFakePlugin } from './harness/api.ts';
 
-const LONG = 'Extremely-Long-Unbreakable-Token-For-Layout-Testing';
+// Underscores and dots, not hyphens: CSS breaks a word at a hyphen, so only this form is unbreakable.
+const LONG = 'Extremely_Long_Unbreakable_Token_For_Layout_Testing.v2';
 const LONG_SLUG = 'extremely-long-slug-for-layout-test-ab';
 const EPS = 0.5;
 
@@ -36,7 +37,7 @@ test.beforeAll(async ({ cc }) => {
     expect(r.status, `${route} → ${r.status} ${JSON.stringify(r.body)}`).toBeLessThan(300);
   };
   // Worst-case content: unbreakable ids, labels, templates and env values.
-  await ok('/api/settings/models/backends', { id: LONG_SLUG, label: LONG, template: `${LONG} run claude --model {model} --${LONG}`, env: [{ key: `KEY_${LONG.replaceAll('-', '_').toUpperCase()}`, value: LONG }] });
+  await ok('/api/settings/models/backends', { id: LONG_SLUG, label: LONG, template: `${LONG} run claude --model {model} --${LONG}`, env: [{ key: `KEY_${LONG.replaceAll('.', '_').toUpperCase()}`, value: LONG }] });
   await ok('/api/settings/models/custom', { label: LONG, model: `${LONG}:cloud`, backend: LONG_SLUG, contextWindow: 256000 });
   for (const scope of ['workspace', 'conductor', 'project']) {
     await ok(`/api/settings/conventions/${scope}`, { slug: LONG_SLUG, name: LONG, description: `${LONG} ${LONG}`, body: 'x' });
@@ -134,8 +135,8 @@ function measure(a: { id: string; eps: number }): Report {
     const h = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
     if (!h || !(h === c || c.contains(h) || h.contains(c))) v.push(`control ${name(c)} is covered at its centre`);
   });
-  // Positive control: a section whose body never rendered holds no control.
-  if (controls.length === 0) v.push('rendered no control: its body is missing');
+  // The sweep relies on seeded rows to make every section non-empty; a section with none renders no control here.
+  if (controls.length === 0) v.push('rendered no control with the seeded rows');
   return { violations: v, width: s.width, controls: controls.length };
 }
 
