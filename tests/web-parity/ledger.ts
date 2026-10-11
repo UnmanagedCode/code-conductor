@@ -1017,7 +1017,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'with voice unsupported, an empty composer stays in Send mode',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/composer/composerMode.test.tsx::composer mode follows the voice capability > an empty composer is Send without the voice capability and Dictate with it',
+      ] },
   },
   {
     id: 'composer/R1',
@@ -1040,11 +1042,14 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'composer/R2',
-    old: { file: 'tests/composer.test.mjs', tests: 'rest' },
+    old: { file: 'tests/composer.test.mjs', tests: ['click in send mode does not record'] },
     behaviour: 'a click in Send mode never starts a recording',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/composer/composerMode.test.tsx::a click in Send mode > sends the typed text and never starts a recording',
+        'web/src/features/composer/composerMode.test.tsx::a click in Send mode > control: the same click on an empty composer (Dictate mode) does record',
+      ] },
   },
   {
     id: 'composer-attachments/R1',
@@ -1127,7 +1132,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the turn footer is hidden with no session and shows its working row only during a turn',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/turnFooter.test.tsx::turn footer > is absent with no session and shows the working row only while a turn runs',
+      ] },
   },
   {
     id: 'doc/B6',
@@ -1135,7 +1142,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the task panel batches tasks, keeps ✓ rows while a batch is open, hides when all are done, starts fresh after a finished batch',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/turnFooter.test.tsx::task panel > batches rows, keeps done rows, hides when all are done and restarts after a finished batch',
+      ] },
   },
   {
     id: 'doc/B7',
@@ -1143,7 +1152,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'idle footer shows a live `last response Xm ago` label (15 s tick), nothing before the first turn ends',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/turnFooter.test.tsx::last-response age > re-ticks every 15 seconds and grows with time',
+        'web/src/features/session/turnFooter.test.tsx::last-response age > control: no footer without a last response time',
+      ] },
   },
   {
     id: 'doc/B11',
@@ -1169,7 +1181,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'attach via `+` or drag-and-drop',
     viewports: ['desktop', 'phone'],
     area: 'composer',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/composer/composerMode.test.tsx::attaching files > dropping files on the composer attaches them as removable chips',
+        'web/src/features/composer/composerMode.test.tsx::attaching files > the Attach files button opens the file picker; it is disabled when the session cannot take input',
+        'web/e2e/composer-attach.spec.ts::files from the Attach files button and from a drop become removable chips',
+      ] },
   },
   {
     id: 'doc/B18',
@@ -1687,7 +1703,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a lazy page without call_usage renders no line',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/callUsagePage.test.tsx::call usage on a lazily loaded page > a page without call_usage events renders no usage line; one with them renders one per call',
+      ] },
   },
   {
     id: 'conversation-call-usage/R3',
@@ -1877,11 +1895,25 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'lightbox/R2',
-    old: { file: 'tests/lightbox.test.mjs', tests: 'rest' },
+    old: { file: 'tests/lightbox.test.mjs', tests: [
+        'lightbox: clicking a .tool-result-img opens the overlay with the same src',
+        'lightbox: clicking the backdrop closes the overlay',
+        'lightbox: Escape closes the overlay',
+        'lightbox: tapping the big image toggles full-res zoom (does not close)',
+        'lightbox: backdrop click still closes after zooming',
+        'lightbox: ignores clicks on unrelated images',
+      ] },
     behaviour: 'the overlay for tool-result images: same src, closes on backdrop or Escape, full-size toggle, ignores unrelated images',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/ImageZoom.test.tsx::image overlay for tool-result images > tapping a tool-result thumbnail opens an overlay showing the same image source',
+        'web/src/conversation/ImageZoom.test.tsx::image overlay for tool-result images > Escape closes the overlay',
+        'web/src/conversation/ImageZoom.test.tsx::image overlay for tool-result images > a press on the backdrop closes the overlay',
+        'web/src/conversation/ImageZoom.test.tsx::image overlay for tool-result images > tapping the big image toggles full size and keeps the overlay open; a later close then reopens fit-to-screen',
+        'web/src/conversation/ImageZoom.test.tsx::image overlay for tool-result images > a press on the backdrop still closes the overlay after zooming to full size',
+        'web/src/conversation/ImageZoom.test.tsx::image overlay for tool-result images > an image that is not wrapped for zoom does nothing when tapped',
+      ] },
   },
   {
     id: 'lineage-pager/R1',
@@ -2196,7 +2228,13 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'chips on nested sub-agent rows; non-expandable redacted thinking (also for a live stream of empty deltas); markdown + autolinks on text_end; the formatter via the old re-export',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/renderingBlocks.test.tsx::nested sub-agent rows > a tool call made by a sub-agent renders with the same name hook and server chip title as an outer one',
+        'web/src/conversation/renderingBlocks.test.tsx::redacted thinking > a signature-only thinking block is one static line: no expand control, no char count',
+        'web/src/conversation/renderingBlocks.test.tsx::redacted thinking > a stream of empty thinking deltas ends redacted, not as an empty expandable thought',
+        'web/src/conversation/renderingBlocks.test.tsx::assistant text finalised on text_end > stays plain while streaming, then renders markdown with an autolinked URL and trailing punctuation outside the link',
+        'web/src/conversation/answers.test.tsx::question card locking > replay: every hard-case answer renders its exact rows and locks the card with its picks',
+      ] },
   },
   {
     id: 'rewind-fork-client-text/R1',
@@ -2483,11 +2521,34 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'subagent-panel-dom/R1',
-    old: { file: 'tests/subagent-panel-dom.test.mjs' },
+    old: { file: 'tests/subagent-panel-dom.test.mjs', tests: [
+        'a bound worker\'s row holds exactly one .subagent-playbook, right after .task-text',
+        'an unbound worker gets no .subagent-playbook element at all — the row is unchanged',
+        'a stage change re-renders the label in place, with no stale duplicate',
+        'clicking a worker navigates with a user gesture',
+        'clicking the playbook label still navigates to the worker — it does not break tap-to-navigate',
+        'an idle worker awaiting a wake renders as running, marked subagent-awaiting',
+        'only an idle awaiting worker gets the awaiting treatment',
+        'an idle worker waiting on a background job renders as awaiting, titled "on a job"',
+        'displayStatus running with a job stays plain running, not awaiting',
+      ] },
     behaviour: 'the conductor\'s workers panel: playbook·stage label, tap-to-navigate with a gesture, awaiting-wake and on-a-job treatment and styling',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/session/subagentPanel.test.tsx::workers panel > a worker bound to a playbook stage shows both names; an unbound one, or one with only a playbook, shows no label',
+        'web/src/features/session/subagentPanel.test.tsx::workers panel > a stage change updates the label in place with no duplicate',
+        'web/src/features/session/subagentPanel.test.tsx::workers panel > tapping a worker row or its playbook label selects that worker with a pushed user gesture',
+        'web/src/features/session/subagentPanel.test.tsx::workers panel > an idle worker waiting on a worker or a job is marked, with different hints; plain idle and running rows are unmarked',
+      ] },
+  },
+  {
+    id: 'subagent-panel-dom/R2',
+    old: { file: 'tests/subagent-panel-dom.test.mjs', tests: ['the subagent-awaiting marker is styled accent and pulsing'] },
+    behaviour: 'the awaiting marker is styled accent and pulsing',
+    viewports: ['desktop', 'phone'],
+    area: 'conversation',
+    status: { kind: 'dropped', ruling: 'partial-rows-function-only' },
   },
   {
     id: 'task-notification-bubble/R1',
@@ -2766,7 +2827,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'while an older page loads, the sentinel reads loading',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/lazyHistoryLoading.test.ts::earlier-messages sentinel > reads loading while an older page is in flight and settles to not-loading once it lands',
+      ] },
   },
   {
     id: 'doc/B3',
@@ -2805,7 +2868,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'each cache miss puts a `♻ … tokens evicted / written to cache` notice in the conversation',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/notices.test.tsx::cache-miss notice > an eviction and a cold write each add one line carrying their own token count',
+        'web/src/conversation/notices.test.tsx::cache-miss notice > two misses in one conversation give two lines, one apiece',
+      ] },
   },
   {
     id: 'doc/B14',
@@ -2813,7 +2879,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'user bubbles show attachment thumbnails (memory live, attachments route on replay)',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/attachmentThumbs.test.tsx::user bubble attachment thumbnails > a live image attachment shows its thumbnail from the in-memory bytes',
+        'web/src/conversation/attachmentThumbs.test.tsx::user bubble attachment thumbnails > a replayed image marker line shows a thumbnail served from the instance attachments route',
+      ] },
   },
   {
     id: 'doc/B19',
@@ -2829,7 +2898,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'an Apply leaving Stop & resume logs `⚠ Auto-resume skipped … dropped` per affected session',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/notices.test.tsx::auto-resume-skipped notice > each dropped session logs its own line with its reason',
+      ] },
   },
   {
     id: 'doc/B28',
@@ -2837,7 +2908,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'each turn drained after an abort shows a drained-turn line',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/notices.test.tsx::drained-turn notice > one drain event is one line and two are two, each carrying its count',
+        'web/src/conversation/notices.test.tsx::drained-turn notice > does not end the action group the surrounding tool calls share',
+      ] },
   },
 
   // notifications
@@ -2868,11 +2942,17 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'attention-notifier/R2',
-    old: { file: 'tests/attention-notifier.test.mjs', tests: 'rest' },
+    old: { file: 'tests/attention-notifier.test.mjs', tests: [
+        'a hidden tab notifies even with the same session active',
+        'a visible tab on a full-page view notifies even with the same session active',
+      ] },
     behaviour: 'a hidden tab or a full-page view counts as not on screen',
     viewports: ['desktop', 'phone'],
     area: 'notifications',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/notifications/onScreen.test.ts::the real on-screen predicate > a hidden tab counts as not on screen even with that session active',
+        'web/src/features/notifications/onScreen.test.ts::the real on-screen predicate > a full-page view counts as not on screen even with that session active',
+      ] },
   },
   {
     id: 'notifications/R1',
@@ -2919,7 +2999,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'exactly two pings summarise both projects; mutes persist and restore safely',
     viewports: ['desktop', 'phone'],
     area: 'notifications',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/notifications/mutes.test.ts::summarizeOpenNotifications with exactly two pings > summarises both projects, and a single ping does not',
+        'web/src/features/notifications/mutes.test.ts::session mutes persistence > a mute set round-trips through localStorage across a reload',
+        'web/src/features/notifications/mutes.test.ts::session mutes persistence > corrupt or absent storage restores an empty set',
+      ] },
   },
   {
     id: 'sw-notificationclick/R1',
@@ -2933,11 +3017,25 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'sw-notificationclick/R2',
-    old: { file: 'tests/sw-notificationclick.test.mjs', tests: 'rest' },
+    old: { file: 'tests/sw-notificationclick.test.mjs', tests: [
+        'notificationclick: postMessages the resolved client with instanceId/sessionId',
+        'notificationclick: prefers a visible client over the first-listed hidden one',
+        'notificationclick: falls back to a `focused` client when visibilityState is genuinely absent',
+        'notificationclick: falls through to the next client if the preferred one fails to focus',
+        'notificationclick: stale data (no instanceId/sessionId) degrades to today\'s behavior without throwing',
+        'notificationclick: missing notification.data entirely does not throw',
+      ] },
     behaviour: 'client choice (visible first, then focused, fall through on failure) and stale/missing data tolerance',
     viewports: ['desktop', 'phone', 'android'],
     area: 'notifications',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/sw.test.ts::web service worker notificationclick > posts the resolved client the instance and session ids, and closes the notification',
+        'web/src/sw.test.ts::web service worker notificationclick > prefers a visible client over an earlier-listed hidden one',
+        'web/src/sw.test.ts::web service worker notificationclick > falls back to a focused client when visibilityState is absent',
+        'web/src/sw.test.ts::web service worker notificationclick > falls through to the next client when the preferred one fails to focus, and opens a window only when none can',
+        'web/src/sw.test.ts::web service worker notificationclick > stale data without ids degrades to an id-less message or a bare open, without throwing',
+        'web/src/sw.test.ts::web service worker notificationclick > missing notification data entirely does not throw',
+      ] },
   },
   {
     id: 'doc/B29',
@@ -2956,7 +3054,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'focusing the tab clears the summary and every per-session notification',
     viewports: ['desktop', 'phone'],
     area: 'notifications',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/notifications/focusClear.test.ts::focusing the tab > closes the summary and every per-session ping, and leaves a foreign tag alone',
+      ] },
   },
 
   // android-shell
@@ -3330,11 +3430,14 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'review-lazy-diff/R2',
-    old: { file: 'tests/review-lazy-diff.test.mjs', tests: 'rest' },
+    old: { file: 'tests/review-lazy-diff.test.mjs', tests: ['review: summary renders all files with zero per-file fetches'] },
     behaviour: 'the summary renders a card for every file with no per-file fetch',
     viewports: ['desktop', 'phone'],
     area: 'views',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/reviewSummary.test.tsx::review summary > renders a card for every file from the one summary request, with no per-file fetch',
+        'web/src/features/views/reviewSummary.test.tsx::review summary > a summary with no files renders no cards (control)',
+      ] },
   },
   {
     id: 'main-view-switch/R1',
@@ -3350,7 +3453,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'an over-cap file diff shows a truncation note',
     viewports: ['desktop', 'phone'],
     area: 'views',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/reviewSummary.test.tsx::over-cap file diff > shows an extra note after the still-rendered hunks when truncated, and none when not',
+      ] },
   },
   {
     id: 'doc/A5',
@@ -3358,7 +3463,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the commits header titles the project/worktree with branch; stats show count, `(showing latest N)`, ahead',
     viewports: ['desktop', 'phone'],
     area: 'views',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/commitsHeader.test.tsx::commits header > titles the worktree with its branch, not the parent project, and states count and ahead',
+        'web/src/features/views/commitsHeader.test.tsx::commits header > titles the project when there is no worktree, and omits ahead stats when nothing is ahead (control)',
+      ] },
   },
 
   // cross-cutting
