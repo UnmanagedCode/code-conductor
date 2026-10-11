@@ -3421,7 +3421,7 @@ export const LEDGER: readonly Row[] = [
         'TTS button: clicking a different button stops the first and activates the second',
         'TTS button: natural end (empty stream, no sources) reverts button automatically',
       ] },
-    behaviour: 'the per-message read-aloud button: hidden without TTS, start/stop, switching message, reset at the natural end',
+    behaviour: 'the read-aloud button of every finished text block, which reads that block: hidden without TTS, start/stop, switching message, reset at the natural end',
     viewports: ['desktop', 'phone'],
     area: 'voice',
     status: { kind: 'ported', by: [
@@ -3430,6 +3430,9 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/voice/tts.test.ts::read aloud > a second tap on the speaking message stops it',
         'web/src/features/voice/tts.test.ts::read aloud > tapping another message switches to it',
         'web/src/features/voice/tts.test.ts::read aloud > turns the button back off when playback ends naturally',
+        'web/src/conversation/assistantControls.test.tsx::read-aloud > every finished text block has a read-aloud of its own, placed with that block, that reads that block\'s text; a block still streaming has none until it finishes',
+        'web/src/conversation/assistantControls.test.tsx::read-aloud > the block being read, wherever it sits in the bubble, is the one whose control offers to stop',
+        'web/e2e/conversation-bubbles.spec.ts::every finished text block has a read-aloud of its own that reads that block, and a block still streaming has none',
       ] },
   },
   {

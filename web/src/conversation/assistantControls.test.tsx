@@ -1,12 +1,13 @@
 // The assistant bubble's controls: what copy hands the clipboard (each text block's
 // source in stream order and the plan that closes the bubble; never thinking, tools,
 // questions or sub-agent output), the raw view every text block of the bubble follows,
-// read-aloud, and the same controls mid-stream, on a retired segment, in a replay, on a
+// a read-aloud of its own on every finished text block, and the same controls mid-stream, on a retired segment, in a replay, on a
 // lazy page and across a page seam. A copy announces its outcome while the button keeps
 // its name.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 import { voiceStore } from '@/features/voice/store';
+import * as tts from '@/features/voice/tts';
 import type { UiEvent } from '@/state/types';
 import { ConversationModel, userActionsForStatus, type AssistantNode, type TextNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
@@ -24,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
-  act(() => { voiceStore.set({ ttsAvailable: false }); });
+  act(() => { voiceStore.set({ ttsAvailable: false }); tts.speakStore.set({ activeNodeId: null }); });
 });
 
 async function show(events: UiEvent[], m = new ConversationModel(), actions = noActions) {
@@ -72,6 +73,46 @@ async function view(b: HTMLElement, to: 'raw' | 'rendered') {
 const announced = (b: HTMLElement) => copyButton(b)?.parentElement?.querySelector('[aria-live]')?.textContent ?? '';
 const OFFERS_RAW = ['Show raw text', 'Copy message'];
 const OFFERS_RENDERED = ['Show rendered markdown', 'Copy message'];
+/** The bubble's own read-aloud controls in document order, never a sub-agent bubble's inside it. */
+const speakControls = (b: HTMLElement) =>
+  ([...b.querySelectorAll('button')] as HTMLButtonElement[]).filter((x) => /^(Read aloud|Stop reading)$/.test(x.getAttribute('aria-label') ?? '') && x.closest('[data-item="assistant"]') === b);
+const speakLabels = (b: HTMLElement) => speakControls(b).map((x) => x.getAttribute('aria-label'));
+/** Clicks each of the bubble's read-aloud controls in order; what each handed the speech toggle, as [text, block id]. */
+function spoken(b: HTMLElement): [string, string][] {
+  const toggle = vi.spyOn(tts, 'toggleSpeak').mockImplementation(() => {});
+  try {
+    for (const x of speakControls(b)) fireEvent.click(x);
+    return toggle.mock.calls.map(([t, id]) => [t, id]);
+  } finally {
+    toggle.mockRestore();
+  }
+}
+/** Per text block of the bubble, in order: the text its own read-aloud control speaks, or null where it has none. */
+function blockSpeech(b: HTMLElement): (string | null)[] {
+  const toggle = vi.spyOn(tts, 'toggleSpeak').mockImplementation(() => {});
+  try {
+    const blocks = ([...b.querySelectorAll('[data-text-block]')] as HTMLElement[]).filter((w) => w.closest('[data-item="assistant"]') === b);
+    return blocks.map((w) => {
+      const own = speakControls(b).filter((x) => w.contains(x));
+      if (own.length > 1) throw new Error(`a text block holds ${own.length} read-aloud controls`);
+      if (!own.length) return null;
+      fireEvent.click(own[0]);
+      return toggle.mock.calls.at(-1)![0];
+    });
+  } finally {
+    toggle.mockRestore();
+  }
+}
+/** The first bubble's text blocks, from the model. */
+const textBlocks = (m: ConversationModel) => (m.items[0] as AssistantNode).children.filter((c): c is TextNode => c.type === 'text');
+/** Three finished text blocks, each with its own text, a tool call and a thinking block between them. */
+const threeBlocks = (): UiEvent[] => [
+  ...text('m1', 0, 'ALPHA first **block**'),
+  ...tool('m1', 1, 'tu1', 'Bash', { input: { command: 'ls' }, result: 'out' }),
+  ...text('m1', 2, 'BRAVO second block'),
+  ...thinking('m1', 3, 'hmm'),
+  ...text('m1', 4, 'CHARLIE third block'),
+];
 
 describe('copy', () => {
   it("hands the clipboard every text block's source in stream order, joined by a blank line, and no thinking, tool call or result", async () => {
@@ -221,14 +262,16 @@ describe('the raw view', () => {
   it('read-aloud stays through switching the bubble to raw and back', async () => {
     const { root } = await show(text('m1', 0, 'speak **me**'));
     const b = bubbles(root)[0];
-    expect(names(b), 'precondition: no read-aloud without a voice').toEqual(OFFERS_RAW);
+    expect(speakLabels(b), 'precondition: no read-aloud without a voice').toEqual([]);
     act(() => { voiceStore.set({ ttsAvailable: true }); });
     await flush();
-    expect(names(b)).toEqual([...OFFERS_RAW, 'Read aloud']);
+    expect(speakLabels(b)).toEqual(['Read aloud']);
     await view(b, 'raw');
-    expect(names(b)).toEqual([...OFFERS_RENDERED, 'Read aloud']);
+    expect(b.textContent, 'fixture check: the bubble shows its source').toContain('speak **me**');
+    expect(speakLabels(b)).toEqual(['Read aloud']);
     await view(b, 'rendered');
-    expect(names(b)).toEqual([...OFFERS_RAW, 'Read aloud']);
+    expect(b.textContent, 'fixture check: the bubble renders its markdown again').not.toContain('**');
+    expect(speakLabels(b)).toEqual(['Read aloud']);
   });
 });
 
@@ -249,17 +292,55 @@ describe('read-aloud', () => {
     await flush();
     const [sub] = subBubbles(root);
     expect(sub, "fixture check: the sub-agent's bubble is on screen").toBeTruthy();
-    expect(names(outer), 'positive control: the outer bubble offers read-aloud').toEqual([...OFFERS_RAW, 'Read aloud']);
-    expect(names(sub), 'the sub-agent bubble offers copy and raw, never read-aloud').toEqual(OFFERS_RAW);
+    expect(speakLabels(outer).length, 'positive control: the outer bubble offers read-aloud').toBeGreaterThan(0);
+    expect(speakLabels(sub), 'the sub-agent bubble never offers read-aloud').toEqual([]);
+    expect(names(sub), 'it offers copy and raw').toEqual(OFFERS_RAW);
   });
 
   it('a still-streaming block offers no read-aloud; a finalized one does', async () => {
     act(() => { voiceStore.set({ ttsAvailable: true }); });
     const { m, root } = await show([{ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'still **going**' }]);
     const b = bubbles(root)[0];
-    expect(names(b), 'a still-streaming block offers copy and raw but no read-aloud').toEqual(OFFERS_RAW);
+    expect(names(b), 'a still-streaming block offers copy and raw').toEqual(OFFERS_RAW);
+    expect(speakLabels(b), 'but no read-aloud').toEqual([]);
     await live(m, [{ kind: 'text_end', msgId: 'm1', blockIdx: 0 }]);
-    expect(names(b), 'the finalized block offers read-aloud').toEqual([...OFFERS_RAW, 'Read aloud']);
+    expect(speakLabels(b), 'the finalized block offers read-aloud').toEqual(['Read aloud']);
+  });
+
+  it("every finished text block has a read-aloud of its own, placed with that block, that reads that block's text; a block still streaming has none until it finishes", async () => {
+    act(() => { voiceStore.set({ ttsAvailable: true }); });
+    const { m, root } = await show([...threeBlocks(), { kind: 'text_delta', msgId: 'm1', blockIdx: 5, text: 'DELTA still streaming' }]);
+    const blocks = textBlocks(m);
+    expect(blocks.map((t) => [t.buffer, t.finalized]), 'fixture check: three finished blocks, then one still streaming').toEqual([
+      ['ALPHA first **block**', true], ['BRAVO second block', true], ['CHARLIE third block', true], ['DELTA still streaming', false],
+    ]);
+    const b = bubbles(root)[0];
+    expect(speakControls(b).length, 'positive control: the bubble offers read-aloud').toBeGreaterThan(0);
+    expect(spoken(b), "each finished block's control reads that block, in stream order").toEqual(blocks.slice(0, 3).map((t) => [t.buffer, t.id]));
+    expect(names(b), "the bubble's row of controls holds no read-aloud besides").toEqual(OFFERS_RAW);
+    expect(blockSpeech(b), 'each control sits with the block it reads; the streaming block has none').toEqual(['ALPHA first **block**', 'BRAVO second block', 'CHARLIE third block', null]);
+    await live(m, [{ kind: 'text_end', msgId: 'm1', blockIdx: 5 }]);
+    expect(blockSpeech(b), 'the block that finished gains its own').toEqual(['ALPHA first **block**', 'BRAVO second block', 'CHARLIE third block', 'DELTA still streaming']);
+  });
+
+  it('the block being read, wherever it sits in the bubble, is the one whose control offers to stop', async () => {
+    act(() => { voiceStore.set({ ttsAvailable: true }); });
+    const { m, root } = await show(threeBlocks());
+    const blocks = textBlocks(m);
+    expect(blocks.map((t) => t.finalized), 'fixture check: three finished blocks').toEqual([true, true, true]);
+    const b = bubbles(root)[0];
+    act(() => { tts.speakStore.set({ activeNodeId: blocks[2].id }); });
+    await flush();
+    expect(speakLabels(b), 'positive control: a control in the bubble follows playback').toContain('Stop reading');
+    for (const [i, t] of blocks.entries()) {
+      act(() => { tts.speakStore.set({ activeNodeId: t.id }); });
+      await flush();
+      expect(speakLabels(b), `while block ${i + 1} is read`).toEqual(blocks.map((_, j) => (j === i ? 'Stop reading' : 'Read aloud')));
+      expect(speakControls(b).map((x) => x.getAttribute('aria-pressed')), `block ${i + 1}'s control is the pressed one`).toEqual(blocks.map((_, j) => String(j === i)));
+    }
+    act(() => { tts.speakStore.set({ activeNodeId: null }); });
+    await flush();
+    expect(speakLabels(b), 'with nothing playing, every block offers read-aloud').toEqual(['Read aloud', 'Read aloud', 'Read aloud']);
   });
 });
 

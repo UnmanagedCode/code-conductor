@@ -301,9 +301,11 @@ function TextBlockView({ node, view }: { node: TextNode; view: 'rendered' | 'raw
   return <Markdown text={node.buffer} className={MD_TEXT} />;
 }
 
+// The bubble's controls show while it is hovered or one of them has focus, and always where nothing hovers.
+const ASSISTANT_CONTROLS_REVEAL = 'opacity-0 transition-opacity group-hover/asst:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+
 function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx }) {
   const hasText = node.children.some((c) => c.type === 'text') || !!node.planText;
-  const lastText = [...node.children].reverse().find((c): c is TextNode => c.type === 'text' && c.finalized);
   return (
     <div className="group/asst flex gap-3" data-item="assistant">
       {!ctx.model.isSub && (
@@ -313,15 +315,22 @@ function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx })
       )}
       <div className="min-w-0 flex-1 space-y-3">
         {node.children.map((c) => {
-          if (c.type === 'text') return <TextBlockView key={c.id} node={c} view={node.view} />;
+          // Each finished block carries its own read-aloud, right after the text it reads.
+          if (c.type === 'text') {
+            return (
+              <div key={c.id} data-text-block>
+                <TextBlockView node={c} view={node.view} />
+                {c.finalized && !ctx.model.isSub && <div className={cn('flex', ASSISTANT_CONTROLS_REVEAL)}><SpeakButton text={c.buffer} nodeId={c.id} /></div>}
+              </div>
+            );
+          }
           if (c.type === 'group') return <ActionGroup key={c.id} node={c} rev={c.rev} ctx={ctx} />;
           return <CallUsageLine key={c.id} node={c} />;
         })}
         {hasText && (
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/asst:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+          <div className={cn('flex items-center gap-0.5', ASSISTANT_CONTROLS_REVEAL)}>
             <ViewToggle view={node.view} onChange={(v) => ctx.model.setAssistantView(node, v)} />
             <CopyButton getText={() => ConversationModel.assistantCopyText(node)} label="Copy message" />
-            {lastText && !ctx.model.isSub && <SpeakButton text={lastText.buffer} nodeId={lastText.id} />}
           </div>
         )}
       </div>
