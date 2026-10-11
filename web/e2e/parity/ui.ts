@@ -248,8 +248,8 @@ export interface Ui {
   stripEntry(page: Page, sessionId: string): Promise<Locator>;
   /** A strip entry's selected state, fill and owner colour (null when it has none). */
   stripEntryStyle(entry: Locator): Promise<{ active: boolean; fill: string; colour: string | null }>;
-  /** A row's status dot: its tooltip and computed fill. */
-  rowDot(row: Locator): Promise<{ title: string; fill: string }>;
+  /** A row's status dot: its tooltip. */
+  rowDot(row: Locator): Promise<{ title: string }>;
 
   // Settings part 3 (card 2026-0637)
   /** Opens a Conventions block if it is closed; idempotent. */
@@ -964,7 +964,7 @@ export const legacy: Ui = {
   }),
   rowDot: (row) => row.evaluate((e) => {
     const d = e.querySelector<HTMLElement>('.dot')!;
-    return { title: d.title, fill: getComputedStyle(d).backgroundColor };
+    return { title: d.title };
   }),
 
   // Settings part 3 (card 2026-0637)
@@ -1632,7 +1632,7 @@ export const next: Ui = {
   }),
   rowDot: (row) => row.evaluate((e) => {
     const d = e.querySelector<HTMLElement>('[data-dot]')!;
-    return { title: d.title, fill: getComputedStyle(d).backgroundColor };
+    return { title: d.title };
   }),
 
   // Settings part 3 (card 2026-0637)
