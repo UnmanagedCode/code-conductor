@@ -87,7 +87,7 @@ function ConductorPlaybookPrefs({ data }: { data: ConventionsPayload }) {
     }
   }
   return (
-    <div className="grid gap-4 rounded-lg bg-muted/40 p-3 lg:grid-cols-2">
+    <div className="grid gap-4 rounded-lg bg-muted/40 p-3 @3xl:grid-cols-2">
       <Field
         label="Preferred playbook"
         htmlFor="dp-select"
@@ -212,8 +212,8 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
             <li className="flex items-start gap-3 px-3 py-2.5">
               <LockIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{data.core.name}</span><Badge variant="secondary">always on</Badge></div>
-                <div className="text-xs text-muted-foreground">{data.core.description}</div>
+                <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 text-sm font-medium break-words">{data.core.name}</span><Badge variant="secondary">always on</Badge></div>
+                <div className="text-xs break-words text-muted-foreground">{data.core.description}</div>
               </div>
             </li>
           )}
@@ -224,11 +224,11 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
               )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium">{c.name}</span>
-                  <span className="font-mono text-[11px] text-muted-foreground">{c.slug}</span>
+                  <span className="min-w-0 text-sm font-medium break-words">{c.name}</span>
+                  <span className="min-w-0 font-mono text-[11px] break-all text-muted-foreground">{c.slug}</span>
                   {c.plugin ? <Badge variant="plan"><PlugIcon />plugin: {c.plugin}</Badge> : c.builtin ? <Badge variant="outline">built-in</Badge> : null}
                 </div>
-                <div className="text-xs text-muted-foreground">{c.description}</div>
+                <div className="text-xs break-words text-muted-foreground">{c.description}</div>
               </div>
               {!c.plugin && !c.builtin && (
                 <div className="flex shrink-0 gap-0.5">
@@ -245,15 +245,15 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
         </ul>
       )}
       {form ? (
-        <form className="grid gap-3 rounded-lg border border-dashed p-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editingSlug ? `Edit ${noun}` : `Add ${noun}`}>
+        <form className="grid gap-3 rounded-lg border border-dashed p-3 @xl:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label={editingSlug ? `Edit ${noun}` : `Add ${noun}`}>
           <Field label="Slug" htmlFor={`${base}-slug`}><Input id={`${base}-slug`} value={form.slug} disabled={!!editingSlug} placeholder="e.g. my-convention" onChange={(e) => setField({ slug: e.target.value })} autoFocus={!editingSlug} /></Field>
           <Field label="Name" htmlFor={`${base}-name`}><Input id={`${base}-name`} value={form.name} placeholder="Short name" onChange={(e) => setField({ name: e.target.value })} autoFocus={!!editingSlug} /></Field>
-          <Field label="Description" htmlFor={`${base}-desc`} className="sm:col-span-2"><Input id={`${base}-desc`} value={form.description} placeholder="One-line description" onChange={(e) => setField({ description: e.target.value })} /></Field>
-          <Field label="Body (Markdown)" htmlFor={`${base}-body`} className="sm:col-span-2">
+          <Field label="Description" htmlFor={`${base}-desc`} className="@xl:col-span-2"><Input id={`${base}-desc`} value={form.description} placeholder="One-line description" onChange={(e) => setField({ description: e.target.value })} /></Field>
+          <Field label="Body (Markdown)" htmlFor={`${base}-body`} className="@xl:col-span-2">
             <Textarea id={`${base}-body`} className="min-h-32 font-mono text-[13px]" value={form.body} placeholder={bodyPlaceholder} onChange={(e) => setField({ body: e.target.value })} />
           </Field>
-          <Status text={formError} tone="error" className="sm:col-span-2" />
-          <div className="flex justify-end gap-2 sm:col-span-2">
+          <Status text={formError} tone="error" className="@xl:col-span-2" />
+          <div className="flex flex-wrap justify-end gap-2 @xl:col-span-2">
             <Button type="button" variant="ghost" onClick={() => patchDraft(scope, NO_FORM)}>Cancel</Button>
             <Button type="submit">Save</Button>
           </div>
@@ -274,7 +274,7 @@ function Block({ scope, title, description, children }: { scope: ConventionScope
         <span className="font-semibold">{title}</span>
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-4 border-t px-5 py-4">
-        <p className="max-w-[70ch] text-sm leading-relaxed text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.85em]">{description}</p>
+        <p className="max-w-[70ch] text-sm leading-relaxed text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.85em] [&_code]:break-all">{description}</p>
         {children}
       </CollapsibleContent>
     </Collapsible>

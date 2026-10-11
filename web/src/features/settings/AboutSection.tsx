@@ -86,7 +86,7 @@ export function AboutSection() {
           </p>
           <p>
             Source code:{' '}
-            <a className="inline-flex items-center gap-1 font-medium text-primary hover:underline" href="https://github.com/UnmanagedCode/code-conductor" target="_blank" rel="noopener noreferrer">
+            <a className="inline-flex max-w-full items-center gap-1 font-medium break-all text-primary hover:underline" href="https://github.com/UnmanagedCode/code-conductor" target="_blank" rel="noopener noreferrer">
               github.com/UnmanagedCode/code-conductor <ExternalLinkIcon className="size-3.5" />
             </a>
           </p>
