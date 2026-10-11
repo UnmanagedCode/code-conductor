@@ -18,164 +18,185 @@ const STATE_VARIANT: Record<string, 'success' | 'warning' | 'destructive' | 'sec
   invalid: 'destructive', incompatible: 'warning', conflict: 'warning',
 };
 
-type Tone = { text: string; error?: boolean } | null;
+type Line = { text: string; error?: boolean } | null;
+type ProjectWorktrees = { name: string; worktrees?: { worktreeName?: string }[] };
+type PluginsState = {
+  rows: PluginRow[] | null;
+  worktrees: Record<string, string[]>;
+  library: LibraryEntry[] | null;
+  /** Each status line as the last load left it. */
+  loaded: Line;
+  libLoaded: Line;
+  /** An action's progress, warning or refusal; shown over the load's line until the next reload that resets. */
+  note: Line;
+  libNote: Line;
+  libTail: string;
+  live: Record<string, string>;
+  /** The one-action-at-a-time guard. */
+  busy: boolean;
+  busyEntry: { id: string; label: string } | null;
+  updatingAll: string | null;
+};
+const PLUGINS0: PluginsState = {
+  rows: null, worktrees: {}, library: null, loaded: { text: 'Loading…' }, libLoaded: { text: 'Loading…' },
+  note: null, libNote: null, libTail: '', live: {}, busy: false, busyEntry: null, updatingAll: null,
+};
 
-// The running library action lives at module scope, not in the section: an
-// Update all keeps running after Settings is left, and a remounted section must
-// still show it and keep every other action locked.
-const pluginsBusyStore = createStore<{ busyEntry: { id: string; label: string } | null; updatingAll: string | null }>({ busyEntry: null, updatingAll: null });
-const setBusyEntry = (busyEntry: { id: string; label: string } | null) => pluginsBusyStore.set({ busyEntry });
-const setUpdatingAll = (updatingAll: string | null) => pluginsBusyStore.set({ updatingAll });
+// The section's lists, status lines, output and running action live at module
+// scope, not in the component: Settings remounts a section on every switch and
+// on re-entry, and an action still running then must keep every other action
+// locked and land its outcome in the section shown.
+export const pluginsStore = createStore<PluginsState>(PLUGINS0);
 
-export function PluginsSection() {
-  const [rows, setRows] = React.useState<PluginRow[] | null>(null);
-  const [worktrees, setWorktrees] = React.useState<Record<string, string[]>>({});
-  const [library, setLibrary] = React.useState<LibraryEntry[] | null>(null);
-  const [status, setStatus] = React.useState<Tone>({ text: 'Loading…' });
-  const [libStatus, setLibStatus] = React.useState<Tone>({ text: 'Loading…' });
-  const [libTail, setLibTail] = React.useState('');
-  const [live, setLive] = React.useState<Record<string, string>>({});
-  const { busyEntry, updatingAll } = useStore(pluginsBusyStore, (s) => s);
-  const busy = React.useRef(false);
+/** Takes the one-action-at-a-time guard; false while another action holds it. */
+function claim(): boolean {
+  if (pluginsStore.get().busy) return false;
+  pluginsStore.set({ busy: true });
+  return true;
+}
 
-  const load = React.useCallback(async () => {
-    try {
-      const [plugins, projects, lib] = await Promise.all([
-        json<{ rows: PluginRow[]; notices?: { file: string; reason: string; backup?: string }[] }>('/api/plugins'),
-        json<any[]>('/api/projects').catch(() => []),
-        json<{ entries: LibraryEntry[]; skipped?: { dir: string; file: string | null; reason: string }[] }>('/api/plugins/library'),
-      ]);
-      const wt: Record<string, string[]> = {};
-      for (const p of projects) wt[p.name] = (p.worktrees || []).map((w: any) => w.worktreeName).filter(Boolean);
-      setWorktrees(wt);
-      setRows(plugins.rows);
-      setLibrary(lib.entries);
-      if (plugins.notices?.length) {
-        setStatus({ error: true, text: plugins.notices.map((n) => `${n.file} was unreadable (${n.reason})${n.backup ? ` — moved aside to ${n.backup}; plugin enable/version state was reset` : ''}`).join(' · ') });
-      } else {
-        setStatus({ text: plugins.rows.length ? `${plugins.rows.length} plugin${plugins.rows.length === 1 ? '' : 's'}` : 'No plugins found. A plugin is a project with a conductor.plugin.json at its root.' });
-      }
-      if (lib.skipped?.length) {
-        setLibStatus({ error: true, text: `Skipped ${lib.skipped.length} library drop-in(s): ${lib.skipped.map((s) => (s.file === null ? `${s.dir} (${s.reason})` : `${s.dir}/${s.file} (${s.reason})`)).join(', ')}` });
-      } else {
-        setLibStatus({ text: lib.entries.length ? `${lib.entries.length} available` : 'No library entries.' });
-      }
-      return plugins.rows;
-    } catch (e) {
-      setStatus({ error: true, text: `Failed to load plugins: ${errText(e)}` });
-      return null;
-    }
-  }, []);
-
-  React.useEffect(() => { void load(); }, [load]);
-
-  async function act(label: string, fn: () => Promise<unknown>, change?: PluginsChange) {
-    if (busy.current) return;
-    busy.current = true;
-    setStatus({ text: `${label}…` });
-    try {
-      await fn();
-      await load();
-      notifyPluginsChanged(change);
-    } catch (e) {
-      setStatus({ error: true, text: `${label} failed: ${errText(e)}` });
-    } finally {
-      busy.current = false;
-    }
+/**
+ * Reloads both lists and the load-owned status lines. `reset` also drops both
+ * action notes and every live log, as each reload the old UI made after an
+ * action did; a remount's load keeps them.
+ */
+async function loadPlugins(reset: boolean): Promise<PluginRow[] | null> {
+  try {
+    const [plugins, projects, lib] = await Promise.all([
+      json<{ rows: PluginRow[]; notices?: { file: string; reason: string; backup?: string }[] }>('/api/plugins'),
+      json<ProjectWorktrees[]>('/api/projects').catch((): ProjectWorktrees[] => []),
+      json<{ entries: LibraryEntry[]; skipped?: { dir: string; file: string | null; reason: string }[] }>('/api/plugins/library'),
+    ]);
+    const worktrees: Record<string, string[]> = {};
+    for (const p of projects) worktrees[p.name] = (p.worktrees || []).map((w) => w.worktreeName).filter((n): n is string => !!n);
+    const loaded: Line = plugins.notices?.length
+      ? { error: true, text: plugins.notices.map((n) => `${n.file} was unreadable (${n.reason})${n.backup ? ` — moved aside to ${n.backup}; plugin enable/version state was reset` : ''}`).join(' · ') }
+      : { text: plugins.rows.length ? `${plugins.rows.length} plugin${plugins.rows.length === 1 ? '' : 's'}` : 'No plugins found. A plugin is a project with a conductor.plugin.json at its root.' };
+    const libLoaded: Line = lib.skipped?.length
+      ? { error: true, text: `Skipped ${lib.skipped.length} library drop-in(s): ${lib.skipped.map((s) => (s.file === null ? `${s.dir} (${s.reason})` : `${s.dir}/${s.file} (${s.reason})`)).join(', ')}` }
+      : { text: lib.entries.length ? `${lib.entries.length} available` : 'No library entries.' };
+    pluginsStore.set({ rows: plugins.rows, worktrees, library: lib.entries, loaded, libLoaded, ...(reset ? { note: null, libNote: null, live: {} } : {}) });
+    return plugins.rows;
+  } catch (e) {
+    pluginsStore.set({ loaded: { error: true, text: `Failed to load plugins: ${errText(e)}` } });
+    return null;
   }
+}
 
-  const appendLive = (id: string) => (text: string) => setLive((l) => ({ ...l, [id]: capLog(l[id] ?? '', text) }));
+/**
+ * Opening Settings drops the action notes and live logs, as the old UI's reload
+ * on open did. While an action is running it keeps them, so its progress line and
+ * log stay on screen, as About's running update does; the old reload replaced them.
+ */
+export function resetPluginNotes() {
+  if (!pluginsStore.get().busy) pluginsStore.set({ note: null, libNote: null, live: {} });
+}
 
-  async function install(entry: LibraryEntry) {
-    if (busy.current) return;
-    busy.current = true;
-    setBusyEntry({ id: entry.id, label: 'Installing…' });
-    setLibStatus({ text: `Installing ${entry.name}…` });
-    setLibTail('');
-    try {
-      const result = await streamAction(`/api/plugins/library/${entry.id}/install`, appendLive(entry.id));
-      await load();
-      notifyPluginsChanged(undefined);
-      const w = hookWarning(entry.name, 'Installed', 'post-install', result?.postClone);
-      if (w) { setLibStatus({ error: true, text: w.text }); setLibTail(w.tail ?? ''); }
-    } catch (e) {
-      setLibStatus({ error: true, text: `Installing ${entry.name} failed: ${errText(e)}` });
-      if ((e as HttpError).tail) setLibTail((e as HttpError).tail!);
-    } finally {
-      setBusyEntry(null);
-      busy.current = false;
-    }
+const appendLive = (id: string) => (text: string) => pluginsStore.set((s) => ({ live: { ...s.live, [id]: capLog(s.live[id] ?? '', text) } }));
+
+async function act(label: string, fn: () => Promise<unknown>, change?: PluginsChange) {
+  if (!claim()) return;
+  pluginsStore.set({ note: { text: `${label}…` } });
+  try {
+    await fn();
+    await loadPlugins(true);
+    // A failed reload leaves its own message on the line, never the progress note.
+    pluginsStore.set({ note: null });
+    notifyPluginsChanged(change);
+  } catch (e) {
+    pluginsStore.set({ note: { error: true, text: `${label} failed: ${errText(e)}` } });
+  } finally {
+    pluginsStore.set({ busy: false });
   }
+}
 
-  async function runUpdate(entry: LibraryEntry): Promise<{ ok: true; result: UpdateResult } | { ok: false; error: string; tail?: string }> {
-    try {
-      return { ok: true, result: await streamAction(`/api/plugins/library/${entry.id}/update`, appendLive(entry.id)) };
-    } catch (e) {
-      return { ok: false, error: errText(e), tail: (e as HttpError).tail };
-    }
+async function install(entry: LibraryEntry) {
+  if (!claim()) return;
+  pluginsStore.set({ busyEntry: { id: entry.id, label: 'Installing…' }, libNote: { text: `Installing ${entry.name}…` }, libTail: '' });
+  try {
+    const result = await streamAction(`/api/plugins/library/${entry.id}/install`, appendLive(entry.id));
+    await loadPlugins(true);
+    notifyPluginsChanged(undefined);
+    const w = hookWarning(entry.name, 'Installed', 'post-install', result?.postClone);
+    pluginsStore.set(w ? { libNote: { error: true, text: w.text }, libTail: w.tail ?? '' } : { libNote: null });
+  } catch (e) {
+    const tail = (e as HttpError).tail;
+    pluginsStore.set({ libNote: { error: true, text: `Installing ${entry.name} failed: ${errText(e)}` }, ...(tail ? { libTail: tail } : {}) });
+  } finally {
+    pluginsStore.set({ busyEntry: null, busy: false });
   }
+}
 
-  async function update(entry: LibraryEntry) {
-    if (busy.current) return;
-    busy.current = true;
-    setBusyEntry({ id: entry.id, label: 'Updating…' });
-    setLibStatus({ text: `Updating ${entry.name}…` });
-    setLibTail('');
-    try {
-      const out = await runUpdate(entry);
-      if (out.ok) {
-        const fresh = (await load()) ?? rows ?? [];
-        notifyPluginsChanged(updateChange([out.result], fresh));
-        const w = updateWarning(entry.name, out.result);
-        if (w) { setLibStatus({ error: true, text: w.text }); setLibTail(w.tail ?? ''); }
-      } else {
-        setLibStatus({ error: true, text: `Updating ${entry.name} failed: ${out.error}` });
-        if (out.tail) setLibTail(out.tail);
-      }
-    } finally {
-      setBusyEntry(null);
-      busy.current = false;
-    }
+async function runUpdate(entry: LibraryEntry): Promise<{ ok: true; result: UpdateResult } | { ok: false; error: string; tail?: string }> {
+  try {
+    return { ok: true, result: await streamAction(`/api/plugins/library/${entry.id}/update`, appendLive(entry.id)) };
+  } catch (e) {
+    return { ok: false, error: errText(e), tail: (e as HttpError).tail };
   }
+}
 
-  async function updateAll() {
-    const targets = (library || []).filter((e) => e.installed && e.updateAvailable);
-    if (busy.current || !targets.length) return;
-    busy.current = true;
-    setLibTail('');
-    const outcomes: ({ name: string } & Awaited<ReturnType<typeof runUpdate>>)[] = [];
-    try {
-      for (const [i, entry] of targets.entries()) {
-        setUpdatingAll(`Updating ${i + 1}/${targets.length}…`);
-        setBusyEntry({ id: entry.id, label: 'Updating…' });
-        setLibStatus({ text: `Updating ${entry.name} (${i + 1}/${targets.length})…` });
-        outcomes.push({ name: entry.name, ...(await runUpdate(entry)) });
+async function update(entry: LibraryEntry) {
+  if (!claim()) return;
+  pluginsStore.set({ busyEntry: { id: entry.id, label: 'Updating…' }, libNote: { text: `Updating ${entry.name}…` }, libTail: '' });
+  try {
+    const out = await runUpdate(entry);
+    if (out.ok) {
+      const fresh = (await loadPlugins(true)) ?? pluginsStore.get().rows ?? [];
+      notifyPluginsChanged(updateChange([out.result], fresh));
+      const w = updateWarning(entry.name, out.result);
+      pluginsStore.set(w ? { libNote: { error: true, text: w.text }, libTail: w.tail ?? '' } : { libNote: null });
+    } else {
+      pluginsStore.set({ libNote: { error: true, text: `Updating ${entry.name} failed: ${out.error}` }, ...(out.tail ? { libTail: out.tail } : {}) });
+    }
+  } finally {
+    pluginsStore.set({ busyEntry: null, busy: false });
+  }
+}
+
+async function updateAll() {
+  const targets = (pluginsStore.get().library || []).filter((e) => e.installed && e.updateAvailable);
+  if (!targets.length || !claim()) return;
+  pluginsStore.set({ libTail: '' });
+  const outcomes: ({ name: string } & Awaited<ReturnType<typeof runUpdate>>)[] = [];
+  try {
+    for (const [i, entry] of targets.entries()) {
+      pluginsStore.set({
+        updatingAll: `Updating ${i + 1}/${targets.length}…`,
+        busyEntry: { id: entry.id, label: 'Updating…' },
+        libNote: { text: `Updating ${entry.name} (${i + 1}/${targets.length})…` },
+      });
+      outcomes.push({ name: entry.name, ...(await runUpdate(entry)) });
+    }
+    pluginsStore.set({ busyEntry: null });
+    const fresh = (await loadPlugins(true)) ?? pluginsStore.get().rows ?? [];
+    const ok = outcomes.filter((o): o is { name: string; ok: true; result: UpdateResult } => o.ok);
+    if (ok.length) notifyPluginsChanged(updateChange(ok.map((o) => o.result), fresh));
+    const problems: { name: string; text: string; tail?: string }[] = [];
+    for (const o of outcomes) {
+      if (!o.ok) problems.push({ name: o.name, text: `${o.name} failed: ${o.error}`, tail: o.tail });
+      else {
+        const w = updateWarning(o.name, o.result);
+        if (w) problems.push({ name: o.name, ...w });
       }
-      setBusyEntry(null);
-      const fresh = (await load()) ?? rows ?? [];
-      const ok = outcomes.filter((o): o is { name: string; ok: true; result: UpdateResult } => o.ok);
-      if (ok.length) notifyPluginsChanged(updateChange(ok.map((o) => o.result), fresh));
-      const problems: { name: string; text: string; tail?: string }[] = [];
-      for (const o of outcomes) {
-        if (!o.ok) problems.push({ name: o.name, text: `${o.name} failed: ${o.error}`, tail: o.tail });
-        else {
-          const w = updateWarning(o.name, o.result);
-          if (w) problems.push({ name: o.name, ...w });
-        }
-      }
-      setLibStatus({
+    }
+    const tails = problems.filter((p) => p.tail);
+    pluginsStore.set({
+      libNote: {
         error: problems.length > 0,
         text: `Updated ${ok.length} of ${targets.length} plugin${targets.length === 1 ? '' : 's'}${problems.length ? ` — ${problems.map((p) => p.text).join('; ')}` : ''}`,
-      });
-      const tails = problems.filter((p) => p.tail);
-      if (tails.length) setLibTail(tails.map((p) => `── ${p.name} ──\n${p.tail}`).join('\n\n'));
-    } finally {
-      setUpdatingAll(null);
-      setBusyEntry(null);
-      busy.current = false;
-    }
+      },
+      ...(tails.length ? { libTail: tails.map((p) => `── ${p.name} ──\n${p.tail}`).join('\n\n') } : {}),
+    });
+  } finally {
+    pluginsStore.set({ updatingAll: null, busyEntry: null, busy: false });
   }
+}
 
+export function PluginsSection() {
+  const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, busyEntry, updatingAll } = useStore(pluginsStore, (s) => s);
+  React.useEffect(() => { void loadPlugins(false); }, []);
+  const status = note ?? loaded;
+  const libStatus = libNote ?? libLoaded;
   const updatable = (library || []).filter((e) => e.installed && e.updateAvailable).length;
   const locked = !!busyEntry || !!updatingAll;
 
