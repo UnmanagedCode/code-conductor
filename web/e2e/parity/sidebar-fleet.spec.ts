@@ -8,6 +8,7 @@ import { expect, test, type Cc } from '../harness/fixtures.ts';
 import { seedTranscript } from '../harness/transcript.ts';
 import { archived, colourOf, gone, idleInst, insts, liveModel, spawnConductor, spawnWorker } from './fleet.ts';
 import { parity } from './parity.ts';
+import type { Ui } from './ui.ts';
 
 test.use({ ccOptions: { server: 'sidebar-fleet' } });
 
@@ -57,7 +58,7 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
     return workers.every((sid) => all.find((i) => i.sessionId === sid)?.ownerSessionId);
   }, { message: 'every worker reports its owner', timeout: 20_000 }).toBe(true);
 
-  return { P, O, aSid: a.sessionId, aLabel, colA, colB, aSolo, aSolo2, aMixed, bMixed, aMain, bMain, hand };
+  return { P, O, a, b, aSid: a.sessionId, aLabel, colA, colB, aSolo, aSolo2, aMixed, bMixed, aMain, bMain, bOther, hand };
 }
 
 parity('legacy-sidebar-lenses/R7', 'the Projects lens lists no .conduct row while a conductor is live and .conduct has a disk row', async ({ page, cc, ui, uniq }) => {
@@ -159,5 +160,160 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
     expect(after.fill).not.toBe(before.fill);
     expect(await ui.ownerBar(r)).toBe(f.colA);
     expect(after.weight).toBe('700');
+  });
+});
+
+// Sidebar B3 (card 2026-0642)
+const BARE = { sessions: false, worktrees: false, rows: 0, hint: false };
+/** `sid`'s row in the .conduct disk list, or null. */
+const conductRow = async (cc: Cc, sid: string) =>
+  ((await api<{ sessionId: string; firstPrompt?: string | null }[]>(cc, 'GET', '/api/projects/.conduct/sessions')).body ?? [])
+    .find((r) => r.sessionId === sid) ?? null;
+
+/**
+ * The fleet, with B labelled by a first prompt on disk (so it stays a conductor
+ * once its instance is gone), then the page re-opened so both UIs load the spawn
+ * history the fleet recorded.
+ */
+async function seedFilterFleet(cc: Cc, page: Page, ui: Ui, uniq: (s: string) => string, tag: string) {
+  const u = (s: string) => uniq(`${tag}-${s}`);
+  await ui.open(page);
+  const f = await seedFleet(cc, page, u);
+  const bLabel = u('bravo');
+  await seedTranscript(cc, f.b.id, bLabel);
+  await expect.poll(async () => (await conductRow(cc, f.b.sessionId))?.firstPrompt ?? null, { message: "B's transcript lists it under .conduct" })
+    .toBe(bLabel);
+  await ui.open(page);
+  await expect.poll(() => ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O]));
+  await expect(await ui.sessionRow(page, f.P, f.bMain.sessionId)).toHaveCount(1);
+  return { ...f, bSid: f.b.sessionId, bLabel };
+}
+
+parity('sidebar-conductor-filter/R3', "the conductor filter in a browser: a conductor narrows the tree, force-opens Worktrees and colours the root, survives the drawer, Hand-spawned only keeps hand rows, and All restores the user's expansion", async ({ page, cc, ui, uniq }) => {
+  // Invariant: an owner filter narrows to its projects, worktrees and rows, force-opens Worktrees unrecorded and colours its root, and survives the drawer; Hand-spawned only keeps hand places and rows, uncoloured and unforced; All restores the tree.
+  test.setTimeout(300_000);
+  const E = uniq('fleet-empty');
+  await createProject(cc, E);
+  const f = await seedFilterFleet(cc, page, ui, uniq, 'filter');
+  const row = (sid: string) => ui.sessionRow(page, f.P, sid);
+
+  await test.step('All', async () => {
+    await ui.openWorktrees(page, f.P);
+    await expect.poll(() => ui.conductedSeparator(page, f.P, 'mixed')).toBe(true);
+    await expect(await ui.sessionsSummary(page, f.P, null)).toHaveCount(1);
+    await expect.poll(() => ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O, E]));
+    await ui.closeWorktrees(page, f.P);
+  });
+
+  await test.step('filter to B', async () => {
+    await ui.filterTo(page, f.bSid, f.bLabel);
+    await expect.poll(() => ui.projectNames(page)).not.toContain(E);
+    expect(await ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O]));
+    expect(await ui.worktreesOpen(page, f.P)).toBe(true);
+    await expect(await ui.worktreeHead(page, f.P, 'mixed')).toHaveCount(1);
+    await expect.poll(async () => ui.ownerBar(await ui.worktreeHead(page, f.P, 'mixed'))).toBeNull();
+    await expect(await ui.worktreeHead(page, f.P, 'solo-a')).toHaveCount(0);
+    await expect.poll(async () => ui.ownerBar(await row(f.bMixed.sessionId))).toBe(f.colB);
+    await expect.poll(async () => ui.ownerBar(await row(f.bMain.sessionId))).toBe(f.colB);
+    await expect(await row(f.aMixed.sessionId)).toHaveCount(0);
+    await expect(await row(f.aMain.sessionId)).toHaveCount(0);
+    await expect(await row(f.hand.sessionId)).toHaveCount(0);
+    await expect.poll(() => ui.filterBar(page)).toBe(f.colB);
+    await ui.closeSidebar(page);
+    expect(await ui.filterValue(page)).toBe(f.bSid);
+    await expect.poll(() => ui.filterBar(page)).toBe(f.colB);
+  });
+
+  await test.step('All restores the closed Worktrees group', async () => {
+    await ui.filterTo(page, '', 'All sessions');
+    await expect.poll(() => ui.projectNames(page)).toContain(E);
+    expect(await ui.worktreesOpen(page, f.P)).toBe(false);
+    expect(await ui.filterBar(page)).toBeNull();
+  });
+
+  await test.step('Hand-spawned only', async () => {
+    await ui.filterTo(page, 'hand', 'Hand-spawned only');
+    await expect.poll(() => ui.projectNames(page)).not.toContain(f.O);
+    expect(await ui.projectNames(page)).toContain(f.P);
+    expect(await ui.projectNames(page)).not.toContain(E);
+    expect(await ui.filterBar(page)).toBeNull();
+    expect(await ui.worktreesOpen(page, f.P)).toBe(false);
+    await expect(await ui.sessionsSummary(page, f.P, null)).toHaveCount(0);
+    await ui.openWorktrees(page, f.P);
+    await expect(await ui.worktreeHead(page, f.P, 'mixed')).toHaveCount(1);
+    await expect(await ui.worktreeHead(page, f.P, 'solo-a')).toHaveCount(0);
+    await expect(await row(f.hand.sessionId)).toHaveCount(1);
+    await expect(await row(f.aMixed.sessionId)).toHaveCount(0);
+    await expect(await row(f.bMixed.sessionId)).toHaveCount(0);
+    await expect.poll(() => ui.conductedSeparator(page, f.P, 'mixed')).toBe(false);
+  });
+
+  await test.step('back to All', async () => {
+    await ui.filterTo(page, '', 'All sessions');
+    await expect.poll(() => ui.projectNames(page)).toEqual(expect.arrayContaining([f.O, E]));
+    await expect.poll(() => ui.conductedSeparator(page, f.P, 'mixed')).toBe(true);
+  });
+});
+
+parity('sidebar-conductor-filter/R3', 'the conductor filter keeps a conductor with idle chips, listing them as bare rows, and falls back to All once nothing offers its owner', async ({ page, cc, ui, uniq }) => {
+  // Invariant: a conductor stays offered and selected while it has a live worker or a registered idle chip, live or inactive, with its idle projects listed bare; a dead conductor with no disk row is not offered, and its filter falls back to All.
+  test.setTimeout(300_000);
+  const f = await seedFilterFleet(cc, page, ui, uniq, 'chips');
+  expect(await conductRow(cc, f.aSid), 'A has no .conduct disk row').toBeNull();
+
+  await test.step('idle beside live', async () => {
+    await api(cc, 'DELETE', `/api/instances/${f.bOther.id}`);
+    await gone(cc, f.bOther.id);
+    await ui.filterTo(page, f.bSid, f.bLabel);
+    await expect.poll(() => ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O]));
+    await expect.poll(() => ui.projectParts(page, f.O)).toEqual(BARE);
+    expect(await ui.projectParts(page, f.P)).toMatchObject({ sessions: true, worktrees: true });
+  });
+
+  await test.step('keeps its entry after its last worker', async () => {
+    await api(cc, 'DELETE', `/api/instances/${f.bMixed.id}`);
+    await gone(cc, f.bMixed.id);
+    await api(cc, 'DELETE', `/api/instances/${f.bMain.id}`);
+    await gone(cc, f.bMain.id);
+    await expect.poll(() => ui.projectParts(page, f.P)).toEqual(BARE);
+    expect(await ui.projectParts(page, f.O)).toEqual(BARE);
+    expect(await ui.filterValue(page)).toBe(f.bSid);
+    expect(await ui.filterOptions(page)).toContain(f.bLabel);
+    expect(await ui.filterBar(page)).toBe(f.colB);
+  });
+
+  await test.step('an inactive conductor keeps its entry', async () => {
+    await api(cc, 'DELETE', `/api/instances/${f.b.id}`);
+    await gone(cc, f.b.id);
+    expect(await conductRow(cc, f.bSid), "B's transcript stays under .conduct").not.toBeNull();
+    await expect.poll(() => ui.filterOptions(page)).toContain(f.bLabel);
+    expect(await ui.filterValue(page)).toBe(f.bSid);
+    expect(await ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O]));
+    expect(await ui.projectParts(page, f.P)).toEqual(BARE);
+    expect(await ui.projectParts(page, f.O)).toEqual(BARE);
+  });
+
+  await test.step('falls back to All', async () => {
+    await ui.filterTo(page, f.aSid, f.aLabel);
+    await expect.poll(() => ui.projectNames(page)).not.toContain(f.O);
+    await api(cc, 'DELETE', `/api/instances/${f.aSolo.id}`);
+    await gone(cc, f.aSolo.id);
+    await api(cc, 'DELETE', `/api/instances/${f.aSolo2.id}`);
+    await gone(cc, f.aSolo2.id);
+    await api(cc, 'DELETE', `/api/instances/${f.aMixed.id}`);
+    await gone(cc, f.aMixed.id);
+    await api(cc, 'DELETE', `/api/instances/${f.aMain.id}`);
+    await gone(cc, f.aMain.id);
+    // A is still a live conductor with an idle chip in P: still offered.
+    expect(await ui.filterValue(page)).toBe(f.aSid);
+    await api(cc, 'DELETE', `/api/instances/${f.a.id}`);
+    await gone(cc, f.a.id);
+    expect(await conductRow(cc, f.aSid), 'A left no .conduct disk row').toBeNull();
+    await expect.poll(() => ui.filterValue(page)).toBe('');
+    expect(await ui.filterBar(page)).toBeNull();
+    const options = await ui.filterOptions(page);
+    expect(options).not.toContain(f.aLabel);
+    expect(options).toContain(f.bLabel);
+    await expect.poll(() => ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O]));
   });
 });
