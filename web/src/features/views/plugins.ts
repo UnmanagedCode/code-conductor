@@ -17,9 +17,13 @@
 //     action) or when that action put new code under it (EVICTING_ACTIONS).
 //
 // Parent side of the bridge (the root /pluginBridge.js, served from public/, runs in the frame):
-// child `route` messages mirror into the hash via replaceState (no hashchange,
-// no reload loop); an outside subpath change is forwarded as `navigate`.
+// child `route` messages mirror into the hash with the route store's
+// replaceHash (no history entry, no hashchange, no reload loop), so the store
+// always reads the hash the frame is at and an outside change back to an
+// earlier subpath still reads as a change; an outside subpath change is
+// forwarded as `navigate`.
 import { createSignal, createStore } from '@/state/createStore';
+import { replaceHash } from '@/state/route';
 
 export type PluginTarget = { id: string; subpath: string };
 type Record_ = { id: string; subpath: string; frame: HTMLIFrameElement };
@@ -43,6 +47,8 @@ const frameClass = 'absolute inset-0 h-full w-full border-0 bg-transparent';
 class PluginFrames {
   private host: HTMLElement | null = null;
   private shared: HTMLIFrameElement | null = null;
+  /** The target the shared frame was loaded for; mid-load, `current` already names the next one. */
+  private sharedTarget: PluginTarget | null = null;
   private current: Current | null = null;
   private token = 0;
   readonly resident = new Map<string, Record_>();
@@ -63,9 +69,11 @@ class PluginFrames {
     return this.current?.id ?? null;
   }
 
+  /** The current plugin's frame; none while it is still loading, even with another plugin's page in the view. */
   private activeFrame(): HTMLIFrameElement | null {
     const c = this.current;
-    return c && 'frame' in c ? c.frame : this.shared;
+    if (c && 'frame' in c) return c.frame;
+    return c && c === this.sharedTarget ? this.shared : null;
   }
 
   private setOverlay(o: Overlay) {
@@ -78,7 +86,7 @@ class PluginFrames {
   // insertion so no initial about:blank load reveals it early, and each plain
   // load gets a fresh frame: re-setting src to a URL differing only by fragment
   // would fire no load and leave the frame hidden.
-  private mountShared(url: string) {
+  private mountShared(target: PluginTarget) {
     this.dropShared();
     const f = document.createElement('iframe');
     f.className = frameClass;
@@ -86,12 +94,13 @@ class PluginFrames {
     f.title = 'Plugin';
     f.addEventListener('load', () => {
       f.style.visibility = '';
-      if (this.current && !('frame' in this.current)) this.setOverlay(null);
+      if (this.current === target) this.setOverlay(null);
     });
     f.style.visibility = 'hidden';
-    f.src = url;
+    f.src = `/plugins/${target.id}${target.subpath}`;
     this.host?.appendChild(f);
     this.shared = f;
+    this.sharedTarget = target;
   }
 
   // A fresh frame's initial document is transparent over the app background;
@@ -99,6 +108,7 @@ class PluginFrames {
   private dropShared() {
     this.shared?.remove();
     this.shared = null;
+    this.sharedTarget = null;
   }
 
   private async api(method: string, path: string) {
@@ -160,7 +170,7 @@ class PluginFrames {
     this.current = record;
     if (target.subpath === '/' || target.subpath === record.subpath) {
       const hash = `#plugin/${record.id}${record.subpath}`;
-      if (location.hash !== hash) history.replaceState(null, '', hash);
+      if (location.hash !== hash) replaceHash(hash);
     } else {
       record.subpath = target.subpath;
       record.frame.contentWindow?.postMessage({ cc: 1, type: 'navigate', path: target.subpath }, location.origin);
@@ -189,7 +199,7 @@ class PluginFrames {
         if (token !== this.token) return;
       }
       if (st.frontendKeepAlive) this.mountResident(target);
-      else this.mountShared(`/plugins/${target.id}${target.subpath}`);
+      else this.mountShared(target);
     } catch (e: any) {
       if (token !== this.token) return;
       this.setOverlay({ message: `${target.id}: ${e.message}${e.tail ? `\n\n${e.tail}` : ''}`, retry: target });
@@ -225,20 +235,23 @@ class PluginFrames {
     }));
   }
 
-  // Child → parent ({cc:1}; ready / route). A hidden resident frame's route is
-  // tracked on its record only — the user is somewhere else.
+  // Child → parent ({cc:1}; ready / route), attributed by the frame that posted
+  // it. A frame that is not the current plugin's (a hidden resident one, or the
+  // page being replaced while the next plugin loads) has its route tracked on
+  // its own record only — the user is somewhere else.
   private onMessage(ev: MessageEvent) {
-    if (ev.origin !== location.origin) return;
-    const frame = this.activeFrame();
-    const active = !!this.current && !!frame && ev.source === frame.contentWindow;
-    const record: Current | undefined = active ? this.current! : [...this.resident.values()].find((r) => ev.source && ev.source === r.frame.contentWindow);
+    if (ev.origin !== location.origin || !ev.source) return;
+    const record: Current | null | undefined = this.shared && ev.source === this.shared.contentWindow
+      ? this.sharedTarget
+      : [...this.resident.values()].find((r) => ev.source === r.frame.contentWindow);
     if (!record) return;
+    const active = record === this.current;
     const d = ev.data;
     if (!d || d.cc !== 1) return;
     // A path without its leading slash would splice into the id part of the hash.
     if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
       record.subpath = d.path;
-      if (active) history.replaceState(null, '', `#plugin/${record.id}${d.path}`);
+      if (active) replaceHash(`#plugin/${record.id}${d.path}`);
     }
   }
 }

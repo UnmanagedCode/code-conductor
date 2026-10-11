@@ -35,14 +35,11 @@
 // measures that the frame stays live for 330 s under a `display: none` ancestor
 // with the flags above on; it says nothing about Chrome's default throttling
 // policy.
-import fs from 'node:fs';
-import path from 'node:path';
-import type { BrowserContext, Frame, Page } from '@playwright/test';
-import { test, expect, type Cc } from '../harness/fixtures.ts';
+import type { BrowserContext, Page } from '@playwright/test';
+import { test, expect } from '../harness/fixtures.ts';
 import { api } from '../harness/api.ts';
-import { FIXTURES } from '../harness/boot.ts';
+import { installProbePlugin, probeFrame, readProbe, type Probe } from '../harness/pluginProbe.ts';
 
-const FIXTURE = path.join(FIXTURES, 'keepalive-plugin');
 const KEEP = 'keepalive-plugin';
 const CONTROL = 'keepalive-control';
 
@@ -57,21 +54,7 @@ test.use({
 // B holds twice; every test also spends up to 20 s per frame wait.
 test.describe.configure({ mode: 'serial', timeout: 120_000 + 2 * HOLD_MS });
 
-type Mic = { readyState: string; ctxState: string; currentTime: number; rmsNonZero: number; polls: number };
-type Probe = { nonce: string; ticks: number; ws: number; raf: number; mic: Mic | null };
 type PluginRow = { id: string; enabled?: boolean; frontendKeepAlive?: boolean; state?: string; errors?: unknown };
-
-/** One project per plugin, adopted in place under the projects root. */
-async function installPlugin(cc: Cc, name: string, patch?: (mf: Record<string, unknown>) => void): Promise<void> {
-  const dir = path.join(cc.dirs.projects, name);
-  fs.cpSync(FIXTURE, dir, { recursive: true });
-  const mfPath = path.join(dir, 'conductor.plugin.json');
-  const mf = JSON.parse(fs.readFileSync(mfPath, 'utf8'));
-  patch?.(mf);
-  fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2));
-  const r = await api(cc, 'POST', '/api/projects/external', { name, path: dir });
-  expect(r.body?.ok, `adopt ${name}: ${JSON.stringify(r.body)}`).toBeTruthy();
-}
 
 /** Polls `fn` every 100 ms until it is truthy; a throw (a frame mid-navigation) counts as not yet. */
 const until = (fn: () => Promise<unknown>, timeout = 20_000) =>
@@ -83,14 +66,8 @@ let page: Page;
 let keepRow: PluginRow | undefined;
 
 test.beforeAll(async ({ browser, cc }, testInfo) => {
-  await installPlugin(cc, KEEP);
-  await installPlugin(cc, CONTROL, (mf) => {
-    mf.id = CONTROL;
-    mf.name = 'Keep-alive control';
-    mf.frontend = { navLabel: 'Keep-alive control' };
-  });
-  await api(cc, 'POST', '/api/plugins/rescan');
-  for (const id of [KEEP, CONTROL]) await api(cc, 'POST', `/api/plugins/${id}/enable`);
+  await installProbePlugin(cc, { id: KEEP, name: 'Keep-alive probe', keepAlive: true });
+  await installProbePlugin(cc, { id: CONTROL, name: 'Keep-alive control', keepAlive: false });
   const rows = (await api<{ rows: PluginRow[] }>(cc, 'GET', '/api/plugins')).body.rows;
   keepRow = rows.find((r) => r.id === KEEP);
   const controlRow = rows.find((r) => r.id === CONTROL);
@@ -106,15 +83,9 @@ test.beforeAll(async ({ browser, cc }, testInfo) => {
 
 test.afterAll(async () => { await context?.close(); });
 
-const frameOf = (id: string): Frame | undefined => page.frames().find((f) => {
-  try { return new URL(f.url()).pathname.startsWith(`/plugins/${id}/`); } catch { return false; }
-});
+const frameOf = (id: string) => probeFrame(page, id);
 /** The probe of `id`'s frame, read without re-showing the view. */
-const read = async (id: string): Promise<Probe | null> => {
-  const f = frameOf(id);
-  if (!f) return null;
-  return f.evaluate(() => JSON.parse(JSON.stringify((window as unknown as { __probe?: Probe }).__probe ?? null)));
-};
+const read = (id: string) => readProbe(page, id);
 const viewHidden = () => page.evaluate(() => document.getElementById('plugin-view')!.hidden);
 const enter = async (id: string) => {
   await page.selectOption('#app-switcher-select', id);

@@ -37,7 +37,7 @@ async function pickApp(scope: HTMLElement, name: string | RegExp) {
   const trigger = within(scope).getByRole('button', { name: 'Switch app' });
   await act(async () => { trigger.focus(); fireEvent.keyDown(trigger, { key: 'ArrowDown' }); });
   await settle();
-  await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name })); });
+  await act(async () => { fireEvent.click(screen.getByRole('menuitemradio', { name })); });
   await settle();
 }
 
