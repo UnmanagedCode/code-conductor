@@ -9,6 +9,7 @@ import { send, stickyPrompt } from '@/app/controller';
 import { on } from '@/app/events';
 import { voiceStore } from '@/features/voice/store';
 import { cn } from '@/lib/utils';
+import { NO_ATTACHMENTS, attachmentStore, type Pending } from './attachments';
 import { DRAFT_SAVE_DEBOUNCE_MS, EMPTY_DRAFT, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { useDictation } from './useDictation';
 
@@ -16,20 +17,7 @@ const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_HEIGHT = 240;
 const HOLD_TO_DICTATE_MS = 500;
 
-type Pending = {
-  id: number;
-  name: string;
-  size: number;
-  mediaType: string;
-  isImage: boolean;
-  objectUrl?: string;
-  dataBase64?: string;
-  error?: string;
-};
-
 let nextAttachmentId = 1;
-/** Attachments a session left behind when the user switched away. */
-const parkedAttachments = new Map<string, Pending[]>();
 
 const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 const isImageType = (mt: string) => /^image\/(png|jpeg|gif|webp)$/i.test(mt);
@@ -47,7 +35,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const sid = inst?.sessionId ?? null;
   const [text, setText] = React.useState('');
   const [transcribed, setTranscribed] = React.useState(false);
-  const [pending, setPending] = React.useState<Pending[]>([]);
+  const pending = useStore(attachmentStore.store, (s) => s.lists.get(sid) ?? NO_ATTACHMENTS);
   const [dragOver, setDragOver] = React.useState(false);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
@@ -84,24 +72,17 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   }, []);
   const transcribedRef = React.useRef(false);
   transcribedRef.current = transcribed;
-  const pendingRef = React.useRef<Pending[]>([]);
-  pendingRef.current = pending;
 
   React.useLayoutEffect(() => {
     if (sid === sidRef.current) return;
     flush();
-    const outgoing = pendingRef.current;
-    if (outgoing.length) {
-      if (sidRef.current) parkedAttachments.set(sidRef.current, outgoing);
-      else for (const a of outgoing) if (a.objectUrl) URL.revokeObjectURL(a.objectUrl);
-    }
-    const incoming = (sid && parkedAttachments.get(sid)) || [];
-    if (sid) parkedAttachments.delete(sid);
+    // A spawning instance's list has no session to stay with, and handing it on could send it to the
+    // wrong one. Every other list stays in the store under its session.
+    if (sidRef.current === null) attachmentStore.discard(null);
     sidRef.current = sid;
     const d = (sid && draftStore.load(sid)) || EMPTY_DRAFT;
     setText(d.text);
     setTranscribed(!!d.transcribed && !!d.text);
-    setPending(incoming);
   }, [sid, flush]);
 
   React.useEffect(() => {
@@ -153,8 +134,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
 
   // ── Attachments ─────────────────────────────────────────────────────
   function clearAttachments() {
-    for (const a of pendingRef.current) if (a.objectUrl) URL.revokeObjectURL(a.objectUrl);
-    setPending([]);
+    attachmentStore.discard(sidRef.current);
   }
 
   async function addFiles(files: File[]) {
@@ -171,19 +151,18 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
       }
       added.push(entry);
     }
-    setPending((p) => [...p, ...added]);
+    // The files belong to the session showing now, wherever the user is when each encode lands.
+    const owner = sidRef.current;
+    attachmentStore.add(owner, added);
     for (const [entry, file] of entries) {
-      try { entry.dataBase64 = await fileToBase64(file); } catch (e: any) { entry.error = `read failed: ${e?.message ?? e}`; }
-      setPending((p) => p.map((x) => (x.id === entry.id ? { ...entry } : x)));
+      let patch: Pick<Pending, 'dataBase64' | 'error'>;
+      try { patch = { dataBase64: await fileToBase64(file) }; } catch (e: any) { patch = { error: `read failed: ${e?.message ?? e}` }; }
+      attachmentStore.settle(owner, entry.id, patch);
     }
   }
 
   function removeAttachment(id: number) {
-    setPending((p) => {
-      const a = p.find((x) => x.id === id);
-      if (a?.objectUrl) URL.revokeObjectURL(a.objectUrl);
-      return p.filter((x) => x.id !== id);
-    });
+    attachmentStore.remove(sidRef.current, id);
   }
 
   // ── Send ────────────────────────────────────────────────────────────
