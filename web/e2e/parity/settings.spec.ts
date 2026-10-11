@@ -444,3 +444,118 @@ parity('settings-toggle/R5', 'Conventions: enabling a plugin from the Plugins se
   await expect(ui.conventionRow(page, 'conductor', 'demo/rule')).toContainText('plugin: demo');
   await expect(page.getByText('Delete failed: still in use')).toHaveCount(0);
 });
+
+// Settings part 3b (card 2026-0646)
+// The library is served and every install and update fulfilled page-locally:
+// nothing is cloned or pulled on the shared cc.
+type LibraryEntry = { id: string; name: string; description: string; repo: string; installed: boolean; installedAs: string | null; updateAvailable: boolean };
+
+const libraryEntry = (id: string, over: Partial<LibraryEntry> = {}): LibraryEntry => ({
+  id, name: `Share ${id}`, description: 'A page-local library entry.', repo: `https://example.test/${id}`,
+  installed: false, installedAs: null, updateAvailable: false, ...over,
+});
+
+const ndjson = (events: object[]) => ({ status: 200, contentType: 'application/x-ndjson', body: events.map((e) => `${JSON.stringify(e)}\n`).join('') });
+
+async function routeLibrary(page: Page, entries: () => LibraryEntry[]): Promise<void> {
+  await page.route('**/api/plugins/library', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: { entries: entries(), skipped: [] } }) : r.fallback()));
+}
+
+parity('plugins-frontend/R16', 'Plugins: an update whose post-update command failed relabels the entry up to date and warns that its backend still runs the old code, with the command output', async ({ page, ui, uniq }) => {
+  const id = uniq('share');
+  let updated = false;
+  const updates: string[] = [];
+  await routeLibrary(page, () => [libraryEntry(id, { installed: true, installedAs: id, updateAvailable: !updated })]);
+  await page.route(`**/api/plugins/library/${id}/update`, (r) => {
+    if (r.request().method() !== 'POST') return r.fallback();
+    updates.push(id);
+    updated = true;
+    return r.fulfill(ndjson([
+      { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+      { type: 'result', ok: true, result: { id, name: id, project: id, postPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! boom' }, restarted: { skipped: 'postPull-failed' } } },
+    ]));
+  });
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'plugins');
+  const entry = ui.libraryEntry(page, `Share ${id}`);
+  await ui.libraryAction(entry, 'Update').click();
+  await expect(ui.libraryStatus(page)).toHaveText(`Updated Share ${id}, but its post-update command failed — its backend was left running the old code`);
+  await expect(ui.libraryInstalledAs(entry)).toHaveText(`installed as ${id} · up to date`);
+  await expect(ui.libraryAction(entry, 'Update')).toHaveCount(0);
+  await expect(ui.libraryTail(page)).toHaveText('npm ERR! boom');
+  expect(updates).toEqual([id]);
+});
+
+parity('plugins-frontend/R17', 'Plugins: Install shows its progress in the entry and the status line, both survive a section switch, and the entry then relabels installed', async ({ page, ui, uniq }) => {
+  const id = uniq('share');
+  let installed = false;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const installs: string[] = [];
+  await routeLibrary(page, () => [libraryEntry(id, installed ? { installed: true, installedAs: id, updateAvailable: true } : {})]);
+  await page.route(`**/api/plugins/library/${id}/install`, async (r) => {
+    if (r.request().method() !== 'POST') return r.fallback();
+    installs.push(id);
+    await gate;
+    installed = true;
+    await r.fulfill(ndjson([
+      { type: 'chunk', phase: 'clone', text: `Cloning into ${id}...\n` },
+      { type: 'result', ok: true, result: { id, name: id, postClone: null } },
+    ]));
+  });
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'plugins');
+  const entry = ui.libraryEntry(page, `Share ${id}`);
+  await ui.libraryAction(entry, 'Install').click();
+  await expect(ui.libraryAction(entry, 'Installing…')).toBeDisabled();
+  await expect(ui.libraryStatus(page)).toHaveText(`Installing Share ${id}…`);
+  await ui.switchSettingsSection(page, 'archived');
+  await ui.switchSettingsSection(page, 'plugins');
+  await expect(ui.libraryAction(entry, 'Installing…')).toBeDisabled();
+  await expect(ui.libraryStatus(page)).toHaveText(`Installing Share ${id}…`);
+  release();
+  await expect(ui.libraryInstalledAs(entry)).toHaveText(`installed as ${id}`);
+  await expect(ui.libraryAction(entry, 'Update')).toBeEnabled();
+  await expect(ui.libraryStatus(page)).toHaveText('1 available');
+  expect(installs).toEqual([id]);
+});
+
+parity('plugins-frontend/R17', 'Plugins: a failed update keeps Update offered with the error, the pull output and the live log; all survive a section switch, and reopening Settings keeps only the output', async ({ page, ui, uniq }) => {
+  const id = uniq('share');
+  const updates: string[] = [];
+  await routeLibrary(page, () => [libraryEntry(id, { installed: true, installedAs: id, updateAvailable: true })]);
+  await page.route(`**/api/plugins/library/${id}/update`, (r) => {
+    if (r.request().method() !== 'POST') return r.fallback();
+    updates.push(id);
+    return r.fulfill(ndjson([
+      { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+      { type: 'result', ok: false, error: 'git pull failed', tail: 'fatal: diverged' },
+    ]));
+  });
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'plugins');
+  const entry = ui.libraryEntry(page, `Share ${id}`);
+  const refused = `Updating Share ${id} failed: git pull failed`;
+  await ui.libraryAction(entry, 'Update').click();
+  await expect(ui.libraryStatus(page)).toHaveText(refused);
+  await expect(ui.libraryTail(page)).toHaveText('fatal: diverged');
+  await expect(ui.libraryLive(entry)).toContainText(`Updating ${id}...`);
+  await expect(ui.libraryAction(entry, 'Update')).toBeEnabled();
+
+  await ui.switchSettingsSection(page, 'archived');
+  await ui.switchSettingsSection(page, 'plugins');
+  // Positive control: the section shown after the switch has rendered its entry.
+  await expect(ui.libraryAction(entry, 'Update')).toBeEnabled();
+  await expect(ui.libraryStatus(page)).toHaveText(refused);
+  await expect(ui.libraryTail(page)).toHaveText('fatal: diverged');
+  await expect(ui.libraryLive(entry)).toContainText(`Updating ${id}...`);
+
+  await noDialog(page);
+  await page.keyboard.press('Escape');
+  await expect(ui.settingsView(page)).toBeHidden();
+  await ui.openSettingsSection(page, 'plugins');
+  await expect(ui.libraryStatus(page)).toHaveText('1 available');
+  await expect(ui.libraryTail(page)).toHaveText('fatal: diverged');
+  await expect(ui.libraryLive(entry)).toHaveCount(0);
+  expect(updates).toEqual([id]);
+});

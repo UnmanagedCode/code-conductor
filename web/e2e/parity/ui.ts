@@ -298,6 +298,20 @@ export interface Ui {
   projectParts(page: Page, project: string): Promise<ProjectParts>;
   /** Selects the Projects lens and reads whether the Sessions list of `project`'s `worktree` shows the conducted separator. */
   conductedSeparator(page: Page, project: string, worktree: string): Promise<boolean>;
+
+  // Settings part 3b (card 2026-0646)
+  /** A Plugin Library entry, found by its display name. */
+  libraryEntry(page: Page, name: string): Locator;
+  /** An entry's action button by its exact label: `Install`, `Update`, or the in-flight `Installing…` / `Updating…`. */
+  libraryAction(entry: Locator, label: string): Locator;
+  /** The entry's `installed as …` line. */
+  libraryInstalledAs(entry: Locator): Locator;
+  /** The entry's live install/update output. */
+  libraryLive(entry: Locator): Locator;
+  /** The Plugin Library's status line. */
+  libraryStatus(page: Page): Locator;
+  /** The Plugin Library's install/update output: a failure's or a warning's tail. */
+  libraryTail(page: Page): Locator;
 }
 
 // Sidebar C (card 2026-0629)
@@ -1056,6 +1070,14 @@ export const legacy: Ui = {
       .locator('.sessions-separator')
       .evaluateAll((es) => es.some((e) => e.textContent === '— conducted —'));
   },
+
+  // Settings part 3b (card 2026-0646)
+  libraryEntry: (page, name) => page.locator('#pll-list .pll-row').filter({ has: page.locator('.pll-name', { hasText: exactly(name) }) }),
+  libraryAction: (entry, label) => entry.locator('button', { hasText: exactly(label) }),
+  libraryInstalledAs: (entry) => entry.locator('.pll-installed-as'),
+  libraryLive: (entry) => entry.locator('.pll-live'),
+  libraryStatus: (page) => page.locator('#pll-status'),
+  libraryTail: (page) => page.locator('#pll-tail-pre'),
 };
 
 /**
@@ -1710,6 +1732,15 @@ export const next: Ui = {
     return sidebar(page).locator(`ul[data-sessions="${project}:${worktree}"] > li:not([data-session-row])`)
       .evaluateAll((es) => es.some((e) => e.textContent === 'Conducted'));
   },
+
+  // Settings part 3b (card 2026-0646)
+  libraryEntry: (page, name) => page.locator('[data-testid="library-list"] [data-entry]').filter({ has: page.getByText(name, { exact: true }) }),
+  libraryAction: (entry, label) => entry.getByRole('button', { name: label, exact: true }),
+  libraryInstalledAs: (entry) => entry.getByText(/^installed as /),
+  libraryLive: (entry) => entry.locator('pre'),
+  // The library's own status line is a direct child of its card content, beside the list.
+  libraryStatus: (page) => page.locator('[data-testid="library-list"]').locator('xpath=../div[@role="status"]'),
+  libraryTail: (page) => page.locator('details').filter({ has: page.locator('summary', { hasText: 'Install output' }) }).locator('pre'),
 };
 
 // Sidebar B (card 2026-0628)

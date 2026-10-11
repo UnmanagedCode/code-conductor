@@ -16,7 +16,7 @@ import { SystemsSection } from './SystemsSection';
 import { AccountSection } from './AccountSection';
 import { VoiceSection } from './VoiceSection';
 import { ConventionsSection, clearConventionsListErrors } from './ConventionsSection';
-import { PluginsSection } from './PluginsSection';
+import { PluginsSection, resetPluginNotes } from './PluginsSection';
 import { ArchivedSection } from './ArchivedSection';
 import { AboutSection } from './AboutSection';
 
@@ -56,6 +56,7 @@ export function SettingsView() {
   React.useEffect(() => {
     void loadModelsSettings();
     clearConventionsListErrors();
+    resetPluginNotes();
     loadCapabilities().then((c: any) => { setCaps(c); setCapsLoaded(true); });
   }, []);
 
