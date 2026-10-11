@@ -118,7 +118,7 @@ The harness, fixtures, projects, live mode and every ported check are documented
 
 `tests/web-parity/ledger.ts` is the frontend-rework epic's migration ledger: one row per old-UI behaviour, each statused against the web UI as it stands. The cutover to the web UI deletes it together with the old UI and its tests.
 
-- **The gate:** `the ledger` in `web/src/parity/ledger.test.ts` (`// @vitest-environment node`), part of `npm run test:web`, so of `test:all`. Alone: `npx vitest run --config web/vitest.config.ts web/src/parity`. Its failure message prints one problem per line.
+- **The gate:** `the ledger` in `web/src/parity/ledger.test.ts` (`// @vitest-environment node`), part of `npm run test:web`, so of `test:all`. Alone: `npx vitest run --config web/vitest.config.ts web/src/parity`. Its failure message prints one problem per line. It carries its own longer timeout, because it parses the whole tree in one synchronous block; the value is set on the test itself.
 - **The modules:** `tests/web-parity/inventory.ts` (what must be accounted for), `titles.ts` (static title resolution), `check.ts` (`buildWorld` reads the tree, `checkLedger` is pure). The fixture tests in the same test file pin each.
 
 ### What must be accounted for
