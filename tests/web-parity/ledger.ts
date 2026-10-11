@@ -3552,10 +3552,11 @@ export const LEDGER: readonly Row[] = [
   {
     id: 'viewed-marker/R2',
     old: { file: 'tests/viewed-marker.test.mjs', tests: ['install removes the legacy unread key and survives a throwing storage'] },
-    behaviour: 'install survives a throwing storage',
+    behaviour: 'install removes the legacy unread key and survives a throwing storage',
     viewports: ['desktop', 'phone'],
     area: 'cross-cutting',
     status: { kind: 'ported', by: [
+        'web/src/app/viewedMarker.test.ts::viewed marker > removes the legacy unread key',
         'web/src/app/viewedMarkerStorage.test.ts::viewed marker install with unusable storage > survives a throwing storage and still marks a seen turn',
       ] },
   },

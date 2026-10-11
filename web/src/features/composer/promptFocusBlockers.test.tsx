@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, within } from '@testing-library/react';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
 import { ConversationModel } from '@/conversation/model';
@@ -7,6 +7,8 @@ import { flush, renderModel } from '@/conversation/renderModel';
 
 const win = { matchMedia: () => ({ matches: false }) } as unknown as Window & typeof globalThis;
 const prompt = () => document.getElementById('p') as HTMLTextAreaElement;
+/** Counts focus attempts: an open overlay's own focus trap can pull focus back, so only the attempt is the contract. */
+const watchFocus = (el: HTMLElement) => vi.spyOn(el, 'focus');
 
 afterEach(() => { cleanup(); document.body.innerHTML = ''; });
 
@@ -14,15 +16,17 @@ describe('prompt focus and overlays', () => {
   const setup = () => { document.body.innerHTML = '<textarea id="p"></textarea><button id="b">go</button>'; };
 
   it('an open aria-modal overlay keeps focus where it was; a hidden one does not block', () => {
-    // Invariant: only a shown modal overlay stops the prompt from taking focus.
+    // Invariant: focus is not attempted while a shown modal overlay is present, and is attempted once it is hidden.
     setup();
+    const attempts = watchFocus(prompt());
     const overlay = document.createElement('div');
     overlay.setAttribute('aria-modal', 'true');
     document.body.appendChild(overlay);
     focusPromptAfterSelect(true, prompt(), { win });
-    expect(document.activeElement).not.toBe(prompt());
+    expect(attempts).not.toHaveBeenCalled();
     overlay.hidden = true;
     focusPromptAfterSelect(true, prompt(), { win });
+    expect(attempts).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(prompt());
   });
 
@@ -36,7 +40,7 @@ describe('prompt focus and overlays', () => {
   });
 
   it('the real image overlay blocks it while open and stops blocking once closed', async () => {
-    // Invariant: the app's lightbox (the image overlay) is one of the overlays that keep focus.
+    // Invariant: focus is not attempted while the app's lightbox (the image overlay) is open, and is attempted once it closes.
     const m = new ConversationModel();
     feed(m, [
       ...tool('m1', 0, 't1', 'Read', { result: null, input: { file_path: 'x.png' } }),
@@ -50,15 +54,17 @@ describe('prompt focus and overlays', () => {
     await flush();
     const ta = document.createElement('textarea');
     document.body.appendChild(ta);
+    const attempts = watchFocus(ta);
     fireEvent.click(r.root.querySelector('button[aria-label^="Enlarge"]')!);
     await flush();
     expect(document.querySelector('[data-image-overlay]')).not.toBeNull();
     focusPromptAfterSelect(true, ta, { win });
-    expect(document.activeElement).not.toBe(ta);
+    expect(attempts).not.toHaveBeenCalled();
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     await flush();
     expect(document.querySelector('[data-image-overlay]')).toBeNull();
     focusPromptAfterSelect(true, ta, { win });
+    expect(attempts).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(ta);
   });
 });

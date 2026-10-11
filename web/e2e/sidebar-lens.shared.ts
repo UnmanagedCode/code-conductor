@@ -41,22 +41,24 @@ export async function lensControlsFitFlow({ page, cc }: Ctx): Promise<void> {
   await reachable(page, filter);
   await reachable(page, menu);
 
-  // Neither control pushes the column sideways, and both sit inside it.
-  const fit = await page.evaluate(() => {
-    const body = document.querySelector('[data-sidebar-body]') as HTMLElement;
-    const root = [...document.querySelectorAll('[data-sidebar]')].find((e) => (e as HTMLElement).offsetParent) as HTMLElement;
+  // Neither control pushes the column sideways, and both sit inside it. Every element is resolved from the
+  // visible sidebar: on a drawer viewport the desktop column is also in the DOM, with all-zero rects.
+  const fit = await sb.first().evaluate((root) => {
     const col = root.getBoundingClientRect();
-    const inside = (sel: string) => {
-      const r = document.querySelector(sel)!.getBoundingClientRect();
-      return r.left >= col.left - 1 && r.right <= col.right + 1;
-    };
+    const body = root.querySelector('[data-sidebar-body]') as HTMLElement;
+    const rectOf = (sel: string) => root.querySelector(sel)!.getBoundingClientRect();
+    const filter = rectOf('[data-filter] [role="combobox"]');
+    const menu = rectOf('button[aria-label="Project actions"]');
+    const inside = (r: DOMRect) => r.left >= col.left - 1 && r.right <= col.right + 1;
     return {
+      measured: [col, filter, menu].every((r) => r.width > 0 && r.height > 0),
       bodyOverflow: body.scrollWidth - body.clientWidth,
       pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      filterInside: inside('[data-filter] [role="combobox"]'),
-      menuInside: inside('button[aria-label="Project actions"]'),
+      filterInside: inside(filter),
+      menuInside: inside(menu),
     };
   });
+  expect(fit.measured, 'the measured rects are real, not a hidden copy\'s zeros').toBe(true);
   expect(fit.bodyOverflow).toBeLessThanOrEqual(0);
   expect(fit.pageOverflow).toBeLessThanOrEqual(0);
   expect(fit.filterInside).toBe(true);
