@@ -22,7 +22,7 @@ export const SEED_PROJECT_CONVENTIONS: Array<{ slug: string; name: string; descr
   { slug: 'design-guidelines', name: 'Design guidelines',
     description: 'YAGNI; no god-modules; single source of truth; thin bootstrap; shared service layer' },
   { slug: 'testing-guidelines', name: 'Testing guidelines',
-    description: 'Prefer automated tests over manual checklists; deterministic; isolated; fake external deps' },
+    description: 'Prefer automated tests over manual checklists; deterministic; isolated; fake external deps; assert contracts, not incidental presentation' },
   { slug: 'documentation-guidelines', name: 'Documentation guidelines',
     description: 'Layered docs (README + docs/features/protocol/architecture); update the most-specific file(s) when behavior changes' },
   { slug: 'migration-guidelines', name: 'Migration guidelines',
