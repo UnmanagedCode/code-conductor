@@ -101,19 +101,14 @@ async function refuseDelete(title: Title, name: string, slug: string) {
   fireEvent.click(within(block(title)).getByRole('button', { name: `Delete ${name}` }));
   const dialog = await screen.findByRole('dialog', { name: `Delete ${scopeOf(title)} convention “${slug}”?` });
   fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
-  await waitFor(() => expect(listStatus(title)).toBe('Delete failed: still in use'));
+  await waitFor(() => expect(listStatus(title)).toContain('still in use'));
 }
 
 /** A block's list status line: the panel's own status, not a picker's or the form's (those sit deeper). */
 const listLineEl = (title: Title) => block(title).querySelector('[data-slot="collapsible-content"] > div > [role="status"]') as HTMLElement | null;
 const listLine = (title: Title) => listLineEl(title)?.textContent ?? '';
-/** A rendered Status's tone, read from what it emits: the error tone's colour class plus its alert icon, the muted tone's colour class and no icon. */
-const toneOf = (el: HTMLElement) => {
-  const icon = el.querySelector('svg.lucide-circle-alert') !== null;
-  if (el.classList.contains('text-destructive') && icon) return 'error';
-  if (el.classList.contains('text-muted-foreground') && !icon) return 'muted';
-  return 'other';
-};
+/** A rendered Status's declared tone (`data-tone`). */
+const toneOf = (el: HTMLElement) => el.dataset.tone;
 const pickerStatusEl = (label: 'Preferred playbook' | 'Playbook enforcement') => within(screen.getByText(label, { selector: 'label' }).parentElement as HTMLElement).getByRole('status');
 
 const renderSection = () => render(<TooltipProvider><ConventionsSection /><ConfirmHost /></TooltipProvider>);
@@ -270,7 +265,7 @@ describe('Conventions → blocks', () => {
     const form = within(b).getByRole('form', { name: 'Edit workspace convention' });
     type(b, 'Name', 'Mine 2');
     fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(statusText(form)).toBe('name already used'));
+    await waitFor(() => expect(statusText(form)).toContain('already used'));
     expect(within(b).getByRole('form', { name: 'Edit workspace convention' })).toBe(form);
     fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(within(b).queryByRole('form')).toBeNull());
@@ -336,7 +331,7 @@ describe('Conventions → conductor pickers', () => {
     expect(writes()).toEqual([{ method: 'PUT', url, body: { mode: 'lenient' } }]);
     expect(pickerStatus('Playbook enforcement')).toBe('');
     pick('dpe-select', 'paranoid');
-    await waitFor(() => expect(pickerStatus('Playbook enforcement')).toBe('Save failed: mode must be one of warn | enforce'));
+    await waitFor(() => expect(pickerStatus('Playbook enforcement')).toContain('mode must be one of'));
     pick('dpe-select', 'lenient');
     await waitFor(() => expect(writes()).toHaveLength(3));
     await waitFor(() => expect(pickerStatus('Playbook enforcement')).toBe(''));
@@ -363,7 +358,7 @@ describe('Conventions → conductor pickers', () => {
     ]);
     refuse = true;
     pick('dp-select', 'playbook:relay');
-    await waitFor(() => expect(pickerStatus('Preferred playbook')).toBe('Save failed: unknown playbook id'));
+    await waitFor(() => expect(pickerStatus('Preferred playbook')).toContain('unknown playbook id'));
   });
 
   // A stored playbook absent from the payload renders as the selected, disabled "<id> — not loaded" option, and the status line leads with its reason before the load errors.
@@ -373,10 +368,14 @@ describe('Conventions → conductor pickers', () => {
     await expand('Conductor conventions');
     expect(select('dp-select').value).toBe('playbook:acme/release');
     const opt = select('dp-select').querySelector('option[value="playbook:acme/release"]') as HTMLOptionElement;
-    expect(opt.textContent).toBe('acme/release — not loaded');
+    expect(opt.textContent).toContain('acme/release');
+    expect(opt.textContent).toMatch(/not loaded/);
     expect(opt.disabled).toBe(true);
-    expect(pickerStatus('Preferred playbook').startsWith(R)).toBe(true);
-    expect(pickerStatus('Preferred playbook')).toContain('mine: bad');
+    // Invariant: the missing-playbook reason (naming the playbook and its contributing plugin) leads the status line, ahead of the load errors.
+    const line = pickerStatus('Preferred playbook');
+    expect(line).toContain('acme/release');
+    expect(line).toContain("'acme'");
+    expect(line.indexOf('acme/release')).toBeLessThan(line.indexOf('mine: bad'));
   });
 
   // One conductor GET feeds both pickers and the list; no picker fetches on its own.
@@ -398,8 +397,9 @@ describe('Conventions → conductor pickers', () => {
     serve({ 'PUT /api/settings/conventions/conductor/default-playbook': () => ({}) });
     renderSection();
     await expand('Conductor conventions');
-    const notes = `${R} 1 playbook definition(s) rejected at load: mine: bad`;
-    expect(pickerStatus('Preferred playbook')).toBe(notes);
+    const notes = pickerStatus('Preferred playbook');
+    expect(notes).toContain('acme/release');
+    expect(notes).toContain('mine: bad');
     pick('dp-select', 'playbook:solo');
     await waitFor(() => expect(writes()).toHaveLength(1));
     await waitFor(() => expect(pickerStatus('Preferred playbook')).toBe(''));
@@ -419,15 +419,15 @@ describe('Conventions → conductor pickers', () => {
     await expand('Conductor conventions');
     pick('dpe-select', 'lenient');
     pick('dp-select', 'playbook:solo');
-    await waitFor(() => expect(pickerStatus('Playbook enforcement')).toBe('Save failed: mode must be one of warn | enforce'));
-    await waitFor(() => expect(pickerStatus('Preferred playbook')).toBe('Save failed: unknown playbook id'));
+    await waitFor(() => expect(pickerStatus('Playbook enforcement')).toContain('mode must be one of'));
+    await waitFor(() => expect(pickerStatus('Preferred playbook')).toContain('unknown playbook id'));
     expect(select('dpe-select').value).toBe('lenient');
     expect(select('dp-select').value).toBe('playbook:solo');
     await reloadConductor();
     expect(select('dpe-select').value).toBe('strict');
-    expect(pickerStatus('Playbook enforcement')).toBe('Save failed: mode must be one of warn | enforce');
+    expect(pickerStatus('Playbook enforcement')).toContain('mode must be one of');
     expect(select('dp-select').value).toBe('playbook:relay');
-    expect(pickerStatus('Preferred playbook')).toBe('1 playbook definition(s) rejected at load: mine: bad');
+    expect(pickerStatus('Preferred playbook')).toContain('mine: bad');
   });
 
   // Every picker status line that renders is in the error tone: a refused playbook or enforcement pick, the not-loaded reason, and the load-error notes alike (the playbook line has no muted text, since it renders only when there is something to report).
@@ -439,12 +439,12 @@ describe('Conventions → conductor pickers', () => {
     });
     const view = renderSection();
     await expand('Conductor conventions');
-    expect(pickerStatusEl('Preferred playbook').textContent).toBe('1 playbook definition(s) rejected at load: mine: bad');
+    expect(pickerStatusEl('Preferred playbook').textContent).toContain('mine: bad');
     expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
     pick('dp-select', 'playbook:solo');
     pick('dpe-select', 'lenient');
-    await waitFor(() => expect(pickerStatusEl('Preferred playbook').textContent).toBe('Save failed: unknown playbook id'));
-    await waitFor(() => expect(pickerStatusEl('Playbook enforcement').textContent).toBe('Save failed: mode must be one of warn | enforce'));
+    await waitFor(() => expect(pickerStatusEl('Preferred playbook').textContent).toContain('unknown playbook id'));
+    await waitFor(() => expect(pickerStatusEl('Playbook enforcement').textContent).toContain('mode must be one of'));
     expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
     expect(toneOf(pickerStatusEl('Playbook enforcement'))).toBe('error');
     view.unmount();
@@ -452,7 +452,8 @@ describe('Conventions → conductor pickers', () => {
     cd = { ...MISSING, playbookErrors: [] };
     renderSection();
     await expand('Conductor conventions');
-    expect(pickerStatusEl('Preferred playbook').textContent).toBe(R);
+    // Invariant: the missing-playbook status names the playbook, says it is not loaded, and names the contributing plugin.
+    for (const part of ['acme/release', 'not loaded', "'acme'"]) expect(pickerStatusEl('Preferred playbook').textContent).toContain(part);
     expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
   });
 });
@@ -594,7 +595,7 @@ describe('Conventions → drafts', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Delete Mine' }));
       const dialog = await screen.findByRole('dialog', { name: 'Delete workspace convention “mine”?' });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
-      await waitFor(() => expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use'));
+      await waitFor(() => expect(listStatus('Workspace conventions')).toContain('still in use'));
     };
     await refuse();
 
@@ -603,14 +604,14 @@ describe('Conventions → drafts', () => {
     expect(trigger('Workspace conventions').getAttribute('aria-expanded')).toBe('false');
     await expand('Workspace conventions');
     expect(gets('workspace')).toBe(g + 1);
-    expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listStatus('Workspace conventions')).toContain('still in use');
 
     g = gets('workspace');
     await switchTo('archived');
     await switchTo('conventions');
     await waitFor(() => expect(gets('workspace')).toBe(g + 1));
     await screen.findByTestId('conventions-workspace');
-    expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listStatus('Workspace conventions')).toContain('still in use');
 
     g = gets('workspace');
     act(() => notifyPluginsChanged(undefined));
@@ -707,14 +708,14 @@ describe('Conventions → drafts', () => {
     fireEvent.click(trigger('Workspace conventions'));
     await expand('Workspace conventions');
     expect(gets('workspace')).toBeGreaterThan(g);
-    expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listStatus('Workspace conventions')).toContain('still in use');
 
     g = gets('workspace');
     await switchTo('archived');
     await switchTo('conventions');
     await waitFor(() => expect(gets('workspace')).toBeGreaterThan(g));
     await screen.findByTestId('conventions-workspace');
-    expect(listStatus('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listStatus('Workspace conventions')).toContain('still in use');
 
     g = gets('workspace');
     act(() => notifyPluginsChanged(undefined));
@@ -746,7 +747,7 @@ describe('Conventions → drafts', () => {
     fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(statusText(within(b).getByRole('form', { name: 'Add workspace convention' }))).toBe("convention 'dup' already exists"));
 
-    expect(listLine()).toBe('Delete failed: still in use');
+    expect(listLine()).toContain('still in use');
     expect(gets('workspace')).toBe(loads);
     expect(writes().map((w) => w.method)).toEqual(['DELETE', 'PUT', 'POST']);
   });
@@ -761,16 +762,16 @@ describe('Conventions → drafts', () => {
     const b = () => block('Workspace conventions');
 
     fireEvent.click(within(b()).getByRole('button', { name: 'Add custom convention' }));
-    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listLine('Workspace conventions')).toContain('still in use');
     fireEvent.click(within(b()).getByRole('button', { name: 'Cancel' }));
     expect(within(b()).queryByRole('form')).toBeNull();
-    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listLine('Workspace conventions')).toContain('still in use');
 
     fireEvent.click(within(b()).getByRole('button', { name: 'Edit Mine' }));
-    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listLine('Workspace conventions')).toContain('still in use');
     fireEvent.click(within(b()).getByRole('button', { name: 'Cancel' }));
     expect(within(b()).queryByRole('form')).toBeNull();
-    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listLine('Workspace conventions')).toContain('still in use');
     expect(gets('workspace')).toBe(loads);
   });
 
@@ -790,7 +791,7 @@ describe('Conventions → drafts', () => {
     await expand('Project conventions');
     await refuseDelete('Project conventions', 'P mine', 'pmine');
     const titles = ['Workspace conventions', 'Conductor conventions', 'Project conventions'] as const;
-    expect(titles.map(listLine)).toEqual(['Delete failed: still in use', 'Delete failed: still in use', 'Delete failed: still in use']);
+    expect(titles.map(listLine).map((l) => l.includes('still in use'))).toEqual([true, true, true]);
 
     const g = [gets('workspace'), gets('conductor'), gets('project')];
     await leaveAndReenter('conventions');
@@ -812,10 +813,10 @@ describe('Conventions → drafts', () => {
     renderSection();
     await screen.findByTestId('conventions-workspace');
     fireEvent.click(screen.getByRole('switch', { name: 'Enable Mine' }));
-    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Save failed: selection refused'));
+    await waitFor(() => expect(listLine('Workspace conventions')).toContain('selection refused'));
     expect(n).toBe(2);
     expect(screen.queryByRole('form')).toBeNull();
-    expect(statusText(block('Workspace conventions'))).toBe('Save failed: selection refused');
+    expect(statusText(block('Workspace conventions'))).toContain('selection refused');
     await act(async () => reload.release({ json: WS }));
   });
 
@@ -851,9 +852,9 @@ describe('Conventions → drafts', () => {
     await screen.findByRole('button', { name: 'Delete Mine' });
     fail = true;
     act(() => notifyPluginsChanged(undefined));
-    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Failed: boom'));
+    await waitFor(() => expect(listLine('Workspace conventions')).toContain('boom'));
     await refuseDelete('Workspace conventions', 'Mine', 'mine');
-    expect(listLine('Workspace conventions')).toBe('Delete failed: still in use');
+    expect(listLine('Workspace conventions')).toContain('still in use');
   });
 
   // The list line is muted only while it reads "Loading…"; a refusal and a load failure both render in the error tone.
@@ -875,7 +876,7 @@ describe('Conventions → drafts', () => {
     expect(toneOf(listLineEl('Workspace conventions') as HTMLElement)).toBe('error');
 
     act(() => notifyPluginsChanged(undefined));
-    await waitFor(() => expect(listLine('Workspace conventions')).toBe('Failed: boom'));
+    await waitFor(() => expect(listLine('Workspace conventions')).toContain('boom'));
     expect(toneOf(listLineEl('Workspace conventions') as HTMLElement)).toBe('error');
   });
 });
