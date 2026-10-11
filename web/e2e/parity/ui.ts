@@ -266,6 +266,26 @@ export interface Ui {
   deleteConvention(page: Page, scope: ConventionScope, slug: string): Promise<void>;
   /** The block's list status line (load failures and refused actions). */
   conventionStatus(page: Page, scope: ConventionScope): Locator;
+
+  // Conversation part 3 (card 2026-0633)
+  /** The AskUserQuestion card(s) in the transcript. */
+  questionCard(page: Page): Locator;
+  /** The option button `label` in the card's visible pane. */
+  cardOption(card: Locator, label: string): Locator;
+  /** Whether an option returned by `cardOption` is picked. */
+  cardOptionPicked(option: Locator): Promise<boolean>;
+  /** The visible pane's text field (custom answer or note). */
+  cardField(card: Locator): Locator;
+  /** The card's Send button. */
+  cardSend(card: Locator): Locator;
+  /** The card's status line. */
+  cardStatus(card: Locator): Locator;
+  /** The tab of question `i` on a multi-question card. */
+  cardTab(card: Locator, i: number): Locator;
+  /** The answer bubble(s) a stamped echo renders. */
+  answerBubble(page: Page): Locator;
+  /** One entry per question row of an answer bubble. */
+  answerRows(bubble: Locator): Promise<{ kind: string; choices: string[]; note: string | null; custom: string | null }[]>;
 }
 
 // Sidebar C (card 2026-0629)
@@ -965,6 +985,23 @@ export const legacy: Ui = {
     await legacy.conventionRow(page, scope, slug).locator('button', { hasText: exactly('Delete') }).click();
   },
   conventionStatus: (page, scope) => page.locator(`#${LEGACY_PREFIX[scope]}-status`),
+
+  // Conversation part 3 (card 2026-0633)
+  questionCard: (page) => page.locator('#conversation .block.user-question'),
+  // Inactive panes are display:none (UserQuestionBlock._render).
+  cardOption: (card, label) => card.locator('.uq-pane').filter({ visible: true }).locator(`button.uq-opt[data-label="${label}"]`),
+  cardOptionPicked: (option) => option.evaluate((e) => e.classList.contains('picked')),
+  cardField: (card) => card.locator('.uq-pane').filter({ visible: true }).locator('.uq-custom-input'),
+  cardSend: (card) => card.locator('.uq-submit'),
+  cardStatus: (card) => card.locator('.uq-status'),
+  cardTab: (card, i) => card.locator('.uq-tab').nth(i),
+  answerBubble: (page) => page.locator('#conversation .msg.user.question-answer'),
+  answerRows: (bubble) => bubble.locator('.qa-item').evaluateAll((es) => es.map((e) => ({
+    kind: (e as HTMLElement).dataset.kind ?? '',
+    choices: [...e.querySelectorAll('.qa-choice')].map((n) => n.textContent ?? ''),
+    note: e.querySelector('.qa-note')?.textContent ?? null,
+    custom: e.querySelector('.qa-custom')?.textContent ?? null,
+  }))),
 };
 
 /**
@@ -1566,6 +1603,22 @@ export const next: Ui = {
   },
   // The list's own status line is a direct child of the panel; the conductor pickers' status lines sit deeper.
   conventionStatus: (page, scope) => next.conventionList(page, scope).locator('xpath=../div[@role="status"]'),
+
+  // Conversation part 3 (card 2026-0633)
+  questionCard: (page) => page.locator('[data-item=question]'),
+  cardOption: (card, label) => card.locator(`[data-option="${label}"]`),
+  cardOptionPicked: async (option) => (await option.getAttribute('aria-pressed')) === 'true',
+  cardField: (card) => card.locator('input'),
+  cardSend: (card) => card.getByRole('button', { name: /^Send (all )?answers?$/ }),
+  cardStatus: (card) => card.locator('[data-status]'),
+  cardTab: (card, i) => card.locator(`[data-tab="${i}"]`),
+  answerBubble: (page) => page.locator('[data-item=user][data-variant=answer]'),
+  answerRows: (bubble) => bubble.locator('[data-kind]').evaluateAll((es) => es.map((e) => ({
+    kind: (e as HTMLElement).dataset.kind ?? '',
+    choices: [...e.querySelectorAll('[data-choice]')].map((n) => n.textContent ?? ''),
+    note: e.querySelector('[data-note]')?.textContent ?? null,
+    custom: e.querySelector('[data-custom]')?.textContent ?? null,
+  }))),
 };
 
 // Sidebar B (card 2026-0628)

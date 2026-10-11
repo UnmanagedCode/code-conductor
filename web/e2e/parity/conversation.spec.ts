@@ -1,8 +1,14 @@
 import { expect } from '../harness/fixtures.ts';
-import { createProject } from '../harness/api.ts';
+import { api, createProject } from '../harness/api.ts';
 import { parity } from './parity.ts';
 import { bringTo, conceal, cssOf, offsetFromTop, reveal, sendAll, shadowLayers, tallPrompt } from './stickyPin.ts';
 import { LONG_WAKE_STUB, overflowsX, px, sendWake, WAKE_PAYLOAD } from './foldedBubbles.ts';
+import { appendTranscriptRecord } from '../harness/transcript.ts';
+import { answerCard, askCard, expectLockedOn, instanceIn, QA_NOTE, reselect } from './questionCard.ts';
+import { MID_TURN_NOTE } from '../../../src/instances.ts';
+import { AWAITING_INPUT_MESSAGE } from '../../../src/settings.ts';
+import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
+import { buildWakeStub } from '../../../public/wakeCallback.ts';
 
 parity('sticky-prompt/R2', 'revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('pin-jump');
@@ -211,4 +217,82 @@ parity('user-bubble-markdown/R2', 'headings render at body size in a prompt and 
   const foldHead = fold.locator('.md h1', { hasText: 'WAKE-HEAD' });
   await expect(foldHead).toBeVisible();
   expect(await px(foldHead)).toBe(await px(fold.locator('.md p', { hasText: 'WAKE-PROSE' })));
+});
+
+parity('question-answer-bubble/R2', 'a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows', async ({ page, cc, ui, uniq }) => {
+  // Invariant: an interleaved wake stub leaves the card open; the stamped answer locks it with each pane's pick and note; tab clicks never re-open a control; a snapshot replay renders the same locked card and answer rows.
+  const project = uniq('qa-live');
+  await createProject(cc, project);
+  await ui.open(page);
+  await ui.startSessionIn(page, project);
+  const inst = await instanceIn(cc, project);
+  let card = await askCard(page, ui);
+  // An open multi-question card reads "0/2 answered" in both UIs: only the anchored form means locked.
+  await expect(ui.cardOption(card, 'Apple')).toBeEnabled();
+  expect(await ui.cardOptionPicked(ui.cardOption(card, 'Apple'))).toBe(false);
+  await expect(ui.cardStatus(card)).not.toHaveText(/^answered$/i);
+
+  await sendWake(page, ui, 2);
+  await expect(ui.cardOption(card, 'Apple')).toBeEnabled();
+  await expect(ui.cardStatus(card)).not.toHaveText(/^answered$/i);
+  await expect(ui.cardSend(card)).toBeDisabled();
+
+  await answerCard(page, ui, card, 3);
+  await expectLockedOn(ui, card, 'L', 'S', '');
+  await ui.cardTab(card, 0).click();
+  await expectLockedOn(ui, card, 'Banana', 'Apple', QA_NOTE);
+  const rows = [
+    { kind: 'option', choices: ['Banana'], note: `— ${QA_NOTE}`, custom: null },
+    { kind: 'option', choices: ['L'], note: null, custom: null },
+  ];
+  await expect(ui.answerBubble(page)).toHaveCount(1);
+  expect(await ui.answerRows(ui.answerBubble(page))).toEqual(rows);
+
+  await reselect(page, ui, project, inst.sessionId);
+  card = ui.questionCard(page);
+  await expect(card).toHaveCount(1);
+  await expectLockedOn(ui, card, 'Banana', 'Apple', QA_NOTE);
+  await ui.cardTab(card, 1).click();
+  await expectLockedOn(ui, card, 'L', 'S', '');
+  await expect(ui.answerBubble(page)).toHaveCount(1);
+  expect(await ui.answerRows(ui.answerBubble(page))).toEqual(rows);
+});
+
+parity('user-question-idle-callback/R2', 'a mid-turn answer replayed from disk past an interleaved wake stub locks the card on the answered option, and the mid-turn note never shows', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the server's disk replay strips the mid-turn note, stamps the answer past an interleaved wake stub, and the card renders locked on the answered option.
+  const project = uniq('qa-replay');
+  await createProject(cc, project);
+  expect((await api(cc, 'POST', '/api/instances', { project, mode: 'bypassPermissions', temp: false })).status).toBeLessThan(300);
+  const inst = await instanceIn(cc, project);
+  const Q = [{ question: 'Pick a QA replay fruit', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple' }, { label: 'Banana' }] }];
+  const user = (content: unknown) => ({ type: 'user', message: { role: 'user', content } });
+  await appendTranscriptRecord(cc, inst.id, user('QA-REPLAY opening prompt'));
+  await appendTranscriptRecord(cc, inst.id, { type: 'assistant', message: { id: 'msg_qr', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_qr', name: 'AskUserQuestion', input: { questions: Q } }], stop_reason: 'tool_use' } });
+  await appendTranscriptRecord(cc, inst.id, user([{ type: 'tool_result', tool_use_id: 'toolu_qr', content: AWAITING_INPUT_MESSAGE, is_error: true }]));
+  await appendTranscriptRecord(cc, inst.id, user(buildWakeStub({ targetSessionId: 'qareplay', payloadText: '{"sessionId":"qareplay"}\nQA-WAKE prose' })));
+  await appendTranscriptRecord(cc, inst.id, user([{ type: 'text', text: MID_TURN_NOTE }, { type: 'text', text: formatUserQuestionAnswers(Q, [{ kind: 'option', label: 'Apple' }]) }]));
+
+  await api(cc, 'DELETE', `/api/instances/${inst.id}`);
+  await expect.poll(async () => {
+    const x = (await api<{ id: string; status: string }[]>(cc, 'GET', '/api/instances')).body.find((i) => i.id === inst.id);
+    return !x || x.status === 'exited';
+  }).toBe(true);
+  const resumed = await api<{ id: string }>(cc, 'POST', '/api/instances', { project, resume: inst.sessionId, mode: 'bypassPermissions' });
+  expect(resumed.status).toBeLessThan(300);
+  await expect.poll(async () =>
+    (await api<{ id: string; status: string }[]>(cc, 'GET', '/api/instances')).body.find((i) => i.id === resumed.body.id)?.status,
+  ).toBe('idle');
+
+  await ui.open(page);
+  const row = await ui.sessionRow(page, project, inst.sessionId);
+  await expect.poll(() => row.count()).toBe(1);
+  await row.click();
+  await expect(ui.sessionHeader(page).locator(`[title="session ${inst.sessionId}"]`)).toBeVisible();
+  const card = ui.questionCard(page);
+  await expect(card).toHaveCount(1);
+  await expectLockedOn(ui, card, 'Apple', 'Banana', '');
+  await expect(ui.wakeFold(page)).toHaveCount(1);
+  expect(await ui.answerRows(ui.answerBubble(page))).toEqual([{ kind: 'option', choices: ['Apple'], note: null, custom: null }]);
+  // Last on purpose: the card and its lock above prove the replayed transcript is on screen, so this absence is not vacuous.
+  await expect(ui.transcript(page)).not.toContainText('mid-turn');
 });

@@ -7,11 +7,11 @@ import { api } from './api.ts';
 import type { Cc } from './boot.ts';
 
 /**
- * Appends one user line to instance `instanceId`'s session jsonl, where cc reads its on-disk session list from
+ * Appends one record to instance `instanceId`'s session jsonl, where cc reads its on-disk session list from
  * (Claude Code's cwd encoding). The file is named by the backing Claude session id, which the API withholds; the
  * store's sessions.json maps the public id to it (`.sessions[publicId].current`).
  */
-export async function seedTranscript(cc: Pick<Cc, 'url' | 'dirs'>, instanceId: string, text: string): Promise<void> {
+export async function appendTranscriptRecord(cc: Pick<Cc, 'url' | 'dirs'>, instanceId: string, record: Record<string, unknown>): Promise<void> {
   const inst = ((await api<{ id: string; sessionId: string; cwd: string }[]>(cc, 'GET', '/api/instances')).body)
     .find((i) => i.id === instanceId);
   if (!inst) throw new Error(`no instance ${instanceId}`);
@@ -20,7 +20,11 @@ export async function seedTranscript(cc: Pick<Cc, 'url' | 'dirs'>, instanceId: s
   if (!backing) throw new Error(`no backing id recorded for session ${inst.sessionId}`);
   const dir = path.join(cc.dirs.claudeProjects, inst.cwd.replace(/[^A-Za-z0-9-]/g, '-'));
   await fs.mkdir(dir, { recursive: true });
-  await fs.appendFile(path.join(dir, `${backing}.jsonl`), JSON.stringify({
-    type: 'user', message: { role: 'user', content: text }, sessionId: backing, timestamp: new Date().toISOString(),
-  }) + '\n');
+  await fs.appendFile(path.join(dir, `${backing}.jsonl`),
+    JSON.stringify({ sessionId: backing, timestamp: new Date().toISOString(), ...record }) + '\n');
+}
+
+/** Appends one user line to instance `instanceId`'s session jsonl. */
+export async function seedTranscript(cc: Pick<Cc, 'url' | 'dirs'>, instanceId: string, text: string): Promise<void> {
+  await appendTranscriptRecord(cc, instanceId, { type: 'user', message: { role: 'user', content: text } });
 }
