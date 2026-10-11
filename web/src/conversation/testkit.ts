@@ -34,6 +34,12 @@ export async function serverModules(): Promise<{
   return { Parser: parser.Parser, ...transcript, encodeCwd: projects.encodeCwd, localPlace: projects.localPlace };
 }
 
+/** The real note Instance.prompt prepends mid-turn; untyped import, as serverModules. */
+export async function serverMidTurnNote(): Promise<string> {
+  const instances = await import(/* @vite-ignore */ path.join(SERVER_SRC, 'instances.ts'));
+  return instances.MID_TURN_NOTE as string;
+}
+
 let seq = 0;
 /** Apply with a fresh _seq, as the server stamps live events. */
 export const apply = (m: ConversationModel, ev: UiEvent) => m.apply({ ...ev, _seq: ++seq });
