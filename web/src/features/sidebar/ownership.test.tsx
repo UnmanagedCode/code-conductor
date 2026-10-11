@@ -219,8 +219,8 @@ describe('Projects-lens ownership colour', () => {
 });
 
 describe('selected session row', () => {
-  it('a selected session row reads bold, outranking the unread weight, and keeps its ring and its owner bar', async () => {
-    // Invariant: selection alone sets the bold weight and beats unread in both directions, without dropping the ring or the owner bar.
+  it('a selected session row is marked active independently of its unread pill and keeps its owner colour', async () => {
+    // Invariant: selection marks exactly one session row and never swallows its unread pill, so selected stays distinct from unread; the owner colour survives selection.
     const f = fleet();
     const seqs: Record<string, { turnEndSeq: number; viewedSeq: number }> = {
       'wa-main1': { turnEndSeq: 3, viewedSeq: 1 },
@@ -231,20 +231,17 @@ describe('selected session row', () => {
     seedFleet(f, { activeId: 'i-wa-main1' });
     renderSidebar();
     await settle();
+    const pill = (sid: string) => rowOf(sid).querySelector('[data-unread]')?.textContent ?? null;
     expect(rowOf('wa-main1').getAttribute('data-active')).toBe('true');
-    expect(rowOf('wa-main1').classList.contains('font-bold')).toBe(true);
-    expect(rowOf('wa-main1').classList.contains('font-semibold')).toBe(false);
-    expect(rowOf('wa-main1').classList.contains('font-medium')).toBe(false);
-    expect(rowOf('wa-main1').classList.contains('ring-1')).toBe(true);
+    expect(pill('wa-main1')).toBe('2');
     expect(barOf(rowOf('wa-main1'))).toEqual({ bar: true, color: COLOUR.A });
-    expect(rowOf('wa-main2').classList.contains('font-semibold')).toBe(true);
-    expect(rowOf('wa-main2').classList.contains('font-bold')).toBe(false);
-    expect(rowOf('wb-main').classList.contains('font-bold')).toBe(false);
-    expect(rowOf('wb-main').classList.contains('font-semibold')).toBe(false);
+    expect(rowOf('wa-main2').hasAttribute('data-active')).toBe(false);
+    expect(pill('wa-main2')).toBe('1');
+    expect(rowOf('wb-main').hasAttribute('data-active')).toBe(false);
+    expect(pill('wb-main')).toBeNull();
     act(() => appStore.set({ activeId: 'i-wb-main' }));
-    expect(rowOf('wb-main').classList.contains('font-bold')).toBe(true);
-    expect(rowOf('wa-main1').classList.contains('font-semibold')).toBe(true);
-    expect(rowOf('wa-main1').classList.contains('font-bold')).toBe(false);
+    expect(rowOf('wb-main').getAttribute('data-active')).toBe('true');
     expect(rowOf('wa-main1').hasAttribute('data-active')).toBe(false);
+    expect(pill('wa-main1')).toBe('2');
   });
 });

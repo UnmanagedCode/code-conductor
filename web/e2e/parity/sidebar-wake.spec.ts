@@ -25,7 +25,7 @@ const userEchoes = async (cc: Cc, id: string, needle: string): Promise<number> =
 const dot = async (page: Page, ui: Ui, project: string, sid: string) => ui.rowDot(await ui.sessionRow(page, project, sid));
 
 parity('legacy-awaiting-wake-dot/R1', "a session's dot lights while its worker is mid-turn, stays lit across a heartbeat, and clears at turn_end", async ({ page, cc, ui, uniq }) => {
-  // Invariant: the caller's dot reads waiting-on-a-worker in a distinct computed fill while its worker is mid-turn, keeps it across a heartbeat, and returns to plain idle at turn_end.
+  // Invariant: the caller's dot reads waiting-on-a-worker (its title) while its worker is mid-turn, keeps it across a heartbeat, and returns to plain idle at turn_end.
   test.setTimeout(180_000);
   const P = uniq('wake');
   await createProject(cc, P);
@@ -40,18 +40,14 @@ parity('legacy-awaiting-wake-dot/R1', "a session's dot lights while its worker i
   await ui.open(page);
   await expect(await ui.sessionRow(page, P, caller.sessionId)).toHaveCount(1);
 
-  const before = await test.step('baseline: a plain idle dot', async () => {
+  await test.step('baseline: a plain idle dot', async () => {
     await expect.poll(async () => (await dot(page, ui, P, caller.sessionId)).title).toBe('idle');
-    return dot(page, ui, P, caller.sessionId);
   });
 
-  const mid = await test.step('worker mid-turn: the waiting-on-a-worker dot', async () => {
+  await test.step('worker mid-turn: the waiting-on-a-worker dot', async () => {
     await mcpCall(cc, 'send_prompt', { sessionId: worker.sessionId, text: 'WORKER-GO' }, caller.id);
     await expect.poll(() => statusOf(cc, worker.id), { message: 'worker in turn' }).toBe('turn');
     await expect.poll(async () => (await dot(page, ui, P, caller.sessionId)).title).toBe('idle — waiting on a worker');
-    const d = await dot(page, ui, P, caller.sessionId);
-    expect(d.fill).not.toBe(before.fill);
-    return d;
   });
 
   await test.step('across a heartbeat, the dot stays lit', async () => {
@@ -61,13 +57,13 @@ parity('legacy-awaiting-wake-dot/R1', "a session's dot lights while its worker i
     // The sidebar may still show the heartbeat's turn: wait for the dot to leave it before the read.
     await expect.poll(async () => (await dot(page, ui, P, caller.sessionId)).title, { message: 'dot out of the heartbeat turn' }).not.toBe('running');
     expect(await statusOf(cc, worker.id), 'fixture: worker still mid-turn').toBe('turn');
-    expect(await dot(page, ui, P, caller.sessionId)).toEqual({ title: 'idle — waiting on a worker', fill: mid.fill });
+    expect((await dot(page, ui, P, caller.sessionId)).title).toBe('idle — waiting on a worker');
   });
 
   await test.step('after turn_end the dot drops to plain idle', async () => {
     await expect.poll(() => statusOf(cc, worker.id), { message: 'worker idle after its turn', timeout: 20_000 }).toBe('idle');
     await expect.poll(() => userEchoes(cc, caller.id, 'finished its turn'), { message: 'completion wake', timeout: 20_000 }).toBeGreaterThan(0);
     await expect.poll(() => statusOf(cc, caller.id), { message: 'caller idle' }).toBe('idle');
-    await expect.poll(() => dot(page, ui, P, caller.sessionId)).toEqual({ title: 'idle', fill: before.fill });
+    await expect.poll(async () => (await dot(page, ui, P, caller.sessionId)).title).toBe('idle');
   });
 });

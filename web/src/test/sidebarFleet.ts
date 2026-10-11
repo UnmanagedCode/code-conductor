@@ -5,7 +5,6 @@
 // hand 3), so an inverted owner predicate cannot hide behind equal totals.
 import { appStore } from '@/state/app';
 import { conductorColor } from '@/lib/core/conductorColor.js';
-import { OWNER_BAR } from '@/features/sidebar/rows';
 import type { SidebarUi } from '@/features/sidebar/state';
 
 export const A = 'cond-a';
@@ -109,17 +108,15 @@ export const rowOf = (sid: string) => el(`[data-session-row="${sid}"] [role="but
 export const labelOf = (sid: string) => rowOf(sid).querySelector('span.truncate') as HTMLElement;
 export const headOf = (wtName: string) => el(`[data-worktree-row="${wtName}"]`);
 export const projectRowOf = (name: string) => el(`[data-project-row="${name}"]`);
-/** Whether `node` draws the owner bar, and in which colour. */
-export const barOf = (node: HTMLElement): { bar: boolean; color: string } => ({
-  bar: node.classList.contains(OWNER_BAR),
-  color: node.style.getPropertyValue('--owner-color'),
-});
+/** Whether `node` carries an owner colour, and which: the inline `--owner-color` is the contract, not the bar's classes. */
+export const barOf = (node: HTMLElement): { bar: boolean; color: string } => {
+  const color = node.style.getPropertyValue('--owner-color');
+  return { bar: color !== '', color };
+};
 export const NO_BAR = { bar: false, color: '' };
 
 // Conductors lens and needs-you strip (card 2026-0629)
 export const blockOf = (sid: string) => el(`[data-conductor="${sid}"]`);
 export const conductorRowOf = (sid: string) => el(`[data-conductor="${sid}"] > [role="button"]`);
-/** The row's label: its first span.truncate (the dot is no truncate span). */
-export const conductorTitleOf = (sid: string) => conductorRowOf(sid).querySelector('span.truncate') as HTMLElement;
 export const conductorDotOf = (sid: string) => conductorRowOf(sid).querySelector('[data-dot]') as HTMLElement;
 export const stripEntryOf = (sid: string) => el(`[data-strip-entry="${sid}"] > button`);

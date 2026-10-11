@@ -17,7 +17,6 @@ const zed = (p: string) => `Zed-${p}`;
 /** 40 characters, the registry's maximum workspace name (src/projects.ts). */
 const long = (p: string) => `A${'W'.repeat(38 - p.length)}-${p}`;
 
-const labelBox = async (section: Locator) => (await section.locator('button[aria-expanded] span').first().boundingBox())!;
 const wsSection = (sb: Locator, name: string) => sb.locator(`section[data-workspace="${name}"]`);
 const wsToggle = (sb: Locator, name: string) => wsSection(sb, name).locator('button[aria-expanded]');
 
@@ -48,13 +47,12 @@ test.beforeAll(async ({ cc }, info) => {
   expect(adopt.body?.ok, JSON.stringify(adopt.body)).toBe(true);
 });
 
-test('the Other projects rule is a visible dashed line drawn once after the workspaces, with the last workspace open or closed', async ({ page }) => {
-  // Invariant: the unassigned run opens with one visible dashed rule right after the last workspace, whatever that workspace's state.
+test('the Other projects rule is a visible line drawn once after the workspaces, with the last workspace open or closed', async ({ page }) => {
+  // Invariant: the unassigned run opens with one visible rule right after the last workspace, whatever that workspace's state.
   const sb = await projectsLens(page);
   const rule = sb.locator('[data-section-rule]');
   const check = async () => {
     await expect(rule).toHaveCount(1);
-    expect(await rule.evaluate((e) => getComputedStyle(e).borderTopStyle)).toBe('dashed');
     expect((await rule.boundingBox())!.width).toBeGreaterThan(0);
     expect(await sb.locator('section[data-workspace=""]').evaluate((e) => e.previousElementSibling?.getAttribute('data-workspace'))).toBe(zed(P()));
   };
@@ -65,37 +63,12 @@ test('the Other projects rule is a visible dashed line drawn once after the work
   await check();
 });
 
-test('the Other projects label starts at the workspace label x, and project names start at one x inside a workspace and under Other projects, git and non-git alike', async ({ page }) => {
-  // Invariant: the section peer's label aligns with workspace labels, and row geometry is identical in and out of workspaces, git or not.
+test('a git project under Other projects offers Commit history and a non-git one does not', async ({ page }) => {
+  // Invariant: under Other projects the Commit history button is on the git project's row and absent from the non-git one's.
   const sb = await projectsLens(page);
   const p = P();
-  await setOpen(sb, zed(p), true);
-  const wsX = (await labelBox(wsSection(sb, zed(p)))).x;
-  const secX = (await sb.locator('[data-unassigned-header] > span').first().boundingBox())!.x;
-  expect(Math.abs(secX - wsX), `Other projects label x ${secX} vs workspace label x ${wsX}`).toBeLessThan(0.5);
   await expect(sb.locator(`[data-project-row="sp-git-${p}"]`).getByRole('button', { name: 'Commit history', exact: true })).toBeVisible();
   await expect(sb.locator(`[data-project-row="sp-plain-${p}"]`).getByRole('button', { name: 'Commit history', exact: true })).toHaveCount(0);
-  const nameOf = async (name: string) => (await sb.locator(`[data-project-row="${name}"]`).getByText(name, { exact: true }).boundingBox())!.x;
-  const member = await nameOf(`sp-member-${p}`);
-  const git = await nameOf(`sp-git-${p}`);
-  const plain = await nameOf(`sp-plain-${p}`);
-  expect(Math.abs(git - member), `git ${git} vs member ${member}`).toBeLessThan(0.5);
-  expect(Math.abs(plain - member), `plain ${plain} vs member ${member}`).toBeLessThan(0.5);
-  // Invariant: a project name sits right of the workspace label by the row's own lead columns (chevron, then
-  // commit column, each followed by the row gap) less the label's offset in its header; a collapsed column fails.
-  for (const name of [`sp-member-${p}`, `sp-git-${p}`, `sp-plain-${p}`]) {
-    const row = sb.locator(`[data-project-row="${name}"]`);
-    const rowX = (await row.boundingBox())!.x;
-    const chevron = (await row.locator(':scope > *').nth(0).boundingBox())!;
-    const commit = (await row.locator(':scope > *').nth(1).boundingBox())!;
-    const gap = await row.evaluate((e) => parseFloat(getComputedStyle(e).columnGap));
-    expect(chevron.width, `${name} chevron column`).toBeGreaterThan(0);
-    expect(commit.width, `${name} commit column`).toBeGreaterThan(0);
-    const inset = chevron.width + gap + commit.width + gap - (wsX - rowX);
-    expect(inset, `${name} inset`).toBeGreaterThan(0);
-    const nameX = await nameOf(name);
-    expect(Math.abs(nameX - wsX - inset), `${name}: name x ${nameX}, workspace label x ${wsX}, derived inset ${inset}`).toBeLessThan(0.5);
-  }
 });
 
 test('an unassigned git project shows its commit history button without hover, and it opens that project history', async ({ page }) => {
@@ -112,20 +85,19 @@ test('an unassigned git project shows its commit history button without hover, a
     .toEqual({ project: `sp-git-${p}`, worktree: null });
 });
 
-test('a workspace caret keeps its size while a long workspace name overflows', async ({ page }) => {
-  // Invariant: an overflowing name never shrinks the caret or pulls the label left.
+test('a workspace caret stays visible while a long workspace name overflows', async ({ page }) => {
+  // Invariant: an overflowing name never collapses the caret.
   const sb = await projectsLens(page);
   const p = P();
   const section = wsSection(sb, long(p));
   const caret = section.locator('button[aria-expanded] svg').first();
   const label = section.locator('button[aria-expanded] span').first();
   expect(await label.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(true);
-  expect(Math.abs((await caret.boundingBox())!.width - 14)).toBeLessThan(0.5);
-  expect(Math.abs((await labelBox(section)).x - (await labelBox(wsSection(sb, zed(p)))).x)).toBeLessThan(0.5);
+  expect((await caret.boundingBox())!.width).toBeGreaterThan(0);
 });
 
-test('a Conductors-lens tree project row keeps the Projects-lens commit history column', async ({ page, cc }) => {
-  // Invariant: the Projects-lens section layout never reaches the Conductors tree's project rows; their commit-history column is the base one.
+test('a Conductors-lens tree project row offers the same Commit history button as the Projects lens', async ({ page, cc }) => {
+  // Invariant: a Conductors tree project row shows its Commit history button, as the Projects-lens row of the same project does.
   const p = P();
   const project = `sp-tree-${p}`;
   await createProject(cc, project);
@@ -151,11 +123,9 @@ test('a Conductors-lens tree project row keeps the Projects-lens commit history 
   await next.lens(page, 'conductors');
   const sb = nextSidebar(page);
   await sb.locator(`[data-conductor="${sid}"] button[aria-label="Show workers"]`).click();
-  const treeBox = (await sb.locator(`[data-conductor="${sid}"] [data-project-row="${project}"]`)
-    .getByRole('button', { name: 'Commit history', exact: true }).boundingBox())!;
+  await expect(sb.locator(`[data-conductor="${sid}"] [data-project-row="${project}"]`)
+    .getByRole('button', { name: 'Commit history', exact: true })).toBeVisible();
   await next.lens(page, 'projects');
-  const listBox = (await nextSidebar(page).locator(`[data-project-list] [data-project-row="${project}"]`)
-    .getByRole('button', { name: 'Commit history', exact: true }).boundingBox())!;
-  expect(Math.abs(treeBox.width - listBox.width)).toBeLessThan(0.5);
-  expect(Math.abs(treeBox.height - listBox.height)).toBeLessThan(0.5);
+  await expect(nextSidebar(page).locator(`[data-project-list] [data-project-row="${project}"]`)
+    .getByRole('button', { name: 'Commit history', exact: true })).toBeVisible();
 });

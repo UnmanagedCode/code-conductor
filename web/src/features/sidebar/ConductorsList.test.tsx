@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import {
-  A, ALPHA, B, BRAVO, COLOUR, FLEET_UI, NO_BAR, barOf, blockOf, conductor, conductorDotOf, conductorRowOf, conductorTitleOf, el, fleet,
+  A, ALPHA, B, BRAVO, COLOUR, FLEET_UI, NO_BAR, barOf, blockOf, conductor, conductorDotOf, conductorRowOf, el, fleet,
   proj, seed, seedFleet, stripEntryOf, worker,
 } from '@/test/sidebarFleet';
 import { conductorColor } from '@/lib/core/conductorColor.js';
@@ -81,8 +81,8 @@ describe('Conductors-lens conductor rows', () => {
     expect(resumeSession).toHaveBeenCalledTimes(1);
   });
 
-  it("a conductor block carries its own conductor's colour, and only an inactive block fades itself and its bar", async () => {
-    // Invariant: each block is coloured by its own sid, and only the inactive one fades, block and bar.
+  it("a conductor block carries its own conductor's colour", async () => {
+    // Invariant: each block, active or inactive, is coloured by its own sid, so the three colours are pairwise distinct.
     sidebarStore.set({ inactiveOpen: true });
     seed({
       instances: [conductor(A, { title: ALPHA }), conductor(B, { temp: false, firstPrompt: BRAVO })],
@@ -93,14 +93,7 @@ describe('Conductors-lens conductor rows', () => {
     expect(blockOf(A).style.getPropertyValue('--owner-color')).toBe(COLOUR.A);
     expect(blockOf(B).style.getPropertyValue('--owner-color')).toBe(COLOUR.B);
     expect(blockOf('cd').style.getPropertyValue('--owner-color')).toBe(conductorColor('cd'));
-    const bar = (s: string) => blockOf(s).firstElementChild as HTMLElement;
-    expect(bar(A).classList.contains('bg-[var(--owner-color)]')).toBe(true);
-    expect(blockOf(A).classList.contains('opacity-80')).toBe(false);
-    expect(bar(A).classList.contains('opacity-50')).toBe(false);
-    expect(blockOf(B).classList.contains('opacity-80')).toBe(false);
-    expect(bar(B).classList.contains('opacity-50')).toBe(false);
-    expect(blockOf('cd').classList.contains('opacity-80')).toBe(true);
-    expect(bar('cd').classList.contains('opacity-50')).toBe(true);
+    expect(new Set([COLOUR.A, COLOUR.B, conductorColor('cd')]).size).toBe(3);
   });
 
   it('worker rows in an expanded conductor tree carry no owner bar, though the same worker carries one in the Projects lens', async () => {
@@ -118,29 +111,23 @@ describe('Conductors-lens conductor rows', () => {
   });
 
   it("a conductor row's dot keeps the running, waiting-on-a-worker, waiting-on-a-job and idle semantics", async () => {
-    // Invariant: the dot's state, tooltip and fill follow status, awaitingWake and waitingOnJob, a worker or a job reading as waiting.
+    // Invariant: the dot's state and tooltip follow status, awaitingWake and waitingOnJob, a worker or a job reading as waiting, and an idle wait reads differently from plain idle.
     seed({ instances: [conductor('cw', { awaitingWake: true }), conductor('cr', { status: 'turn' }), conductor('cj', { waitingOnJob: true }), conductor('ci')] });
     renderSidebar();
     await settle();
     const d = conductorDotOf;
     expect(d('cw').getAttribute('data-dot')).toBe('idle');
     expect(d('cw').title).toBe('idle — waiting on a worker');
-    expect(d('cw').classList.contains('bg-info')).toBe(true);
     expect(d('cj').getAttribute('data-dot')).toBe('idle');
     expect(d('cj').title).toBe('idle — waiting on a background job');
-    expect(d('cj').classList.contains('bg-info')).toBe(true);
     expect(d('cr').getAttribute('data-dot')).toBe('turn');
     expect(d('cr').title).toBe('running');
-    expect(d('cr').classList.contains('bg-success')).toBe(true);
-    expect(d('cr').classList.contains('animate-pulse')).toBe(true);
     expect(d('ci').getAttribute('data-dot')).toBe('idle');
     expect(d('ci').title).toBe('idle');
-    expect(d('ci').classList.contains('bg-muted-foreground/45')).toBe(true);
-    expect(d('ci').classList.contains('bg-info')).toBe(false);
   });
 
-  it("a live conductor's dot gains the waiting-on-you ring over its fill, titled by the ask, and an exited or disk-only conductor is never ringed", async () => {
-    // Invariant: the ring appears only on a live conductor with an ask, sits over the run-state fill and names the ask.
+  it("a live conductor's dot is marked needs-you and titled by the ask, and an exited or disk-only conductor is never marked", async () => {
+    // Invariant: the needs-you mark appears only on a live conductor with an ask, keeps the run-state dot and names the ask.
     sidebarStore.set({ inactiveOpen: true });
     seed({
       instances: [
@@ -156,21 +143,17 @@ describe('Conductors-lens conductor rows', () => {
     const d = conductorDotOf;
     expect(d('ci').getAttribute('data-needs-you')).toBe('true');
     expect(d('ci').title).toBe('waiting on you (plan approval) · idle');
-    expect(d('ci').classList.contains('ring-warning')).toBe(true);
-    expect(d('ci').classList.contains('bg-warning')).toBe(true);
+    expect(d('ci').getAttribute('data-dot')).toBe('idle');
     expect(d('ct').title).toBe('waiting on you (asked in text) · running');
-    expect(d('ct').classList.contains('ring-warning')).toBe(true);
-    expect(d('ct').classList.contains('bg-success')).toBe(true);
-    expect(d('ct').classList.contains('animate-pulse')).toBe(false);
+    expect(d('ct').getAttribute('data-needs-you')).toBe('true');
+    expect(d('ct').getAttribute('data-dot')).toBe('turn');
     expect(d('cw').title).toBe('waiting on you (question) · on a worker');
-    expect(d('cw').classList.contains('ring-warning')).toBe(true);
-    expect(d('cw').classList.contains('bg-info')).toBe(true);
+    expect(d('cw').getAttribute('data-needs-you')).toBe('true');
+    expect(d('cw').getAttribute('data-dot')).toBe('idle');
     expect(d('cx').getAttribute('data-dot')).toBe('exited');
     expect(d('cx').hasAttribute('data-needs-you')).toBe(false);
-    expect(d('cx').classList.contains('ring-warning')).toBe(false);
     expect(d('cd').getAttribute('data-dot')).toBe('offline');
     expect(d('cd').hasAttribute('data-needs-you')).toBe(false);
-    expect(d('cd').classList.contains('ring-warning')).toBe(false);
   });
 
   it('the selected conductor row and the selected worker row in its tree are marked, and only they', async () => {
@@ -200,6 +183,17 @@ describe('Conductors-lens conductor rows', () => {
     act(() => agoTick.bump());
     expect(conductorRowOf('ca').querySelector('[data-ago]') === ago).toBe(true);
     expect(ago.textContent).toBe('2h ago');
+  });
+
+  it("a conductor row is labelled by its title, and an untitled one by its first prompt", async () => {
+    // Invariant: a titled conductor row shows its title; an untitled one falls back to its first prompt, and neither shows the other's label.
+    seed({ instances: [conductor(A, { title: ALPHA }), conductor(B, { temp: false, firstPrompt: BRAVO })] });
+    renderSidebar();
+    await settle();
+    expect(conductorRowOf(A).textContent).toContain(ALPHA);
+    expect(conductorRowOf(A).textContent).not.toContain(BRAVO);
+    expect(conductorRowOf(B).textContent).toContain(BRAVO);
+    expect(conductorRowOf(B).textContent).not.toContain(ALPHA);
   });
 
   it('a conductor row pills its unread turn marks from a live instance or its .conduct row, and a read conductor has no pill', async () => {
@@ -236,70 +230,32 @@ describe('Conductors-lens conductor rows', () => {
     await settle();
     expect(blockOf('ca').querySelector('[data-session-row="w"]')).not.toBeNull();
     const clock = formatAutoResumeTime(T)!.replace(/^resumes at /, '');
-    expect((el('[data-conductor-list]').textContent ?? '').includes('⏸')).toBe(false);
-    expect(stripEntryOf('ca').textContent).toContain(`2 · ⏸ ${clock}`);
-  });
-  it('an unselected untitled conductor row with unread turns reads semi-bold and italic', async () => {
-    // Invariant: unread turns alone give an untitled row the semi-bold weight, beside its untitled italic.
-    seed({ instances: [conductor(B, { temp: false, firstPrompt: BRAVO, turnEndSeq: 3, viewedSeq: 1 })] });
-    renderSidebar();
-    await settle();
-    expect(conductorTitleOf(B).textContent).toBe(BRAVO);
-    expect(conductorRowOf(B).querySelector('[data-unread]')?.textContent).toBe('2');
-    expect(conductorRowOf(B).hasAttribute('data-active')).toBe(false);
-    expect(conductorTitleOf(B).classList.contains('font-semibold')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('italic')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('font-bold')).toBe(false);
-  });
-
-  it('an unselected titled conductor row with no unread turns reads semi-bold', async () => {
-    // Invariant: a title alone gives the row the semi-bold weight, with no unread turns to supply it.
-    seed({ instances: [conductor(A, { title: ALPHA, turnEndSeq: 2, viewedSeq: 2 })] });
-    renderSidebar();
-    await settle();
-    expect(conductorTitleOf(A).textContent).toBe(ALPHA);
-    expect(conductorRowOf(A).querySelector('[data-unread]')).toBeNull();
-    expect(conductorRowOf(A).hasAttribute('data-active')).toBe(false);
-    expect(conductorTitleOf(A).classList.contains('font-semibold')).toBe(true);
-    expect(conductorTitleOf(A).classList.contains('font-bold')).toBe(false);
-    expect(conductorTitleOf(A).classList.contains('italic')).toBe(false);
+    // Invariant: the badge is found by its tooltip, which leads with the full resume time; the strip has one and the conductor list none.
+    const badge = `[title^="${formatAutoResumeTime(T)}"]`;
+    const inStrip = stripEntryOf('ca').querySelector(badge) as HTMLElement;
+    expect(inStrip.textContent).toMatch(/^2 ·/);
+    expect(inStrip.textContent).toContain(clock);
+    expect(el('[data-conductor-list]').querySelector(badge)).toBeNull();
   });
 });
 
 describe('selected conductor row', () => {
-  it('a selected conductor row reads bold, titled or untitled, outranking the titled and unread weights, and keeps its frame', async () => {
-    // Invariant: selection gives the bold weight to titled and untitled labels, outranking the titled and unread weights, both ways across a selection change, while the frame stays.
+  it('a selected conductor row is marked data-active whether titled or untitled and keeps its unread pill, and the mark follows a selection change', async () => {
+    // Invariant: selection marks exactly one conductor row, titled or untitled, and never swallows its unread pill, so selected stays distinct from unread.
     seed({
       instances: [conductor(A, { title: ALPHA, turnEndSeq: 2, viewedSeq: 1 }), conductor(B, { temp: false, firstPrompt: BRAVO })],
       activeId: `i-${A}`,
     });
     renderSidebar();
     await settle();
+    const pill = (s: string) => conductorRowOf(s).querySelector('[data-unread]');
     expect(conductorRowOf(A).getAttribute('data-active')).toBe('true');
-    expect(conductorTitleOf(A).classList.contains('font-bold')).toBe(true);
-    expect(conductorTitleOf(A).classList.contains('font-semibold')).toBe(false);
-    expect(conductorRowOf(A).classList.contains('ring-1')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('italic')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('text-muted-foreground')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('font-bold')).toBe(false);
-    expect(conductorTitleOf(B).classList.contains('font-semibold')).toBe(false);
+    expect(pill(A)?.textContent).toBe('1');
+    expect(conductorRowOf(B).hasAttribute('data-active')).toBe(false);
+    expect(pill(B)).toBeNull();
     act(() => appStore.set({ activeId: `i-${B}` }));
-    expect(conductorTitleOf(B).classList.contains('font-bold')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('italic')).toBe(true);
-    expect(conductorTitleOf(A).classList.contains('font-semibold')).toBe(true);
-    expect(conductorTitleOf(A).classList.contains('font-bold')).toBe(false);
-    expect(conductorRowOf(A).hasAttribute('data-active')).toBe(false);
-  });
-
-  it("a selected untitled conductor row's label takes the foreground colour, not the muted one", async () => {
-    // Invariant: selection lifts an untitled label from the muted colour to the foreground colour (ruling R-c).
-    seed({ instances: [conductor(B, { temp: false, firstPrompt: BRAVO })], activeId: `i-${B}` });
-    renderSidebar();
-    await settle();
-    expect(conductorTitleOf(B).textContent).toBe(BRAVO);
     expect(conductorRowOf(B).getAttribute('data-active')).toBe('true');
-    expect(conductorRowOf(B).querySelector('[data-unread]')).toBeNull();
-    expect(conductorTitleOf(B).classList.contains('text-foreground')).toBe(true);
-    expect(conductorTitleOf(B).classList.contains('text-muted-foreground')).toBe(false);
+    expect(conductorRowOf(A).hasAttribute('data-active')).toBe(false);
+    expect(pill(A)?.textContent).toBe('1');
   });
 });

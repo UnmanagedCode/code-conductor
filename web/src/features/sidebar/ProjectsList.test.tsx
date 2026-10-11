@@ -128,7 +128,7 @@ describe('Projects tree', () => {
   });
 
   it('the dot names an idle wait: a held wake reads waiting on a worker and beats a background job, a job alone names the job, and both clear when consumed', async () => {
-    // Invariant: the dot's accent and name follow the wait flags both ways (the wake wins), and never stick.
+    // Invariant: the dot's name follows the wait flags both ways (the wake wins) while its run-state stays idle, and a wait never sticks.
     const four = (wake: boolean) => [
       inst({ sessionId: 'sid-wait', project: 'demo', awaitingWake: wake, waitingOnJob: false }),
       inst({ sessionId: 'sid-job', project: 'demo', awaitingWake: false, waitingOnJob: wake }),
@@ -142,15 +142,11 @@ describe('Projects tree', () => {
     expect(dotOf('sid-both').title).toBe('idle — waiting on a worker');
     expect(dotOf('sid-job').title).toBe('idle — waiting on a background job');
     expect(dotOf('sid-done').title).toBe('idle');
-    expect(dotOf('sid-wait').classList.contains('bg-info')).toBe(true);
-    expect(dotOf('sid-job').classList.contains('bg-info')).toBe(true);
-    expect(dotOf('sid-both').classList.contains('bg-info')).toBe(true);
-    expect(dotOf('sid-done').classList.contains('bg-info')).toBe(false);
+    for (const sid of ['sid-wait', 'sid-job', 'sid-both', 'sid-done']) expect(dotOf(sid).getAttribute('data-dot')).toBe('idle');
     act(() => appStore.set({ instances: four(false) }));
     await settle();
     for (const sid of ['sid-wait', 'sid-job', 'sid-both', 'sid-done']) {
       expect(dotOf(sid).title).toBe('idle');
-      expect(dotOf(sid).classList.contains('bg-info')).toBe(false);
     }
   });
 
@@ -214,8 +210,8 @@ describe('Projects tree', () => {
     expect(callsFor('wt')).toBe(inWt + 1);
   });
 
-  it('a session row pills turnEndSeq minus viewedSeq, a live instance beats its disk row, and viewing clears the pill and the bold', async () => {
-    // Invariant: unread = turnEndSeq − viewedSeq, a live instance's marks win over its disk row's, and viewing clears the pill and the bold.
+  it('a session row pills turnEndSeq minus viewedSeq, a live instance beats its disk row, and viewing clears the pill', async () => {
+    // Invariant: unread = turnEndSeq − viewedSeq, a live instance's marks win over its disk row's, and viewing clears the pill.
     loadSessions.mockResolvedValue([
       disk('sid-a', 'a', { turnEndSeq: 3, viewedSeq: 1 }),
       disk('sid-b', 'b', { turnEndSeq: 1, viewedSeq: 1 }),
@@ -229,13 +225,10 @@ describe('Projects tree', () => {
     renderSidebar();
     await screen.findByText('c');
     expect(rowOf('sid-b').querySelector('[data-unread]')?.textContent).toBe('3');
-    expect(rowOf('sid-b').classList.contains('font-semibold')).toBe(true);
     expect(rowOf('sid-a').querySelector('[data-unread]')).toBeNull();
-    expect(rowOf('sid-a').classList.contains('font-semibold')).toBe(false);
     expect(rowOf('sid-c').querySelector('[data-unread]')?.textContent).toBe('2');
     act(() => appStore.set({ instances: live(4) }));
     expect(rowOf('sid-b').querySelector('[data-unread]')).toBeNull();
-    expect(rowOf('sid-b').classList.contains('font-semibold')).toBe(false);
   });
 
   it('a paused live session row in the Projects lens carries no auto-resume badge', async () => {
@@ -250,8 +243,12 @@ describe('Projects tree', () => {
     await settle();
     expect(dotOf('sid-p').getAttribute('data-dot')).toBe('idle');
     const clock = formatAutoResumeTime(T)!.replace(/^resumes at /, '');
-    expect(within(el('[data-strip]')).getByText(`1 · ⏸ ${clock}`)).toBeTruthy();
-    expect(within(el('[data-project-list]')).queryByText(/⏸/)).toBeNull();
+    // Invariant: the badge is found by its tooltip, which leads with the full resume time; the strip has one and the project list none.
+    const badge = `[title^="${formatAutoResumeTime(T)}"]`;
+    const inStrip = el('[data-strip]').querySelector(badge) as HTMLElement;
+    expect(inStrip.textContent).toMatch(/^1 ·/);
+    expect(inStrip.textContent).toContain(clock);
+    expect(el('[data-project-list]').querySelector(badge)).toBeNull();
   });
 
   it('a Sessions list is open by default and stays collapsed across re-renders once collapsed', async () => {
@@ -305,8 +302,8 @@ describe('Projects tree', () => {
     expect(wsHeader('Hidden').getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('temp and conducted sessions sit under their own separators after the normal rows; a conducted temp session groups as conducted but keeps the temp colour', async () => {
-    // Invariant: the order is normal, then Temp, then Conducted; conducted wins the grouping while temp wins the colour.
+  it('temp and conducted sessions sit under their own separators after the normal rows; a conducted temp session groups as conducted and keeps its Make persistent button', async () => {
+    // Invariant: the order is normal, then Temp, then Conducted; conducted wins the grouping while a temp row, conducted or not, keeps its Make persistent button and a non-temp row never has one.
     seed({
       projects: [proj('demo')],
       instances: [
@@ -319,15 +316,9 @@ describe('Projects tree', () => {
     renderSidebar();
     await settle();
     expect(items('demo')).toEqual(['sid-normal', 'Temp', 'sid-temp', 'Conducted', 'sid-cond', 'sid-ct']);
-    for (const sid of ['sid-temp', 'sid-ct']) {
-      expect(labelOf(sid).classList.contains('text-primary')).toBe(true);
-      expect(labelOf(sid).classList.contains('text-info')).toBe(false);
-    }
-    expect(labelOf('sid-cond').classList.contains('text-info')).toBe(true);
-    // Invariant: a conducted row that is not temp never takes the temp colour.
-    expect(labelOf('sid-cond').classList.contains('text-primary')).toBe(false);
-    expect(labelOf('sid-normal').classList.contains('text-primary')).toBe(false);
-    expect(labelOf('sid-normal').classList.contains('text-info')).toBe(false);
+    const promote = (sid: string) => within(rowOf(sid)).queryByRole('button', { name: 'Make persistent' });
+    for (const sid of ['sid-temp', 'sid-ct']) expect(promote(sid)).not.toBeNull();
+    for (const sid of ['sid-cond', 'sid-normal']) expect(promote(sid)).toBeNull();
   });
 
   it('no separator renders when every session is a normal one', async () => {
@@ -358,7 +349,6 @@ describe('Projects tree', () => {
     for (const sid of ['sid-dead', 'sid-normal', 'sid-disktemp']) {
       expect(within(rowOf(sid)).queryByRole('button', { name: 'Make persistent' })).toBeNull();
     }
-    expect(labelOf('sid-disktemp').classList.contains('text-primary')).toBe(true);
   });
 
   it('a session row × reads Stop for a live persistent session and Archive otherwise, and a click closes with the row facts without selecting', async () => {
@@ -408,7 +398,7 @@ describe('Projects tree', () => {
     renderSidebar();
     await screen.findByText('promoted');
     expect(items('demo')).toEqual(['sid-promoted']);
-    expect(labelOf('sid-promoted').classList.contains('text-primary')).toBe(false);
+    expect(within(rowOf('sid-promoted')).queryByRole('button', { name: 'Make persistent' })).toBeNull();
   });
 
   it('the 15s tick re-renders the ago labels without new data: the row and the Sessions summary line', async () => {

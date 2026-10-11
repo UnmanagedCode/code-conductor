@@ -121,9 +121,9 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean
           awaitingUser={c.live ? c.awaitingUser : null}
           awaitingUserSource={c.awaitingUserSource}
         />
-        <span className={cn('min-w-[2em] flex-1 truncate', untitled ? 'text-muted-foreground italic' : 'font-semibold', active && 'text-foreground',
-          // Selected is bold and outranks the titled and unread weights (docs/features.md → Selected session).
-          active ? 'font-bold' : unread > 0 && 'font-semibold')}>
+        <span className={cn('min-w-[2em] flex-1 truncate', untitled && 'text-muted-foreground italic', active && 'text-foreground',
+          // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
+          unread > 0 && 'font-semibold')}>
           {text}
         </span>
         <Ago ms={c.lastActivity} />

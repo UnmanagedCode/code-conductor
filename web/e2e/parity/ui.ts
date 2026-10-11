@@ -174,7 +174,7 @@ export interface Ui {
   worktreesOpen(page: Page, project: string): Promise<boolean>;
   /** Selects the Projects lens, opens `project`'s Worktrees group and returns `worktree`'s head row. */
   worktreeHead(page: Page, project: string, worktree: string): Promise<Locator>;
-  /** The computed colour of the 3px owner bar `el` draws, or null when it draws none. */
+  /** The owner colour `el` carries (computed), or null when it has none. */
   ownerBar(el: Locator): Promise<string | null>;
   /** Selects the Projects lens and returns the listed project names, in order. */
   projectNames(page: Page): Promise<string[]>;
@@ -184,8 +184,8 @@ export interface Ui {
   filterBar(page: Page): Promise<string | null>;
   /** Whether a session row is the selected one. */
   sessionRowActive(row: Locator): Promise<boolean>;
-  /** A session row's label weight, whether it draws a 1px selection frame, and its fill. */
-  sessionRowStyle(row: Locator): Promise<{ weight: string; framed: boolean; fill: string }>;
+  /** A session row's selected state, fill and owner colour (null when it has none). */
+  sessionRowStyle(row: Locator): Promise<{ active: boolean; fill: string; colour: string | null }>;
 
   // Dialogs part 3 (card 2026-0639)
   /** Opens the active session's ⋮ item for `which` and returns its dialog. */
@@ -234,22 +234,22 @@ export interface Ui {
   conductorRow(page: Page, sessionId: string): Promise<Locator>;
   /** Selects the Conductors lens and opens the Inactive group. */
   openInactive(page: Page): Promise<void>;
-  /** A conductor row's selected state, label text, weight, italic and whether its colour is the UI's muted token, and the row's frame and fill. */
-  conductorRowStyle(row: Locator): Promise<{ active: boolean; text: string; weight: string; italic: boolean; muted: boolean; framed: boolean; fill: string }>;
-  /** Selects the Conductors lens and returns `sessionId`'s project chips in order, their text colour resolved against the UI's muted and foreground tokens. */
+  /** A conductor row's selected state and fill. */
+  conductorRowStyle(row: Locator): Promise<{ active: boolean; fill: string }>;
+  /** Selects the Conductors lens and returns `sessionId`'s project chips in order. */
   conductorChips(page: Page, sessionId: string): Promise<ConductorChip[]>;
-  /** Selects the Conductors lens and returns `sessionId`'s block bar (computed colour, width) and where its row box and its first control start, from the block's left edge. */
-  conductorGeometry(page: Page, sessionId: string): Promise<ConductorGeometry>;
+  /** Selects the Conductors lens and returns the computed colour of `sessionId`'s block bar, or null when it has none. */
+  conductorBar(page: Page, sessionId: string): Promise<string | null>;
   /** Selects the Conductors lens, expands `conductor`'s tree and returns the worker row of `sessionId` in it. */
   treeWorkerRow(page: Page, conductor: string, sessionId: string): Promise<Locator>;
   /** A conductor, tree-worker or session row's label (floor, flex basis and grow, width, text height, truncated) and its ago / ↑ / × (flex-shrink, inside the row box). */
   rowLayout(row: Locator): Promise<RowLayout>;
   /** Opens the sidebar and returns `sessionId`'s needs-you strip entry. */
   stripEntry(page: Page, sessionId: string): Promise<Locator>;
-  /** A strip entry's selected state, label weight, frame and fill. */
-  stripEntryStyle(entry: Locator): Promise<{ active: boolean; weight: string; framed: boolean; fill: string }>;
-  /** A row's status dot: its tooltip and computed fill. */
-  rowDot(row: Locator): Promise<{ title: string; fill: string }>;
+  /** A strip entry's selected state, fill and owner colour (null when it has none). */
+  stripEntryStyle(entry: Locator): Promise<{ active: boolean; fill: string; colour: string | null }>;
+  /** A row's status dot: its tooltip. */
+  rowDot(row: Locator): Promise<{ title: string }>;
 
   // Settings part 3 (card 2026-0637)
   /** Opens a Conventions block if it is closed; idempotent. */
@@ -349,9 +349,8 @@ export interface Ui {
 }
 
 // Sidebar C (card 2026-0629)
-export type ConductorGeometry = { bar: string | null; barWidth: number; rowLeft: number; contentLeft: number };
-/** A chip's project and kind, its border style, and whether its text colour is the UI's muted or foreground token. */
-export type ConductorChip = { project: string; kind: 'live' | 'idle'; dashed: boolean; muted: boolean; foreground: boolean };
+/** A chip's project and kind. */
+export type ConductorChip = { project: string; kind: 'live' | 'idle' };
 export type RowLayout = {
   label: { minWidth: number; basis: number; grow: string; width: number; textHeight: number; truncated: boolean };
   fixed: { part: 'ago' | 'promote' | 'close'; shrink: string; inside: boolean }[];
@@ -793,13 +792,10 @@ export const legacy: Ui = {
     return legacy.ownerBar(page.locator('#conductor-filter'));
   },
   sessionRowActive: (row) => row.evaluate((e) => e.classList.contains('active')),
-  sessionRowStyle: (row) => row.evaluate((e) => {
-    const cs = getComputedStyle(e);
-    return {
-      weight: getComputedStyle(e.querySelector('.session-preview')!).fontWeight,
-      framed: cs.outlineStyle === 'solid' && cs.outlineWidth === '1px',
-      fill: cs.backgroundColor,
-    };
+  sessionRowStyle: async (row) => ({
+    active: await legacy.sessionRowActive(row),
+    fill: await row.evaluate((e) => getComputedStyle(e).backgroundColor),
+    colour: await legacy.ownerBar(row),
   }),
 
   // Dialogs part 3 (card 2026-0639)
@@ -927,65 +923,19 @@ export const legacy: Ui = {
       await expect(det).toHaveAttribute('open', '', { timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
   },
-  conductorRowStyle: (row) => row.evaluate((e) => {
-    const t = e.querySelector('.conductor-title')!;
-    const ts = getComputedStyle(t);
-    const p = document.createElement('i');
-    p.style.color = 'var(--muted)';
-    document.body.appendChild(p);
-    const muted = getComputedStyle(p).color;
-    p.remove();
-    const cs = getComputedStyle(e);
-    return {
-      active: e.classList.contains('active'),
-      text: t.textContent ?? '',
-      weight: ts.fontWeight,
-      italic: ts.fontStyle === 'italic',
-      muted: ts.color === muted,
-      framed: cs.outlineStyle === 'solid' && cs.outlineWidth === '1px',
-      fill: cs.backgroundColor,
-    };
-  }),
+  conductorRowStyle: (row) => row.evaluate((e) => ({ active: e.classList.contains('active'), fill: getComputedStyle(e).backgroundColor })),
   async conductorChips(page, sessionId) {
     await legacy.lens(page, 'conductors');
     const b = `#conductor-list [data-key="conductor:${sessionId}"]`;
-    return page.locator(`${b} .conductor-chip.live, ${b} .conductor-chip.idle`).evaluateAll((es) => {
-      const token = (v: string) => {
-        const p = document.createElement('i');
-        p.style.color = `var(${v})`;
-        document.body.appendChild(p);
-        const c = getComputedStyle(p).color;
-        p.remove();
-        return c;
-      };
-      const t = { foreground: token('--text'), muted: token('--muted') };
-      return es.map((c) => {
-        const cs = getComputedStyle(c);
-        return {
-          project: c.textContent ?? '',
-          kind: c.classList.contains('live') ? 'live' as const : 'idle' as const,
-          dashed: cs.borderTopStyle === 'dashed',
-          muted: cs.color === t.muted,
-          foreground: cs.color === t.foreground,
-        };
-      });
-    });
+    return page.locator(`${b} .conductor-chip.live, ${b} .conductor-chip.idle`).evaluateAll((es) => es.map((c) => ({
+      project: c.textContent ?? '',
+      kind: c.classList.contains('live') ? 'live' as const : 'idle' as const,
+    })));
   },
-  async conductorGeometry(page, sessionId) {
+  async conductorBar(page, sessionId) {
     await legacy.lens(page, 'conductors');
-    return page.locator(`#conductor-list [data-key="conductor:${sessionId}"]`).evaluate((e) => {
-      const b = e.getBoundingClientRect();
-      // Any colour function: an inactive block's faded bar is a color-mix, which is no rgb().
-      const m = /([a-z-]+\([^)]*\)) (-?[\d.]+)px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow);
-      const row = e.querySelector(':scope > .conductor-row')!;
-      const caret = row.querySelector('.conductor-caret')!;
-      return {
-        bar: m?.[1] ?? null,
-        barWidth: m ? parseFloat(m[2]) : 0,
-        rowLeft: row.getBoundingClientRect().left - b.left,
-        contentLeft: caret.getBoundingClientRect().left - b.left,
-      };
-    });
+    // Any colour function: an inactive block's faded bar is a color-mix, which is no rgb().
+    return page.locator(`#conductor-list [data-key="conductor:${sessionId}"]`).evaluate((e) => /([a-z-]+\([^)]*\)) (-?[\d.]+)px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow)?.[1] ?? null);
   },
   async treeWorkerRow(page, conductor, sessionId) {
     await legacy.lens(page, 'conductors');
@@ -1008,18 +958,13 @@ export const legacy: Ui = {
     await openOldDrawer(page);
     return page.locator(`#sidebar-strip-slot .strip-list > li[data-key="entry:${sessionId}"] > .strip-entry`);
   },
-  stripEntryStyle: (entry) => entry.evaluate((e) => {
-    const cs = getComputedStyle(e);
-    return {
-      active: e.classList.contains('active'),
-      weight: getComputedStyle(e.querySelector('.strip-title')!).fontWeight,
-      framed: cs.outlineStyle === 'solid' && cs.outlineWidth === '1px',
-      fill: cs.backgroundColor,
-    };
+  stripEntryStyle: async (entry) => ({
+    ...(await entry.evaluate((e) => ({ active: e.classList.contains('active'), fill: getComputedStyle(e).backgroundColor }))),
+    colour: await legacy.ownerBar(entry),
   }),
   rowDot: (row) => row.evaluate((e) => {
     const d = e.querySelector<HTMLElement>('.dot')!;
-    return { title: d.title, fill: getComputedStyle(d).backgroundColor };
+    return { title: d.title };
   }),
 
   // Settings part 3 (card 2026-0637)
@@ -1509,7 +1454,17 @@ export const next: Ui = {
     await next.openWorktrees(page, project);
     return sidebar(page).locator(`[data-project="${project}"] [data-worktree-row="${worktree}"]`);
   },
-  ownerBar: (el) => el.evaluate((e) => /(rgba?\([^)]*\)) 3px 0px 0px 0px inset/.exec(getComputedStyle(e).boxShadow)?.[1] ?? null),
+  // The inline --owner-color is the contract (it is never inherited when read off the style attribute), resolved the way colourOf resolves a conductor's colour.
+  ownerBar: (el) => el.evaluate((e) => {
+    const v = (e as HTMLElement).style.getPropertyValue('--owner-color');
+    if (!v) return null;
+    const p = document.createElement('i');
+    p.style.color = v;
+    document.body.appendChild(p);
+    const c = getComputedStyle(p).color;
+    p.remove();
+    return c;
+  }),
   async projectNames(page) {
     await next.lens(page, 'projects');
     return sidebar(page).locator('[data-project-list] [data-project-row]').evaluateAll((es) => es.map((e) => e.getAttribute('data-project-row') ?? ''));
@@ -1525,14 +1480,10 @@ export const next: Ui = {
     return next.ownerBar(sidebar(page).locator('[data-filter]'));
   },
   sessionRowActive: async (row) => (await row.getAttribute('data-active')) === 'true',
-  sessionRowStyle: (row) => row.evaluate((e) => {
-    const cs = getComputedStyle(e);
-    return {
-      weight: getComputedStyle(e.querySelector('span.truncate')!).fontWeight,
-      // By geometry, not colour: ring-border is --border, an oklch() Chrome serializes verbatim in box-shadow.
-      framed: cs.boxShadow.replace(/\s+/g, ' ').split(', ').some((p) => p.endsWith(' 0px 0px 0px 1px')),
-      fill: cs.backgroundColor,
-    };
+  sessionRowStyle: async (row) => ({
+    active: await next.sessionRowActive(row),
+    fill: await row.evaluate((e) => getComputedStyle(e).backgroundColor),
+    colour: await next.ownerBar(row),
   }),
 
   // Dialogs part 3 (card 2026-0639)
@@ -1640,63 +1591,17 @@ export const next: Ui = {
     if ((await t.getAttribute('aria-expanded')) !== 'true') await t.click();
     await expect(t).toHaveAttribute('aria-expanded', 'true');
   },
-  conductorRowStyle: (row) => row.evaluate((e) => {
-    const t = e.querySelector<HTMLElement>('span.truncate')!;
-    const ts = getComputedStyle(t);
-    const p = document.createElement('span');
-    p.className = 'text-muted-foreground';
-    e.appendChild(p);
-    const muted = getComputedStyle(p).color;
-    p.remove();
-    const cs = getComputedStyle(e);
-    return {
-      active: e.getAttribute('data-active') === 'true',
-      text: t.textContent ?? '',
-      weight: ts.fontWeight,
-      italic: ts.fontStyle === 'italic',
-      muted: ts.color === muted,
-      // By geometry, not colour: ring-border is --border, an oklch() Chrome serializes verbatim in box-shadow.
-      framed: cs.boxShadow.replace(/\s+/g, ' ').split(', ').some((x) => x.endsWith(' 0px 0px 0px 1px')),
-      fill: cs.backgroundColor,
-    };
-  }),
+  conductorRowStyle: (row) => row.evaluate((e) => ({ active: e.getAttribute('data-active') === 'true', fill: getComputedStyle(e).backgroundColor })),
   async conductorChips(page, sessionId) {
     await next.lens(page, 'conductors');
-    return sidebar(page).locator(`[data-conductor="${sessionId}"] [data-chip]`).evaluateAll((es) => es.map((c) => {
-      // Probes in the chip's own subtree, so the sidebar's variables resolve as they do for the chip.
-      const token = (cls: string) => {
-        const p = document.createElement('span');
-        p.className = cls;
-        c.parentElement!.appendChild(p);
-        const v = getComputedStyle(p).color;
-        p.remove();
-        return v;
-      };
-      const t = { foreground: token('text-foreground'), muted: token('text-muted-foreground') };
-      const cs = getComputedStyle(c);
-      return {
-        project: c.textContent ?? '',
-        kind: c.getAttribute('data-chip') as 'live' | 'idle',
-        dashed: cs.borderTopStyle === 'dashed',
-        muted: cs.color === t.muted,
-        foreground: cs.color === t.foreground,
-      };
-    }));
+    return sidebar(page).locator(`[data-conductor="${sessionId}"] [data-chip]`).evaluateAll((es) => es.map((c) => ({
+      project: c.textContent ?? '',
+      kind: c.getAttribute('data-chip') as 'live' | 'idle',
+    })));
   },
-  async conductorGeometry(page, sessionId) {
+  async conductorBar(page, sessionId) {
     await next.lens(page, 'conductors');
-    return sidebar(page).locator(`[data-conductor="${sessionId}"]`).evaluate((e) => {
-      const b = e.getBoundingClientRect();
-      const bar = e.firstElementChild as HTMLElement;
-      const row = e.querySelector(':scope > [role="button"]')!;
-      const caret = row.querySelector('button[aria-label="Show workers"]')!;
-      return {
-        bar: getComputedStyle(bar).backgroundColor,
-        barWidth: bar.getBoundingClientRect().width,
-        rowLeft: row.getBoundingClientRect().left - b.left,
-        contentLeft: caret.getBoundingClientRect().left - b.left,
-      };
-    });
+    return next.ownerBar(sidebar(page).locator(`[data-conductor="${sessionId}"]`));
   },
   async treeWorkerRow(page, conductor, sessionId) {
     await next.lens(page, 'conductors');
@@ -1721,19 +1626,13 @@ export const next: Ui = {
     await next.openSidebar(page);
     return sidebar(page).locator(`[data-strip-entry="${sessionId}"] > button`);
   },
-  stripEntryStyle: (entry) => entry.evaluate((e) => {
-    const cs = getComputedStyle(e);
-    return {
-      active: e.getAttribute('data-active') === 'true',
-      // The label is the first span.truncate; the resume badge comes after it.
-      weight: getComputedStyle(e.querySelector('span.truncate')!).fontWeight,
-      framed: cs.boxShadow.replace(/\s+/g, ' ').split(', ').some((x) => x.endsWith(' 0px 0px 0px 1px')),
-      fill: cs.backgroundColor,
-    };
+  stripEntryStyle: async (entry) => ({
+    ...(await entry.evaluate((e) => ({ active: e.getAttribute('data-active') === 'true', fill: getComputedStyle(e).backgroundColor }))),
+    colour: await next.ownerBar(entry),
   }),
   rowDot: (row) => row.evaluate((e) => {
     const d = e.querySelector<HTMLElement>('[data-dot]')!;
-    return { title: d.title, fill: getComputedStyle(d).backgroundColor };
+    return { title: d.title };
   }),
 
   // Settings part 3 (card 2026-0637)
