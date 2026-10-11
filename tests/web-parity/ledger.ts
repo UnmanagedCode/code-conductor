@@ -4408,7 +4408,7 @@ export const LEDGER: readonly Row[] = [
     old: { file: 'web/e2e/legacy/awaiting-wake-dot.spec.ts', tests: [
         'the conductor dot lights while its worker is mid-turn, stays lit across a heartbeat, and clears at turn_end',
       ] },
-    behaviour: 'the conductor dot in a real browser: idle, accent "idle — waiting on a worker" while its worker is mid-turn (computed colour differs), still accent across a heartbeat, idle after turn_end',
+    behaviour: 'the conductor dot in a real browser: idle, accent "idle — waiting on a worker" while its worker is mid-turn (by its title), still waiting across a heartbeat, idle after turn_end',
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [

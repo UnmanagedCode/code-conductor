@@ -144,6 +144,15 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
   });
 
   await test.step('selected row', async () => {
+    // A row's fill transitions, so each read waits until three reads 250ms apart agree: a mid-transition value would differ from any other row's whether or not the row has a fill of its own.
+    const settledFill = async (sid: string) => {
+      const reads: string[] = [];
+      await expect.poll(async () => {
+        reads.push((await ui.sessionRowStyle(await row(sid))).fill);
+        return reads.length >= 3 && reads.slice(-3).every((x) => x === reads[reads.length - 1]);
+      }, { intervals: [250], timeout: 15_000 }).toBe(true);
+      return reads[reads.length - 1];
+    };
     let r = await row(f.aMain.sessionId);
     const before = await ui.sessionRowStyle(r);
     expect(before.active).toBe(false);
@@ -155,10 +164,13 @@ parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed 
     // Off the row, so its fill is the selection's, not hover's.
     await page.mouse.move(1, 1);
     await expect.poll(() => ui.sessionRowActive(r)).toBe(true);
-    const after = await ui.sessionRowStyle(r);
+    const after = await ui.sessionRowStyle(await row(f.aMain.sessionId));
     expect(after.active).toBe(true);
-    expect(after.fill).not.toBe(before.fill);
     expect(after.colour).toBe(f.colA);
+    // Invariant: the selected row's settled fill differs from an unselected row's settled fill, so it fails when selection draws no fill of its own.
+    const other = await ui.sessionRowStyle(await row(f.aMixed.sessionId));
+    expect(other.active).toBe(false);
+    expect(await settledFill(f.aMain.sessionId)).not.toBe(await settledFill(f.aMixed.sessionId));
   });
 });
 

@@ -185,6 +185,17 @@ describe('Conductors-lens conductor rows', () => {
     expect(ago.textContent).toBe('2h ago');
   });
 
+  it("a conductor row is labelled by its title, and an untitled one by its first prompt", async () => {
+    // Invariant: a titled conductor row shows its title; an untitled one falls back to its first prompt, and neither shows the other's label.
+    seed({ instances: [conductor(A, { title: ALPHA }), conductor(B, { temp: false, firstPrompt: BRAVO })] });
+    renderSidebar();
+    await settle();
+    expect(conductorRowOf(A).textContent).toContain(ALPHA);
+    expect(conductorRowOf(A).textContent).not.toContain(BRAVO);
+    expect(conductorRowOf(B).textContent).toContain(BRAVO);
+    expect(conductorRowOf(B).textContent).not.toContain(ALPHA);
+  });
+
   it('a conductor row pills its unread turn marks from a live instance or its .conduct row, and a read conductor has no pill', async () => {
     // Invariant: the pill shows turnEndSeq − viewedSeq, from the instance when live and from the .conduct row when not.
     sidebarStore.set({ inactiveOpen: true });
@@ -219,8 +230,12 @@ describe('Conductors-lens conductor rows', () => {
     await settle();
     expect(blockOf('ca').querySelector('[data-session-row="w"]')).not.toBeNull();
     const clock = formatAutoResumeTime(T)!.replace(/^resumes at /, '');
-    expect((el('[data-conductor-list]').textContent ?? '').includes('⏸')).toBe(false);
-    expect(stripEntryOf('ca').textContent).toContain(`2 · ⏸ ${clock}`);
+    // Invariant: the badge is found by its tooltip, which leads with the full resume time; the strip has one and the conductor list none.
+    const badge = `[title^="${formatAutoResumeTime(T)}"]`;
+    const inStrip = stripEntryOf('ca').querySelector(badge) as HTMLElement;
+    expect(inStrip.textContent).toMatch(/^2 ·/);
+    expect(inStrip.textContent).toContain(clock);
+    expect(el('[data-conductor-list]').querySelector(badge)).toBeNull();
   });
 });
 

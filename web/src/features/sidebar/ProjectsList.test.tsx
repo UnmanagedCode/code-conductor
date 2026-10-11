@@ -243,8 +243,12 @@ describe('Projects tree', () => {
     await settle();
     expect(dotOf('sid-p').getAttribute('data-dot')).toBe('idle');
     const clock = formatAutoResumeTime(T)!.replace(/^resumes at /, '');
-    expect(within(el('[data-strip]')).getByText(`1 · ⏸ ${clock}`)).toBeTruthy();
-    expect(within(el('[data-project-list]')).queryByText(/⏸/)).toBeNull();
+    // Invariant: the badge is found by its tooltip, which leads with the full resume time; the strip has one and the project list none.
+    const badge = `[title^="${formatAutoResumeTime(T)}"]`;
+    const inStrip = el('[data-strip]').querySelector(badge) as HTMLElement;
+    expect(inStrip.textContent).toMatch(/^1 ·/);
+    expect(inStrip.textContent).toContain(clock);
+    expect(el('[data-project-list]').querySelector(badge)).toBeNull();
   });
 
   it('a Sessions list is open by default and stays collapsed across re-renders once collapsed', async () => {
