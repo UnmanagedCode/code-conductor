@@ -30,8 +30,12 @@ const control = (page: Page, name: string) => bubble(page).getByRole('button', {
 /** The live region beside the bubble's copy button, in the row of its controls. */
 const copyAnnouncement = (page: Page) => control(page, 'Copy message').locator('xpath=..').locator('[aria-live]');
 const clipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText());
-/** The held bubble's text blocks, in stream order. */
-const textBlocks = (page: Page) => bubble(page).locator('[data-text-block]');
+/**
+ * The held bubble's own text blocks, in stream order, never those of a sub-agent bubble inside it. The nesting test runs
+ * from the page: inside a locator chain, `:not(…)` with combinators only sees the chain's own subtree.
+ */
+const textBlocks = (page: Page) =>
+  bubble(page).locator('[data-text-block]').and(page.locator('[data-text-block]:not([data-item=assistant] [data-item=assistant] [data-text-block])'));
 
 /** Collects what each read-aloud tap sends to be spoken (the `POST /api/tts` bodies), answered with no audio. */
 async function speechSeam(page: Page): Promise<string[]> {

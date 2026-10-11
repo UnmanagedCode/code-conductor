@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 import { voiceStore } from '@/features/voice/store';
 import * as tts from '@/features/voice/tts';
+import { startVoice } from '@/features/voice';
+import { conversation } from '@/app/controller';
 import type { UiEvent } from '@/state/types';
 import { ConversationModel, userActionsForStatus, type AssistantNode, type TextNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
@@ -87,12 +89,14 @@ function spoken(b: HTMLElement): [string, string][] {
     toggle.mockRestore();
   }
 }
+/** The bubble's own text block wrappers in document order, never a sub-agent bubble's inside it. */
+const blockWrappers = (b: HTMLElement) =>
+  ([...b.querySelectorAll('[data-text-block]')] as HTMLElement[]).filter((w) => w.closest('[data-item="assistant"]') === b);
 /** Per text block of the bubble, in order: the text its own read-aloud control speaks, or null where it has none. */
 function blockSpeech(b: HTMLElement): (string | null)[] {
   const toggle = vi.spyOn(tts, 'toggleSpeak').mockImplementation(() => {});
   try {
-    const blocks = ([...b.querySelectorAll('[data-text-block]')] as HTMLElement[]).filter((w) => w.closest('[data-item="assistant"]') === b);
-    return blocks.map((w) => {
+    return blockWrappers(b).map((w) => {
       const own = speakControls(b).filter((x) => w.contains(x));
       if (own.length > 1) throw new Error(`a text block holds ${own.length} read-aloud controls`);
       if (!own.length) return null;
@@ -102,6 +106,61 @@ function blockSpeech(b: HTMLElement): (string | null)[] {
   } finally {
     toggle.mockRestore();
   }
+}
+/** Per text block of the bubble that has a read-aloud control: the block's text before that control, and any after it. */
+function aroundControl(b: HTMLElement): { before: string; after: string }[] {
+  return blockWrappers(b).flatMap((w) => {
+    const [x] = speakControls(b).filter((c) => w.contains(c));
+    if (!x) return [];
+    let before = '';
+    let after = '';
+    const walk = document.createTreeWalker(w, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (x.contains(n)) continue;
+      if (x.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING) before += n.textContent;
+      else after += n.textContent;
+    }
+    return [{ before: before.trim(), after: after.trim() }];
+  });
+}
+/**
+ * Fakes only the audio device and the TTS endpoint: `bodies` is what each POST /api/tts asked to speak, each answered
+ * with one sentence that plays until `end()` ends whatever is playing.
+ */
+function fakeSpeech() {
+  const bodies: string[] = [];
+  const playing: { onended: (() => void) | null }[] = [];
+  class FakeAudioContext {
+    currentTime = 0;
+    destination = {};
+    async resume() {}
+    async decodeAudioData() { return { duration: 1 }; }
+    createBufferSource() {
+      const s = { buffer: null as unknown, onended: null as (() => void) | null, connect() {}, start() {}, stop() {} };
+      playing.push(s);
+      return s;
+    }
+  }
+  const w = window as unknown as { AudioContext?: unknown };
+  const prior = w.AudioContext;
+  w.AudioContext = FakeAudioContext;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+    bodies.push(String(init.body));
+    const frame = new Uint8Array(4 + 8);
+    new DataView(frame.buffer).setUint32(0, 8, true);
+    return new Response(frame, { status: 200 });
+  }));
+  return {
+    bodies,
+    isPlaying: () => playing.length > 0,
+    end: () => { for (const s of playing.splice(0)) s.onended?.(); },
+    restore: () => { w.AudioContext = prior; vi.unstubAllGlobals(); },
+  };
+}
+/** Lets the speech queue's promise chain run, a bounded number of ticks, until `ok` holds. */
+async function until(what: string, ok: () => boolean) {
+  for (let i = 0; i < 50 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  if (!ok()) throw new Error(`never happened: ${what}`);
 }
 /** The first bubble's text blocks, from the model. */
 const textBlocks = (m: ConversationModel) => (m.items[0] as AssistantNode).children.filter((c): c is TextNode => c.type === 'text');
@@ -319,6 +378,9 @@ describe('read-aloud', () => {
     expect(spoken(b), "each finished block's control reads that block, in stream order").toEqual(blocks.slice(0, 3).map((t) => [t.buffer, t.id]));
     expect(names(b), "the bubble's row of controls holds no read-aloud besides").toEqual(OFFERS_RAW);
     expect(blockSpeech(b), 'each control sits with the block it reads; the streaming block has none').toEqual(['ALPHA first **block**', 'BRAVO second block', 'CHARLIE third block', null]);
+    expect(aroundControl(b), "each control comes right after its block's text, none of which follows it").toEqual([
+      { before: 'ALPHA first block', after: '' }, { before: 'BRAVO second block', after: '' }, { before: 'CHARLIE third block', after: '' },
+    ]);
     await live(m, [{ kind: 'text_end', msgId: 'm1', blockIdx: 5 }]);
     expect(blockSpeech(b), 'the block that finished gains its own').toEqual(['ALPHA first **block**', 'BRAVO second block', 'CHARLIE third block', 'DELTA still streaming']);
   });
@@ -341,6 +403,36 @@ describe('read-aloud', () => {
     act(() => { tts.speakStore.set({ activeNodeId: null }); });
     await flush();
     expect(speakLabels(b), 'with nothing playing, every block offers read-aloud').toEqual(['Read aloud', 'Read aloud', 'Read aloud']);
+  });
+
+  it('auto-speak reads each block of a bubble as it finishes, and the block it is reading is the one whose control offers to stop', async () => {
+    // Through the app's own conversation model, the voice feature's auto-speak and the real speech queue.
+    const speech = fakeSpeech();
+    try {
+      act(() => { voiceStore.set({ ttsAvailable: true, ttsEnabled: true }); });
+      startVoice();
+      fireEvent.pointerDown(document);
+      const { root } = renderModel(conversation);
+      await flush();
+      await live(conversation, threeBlocks());
+      const blocks = textBlocks(conversation);
+      expect(blocks.map((t) => t.finalized), 'fixture check: three finished blocks').toEqual([true, true, true]);
+      const b = bubbles(root)[0];
+      for (const [i, word] of ['ALPHA', 'BRAVO', 'CHARLIE'].entries()) {
+        await until(`block ${i + 1} is sent to be spoken`, () => speech.bodies.length === i + 1);
+        expect(speech.bodies[i], `positive control: auto-speak reads block ${i + 1}`).toContain(word);
+        expect(speakLabels(b), `while auto-speak reads block ${i + 1}`).toEqual(blocks.map((_, j) => (j === i ? 'Stop reading' : 'Read aloud')));
+        await until(`block ${i + 1} plays`, speech.isPlaying);
+        act(() => { speech.end(); });
+      }
+      await until('the last block ends', () => tts.speakStore.get().activeNodeId === null);
+      await flush();
+      expect(speakLabels(b), 'with the bubble read, every block offers read-aloud').toEqual(['Read aloud', 'Read aloud', 'Read aloud']);
+    } finally {
+      act(() => { voiceStore.set({ ttsEnabled: false }); conversation.clear(); });
+      tts.__resetTtsForTests();
+      speech.restore();
+    }
   });
 });
 

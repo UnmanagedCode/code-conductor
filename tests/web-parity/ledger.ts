@@ -3432,6 +3432,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/voice/tts.test.ts::read aloud > turns the button back off when playback ends naturally',
         'web/src/conversation/assistantControls.test.tsx::read-aloud > every finished text block has a read-aloud of its own, placed with that block, that reads that block\'s text; a block still streaming has none until it finishes',
         'web/src/conversation/assistantControls.test.tsx::read-aloud > the block being read, wherever it sits in the bubble, is the one whose control offers to stop',
+        'web/src/conversation/assistantControls.test.tsx::read-aloud > auto-speak reads each block of a bubble as it finishes, and the block it is reading is the one whose control offers to stop',
         'web/e2e/conversation-bubbles.spec.ts::every finished text block has a read-aloud of its own that reads that block, and a block still streaming has none',
       ] },
   },
