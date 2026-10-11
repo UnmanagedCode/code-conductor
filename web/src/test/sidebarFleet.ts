@@ -120,3 +120,7 @@ export const blockOf = (sid: string) => el(`[data-conductor="${sid}"]`);
 export const conductorRowOf = (sid: string) => el(`[data-conductor="${sid}"] > [role="button"]`);
 export const conductorDotOf = (sid: string) => conductorRowOf(sid).querySelector('[data-dot]') as HTMLElement;
 export const stripEntryOf = (sid: string) => el(`[data-strip-entry="${sid}"] > button`);
+
+// Conductors lens: a conductor's expanded tree and the Inactive group
+export const treeOf = (sid: string) => blockOf(sid).querySelector('[data-conductor-tree]') as HTMLElement | null;
+export const inactiveGroup = () => document.querySelector('[data-conductors-inactive]') as HTMLElement | null;
