@@ -39,4 +39,52 @@ describe('performRestart', () => {
     expect(reload).toHaveBeenCalledTimes(1);
     expect(appStore.get().sidebarStatus?.text).toBe('Reloading…');
   });
+
+  it('a plain restart gives up waiting after the short poll budget and reloads', async () => {
+    // Invariant: a plain restart polls /api/health exactly 60 times, 250 ms apart, before it gives up and reloads.
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      restartStore.set({ inProgress: false });
+      let healthCalls = 0;
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url === '/api/admin/restart') return new Response('{}', { status: 202 });
+        healthCalls++;
+        return health('same');
+      }) as unknown as typeof fetch;
+      const reload = vi.fn();
+      const p = performRestart({ resume: false }, { fetchImpl, reload });
+      await vi.advanceTimersByTimeAsync(59 * 250);
+      expect(reload).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await p;
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(healthCalls).toBe(61);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a resume restart keeps waiting through the long drain budget before it reloads', async () => {
+    // Invariant: a resume restart polls /api/health exactly 480 times, 250 ms apart, before it gives up and reloads.
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      restartStore.set({ inProgress: false });
+      let healthCalls = 0;
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url === '/api/admin/restart') return new Response('{}', { status: 202 });
+        healthCalls++;
+        return health('same');
+      }) as unknown as typeof fetch;
+      const reload = vi.fn();
+      const p = performRestart({ resume: true }, { fetchImpl, reload });
+      await vi.advanceTimersByTimeAsync(479 * 250);
+      expect(reload).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await p;
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(healthCalls).toBe(481);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

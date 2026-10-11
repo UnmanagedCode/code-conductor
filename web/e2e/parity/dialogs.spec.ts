@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Page } from '@playwright/test';
-import { expect } from '../harness/fixtures.ts';
-import { api, createProject } from '../harness/api.ts';
+import type { Page, Route } from '@playwright/test';
+import { expect, type Cc } from '../harness/fixtures.ts';
+import { api, createProject, spawnSession } from '../harness/api.ts';
+import { seedTranscript } from '../harness/transcript.ts';
 import { parity } from './parity.ts';
+import type { Ui } from './ui.ts';
 
 // The scratch cc has no reachable provider, so a scenario that needs a remote
 // system answers the registry, its targets and its directory listings itself.
@@ -292,4 +294,314 @@ parity('spawn-dialog-effort/R2', 'The spawn dialog hides disabled tiers, opens E
     .toEqual({ options: ['adaptive (claude decides)', 'enabled', 'disabled'], selected: 'adaptive (claude decides)' });
   await expect(ui.spawnField(d, 'debug')).toBeChecked();
   await ui.cancelDialog(d);
+});
+
+// Dialogs part 3 (card 2026-0639)
+type LiveInst = { id: string; status: string; sessionId: string | null };
+/** Creates `project`, spawns a persistent session there, waits for it to idle and gives it a transcript. */
+async function idleSession(cc: Cc, project: string): Promise<{ id: string; sessionId: string }> {
+  await createProject(cc, project);
+  const { id } = await spawnSession(cc, project, { temp: false });
+  let row: LiveInst | undefined;
+  await expect.poll(async () => {
+    row = ((await api(cc, 'GET', '/api/instances')).body as LiveInst[]).find((i) => i.id === id);
+    return row?.status === 'idle' && !!row.sessionId;
+  }).toBe(true);
+  await seedTranscript(cc, id, 'dialogs part 3');
+  return { id, sessionId: row!.sessionId! };
+}
+/** Opens the live session from its Projects-lens row; the header then names it. */
+async function selectSession(page: Page, ui: Ui, project: string, sessionId: string) {
+  await expect.poll(async () => ui.sessionRowLive(await ui.sessionRow(page, project, sessionId))).toBe(true);
+  await (await ui.sessionRow(page, project, sessionId)).click();
+  await expect(ui.sessionHeader(page).locator(`[title="session ${sessionId}"]`)).toBeVisible();
+}
+
+parity('doc/A9', 'Summarize opens on Medium with the cached summary as markdown and its stale warning, generates an empty tier on request with its cost, clears the cost on a tier switch, and applies the Title tier as the session title', async ({ page, cc, ui, uniq }) => {
+  const project = uniq('sum');
+  const { sessionId: sid } = await idleSession(cc, project);
+  const data = {
+    title: { summary: 'Demo: ship the port', generatedAt: 1, messageCount: 3, isStale: false },
+    short: null,
+    medium: { summary: '## Recap\n\nShipped **three** dialogs.', generatedAt: 1, messageCount: 3, isStale: true },
+    long: null,
+  };
+  const posts: unknown[] = [];
+  const titles: unknown[] = [];
+  await page.route(`**/api/sessions/${sid}/summary`, (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: { ok: true, sessionId: sid, data } });
+    posts.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ok: true, sessionId: sid, data: { ...data, long: { summary: 'The long account.', generatedAt: 2, messageCount: 3, isStale: false } }, costUsd: 0.0123 } });
+  });
+  await page.route(`**/api/sessions/${sid}/title`, (route) => {
+    const body = route.request().postDataJSON() as { title: string };
+    titles.push(body);
+    return route.fulfill({ json: { ok: true, sessionId: sid, title: body.title, maxLength: 100 } });
+  });
+  await ui.open(page);
+  await selectSession(page, ui, project, sid);
+  const d = await ui.openSessionDialog(page, 'summary');
+  await expect.poll(() => ui.summaryTiers(d)).toEqual({ tiers: ['title', 'short', 'medium', 'long'], selected: 'medium' });
+  await expect(ui.summaryContent(d).locator('h2')).toHaveText('Recap');
+  await expect(ui.summaryContent(d).locator('strong')).toHaveText('three');
+  await expect(ui.summaryStale(d)).toBeVisible();
+  await expect(ui.summaryStale(d)).toContainText('grown since this summary');
+  await expect(ui.summaryCost(d)).toBeHidden();
+  await expect(ui.summaryUseAsTitle(d)).toBeHidden();
+
+  await ui.pickSummaryTier(d, 'long');
+  await expect(ui.summaryStale(d)).toBeHidden();
+  await expect(ui.summaryGenerate(d)).toHaveText(/Generate summary/);
+  expect(posts).toHaveLength(0);
+  await ui.summaryGenerate(d).click();
+  await expect.poll(() => posts).toEqual([{ length: 'long' }]);
+  await expect(ui.summaryContent(d)).toContainText('The long account.');
+  await expect(ui.summaryCost(d)).toHaveText('Cost: $0.0123');
+  await expect(ui.summaryGenerate(d)).toHaveText(/Regenerate/);
+
+  await ui.pickSummaryTier(d, 'title');
+  await expect(ui.summaryCost(d)).toBeHidden();
+  await expect(ui.summaryUseAsTitle(d)).toBeVisible();
+  await ui.summaryUseAsTitle(d).click();
+  await expect.poll(() => titles).toEqual([{ title: 'Demo: ship the port' }]);
+  await expect(ui.summaryUseAsTitle(d)).toHaveText(/Applied/);
+  await ui.closeSessionDialog(d);
+});
+
+parity('doc/A10', 'Rename prefills the current title, sends nothing for a cancel or an unchanged title, cuts a long title to 100 characters, and sends an empty title to clear it', async ({ page, cc, ui, uniq }) => {
+  const project = uniq('ren');
+  const { sessionId: sid } = await idleSession(cc, project);
+  const seeded = uniq('Seeded title');
+  const seed = await api(cc, 'PUT', `/api/sessions/${sid}/title`, { title: seeded });
+  expect(seed.status, JSON.stringify(seed.body)).toBe(200);
+  const puts: unknown[] = [];
+  await page.route(`**/api/sessions/${sid}/title`, (route) => {
+    const body = route.request().postDataJSON() as { title: string };
+    puts.push(body);
+    return route.fulfill({ json: { ok: true, sessionId: sid, title: body.title || null, maxLength: 100 } });
+  });
+  await ui.open(page);
+  await selectSession(page, ui, project, sid);
+  expect(await ui.renameSession(page, null)).toBe(seeded);
+  expect(await ui.renameSession(page, `  ${seeded}  `)).toBe(seeded);
+  expect(puts).toHaveLength(0);
+  // No spaces: the web UI's maxlength can cut the typed value before the trim.
+  await ui.renameSession(page, 'x'.repeat(120));
+  await expect.poll(() => puts).toEqual([{ title: 'x'.repeat(100) }]);
+  await ui.renameSession(page, '');
+  await expect.poll(() => puts).toEqual([{ title: 'x'.repeat(100) }, { title: '' }]);
+});
+
+parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices", async ({ page, cc, ui, uniq }) => {
+  const project = uniq('prune');
+  const { id, sessionId } = await idleSession(cc, project);
+  const turn = { thinking: 30, toolInputTruncatable: 10, toolInputMinimal: 20, toolOutput: 100, toolOutputImage: 0, exempt: 0 };
+  const analysis = { turnCount: 20, turns: Array.from({ length: 20 }, () => turn), encryptedThinking: 500, contextTokens: 50000, calibration: { factor: 1, calibrated: true } };
+  const prunes: unknown[] = [];
+  await page.route(`**/api/instances/${id}/prune/analysis`, (route) => route.fulfill({ json: analysis }));
+  await page.route(`**/api/instances/${id}/prune`, (route) => {
+    prunes.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ok: true } });
+  });
+  await ui.open(page);
+  await selectSession(page, ui, project, sessionId);
+  const d = await ui.openSessionDialog(page, 'prune');
+  const cut = ui.pruneField(d, 'cut');
+  await expect(cut).toHaveAttribute('min', '0');
+  await expect(cut).toHaveAttribute('max', '20');
+  await expect(cut).toHaveValue('18');
+  await expect(ui.pruneField(d, 'cutLabel')).toHaveText('18 of 20');
+  await expect(ui.pruneField(d, 'thinking')).toBeChecked();
+  await expect(ui.pruneField(d, 'minimal')).not.toBeChecked();
+
+  const row = ui.pruneSavingsRows(d).first().locator('td');
+  await expect(row).toHaveText(['Thinking', '~600 tokens']);
+  await ui.pruneField(d, 'thinking').setChecked(false);
+  await expect(row.nth(1)).toHaveText(/stored encrypted \(~500 in context, kept\)/);
+
+  await cut.fill('20');
+  await expect(ui.pruneField(d, 'cutLabel')).toHaveText('20 of 20');
+  await ui.pruneField(d, 'minimal').setChecked(true);
+  expect(prunes).toHaveLength(0);
+  await ui.applyPrune(d);
+  await expect(d).toBeHidden();
+  await expect.poll(() => prunes.length).toBe(1);
+  expect(prunes).toEqual([{ cutTurnIndex: 20, pruneThinking: false, inputMode: 'minimal' }]);
+});
+
+parity('doc/B9', 'Statistics shows This session alone with the no-workers note, and with workers adds the Incl. N workers column and drops the note', async ({ page, cc, ui, uniq }) => {
+  const project = uniq('stats');
+  const { sessionId: sid } = await idleSession(cc, project);
+  let workers = 0;
+  await page.route(`**/api/costs/session/${sid}`, (route) => route.fulfill({ json: {
+    own: { cost_usd: 1.2345, duration_api_ms: 65000, duration_ms: 125000, turns: 3 },
+    rolled: { cost_usd: 9, duration_api_ms: 300000, duration_ms: 600000, turns: 9 },
+    workerSessions: workers,
+  } }));
+  await ui.open(page);
+  await selectSession(page, ui, project, sid);
+  let d = await ui.openSessionDialog(page, 'stats');
+  await expect(ui.statsTable(d).locator('thead th')).toHaveText(['', 'This session']);
+  await expect(ui.statsTable(d).locator('tbody tr').first().locator('td')).toHaveText(['Cost', '$1.2345']);
+  await expect(ui.statsNote(d)).toBeVisible();
+  await expect(ui.statsNote(d)).toContainText('No worker sessions');
+  await ui.closeSessionDialog(d);
+
+  workers = 2;
+  d = await ui.openSessionDialog(page, 'stats');
+  await expect(ui.statsTable(d).locator('thead th')).toHaveText(['', 'This session', 'Incl. 2 workers']);
+  await expect(ui.statsTable(d).locator('tbody tr').first().locator('td')).toHaveText(['Cost', '$1.2345', '$9.0000']);
+  await expect(ui.statsNote(d)).toBeHidden();
+  await ui.closeSessionDialog(d);
+});
+
+parity('doc/A1', 'A workspace is created from the project menu, edited from its pencil with its members pre-ticked, renamed before its members move, created empty with nothing ticked, and deleted only once the confirm is accepted', async ({ page, cc, ui, uniq }) => {
+  const a = uniq('wsa');
+  const b = uniq('wsb');
+  await createProject(cc, a);
+  await createProject(cc, b);
+  const w1 = uniq('ws');
+  const w2 = uniq('ws2');
+  const w3 = uniq('ws3');
+
+  // Page-local workspaces: every write is fulfilled here, and the list reads overlay it on the real lists.
+  const registered = new Set<string>();
+  const memberOf = new Map<string, string | null>();
+  const writes: [string, string, unknown][] = [];
+  const record = (route: Route) => {
+    const r = route.request();
+    const body = r.postData() ? r.postDataJSON() : null;
+    writes.push([r.method(), new URL(r.url()).pathname, body]);
+    return body;
+  };
+  await page.route('**/api/workspaces', async (route) => {
+    if (route.request().method() === 'GET') {
+      const res = await route.fetch();
+      const real = (await res.json()) as { name: string; projectCount: number }[];
+      const mine = [...registered].map((name) => ({ name, projectCount: [...memberOf.values()].filter((w) => w === name).length }));
+      return route.fulfill({ response: res, json: [...real, ...mine] });
+    }
+    registered.add((record(route) as { name: string }).name);
+    return route.fulfill({ status: 201, json: { ok: true, added: true } });
+  });
+  await page.route('**/api/workspaces/*', async (route) => {
+    const from = decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop()!);
+    const body = record(route) as { name?: string } | null;
+    const to = route.request().method() === 'PUT' ? body!.name! : null;
+    registered.delete(from);
+    if (to) registered.add(to);
+    for (const [p, w] of memberOf) if (w === from) memberOf.set(p, to);
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route('**/api/projects/*/workspace', async (route) => {
+    const project = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[3]);
+    const { workspace } = record(route) as { workspace: string | null };
+    memberOf.set(project, workspace);
+    if (workspace) registered.add(workspace);
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const res = await route.fetch();
+    const list = (await res.json()) as { name: string; workspace?: string | null }[];
+    return route.fulfill({ response: res, json: list.map((p) => (memberOf.has(p.name) ? { ...p, workspace: memberOf.get(p.name) } : p)) });
+  });
+
+  await ui.open(page);
+  let d = await ui.openNewWorkspace(page);
+  await expect(ui.workspaceName(d)).toHaveValue('');
+  await ui.workspaceName(d).fill(w1);
+  await ui.workspaceMember(d, a).setChecked(true);
+  await ui.saveWorkspace(d);
+  await expect(d).toBeHidden();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes).toEqual([['PUT', `/api/projects/${a}/workspace`, { workspace: w1 }]]);
+  await expect(await ui.workspaceHeader(page, w1)).toBeVisible();
+
+  d = await ui.openEditWorkspace(page, w1);
+  await expect(ui.workspaceName(d)).toHaveValue(w1);
+  await expect(ui.workspaceMember(d, a)).toBeChecked();
+  await expect(ui.workspaceMember(d, b)).not.toBeChecked();
+  await ui.workspaceName(d).fill(w2);
+  await ui.workspaceMember(d, a).setChecked(false);
+  await ui.workspaceMember(d, b).setChecked(true);
+  await ui.saveWorkspace(d);
+  await expect(d).toBeHidden();
+  await expect.poll(() => writes.length).toBe(4);
+  expect(writes[1]).toEqual(['PUT', `/api/workspaces/${w1}`, { name: w2 }]);
+  expect(writes.slice(2).sort((x, y) => x[1].localeCompare(y[1]))).toEqual([
+    ['PUT', `/api/projects/${a}/workspace`, { workspace: null }],
+    ['PUT', `/api/projects/${b}/workspace`, { workspace: w2 }],
+  ]);
+  await expect(await ui.workspaceHeader(page, w2)).toBeVisible();
+  await expect(await ui.workspaceHeader(page, w1)).toHaveCount(0);
+
+  d = await ui.openNewWorkspace(page);
+  await ui.workspaceName(d).fill(w3);
+  await ui.saveWorkspace(d);
+  await expect.poll(() => writes.length).toBe(5);
+  expect(writes[4]).toEqual(['POST', '/api/workspaces', { name: w3 }]);
+  await expect(await ui.workspaceHeader(page, w3)).toBeVisible();
+
+  d = await ui.openEditWorkspace(page, w2);
+  await ui.deleteWorkspace(page, d, false);
+  await expect(d).toBeVisible();
+  expect(writes).toHaveLength(5);
+  await ui.deleteWorkspace(page, d, true);
+  await expect(d).toBeHidden();
+  await expect.poll(() => writes.length).toBe(6);
+  expect(writes[5]).toEqual(['DELETE', `/api/workspaces/${w2}`, null]);
+  await expect(await ui.workspaceHeader(page, w2)).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'wait' });
+});
+
+parity('doc/B31', 'With live sessions the restart button asks first: dismissing restarts nothing, the plain choice posts resume:false and the resume choice resume:true, each reloading once the server is back; with no sessions it restarts plain without asking', async ({ page, cc, ui, uniq }) => {
+  const p = uniq('rst');
+  await createProject(cc, p);
+  const { sessionId } = await spawnSession(cc, p, { temp: false });
+  // The restart button counts the instance list the UI has loaded, which arrives after the sidebar mounts.
+  const asks = async () => { await expect.poll(async () => ui.sessionRowLive(await ui.sessionRow(page, p, sessionId))).toBe(true); };
+  let boot = 0;
+  const restarts: unknown[] = [];
+  await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, bootId: `pw-${boot}` } }));
+  await page.route('**/api/admin/restart', (route) => {
+    restarts.push(route.request().postDataJSON());
+    boot++;
+    return route.fulfill({ status: 202, json: { ok: true } });
+  });
+
+  await ui.open(page);
+  await asks();
+  await ui.clickRestart(page);
+  const d = ui.restartDialog(page);
+  await expect(d).toBeVisible();
+  await expect(ui.restartChoice(d, 'only')).toBeVisible();
+  await expect(ui.restartChoice(d, 'resume')).toBeVisible();
+  await ui.dismissRestart(page, d);
+  expect(restarts).toEqual([]);
+
+  let reloaded = page.waitForEvent('load');
+  await ui.clickRestart(page);
+  await ui.restartChoice(ui.restartDialog(page), 'only').click();
+  await reloaded;
+  await expect.poll(() => restarts.length).toBe(1);
+  expect(restarts).toEqual([{ resume: false }]);
+
+  await ui.open(page);
+  await asks();
+  reloaded = page.waitForEvent('load');
+  await ui.clickRestart(page);
+  await ui.restartChoice(ui.restartDialog(page), 'resume').click();
+  await reloaded;
+  await expect.poll(() => restarts.length).toBe(2);
+  expect(restarts).toEqual([{ resume: false }, { resume: true }]);
+
+  await page.route('**/api/instances', (route) => route.request().method() === 'GET' ? route.fulfill({ json: [] }) : route.fallback());
+  await ui.open(page);
+  reloaded = page.waitForEvent('load');
+  await ui.clickRestart(page);
+  await reloaded;
+  await expect.poll(() => restarts.length).toBe(3);
+  expect(restarts).toEqual([{ resume: false }, { resume: true }, { resume: false }]);
+  await page.unrouteAll({ behavior: 'wait' });
 });
