@@ -14,7 +14,7 @@ vi.mock('@/lib/core/capabilities.js', () => ({ loadCapabilities: vi.fn(), capabi
 import { loadCapabilities } from '@/lib/core/capabilities.js';
 import { syncRoute, useRoute } from '@/state/route';
 import { ConfirmHost } from '@/ui/feedback';
-import { ConventionsSection, conventionsBlocksStore, conventionsDraftStore, type ConventionsPayload } from './ConventionsSection';
+import { ConventionsSection, conventionsBlocksStore, conventionsDraftStore, pluginsSeen, type ConventionsPayload } from './ConventionsSection';
 import { notifyPluginsChanged, pluginsChangedSignal } from './pluginsSignal';
 import { SettingsView } from './SettingsView';
 
@@ -69,6 +69,7 @@ let pj: ConventionsPayload;
 let calls: Call[];
 const DRAFT0 = conventionsDraftStore.get();
 const BLOCKS0 = conventionsBlocksStore.get();
+const SEEN0 = { ...pluginsSeen };
 
 /** Routes the three conventions GETs and Archived, plus a test's writes. */
 function serve(writes: Parameters<typeof mockFetch>[0] = {}) {
@@ -160,6 +161,8 @@ beforeEach(() => {
   pj = PJ;
   conventionsDraftStore.set(DRAFT0);
   conventionsBlocksStore.set(BLOCKS0);
+  for (const k of Object.keys(pluginsSeen) as Scope[]) delete pluginsSeen[k];
+  Object.assign(pluginsSeen, SEEN0);
   vi.mocked(loadCapabilities).mockReset().mockResolvedValue({ remoteSystems: false, voice: false });
   serve();
 });
@@ -679,5 +682,34 @@ describe('Conventions → drafts', () => {
     act(() => notifyPluginsChanged(undefined));
     await waitFor(() => expect(gets('workspace')).toBeGreaterThan(g));
     await waitFor(() => expect(listStatus('Workspace conventions')).toBe(''));
+  });
+
+  // Only a delete, a successful save, a failed toggle, a plugin change, reopening Settings or a page reload replaces a list refusal: a successful switch flip and a refused save leave it on the list's own status line, with no reload.
+  it("a successful switch flip and a refused save leave a refused Delete's message on the list status line", async () => {
+    serve({
+      'DELETE /api/settings/conventions/workspace/mine': () => ({ status: 409, json: { error: 'still in use' } }),
+      'PUT /api/settings/conventions/workspace/selection': () => ({}),
+      'POST /api/settings/conventions/workspace': () => ({ status: 409, json: { error: "convention 'dup' already exists" } }),
+    });
+    openAt('#settings/conventions');
+    await screen.findByRole('button', { name: 'Delete Mine' });
+    await refuseDelete('Workspace conventions', 'Mine', 'mine');
+    // The list's own status line is a direct child of the panel; the form's sits inside the form.
+    const listLine = () => [...(screen.getByTestId('conventions-workspace').parentElement as HTMLElement).children]
+      .filter((el) => el.getAttribute('role') === 'status').map((el) => el.textContent).join('');
+    const loads = gets('workspace');
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable Mine' }));
+    await waitFor(() => expect(writes().map((w) => w.method)).toEqual(['DELETE', 'PUT']));
+
+    const b = block('Workspace conventions');
+    fireEvent.click(within(b).getByRole('button', { name: 'Add custom convention' }));
+    type(b, 'Slug', 'dup');
+    fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(statusText(within(b).getByRole('form', { name: 'Add workspace convention' }))).toBe("convention 'dup' already exists"));
+
+    expect(listLine()).toBe('Delete failed: still in use');
+    expect(gets('workspace')).toBe(loads);
+    expect(writes().map((w) => w.method)).toEqual(['DELETE', 'PUT', 'POST']);
   });
 });

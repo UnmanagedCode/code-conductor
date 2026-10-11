@@ -5934,6 +5934,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > every block\'s refused Delete clears after a plugin change made while another section was shown',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a refused Delete\'s message clears after a plugin change made while its block was collapsed',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > under StrictMode a refused Delete\'s message survives a collapse and a section switch, and a plugin change clears it',
+        'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a successful switch flip and a refused save leave a refused Delete\'s message on the list status line',
         'web/e2e/parity/settings.spec.ts::Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings > next',
       ] },
   },
