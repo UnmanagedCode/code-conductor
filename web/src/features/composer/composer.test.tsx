@@ -227,7 +227,7 @@ describe('drafts', () => {
   };
   const storedDraft = (sid: string) => {
     const raw = localStorage.getItem(`${DRAFT_KEY_PREFIX}${sid}`);
-    return raw === null ? null : (JSON.parse(raw) as { text: string; transcribed: boolean });
+    return raw === null ? null : (JSON.parse(raw) as { text: string; transcribed: boolean; savedAt: number });
   };
 
   it("a dictation into the showing session is saved by the debounce with its transcribed flag, and an edit keeps the flag", async () => {
@@ -236,8 +236,13 @@ describe('drafts', () => {
     await dictateIntoBox(c);
     expect(c.box().value, 'positive control: the dictation landed in the box').toBe('dictated words');
     expect(storedDraft('dictated-draft'), 'nothing is written before the debounce').toBeNull();
+    // Date is real here, and the module's draftStore stamps with Date.now: bracket the write.
+    const before = Date.now();
     vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS);
-    expect(storedDraft('dictated-draft')).toMatchObject({ text: 'dictated words', transcribed: true });
+    const after = Date.now();
+    const written = storedDraft('dictated-draft');
+    expect(written).toMatchObject({ text: 'dictated words', transcribed: true });
+    expect(written!.savedAt >= before && written!.savedAt <= after, `savedAt ${written!.savedAt} is the time of the write, within [${before}, ${after}]`).toBe(true);
     type(c.box(), 'dictated words, edited');
     vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS);
     expect(storedDraft('dictated-draft'), 'typing into a dictated draft keeps its flag').toMatchObject({ text: 'dictated words, edited', transcribed: true });
