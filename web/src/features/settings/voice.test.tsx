@@ -29,6 +29,7 @@ const tts = (over: object = {}) => ({ available: true, activeVoice: 'amy', voice
 
 const card = (title: 'Dictation' | 'Speech') => screen.getByText(title, { selector: '[data-slot="card-title"]' }).closest('[data-slot="card"]') as HTMLElement;
 const statusLine = (title: 'Dictation' | 'Speech') => within(card(title)).getAllByRole('status')[0].textContent;
+const statusTone = (title: 'Dictation' | 'Speech') => (within(card(title)).getAllByRole('status')[0] as HTMLElement).dataset.tone;
 const badge = (title: 'Dictation' | 'Speech', item: string) => card(title).querySelector(`[data-item="${item}"] [data-slot="badge"]`)?.textContent?.trim();
 const gets = (calls: Call[], url: string) => calls.filter((c) => c.method === 'GET' && c.url === url).length;
 const posts = (calls: Call[], url: string) => calls.filter((c) => c.method === 'POST' && c.url === url);
@@ -50,7 +51,8 @@ describe('Voice → Dictation', () => {
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe(), 'GET /api/settings/tts': () => tts() });
     const view = show();
     await waitFor(() => expect(statusLine('Dictation')).toContain('Base'));
-    // Invariant: an available whisper names its active model and does not read as not installed (positive control: the line was just proven to carry the model name).
+    // Invariant: an available whisper names its active model, is declared the ok tone, and does not read as not installed (positive control: the line was just proven to carry the model name).
+    expect(statusTone('Dictation')).toBe('ok');
     expect(statusLine('Dictation')).not.toMatch(/not installed/i);
     expect(within(card('Dictation')).getByRole('listbox', { name: 'model catalog' })).toBeTruthy();
     expect(badge('Dictation', 'base')).toBe('active');
@@ -61,6 +63,7 @@ describe('Voice → Dictation', () => {
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe({ available: false, activeModel: null }), 'GET /api/settings/tts': () => tts() });
     show();
     await waitFor(() => expect(statusLine('Dictation')).toMatch(/not installed/i));
+    expect(statusTone('Dictation')).toBe('muted');
   });
 
   // Picking an installed model switches it immediately from the server's answer and publishes mic availability; a refused switch reports the reason.
@@ -198,13 +201,15 @@ describe('Voice → Speech', () => {
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe(), 'GET /api/settings/tts': () => tts({ available: false, activeVoice: null }) });
     const view = show();
     await waitFor(() => expect(statusLine('Speech')).toMatch(/not installed/i));
+    expect(statusTone('Speech')).toBe('muted');
     expect(screen.getByRole('switch', { name: 'Auto-speak assistant replies' })).toHaveProperty('disabled', true);
     view.unmount();
 
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe(), 'GET /api/settings/tts': () => tts() });
     show();
     await waitFor(() => expect(statusLine('Speech')).toContain('Amy'));
-    // Invariant: an available Piper names its active voice and does not read as not installed (positive control: the line was just proven to carry the voice name).
+    // Invariant: an available Piper names its active voice, is declared the ok tone, and does not read as not installed (positive control: the line was just proven to carry the voice name).
+    expect(statusTone('Speech')).toBe('ok');
     expect(statusLine('Speech')).not.toMatch(/not installed/i);
     expect(screen.getByRole('switch', { name: 'Auto-speak assistant replies' })).toHaveProperty('disabled', false);
   });

@@ -648,7 +648,7 @@ parity('plugins-frontend/R23', 'Plugins: Update all updates one behind entry at 
   await expect(ui.libraryStatus(page)).toContainText('Updated 2 of 2');
   await expect(ui.libraryInstalledAs(entryA)).toHaveText(`installed as ${a} · up to date`);
   await expect(ui.libraryInstalledAs(entryB)).toHaveText(`installed as ${b} · up to date`);
-  await expect(updateAll).toHaveText(/^\D*$/);
+  await expect(updateAll).toHaveText(/^Update all\D*$/);
   await expect(updateAll).toBeDisabled();
   await expect(ui.libraryAction(entryC, 'Install')).toBeEnabled();
   expect(updates).toEqual([a, b]);

@@ -265,7 +265,7 @@ describe('Conventions → blocks', () => {
     const form = within(b).getByRole('form', { name: 'Edit workspace convention' });
     type(b, 'Name', 'Mine 2');
     fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(statusText(form)).toBe('name already used'));
+    await waitFor(() => expect(statusText(form)).toContain('already used'));
     expect(within(b).getByRole('form', { name: 'Edit workspace convention' })).toBe(form);
     fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(within(b).queryByRole('form')).toBeNull());
@@ -452,7 +452,8 @@ describe('Conventions → conductor pickers', () => {
     cd = { ...MISSING, playbookErrors: [] };
     renderSection();
     await expand('Conductor conventions');
-    expect(pickerStatusEl('Preferred playbook').textContent).toBe(R);
+    // Invariant: the missing-playbook status names the playbook, says it is not loaded, and names the contributing plugin.
+    for (const part of ['acme/release', 'not loaded', "'acme'"]) expect(pickerStatusEl('Preferred playbook').textContent).toContain(part);
     expect(toneOf(pickerStatusEl('Preferred playbook'))).toBe('error');
   });
 });

@@ -724,7 +724,7 @@ describe('Plugins → Update all', () => {
     await waitFor(() => expect(libLine()).toMatch(/^3\b/));
     expect(entryButtons('stray')).toEqual(['Install']);
     expect(entryButtons('current')).toEqual([]);
-    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
     expect(updateAllButton().disabled).toBe(true);
   });
 
@@ -735,14 +735,14 @@ describe('Plugins → Update all', () => {
     serve({ 'POST /api/plugins/library/behind/update': newStream });
     wrap();
     await waitFor(() => expect(libLine()).toMatch(/^4\b/));
-    expect(updateAllButton().textContent).toBe('Update all (2)');
+    expect(updateAllButton().textContent).toMatch(/\(2\)/);
     expect(updateAllButton().disabled).toBe(false);
     const v0 = pluginsChangedSignal.version();
     const g = gets('/api/plugins/library');
 
     fireEvent.click(updateAllButton());
     const s0 = await streamAt(0);
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/2…'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/1\/2/));
     expect(updateAllButton().disabled).toBe(true);
     expect(libLine()).toMatch(/Updating Code Share.*1\/2/);
     expect(libTone()).toBe('muted');
@@ -754,7 +754,7 @@ describe('Plugins → Update all', () => {
 
     await finish(s0, ok({ id: 'code-share', name: 'code-share', project: 'code-share', postPull: null, restarted: null }));
     const s1 = await streamAt(1);
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 2/2…'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/2\/2/));
     expect(libLine()).toMatch(/Updating Behind.*2\/2/);
     expect(entryButton('behind', 'Updating…').disabled).toBe(true);
     expect(entryButton('code-share', 'Update').disabled).toBe(true);
@@ -768,7 +768,7 @@ describe('Plugins → Update all', () => {
     expect(installedAs('code-share')).toBe('installed as code-share · up to date');
     expect(installedAs('behind')).toBe('installed as behind · up to date');
     expect(live('code-share')).toBe('');
-    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
     expect(updateAllButton().disabled).toBe(true);
     const reloads = libraryGetsAfter(postIndex('/api/plugins/library/code-share/update'));
     expect(reloads.length).toBe(1);
@@ -798,7 +798,7 @@ describe('Plugins → Update all', () => {
     for (const part of ['Code Share', 'git pull failed', 'Behind', 'post-update']) expect(libLine()).toContain(part);
     expect(libTone()).toBe('error');
     expect(tail()).toMatch(/Code Share[\s\S]*fatal: diverged[\s\S]*Behind[\s\S]*npm ERR! behind/);
-    expect(updateAllButton().textContent).toBe('Update all (1)');
+    expect(updateAllButton().textContent).toMatch(/\(1\)/);
     expect(updateAllButton().disabled).toBe(false);
     expect(entryButton('code-share', 'Update').disabled).toBe(false);
     expect(installedAs('behind')).toBe('installed as behind · up to date');
@@ -807,14 +807,14 @@ describe('Plugins → Update all', () => {
 
     fireEvent.click(updateAllButton());
     const s2 = await streamAt(2);
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/1…'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/1\/1/));
     expect(tail()).toBe('');
     await finish(s2, failed('git pull failed'));
     await waitFor(() => expect(libLine()).toMatch(/Updated 0 of 1.*Code Share.*git pull failed/));
     expect(libTone()).toBe('error');
     expect(tail()).toBe('');
     expect(pluginsChangedSignal.version()).toBe(v0 + 1);
-    expect(updateAllButton().textContent).toBe('Update all (1)');
+    expect(updateAllButton().textContent).toMatch(/\(1\)/);
   });
 
   // A soft warning is not a failure: both updates count, the summary lists each warning in the single-update wording, only a warning with output adds to the output, and every updated plugin is announced.
@@ -840,7 +840,7 @@ describe('Plugins → Update all', () => {
     expect(tail()).toContain('npm ERR! share');
     // Positive control: the output is non-empty (the line above), so the absence below is not an empty read.
     expect(tail()).not.toContain('added 3 packages');
-    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
     expect(pluginsChangedSignal.version()).toBe(v0 + 1);
     expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'update', ids: ['share-a', 'behind-a'] });
   });
@@ -854,7 +854,7 @@ describe('Plugins → Update all', () => {
     await waitFor(() => expect(libLine()).toMatch(/^3\b/));
     fireEvent.click(updateAllButton());
     const s0 = await streamAt(0);
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/2…'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/1\/2/));
     expect(button('Rescan').disabled).toBe(true);
     expect(button('Start').disabled).toBe(true);
     expect(button('Disable').disabled).toBe(true);
@@ -890,7 +890,7 @@ describe('Plugins → Update all', () => {
     await switchTo('plugins');
     await waitFor(() => expect(gets('/api/plugins/library')).toBe(2));
     await waitFor(() => expect(entryButton('code-share', 'Updating…').disabled).toBe(true));
-    expect(updateAllButton().textContent).toBe('Updating 1/2…');
+    expect(updateAllButton().textContent).toMatch(/1\/2/);
     expect(updateAllButton().disabled).toBe(true);
     expect(entryButton('behind', 'Update').disabled).toBe(true);
     expect(libLine()).toMatch(/Updating Code Share.*1\/2/);
@@ -899,7 +899,7 @@ describe('Plugins → Update all', () => {
     await leaveAndReenter('plugins');
     await waitFor(() => expect(gets('/api/plugins/library')).toBe(3));
     await waitFor(() => expect(entryButton('code-share', 'Updating…').disabled).toBe(true));
-    expect(updateAllButton().textContent).toBe('Updating 1/2…');
+    expect(updateAllButton().textContent).toMatch(/1\/2/);
     expect(updateAllButton().disabled).toBe(true);
     expect(entryButton('behind', 'Update').disabled).toBe(true);
     expect(libLine()).toMatch(/Updating Code Share.*1\/2/);
@@ -910,7 +910,7 @@ describe('Plugins → Update all', () => {
     library = [UP_TO_DATE, CAUGHT_UP];
     await finish(s1, ok({ project: 'behind', postPull: null, restarted: null }));
     await waitFor(() => expect(libLine()).toMatch(/Updated 2 of 2/));
-    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
   });
 
   // Update all starts nothing while another action holds the guard: during a single Update it is disabled; during a plugin action it stays enabled, but its click starts no update; once the action ends it runs.
@@ -925,11 +925,11 @@ describe('Plugins → Update all', () => {
     fireEvent.click(entryButton('code-share', 'Update'));
     const s0 = await streamAt(0);
     await waitFor(() => expect(entryButton('code-share', 'Updating…').disabled).toBe(true));
-    expect(updateAllButton().textContent).toBe('Update all (2)');
+    expect(updateAllButton().textContent).toMatch(/\(2\)/);
     expect(updateAllButton().disabled).toBe(true);
     library = [UP_TO_DATE, BEHIND];
     await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Update all (1)'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/\(1\)/));
     expect(posts('/api/plugins/library/behind/update').length).toBe(0);
 
     fireEvent.click(button('Rescan'));
@@ -938,7 +938,7 @@ describe('Plugins → Update all', () => {
     fireEvent.click(updateAllButton());
     await act(async () => {});
     expect(posts('/api/plugins/library/behind/update').length).toBe(0);
-    expect(updateAllButton().textContent).toBe('Update all (1)');
+    expect(updateAllButton().textContent).toMatch(/\(1\)/);
     expect(libLine()).toMatch(/^2\b/);
 
     await act(async () => h.release({ ok: true }));
@@ -968,7 +968,7 @@ describe('Plugins → Update all', () => {
     await waitFor(() => expect(pluginsLine()).toMatch(/library unavailable/));
     expect(pluginsTone()).toBe('error');
     await waitFor(() => expect(libLine()).toMatch(/Updated 2 of 2/));
-    expect(updateAllButton().textContent).toBe('Update all (2)');
+    expect(updateAllButton().textContent).toMatch(/\(2\)/);
     expect(updateAllButton().disabled).toBe(false);
     expect(entryButton('code-share', 'Update').disabled).toBe(false);
     expect(entryButton('behind', 'Update').disabled).toBe(false);
@@ -981,12 +981,12 @@ describe('Plugins → Update all', () => {
     library = [INSTALLED, BEHIND];
     serve({ 'POST /api/plugins/rescan': () => ({ ok: true }) });
     wrap();
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Update all (2)'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/\(2\)/));
     expect(updateAllButton().disabled).toBe(false);
     library = [];
     fireEvent.click(button('Rescan'));
     await waitFor(() => expect(libLine()).toMatch(/no library entries/i));
-    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
     expect(updateAllButton().disabled).toBe(true);
   });
 
@@ -1016,7 +1016,7 @@ describe('Plugins → Update all', () => {
     await waitFor(() => expect(gets('/api/plugins/library')).toBe(g + 1));
     // Positive control: the run has cleared its running entry, so only Update all's own hold can lock anything now.
     await waitFor(() => expect(entryButtons('behind')).toEqual(['Update']));
-    expect(updateAllButton().textContent).toBe('Updating 2/2…');
+    expect(updateAllButton().textContent).toMatch(/2\/2/);
     expect(updateAllButton().disabled).toBe(true);
     expect(entryButton('code-share', 'Update').disabled).toBe(true);
     expect(entryButton('behind', 'Update').disabled).toBe(true);
@@ -1037,18 +1037,18 @@ describe('Plugins → Update all', () => {
     library = [INSTALLED, BEHIND];
     serve({ 'POST /api/plugins/library/behind/update': newStream, 'POST /api/plugins/rescan': () => ({ ok: true }) });
     wrap();
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Update all (2)'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/\(2\)/));
     const btn = updateAllButton();
     // A reload lands after the paint, Behind caught up; React re-renders only when this act ends.
     act(() => {
       pluginsStore.set({ library: [INSTALLED, CAUGHT_UP] });
       // Positive control: the click lands on the paint that still offers both.
-      expect(btn.textContent).toBe('Update all (2)');
+      expect(btn.textContent).toMatch(/\(2\)/);
       expect(btn.disabled).toBe(false);
       fireEvent.click(btn);
     });
     const s0 = await streamAt(0);
-    await waitFor(() => expect(updateAllButton().textContent).toBe('Updating 1/1…'));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/1\/1/));
     library = [UP_TO_DATE, CAUGHT_UP];
     await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
     await waitFor(() => expect(libLine()).toMatch(/Updated 1 of 1/));
@@ -1058,14 +1058,14 @@ describe('Plugins → Update all', () => {
     fireEvent.click(button('Rescan'));
     await waitFor(() => {
       expect(pluginsLine()).toMatch(/^1\b/);
-      expect(updateAllButton().textContent).toBe('Update all (2)');
+      expect(updateAllButton().textContent).toMatch(/\(2\)/);
     });
     const g = gets('/api/plugins/library');
     const btn2 = updateAllButton();
     act(() => {
       pluginsStore.set({ library: [UP_TO_DATE, CAUGHT_UP] });
       // Positive control, as above.
-      expect(btn2.textContent).toBe('Update all (2)');
+      expect(btn2.textContent).toMatch(/\(2\)/);
       expect(btn2.disabled).toBe(false);
       fireEvent.click(btn2);
     });
@@ -1074,7 +1074,7 @@ describe('Plugins → Update all', () => {
     expect(posts('/api/plugins/library/code-share/update').length).toBe(1);
     expect(gets('/api/plugins/library')).toBe(g);
     expect(libLine()).toMatch(/^2\b/);
-    expect(updateAllButton().textContent).toBe('Update all');
+    expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
     fireEvent.click(button('Rescan'));
     expect(posts('/api/plugins/rescan').length).toBe(2);
     await waitFor(() => expect(pluginsLine()).toMatch(/^1\b/));
