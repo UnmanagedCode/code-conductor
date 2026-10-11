@@ -368,6 +368,7 @@ describe('clearing and falling back', () => {
     renderSidebar();
     await settle();
     await pick(BRAVO);
+    expect(sidebarStore.get().filter).toBe(B);
     act(() => uiStore.set({ lens: 'conductors' }));
     expect(document.querySelector('[data-filter]')).toBeNull();
     act(() => appStore.set({ instances: withoutB(f) }));
