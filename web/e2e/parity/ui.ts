@@ -20,6 +20,8 @@ export type PruneField = 'cut' | 'cutLabel' | 'thinking' | 'minimal';
 export type RestartChoice = 'resume' | 'only';
 // Settings part 3 (card 2026-0637)
 export type ConventionScope = 'workspace' | 'conductor' | 'project';
+// Settings part 2b
+export type ModelsField = { name: string; caption: string | null };
 
 export interface Ui {
   name: UiName;
@@ -346,6 +348,12 @@ export interface Ui {
   sidebarScroll(page: Page): Promise<number>;
   /** Opens the sidebar, scrolls its body to `top` as a user would, and returns the offset it settled at. */
   scrollSidebar(page: Page, top: number): Promise<number>;
+
+  // Settings part 2b
+  /** Every tier and role select in Settings → Models with the visible caption that labels it (null when none shows); waits for the rows. */
+  modelsFields(page: Page): Promise<ModelsField[]>;
+  /** Settings' scroll container, whose sideways overflow is the column's. */
+  modelsScroller(page: Page): Locator;
 }
 
 // Sidebar C (card 2026-0629)
@@ -421,6 +429,38 @@ export async function expectOldUiRunning(page: Page) {
 const LEGACY_PREFIX: Record<ConventionScope, string> = { workspace: 'wk', conductor: 'cc', project: 'pc' };
 const conventionsBase = (scope: ConventionScope) => `/api/settings/conventions/${scope}`;
 const conventionsTitle = (scope: ConventionScope) => `${scope[0].toUpperCase()}${scope.slice(1)} conventions`;
+
+// Settings part 2b
+/**
+ * Every tier and role select with the caption a sighted user reads for it: its
+ * own when shown (legacy: the wrapping label's `.sm-field-cap`; next: its
+ * `label[for]`), else the tier column-header cell over its centre.
+ */
+async function readModelsFields(page: Page, o: { selects: string; tierList: string; ui: UiName }): Promise<ModelsField[]> {
+  await expect(page.locator(o.selects).first()).toBeVisible();
+  return page.locator(o.selects).evaluateAll((els, s) => {
+    const shown = (e: Element | null | undefined): e is Element => {
+      if (!e) return false;
+      const cs = getComputedStyle(e);
+      const r = e.getBoundingClientRect();
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+    };
+    const header = document.querySelector(s.tierList)?.previousElementSibling ?? null;
+    return els.map((el) => {
+      const own = s.ui === 'legacy'
+        ? el.closest('label')?.querySelector('.sm-field-cap')
+        : el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+      let caption = shown(own) ? (own.textContent ?? '').trim() || null : null;
+      if (caption === null && shown(header)) {
+        const r = el.getBoundingClientRect();
+        const x = (r.left + r.right) / 2;
+        const cell = [...header.children].find((c) => { const b = c.getBoundingClientRect(); return b.left <= x && x <= b.right; });
+        caption = (cell?.textContent ?? '').trim() || null;
+      }
+      return { name: el.getAttribute('aria-label') ?? '', caption };
+    });
+  }, o);
+}
 
 export const legacy: Ui = {
   name: 'legacy',
@@ -1118,6 +1158,10 @@ export const legacy: Ui = {
     await body.evaluate((e, t) => { e.scrollTop = t; }, top);
     return body.evaluate((e) => e.scrollTop);
   },
+
+  // Settings part 2b
+  modelsFields: (page) => readModelsFields(page, { selects: '#sm-tier-list .sm-family-row select, #sm-role-list .sm-role-row select', tierList: '#sm-tier-list', ui: 'legacy' }),
+  modelsScroller: (page) => page.locator('#settings-view .settings-content'),
 };
 
 /**
@@ -1791,6 +1835,10 @@ export const next: Ui = {
     await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
     return body.evaluate((e) => e.scrollTop);
   },
+
+  // Settings part 2b
+  modelsFields: (page) => readModelsFields(page, { selects: '[data-testid="tier-list"] > li select, [data-testid="role-list"] > li select', tierList: '[data-testid="tier-list"]', ui: 'next' }),
+  modelsScroller: (page) => page.locator('[data-settings-view] > .overflow-y-auto'),
 };
 
 // Sidebar B (card 2026-0628)

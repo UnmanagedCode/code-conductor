@@ -766,3 +766,35 @@ parity('legacy-plugin-version-select-width/R1', 'Plugins: the version select sta
   expect(long.longestOption - short.longestOption, 'sanity: the running plugin really has the longer option').toBeGreaterThan(15);
   expect(scrollWidth, `the page grows no horizontal scrollbar (scrollWidth=${scrollWidth})`).toBeLessThanOrEqual(viewport!.width + 1);
 });
+
+// Settings part 2b
+// The planner role is bound to a Claude model by a page-local rewrite of the
+// models GET, so a role row carries all four selects; nothing is written.
+parity('settings-models-field-labels/R1', 'Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways', async ({ page, ui }) => {
+  let shown: ModelsBody | undefined;
+  const writes = await routeModels(page, {
+    get: (b) => (shown = { ...b, roleBackend: { ...(b.roleBackend as Record<string, unknown>), planner: { backend: 'claude', model: 'claude-sonnet-5-5' } } }),
+    answer: () => shown,
+  });
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'models');
+  const fields = await ui.modelsFields(page);
+  const tierLabels = (shown!.tiers as { label: string }[]).map((t) => t.label);
+  const roles = shown!.roles as { role: string; label?: string }[];
+  const bindings = shown!.roleBackend as Record<string, { kind?: string }>;
+  const rowLabels = [...tierLabels, ...roles.map((r) => r.label ?? r.role)];
+  // Positive control: the rewrite landed (planner is Custom), so every select the payload implies renders.
+  expect(bindings.planner?.kind, 'planner bound to a model').toBeUndefined();
+  expect(fields, 'row selects').toHaveLength(tierLabels.length * 3 + roles.reduce((n, r) => n + (bindings[r.role]?.kind === 'tier' ? 2 : 4), 0));
+  // Every name is distinct and carries its row's payload label.
+  expect(new Set(fields.map((f) => f.name)).size, 'distinct names').toBe(fields.length);
+  for (const f of fields) expect(rowLabels.some((l) => f.name.includes(l)), `${f.name}: names no row`).toBe(true);
+  // Every tier select shows a caption its name contains.
+  for (const f of fields.filter((x) => tierLabels.some((l) => x.name.includes(l)))) {
+    expect(f.caption, `${f.name}: no visible caption`).not.toBeNull();
+    expect(f.name.toLowerCase(), `${f.name} vs its caption`).toContain(f.caption!.toLowerCase());
+  }
+  expect(await ui.modelsScroller(page).evaluate((e) => e.scrollWidth - e.clientWidth), 'the Settings column scrolls sideways').toBeLessThanOrEqual(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 'the page scrolls sideways').toBeLessThanOrEqual(0);
+  expect(writes).toEqual([]);
+});

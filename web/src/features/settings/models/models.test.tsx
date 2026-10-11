@@ -66,7 +66,7 @@ function show(data: ModelsPayload) {
   return render(<TooltipProvider><ModelsSection /></TooltipProvider>);
 }
 
-const select = (label: string) => screen.getByLabelText(label) as HTMLSelectElement;
+const select = (label: string, selector = '*') => screen.getByLabelText(label, { selector }) as HTMLSelectElement;
 const optionTexts = (s: HTMLSelectElement) => [...s.querySelectorAll('option')].map((o) => o.textContent);
 const optionValues = (s: HTMLSelectElement) => [...s.querySelectorAll('option')].map((o) => o.value);
 const groupLabels = (s: HTMLSelectElement) => [...s.querySelectorAll('optgroup')].map((g) => g.label);
@@ -162,8 +162,8 @@ describe('Models → editing a custom model', () => {
   };
   const form = () => ({
     label: input('Label').value,
-    backend: select('Backend').value,
-    backendDisabled: select('Backend').disabled,
+    backend: select('Backend', '#cm-backend').value,
+    backendDisabled: select('Backend', '#cm-backend').disabled,
     model: input('Model id').value,
     modelDisabled: input('Model id').disabled,
     context: input('Context').value,
@@ -216,7 +216,7 @@ describe('Models → editing a custom model', () => {
     });
     expect(screen.getByRole('button', { name: 'Add model' })).toBeTruthy();
     type('Label', 'New');
-    fireEvent.change(select('Backend'), { target: { value: 'px' } });
+    fireEvent.change(select('Backend', '#cm-backend'), { target: { value: 'px' } });
     type('Model id', 'new:v1');
     type('Context', '1m');
     fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
@@ -246,7 +246,7 @@ describe('Models → editing a custom model', () => {
     type('Label', 'dirty');
     await saveElsewhere([MINE, OTHER]);
     expect(input('Label').value).toBe('dirty');
-    expect(select('Backend').disabled).toBe(true);
+    expect(select('Backend', '#cm-backend').disabled).toBe(true);
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Remove Mine' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove Mine' })).toBeNull());
@@ -269,7 +269,7 @@ describe('Models → editing a custom model', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove Sibling' })).toBeNull());
     await act(async () => {});
     expect(input('Label').value).toBe('Mine edited');
-    expect(select('Backend').disabled).toBe(true);
+    expect(select('Backend', '#cm-backend').disabled).toBe(true);
     expect(input('Model id').disabled).toBe(true);
     expect(status()).toBe('Editing Mine. Backend and model id are fixed.');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -301,8 +301,8 @@ describe('Models → editing a custom model', () => {
     await act(async () => {});
     expect(nonGets(calls).map((c) => `${c.method} ${c.url}`)).toEqual(['DELETE /api/settings/models/custom/px/mine%3Av1']);
     expect(input('Label').value).toBe('Mine edited');
-    expect(select('Backend').value).toBe('ollama');
-    expect(select('Backend').disabled).toBe(true);
+    expect(select('Backend', '#cm-backend').value).toBe('ollama');
+    expect(select('Backend', '#cm-backend').disabled).toBe(true);
     expect(input('Model id').value).toBe('mine:v1');
     expect(input('Model id').disabled).toBe(true);
   });

@@ -5960,11 +5960,27 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'settings-models-field-labels/R1',
-    old: { file: 'tests/settings-models-field-labels.test.mjs' },
+    old: { file: 'tests/settings-models-field-labels.test.mjs', tests: [
+        'every select in a tier/role row sits in a captioned label.sm-field',
+        'the tier enable checkbox and default radio are both wrapped and named',
+        'the binding selects carry a row-specific aria-label, not just a shared caption',
+        'a wrapped control still reaches its row via closest(), and the row still reaches it',
+        'model and effort share one .sm-field-pair, and only where both exist',
+        'a caption is omitted entirely rather than emitted empty',
+      ] },
     behaviour: 'every Models control has a captioned wrapper and a row-specific accessible name; model+effort pair only where both exist; no empty captions',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > every tier and role select has its own caption, a word its name contains',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > the tier enable switch and default radio each name their row, and the radio keeps a caption its name contains',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > the backend, model and binding selects carry a row-specific name, not just a shared caption',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > every control sits inside its own row, and each row holds all of its controls',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > model and effort share one pair, and only where both exist',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > no caption is emitted empty, and the enable switch, named by the tier beside it, has none',
+        'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > every tier and role select and every default radio shows a caption its name contains: its own when the row stacks, the column header when it is one line',
+        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+      ] },
   },
   {
     id: 'settings-systems-panel/R1',
@@ -6289,7 +6305,11 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'Models layout across the 850px sweep: no document/container overflow, containment, grid tracks fit, tier fieldset',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > nothing overflows the page, the Settings column or the Models section at any swept viewport and sidebar width',
+        'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > the Settings nav sits beside the content where the column has room and above it where it has not, and every section link is reachable in both forms',
+        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+      ] },
   },
   {
     id: 'legacy-models-responsive/R2',
@@ -6300,7 +6320,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'controls stay usable: selects ≥100px, 44px targets, no overlap',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > the selected model\'s name fits its select wherever the Models column is at least as wide as on a 320px phone',
+        'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > every control is on screen, inside the Models section, uncovered at its centre and clear of its row\'s other controls',
+      ] },
   },
   {
     id: 'legacy-models-responsive/R3',
@@ -6311,7 +6334,12 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'every control has an accessible name and a visible caption contained in it',
     viewports: ['desktop', 'phone'],
     area: 'settings',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > every tier and role select and every default radio shows a caption its name contains: its own when the row stacks, the column header when it is one line',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > every tier and role select has its own caption, a word its name contains',
+        'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > the backend, model and binding selects carry a row-specific name, not just a shared caption',
+        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+      ] },
   },
   {
     id: 'legacy-models-responsive/R4',

@@ -84,15 +84,15 @@ export function SettingsView() {
   const showBody = !current.capability || capsLoaded;
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col" data-settings-view>
+    <main className="@container flex min-w-0 flex-1 flex-col" data-settings-view>
       <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur md:hidden">
         <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}><MenuIcon /></Button>
         <h1 className="flex-1 text-sm font-semibold">Settings</h1>
         <Button variant="ghost" size="sm" onClick={() => closeView(activeSid)}><ArrowLeftIcon /> Back</Button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5 md:flex-row md:gap-8 md:px-8 md:py-10">
-          <div className="md:sticky md:top-10 md:w-48 md:shrink-0 md:self-start">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5 @2xl:flex-row @2xl:gap-8 @2xl:px-8 @2xl:py-10">
+          <div className="@2xl:sticky @2xl:top-10 @2xl:w-48 @2xl:shrink-0 @2xl:self-start">
             <div className="mb-4 hidden items-center gap-1 md:flex">
               <Button variant="ghost" size="icon-sm" aria-label="Back" title="Back (Esc)" onClick={() => closeView(activeSid)}><ArrowLeftIcon /></Button>
               <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
@@ -100,7 +100,7 @@ export function SettingsView() {
             <nav
               ref={navRef}
               aria-label="Settings sections"
-              className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-col md:overflow-visible md:px-0"
+              className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-1 [scrollbar-width:none] @2xl:mx-0 @2xl:flex-col @2xl:overflow-visible @2xl:px-0"
             >
               {sections.map((s) => (
                 <a
