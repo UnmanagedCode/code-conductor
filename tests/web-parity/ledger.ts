@@ -1596,6 +1596,7 @@ export const LEDGER: readonly Row[] = [
     area: 'conversation',
     status: { kind: 'ported', by: [
         'web/src/conversation/format.test.ts::turn footer and per-call usage > a call line shows growth, context and output with its thinking portion',
+        'web/src/conversation/format.test.ts::turn footer and per-call usage > a call line drops its growth with no baseline, its thinking clause when thinking is 0 or unknown, and its context segment when the prompt is unknown; negative growth keeps its sign',
         'web/src/conversation/toolCardState.test.tsx::per-call usage and subagent totals > a per-call usage line explains itself in its tooltip and is no action: no card, not tallied',
         'web/src/conversation/toolCardState.test.tsx::per-call usage and subagent totals > an Agent card\'s subagent total stays through the card\'s re-renders: a later sub-agent event, closing and reopening it, and a remount',
         'web/e2e/conversation-machinery.spec.ts::tool cards: a system_bash call shows its description and command, and an Agent card shows its subagent total on every viewport, through re-renders',

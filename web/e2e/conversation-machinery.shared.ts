@@ -147,6 +147,7 @@ export async function toolCardsFlow({ page, cc }: Args): Promise<void> {
   await expect(next.turnEnds(page), 'fixture check: the transcript is back').toHaveCount(1);
   await expectAgentTotalShown(page, 'after a full-page view');
 
+  expect(await usageLines(page).count(), 'fixture check: per-call lines are rendered (tooltips)').toBeGreaterThan(0);
   for (const line of await usageLines(page).all()) await expect(line, 'a per-call line explains itself').toHaveAttribute('title', /\S/);
 }
 

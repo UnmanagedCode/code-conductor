@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { callUsageText, describeToolInput, splitResultContent, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { shouldRenderSystem } from './model';
+import type { UiEvent } from '@/state/types';
 
 describe('describeToolInput', () => {
   it('Bash prefers its description, falls back to the command; PowerShell summarises identically', () => {
@@ -140,6 +141,16 @@ describe('turn footer and per-call usage', () => {
   it('a call line shows growth, context and output with its thinking portion', () => {
     expect(callUsageText({ kind: 'call_usage', promptTokens: 40_000, growthTokens: 3_200, outputTokens: 1_500, thinkingTokens: 900 })).toBe('+3.2k → ctx 40k · out 1.5k (900 thinking)');
     expect(callUsageText({ kind: 'call_usage', promptTokens: 40_000, growthTokens: null, outputTokens: 12 })).toBe('ctx 40k · out 12');
+  });
+
+  it('a call line drops its growth with no baseline, its thinking clause when thinking is 0 or unknown, and its context segment when the prompt is unknown; negative growth keeps its sign', () => {
+    const call: UiEvent = { kind: 'call_usage', msgId: 'm1', outputTokens: 460, thinkingTokens: 73, promptTokens: 84_000, growthTokens: 3_200 };
+    expect(callUsageText(call), 'fixture check: the full line').toBe('+3.2k → ctx 84k · out 460 (73 thinking)');
+    expect(callUsageText({ ...call, growthTokens: null }), 'no baseline').toBe('ctx 84k · out 460 (73 thinking)');
+    expect(callUsageText({ ...call, thinkingTokens: 0 }), 'thinking 0').toBe('+3.2k → ctx 84k · out 460');
+    expect(callUsageText({ ...call, thinkingTokens: null }), 'thinking unknown').toBe('+3.2k → ctx 84k · out 460');
+    expect(callUsageText({ ...call, promptTokens: null, growthTokens: null, thinkingTokens: 0 }), 'prompt unknown').toBe('out 460');
+    expect(callUsageText({ ...call, growthTokens: -1_500 }), 'negative growth').toBe('-1.5k → ctx 84k · out 460 (73 thinking)');
   });
 });
 
