@@ -6834,6 +6834,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > opening on a plugin hash loads it into the view, another plugin swaps in a fresh frame, and leaving removes it',
         'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > a load event from the page being replaced leaves the entered plugin\'s Starting overlay up, and the entered plugin\'s own page load clears it',
+        'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > a load event from a hidden resident page leaves the entered keep-alive plugin\'s Starting overlay up, and that plugin\'s own page load clears it',
         'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > booting directly on a plugin hash opens the view at that subpath',
         'web/src/features/views/pluginHost.test.tsx::the hash and the frame stay in step > the route store follows the hash a showing frame\'s route writes',
         'web/src/features/views/pluginHost.test.tsx::the hash and the frame stay in step > after the plugin page moves itself, an outside change back to the subpath the hash named before reaches the frame',

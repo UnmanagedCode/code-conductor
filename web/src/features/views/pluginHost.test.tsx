@@ -108,6 +108,31 @@ describe('the plugin view and its hash space', () => {
     expect(overlayStore.get().overlay, 'positive control: b\'s own page load clears it').toBeNull();
   });
 
+  it('a load event from a hidden resident page leaves the entered keep-alive plugin\'s Starting overlay up, and that plugin\'s own page load clears it', async () => {
+    net.status = { ka: keepRow({ state: 'stopped' }), kb: keepRow({ state: 'stopped' }) };
+    await mountApp();
+    let release!: (r: Response) => void;
+    net.heldStart = new Promise((r) => { release = r; });
+    await go('#plugin/ka/');
+    await act(async () => { release(new Response(JSON.stringify({ state: 'ready' }))); });
+    await settle();
+    const ka = residentFrame('ka')!;
+    expect(!!ka, 'fixture check: ka\'s resident frame mounted after its start').toBe(true);
+    net.heldStart = new Promise((r) => { release = r; });
+    await go('#plugin/kb/');
+    expect(overlayStore.get().overlay, 'precondition: kb is starting behind the overlay').not.toBeNull();
+    expect(ka.hidden && ka.isConnected, 'fixture check: ka\'s page is resident and hidden').toBe(true);
+    act(() => { ka.dispatchEvent(new Event('load')); });
+    expect(overlayStore.get().overlay, 'ka\'s page loading does not clear kb\'s overlay').not.toBeNull();
+    await act(async () => { release(new Response(JSON.stringify({ state: 'ready' }))); });
+    await settle();
+    const kb = residentFrame('kb')!;
+    expect(!!kb && kb !== ka, 'fixture check: kb\'s resident frame is mounted').toBe(true);
+    expect(overlayStore.get().overlay, 'precondition: the overlay waits for kb\'s page').not.toBeNull();
+    act(() => { kb.dispatchEvent(new Event('load')); });
+    expect(overlayStore.get().overlay, 'positive control: kb\'s own page load clears it').toBeNull();
+  });
+
   it('booting directly on a plugin hash opens the view at that subpath', async () => {
     net.status = { alpha: plainRow() };
     history.replaceState(null, '', '/#plugin/alpha/dashboard');
