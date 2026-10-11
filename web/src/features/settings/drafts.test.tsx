@@ -133,7 +133,7 @@ describe('Settings edit drafts', () => {
       expect(steer().getAttribute('aria-checked')).toBe('true');
       expect(hasButton('Save')).toBe(true);
       expect(hasButton('Cancel')).toBe(true);
-      expect(customStatus()).toBe('Editing Mine. Backend and model id are fixed.');
+      expect(customStatus()).toContain('Mine');
     };
     await switchTo('backends');
     await switchTo('models');

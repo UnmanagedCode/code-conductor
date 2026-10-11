@@ -37,6 +37,7 @@ export function Status({ text, tone = 'muted', className }: { text?: React.React
     <div
       role="status"
       aria-live="polite"
+      data-tone={tone}
       className={cn('flex items-start gap-1.5 text-sm', tone === 'muted' && 'text-muted-foreground', tone === 'ok' && 'text-success', tone === 'error' && 'text-destructive', className)}
     >
       {tone === 'ok' && <CircleCheckIcon className="mt-0.5 size-4 shrink-0" />}

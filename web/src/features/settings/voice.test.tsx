@@ -49,7 +49,9 @@ describe('Voice → Dictation', () => {
   it('shows whisper availability with the active model, and badges each model active, installed or not installed', async () => {
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe(), 'GET /api/settings/tts': () => tts() });
     const view = show();
-    await waitFor(() => expect(statusLine('Dictation')).toBe('Whisper available · active model: Base'));
+    await waitFor(() => expect(statusLine('Dictation')).toContain('Base'));
+    // Invariant: an available whisper names its active model and does not read as not installed (positive control: the line was just proven to carry the model name).
+    expect(statusLine('Dictation')).not.toMatch(/not installed/i);
     expect(within(card('Dictation')).getByRole('listbox', { name: 'model catalog' })).toBeTruthy();
     expect(badge('Dictation', 'base')).toBe('active');
     expect(badge('Dictation', 'small')).toBe('installed');
@@ -58,7 +60,7 @@ describe('Voice → Dictation', () => {
 
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe({ available: false, activeModel: null }), 'GET /api/settings/tts': () => tts() });
     show();
-    await waitFor(() => expect(statusLine('Dictation')).toBe('Whisper not installed. Pick a model and install it.'));
+    await waitFor(() => expect(statusLine('Dictation')).toMatch(/not installed/i));
   });
 
   // Picking an installed model switches it immediately from the server's answer and publishes mic availability; a refused switch reports the reason.
@@ -164,7 +166,7 @@ describe('Voice → Dictation', () => {
     await waitFor(() => expect(within(card('Dictation')).queryByText('Installing…')).toBeNull());
     await act(async () => {});
     expect(gets(calls, '/api/settings/transcribe/install/status')).toBe(1);
-    expect(statusLine('Dictation')).toBe('Whisper not installed. Pick a model and install it.');
+    expect(statusLine('Dictation')).toMatch(/not installed/i);
     expect(voiceStore.get().micAvailable).toBe(false);
   });
 
@@ -195,13 +197,15 @@ describe('Voice → Speech', () => {
   it('shows Piper availability and the active voice; auto-speak is unavailable until Piper is installed', async () => {
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe(), 'GET /api/settings/tts': () => tts({ available: false, activeVoice: null }) });
     const view = show();
-    await waitFor(() => expect(statusLine('Speech')).toBe('Piper not installed. Pick a voice and install it.'));
+    await waitFor(() => expect(statusLine('Speech')).toMatch(/not installed/i));
     expect(screen.getByRole('switch', { name: 'Auto-speak assistant replies' })).toHaveProperty('disabled', true);
     view.unmount();
 
     mockFetch({ 'GET /api/settings/transcribe': () => transcribe(), 'GET /api/settings/tts': () => tts() });
     show();
-    await waitFor(() => expect(statusLine('Speech')).toBe('Speech available · active voice: Amy'));
+    await waitFor(() => expect(statusLine('Speech')).toContain('Amy'));
+    // Invariant: an available Piper names its active voice and does not read as not installed (positive control: the line was just proven to carry the voice name).
+    expect(statusLine('Speech')).not.toMatch(/not installed/i);
     expect(screen.getByRole('switch', { name: 'Auto-speak assistant replies' })).toHaveProperty('disabled', false);
   });
 

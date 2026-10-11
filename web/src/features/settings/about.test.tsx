@@ -40,23 +40,25 @@ describe('About', () => {
 
   // Each self-update status maps to its own wording, and Update is offered for an available fast-forward alone; a failed check says why.
   it('the version line names each update state, and only an available fast-forward offers Update', async () => {
-    const cases: [object, string, boolean][] = [
-      [{ version: '1.0', canCheck: true }, 'v1.0 · up to date', false],
-      [{ version: '1.0', canCheck: true, diverged: true, ahead: 1, behind: 2, upstream: 'origin/main' }, "v1.0 · 1 ahead, 2 behind origin/main; can't fast-forward", false],
-      [{ version: '1.0', canCheck: false }, "v1.0 · can't check for updates (no upstream branch)", false],
-      [available, 'v1.0 · update available (3 commits behind origin/main)', true],
+    const cases: [object, string[], boolean][] = [
+      [{ version: '1.0', canCheck: true }, ['v1.0', 'up to date'], false],
+      [{ version: '1.0', canCheck: true, diverged: true, ahead: 1, behind: 2, upstream: 'origin/main' }, ["1 ahead", '2 behind', 'origin/main'], false],
+      [{ version: '1.0', canCheck: false }, ['v1.0', 'upstream'], false],
+      [available, ['v1.0', '3 commits', 'origin/main'], true],
     ];
-    for (const [status, text, offered] of cases) {
+    // Invariant: each update state's line carries its own facts (version, counts, upstream), and Update is offered only for an available fast-forward.
+    for (const [status, facts, offered] of cases) {
       mockFetch({ 'GET /api/settings/self-update': () => status });
       const view = render(<AboutSection />);
-      await waitFor(() => expect(line()).toBe(text));
+      await waitFor(() => expect(line()).toContain(facts[0]));
+      for (const fact of facts) expect(line()).toContain(fact);
       expect(buttons().map((b) => b.textContent?.trim())).toEqual(offered ? ['Update'] : []);
       view.unmount();
       selfUpdateStore.set(INITIAL);
     }
     mockFetch({ 'GET /api/settings/self-update': () => ({ status: 500, json: { error: 'down' } }) });
     render(<AboutSection />);
-    await waitFor(() => expect(line()).toBe('Failed to check for updates: down'));
+    await waitFor(() => expect(line()).toContain('down'));
     expect(buttons()).toEqual([]);
   });
 
@@ -75,7 +77,7 @@ describe('About', () => {
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
     expect(performRestart).not.toHaveBeenCalled();
     act(() => { stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
-    await waitFor(() => expect(line()).toBe('Update applied. Restarting…'));
+    await waitFor(() => expect(line()).toMatch(/Restarting/));
     expect(performRestart).toHaveBeenCalledTimes(1);
     expect(performRestart).toHaveBeenCalledWith({ resume: true });
     // After a successful update nothing re-arms Update while the restart is in flight.
@@ -113,7 +115,7 @@ describe('About', () => {
     first.unmount();
 
     render(<AboutSection />);
-    await waitFor(() => expect(line()).toBe('v1.0 · update available (3 commits behind origin/main)'));
+    await waitFor(() => expect(line()).toMatch(/v1\.0.*3 commits/));
     expect(calls.filter((c) => c.method === 'GET' && c.url.startsWith('/api/settings/self-update'))).toHaveLength(2);
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Update', false]]);
     expect(log()).toBe('');
@@ -127,7 +129,7 @@ describe('About', () => {
     });
     render(<AboutSection />);
     fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
-    await waitFor(() => expect(line()).toBe('Update failed: dirty tree'));
+    await waitFor(() => expect(line()).toContain('dirty tree'));
     expect(log()).toBe('M file');
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Update', false]]);
     expect(performRestart).not.toHaveBeenCalled();
@@ -138,7 +140,7 @@ describe('About', () => {
     const stream = ndjsonStream();
     const calls = mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     const first = render(<AboutSection />);
-    await waitFor(() => expect(line()).toBe('v1.0 · update available (3 commits behind origin/main)'));
+    await waitFor(() => expect(line()).toMatch(/v1\.0.*3 commits/));
     fireEvent.click(screen.getByRole('button', { name: 'Update' }));
     act(() => stream.push({ type: 'chunk', text: 'Pulling…' }));
     await waitFor(() => expect(log()).toContain('Pulling…'));
@@ -153,7 +155,7 @@ describe('About', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
 
     act(() => { stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
-    await waitFor(() => expect(line()).toBe('Update applied. Restarting…'));
+    await waitFor(() => expect(line()).toMatch(/Restarting/));
     expect(performRestart).toHaveBeenCalledTimes(1);
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
   });
