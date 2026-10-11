@@ -137,7 +137,8 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className={cn('h-full overflow-y-auto overscroll-contain', showCallUsage ? 'show-call-usage' : 'hide-call-usage')}
+        className="h-full overflow-y-auto overscroll-contain"
+        data-call-usage={showCallUsage ? 'shown' : 'hidden'}
         data-conversation
       >
         <div ref={listRef} className="mx-auto w-full max-w-3xl space-y-6 px-4 pt-6 pb-10 md:px-6">

@@ -152,7 +152,7 @@ export const GroupChildView = React.memo(function GroupChildView({ node, ctx }: 
 
 export function CallUsageLine({ node }: { node: CallUsageNode }) {
   return (
-    <div className="call-usage px-3 py-1 font-mono text-[11px] text-muted-foreground tabular-nums" title={CALL_USAGE_TITLE}>
+    <div className="px-3 py-1 font-mono text-[11px] text-muted-foreground tabular-nums" title={CALL_USAGE_TITLE} data-call-usage-line>
       {callUsageText(node.ev)}
     </div>
   );
@@ -211,13 +211,13 @@ function ToolBlock({ node, ctx }: { node: ToolNode; ctx: RenderCtx }) {
   const args = renderArgs(node, ctx.model);
   return (
     <Collapsible open={node.reader.open} onOpenChange={(o) => ctx.model.setReader(node, { open: o })} className="px-3 py-2">
-      <CollapsibleTrigger data-tool-trigger className="group/tool flex w-full min-w-0 items-center gap-2 text-left text-sm">
+      <CollapsibleTrigger data-tool-trigger className="group/tool flex w-full min-w-0 flex-wrap items-center gap-2 text-left text-sm sm:flex-nowrap">
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
         <ToolName raw={node.name} />
-        {desc && <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{desc}</span>}
+        {desc && <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground" data-tool-desc>{desc}</span>}
         {!desc && <span className="flex-1" />}
         {node.agentUsage && (
-          <span className="hidden shrink-0 text-[11px] text-muted-foreground sm:inline" title="The subagent's own context when it finished (its last call's prompt + output). A separate context window, not part of this session's figures.">
+          <span className="order-last basis-full pl-5.5 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:shrink-0 sm:pl-0" data-agent-usage title="The subagent's own context when it finished (its last call's prompt + output). A separate context window, not part of this session's figures.">
             subagent {formatTokens(node.agentUsage.tokens)} ctx{node.agentUsage.toolUses != null && ` · ${node.agentUsage.toolUses} tool use${node.agentUsage.toolUses === 1 ? '' : 's'}`}
           </span>
         )}
