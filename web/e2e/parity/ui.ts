@@ -1254,7 +1254,7 @@ export const next: Ui = {
   async leavePlugin(page) {
     await next.openSidebar(page);
     await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
-    await page.getByRole('menuitem', { name: 'Conductor' }).click();
+    await page.getByRole('menuitemradio', { name: 'Conductor' }).click();
     await expect(page).not.toHaveURL(/#plugin\//);
   },
   async openConductor(page, sessionId) {

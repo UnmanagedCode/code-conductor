@@ -1,5 +1,6 @@
-// Backend of the keep-alive probe plugin (web/e2e/legacy/plugin-keepalive.spec.ts).
-// node:http only: serves the probe page, /health, and a WebSocket at /ws that
+// Backend of the keep-alive probe plugin (web/e2e/harness/pluginProbe.ts).
+// node:http only: serves the probe page at every path but /health, so a frame
+// loads at any subpath, plus /health and a WebSocket at /ws that
 // pushes a text frame every TICK_MS so the page can count what it received.
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -15,13 +16,8 @@ const server = http.createServer((req, res) => {
     res.end('{"ok":true}');
     return;
   }
-  if (pathname === '/') {
-    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
-    res.end(PAGE);
-    return;
-  }
-  res.writeHead(404);
-  res.end();
+  res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+  res.end(PAGE);
 });
 
 // Server → client text frames only; anything the client sends is ignored

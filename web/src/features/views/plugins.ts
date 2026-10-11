@@ -17,9 +17,13 @@
 //     action) or when that action put new code under it (EVICTING_ACTIONS).
 //
 // Parent side of the bridge (the root /pluginBridge.js, served from public/, runs in the frame):
-// child `route` messages mirror into the hash via replaceState (no hashchange,
-// no reload loop); an outside subpath change is forwarded as `navigate`.
+// child `route` messages mirror into the hash with the route store's
+// replaceHash (no history entry, no hashchange, no reload loop), so the store
+// always reads the hash the frame is at and an outside change back to an
+// earlier subpath still reads as a change; an outside subpath change is
+// forwarded as `navigate`.
 import { createSignal, createStore } from '@/state/createStore';
+import { replaceHash } from '@/state/route';
 
 export type PluginTarget = { id: string; subpath: string };
 type Record_ = { id: string; subpath: string; frame: HTMLIFrameElement };
@@ -160,7 +164,7 @@ class PluginFrames {
     this.current = record;
     if (target.subpath === '/' || target.subpath === record.subpath) {
       const hash = `#plugin/${record.id}${record.subpath}`;
-      if (location.hash !== hash) history.replaceState(null, '', hash);
+      if (location.hash !== hash) replaceHash(hash);
     } else {
       record.subpath = target.subpath;
       record.frame.contentWindow?.postMessage({ cc: 1, type: 'navigate', path: target.subpath }, location.origin);
@@ -238,7 +242,7 @@ class PluginFrames {
     // A path without its leading slash would splice into the id part of the hash.
     if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
       record.subpath = d.path;
-      if (active) history.replaceState(null, '', `#plugin/${record.id}${d.path}`);
+      if (active) replaceHash(`#plugin/${record.id}${d.path}`);
     }
   }
 }

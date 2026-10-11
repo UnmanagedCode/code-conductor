@@ -50,6 +50,7 @@ test('…', async ({ page, cc }) => { await page.goto('/next/'); /* cc.url, cc.d
 - **`harness/api.ts`** — `api(cc, method, route, body)` → `{ status, body }`, `createProject`, `spawnSession(cc, project, extra)` (a live cc's worker runs on `LIVE_WORKER_MODEL`), `mcpCall(cc, tool, args, callerInstanceId?)`, `installFakePlugin(cc, name)` (`tests/fixtures/fake-plugin`, id `fake-plugin`, adopted as project `name` and enabled; idempotent per cc, so specs sharing a cc may each call it).
 - **`harness/transcript.ts`** — `seedTranscript(cc, id, text)` appends a user line, and `appendTranscriptRecord(cc, id, record)` appends any CLI jsonl record. fake-claude writes no transcript.
 - **`harness/lineage.ts`** — `resumeSeeded(cc, project, publicId, segments)` writes one jsonl per backing segment and the session's lineage row in the store's `sessions.json`, then resumes it, so cc serves a real multi-segment walk; `seedTurns(tag, n)` builds `n` prompt/reply turns (`<tag> prompt <i>` / `<tag> reply <i>`).
+- **`harness/pluginProbe.ts`** — `installProbePlugin(cc, { id, name, keepAlive })` copies `fixtures/keepalive-plugin/` into the projects root under that id, name and keep-alive, then adopts, rescans and enables it; `probeFrame(page, id)` finds the frame serving it, shown or hidden; `readProbe(page, id)` reads its counters: a per-load `nonce` (a reload makes a new one), interval `ticks`, WebSocket messages `ws`, rAF callbacks `raf`, and `mic` once its Start button ran. The fixture serves its page at every path but `/health`, so a frame loads at any subpath.
 - A spec that needs no server (`legacy/header-compact.spec.ts`) imports `test` from `@playwright/test` instead, and no cc boots.
 
 ## What a booted cc gets (`harness/boot.ts`, `env.ts`, `scratch.ts`)
@@ -144,7 +145,7 @@ parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
 
 The `android` project (Pixel 7 + `notifications` permission) runs `harness.spec.ts`, every `**/*.android.spec.ts` and the parity scenarios; no other project runs the `*.android.spec.ts` files. Android-only behaviour lands there: the back button and the hash, external links, a notification click, and the on-screen keyboard opening.
 
-A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `composer-drafts`, `conversation-scroll`, `collapse-state`, `conversation-machinery`, `conversation-bubbles`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
+A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `composer-drafts`, `conversation-scroll`, `collapse-state`, `conversation-machinery`, `conversation-bubbles`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden`, `plugin-host` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
 
 ## Mutation scoring
 

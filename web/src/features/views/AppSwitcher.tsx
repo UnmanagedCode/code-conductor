@@ -3,9 +3,9 @@
 // a resident (keep-alive) frame is labelled "(running)": its page keeps going —
 // possibly with the microphone open — while you're elsewhere.
 import * as React from 'react';
-import { CheckIcon, ChevronsUpDownIcon, PlugIcon } from 'lucide-react';
+import { ChevronsUpDownIcon, PlugIcon } from 'lucide-react';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { OctopusMark } from '@/components/mascot/Octopus';
 import { useSignal, useStore } from '@/state/createStore';
@@ -16,6 +16,9 @@ import { closeSidebarOnMobile } from '@/app/ui';
 import { pluginsChangedSignal } from '@/features/settings/pluginsSignal';
 import { openPlugin } from './api';
 import { catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
+
+/** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
+const CONDUCTOR = '';
 
 /** Back to Conductor: the active session's anchor, never history.back() (no usable entry on a deep link). */
 export function exitToConductor() {
@@ -58,19 +61,20 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Apps</DropdownMenuLabel>
-        <DropdownMenuItem onSelect={() => { if (currentId) exitToConductor(); }}>
-          <OctopusMark className="size-4 text-primary" />
-          <span className="flex-1">Conductor</span>
-          {!currentId && <CheckIcon />}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        {apps.map((p) => (
-          <DropdownMenuItem key={p.id} onSelect={() => openPlugin(p.id)} data-app-id={p.id}>
-            <PlugIcon />
-            <span className="flex-1 truncate">{(p.navLabel || p.name) + (live.has(p.id) ? RESIDENT_SUFFIX : '')}</span>
-            {currentId === p.id && <CheckIcon />}
-          </DropdownMenuItem>
-        ))}
+        {/* The current app is the checked entry; picking it again changes nothing. */}
+        <DropdownMenuRadioGroup value={currentId ?? CONDUCTOR}>
+          <DropdownMenuRadioItem value={CONDUCTOR} onSelect={() => { if (currentId) exitToConductor(); }}>
+            <OctopusMark className="size-4 text-primary" />
+            <span className="flex-1">Conductor</span>
+          </DropdownMenuRadioItem>
+          <DropdownMenuSeparator />
+          {apps.map((p) => (
+            <DropdownMenuRadioItem key={p.id} value={p.id} onSelect={() => { if (currentId !== p.id) openPlugin(p.id); }} data-app-id={p.id}>
+              <PlugIcon />
+              <span className="flex-1 truncate">{(p.navLabel || p.name) + (live.has(p.id) ? RESIDENT_SUFFIX : '')}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

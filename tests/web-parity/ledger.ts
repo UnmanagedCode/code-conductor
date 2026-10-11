@@ -6817,7 +6817,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a view stays open across its hash space',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > stays open on the same frame while the hash moves within a plugin\'s space, and closes on a hash outside it',
+        'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > opens a full-page view only on its exact hash, and the plugin space on every hash under #plugin/',
+      ] },
   },
   {
     id: 'plugins-frontend/R2',
@@ -6828,7 +6831,14 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'opening on #plugin or a boot hash; swapping plugins; no reload on a subpath',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > opening on a plugin hash loads it into the view, another plugin swaps in a fresh frame, and leaving removes it',
+        'web/src/features/views/pluginHost.test.tsx::the plugin view and its hash space > booting directly on a plugin hash opens the view at that subpath',
+        'web/src/features/views/pluginHost.test.tsx::the hash and the frame stay in step > the route store follows the hash a showing frame\'s route writes',
+        'web/src/features/views/pluginHost.test.tsx::the hash and the frame stay in step > after the plugin page moves itself, an outside change back to the subpath the hash named before reaches the frame',
+        'web/src/features/views/pluginHost.test.tsx::the hash and the frame stay in step > after a keep-alive re-entry rewrote the hash to the frame\'s route, an outside change to the bare plugin hash reaches the frame',
+        'web/e2e/plugin-host.spec.ts::a plugin hash opens, steers and swaps plugin pages without reloading them, and a boot on a plugin hash opens it there',
+      ] },
   },
   {
     id: 'plugins-frontend/R3',
@@ -6893,7 +6903,18 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'keep-alive routing rules',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > a keep-alive plugin entered cold at a non-root subpath mounts its frame there > booting directly on the hash',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > a keep-alive plugin entered cold at a non-root subpath mounts its frame there > entering by hash',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > re-entry at the bare plugin hash keeps the frame on its own route, rewrites the hash to it, and starts nothing',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > re-entry at a different non-root subpath steers the resident frame there with a navigate',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > re-entry at the frame\'s own tracked route posts no navigate',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > a route message whose path lacks a leading slash is ignored > from a hidden frame',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > a route message whose path lacks a leading slash is ignored > from the showing frame',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > A (keep-alive) → B (plain) → A keeps A\'s frame and removes B\'s',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > two keep-alive plugins get one resident frame each, and each keeps its own route',
+        'web/src/features/views/pluginHost.test.tsx::keep-alive routing > a hidden resident frame\'s route message updates its record but never the hash',
+      ] },
   },
   {
     id: 'plugins-frontend/R9',
@@ -6906,10 +6927,18 @@ export const LEDGER: readonly Row[] = [
         'pluginView: re-entry\'s background check evicts and reloads when the row is disabled',
         'pluginView: teardown mid-start of a keepAlive plugin creates no resident frame',
       ] },
-    behaviour: 'reconcile and keep-alive edge cases: eviction on a 404 or a restart and keeping on a network error (each guarded by web/src/features/views/plugins.test.ts), with the rest of every case table (unguarded)',
+    behaviour: 'reconcile and keep-alive edge cases: what reconcile evicts (a row that no longer qualifies, a 404, an action that put new code under it) and keeps (a crash, a lazy restart, a 5xx, a network error, an unreadable body, an action naming another plugin), evicting the showing frame without reloading it, re-entry\'s background check, and leaving mid-start',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > reconcile evicts a resident frame whose row no longer qualifies, and only that one: stopped, disabled, invalid, keep-alive dropped, a 404',
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > reconcile keeps a resident frame on crashed, failed, starting, a 5xx, a network error and an unreadable body, while a 404 in the same pass evicts',
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > reconcile evicts the frames a Settings action put new code under — restart, update, version — and only the plugins it names',
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > reconcile keeps a frame through a crash, a lazy restart, an evicting action naming another plugin, and a non-evicting action naming it',
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > reconcile evicting the showing frame neither starts it nor loads it again, and the next move in the open view loads the plugin afresh',
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > re-entry\'s background check keeps a qualifying frame, and evicts it and loads afresh once the row is disabled',
+        'web/src/features/views/pluginHost.test.tsx::reconcile and the keep-alive edge cases > leaving a keep-alive plugin mid-start creates no resident frame, while a start left to finish does',
+      ] },
   },
   {
     id: 'plugins-frontend/R10',
@@ -6956,7 +6985,15 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the app switcher: plain title with no plugins, the menu, the running marker, eviction on a plugin change, re-sync to Conductor on close',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > is absent while no enabled plugin contributes a frontend, appears once one does, and goes again once none does',
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > offers Conductor and each enabled plugin with a frontend, and marks exactly one entry current, following every switch both ways',
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > another view taking the hash from a plugin closes the plugin view and makes Conductor current',
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > a plugin whose frame stays resident reads differently in the menu from its first entry until it is evicted, and no other entry changes',
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > a Settings → Plugins action evicts the resident frames of exactly the plugins it names',
+        'web/src/features/views/appSwitcher.test.tsx::the app switcher > picking the app that is already current changes nothing: Conductor from Conductor, and a plugin from itself after its page moved',
+        'web/e2e/plugin-host.spec.ts::picking a plugin from the switcher while a session is open lands on it on the first pick',
+      ] },
   },
   {
     id: 'plugins-frontend/R20',
@@ -7016,7 +7053,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a real plugin iframe stays alive while hidden; a keepAlive plugin survives real exits without reloading; a plain one reloads',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/plugin-host.spec.ts::a keep-alive plugin keeps running hidden behind Settings and Conductor and comes back as the same page, while a plain one reloads',
+      ] },
   },
   {
     id: 'legacy-plugin-switch/R1',
@@ -7026,6 +7065,8 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'picking a plugin from the switcher while a session is active lands on it on the first try',
     viewports: ['desktop', 'phone'],
     area: 'plugins-host',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/plugin-host.spec.ts::picking a plugin from the switcher while a session is open lands on it on the first pick',
+      ] },
   },
 ];
