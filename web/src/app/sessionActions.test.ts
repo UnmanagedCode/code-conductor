@@ -249,6 +249,23 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(toasts).toEqual([['error', 'Rewind failed', error]]);
   });
 
+  // A refused fork toasts exactly the server's message and neither refreshes nor selects.
+  it('a refused fork toasts the server\'s message for each refusal and refreshes and selects nothing', async () => {
+    const notPersisted = 'prompt 2 hasn\'t been written to the session transcript yet — a message sent during a running turn is written when the turn picks it up; retry in a moment';
+    const sourceChanged = 'the session\'s transcript rotated or restarted while the fork was waiting — nothing was written; fork again from the current transcript';
+    const refusals = [{ error: notPersisted, code: 'PROMPT_NOT_PERSISTED' }, { error: sourceChanged, code: 'FORK_SOURCE_CHANGED' }];
+    stubFetch(() => ({ status: 409, body: refusals.shift() }));
+    appStore.set({ activeId: 'A' });
+    await forkActiveSession(2, 'text');
+    await forkActiveSession(2, 'text');
+    expect(confirms.map((c) => c.title)).toEqual(['Fork from here?', 'Fork from here?']);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([['POST', '/api/instances/A/fork'], ['POST', '/api/instances/A/fork']]);
+    expect(toasts).toEqual([['error', 'Fork failed', notPersisted], ['error', 'Fork failed', sourceChanged]]);
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.selectInstance).not.toHaveBeenCalled();
+  });
+
   it('deleting a project sends deleteDirectory as chosen and drops a selection inside it', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     appStore.set({ activeId: 'i1', instances: [{ id: 'i1', project: 'gone', sessionId: 's', status: 'idle', mode: 'x' }] });

@@ -2551,11 +2551,28 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'user-actions-midturn/R2',
-    old: { file: 'tests/user-actions-midturn.test.mjs', tests: 'rest' },
+    old: { file: 'tests/user-actions-midturn.test.mjs', tests: [
+        "userActionsForStatus",
+        "userActionsForStatus > no instance",
+        "setUserActionsEnabled applies each action separately, to existing and later bubbles",
+        "a status change re-enables what the previous one disabled, per action",
+        "a non-current-segment bubble still has no actions mid-turn",
+        "the header applies the active instance's status to the conversation",
+        "a lazy-history page spliced mid-turn gets fork enabled and rewind disabled",
+      ] },
     behaviour: 'the status→actions map for every status and no instance; applied to existing and later bubbles; re-enabled on change; non-current segments; paged bubbles mid-turn',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        "web/src/conversation/userActions.test.tsx::userActionsForStatus > rewind needs idle; fork takes idle or turn; spawning, exited and crashed take neither",
+        "web/src/conversation/userActions.test.tsx::userActionsForStatus > no instance takes neither, and the view renders both disabled while no instance is active",
+        "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > each action is applied separately, to a bubble rendered before a status change and to one rendered after it, for every status",
+        "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a status change re-enables what the previous one disabled, per action, on the same bubble",
+        "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a bubble from a segment that is no longer current has no actions mid-turn or idle, while the current segment's bubble keeps them",
+        "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a status frame for the active instance reaches its bubbles; a frame for another instance does not",
+        "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a lazy-history page spliced in mid-turn gets fork enabled and rewind disabled, spliced in idle both, and follows a later status change",
+        "web/e2e/parity/conversation.spec.ts::between turns a prompt offers Rewind and Fork; mid-turn Rewind is disabled while Fork stays enabled, on the earlier prompt and on the running one > next",
+      ] },
   },
   {
     id: 'user-bubble-markdown/R1',
@@ -2710,7 +2727,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a refused fork shows the server\'s message',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        "web/src/app/sessionActions.test.ts::promote, resume, rewind, fork, delete > a refused fork toasts the server's message for each refusal and refreshes and selects nothing",
+        "web/e2e/parity/conversation.spec.ts::a refused fork shows the server's message and leaves the session where it was > next",
+      ] },
   },
   {
     id: 'doc/B1',
