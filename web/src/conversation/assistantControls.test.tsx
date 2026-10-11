@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 import { voiceStore } from '@/features/voice/store';
 import type { UiEvent } from '@/state/types';
-import { ConversationModel, userActionsForStatus, type AssistantNode, type ToolNode } from './model';
+import { ConversationModel, userActionsForStatus, type AssistantNode, type TextNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { groupsOf, text, thinking, tool } from './testkit';
 
@@ -229,6 +229,37 @@ describe('the raw view', () => {
     expect(names(b)).toEqual([...OFFERS_RENDERED, 'Read aloud']);
     await view(b, 'rendered');
     expect(names(b)).toEqual([...OFFERS_RAW, 'Read aloud']);
+  });
+});
+
+describe('read-aloud', () => {
+  it('a sub-agent bubble never offers read-aloud, even with a voice available', async () => {
+    act(() => { voiceStore.set({ ttsAvailable: true }); });
+    const { m, root } = await show([
+      ...text('m1', 0, 'A'),
+      { kind: 'tool_use_start', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent' },
+      { kind: 'tool_use', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
+      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
+      ...text('m1', 2, 'B'),
+    ]);
+    const card = groupsOf(m.items[0] as AssistantNode)[0].children[0] as ToolNode;
+    expect((card.sub!.items[0] as AssistantNode).children.filter((c): c is TextNode => c.type === 'text').map((c) => c.finalized), "fixture check: the sub-agent's text block is finalized").toEqual([true]);
+    const outer = bubbles(root)[0];
+    fireEvent.click(outer.querySelector('[data-group-trigger]') as HTMLElement);
+    await flush();
+    const [sub] = subBubbles(root);
+    expect(sub, "fixture check: the sub-agent's bubble is on screen").toBeTruthy();
+    expect(names(outer), 'positive control: the outer bubble offers read-aloud').toEqual([...OFFERS_RAW, 'Read aloud']);
+    expect(names(sub), 'the sub-agent bubble offers copy and raw, never read-aloud').toEqual(OFFERS_RAW);
+  });
+
+  it('a still-streaming block offers no read-aloud; a finalized one does', async () => {
+    act(() => { voiceStore.set({ ttsAvailable: true }); });
+    const { m, root } = await show([{ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'still **going**' }]);
+    const b = bubbles(root)[0];
+    expect(names(b), 'a still-streaming block offers copy and raw but no read-aloud').toEqual(OFFERS_RAW);
+    await live(m, [{ kind: 'text_end', msgId: 'm1', blockIdx: 0 }]);
+    expect(names(b), 'the finalized block offers read-aloud').toEqual([...OFFERS_RAW, 'Read aloud']);
   });
 });
 

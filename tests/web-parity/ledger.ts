@@ -1476,6 +1476,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/conversation/assistantControls.test.tsx::the raw view > raw leaves the thinking block, the tool card and their action group exactly as they were',
         'web/src/conversation/assistantControls.test.tsx::the raw view > controls are live mid-stream: copy takes the text streamed so far, and a block still streaming when the bubble turns raw finalizes raw',
         'web/src/conversation/assistantControls.test.tsx::the raw view > read-aloud stays through switching the bubble to raw and back',
+        'web/src/conversation/assistantControls.test.tsx::read-aloud > a sub-agent bubble never offers read-aloud, even with a voice available',
+        'web/src/conversation/assistantControls.test.tsx::read-aloud > a still-streaming block offers no read-aloud; a finalized one does',
         'web/src/conversation/assistantControls.test.tsx::where the controls hold > a retired segment and a running turn leave copy and raw enabled and working while the prompt loses rewind',
         'web/src/conversation/assistantControls.test.tsx::the copy outcome > copy announces copied, then failed when the clipboard rejects, in its own bubble only; the announcement clears after the flash and the button keeps its name',
         'web/src/conversation/assistantControls.test.tsx::replay and lazy pages > a snapshot replay and a lazy page give the same controls, copy and raw view as the live stream',
@@ -3051,6 +3053,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/conversation/queuedGhosts.test.tsx::queued ghosts > the window reset keeps both ghosts in place, each marked delivered, above the reset line and the delivered turn',
         'web/src/conversation/queuedGhosts.test.tsx::queued ghosts > a message queued after the reset is a ghost that is not delivered while the earlier one stays delivered, until the next reset',
+        'web/src/conversation/queuedGhosts.test.tsx::queued ghosts > a skipped auto-resume marks no ghost delivered; a later window reset does',
         'web/e2e/conversation-bubbles.spec.ts::queued messages show as ghosts that stay on screen, marked delivered, when the usage window resets',
       ] },
   },

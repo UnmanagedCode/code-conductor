@@ -63,8 +63,9 @@ export async function liveControlsFlow({ page, cc }: Args): Promise<void> {
   for (const name of ['Show raw text', 'Copy message', 'Read aloud']) await expect(control(page, name), `${name}, during the running turn`).toBeEnabled();
 
   await copy(page);
-  await expect.poll(() => clipboard(page), { message: 'copy hands over the source streamed so far' }).toBe(COPY_STREAMING);
+  // The announcement lasts only the flash, so it is read first; the clipboard keeps its value.
   await expect(copyAnnouncement(page), 'the copy is announced').toHaveText(/copied/i);
+  await expect.poll(() => clipboard(page), { message: 'copy hands over the source streamed so far' }).toBe(COPY_STREAMING);
   await expect(control(page, 'Copy message'), 'the button keeps its name').toHaveCount(1);
 
   await control(page, 'Show raw text').click();

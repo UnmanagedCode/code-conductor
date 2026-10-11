@@ -67,4 +67,20 @@ describe('queued ghosts', () => {
     await live(m, reset(1));
     expect(delivered(root)).toEqual([true, true]);
   });
+
+  it('a skipped auto-resume marks no ghost delivered; a later window reset does', async () => {
+    const m = new ConversationModel();
+    m.applyEvents([queued('QUEUED-ONE')]);
+    const { root } = renderModel(m);
+    await flush();
+    expect(delivered(root), 'precondition: one ghost, not delivered').toEqual([false]);
+
+    await live(m, { kind: 'system', subtype: 'auto_resume_skipped', data: { reason: 'session no longer running' } });
+    expect(root.querySelectorAll('[data-subtype="auto_resume_skipped"]'), 'fixture check: the skip line rendered').toHaveLength(1);
+    expect(delivered(root), 'a skipped auto-resume delivers nothing').toEqual([false]);
+    expect(ghosts(root)[0].hasAttribute('data-delivered'), 'the ghost carries no delivered mark').toBe(false);
+
+    await live(m, reset(1));
+    expect(delivered(root), 'positive control: a later window reset delivers it').toEqual([true]);
+  });
 });
