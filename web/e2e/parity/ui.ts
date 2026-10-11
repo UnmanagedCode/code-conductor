@@ -318,6 +318,20 @@ export interface Ui {
   bubbleAction(bubble: Locator, which: 'rewind' | 'fork'): Locator;
   /** Clicks the bubble's Fork, accepts the confirmation, and returns the refusal the UI then shows. */
   forkRefused(page: Page, bubble: Locator): Promise<string>;
+
+  // Settings part 3c (card 2026-0654)
+  /** The Plugin Library's Update all button, whatever its label: `Update all`, `Update all (N)` or `Updating i/n…`. */
+  libraryUpdateAll(page: Page): Locator;
+  /** An installed plugin's row in Settings → Plugins, found by its display name. */
+  pluginRow(page: Page, name: string): Locator;
+  /** A plugin row's action button by its exact label: `Start`, `Stop`, `Enable`, `Disable`, … */
+  pluginAction(row: Locator, label: string): Locator;
+  /** A plugin row's local-only note: the capabilities that run only on the machine cc runs on. */
+  pluginLocalOnly(row: Locator): Locator;
+  /** A plugin row's active-version select. */
+  pluginVersionSelect(row: Locator): Locator;
+  /** The row of controls the version select sits in: the width it must stay within. */
+  pluginActionRow(row: Locator): Locator;
 }
 
 // Sidebar C (card 2026-0629)
@@ -1103,6 +1117,14 @@ export const legacy: Ui = {
     await click;
     return text;
   },
+
+  // Settings part 3c (card 2026-0654)
+  libraryUpdateAll: (page) => page.locator('#pll-update-all-btn'),
+  pluginRow: (page, name) => page.locator('#pl-list .pl-row').filter({ has: page.locator('.pl-name', { hasText: exactly(name) }) }),
+  pluginAction: (row, label) => row.locator('button', { hasText: exactly(label) }),
+  pluginLocalOnly: (row) => row.locator('.pl-local-only'),
+  pluginVersionSelect: (row) => row.locator('select.pl-version'),
+  pluginActionRow: (row) => row.locator('.pl-actions'),
 };
 
 /**
@@ -1780,6 +1802,15 @@ export const next: Ui = {
     await expect(toast).toHaveCount(1);
     return toast.innerText();
   },
+
+  // Settings part 3c (card 2026-0654)
+  libraryUpdateAll: (page) => next.settingsView(page).locator('button[title="Update every installed library plugin that is behind its origin, one at a time"]'),
+  pluginRow: (page, name) => page.locator('[data-testid="plugin-list"] [data-plugin]').filter({ has: page.getByText(name, { exact: true }) }),
+  pluginAction: (row, label) => row.getByRole('button', { name: label, exact: true }),
+  pluginLocalOnly: (row) => row.locator('[data-local-only]'),
+  pluginVersionSelect: (row) => row.locator('select[aria-label^="Active version of "]'),
+  // The flex row holding Start/Stop, the select's wrapper and Disable.
+  pluginActionRow: (row) => row.locator('div:has(> [data-slot="native-select-wrapper"])'),
 };
 
 // Sidebar B (card 2026-0628)

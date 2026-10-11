@@ -1,4 +1,4 @@
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page, Route } from '@playwright/test';
 import { expect } from '../harness/fixtures.ts';
 import { createProject } from '../harness/api.ts';
 import { parity } from './parity.ts';
@@ -558,4 +558,211 @@ parity('plugins-frontend/R17', 'Plugins: a failed update keeps Update offered wi
   await expect(ui.libraryTail(page)).toHaveText('fatal: diverged');
   await expect(ui.libraryLive(entry)).toHaveCount(0);
   expect(updates).toEqual([id]);
+});
+
+// Settings part 3c (card 2026-0654)
+// Every plugin row, library list and update is served page-locally: nothing is
+// pulled, started or enabled on the shared cc.
+type PluginRowJson = {
+  id: string; name: string; project: string; state: string; enabled: boolean; hasBackend: boolean; stale: boolean;
+  system: string; localOnly: string[]; activeVersion: { type: 'main' }; manifestSource: { type: 'main' };
+  conventions: unknown[]; roles: unknown[]; playbooks: unknown[]; errors: string[]; crashTail: string | null;
+};
+
+const rowJson = (id: string, name: string, over: Partial<PluginRowJson> = {}): PluginRowJson => ({
+  id, name, project: id, state: 'stopped', enabled: true, hasBackend: true, stale: false, system: 'local', localOnly: [],
+  activeVersion: { type: 'main' }, manifestSource: { type: 'main' }, conventions: [], roles: [], playbooks: [], errors: [], crashTail: null, ...over,
+});
+
+async function routePlugins(page: Page, rows: PluginRowJson[]): Promise<void> {
+  await page.route('**/api/plugins', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: { rows, notices: [] } }) : r.fallback()));
+}
+
+parity('plugins-frontend/R23', 'Plugins: Update all updates one behind entry at a time with its progress in the header, and a section switch or a reopened Settings re-arms nothing until both are updated', async ({ page, ui, uniq }) => {
+  const a = uniq('ua-a');
+  const b = uniq('ua-b');
+  const c = uniq('ua-c');
+  const updated = new Set<string>();
+  const updates: string[] = [];
+  let withC = false;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  await routeLibrary(page, () => [
+    ...[a, b].map((id) => libraryEntry(id, { installed: true, installedAs: id, updateAvailable: !updated.has(id) })),
+    ...(withC ? [libraryEntry(c)] : []),
+  ]);
+  for (const id of [a, b]) {
+    await page.route(`**/api/plugins/library/${id}/update`, async (r) => {
+      if (r.request().method() !== 'POST') return r.fallback();
+      updates.push(id);
+      if (id === a) await gate;
+      updated.add(id);
+      await r.fulfill(ndjson([
+        { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+        { type: 'result', ok: true, result: { id, name: id, project: id, postPull: null, restarted: null } },
+      ]));
+    });
+  }
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'plugins');
+  const entryA = ui.libraryEntry(page, `Share ${a}`);
+  const entryB = ui.libraryEntry(page, `Share ${b}`);
+  const entryC = ui.libraryEntry(page, `Share ${c}`);
+  const updateAll = ui.libraryUpdateAll(page);
+  await expect(updateAll).toHaveText('Update all (2)');
+  await expect(updateAll).toBeEnabled();
+  await updateAll.click();
+  await expect(updateAll).toHaveText('Updating 1/2…');
+  await expect(updateAll).toBeDisabled();
+  await expect(ui.libraryStatus(page)).toHaveText(`Updating Share ${a} (1/2)…`);
+  await expect(ui.libraryAction(entryA, 'Updating…')).toBeDisabled();
+  await expect(ui.libraryAction(entryB, 'Update')).toBeDisabled();
+  expect(updates).toEqual([a]);
+
+  await ui.switchSettingsSection(page, 'archived');
+  await ui.switchSettingsSection(page, 'plugins');
+  // Positive control: the section shown after the switch has rendered the running entry.
+  await expect(ui.libraryAction(entryA, 'Updating…')).toBeDisabled();
+  await expect(updateAll).toHaveText('Updating 1/2…');
+  await expect(updateAll).toBeDisabled();
+  await expect(ui.libraryStatus(page)).toHaveText(`Updating Share ${a} (1/2)…`);
+  await expect(ui.libraryAction(entryB, 'Update')).toBeDisabled();
+
+  withC = true;
+  await noDialog(page);
+  await page.keyboard.press('Escape');
+  await expect(ui.settingsView(page)).toBeHidden();
+  await ui.openSettingsSection(page, 'plugins');
+  // Positive control: only the reopened Settings' own reload can list the third entry.
+  await expect(ui.libraryAction(entryC, 'Install')).toBeDisabled();
+  await expect(updateAll).toHaveText('Updating 1/2…');
+  await expect(updateAll).toBeDisabled();
+  await expect(ui.libraryAction(entryB, 'Update')).toBeDisabled();
+  expect(updates).toEqual([a]);
+
+  release();
+  await expect(ui.libraryStatus(page)).toHaveText('Updated 2 of 2 plugins');
+  await expect(ui.libraryInstalledAs(entryA)).toHaveText(`installed as ${a} · up to date`);
+  await expect(ui.libraryInstalledAs(entryB)).toHaveText(`installed as ${b} · up to date`);
+  await expect(updateAll).toHaveText('Update all');
+  await expect(updateAll).toBeDisabled();
+  await expect(ui.libraryAction(entryC, 'Install')).toBeEnabled();
+  expect(updates).toEqual([a, b]);
+});
+
+parity('plugins-frontend/R23', 'Plugins: Update all continues past a failed update, names it in the summary with its output, and stays armed for the entry still behind', async ({ page, ui, uniq }) => {
+  const a = uniq('uf-a');
+  const b = uniq('uf-b');
+  const updated = new Set<string>();
+  const updates: string[] = [];
+  await routeLibrary(page, () => [a, b].map((id) => libraryEntry(id, { installed: true, installedAs: id, updateAvailable: !updated.has(id) })));
+  for (const id of [a, b]) {
+    await page.route(`**/api/plugins/library/${id}/update`, (r) => {
+      if (r.request().method() !== 'POST') return r.fallback();
+      updates.push(id);
+      if (id === a) {
+        return r.fulfill(ndjson([
+          { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+          { type: 'result', ok: false, error: 'git pull failed', tail: `fatal: ${id} diverged` },
+        ]));
+      }
+      updated.add(id);
+      return r.fulfill(ndjson([
+        { type: 'chunk', phase: 'pull', text: `Updating ${id}...\n` },
+        { type: 'result', ok: true, result: { id, name: id, project: id, postPull: null, restarted: null } },
+      ]));
+    });
+  }
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'plugins');
+  const entryA = ui.libraryEntry(page, `Share ${a}`);
+  const entryB = ui.libraryEntry(page, `Share ${b}`);
+  const updateAll = ui.libraryUpdateAll(page);
+  await expect(updateAll).toHaveText('Update all (2)');
+  await updateAll.click();
+  await expect(ui.libraryStatus(page)).toHaveText(`Updated 1 of 2 plugins — Share ${a} failed: git pull failed`);
+  await expect(ui.libraryTail(page)).toHaveText(`── Share ${a} ──\nfatal: ${a} diverged`);
+  await expect(updateAll).toHaveText('Update all (1)');
+  await expect(updateAll).toBeEnabled();
+  await expect(ui.libraryAction(entryA, 'Update')).toBeEnabled();
+  await expect(ui.libraryInstalledAs(entryB)).toHaveText(`installed as ${b} · up to date`);
+  expect(updates).toEqual([a, b]);
+});
+
+parity('plugins-local-only-ui/R2', 'Plugins: local-only capabilities: a plugin on this machine offers Start, one on a system declaring both names both codes and hides Start, and a conventions-only one there is not marked', async ({ page, ui }) => {
+  await routePlugins(page, [
+    rowJson('hereplug', 'Here Plug'),
+    rowJson('bothplug', 'Both Plug', { system: 'prod-box', localOnly: ['PLUGIN_BACKEND_LOCAL_ONLY', 'PLUGIN_DIR_LOCAL_ONLY'] }),
+    rowJson('convplug', 'Conv Plug', { system: 'prod-box', hasBackend: false }),
+  ]);
+  await routeLibrary(page, () => []);
+  await ui.open(page);
+  await ui.openSettingsSection(page, 'plugins');
+  const here = ui.pluginRow(page, 'Here Plug');
+  const both = ui.pluginRow(page, 'Both Plug');
+  const conv = ui.pluginRow(page, 'Conv Plug');
+  await expect(ui.pluginAction(here, 'Start')).toBeVisible();
+  await expect(ui.pluginLocalOnly(here)).toHaveCount(0);
+  await expect(ui.pluginLocalOnly(both)).toHaveText("on system 'prod-box': PLUGIN_BACKEND_LOCAL_ONLY, PLUGIN_DIR_LOCAL_ONLY");
+  await expect(ui.pluginAction(both, 'Disable')).toBeVisible();
+  await expect(ui.pluginAction(both, 'Start')).toHaveCount(0);
+  await expect(ui.pluginVersionSelect(both)).toHaveCount(0);
+  await expect(ui.pluginAction(conv, 'Disable')).toBeVisible();
+  await expect(ui.pluginLocalOnly(conv)).toHaveCount(0);
+});
+
+const LONG_PROJECT = 'a-very-long-project-name-for-worktree-testing';
+const LONG_WORKTREE = 'a-very-long-worktree-name-for-width-testing';
+type VersionGeometry = { width: number; rowWidth: number; textOverflow: string; focused: boolean; longestOption: number };
+
+async function versionGeometry(page: Page, ui: Ui, name: string): Promise<VersionGeometry> {
+  const row = ui.pluginRow(page, name);
+  const select = ui.pluginVersionSelect(row);
+  const box = await select.boundingBox();
+  const rowBox = await ui.pluginActionRow(row).boundingBox();
+  expect(box, `${name}: the version select has a box`).not.toBeNull();
+  expect(rowBox, `${name}: its action row has a box`).not.toBeNull();
+  const facts = await select.evaluate((e) => {
+    const sel = e as HTMLSelectElement;
+    return {
+      textOverflow: getComputedStyle(sel).textOverflow,
+      focused: document.activeElement === sel,
+      longestOption: Math.max(...Array.from(sel.options).map((o) => (o.textContent ?? '').length)),
+    };
+  });
+  return { width: box!.width, rowWidth: rowBox!.width, ...facts };
+}
+
+parity('legacy-plugin-version-select-width/R1', 'Plugins: the version select stays inside its action row and the page whatever its options say: a stopped plugin on main beside a running one with a long worktree name', async ({ page, ui }) => {
+  await routePlugins(page, [
+    rowJson('shortplug', 'Short Plug'),
+    rowJson('longplug', 'Long Plug', { project: LONG_PROJECT, state: 'ready' }),
+  ]);
+  await routeLibrary(page, () => []);
+  await ui.open(page);
+  // Added after the open and dropped after the measurement: the sidebar reads the same list.
+  const withLongWorktree = async (r: Route) => {
+    if (r.request().method() !== 'GET') return r.fallback();
+    const res = await r.fetch();
+    const real = (await res.json()) as unknown[];
+    await r.fulfill({ response: res, json: [...real, { name: LONG_PROJECT, worktrees: [{ worktreeName: LONG_WORKTREE }] }] });
+  };
+  await page.route('**/api/projects', withLongWorktree);
+  await ui.openSettingsSection(page, 'plugins');
+  // Positive control: the long worktree reached the running plugin's select, and only its.
+  await expect(ui.pluginVersionSelect(ui.pluginRow(page, 'Long Plug')).locator('option')).toHaveCount(2);
+  await expect(ui.pluginVersionSelect(ui.pluginRow(page, 'Short Plug')).locator('option')).toHaveCount(1);
+  const short = await versionGeometry(page, ui, 'Short Plug');
+  const long = await versionGeometry(page, ui, 'Long Plug');
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  await page.unroute('**/api/projects', withLongWorktree);
+  const viewport = page.viewportSize();
+  expect(viewport, 'the page has a viewport').not.toBeNull();
+  for (const [name, d] of Object.entries({ 'Short Plug': short, 'Long Plug': long })) {
+    expect(d.focused, `${name}'s select is not focused at capture`).toBe(false);
+    expect(d.width, `${name}'s select (${d.width}px) stays inside its action row (${d.rowWidth}px)`).toBeLessThanOrEqual(d.rowWidth + 1);
+    expect(d.textOverflow, `${name}'s select truncates with an ellipsis`).toBe('ellipsis');
+  }
+  expect(long.longestOption - short.longestOption, 'sanity: the running plugin really has the longer option').toBeGreaterThan(15);
+  expect(scrollWidth, `the page grows no horizontal scrollbar (scrollWidth=${scrollWidth})`).toBeLessThanOrEqual(viewport!.width + 1);
 });
