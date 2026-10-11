@@ -182,6 +182,8 @@ export type ModelOptions = {
 export class ConversationModel {
   items: RootItem[] = [];
   rev = 0;
+  /** How many times clear() ran: a view tells the transcript it was showing from a replacement by it. */
+  clears = 0;
   readonly isSub: boolean;
   readonly host: ToolNode | null;
   readonly root: ConversationModel;
@@ -314,6 +316,7 @@ export class ConversationModel {
     this.segmentId = null;
     this.currentSegmentId = null;
     this.pageCurrentSegmentId = null;
+    this.clears++;
     this.rev++;
     this.changed();
   }

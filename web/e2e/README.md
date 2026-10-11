@@ -47,6 +47,7 @@ test('…', async ({ page, cc }) => { await page.goto('/next/'); /* cc.url, cc.d
 - **`baseURL`** — `cc.url`, so `page.goto('/next/')` and `request.get('/api/…')` reach this worker's server.
 - **`harness/api.ts`** — `api(cc, method, route, body)` → `{ status, body }`, `createProject`, `spawnSession(cc, project, extra)` (a live cc's worker runs on `LIVE_WORKER_MODEL`), `mcpCall(cc, tool, args, callerInstanceId?)`, `installFakePlugin(cc, name)` (`tests/fixtures/fake-plugin`, id `fake-plugin`, adopted as project `name` and enabled; idempotent per cc, so specs sharing a cc may each call it).
 - **`harness/transcript.ts`** — `seedTranscript(cc, id, text)` appends a user line, and `appendTranscriptRecord(cc, id, record)` appends any CLI jsonl record. fake-claude writes no transcript.
+- **`harness/lineage.ts`** — `resumeSeeded(cc, project, publicId, segments)` writes one jsonl per backing segment and the session's lineage row in the store's `sessions.json`, then resumes it, so cc serves a real multi-segment walk; `seedTurns(tag, n)` builds `n` prompt/reply turns (`<tag> prompt <i>` / `<tag> reply <i>`).
 - A spec that needs no server (`legacy/header-compact.spec.ts`) imports `test` from `@playwright/test` instead, and no cc boots.
 
 ## What a booted cc gets (`harness/boot.ts`, `env.ts`, `scratch.ts`)

@@ -13,6 +13,12 @@ import { userActionsForStatus, type ConversationModel } from './model';
 import type { RenderCtx } from './tools';
 import { cn } from '@/lib/utils';
 
+/**
+ * Where the reader left the transcript scrolled up, while `conversation.clears` still reads `clears`.
+ * Module state, so a full-page view unmounting the view keeps it; null while they are at the bottom.
+ */
+let leftAt: { clears: number; top: number } | null = null;
+
 function useModelRev(model: ConversationModel) {
   return React.useSyncExternalStore(model.subscribe, model.getRev, model.getRev);
 }
@@ -34,6 +40,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const pin = useStore(pinStore, (s) => s.pin);
   const gutter = useStore(pinStore, (s) => s.gutter);
   const sticky = React.useRef(true);
+  const shownClears = React.useRef(conversation.clears);
   const [atBottom, setAtBottom] = React.useState(true);
 
   const activeId = inst?.id ?? null;
@@ -63,17 +70,26 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
       activeId && filename ? `/api/instances/${encodeURIComponent(activeId)}/attachments/${encodeURIComponent(filename)}` : null,
   }), [rewind, fork, activeId]);
 
-  // Stick to the bottom while the reader is there; leave them alone otherwise.
+  // Stick to the bottom while the reader is there; leave them alone otherwise. A cleared
+  // transcript (another session, a rewind, a reconnect) starts at the bottom again.
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
+    if (conversation.clears !== shownClears.current) {
+      shownClears.current = conversation.clears;
+      sticky.current = true;
+      setAtBottom(true);
+    }
     if (el && sticky.current) el.scrollTop = el.scrollHeight;
   }, [rev]);
 
-  // A new session starts at the bottom.
+  // Mounting onto the transcript the reader left scrolled up (a full-page view closing) resumes their place.
   React.useLayoutEffect(() => {
-    sticky.current = true;
-    setAtBottom(true);
-  }, [activeId]);
+    const el = scrollRef.current;
+    if (!el || !leftAt || leftAt.clears !== conversation.clears) return;
+    sticky.current = false;
+    setAtBottom(false);
+    el.scrollTop = leftAt.top;
+  }, []);
 
   // Register the viewport the lazy pager measures and splices against.
   React.useEffect(() => {
@@ -108,6 +124,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
     if (!el) return;
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
     sticky.current = near;
+    leftAt = near ? null : { clears: conversation.clears, top: el.scrollTop };
     if (near !== atBottom) setAtBottom(near);
     if (el.scrollTop < 200) void lazyHistory.loadEarlier();
   };

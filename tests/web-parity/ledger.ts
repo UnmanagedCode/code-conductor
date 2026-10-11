@@ -1725,7 +1725,12 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'the transcript stays pinned to the bottom on replay and live events; a scrolled-up view stays put',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > a snapshot replay leaves the transcript at the bottom',
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > live event frames keep a reader at the bottom there, frame after frame',
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > a reader scrolled up stays put across live events, and is offered Jump to latest',
+        'web/e2e/conversation-scroll.spec.ts::live output keeps a reader at the bottom there; a reader scrolled up stays put; re-opening the session lands at the bottom',
+      ] },
   },
   {
     id: 'conversation-scroll-batch/R2',
@@ -1734,6 +1739,19 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop'],
     area: 'conversation',
     status: { kind: 'dropped', ruling: 'old-ui-internals' },
+  },
+  {
+    id: 'conversation-view-return/R1',
+    old: { doc: 'docs/features.md', section: 'Live conversation' },
+    behaviour: 'leaving a full-page view restores the transcript\'s scroll position',
+    viewports: ['desktop', 'phone'],
+    area: 'conversation',
+    status: { kind: 'ported', by: [
+        'web/src/conversation/transcriptScroll.test.tsx::a full-page view round trip > the transcript remounts where the reader left it scrolled up, with what arrived while away below, and stays there',
+        'web/src/conversation/transcriptScroll.test.tsx::a full-page view round trip > a reader who scrolled back to the bottom before leaving comes back to the bottom, with what arrived while away',
+        'web/src/conversation/transcriptScroll.test.tsx::a full-page view round trip > a transcript cleared while the view was away comes back at the bottom: after a rewind, and after another session was selected',
+        'web/e2e/conversation-scroll.spec.ts::leaving a full-page view puts the transcript back where the reader left it',
+      ] },
   },
   {
     id: 'forward-frame-bubble/R1',
@@ -1875,7 +1893,12 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a page renders standard blocks; head + children in one page nest; finalising twice is a no-op; the live single-pass two-group reference',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/pageRender.test.tsx::a lineage page > renders through the live pipeline: the prompt, the tool card and the reply, and the empty-transcript placeholder gives way',
+        'web/src/conversation/pageRender.test.tsx::a lineage page > puts a sub-agent\'s children inside its Agent card\'s sub-agent section when head and children share the page, never at the outer level',
+        'web/src/conversation/pageRender.test.tsx::a lineage page > finalizing a page a second time changes nothing the first pass rendered',
+        'web/src/conversation/pageRender.test.tsx::a lineage page > the live reference: in one pass, a turn_end between two tool runs renders them as two groups',
+      ] },
   },
   {
     id: 'lazy-load-rendering/R3',
@@ -1924,7 +1947,9 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'a real server\'s lineage walk rendered in the client shows its dividers/gaps, and rewind/fork only on current-segment bubbles',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/e2e/conversation-scroll.spec.ts::a lineage walk shows its dividers and gap in order, and only the current segment offers rewind and fork',
+      ] },
   },
   {
     id: 'lineage-scrollback-client/R1',
@@ -2276,11 +2301,30 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'scroll-anchor/R2',
-    old: { file: 'tests/scroll-anchor.test.mjs', tests: 'rest' },
+    old: { file: 'tests/scroll-anchor.test.mjs', tests: [
+        'prependBatch advances scrollTop by the inserted batch height',
+        'prependBatch: absolute = avoids double-compensation under CSS scroll anchoring',
+        'prependBatch leaves scrollTop unchanged when holder is empty',
+        'Conversation starts with stickyBottom true',
+        'Conversation.clear resets stickyBottom to true',
+        'Conversation.clear resets stickyBottom when it was already true',
+        'Conversation.reset (alias for clear) also resets stickyBottom',
+      ] },
     behaviour: 'prepending keeps the scroll position anchored; stick-to-bottom starts true and resets on clear',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > a transcript that already has content when the view mounts starts at the bottom',
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > selecting another session puts a reader scrolled up in the previous one at the bottom of the new one',
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > a reader at the bottom stays there when the transcript is cleared and replayed',
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > a rewind puts a reader scrolled up back at the bottom, following the replay as it streams in',
+        'web/src/conversation/transcriptScroll.test.tsx::stick to the bottom > a reconnect snapshot of the same session puts a reader scrolled up back at the bottom',
+        'web/src/conversation/transcriptScroll.test.tsx::an older page spliced above > keeps the reader on what they were reading: the position advances by exactly the page\'s height',
+        'web/src/conversation/transcriptScroll.test.tsx::an older page spliced above > is not compensated twice when the browser\'s own scroll anchoring already moved the position',
+        'web/src/conversation/transcriptScroll.test.tsx::an older page spliced above > an empty older page leaves the position alone',
+        'web/e2e/conversation-scroll.spec.ts::an older page spliced above keeps the prompt being read where it was on screen',
+        'web/e2e/conversation-scroll.spec.ts::a rewind from a prompt the reader scrolled up to lands them at the bottom of the rewound transcript',
+      ] },
   },
   {
     id: 'skill-load-bubble/R1',
