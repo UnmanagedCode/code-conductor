@@ -39,8 +39,8 @@ describe('commits header', () => {
     expect(heading).toContain('wt-feature');
     expect(heading).toContain('topic/zeta');
     expect(heading).not.toContain('parent-proj');
-    expect(stats).toContain('7');
-    expect(stats).toContain('3');
+    expect(stats).toMatch(/(^|\D)7(\D|$)/);
+    expect(stats).toMatch(/(^|\D)3(\D|$)/);
     expect(stats).toContain('trunk');
   });
 
@@ -51,7 +51,7 @@ describe('commits header', () => {
     }));
     expect(heading).toContain('parent-proj');
     expect(heading).toContain('main-line');
-    expect(stats).toContain('5');
+    expect(stats).toMatch(/(^|\D)5(\D|$)/);
     expect(stats).not.toContain('trunk');
   });
 });

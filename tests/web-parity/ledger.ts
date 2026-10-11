@@ -2532,7 +2532,7 @@ export const LEDGER: readonly Row[] = [
         'an idle worker waiting on a background job renders as awaiting, titled "on a job"',
         'displayStatus running with a job stays plain running, not awaiting',
       ] },
-    behaviour: 'the conductor\'s workers panel: playbook·stage label, tap-to-navigate with a gesture, awaiting-wake and on-a-job treatment and styling',
+    behaviour: 'the conductor\'s workers panel: playbook·stage label, tap-to-navigate with a gesture, awaiting-wake and on-a-job treatment',
     viewports: ['desktop', 'phone'],
     area: 'conversation',
     status: { kind: 'ported', by: [
@@ -3454,7 +3454,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'views',
     status: { kind: 'ported', by: [
-        'web/src/features/views/reviewSummary.test.tsx::over-cap file diff > shows an extra note after the still-rendered hunks when truncated, and none when not',
+        'web/src/features/views/reviewSummary.test.tsx::over-cap file diff > keeps its hunks and reports the byte size when truncated, and neither note nor size when not',
       ] },
   },
   {

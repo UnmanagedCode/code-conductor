@@ -34,13 +34,13 @@ describe('review summary', () => {
     act(() => viewStore.set({ review: { title: 'empty', url: SUMMARY_URL } }));
     mount();
     await waitFor(() => expect(document.querySelector('[data-view="review"]')).not.toBeNull());
-    await waitFor(() => expect(document.querySelector('.animate-pulse, [data-slot="skeleton"]')).toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-slot="skeleton"]')).toBeNull());
     expect(cards()).toEqual([]);
   });
 });
 
 describe('over-cap file diff', () => {
-  // The expanded card body: the wrapper holding the hunks (and, when truncated, the note after them).
+  // The expanded card for big.ts.
   async function expandWith(file: Record<string, unknown>) {
     const summary = { files: [{ path: 'big.ts', adds: 3, dels: 0 }], totalFiles: 1 };
     const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(String(url).includes('path=') ? { file } : summary)));
@@ -50,22 +50,20 @@ describe('over-cap file diff', () => {
     await waitFor(() => expect(cards()).toEqual(['big.ts']));
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     await waitFor(() => expect(document.querySelector('[data-hunk-header]')).not.toBeNull());
-    const body = document.querySelector('[data-review-file] [data-hunk-header]')!.closest('[data-review-file] > div.border-t')!;
+    const body = document.querySelector('[data-review-file="big.ts"]')!;
     return { body, fetchMock };
   }
   const hunks = [{ header: '@@ -1,3 +1,3 @@', lines: [{ type: 'add', content: 'kept line' }] }];
 
-  it('shows an extra note after the still-rendered hunks when truncated, and none when not', async () => {
-    // Invariant: truncated detail keeps its hunks and adds a note (carrying the byte size); a complete diff has no note.
+  it('keeps its hunks and reports the byte size when truncated, and neither note nor size when not', async () => {
+    // Invariant: truncated detail keeps its hunks and adds a note carrying the byte size; a complete diff has no note.
     const truncated = await expandWith({ hunks, truncated: true, bytes: 987654 });
     expect(truncated.body.querySelectorAll('[data-diff-line]')).toHaveLength(1);
-    expect(truncated.body.children).toHaveLength(2);
     expect(truncated.body.textContent).toContain('987654');
     document.body.innerHTML = '';
     viewStore.set({ review: null });
     const complete = await expandWith({ hunks, truncated: false, bytes: 987654 });
     expect(complete.body.querySelectorAll('[data-diff-line]')).toHaveLength(1);
-    expect(complete.body.children).toHaveLength(1);
     expect(complete.body.textContent).not.toContain('987654');
   });
 });

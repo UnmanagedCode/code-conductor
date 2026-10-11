@@ -18,7 +18,7 @@ describe('summarizeOpenNotifications with exactly two pings', () => {
     if (!two.shouldFire) return;
     expect(two.body).toContain('alpha-proj');
     expect(two.body).toContain('beta-proj');
-    expect(two.title).toContain('2');
+    expect(two.title).toMatch(/(^|\D)2(\D|$)/);
     expect(summarizeOpenNotifications([{ tag: 'session:a', data: { project: 'alpha-proj' } }]).shouldFire).toBe(false);
   });
 });

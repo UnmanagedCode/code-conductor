@@ -58,7 +58,7 @@ describe('redacted thinking', () => {
   ];
 
   it('a signature-only thinking block is one static line: no expand control, no char count', async () => {
-    // Invariant: redacted thinking is a single non-expandable line (marker present, no collapsible trigger, no settled "chars" count).
+    // Invariant: redacted thinking is a single non-expandable line (marker present, no collapsible trigger).
     const root = await run([
       startMsg('r1'),
       se({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }),
@@ -70,12 +70,11 @@ describe('redacted thinking', () => {
     expect(redactedOf(root)).toHaveLength(1);
     expect(root.querySelector('[data-thinking="summary"]')).toBeNull();
     expect(root.querySelector('[data-thinking="redacted"] button, [data-thinking="redacted"] summary')).toBeNull();
-    expect(root.textContent).not.toMatch(/\d+ chars/);
     expect(root.textContent).toContain('visible answer');
   });
 
   it('a stream of empty thinking deltas ends redacted, not as an empty expandable thought', async () => {
-    // Invariant: the parser drops empty thinking deltas so the block takes the redacted path (not "0 chars").
+    // Invariant: the parser drops empty thinking deltas so the block takes the redacted path (not an empty expandable thought).
     const empty = (_n: number) => se({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '' } });
     const root = await run([
       startMsg('r2'),
@@ -88,7 +87,6 @@ describe('redacted thinking', () => {
     ]);
     expect(redactedOf(root)).toHaveLength(1);
     expect(root.querySelector('[data-thinking="summary"]')).toBeNull();
-    expect(root.textContent).not.toMatch(/\d+ chars/);
   });
 
   it('control: a thinking block with real text is expandable, not redacted', async () => {

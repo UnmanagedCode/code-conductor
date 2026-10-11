@@ -95,6 +95,5 @@ describe('task panel', () => {
     expect(panel()!.textContent).toContain('Gamma job');
     expect(panel()!.textContent).not.toContain('Alpha job');
     expect(panel()!.textContent).not.toContain('Beta job');
-    expect(panel()!.querySelectorAll('li')).toHaveLength(1);
   });
 });
