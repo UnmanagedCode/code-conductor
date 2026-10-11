@@ -102,8 +102,10 @@ describe('question card locking', () => {
     expect(sent.length).toBe(1);
     expect(statusOf(card())).toBe('Sending…');
     const expectPaneLocked = (label: string) => {
-      for (const b of card().querySelectorAll<HTMLButtonElement>('[data-option]')) expect(b.disabled, `${b.dataset.option} disabled`).toBe(true);
-      expect(opt(card(), label).getAttribute('aria-pressed')).toBe('true');
+      for (const b of card().querySelectorAll<HTMLButtonElement>('[data-option]')) {
+        expect(b.disabled, `${b.dataset.option} disabled`).toBe(true);
+        expect(b.getAttribute('aria-pressed'), `${b.dataset.option} pressed`).toBe(String(b.dataset.option === label));
+      }
       expect(input(card()).disabled).toBe(true);
       expect(sendBtn(card()).disabled).toBe(true);
     };
@@ -288,6 +290,10 @@ describe('question card locking', () => {
       expect(statusOf(el)).toBe('Answered');
       expect(el.querySelectorAll('[aria-pressed="true"]').length).toBe(0);
       expect(input(el).value).toBe('');
+      const bubble = r.root.querySelector('[data-item="user"][data-variant="answer"]') as HTMLElement | null;
+      expect(bubble, 'an answer bubble').not.toBeNull();
+      expect((bubble as HTMLElement).querySelectorAll('[data-kind]').length, 'no structured rows').toBe(0);
+      expect((bubble as HTMLElement).querySelector('.md'), 'the raw text is shown').not.toBeNull();
     });
 
     it('the formatter\'s own text locks it with its pick, matching the bubble\'s rows', async () => {
@@ -353,7 +359,9 @@ describe('interleaved echoes', () => {
       const last = echoes[echoes.length - 1];
       expect(last.text, 'fixture check: the note is dropped').toBe(ANSWER);
       expect(last.questionAnswer?.toolUseId, 'fixture check: the server stamped the answer').toBe('tu_q1');
-      expect(echoes[echoes.length - 2].questionAnswer, 'fixture check: the stub is unstamped').toBeUndefined();
+      const stubEcho = echoes.find((e: any) => e.text === stub);
+      expect(stubEcho, 'fixture check: the stub echo is replayed').toBeDefined();
+      expect(stubEcho.questionAnswer, 'fixture check: the stub is unstamped').toBeUndefined();
       const m = new ConversationModel();
       m.applyEvents(events);
       const r = renderModel(m);
