@@ -42,6 +42,7 @@ test('…', async ({ page, cc }) => { await page.goto('/next/'); /* cc.url, cc.d
 - **`ccOptions`** — worker option, `{ server?, scenario?, env?, engine? }`:
   - `server` — a name for the file's own server. **A file that sets `ccOptions` at all gets a worker, so a cc, of its own** — even with values equal to another file's (Playwright keys a worker on where worker options are set); files that set none share one cc. A spec that seeds server state and has nothing else to set uses `{ server: '<name>' }`; every `legacy/` spec that boots a cc sets one. Pinned by `server-key/z-check.spec.ts`.
   - `scenario` — the fake CLI's scenario file; default `fixtures/scenario.json`. `fixtures/scenario.json` opens with filtered turns: a `QA-ASK` prompt raises a two-question AskUserQuestion card (tool_use `toolu_qa`, denied through the nested `can_use_tool` request `ct_qa`), a turn keyed to that deny's `request_id` `ct_qa` returns the tool result and ends the turn, and a prompt naming `Pick a QA fruit` (the card's answer) ends with a bare `result`; a `MIDTURN-HOLD` prompt emits only a `message_start` and never a `result`, so its instance stays mid-turn until it is deleted. The prompt turns are text-filtered and sit first, so no other prompt reaches them; `parity/questionCard.ts` reads the card's questions from this file.
+  - `fixtures/scenario-conversation-machinery.json` (`conversation-machinery.spec.ts`): a prompt naming `MACHINERY-HOLD` starts an Agent call whose sub-agent is mid-Read and holds the turn; the session's first `set_permission_mode` control request (MCP `set_mode`, any mode) releases it with the sub-agent's result, the Agent's result carrying subagent totals (`tool_use_result`), a `system_bash` call and the reply. Every call ends in a `message_delta` with `output_tokens`, so the transcript gets per-call usage lines; every other prompt gets a plain reply with one line.
   - `env` — extra server env, applied last.
   - `engine` — `'fake'` (default) or `'live'`.
 - **`baseURL`** — `cc.url`, so `page.goto('/next/')` and `request.get('/api/…')` reach this worker's server.
@@ -142,7 +143,7 @@ parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
 
 The `android` project (Pixel 7 + `notifications` permission) runs `harness.spec.ts`, every `**/*.android.spec.ts` and the parity scenarios; no other project runs the `*.android.spec.ts` files. Android-only behaviour lands there: the back button and the hash, external links, a notification click, and the on-screen keyboard opening.
 
-A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `conversation-scroll`, `collapse-state`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
+A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `conversation-scroll`, `collapse-state`, `conversation-machinery`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
 
 ## Mutation scoring
 
