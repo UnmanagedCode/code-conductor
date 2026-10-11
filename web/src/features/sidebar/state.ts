@@ -4,6 +4,7 @@ import { createSignal, createStore, useSignal, useStore } from '@/state/createSt
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { on } from '@/app/events';
+import type { uiStore } from '@/app/ui';
 import { loadSessions } from '@/app/sessionActions';
 import { placeKeyOf, wtName, type Filter } from './derive';
 
@@ -140,6 +141,20 @@ appStore.subscribe(() => {
   }
   prevStatus = next;
 });
+
+// ── Lens scroll ──────────────────────────────────────────────────────────
+
+type Lens = ReturnType<typeof uiStore.get>['lens'];
+/** Each lens's body scroll offset. Module state, so the phone drawer's remount keeps it; not a store, so a scroll re-renders nothing. */
+const lensScroll = new Map<Lens, number>();
+export const lensScrollOf = (lens: Lens) => lensScroll.get(lens) ?? 0;
+export function setLensScroll(lens: Lens, top: number) {
+  lensScroll.set(lens, top);
+}
+/** Forgets every offset (tests). */
+export function resetLensScroll() {
+  lensScroll.clear();
+}
 
 // ── Ago ticker ───────────────────────────────────────────────────────────
 

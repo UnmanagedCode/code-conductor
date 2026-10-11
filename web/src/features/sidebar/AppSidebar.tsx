@@ -22,7 +22,7 @@ import { AppSwitcher } from '@/features/views/AppSwitcher';
 import { NotifyToggle } from '@/features/notifications/NotifyToggle';
 import { cn } from '@/lib/utils';
 import { filterOwner, SIDEBAR_DEFAULT_WIDTH } from './derive';
-import { setFilter, useSidebarUi } from './state';
+import { lensScrollOf, setFilter, setLensScroll, useSidebarUi } from './state';
 import { useSidebarModel } from './useSidebarModel';
 import { Hint, OWNER_BAR, ownerStyle } from './rows';
 import { Strip } from './Strip';
@@ -30,7 +30,7 @@ import { ProjectsList } from './ProjectsList';
 import { ConductorsList } from './ConductorsList';
 import { RestartButton } from './RestartButton';
 import { useSidebarWidth } from './useSidebarWidth';
-import './reveal';
+import { scrollActiveIntoView } from './reveal';
 import './filterFallback';
 
 function HeaderButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
@@ -70,16 +70,15 @@ function FilterRow({ m }: { m: ReturnType<typeof useSidebarModel> }) {
 export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   const m = useSidebarModel();
   const lens = useStore(uiStore, (s) => s.lens);
-  // Each lens keeps its own scroll position across switches.
+  // Each lens keeps its own scroll offset, across switches and remounts (the phone drawer re-opening).
   const bodyRef = React.useRef<HTMLDivElement>(null);
-  const lensScroll = React.useRef<Record<string, number>>({});
-  const switchLens = (next: 'conductors' | 'projects') => {
-    if (bodyRef.current) lensScroll.current[lens] = bodyRef.current.scrollTop;
-    setLens(next);
-  };
   React.useLayoutEffect(() => {
-    if (bodyRef.current) bodyRef.current.scrollTop = lensScroll.current[lens] ?? 0;
+    if (bodyRef.current) bodyRef.current.scrollTop = lensScrollOf(lens);
   }, [lens]);
+  // Mounting with a selection (the phone drawer re-opening) opens onto its row.
+  React.useLayoutEffect(() => {
+    if (bodyRef.current) scrollActiveIntoView(bodyRef.current);
+  }, []);
   const starting = useStore(conductStore, (s) => s.starting);
   const active = useStore(appStore, activeInstance);
   const route = useRoute();
@@ -119,11 +118,11 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         </Hint>
       </div>
 
-      <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3" data-sidebar-body>
+      <div ref={bodyRef} onScroll={(e) => setLensScroll(lens, e.currentTarget.scrollTop)} className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3" data-sidebar-body>
         <Strip m={m} />
 
         <div className="mt-3 flex items-center gap-1.5 px-3">
-          <Tabs value={lens} onValueChange={(v) => switchLens(v as 'conductors' | 'projects')} className="flex-1">
+          <Tabs value={lens} onValueChange={(v) => setLens(v as 'conductors' | 'projects')} className="flex-1">
             <TabsList className="w-full">
               <TabsTrigger value="conductors">Conductors</TabsTrigger>
               <TabsTrigger value="projects">Projects</TabsTrigger>

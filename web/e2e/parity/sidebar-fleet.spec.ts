@@ -317,3 +317,153 @@ parity('sidebar-conductor-filter/R3', 'the conductor filter keeps a conductor wi
     await expect.poll(() => ui.projectNames(page)).toEqual(expect.arrayContaining([f.P, f.O]));
   });
 });
+
+// Sidebar B4 (card 2026-0643)
+/** Unassigned projects listing above a scenario's fleet, enough to push its rows below the fold of every project's sidebar. */
+const FILLERS = 30;
+/** A uniq under a tag: each B4 scenario names its own projects, workspaces and labels. */
+const tagged = (uniq: (s: string) => string, tag: string) => (s: string) => uniq(`${tag}-${s}`);
+/** Assigns `project` to `workspace`, registering the workspace. */
+async function setWorkspace(cc: Cc, project: string, workspace: string) {
+  const r = await api(cc, 'PUT', `/api/projects/${project}/workspace`, { workspace });
+  expect(r.status, `PUT /api/projects/${project}/workspace: ${JSON.stringify(r.body)}`).toBeLessThan(300);
+}
+/** The fleet under `u`, then the page re-opened once P lists A's main-checkout row. */
+async function seedRevealFleet(cc: Cc, page: Page, ui: Ui, u: (s: string) => string) {
+  await ui.open(page);
+  const f = await seedFleet(cc, page, u);
+  await ui.open(page);
+  await expect.poll(() => ui.projectNames(page)).toContain(f.P);
+  await expect(await ui.sessionRow(page, f.P, f.aMain.sessionId)).toHaveCount(1);
+  return f;
+}
+/** The session header names `sid`: the selection landed. */
+const landed = (page: Page, ui: Ui, sid: string) => expect(ui.sessionHeader(page).locator(`[title="session ${sid}"]`)).toBeVisible();
+
+parity('sidebar-reveal/R2', "reveal on select in a browser: a Conductors-lens pick opens its workspace and Worktrees group and nothing off its path, a Projects-lens pick opens its owner's bubble only, a group revealed under an owner filter stays open after All, and a conductor pick changes nothing", async ({ page, cc, ui, uniq }) => {
+  // Invariant: a worker's selection opens exactly its own path in each lens (its workspace, Worktrees group and owner bubble) and records it; a conductor's selection opens nothing and keeps the filter.
+  test.setTimeout(300_000);
+  const u = tagged(uniq, 'reveal');
+  const f = await seedRevealFleet(cc, page, ui, u);
+  const bSid = f.b.sessionId;
+  const W = u('ws-a');
+  const W2 = u('ws-b');
+  try {
+    await setWorkspace(cc, f.P, W);
+    await setWorkspace(cc, f.O, W2);
+    await ui.open(page);
+    await expect(await ui.workspaceHeader(page, W)).toHaveCount(1);
+    await expect(await ui.workspaceHeader(page, W2)).toHaveCount(1);
+
+    await test.step('a Conductors-lens pick opens its Projects-lens path only', async () => {
+      // A fresh profile: every workspace and bubble starts closed.
+      expect(await ui.workspaceOpen(page, W)).toBe(false);
+      expect(await ui.workspaceOpen(page, W2)).toBe(false);
+      expect(await ui.conductorOpen(page, bSid)).toBe(false);
+      await (await ui.treeWorkerRow(page, f.aSid, f.aSolo.sessionId)).click();
+      await landed(page, ui, f.aSolo.sessionId);
+      await expect.poll(() => ui.workspaceOpen(page, W)).toBe(true);
+      expect(await ui.worktreesOpen(page, f.P)).toBe(true);
+      expect(await ui.sessionRowActive(await ui.sessionRow(page, f.P, f.aSolo.sessionId))).toBe(true);
+      expect(await ui.workspaceOpen(page, W2)).toBe(false);
+      expect(await ui.conductorOpen(page, bSid)).toBe(false);
+    });
+
+    await test.step("a Projects-lens pick opens its owner's bubble only", async () => {
+      await ui.closeConductor(page, f.aSid);
+      await (await ui.sessionRow(page, f.P, f.bMixed.sessionId)).click();
+      await landed(page, ui, f.bMixed.sessionId);
+      await expect.poll(() => ui.conductorOpen(page, bSid)).toBe(true);
+      expect(await ui.conductorOpen(page, f.aSid)).toBe(false);
+      expect(await ui.sessionRowActive(await ui.treeWorkerRow(page, bSid, f.bMixed.sessionId))).toBe(true);
+    });
+
+    await test.step('a group revealed under an owner filter stays open after All', async () => {
+      await ui.closeWorktrees(page, f.P);
+      await ui.filterTo(page, f.aSid, f.aLabel);
+      expect(await ui.worktreesOpen(page, f.P)).toBe(true);
+      await (await ui.sessionRow(page, f.P, f.aMixed.sessionId)).click();
+      await landed(page, ui, f.aMixed.sessionId);
+      await ui.filterTo(page, '', 'All sessions');
+      await expect.poll(() => ui.worktreesOpen(page, f.P)).toBe(true);
+      expect(await ui.workspaceOpen(page, W2)).toBe(false);
+    });
+
+    await test.step('a conductor pick changes neither the filter nor any group', async () => {
+      // Step 3's pick re-opened A's bubble: close both, so each closed read below can only fail by the pick opening it.
+      await ui.closeConductor(page, f.aSid);
+      await ui.closeConductor(page, bSid);
+      await ui.filterTo(page, f.aSid, f.aLabel);
+      await ui.openConductor(page, bSid);
+      await landed(page, ui, bSid);
+      expect(await ui.conductorOpen(page, bSid)).toBe(false);
+      expect(await ui.conductorOpen(page, f.aSid)).toBe(false);
+      expect(await ui.filterValue(page)).toBe(f.aSid);
+      expect(await ui.workspaceOpen(page, W)).toBe(true);
+    });
+  } finally {
+    await api(cc, 'DELETE', `/api/workspaces/${W}`);
+    await api(cc, 'DELETE', `/api/workspaces/${W2}`);
+  }
+});
+
+parity('sidebar-reveal/R2', 'a re-selection of the selected session re-opens the groups the user collapsed on its path, in both lenses', async ({ page, cc, ui, uniq }) => {
+  // Invariant: every selection reveals, the selected session's included, so a click on the selected row re-opens its owner bubble and its Worktrees group.
+  test.setTimeout(300_000);
+  const f = await seedRevealFleet(cc, page, ui, tagged(uniq, 'reselect'));
+
+  await test.step('the first selection reveals', async () => {
+    await ui.openWorktrees(page, f.P);
+    await (await ui.sessionRow(page, f.P, f.aMixed.sessionId)).click();
+    await landed(page, ui, f.aMixed.sessionId);
+    await expect.poll(() => ui.conductorOpen(page, f.aSid)).toBe(true);
+  });
+
+  await test.step('re-selecting from the Projects lens re-opens the owner bubble', async () => {
+    await ui.closeConductor(page, f.aSid);
+    expect(await ui.conductorOpen(page, f.aSid)).toBe(false);
+    await (await ui.sessionRow(page, f.P, f.aMixed.sessionId)).click();
+    await expect.poll(() => ui.conductorOpen(page, f.aSid)).toBe(true);
+  });
+
+  await test.step('re-selecting from the Conductors lens re-opens the Worktrees group', async () => {
+    await ui.closeWorktrees(page, f.P);
+    await (await ui.treeWorkerRow(page, f.aSid, f.aMixed.sessionId)).click();
+    await expect.poll(() => ui.worktreesOpen(page, f.P)).toBe(true);
+  });
+});
+
+parity('sidebar-reveal/R2', 'the sidebar keeps its scroll offset across the phone drawer closing and re-opening, so a row tapped deep in the list is in view when it re-opens', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the sidebar's scroll offset outlives the drawer closing, so the drawer re-opens where the user left it, on the row they tapped.
+  test.setTimeout(300_000);
+  const u = tagged(uniq, 'drawer');
+  // `drawer-fill-…` sorts before `drawer-fleet-…`, so every filler lists above P.
+  const fillers = Array.from({ length: FILLERS }, (_, n) => u(`fill-${String(n).padStart(2, '0')}`));
+  try {
+    for (const name of fillers) await createProject(cc, name);
+    const f = await seedRevealFleet(cc, page, ui, u);
+
+    await test.step('a scrolled drawer keeps its offset', async () => {
+      await ui.lens(page, 'projects');
+      const top = await ui.scrollSidebar(page, 400);
+      expect(top, 'fixture: the list is tall enough to scroll 400px').toBe(400);
+      await ui.closeSidebar(page);
+      await expect.poll(() => ui.sidebarScroll(page)).toBe(top);
+    });
+
+    await test.step('a row tapped deep in the list is in view when the drawer re-opens', async () => {
+      const sid = f.aMain.sessionId;
+      const row = await ui.sessionRow(page, f.P, sid);
+      await expect(row).toHaveCount(1);
+      await expect(row, 'fixture: the row sits below the fold').not.toBeInViewport();
+      await row.click();
+      await landed(page, ui, sid);
+      const selected = await ui.selectedProjectsRow(page);
+      await expect(selected).toHaveCount(1);
+      expect(await selected.getAttribute('title')).toMatch(new RegExp(`^${sid}`));
+      await expect(selected).toBeInViewport();
+    });
+  } finally {
+    for (const name of fillers) await api(cc, 'DELETE', `/api/projects/${name}`, { deleteDirectory: true });
+  }
+});

@@ -332,6 +332,20 @@ export interface Ui {
   pluginVersionSelect(row: Locator): Locator;
   /** The row of controls the version select sits in: the width it must stay within. */
   pluginActionRow(row: Locator): Locator;
+
+  // Sidebar B4 (card 2026-0643)
+  /** Selects the Projects lens and reads whether workspace `name`'s group is open. */
+  workspaceOpen(page: Page, name: string): Promise<boolean>;
+  /** Selects the Conductors lens and reads whether conductor `sessionId`'s bubble is expanded into its tree. */
+  conductorOpen(page: Page, sessionId: string): Promise<boolean>;
+  /** Selects the Conductors lens and collapses conductor `sessionId`'s bubble. */
+  closeConductor(page: Page, sessionId: string): Promise<void>;
+  /** Opens the sidebar without touching the lens (a lens click scrolls the list to its top) and returns the Projects list's selected session row. */
+  selectedProjectsRow(page: Page): Promise<Locator>;
+  /** Opens the sidebar without touching the lens and returns its body's scroll offset. */
+  sidebarScroll(page: Page): Promise<number>;
+  /** Opens the sidebar, scrolls its body to `top` as a user would, and returns the offset it settled at. */
+  scrollSidebar(page: Page, top: number): Promise<number>;
 }
 
 // Sidebar C (card 2026-0629)
@@ -1125,6 +1139,40 @@ export const legacy: Ui = {
   pluginLocalOnly: (row) => row.locator('.pl-local-only'),
   pluginVersionSelect: (row) => row.locator('select.pl-version'),
   pluginActionRow: (row) => row.locator('.pl-actions'),
+
+  // Sidebar B4 (card 2026-0643)
+  async workspaceOpen(page, name) {
+    await legacy.lens(page, 'projects');
+    return page.locator('#project-list details.project-workspace')
+      .filter({ has: page.locator('.project-workspace-name', { hasText: exactly(name) }) })
+      .evaluate((e) => (e as HTMLDetailsElement).open);
+  },
+  async conductorOpen(page, sessionId) {
+    await legacy.lens(page, 'conductors');
+    return page.locator(`#conductor-list [data-key="conductor:${sessionId}"]`).evaluate((e) => e.classList.contains('open'));
+  },
+  async closeConductor(page, sessionId) {
+    await legacy.lens(page, 'conductors');
+    const block = page.locator(`#conductor-list [data-key="conductor:${sessionId}"]`);
+    await expect(async () => {
+      if (/\bopen\b/.test((await block.getAttribute('class')) ?? '')) await block.locator(':scope > .conductor-row .conductor-caret').click();
+      await expect(block).not.toHaveClass(/\bopen\b/, { timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+  },
+  async selectedProjectsRow(page) {
+    await openOldDrawer(page);
+    return page.locator('#project-list .session-row.active');
+  },
+  async sidebarScroll(page) {
+    await openOldDrawer(page);
+    return page.locator('#sidebar-body').evaluate((e) => e.scrollTop);
+  },
+  async scrollSidebar(page, top) {
+    await openOldDrawer(page);
+    const body = page.locator('#sidebar-body');
+    await body.evaluate((e, t) => { e.scrollTop = t; }, top);
+    return body.evaluate((e) => e.scrollTop);
+  },
 };
 
 /**
@@ -1811,6 +1859,39 @@ export const next: Ui = {
   pluginVersionSelect: (row) => row.locator('select[aria-label^="Active version of "]'),
   // The flex row holding Start/Stop, the select's wrapper and Disable.
   pluginActionRow: (row) => row.locator('div:has(> [data-slot="native-select-wrapper"])'),
+
+  // Sidebar B4 (card 2026-0643)
+  async workspaceOpen(page, name) {
+    await next.lens(page, 'projects');
+    // `[aria-expanded]`: the header row also holds the Edit-workspace pencil button.
+    return (await sidebar(page).locator(`section[data-workspace="${name}"] > div > button[aria-expanded]`).getAttribute('aria-expanded')) === 'true';
+  },
+  async conductorOpen(page, sessionId) {
+    await next.lens(page, 'conductors');
+    return (await sidebar(page).locator(`[data-conductor="${sessionId}"] > [role="button"] button[aria-label="Show workers"]`).getAttribute('aria-expanded')) === 'true';
+  },
+  async closeConductor(page, sessionId) {
+    await next.lens(page, 'conductors');
+    const caret = sidebar(page).locator(`[data-conductor="${sessionId}"] > [role="button"] button[aria-label="Show workers"]`);
+    if ((await caret.getAttribute('aria-expanded')) === 'true') await caret.click();
+    await expect(caret).toHaveAttribute('aria-expanded', 'false');
+  },
+  async selectedProjectsRow(page) {
+    await next.openSidebar(page);
+    return sidebar(page).locator('[data-project-list] [data-session-row] > [role="button"][data-active="true"]');
+  },
+  async sidebarScroll(page) {
+    await next.openSidebar(page);
+    return sidebar(page).locator('[data-sidebar-body]').evaluate((e) => e.scrollTop);
+  },
+  async scrollSidebar(page, top) {
+    await next.openSidebar(page);
+    const body = sidebar(page).locator('[data-sidebar-body]');
+    await body.evaluate((e, t) => { e.scrollTop = t; }, top);
+    // Two frames: the scroll event, which records the offset, has run.
+    await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+    return body.evaluate((e) => e.scrollTop);
+  },
 };
 
 // Sidebar B (card 2026-0628)
