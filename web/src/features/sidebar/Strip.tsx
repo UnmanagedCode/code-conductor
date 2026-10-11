@@ -59,7 +59,7 @@ export function Strip({ m }: { m: SidebarModel }) {
                 const badge = autoResumeBadge(e, { compact: true });
                 const active = e.instanceId === m.activeId;
                 return (
-                  <li key={e.sessionId} className="group/row relative">
+                  <li key={e.sessionId} className="group/row relative" data-strip-entry={e.sessionId}>
                     <button
                       type="button"
                       onClick={() => selectInstance(e.instanceId, { userGesture: true })}
@@ -71,8 +71,9 @@ export function Strip({ m }: { m: SidebarModel }) {
                       className={cn(
                         'flex h-7 w-full items-center gap-2 rounded-md pr-7 pl-2 text-left text-[13px] transition-colors hover:bg-sidebar-accent md:h-6',
                         e.conductor && OWNER_BAR,
-                        active && 'bg-sidebar-accent font-semibold',
-                        unread && 'font-semibold',
+                        active && 'bg-sidebar-accent ring-1 ring-border',
+                        // Selected is bold and framed, and outranks the unread weight (docs/features.md → Selected session).
+                        active ? 'font-bold' : unread && 'font-semibold',
                       )}
                     >
                       <Dot

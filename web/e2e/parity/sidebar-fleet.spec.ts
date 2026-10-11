@@ -3,61 +3,13 @@
 // into the other parity files' Conductors-lens and strip scenarios. Each
 // scenario seeds its own uniq-named fleet, because the two halves share the cc.
 import type { Page } from '@playwright/test';
-import { api, createProject, LIVE_WORKER_MODEL, mcpCall } from '../harness/api.ts';
+import { api, createProject } from '../harness/api.ts';
 import { expect, test, type Cc } from '../harness/fixtures.ts';
 import { seedTranscript } from '../harness/transcript.ts';
+import { archived, colourOf, gone, idleInst, insts, liveModel, spawnConductor, spawnWorker } from './fleet.ts';
 import { parity } from './parity.ts';
 
 test.use({ ccOptions: { server: 'sidebar-fleet' } });
-
-type FleetInst = { id: string; sessionId: string; status: string; temp?: boolean; ownerSessionId?: string | null };
-
-const insts = async (cc: Cc): Promise<FleetInst[]> => (await api<FleetInst[]>(cc, 'GET', '/api/instances')).body;
-const liveModel = (cc: Cc) => (cc.engine === 'live' ? { model: LIVE_WORKER_MODEL } : {});
-
-/** Waits until the instance `pred` matches is idle with a session id, and returns it. */
-async function idleInst(cc: Cc, pred: (i: FleetInst) => boolean, what: string): Promise<FleetInst> {
-  let found: FleetInst | undefined;
-  await expect.poll(async () => {
-    found = (await insts(cc)).find(pred);
-    return found?.status === 'idle' && !!found.sessionId;
-  }, { message: what, timeout: 20_000 }).toBe(true);
-  return found!;
-}
-
-async function spawnConductor(cc: Cc, temp: boolean): Promise<FleetInst> {
-  const r = await api(cc, 'POST', '/api/instances', {
-    project: '.conduct', mode: 'bypassPermissions', temp, playbookEnforcement: 'warn', ...liveModel(cc),
-  });
-  expect(r.status, `POST /api/instances (.conduct): ${JSON.stringify(r.body)}`).toBeLessThan(300);
-  return idleInst(cc, (i) => i.id === r.body.id, `conductor ${r.body.id} idle`);
-}
-
-/** Spawns a worker through `spawn_instance` as the conductor whose instance id is `caller`. */
-async function spawnWorker(cc: Cc, caller: string, args: Record<string, unknown>): Promise<FleetInst> {
-  const r = await mcpCall(cc, 'spawn_instance', { mode: 'bypassPermissions', ...liveModel(cc), ...args }, caller);
-  if (r.isError) throw new Error(`spawn_instance refused: ${r.content?.[0]?.text}`);
-  const { sessionId } = JSON.parse(r.content[0].text);
-  return idleInst(cc, (i) => i.sessionId === sessionId, `worker ${sessionId} idle`);
-}
-
-/** A conductor's colour resolved the way the page does, as a computed rgb(). */
-const colourOf = (page: Page, sid: string) => page.evaluate(async ([s, mod]) => {
-  const { conductorColor } = await import(mod);
-  const probe = document.createElement('i');
-  probe.style.color = conductorColor(s);
-  document.body.appendChild(probe);
-  const c = getComputedStyle(probe).color;
-  probe.remove();
-  return c;
-}, [sid, '/conductorColor.js'] as const);
-
-const gone = (cc: Cc, id: string) =>
-  expect.poll(async () => (await insts(cc)).some((i) => i.id === id), { message: `instance ${id} gone` }).toBe(false);
-
-const archived = (cc: Cc, project: string, sid: string) =>
-  expect.poll(async () => ((await api<{ sessionId: string; archived?: boolean }[]>(cc, 'GET', `/api/projects/${project}/sessions?includeArchived=1`)).body ?? [])
-    .some((r) => r.sessionId === sid && r.archived === true), { message: `${sid} archived` }).toBe(true);
 
 /**
  * Two live conductors in distinct colours — A temp and titled, B persistent and

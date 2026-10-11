@@ -115,3 +115,11 @@ export const barOf = (node: HTMLElement): { bar: boolean; color: string } => ({
   color: node.style.getPropertyValue('--owner-color'),
 });
 export const NO_BAR = { bar: false, color: '' };
+
+// Conductors lens and needs-you strip (card 2026-0629)
+export const blockOf = (sid: string) => el(`[data-conductor="${sid}"]`);
+export const conductorRowOf = (sid: string) => el(`[data-conductor="${sid}"] > [role="button"]`);
+/** The row's label: its first span.truncate (the dot is no truncate span). */
+export const conductorTitleOf = (sid: string) => conductorRowOf(sid).querySelector('span.truncate') as HTMLElement;
+export const conductorDotOf = (sid: string) => conductorRowOf(sid).querySelector('[data-dot]') as HTMLElement;
+export const stripEntryOf = (sid: string) => el(`[data-strip-entry="${sid}"] > button`);
