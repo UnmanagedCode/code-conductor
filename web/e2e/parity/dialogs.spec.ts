@@ -422,10 +422,16 @@ parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at ab
   await expect(ui.pruneField(d, 'thinking')).toBeChecked();
   await expect(ui.pruneField(d, 'minimal')).not.toBeChecked();
 
+  // Invariant: the first savings row names the thinking blocks; with thinking ticked it shows the visible-thinking saving (600) in tokens and no encrypted note, and unticked it shows the encrypted figure (500) instead of that saving.
   const row = ui.pruneSavingsRows(d).first().locator('td');
-  await expect(row).toHaveText(['Thinking', '~600 tokens']);
+  await expect(row).toHaveCount(2);
+  await expect(row.nth(0)).toContainText('Thinking');
+  await expect(row.nth(1)).toHaveText(/\b600\b.*tokens/);
+  await expect(row.nth(1)).not.toHaveText(/encrypted/);
   await ui.pruneField(d, 'thinking').setChecked(false);
-  await expect(row.nth(1)).toHaveText(/stored encrypted \(~500 in context, kept\)/);
+  await expect(row.nth(1)).toHaveText(/encrypted/);
+  await expect(row.nth(1)).toHaveText(/\b500\b/);
+  await expect(row.nth(1)).not.toHaveText(/\b600\b/);
 
   await cut.fill('20');
   await expect(ui.pruneField(d, 'cutLabel')).toHaveText(/\b20\b.*\b20\b/);

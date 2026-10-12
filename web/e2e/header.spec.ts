@@ -64,9 +64,21 @@ test('a long-titled worktree session: the controls share one row inside the view
       return { name: b.getAttribute('aria-label') ?? b.textContent!.trim(), offCentre: Math.abs(r.top + r.height / 2 - centre), right: r.right };
     });
     const t = h.querySelector('h1')!;
+    /** How many distinct line boxes an element's text lays out on. */
+    const lines = (el: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+    };
+    // Negative control: the same text, allowed to wrap at the title's width, lays out on more than one line, so the probe can read a wrap.
+    const probe = t.cloneNode(true) as HTMLElement;
+    probe.style.cssText = `position:absolute;visibility:hidden;white-space:normal;width:${t.clientWidth}px`;
+    t.after(probe);
+    const wrapped = lines(probe);
+    probe.remove();
     return {
       buttons, innerWidth, scrollWidth: h.scrollWidth, clientWidth: h.clientWidth, height: box.height,
-      title: { scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: getComputedStyle(t).textOverflow, whiteSpace: getComputedStyle(t).whiteSpace },
+      title: { scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: getComputedStyle(t).textOverflow, lines: lines(t), wrapped, right: t.getBoundingClientRect().right, headerRight: box.right },
     };
   });
   expect(geometry.buttons.length).toBeGreaterThan(0);
@@ -74,11 +86,15 @@ test('a long-titled worktree session: the controls share one row inside the view
     expect(b.offCentre, `${b.name}: vertical centre`).toBeLessThanOrEqual(2);
     expect(b.right, `${b.name}: right edge`).toBeLessThanOrEqual(geometry.innerWidth);
   }
+  // Invariant: a long title stays on one line, overflowing its own box but not the header, and is cut with an ellipsis.
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
   expect(geometry.title.scrollWidth).toBeGreaterThan(geometry.title.clientWidth);
+  expect(geometry.title.right, 'the title ends inside the header').toBeLessThanOrEqual(geometry.title.headerRight);
+  // The ellipsis glyph is drawn by text-overflow and is in no DOM text, so the computed value is its only observable.
   expect(geometry.title.textOverflow).toBe('ellipsis');
-  expect(geometry.title.whiteSpace).toBe('nowrap');
   expect(title, 'the stored title has break opportunities').toContain(' ');
+  expect(geometry.title.lines, 'the title lays out on one line').toBe(1);
+  expect(geometry.title.wrapped, 'the same text allowed to wrap takes several lines').toBeGreaterThan(1);
 
   const r = await api(cc, 'PUT', `/api/sessions/${sessionId}/title`, { title: 't' });
   expect(r.status).toBeLessThan(300);

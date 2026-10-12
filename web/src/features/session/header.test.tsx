@@ -85,7 +85,7 @@ async function openModelPicker(inst: Instance) {
   await act(async () => { fireEvent.keyDown(within(menu).getByRole('menuitem', { name: /Change model/ }), { key: 'ArrowRight' }); });
   return screen.getAllByRole('menu').at(-1)!;
 }
-const restartIcon = (item: HTMLElement) => item.querySelector('.lucide-refresh-cw');
+const restartIcon = (item: HTMLElement) => item.querySelector('[data-restart-mark]');
 
 describe('change model', () => {
   it('an identity session: Claude tiers switch live with no ↻; tiers on another backend restart onto it (mirrors "an identity session: Claude tiers switch live with no badge; tiers on another backend restart onto it")', async () => {
@@ -99,9 +99,11 @@ describe('change model', () => {
       ['Local', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { tier: 'local' }],
       ['Llama 70B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { model: 'llama3:70b', backend: 'ollama' }],
     ]);
+    // Invariant: in the open picker only the entries that restart carry the restart mark: Local and Llama 70B, never the live Claude tiers.
     const sub = await openModelPicker(base());
     expect(restartIcon(within(sub).getByRole('menuitem', { name: /Powerful/ }))).toBeNull();
     expect(restartIcon(within(sub).getByRole('menuitem', { name: /Local/ }))).not.toBeNull();
+    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(2);
     expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
@@ -124,8 +126,10 @@ describe('change model', () => {
     expect(claude[1].map((e) => [e.label, e.state.kind, e.state.disabled, e.state.title])).toEqual([
       ['Fast', 'restart', false, ON_CLAUDE], ['Powerful', 'restart', false, ON_CLAUDE],
     ]);
+    // Invariant: on a substitution session each of the four entries carries the restart mark, and nothing else in the picker does.
     const sub = await openModelPicker(inst);
     for (const name of [/Local/, /Llama 70B/, /Fast/, /Powerful/]) expect(restartIcon(within(sub).getByRole('menuitem', { name }))).not.toBeNull();
+    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(4);
     expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
