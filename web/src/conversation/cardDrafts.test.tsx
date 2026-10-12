@@ -313,6 +313,7 @@ describe('a card from an older page', () => {
     await flush();
     expect(prompts().at(-1), 'the re-opened card sends its new feedback').toBe(build('older lands'));
     expect(state(older), 'and locks on what it sent').toEqual({ feedback: 'older lands', editable: false, decides: false });
+    expect(older.textContent, 'the earlier failure is no longer shown').not.toContain('not connected');
   }
 
   it('when Reject can\'t reach the CLI, the older card re-opens with its feedback, as the tail\'s card does, and sends again', async () => {
