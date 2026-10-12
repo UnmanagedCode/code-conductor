@@ -1,7 +1,8 @@
 // Dictation under /next/ through a real browser microphone: Chromium's fake capture device stands
 // in for it, and the page's own route answers the transcription endpoints. Holding Send with text in
 // the box records until a tap and keeps the box focused; a short press sends; a touch the browser
-// cancels does nothing; and a recording keeps running when the user leaves the session view and
+// cancels does nothing; Space or Enter held on Send and Alt+Enter in the box dictate from the
+// keyboard; and a recording keeps running when the user leaves the session view and
 // comes back, where Cancel discards it. The body is shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -175,4 +176,67 @@ export async function cancelAfterLeavingSessionViewFlow({ page, cc }: { page: Pa
   await button(page, 'Stop recording').click();
   await expect(box).toHaveValue(`kept text ${SPOKEN}`);
   expect(transcription.posted, 'only the later recording was posted').toHaveLength(1);
+}
+
+/**
+ * Space and Enter on the focused Send button, and Alt+Enter in the box, in a real browser: the page
+ * prevents the click Chromium fires on Enter's keydown and repeats and on Space's keyup.
+ */
+export async function keyboardDictateFlow({ page, cc }: { page: Page; cc: Cc }): Promise<void> {
+  const transcription = await fakeTranscription(page);
+  const s = await startSession(cc, 'keys');
+  await next.open(page);
+  await select(page, s);
+  const box = messageBox(page);
+
+  await box.fill('an enter press');
+  await button(page, 'Send').focus();
+  await page.keyboard.press('Enter');
+  await expect(next.lastUserMessage(page), 'a short Enter press on Send sends').toContainText('an enter press');
+  await expect(box).toHaveValue('');
+  await box.fill('a space press');
+  await button(page, 'Send').focus();
+  await page.keyboard.press('Space');
+  await expect(next.lastUserMessage(page), 'a short Space press on Send sends').toContainText('a space press');
+  await expect(box).toHaveValue('');
+
+  // A key pressed down again while it is down is an auto-repeat (`repeat: true`), as a held key sends.
+  await box.fill('hello');
+  await button(page, 'Send').focus();
+  await page.keyboard.down('Enter');
+  for (let i = 0; i < 8; i++) {
+    await page.waitForTimeout(100);
+    await page.keyboard.down('Enter');
+  }
+  await page.keyboard.up('Enter');
+  await twoFrames(page);
+  await expect(button(page, 'Stop recording'), 'a held Enter records, and neither its repeats nor its release stop it').toBeVisible();
+  await expect(box, 'nor send the text').toHaveValue('hello');
+  await expect(next.lastUserMessage(page)).toContainText('a space press');
+  expect(transcription.posted, 'nothing is transcribed before a press').toEqual([]);
+  await button(page, 'Stop recording').focus();
+  await page.keyboard.press('Space');
+  await expect(box, 'a Space press stops it and the transcript is appended').toHaveValue(`hello ${SPOKEN}`);
+  // The landed transcript moves the focus to the box a frame later; focusing Send before that would lose it.
+  await expect(box).toBeFocused();
+
+  await button(page, 'Send').focus();
+  await page.keyboard.down('Space');
+  await page.waitForTimeout(800);
+  await page.keyboard.up('Space');
+  await twoFrames(page);
+  await expect(button(page, 'Stop recording'), 'a held Space records, and its release, which the browser would click on, does not stop it').toBeVisible();
+  await expect(box, 'nor send the text').toHaveValue(`hello ${SPOKEN}`);
+  await page.keyboard.press('Enter');
+  await expect(box, 'an Enter press stops it').toHaveValue(`hello ${SPOKEN} ${SPOKEN}`);
+
+  await expect(box, 'the box announces the shortcut').toHaveAttribute('aria-keyshortcuts', 'Alt+Enter');
+  await box.focus();
+  await page.keyboard.press('Alt+Enter');
+  await expect(button(page, 'Stop recording'), 'Alt+Enter in the box records').toBeVisible();
+  await expect(box, 'and leaves the focus in the box').toBeFocused();
+  await page.keyboard.press('Alt+Enter');
+  await expect(box, 'Alt+Enter again stops it and the transcript is appended').toHaveValue(`hello ${SPOKEN} ${SPOKEN} ${SPOKEN}`);
+  expect(transcription.posted).toHaveLength(3);
+  await expect(next.lastUserMessage(page), 'nothing more was sent').toContainText('a space press');
 }

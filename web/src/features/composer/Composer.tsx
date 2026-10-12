@@ -16,6 +16,8 @@ import { useDictation, type BoxDelivery } from './useDictation';
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_HEIGHT = 240;
 const HOLD_TO_DICTATE_MS = 500;
+/** Dictates from the message box; spelled as `aria-keyshortcuts` names it. */
+const DICTATE_SHORTCUT = 'Alt+Enter';
 
 let nextAttachmentId = 1;
 
@@ -43,6 +45,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const saveTimer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
   const holdTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdDidRecord = React.useRef(false);
+  const holdKey = React.useRef<string | null>(null);
   const voice = useStore(voiceStore, (s) => s);
   const dictation = useDictation();
 
@@ -62,6 +65,8 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
       : hasContent ? 'send'
       : canType && voiceOn ? 'mic' : 'send';
   const queueMode = mode === 'send' && overagePaused;
+  const dictateKeys = voice.micAvailable && voiceOn;
+  const holdOffered = mode === 'send' && dictateKeys;
 
   // ── Drafts follow the session ───────────────────────────────────────
   const flush = React.useCallback(() => {
@@ -211,25 +216,65 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     void dictation.start(sidRef.current);
   }
 
+  function armHold(viaPointer: boolean) {
+    holdTimer.current = setTimeout(() => {
+      holdTimer.current = null;
+      if (viaPointer) holdDidRecord.current = true;
+      startDictation();
+    }, HOLD_TO_DICTATE_MS);
+  }
+  function cancelHold() {
+    if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null; }
+  }
+
   // A hold that started a recording swallows the click its release fires, whenever that click comes
   // (on touch it arrives a task later); the next press starts afresh.
   function onSendPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
     holdDidRecord.current = false;
     if (mode === 'mic' || mode === 'recording') { e.preventDefault(); return; }
-    if (mode === 'send' && voice.micAvailable && voiceOn) {
+    if (holdOffered) {
       // Focus stays in the box: on a phone a blur closes the keyboard, and the button moves out from
       // under the finger before the hold completes.
       e.preventDefault();
       try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      holdTimer.current = setTimeout(() => {
-        holdTimer.current = null;
-        holdDidRecord.current = true;
-        startDictation();
-      }, HOLD_TO_DICTATE_MS);
+      armHold(true);
     }
   }
   function onSendPointerUp() {
-    if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null; }
+    cancelHold();
+  }
+
+  // Space or Enter held on Send is the pointer hold from the keyboard. The browser clicks a button on
+  // Enter's keydown, again on each auto-repeat, and on Space's keyup, so a held key's every keydown and
+  // its keyup are prevented, and a release before the threshold sends. They stay prevented once the
+  // recording runs, so neither the repeats nor the release stop it; no click follows, so the hold
+  // leaves nothing for `holdDidRecord` to swallow. Escape or a blur drops a hold still pending.
+  function onSendKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    const activates = e.key === 'Enter' || e.key === ' ';
+    if (holdKey.current !== null) {
+      if (activates) e.preventDefault();
+      else if (e.key === 'Escape') cancelHold();
+      return;
+    }
+    if (!activates) return;
+    // An auto-repeat never presses the button again: on Dictate it would open a second microphone.
+    if (e.repeat) { e.preventDefault(); return; }
+    holdDidRecord.current = false;
+    if (!holdOffered) return;
+    e.preventDefault();
+    holdKey.current = e.key;
+    armHold(false);
+  }
+  function onSendKeyUp(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (e.key !== holdKey.current) return;
+    e.preventDefault();
+    holdKey.current = null;
+    if (holdTimer.current !== null) { cancelHold(); submit(); }
+  }
+  function onSendBlur() {
+    if (holdKey.current === null) return;
+    holdKey.current = null;
+    cancelHold();
   }
   function onSendClick() {
     if (holdDidRecord.current) { holdDidRecord.current = false; return; }
@@ -244,9 +289,9 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     : !canSend || !hasContent;
   const sendTitle = mode === 'recording' ? 'Recording · tap to stop and transcribe'
     : mode === 'transcribing' ? 'Transcribing…'
-    : mode === 'mic' ? (voice.micAvailable ? 'Tap to dictate · tap again to stop' : 'Install Whisper in Settings → Voice to dictate')
+    : mode === 'mic' ? (voice.micAvailable ? `Tap to dictate · tap again to stop · ${DICTATE_SHORTCUT} in the message box` : 'Install Whisper in Settings → Voice to dictate')
     : queueMode ? 'Queue message · delivered when the rate-limit window resets'
-    : voice.micAvailable && voiceOn ? 'Send (hold to dictate)' : 'Send';
+    : dictateKeys ? `Send (hold to dictate, or ${DICTATE_SHORTCUT} in the message box)` : 'Send';
 
   const placeholder = !inst ? 'Select or start a session to chat'
     : inst.modelSwitch ? 'Switching model · the session is restarting…'
@@ -323,6 +368,14 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
               else if (e.key === 'ArrowUp' && ta.selectionStart === 0) stickyPrompt.conceal();
             }
           }
+          // The shortcut toggles dictation whatever the box holds; an auto-repeat does nothing.
+          if (dictateKeys && e.key === 'Enter' && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            if (e.repeat) return;
+            if (dictation.state === 'idle') startDictation();
+            else if (dictation.state === 'recording') dictation.stop();
+            return;
+          }
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             if (!sendDisabled && mode === 'send') submit();
@@ -337,6 +390,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
         }}
         className="block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
         aria-label="Message"
+        aria-keyshortcuts={dictateKeys ? DICTATE_SHORTCUT : undefined}
       />
       <div className="flex items-center gap-1 px-2 pb-2">
         <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const f = Array.from(e.target.files || []); e.target.value = ''; void addFiles(f); }} />
@@ -366,7 +420,10 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
                 disabled={sendDisabled}
                 onPointerDown={onSendPointerDown}
                 onPointerUp={onSendPointerUp}
-                onPointerCancel={() => { if (holdTimer.current) clearTimeout(holdTimer.current); holdTimer.current = null; holdDidRecord.current = false; }}
+                onPointerCancel={() => { cancelHold(); holdDidRecord.current = false; }}
+                onKeyDown={onSendKeyDown}
+                onKeyUp={onSendKeyUp}
+                onBlur={onSendBlur}
                 onClick={onSendClick}
               >
                 {mode === 'recording' ? <SquareIcon className="fill-current" />
