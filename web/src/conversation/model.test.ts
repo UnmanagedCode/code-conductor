@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ConversationModel, type AssistantNode, type GroupNode, type ToolNode, type QuestionNode, type UserNode } from './model';
+import { formatUserQuestionAnswers, type UserQuestionAnswer } from '../../../public/userQuestionAnswers.ts';
+import { ConversationModel, normalizeQuestions, type AssistantNode, type GroupNode, type ToolNode, type QuestionNode, type UserNode } from './model';
 
 const text = (msgId: string, t: string, blockIdx = 0) => [
   { kind: 'text_delta', msgId, blockIdx, text: t },
@@ -139,5 +140,39 @@ describe('ConversationModel', () => {
     const page = live.renderPage([{ kind: 'user_echo', text: 'old' }, { kind: 'history_gap' }], null, null);
     live.prependPage(page, live.leadingAssistantWrap);
     expect(live.items.filter((i) => i.type === 'divider')).toHaveLength(1);
+  });
+});
+
+describe('normalizeQuestions', () => {
+  const FRUIT = { header: 'Fruit', question: 'Pick a fruit', multiSelect: false, options: [{ label: 'Apple' }, { label: 'Banana', description: 'yellow' }] };
+  const TOPPINGS = { question: 'Pick toppings', multiSelect: true, options: [{ label: 'Nuts' }, { label: 'Syrup' }] };
+
+  // Invariant: a well-formed input comes back deep-equal.
+  it('returns a well-formed input unchanged', () => {
+    expect(normalizeQuestions([FRUIT, TOPPINGS])).toEqual([FRUIT, TOPPINGS]);
+  });
+
+  // Invariant: a non-object question becomes an empty question in the same position, and a non-array questions value is no questions.
+  it('replaces a non-object question with an empty one in its position', () => {
+    expect(normalizeQuestions([null, FRUIT, 'oops', 7, ['x']])).toEqual([{}, FRUIT, {}, {}, {}]);
+    expect(normalizeQuestions({ 0: FRUIT })).toEqual([]);
+  });
+
+  // Invariant: a non-array options is no options; a non-object option is dropped and the rest keep their order.
+  it('treats a non-array options as none and drops non-object options', () => {
+    expect(normalizeQuestions([{ question: 'a', options: { label: 'x' } }, { question: 'b', options: 'x' }, { question: 'c', options: null }, { question: 'd' }]))
+      .toEqual([{ question: 'a', options: [] }, { question: 'b', options: [] }, { question: 'c', options: [] }, { question: 'd', options: [] }]);
+    expect(normalizeQuestions([{ question: 'e', options: [null, { label: 'Yes' }, 'No', 3, ['z'], { label: 'Maybe' }] }]))
+      .toEqual([{ question: 'e', options: [{ label: 'Yes' }, { label: 'Maybe' }] }]);
+  });
+
+  // Invariant: on a mixed malformed card the formatter's text over the normalised questions equals its text over the raw ones, for every answer kind.
+  it('leaves the answer text of a mixed malformed card unchanged', () => {
+    const raw: any[] = [null, { question: 'Notes?', options: { a: 1 } }, { question: 'Proceed?', options: [null, { label: 'Yes' }] }, 'oops', TOPPINGS];
+    const answers: UserQuestionAnswer[] = [
+      { kind: 'custom', text: 'skip' }, { kind: 'none' }, { kind: 'option', label: 'Yes', note: 'now' }, { kind: 'custom', text: 'x' }, { kind: 'multi', labels: ['Nuts', 'Syrup'] },
+    ];
+    expect(formatUserQuestionAnswers(normalizeQuestions(raw), answers)).toBe(formatUserQuestionAnswers(raw, answers));
+    expect(formatUserQuestionAnswers(normalizeQuestions([null]), [{ kind: 'custom', text: 'y' }])).toBe(formatUserQuestionAnswers([null as any], [{ kind: 'custom', text: 'y' }]));
   });
 });

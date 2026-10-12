@@ -187,6 +187,23 @@ function looseResultOpens(ev: UiEvent): boolean {
   return images.length > 0 || text.length < LOOSE_RESULT_OPEN_MAX;
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * An AskUserQuestion's `questions` (the model's raw tool input) in the shape the
+ * card renders: a non-object question becomes an empty one IN ITS POSITION, a
+ * non-array `options` becomes none, and a non-object option is dropped. A
+ * question is never dropped: the server pairs the answer echo and formats MCP
+ * answers against the raw array, so the count and positions must survive for
+ * the card's answer text to match theirs.
+ */
+export function normalizeQuestions(raw: unknown): any[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((q) => (isRecord(q)
+    ? { ...q, options: Array.isArray(q.options) ? q.options.filter(isRecord) : [] }
+    : {}));
+}
+
 function answersToLock(questions: any[], text: string): AnswerState[] {
   return parseCanonicalUserQuestionAnswers(questions, text) ?? questions.map(() => ({ kind: 'none' as const }));
 }
@@ -874,7 +891,7 @@ export class ConversationModel {
 
   private renderUserQuestion(ev: UiEvent) {
     if (this.questionNodes.has(ev.toolUseId)) return;
-    const questions = Array.isArray(ev.questions) ? ev.questions : [];
+    const questions = normalizeQuestions(ev.questions);
     const node = this.make<QuestionNode>({
       type: 'question', toolUseId: ev.toolUseId, questions,
       answers: questions.map(() => ({ kind: 'none' as const })),
@@ -949,9 +966,8 @@ export class ConversationModel {
     const transcribed = !skill && !wake && !renew && !forward && text.startsWith(TRANSCRIBED_PREFIX);
     if (transcribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
-    const answer = qa
-      ? { questions: Array.isArray(qa.questions) ? qa.questions : [], answers: parseCanonicalUserQuestionAnswers(Array.isArray(qa.questions) ? qa.questions : [], text) }
-      : null;
+    const answerQuestions = qa ? normalizeQuestions(qa.questions) : [];
+    const answer = qa ? { questions: answerQuestions, answers: parseCanonicalUserQuestionAnswers(answerQuestions, text) } : null;
     const hasUserText = !!answer || (!skill && !wake && !renew && text.length > 0);
     const variant: UserVariant = wake ? 'wake' : renew ? 'renew' : forward ? 'forward' : answer ? 'answer' : 'plain';
 

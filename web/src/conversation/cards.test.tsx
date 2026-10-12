@@ -166,6 +166,71 @@ describe('question card', () => {
     expect(sent).toEqual([{ t: 'prompt', payload: { id: 'inst-1', text }, opts: { ack: true } }]);
   });
 
+  // Answers tab 0 with `first`, picks `L` on the SIZE tab, sends, and applies the server's stamp built from the raw questions.
+  async function answerWithSize(qs: any[], answers: UserQuestionAnswer[], first: (card: HTMLElement) => void) {
+    const { m, card, root } = await show([CARD(qs)]);
+    first(card());
+    await flush();
+    fireEvent.click(card().querySelector('[data-tab="1"]')!);
+    await flush();
+    fireEvent.click(opt(card(), 'L'));
+    await flush();
+    fireEvent.click(sendBtn(card()));
+    await flush();
+    expect(sent).toEqual([{ t: 'prompt', payload: { id: 'inst-1', text: formatUserQuestionAnswers(qs, answers) }, opts: { ack: true } }]);
+    m.apply(stamped(qs, answers));
+    await flush();
+    expect(statusOf(card())).toBe('Answered');
+    return root.querySelector('[data-item="user"][data-variant="answer"]') as HTMLElement;
+  }
+
+  // Invariant: a non-array `options` is no options: the question keeps its named tab, offers only the free-text field, answers, and its echo renders.
+  it.each([['an object', { a: 'Yes' }], ['a string', 'Yes/No'], ['a number', 3]])('a non-array options (%s) leaves a free-text question that answers, and its echo renders', async (_name, bad) => {
+    const qs: any[] = [{ question: 'Any notes?', options: bad }, SIZE];
+    const answers: UserQuestionAnswer[] = [{ kind: 'custom', text: 'none' }, { kind: 'option', label: 'L' }];
+    const bubble = await answerWithSize(qs, answers, (card) => {
+      const group = within(card).getByRole('group', { name: 'Questions' });
+      expect(within(group).getByRole('button', { name: /Any notes\?$/ }).getAttribute('data-tab')).toBe('0');
+      expect(within(group).getByRole('button', { name: /Pick a size$/ }).getAttribute('data-tab')).toBe('1');
+      expect(card.querySelectorAll('[data-option]')).toHaveLength(0);
+      fireEvent.change(input(card), { target: { value: 'none' } });
+    });
+    expect(bubble.querySelector('[data-custom]')!.textContent).toBe('none');
+    expect([...bubble.querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['L']);
+  });
+
+  // Invariant: a non-object question entry keeps its position as an empty question: tab `Q<n>`, free-text answer, and the sent text equals the formatter's over the raw questions, so the server's stamp pairs it.
+  it.each([['null', null], ['a string', 'oops']])('a non-object question entry (%s) keeps its tab, answers, and its echo renders', async (_name, bad) => {
+    const qs: any[] = [bad, SIZE];
+    const answers: UserQuestionAnswer[] = [{ kind: 'custom', text: 'skip it' }, { kind: 'option', label: 'L' }];
+    const bubble = await answerWithSize(qs, answers, (card) => {
+      const group = within(card).getByRole('group', { name: 'Questions' });
+      expect(within(group).getByRole('button', { name: /Q1$/ }).getAttribute('data-tab')).toBe('0');
+      expect(within(group).getByRole('button', { name: /Pick a size$/ }).getAttribute('data-tab')).toBe('1');
+      fireEvent.change(input(card), { target: { value: 'skip it' } });
+    });
+    expect(bubble.querySelector('[data-custom]')!.textContent).toBe('skip it');
+    expect([...bubble.querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['L']);
+  });
+
+  // Invariant: a non-object option entry is not offered; the valid options still pick, send, and round-trip into the echo's chips.
+  it('non-object option entries are skipped; the valid options answer and the echo round-trips', async () => {
+    const qs: any[] = [{ question: 'Proceed?', options: [null, { label: 'Yes' }, 'No'] }, SIZE];
+    const answers: UserQuestionAnswer[] = [{ kind: 'option', label: 'Yes' }, { kind: 'option', label: 'L' }];
+    const bubble = await answerWithSize(qs, answers, (card) => {
+      expect([...card.querySelectorAll('[data-option]')].map((b) => b.textContent)).toEqual(['Yes']);
+      fireEvent.click(opt(card, 'Yes'));
+    });
+    expect([...bubble.querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['Yes', 'L']);
+  });
+
+  // Invariant: a well-formed card's questions reach the node unchanged.
+  it('a well-formed card keeps its questions unchanged', async () => {
+    const { m, card } = await show([CARD([FRUIT, SIZE])]);
+    expect((m.items[0] as QuestionNode).questions).toEqual([FRUIT, SIZE]);
+    expect([...card().querySelectorAll('[data-option]')].map((b) => b.textContent)).toEqual(['Apple', 'Banana']);
+  });
+
   it("an answer that never reaches the CLI re-opens the card with the reason; the picks survive", async () => {
     ackBehavior = () => Promise.reject(new Error('not connected'));
     const { card } = await show([CARD()]);
