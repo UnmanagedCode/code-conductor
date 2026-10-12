@@ -14,7 +14,9 @@
 //     reveals it with no /start and no src change. A resident frame is evicted
 //     only when its row stops passing `keepsResident` (checked in the
 //     background on re-entry and by `reconcile()` after a Settings → Plugins
-//     action) or when that action put new code under it (EVICTING_ACTIONS).
+//     action) or when that action put new code under it (EVICTING_ACTIONS);
+//     a renewed frame that is on screen reloads in place, a disqualified one
+//     is not started again.
 //
 // Parent side of the bridge (the root /pluginBridge.js, served from public/, runs in the frame):
 // child `route` messages mirror into the hash with the route store's
@@ -226,12 +228,14 @@ class PluginFrames {
     for (const r of this.resident.values()) r.frame.hidden = true;
   }
 
-  /** After a Settings → Plugins action: evict what no longer qualifies, or got new code. Never reloads. */
+  /** After a Settings → Plugins action: evict what no longer qualifies, or got new code; the on-screen plugin reloads only in the second case. */
   async reconcile(change?: { action?: string; ids?: string[] } | null) {
     const renewed = change?.action && EVICTING_ACTIONS.includes(change.action) ? change.ids ?? [] : [];
     await Promise.all([...this.resident.values()].map(async (record) => {
       if (!renewed.includes(record.id) && (await this.stillResident(record.id))) return;
+      const reload = this.current === record && renewed.includes(record.id);
       this.evict(record);
+      if (reload) void this.load({ id: record.id, subpath: record.subpath });
     }));
   }
 
