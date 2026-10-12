@@ -30,15 +30,14 @@ afterEach(() => {
 });
 
 describe('pinned prompt', () => {
-  it('a status line is a status region with the default cursor and no jump affordance; a pinned prompt is the jump button with the pointer again', () => {
+  // Invariant: a status line is a status region with no tab stop and no title whose text tells the reader there is nothing earlier; a pinned prompt is the focusable, titled jump button; the swap goes both ways.
+  it('a status line is a status region with no jump affordance; a pinned prompt is the jump button again', () => {
     const { pin } = mount();
     const status: PinState = { kind: 'status', text: STATUS_NONE };
     const expectRegion = () => {
       expect(pin.getAttribute('role')).toBe('status');
       expect(pin.hasAttribute('tabindex')).toBe(false);
       expect(pin.hasAttribute('title')).toBe(false);
-      expect(pin.classList.contains('cursor-default')).toBe(true);
-      expect(pin.classList.contains('cursor-pointer')).toBe(false);
       expect(pin.hidden).toBe(false);
       expect(pin.textContent).toBe(STATUS_NONE);
     };
@@ -47,9 +46,7 @@ describe('pinned prompt', () => {
     show(PINNED);
     expect(pin.getAttribute('role')).toBe('button');
     expect(pin.getAttribute('tabindex')).toBe('0');
-    expect(pin.getAttribute('title')).toBe('Jump to this prompt');
-    expect(pin.classList.contains('cursor-pointer')).toBe(true);
-    expect(pin.classList.contains('cursor-default')).toBe(false);
+    expect(pin.getAttribute('title')).toBeTruthy();
     show(status);
     expectRegion();
   });

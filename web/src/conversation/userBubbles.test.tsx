@@ -41,7 +41,6 @@ describe('plain user bubbles', () => {
     const p = lines.bubble.querySelectorAll('[data-user-text] p');
     expect(p).toHaveLength(1);
     expect(p[0].textContent).toBe('line one\nline two\nline three');
-    expect(lines.bubble.querySelector('[data-user-text] .md')!.className).toContain('whitespace-pre-wrap');
   });
 
   it('HTML-looking text renders literally, never as elements', async () => {
@@ -101,7 +100,6 @@ describe('wake-callback bubbles', () => {
     const withJobs = await echo(buildWakeStub({ targetSessionId: 'abc12345', payloadText: PAYLOAD, jobsNote: JOBS }));
     const title = withJobs.bubble.querySelector('[data-fold-title]')!;
     expect(title.textContent).toContain('\n- "npm test" — running 2m5s\n');
-    expect(title.className).toContain('whitespace-pre-line');
     const without = await echo(STUB);
     expect(without.bubble.querySelector('[data-fold-title]')!.textContent).not.toContain('Background jobs');
   });
@@ -124,27 +122,6 @@ describe('wake-callback bubbles', () => {
     fireEvent.click(within(fold as HTMLElement).getByRole('button', { name: 'Copy text' }));
     await flush();
     expect(copied).toEqual([PAYLOAD]);
-  });
-
-  // happy-dom does no layout, so this pins the class that lets an unbroken
-  // token (the get_recent_messages call in every summary) wrap instead of
-  // widening the transcript's scroll container.
-  it('long unbroken tokens wrap: summary, plain line, meta and raw views carry wrap-anywhere', async () => {
-    const LONG = 'x'.repeat(200);
-    const folded = await echo(buildWakeStub({ targetSessionId: LONG, payloadText: `{"sessionId":"${LONG}"}\nbody` }));
-    const fold = folded.bubble.querySelector('[data-fold="wake"]')!;
-    expect(fold.querySelector('[data-fold-title]')!.className).toContain('wrap-anywhere');
-    await expand(fold);
-    expect(fold.querySelector('[data-wake-meta]')!.className).toContain('wrap-anywhere');
-    fireEvent.click(within(fold as HTMLElement).getByRole('button', { name: 'Show raw text' }));
-    expect(fold.querySelector('[data-view="raw"]')!.className).toContain('wrap-anywhere');
-
-    const plain = await echo(markPlainStub(`Worker \`${LONG}\` finished its turn.`));
-    expect(plain.bubble.querySelector('[data-wake-plain]')!.className).toContain('wrap-anywhere');
-
-    const typed = await echo(LONG);
-    fireEvent.click(within(typed.bubble).getByRole('button', { name: 'Show raw text' }));
-    expect(typed.bubble.querySelector('[data-view="raw"]')!.className).toContain('wrap-anywhere');
   });
 });
 

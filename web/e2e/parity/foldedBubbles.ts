@@ -1,10 +1,9 @@
 // Helpers the folded-bubble parity scenarios share: a wake stub sent from the
 // composer, which both UIs fold exactly as an orchestrator-injected wake, and
-// a computed font size. Declares no tests.
+// a sideways-overflow probe. Declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '../harness/fixtures.ts';
 import { buildWakeStub } from '../../../public/wakeCallback.ts';
-import { cssOf } from './stickyPin.ts';
 import type { Ui } from './ui.ts';
 
 export const WAKE_PAYLOAD = '{"sessionId":"wakeparity","source":"live"}\nWAKE-PROSE first paragraph with **bold** words\n\n# WAKE-HEAD plan\n\nWAKE-TAIL closing paragraph';
@@ -24,9 +23,4 @@ export async function sendWake(page: Page, ui: Ui, turns: number, { stub = WAKE_
 /** Whether `loc`'s content is wider than its box. */
 export function overflowsX(loc: Locator): Promise<boolean> {
   return loc.evaluate((e) => e.scrollWidth > e.clientWidth + 1);
-}
-
-/** `loc`'s computed font size in px. */
-export async function px(loc: Locator): Promise<number> {
-  return parseFloat(await cssOf(loc, 'font-size'));
 }
