@@ -152,6 +152,18 @@ describe('installToastFocus', () => {
     expect(document.activeElement === f.item).toBe(true);
   });
 
+  it('moves no focus when another toast leaves just after focus fell to the document from a toast still showing', async () => {
+    const f = fixture({ second: true });
+    f.page.focus();
+    f.item.focus();
+    // Tab past the toaster: focus falls to body and the forget waits on its timer; the other toast leaves first.
+    f.item.blur();
+    f.second!.remove();
+    await settle();
+    expect(f.item.isConnected, 'fixture: the toast focus fell from still shows').toBe(true);
+    expect(document.activeElement === document.body).toBe(true);
+  });
+
   it('returns focus to the page element focus came from when the focused toast leaves while another still shows', async () => {
     const f = fixture({ second: true });
     f.page.focus();
