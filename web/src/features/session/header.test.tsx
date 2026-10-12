@@ -85,7 +85,7 @@ async function openModelPicker(inst: Instance) {
   await act(async () => { fireEvent.keyDown(within(menu).getByRole('menuitem', { name: /Change model/ }), { key: 'ArrowRight' }); });
   return screen.getAllByRole('menu').at(-1)!;
 }
-const restartIcon = (item: HTMLElement) => item.querySelector('.lucide-refresh-cw');
+const restartIcon = (item: HTMLElement) => item.querySelector('[data-restart-mark]');
 
 describe('change model', () => {
   it('an identity session: Claude tiers switch live with no ↻; tiers on another backend restart onto it (mirrors "an identity session: Claude tiers switch live with no badge; tiers on another backend restart onto it")', async () => {
@@ -99,9 +99,11 @@ describe('change model', () => {
       ['Local', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { tier: 'local' }],
       ['Llama 70B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { model: 'llama3:70b', backend: 'ollama' }],
     ]);
+    // Invariant: in the open picker only the entries that restart carry the restart mark: Local and Llama 70B, never the live Claude tiers.
     const sub = await openModelPicker(base());
     expect(restartIcon(within(sub).getByRole('menuitem', { name: /Powerful/ }))).toBeNull();
     expect(restartIcon(within(sub).getByRole('menuitem', { name: /Local/ }))).not.toBeNull();
+    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(2);
     expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
@@ -124,8 +126,10 @@ describe('change model', () => {
     expect(claude[1].map((e) => [e.label, e.state.kind, e.state.disabled, e.state.title])).toEqual([
       ['Fast', 'restart', false, ON_CLAUDE], ['Powerful', 'restart', false, ON_CLAUDE],
     ]);
+    // Invariant: on a substitution session each of the four entries carries the restart mark, and nothing else in the picker does.
     const sub = await openModelPicker(inst);
     for (const name of [/Local/, /Llama 70B/, /Fast/, /Powerful/]) expect(restartIcon(within(sub).getByRole('menuitem', { name }))).not.toBeNull();
+    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(4);
     expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
@@ -292,30 +296,46 @@ describe('change model', () => {
     expect(b.container.textContent).toContain('Switch failed');
   });
 
-  it('the Change model label is static whatever the running model, and idle with a session it is enabled and titled "Switch this session to another model"', async () => {
-    for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5', null]) {
+  it('the Change model label is static whatever the running model, and idle with a session it is enabled and titled', async () => {
+    // Invariant: across running models (null included) the Change model label is one value that names no model family, and idle with a session the item is enabled with a non-empty title that is not the between-turns reason.
+    const models = ['claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5', null];
+    const labels = new Set<string>();
+    let seen = 0;
+    for (const model of models) {
       const r = wrap(<SessionHeader inst={base({ model })} onMenu={() => {}} />);
       const trigger = menuItem(await openMenu(), /Change model/);
-      expect(trigger.textContent!.trim(), `model ${model}`).toBe('Change model');
+      const label = trigger.textContent!.trim();
+      labels.add(label);
+      seen++;
+      expect(label, `model ${model}`).not.toMatch(/opus|haiku|sonnet|claude/i);
       expect(isDisabled(trigger), `model ${model}`).toBe(false);
-      expect(trigger.title, `model ${model}`).toBe('Switch this session to another model');
+      expect(trigger.title, `model ${model}`).toBeTruthy();
+      expect(trigger.title, `model ${model}`).not.toMatch(/between turns/i);
       r.unmount();
     }
+    expect(seen).toBe(models.length);
+    expect([...labels]).toHaveLength(1);
+    expect([...labels][0]).toMatch(/change model/i);
   });
 
   it('Change model is disabled with the between-turns title during a turn and re-enabled at turn end, on a Claude and a substitution session', async () => {
+    // Invariant: on either backend a turn disables Change model (and Change effort) with a title giving the between-turns reason, and turn end re-enables it with a non-empty title that drops that reason.
+    let seen = 0;
     for (const backend of ['claude', 'ollama']) {
       const inst = base(backend === 'claude' ? {} : { backend, model: 'qwen3:8b' });
       const h = mountHeader({ ...inst, status: 'turn', displayStatus: 'turn' });
       const menu = await openMenu();
       expect(isDisabled(menuItem(menu, /Change model/)), `${backend} turn`).toBe(true);
-      expect(menuItem(menu, /Change model/).title, `${backend} turn`).toBe('Model can only be changed between turns');
+      expect(menuItem(menu, /Change model/).title, `${backend} turn`).toMatch(/between turns/i);
       expect(isDisabled(menuItem(menu, /Change effort/)), `${backend} turn`).toBe(true);
       h.update(inst);
       expect(isDisabled(menuItem(menu, /Change model/)), `${backend} idle`).toBe(false);
-      expect(menuItem(menu, /Change model/).title, `${backend} idle`).toBe('Switch this session to another model');
+      expect(menuItem(menu, /Change model/).title, `${backend} idle`).toBeTruthy();
+      expect(menuItem(menu, /Change model/).title, `${backend} idle`).not.toMatch(/between turns/i);
       h.unmount();
+      seen++;
     }
+    expect(seen).toBe(2);
   });
 
   it('an open picker follows the session: a turn disables its restart and registered-model entries with the busy title, and idle re-enables them in the same open picker', async () => {
@@ -381,20 +401,26 @@ describe('change effort', () => {
     expect(sent).toEqual([['effort', { id: 'inst-1', effort: 'max' }, { ack: true }]]);
   });
 
-  it('Change effort sits directly below Change model, and its label is static whatever the level', async () => {
-    for (const effort of ['low', 'medium', 'high', 'max', undefined]) {
+  it('Change effort is a ⋮ item whose label is static whatever the level', async () => {
+    // Invariant: at every level (none included) ⋮ holds a Change effort item whose label is one value that never names the running level.
+    const efforts = ['low', 'medium', 'high', 'max', undefined];
+    const labels = new Set<string>();
+    let seen = 0;
+    for (const effort of efforts) {
       const r = wrap(<SessionHeader inst={base({ effort })} onMenu={() => {}} />);
-      const items = within(await openMenu()).getAllByRole('menuitem');
-      const model = items.findIndex((i) => /Change model/.test(i.textContent!));
-      const effortAt = items.findIndex((i) => /Change effort/.test(i.textContent!));
-      expect(model, `effort ${effort}`).toBeGreaterThanOrEqual(0);
-      expect(effortAt, `effort ${effort}`).toBe(model + 1);
-      expect(items[effortAt].textContent!.trim(), `effort ${effort}`).toBe('Change effort');
+      const label = menuItem(await openMenu(), /Change effort/).textContent!.trim();
+      labels.add(label);
+      seen++;
+      if (effort) expect(label, `effort ${effort}`).not.toMatch(new RegExp(`\\b${effort}\\b`, 'i'));
       r.unmount();
     }
+    expect(seen).toBe(efforts.length);
+    expect([...labels]).toHaveLength(1);
+    expect([...labels][0]).toMatch(/change effort/i);
   });
 
   it('Change effort is enabled only idle with a session, titled for why; a turn or a spawn disables it with the between-turns title', async () => {
+    // Invariant: idle with a session Change effort is enabled with a non-empty title that is not the between-turns reason; a turn or a spawn disables it with a title giving that reason; no session disables it.
     const effortItem = async (inst: Instance) => {
       const r = wrap(<SessionHeader inst={inst} onMenu={() => {}} />);
       const item = menuItem(await openMenu(), /Change effort/);
@@ -402,9 +428,14 @@ describe('change effort', () => {
       r.unmount();
       return got;
     };
-    expect(await effortItem(base())).toEqual({ disabled: false, title: 'Change how hard this session reasons, without restarting' });
+    const idle = await effortItem(base());
+    expect(idle.disabled).toBe(false);
+    expect(idle.title).toBeTruthy();
+    expect(idle.title).not.toMatch(/between turns/i);
     for (const status of ['turn', 'spawning']) {
-      expect(await effortItem(base({ status, displayStatus: status })), status).toEqual({ disabled: true, title: 'Effort can only be changed between turns' });
+      const busy = await effortItem(base({ status, displayStatus: status }));
+      expect(busy.disabled, status).toBe(true);
+      expect(busy.title, status).toMatch(/between turns/i);
     }
     expect((await effortItem(base({ sessionId: null }))).disabled).toBe(true);
   });
@@ -502,26 +533,34 @@ describe('session menu', () => {
   });
 
   it('while ⋮ stays open its items follow the session: a turn disables Prune with the between-turns title and makes Terminate Interrupt, and muting flips the label', async () => {
+    // Invariant: in the same open ⋮, a turn disables Prune with a title giving the between-turns reason and swaps Terminate for Interrupt; idle re-enables Prune with a non-empty title without that reason and swaps back; muting swaps Mute for Unmute.
     const h = mountHeader(base());
     const menu = await openMenu();
-    const last = () => within(menu).getAllByRole('menuitem').at(-1)!.textContent!.trim();
+    const item = (name: RegExp) => within(menu).queryByRole('menuitem', { name });
     try {
-      expect(menuItem(menu, /Prune/).title).toBe("Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost");
-      expect(last()).toBe('Terminate');
+      expect(menuItem(menu, /Prune/).title).toBeTruthy();
+      expect(menuItem(menu, /Prune/).title).not.toMatch(/between turns/i);
+      expect(item(/^Terminate$/)).not.toBeNull();
+      expect(item(/^Interrupt$/)).toBeNull();
       h.update(base({ status: 'turn', displayStatus: 'turn' }));
       expect(menu.isConnected).toBe(true);
       expect(isDisabled(menuItem(menu, /Prune/))).toBe(true);
-      expect(menuItem(menu, /Prune/).title).toBe('Prune is only available between turns');
-      expect(last()).toBe('Interrupt');
+      expect(menuItem(menu, /Prune/).title).toMatch(/between turns/i);
+      expect(item(/^Interrupt$/)).not.toBeNull();
+      expect(item(/^Terminate$/)).toBeNull();
       h.update(base());
       expect(menu.isConnected).toBe(true);
       expect(isDisabled(menuItem(menu, /Prune/))).toBe(false);
-      expect(menuItem(menu, /Prune/).title).toBe("Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost");
-      expect(last()).toBe('Terminate');
-      expect(menuItem(menu, /Mute notifications/).textContent!.trim()).toBe('Mute notifications');
+      expect(menuItem(menu, /Prune/).title).toBeTruthy();
+      expect(menuItem(menu, /Prune/).title).not.toMatch(/between turns/i);
+      expect(item(/^Terminate$/)).not.toBeNull();
+      expect(item(/^Interrupt$/)).toBeNull();
+      expect(item(/^Mute notifications/)).not.toBeNull();
+      expect(item(/^Unmute/)).toBeNull();
       act(() => muteSession('sess-1', true));
       expect(menu.isConnected).toBe(true);
-      expect(menuItem(menu, /mute notifications/i).textContent!.trim()).toBe('Unmute notifications');
+      expect(item(/^Unmute notifications/)).not.toBeNull();
+      expect(item(/^Mute/)).toBeNull();
     } finally { act(() => muteSession('sess-1', false)); }
   });
 

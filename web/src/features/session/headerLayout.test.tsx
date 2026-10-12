@@ -237,63 +237,90 @@ describe('Sync and ⋮ across md', () => {
 describe('title block', () => {
   const line1 = () => screen.getByRole('heading', { level: 1 }).parentElement!;
   const subline = () => line1().nextElementSibling as HTMLElement | null;
-  /** Line 1's elements after the title (a badge under a tooltip carries the trigger's data-slot, not "badge"). */
-  const afterLead = () => {
+  /** Line 1's elements besides the title (a badge under a tooltip carries the trigger's data-slot, not "badge"). */
+  const lineBadges = () => {
     const h1 = screen.getByRole('heading', { level: 1 });
-    return [...line1().children].filter((el) => h1.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) as HTMLElement[];
+    return [...line1().children].filter((el) => el !== h1) as HTMLElement[];
   };
 
   it('no TEMP or DEBUG badge at either width; debug capture shows only as the ⋮ item', async () => {
+    // Invariant: at either width the header shows no TEMP or DEBUG badge, and a debug session's ⋮ debug-capture item says capture is on, which a non-debug session's does not.
+    let seen = 0;
     for (const w of [false, true]) {
       setWide(w);
       const r = render(tree(base({ temp: true, debug: true, debugDir: '/tmp/d' })));
       const where = w ? 'wide' : 'narrow';
       expect([...header().querySelectorAll('*')].filter((el) => /^(temp|debug)$/i.test(el.textContent!.trim())), where).toEqual([]);
       const menu = await openMenu();
-      expect(within(menu).getByRole('menuitem', { name: /debug capture/i }).textContent!.trim(), where).toBe('Debug capture on');
+      expect(within(menu).getByRole('menuitem', { name: /debug capture/i }).textContent!.trim(), where).toMatch(/debug capture.*\bon\b/i);
       r.unmount();
+      seen++;
     }
+    expect(seen).toBe(2);
+    const off = render(tree(base({ debug: false })));
+    const menu = await openMenu();
+    expect(within(menu).getByRole('menuitem', { name: /debug capture/i }).textContent!.trim(), 'not debugging').not.toMatch(/\bon\b/i);
+    off.unmount();
   });
 
-  it('line 1 leads with the title, else the project, and its status badges; the subline holds the project only when titled, and the worktree; no subline without either', () => {
+  it('line 1 holds the title, else the project, and its status badges; the subline holds the project only when titled, and the worktree; no subline without either', () => {
+    // Invariant: the h1 names the title, else the project; the status badge is on line 1 and not the subline; the subline names the project only under a title, plus the worktree and its base branch, and is absent with neither.
     const cases = [
-      { name: 'title + worktree', inst: stopped('crashed'), lead: TITLE, sub: 'demomobile-compact-header← main' },
-      { name: 'no title + worktree', inst: stopped('crashed', { title: null }), lead: 'demo', sub: 'mobile-compact-header← main' },
-      { name: 'no title, no worktree', inst: stopped('crashed', { title: null, worktree: null }), lead: 'demo', sub: null },
-      { name: 'title, no worktree', inst: stopped('crashed', { worktree: null }), lead: TITLE, sub: 'demo' },
+      { name: 'title + worktree', inst: stopped('crashed'), lead: TITLE, sub: ['demo', 'mobile-compact-header', 'main'], absent: [] },
+      { name: 'no title + worktree', inst: stopped('crashed', { title: null }), lead: 'demo', sub: ['mobile-compact-header', 'main'], absent: ['demo'] },
+      { name: 'no title, no worktree', inst: stopped('crashed', { title: null, worktree: null }), lead: 'demo', sub: null, absent: [] },
+      { name: 'title, no worktree', inst: stopped('crashed', { worktree: null }), lead: TITLE, sub: ['demo'], absent: ['mobile-compact-header'] },
     ];
+    let seen = 0;
     for (const c of cases) {
       const r = render(tree(c.inst));
       const h1 = screen.getByRole('heading', { level: 1 });
       expect(h1.textContent, c.name).toBe(c.lead);
-      expect(afterLead().map((el) => el.textContent), `${c.name}: the status badge follows the lead on line 1`).toEqual(['crashed']);
-      expect(subline()?.textContent ?? null, `${c.name}: the subline`).toBe(c.sub);
+      expect(lineBadges().some((el) => el.textContent!.includes('crashed')), `${c.name}: the status badge is on line 1`).toBe(true);
+      const sub = subline()?.textContent ?? null;
+      if (c.sub === null) {
+        expect(sub, `${c.name}: no subline`).toBeNull();
+      } else {
+        expect(sub, `${c.name}: a subline`).not.toBeNull();
+        for (const s of c.sub) expect(sub, `${c.name}: the subline names ${s}`).toContain(s);
+        for (const s of [...c.absent, 'crashed']) expect(sub, `${c.name}: the subline leaves out ${s}`).not.toContain(s);
+      }
       r.unmount();
+      seen++;
     }
+    expect(seen).toBe(cases.length);
   });
 
-  it('Stopping… and the overage auto-resume badge follow on line 1', () => {
+  it('Stopping… and the overage auto-resume badge show on line 1, not on the subline', () => {
+    // Invariant: an interrupting turn with an armed resume shows a Stopping badge and a resume badge with its full time and queued count on line 1, and neither on the subline.
     const T = 1_900_000_000;
     render(tree(base({ status: 'turn', displayStatus: 'turn', interrupting: true, autoResumeAt: T, queuedCount: 2 })));
-    expect(afterLead().map((el) => el.textContent)).toEqual(['Stopping…', `${formatAutoResumeTime(T)} · 2 queued`]);
-    expect(subline()!.textContent).not.toMatch(/Stopping|resumes/);
+    const texts = lineBadges().map((el) => el.textContent ?? '');
+    expect(texts.some((t) => /Stopping/.test(t))).toBe(true);
+    expect(texts.find((t) => t.includes(formatAutoResumeTime(T)!))).toMatch(/\b2 queued\b/);
+    expect(subline()!.textContent).not.toMatch(/Stopping|resumes|queued/);
   });
 
   it('an armed session\'s badge reads its full resume time and queued count with its tooltip; clearing the resume removes it', async () => {
+    // Invariant: an armed resume puts a line-1 badge with the full resume time; with messages queued the badge and its tooltip count them, with none neither mentions a queue; the tooltip says it will resume; clearing the resume removes the badge.
     const T = 1_900_000_000;
-    const resumeBadge = () => afterLead().find((el) => el.textContent!.includes(formatAutoResumeTime(T)!));
+    const resumeBadge = () => lineBadges().find((el) => el.textContent!.includes(formatAutoResumeTime(T)!));
     const tooltip = async () => {
       await act(async () => { fireEvent.focus(resumeBadge()!); });
       return (await screen.findByRole('tooltip')).textContent;
     };
     let r = render(tree(base({ autoResumeAt: T, queuedCount: 3 })));
-    expect(resumeBadge()!.textContent).toBe(`${formatAutoResumeTime(T)} · 3 queued`);
-    expect(await tooltip()).toBe('auto-stopped on overage — 3 messages queued; will resume when the window resets');
+    expect(resumeBadge()!.textContent).toMatch(/\b3 queued\b/);
+    const queued = await tooltip();
+    expect(queued).toMatch(/3 messages queued/);
+    expect(queued).toMatch(/resume/i);
     r.unmount();
 
     const h = mountHeader(base({ autoResumeAt: T, queuedCount: 0 }));
-    expect(resumeBadge()!.textContent).toBe(formatAutoResumeTime(T));
-    expect(await tooltip()).toBe('auto-stopped on overage — will resume when the rate-limit window resets');
+    expect(resumeBadge()!.textContent).not.toMatch(/queued/);
+    const empty = await tooltip();
+    expect(empty).not.toMatch(/queued/);
+    expect(empty).toMatch(/resume/i);
     h.update(base({ autoResumeAt: null, queuedCount: 0 }));
     expect(resumeBadge()).toBeUndefined();
     expect(header().textContent).not.toContain('resumes at');

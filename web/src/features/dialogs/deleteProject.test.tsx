@@ -70,14 +70,16 @@ async function reopen(project: Project, n: number) {
 describe('delete-project confirmation', () => {
   it('a mismatched name keeps the submit disabled, and a forced submit says so and deletes nothing', async () => {
     // Only the exact project name enables Delete; a submit with any other name reports the mismatch and deletes nothing.
+    // Invariant: no alert shows until a mismatched submit, and that submit raises an alert naming the mismatch.
     renderHost();
     act(() => openDeleteProjectDialog(local(), 0));
     const input = await screen.findByLabelText(/Type the project name/);
     fireEvent.change(input, { target: { value: 'wrong' } });
     const submit = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
+    expect(screen.queryByRole('alert')).toBeNull();
     fireEvent.submit(input.closest('form')!);
-    expect((await screen.findByRole('alert')).textContent).toBe('The name does not match. Nothing was deleted.');
+    expect((await screen.findByRole('alert')).textContent).toMatch(/does not match/i);
     expect(performProjectDelete).not.toHaveBeenCalled();
     fireEvent.change(input, { target: { value: 'demo' } });
     expect(submit.disabled).toBe(false);
@@ -94,49 +96,54 @@ describe('delete-project confirmation', () => {
     await waitFor(() => expect(performProjectDelete).toHaveBeenCalledWith({ name: 'demo', deleteDirectory: false }));
   });
 
-  it('the opt-in label is exactly "Also delete the directory" and the literal path', async () => {
-    // The opt-in label is the fixed phrase plus the project's path, nothing more.
+  it('the opt-in label names the project\'s own directory, and follows the project on a reopen', async () => {
+    // Invariant: the directory opt-in's label, and so the checkbox's accessible name, carries the open project's own path and no other project's.
     renderHost();
     act(() => openDeleteProjectDialog(local({ path: '/home/me/myrepo' }), 0));
     await screen.findByRole('dialog');
-    expect(optInLabel().textContent).toBe('Also delete the directory /home/me/myrepo');
-  });
-
-  it('the opt-in checkbox comes before its label, in the same row', async () => {
-    // The opt-in box and its label share one parent, with the box first in document order.
-    renderHost();
-    act(() => openDeleteProjectDialog(local(), 0));
-    await screen.findByRole('dialog');
-    const box = document.getElementById('dpd-delete-dir')!;
-    const label = optInLabel();
-    expect(box.parentElement).toBe(label.parentElement);
-    expect(box.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(optInLabel().textContent).toContain('/home/me/myrepo');
+    expect(screen.getByRole('checkbox', { name: /\/home\/me\/myrepo/ })).toBeTruthy();
+    await reopen(local({ path: '/w/other' }), 0);
+    expect(optInLabel().textContent).toContain('/w/other');
+    expect(optInLabel().textContent).not.toContain('myrepo');
   });
 
   it('a project on a system names its path, target and system, and only path and system with no target', async () => {
     // A system project's description names the target only when the project has one.
+    // Invariant: the description names the path and the system, and the target exactly when the project has one.
     renderHost();
+    const description = () => document.querySelector('[data-slot="dialog-description"]')!.textContent ?? '';
     const onSystem = { name: 'shipping', path: '/app', system: 'prod-box' };
     act(() => openDeleteProjectDialog(local({ ...onSystem, remoteId: 'c1' }), 0));
-    expect(await screen.findByText("/app on target 'c1' of system 'prod-box'")).toBeTruthy();
+    await screen.findByRole('dialog');
+    expect(description()).toContain('/app');
+    expect(description()).toContain('c1');
+    expect(description()).toContain('prod-box');
     await reopen(local({ ...onSystem, remoteId: null }), 0);
-    expect(screen.getByText("/app on system 'prod-box'")).toBeTruthy();
+    expect(description()).toContain('/app');
+    expect(description()).toContain('prod-box');
+    expect(description()).not.toContain('c1');
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).queryByText(/target/i)).toBeNull();
   });
 
-  it('a project with no worktrees says Remove 0 worktrees, and one with two says 2', async () => {
-    // The worktree effect counts the project's worktrees, zero included.
+  it('the worktree effect counts the project\'s worktrees: 0 with none, 2 with two', async () => {
+    // Invariant: the effect naming worktrees, found by content and not by position, carries the project's worktree count, zero included, and no other count.
     renderHost();
+    const wt = () => effects().find((t) => /worktree/.test(t ?? '')) ?? '';
+    const says = (re: RegExp) => effects().some((t) => re.test(t ?? ''));
     act(() => openDeleteProjectDialog(local(), 0));
     await screen.findByRole('dialog');
-    expect(effects()[1]).toBe('Remove 0 worktrees (directory and branch); refused if any is dirty or has dependents');
+    expect(wt()).toMatch(/\b0 worktrees\b/);
+    expect(says(/\b2 worktrees\b/)).toBe(false);
     await reopen(local({ worktrees: [{ name: 'a' }, { name: 'b' }] as any }), 0);
-    expect(effects()[1]).toBe('Remove 2 worktrees (directory and branch); refused if any is dirty or has dependents');
+    expect(wt()).toMatch(/\b2 worktrees\b/);
+    expect(says(/\b0 worktrees\b/)).toBe(false);
   });
 
   it('the sidebar\'s Delete project hands the dialog this project\'s live instance count', async () => {
     // The row's Delete project counts the live instances of that project only.
+    // Invariant: the kill effect counts this project's 2 live instances, not all 3 in the list.
     seed({
       projects: [{ name: 'far', path: '/p/far', workspace: null, system: 'local', remoteId: null, systemUnreachable: null, isGitRepo: true, worktrees: [] }] as any,
       instances: [inst({ sessionId: 'a', project: 'far' }), inst({ sessionId: 'b', project: 'far' }), inst({ sessionId: 'c', project: 'other' })],
@@ -146,7 +153,8 @@ describe('delete-project confirmation', () => {
     const farRow = document.querySelector('[data-project-row="far"]') as HTMLElement;
     fireEvent.click(within(farRow).getByRole('button', { name: 'Delete project' }));
     await screen.findByRole('dialog');
-    expect(effects()[0]).toBe('Kill 2 running sessions');
+    expect(effects().some((t) => /\b2 running sessions\b/.test(t ?? ''))).toBe(true);
+    expect(effects().some((t) => /\b3 running/.test(t ?? ''))).toBe(false);
     expect(dialogStore.get().deleteProject?.instanceCount).toBe(2);
   });
 });

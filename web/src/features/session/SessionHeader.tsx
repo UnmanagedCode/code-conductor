@@ -287,7 +287,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                             onSelect={() => void pickModel(e.target)}
                           >
                             <span className="flex-1">{e.label}</span>
-                            {e.state.kind === 'restart' && <RefreshCwIcon className="size-3" />}
+                            {e.state.kind === 'restart' && <RefreshCwIcon className="size-3" data-restart-mark />}
                             {e.selected && <CheckIcon />}
                           </DropdownMenuItem>
                         ))}

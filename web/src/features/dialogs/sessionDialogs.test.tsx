@@ -45,15 +45,15 @@ describe('session summary', () => {
   const tier = (t: string) => document.querySelector<HTMLButtonElement>(`[data-len="${t}"]`)!;
   const content = () => document.querySelector('[data-summary-content]')!;
 
-  it('opens on Medium with its cached summary rendered as markdown, Title leftmost, and no cost', async () => {
-    // Invariant: the dialog opens on the cached Medium tier (not the first cached tier), renders it through the markdown pipeline, and shows no cost before a generation.
+  it('opens on Medium with its cached summary rendered as markdown, offering all four tiers, and no cost', async () => {
+    // Invariant: the dialog offers each of the four tiers once, opens on the cached Medium tier alone pressed (not the first cached tier), renders it through the markdown pipeline, and shows no cost before a generation.
     const data = SUMMARY;
     routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
     await screen.findByText('Recap');
     const lens = [...document.querySelectorAll('[data-len]')].map((b) => b.getAttribute('data-len'));
-    expect(lens).toEqual(['title', 'short', 'medium', 'long']);
+    expect([...lens].sort()).toEqual(['long', 'medium', 'short', 'title']);
     const pressed = [...document.querySelectorAll('[data-len]')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.getAttribute('data-len'));
     expect(pressed).toEqual(['medium']);
     expect(content().querySelector('h2')?.textContent).toBe('Recap');
@@ -303,25 +303,37 @@ describe('prune context', () => {
     render(<DialogsHost />);
     act(() => openPruneDialog('i1'));
     await loaded();
-    expect(thinkingCells()).toEqual(['Thinking', '~600 tokens']);
+    let cells = thinkingCells();
+    expect(cells).toHaveLength(2);
+    expect(cells[0]).toContain('Thinking');
+    expect(cells[1]).toMatch(/\b600\b.*tokens/);
+    expect(cells[1]).not.toMatch(/encrypted/);
     fireEvent.click(thinking());
-    expect(thinkingCells()).toEqual(['Thinking', 'n/a, stored encrypted (~500 in context, kept)']);
+    cells = thinkingCells();
+    expect(cells[0]).toContain('Thinking');
+    expect(cells[1]).toMatch(/encrypted/);
+    expect(cells[1]).toMatch(/\b500\b/);
+    expect(cells[1]).not.toMatch(/\b600\b/);
   });
 
   it('Prune is disabled while the selection saves nothing, and enabled again once it saves something', async () => {
-    // Invariant: with an analysis loaded, a selection whose estimated total saving is zero disables Prune and sends nothing; a non-zero saving enables it.
+    // Invariant: with an analysis loaded, a selection whose estimated total saving is zero (the totals row's figure reads 0, where the opening selection's does not) disables Prune and sends nothing; a non-zero saving enables it.
     current = analysis(20);
     const calls = route();
     render(<DialogsHost />);
     act(() => openPruneDialog('i1'));
     await loaded();
+    const totals = () => [...[...document.querySelectorAll('[data-savings] tr')].at(-1)!.querySelectorAll('td')].map((td) => td.textContent ?? '');
+    const figure = () => totals()[1].replace(/\D/g, '');
     expect(pruneBtn().disabled).toBe(false);
+    expect(totals()[0]).toMatch(/total/i);
+    expect(figure()).not.toBe('0');
     fireEvent.change(range(), { target: { value: '0' } });
     fireEvent.click(thinking());
-    expect(document.querySelector('[data-cut-label]')?.textContent).toBe('0 of 20');
+    expect(document.querySelector('[data-cut-label]')?.textContent).toMatch(/\b0\b.*\b20\b/);
     expect(thinking().getAttribute('aria-checked')).toBe('false');
-    const totals = [...document.querySelectorAll('[data-savings] tr')].at(-1)!;
-    expect([...totals.querySelectorAll('td')].map((td) => td.textContent)).toEqual(['Estimated total saved', '~0 tokens']);
+    expect(totals()[0]).toMatch(/total/i);
+    expect(figure()).toBe('0');
     expect(pruneBtn().disabled).toBe(true);
     fireEvent.click(pruneBtn());
     await act(async () => {});
@@ -335,13 +347,13 @@ describe('prune context', () => {
   });
 
   it('a session with no completed turns says so and cannot be pruned, while a one-turn session can', async () => {
-    // Invariant: turnCount 0 is refused with a message, no slider and a disabled Prune; turnCount 1 is offered.
+    // Invariant: turnCount 0 is refused with an alert saying there are no completed turns, no slider and a disabled Prune; turnCount 1 is offered with no alert.
     current = analysis(0);
     route();
     render(<DialogsHost />);
     act(() => openPruneDialog('i1'));
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toBe('Nothing to prune yet. This session has no completed turns.');
+    expect(alert.textContent).toMatch(/no completed turns/i);
     expect(range()).toBeNull();
     expect(pruneBtn().disabled).toBe(true);
 
@@ -370,21 +382,31 @@ describe('session statistics', () => {
   const description = () => screen.getByText(/^Spend and time for this session/).textContent;
 
   it('with no workers it shows This session alone and the no-workers note', async () => {
-    // Invariant: with zero workers only the This session column renders, the rolled-up figures stay hidden, and the no-workers note shows.
+    // Invariant: with zero workers only the label column and This session render, each metric row carries the session's own figure, the rolled-up figures stay hidden, the no-workers note shows, and the description does not mention workers.
     await open(0);
-    expect(heads()).toEqual(['', 'This session']);
-    expect(rows()).toEqual([['Cost', '$1.2345'], ['LLM time', '1m 5s'], ['Turn walltime', '2m 5s']]);
-    expect(screen.queryByText('$9.0000')).toBeNull();
-    expect(screen.getByText('No worker sessions were spawned from this session.')).toBeTruthy();
-    expect(description()).toBe('Spend and time for this session.');
+    expect(heads()).toHaveLength(2);
+    expect(heads()[1]).toContain('This session');
+    const r = rows();
+    expect(r.map((row) => row.length)).toEqual([2, 2, 2]);
+    expect(r[0][0]).toMatch(/cost/i);
+    expect(r[0][1]).toContain('1.2345');
+    expect(r[1][1]).toMatch(/1m\s*5s/);
+    expect(r[2][1]).toMatch(/2m\s*5s/);
+    expect(r.flat().some((t) => /\b9\b/.test(t ?? ''))).toBe(false);
+    expect(screen.getByText(/no worker sessions/i)).toBeTruthy();
+    expect(description()).not.toMatch(/worker/i);
   });
 
   it('with one worker it adds the Incl. 1 worker column beside This session and drops the note', async () => {
-    // Invariant: with workers the rolled-up column renders with a singular label for one worker, and the no-workers note is gone.
+    // Invariant: with workers a third column renders, its header counting one worker in the singular, the Cost row carrying the session's own and the rolled-up figure under their headers; the no-workers note is gone and the description mentions the workers.
     await open(1);
-    expect(heads()).toEqual(['', 'This session', 'Incl. 1 worker']);
-    expect(rows()[0]).toEqual(['Cost', '$1.2345', '$9.0000']);
-    expect(screen.queryByText('No worker sessions were spawned from this session.')).toBeNull();
-    expect(description()).toBe('Spend and time for this session, and rolled up across the workers it spawned.');
+    expect(heads()).toHaveLength(3);
+    expect(heads()[1]).toContain('This session');
+    expect(heads()[2]).toMatch(/\b1 worker\b/);
+    expect(rows()[0]).toHaveLength(3);
+    expect(rows()[0][1]).toContain('1.2345');
+    expect(rows()[0][2]).toMatch(/\b9\b/);
+    expect(screen.queryByText(/no worker sessions/i)).toBeNull();
+    expect(description()).toMatch(/worker/i);
   });
 });

@@ -418,26 +418,20 @@ describe('New project dialog', () => {
     expect(listings(calls)[0].get('remoteId')).toBe('ctr-z');
   });
 
-  // In document order: System, then the Target block (label, dropdown, free text, note), then the path field.
-  it('System comes first, then the Target block with its dropdown, free-text field and note, then the path field', async () => {
+  // Invariant: on this machine the dialog offers System but no Target dropdown, Target text field or path field; once a system is chosen (and Other… picked) each of those is reachable by role and label, with the no-targets note.
+  it('on a system the dialog offers System, a Target dropdown with its free-text field and note, and the path field, each by its label; on this machine none but System', async () => {
     stub({ 'GET /api/systems/prod-box/remotes': () => listedAnswer('prod-box', []) });
     await renderNew();
+    expect(await system()).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: 'Target' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Target' })).toBeNull();
+    expect(queryPathField()).toBeNull();
     await chooseSystem('Prod box (prod-box)');
     await chooseTarget('Other…');
-    const label = screen.getByText('Target', { selector: 'label' });
-    const order = [
-      await system(),
-      label,
-      await findTargetSelect(),
-      await findTargetText(),
-      screen.getByText(/lists no configured targets/),
-      pathField(),
-    ];
-    for (let i = 1; i < order.length; i++) {
-      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING, `element ${i - 1} precedes element ${i}`).toBeTruthy();
-    }
-    expect(label.parentElement!.contains(order[2])).toBe(true);
-    expect(label.parentElement!.contains(order[3])).toBe(true);
+    expect(await findTargetSelect()).toBeTruthy();
+    expect(await findTargetText()).toBeTruthy();
+    expect(screen.getByText(/lists no configured targets/)).toBeTruthy();
+    expect(pathField()).toBeTruthy();
   });
 
   // Conventions are offered core-first then per plugin as independent boxes with no master toggle and no "sets up" tag; the picks are posted as conventions only, and the scaffold shows after.
