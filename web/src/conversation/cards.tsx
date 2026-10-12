@@ -81,9 +81,17 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
   );
 }
 
+/**
+ * A question field as display text: a string, or undefined for anything else.
+ * The questions come from the model's raw tool input, so a field may hold any
+ * JSON value; a non-string is treated as missing, as the answer formatter does.
+ */
+export const fieldText = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+
 export function QuestionCard({ node, model }: { node: QuestionNode; model: ConversationModel }) {
   const active = node.tab;
   const q = node.questions[active] ?? {};
+  const header = fieldText(q.header);
   const answer = node.answers[active] ?? { kind: 'none' };
   const ready = ConversationModel.questionReady(node);
   const multi = node.questions.length > 1;
@@ -129,19 +137,20 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
               <span className={cn('flex size-4 items-center justify-center rounded-full text-[10px]', node.answers[i]?.kind !== 'none' ? 'bg-success text-white' : 'bg-background/30')}>
                 {node.answers[i]?.kind !== 'none' ? '✓' : i + 1}
               </span>
-              {qq.header || qq.question?.slice(0, 24) || `Q${i + 1}`}
+              {fieldText(qq.header) || fieldText(qq.question)?.slice(0, 24) || `Q${i + 1}`}
             </button>
           ))}
         </div>
       )}
       <div className="space-y-3 px-4 py-3">
         <div>
-          {q.header && <div className="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">{q.header}{q.multiSelect && ' · select any'}</div>}
-          <div className="text-[15px] font-medium">{q.question ?? ''}</div>
+          {header && <div className="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">{header}{q.multiSelect && ' · select any'}</div>}
+          <div className="text-[15px] font-medium">{fieldText(q.question) ?? ''}</div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {(q.options ?? []).map((opt: any, oi: number) => {
-            const label = opt.label ?? `Option ${oi + 1}`;
+            const label = fieldText(opt.label) ?? `Option ${oi + 1}`;
+            const description = fieldText(opt.description);
             const on = picked(opt.label ?? '');
             return (
               <button
@@ -157,7 +166,7 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
                 )}
               >
                 <span className="font-medium">{label}</span>
-                {opt.description && <span className="text-xs text-muted-foreground">{opt.description}</span>}
+                {description && <span className="text-xs text-muted-foreground">{description}</span>}
               </button>
             );
           })}

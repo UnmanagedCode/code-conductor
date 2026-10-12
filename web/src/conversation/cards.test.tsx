@@ -12,7 +12,7 @@ vi.mock('@/lib/core/ws.js', () => ({
   },
 }));
 
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers, type UserQuestionAnswer } from '../../../public/userQuestionAnswers.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
 import { appStore } from '@/state/app';
 import { ConversationModel, type QuestionNode } from './model';
@@ -91,6 +91,48 @@ describe('question card', () => {
     await flush();
     expect(sent).toEqual([{ t: 'prompt', payload: { id: 'inst-1', text: formatUserQuestionAnswers([FRUIT, SIZE], [{ kind: 'option', label: 'Apple' }, { kind: 'option', label: 'L' }]) }, opts: { ack: true } }]);
     expect(statusOf(card())).toBe('Sending…');
+  });
+
+  // Invariant: a string question's tab reads its header, else its question's first 24 characters.
+  it('a string question keeps its tab label: header first, else the first 24 characters', async () => {
+    const long = { question: 'Pick a size for the whole order', options: [{ label: 'S' }] };
+    const { card } = await show([CARD([FRUIT, long])]);
+    const group = within(card()).getByRole('group', { name: 'Questions' });
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['1Fruit', '2Pick a size for the whol']);
+  });
+
+  // Invariant: a non-string question is treated as missing: its tab is named `Q<n>`, the card answers, and the answer echo renders.
+  it.each([['false', false], ['42', 42], ['an object', {}]])('a non-string question (%s) gets a named tab, answers, and its echo renders', async (_name, bad) => {
+    const qs: any[] = [{ question: bad, options: [{ label: 'Yes' }, { label: 'No' }] }, SIZE];
+    const answers: UserQuestionAnswer[] = [{ kind: 'option', label: 'Yes' }, { kind: 'option', label: 'L' }];
+    const { m, card, root } = await show([CARD(qs)]);
+    const group = within(card()).getByRole('group', { name: 'Questions' });
+    expect(within(group).getByRole('button', { name: /Q1$/ }).getAttribute('data-tab')).toBe('0');
+    expect(within(group).getByRole('button', { name: /Pick a size$/ }).getAttribute('data-tab')).toBe('1');
+    fireEvent.click(opt(card(), 'Yes'));
+    await flush();
+    fireEvent.click(card().querySelector('[data-tab="1"]')!);
+    await flush();
+    fireEvent.click(opt(card(), 'L'));
+    await flush();
+    fireEvent.click(sendBtn(card()));
+    await flush();
+    expect(sent).toEqual([{ t: 'prompt', payload: { id: 'inst-1', text: formatUserQuestionAnswers(qs, answers) }, opts: { ack: true } }]);
+    m.apply(stamped(qs, answers));
+    await flush();
+    expect(statusOf(card())).toBe('Answered');
+    const bubble = root.querySelector('[data-item="user"][data-variant="answer"]') as HTMLElement;
+    expect([...bubble.querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['Yes', 'L']);
+  });
+
+  // Invariant: a non-string header, option label or description is treated as missing: the tab falls back to the question, the option to `Option <n>`, and no object text reaches the card.
+  it('non-string header, option label and description fall back without crashing', async () => {
+    const qs = [{ header: {}, question: 'Pick a colour', options: [{ label: {}, description: {} }, { label: 'Red' }] }, SIZE];
+    const { card } = await show([CARD(qs)]);
+    const group = within(card()).getByRole('group', { name: 'Questions' });
+    expect(within(group).getByRole('button', { name: /Pick a colour$/ }).getAttribute('data-tab')).toBe('0');
+    expect([...card().querySelectorAll('[data-option]')].map((b) => b.textContent)).toEqual(['Option 1', 'Red']);
+    expect(card().textContent).not.toContain('[object Object]');
   });
 
   it("an answer that never reaches the CLI re-opens the card with the reason; the picks survive", async () => {

@@ -16,7 +16,7 @@ import { parseRenewSeed, splitSummarySections } from '../../../public/renewSeed.
 import { splitForwardedMessages } from '../../../public/forwardFrame.ts';
 import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
 import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
-import { PlanCard, QuestionCard } from './cards';
+import { fieldText, PlanCard, QuestionCard } from './cards';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { ImageZoom } from './ImageZoom';
 
@@ -190,7 +190,7 @@ function AnswerSummary({ answer }: { answer: NonNullable<UserNode['answer']> }) 
         const a = answer.answers![i];
         return (
           <div key={i} className="space-y-1" data-kind={a.kind}>
-            <div className="text-xs text-muted-foreground">{q?.header && <span className="mr-1 font-semibold uppercase">{q.header}</span>}{q?.question ?? ''}</div>
+            <div className="text-xs text-muted-foreground">{fieldText(q?.header) && <span className="mr-1 font-semibold uppercase">{fieldText(q.header)}</span>}{fieldText(q?.question) ?? ''}</div>
             <div className="flex flex-wrap gap-1.5">
               {a.kind === 'option' && <span className="rounded-full bg-primary/12 px-2 py-0.5 text-sm text-primary" data-choice>{a.label}</span>}
               {a.kind === 'multi' && a.labels.map((l: string) => <span key={l} className="rounded-full bg-primary/12 px-2 py-0.5 text-sm text-primary" data-choice>{l}</span>)}
