@@ -36,9 +36,23 @@ export function Hint({ label, children }: { label: React.ReactNode; children: Re
 
 // ── Status dot ───────────────────────────────────────────────────────────
 
-export function Dot({ status, awaitingWake, waitingOnJob, awaitingUser = null, awaitingUserSource = null, unreadRing = false, className }: {
+type DotProps = {
   status?: string | null; awaitingWake?: boolean; waitingOnJob?: boolean;
-  awaitingUser?: string | null; awaitingUserSource?: string | null; unreadRing?: boolean; className?: string;
+  awaitingUser?: string | null; awaitingUserSource?: string | null;
+};
+
+/** The status dot's words: its tooltip, and the status part of a row's accessible name. */
+export function dotTitle({ status, awaitingWake, waitingOnJob, awaitingUser = null, awaitingUserSource = null }: DotProps) {
+  const d = dotState({ status, awaitingWake, waitingOnJob, awaitingUser });
+  return d.needsYou
+    ? needsYouTitle({ status: d.status, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource })
+    : d.waiting === 'worker' ? 'idle — waiting on a worker'
+    : d.waiting === 'job' ? 'idle — waiting on a background job'
+    : runLabel(d.status, awaitingWake, waitingOnJob);
+}
+
+export function Dot({ status, awaitingWake, waitingOnJob, awaitingUser = null, awaitingUserSource = null, unreadRing = false, className }: DotProps & {
+  unreadRing?: boolean; className?: string;
 }) {
   const d = dotState({ status, awaitingWake, waitingOnJob, awaitingUser });
   const s = d.status;
@@ -51,11 +65,7 @@ export function Dot({ status, awaitingWake, waitingOnJob, awaitingUser = null, a
     : d.waiting ? 'bg-info'
     : d.needsYou ? 'bg-warning'
     : 'bg-muted-foreground/45';
-  const title = d.needsYou
-    ? needsYouTitle({ status: s, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource })
-    : d.waiting === 'worker' ? 'idle — waiting on a worker'
-    : d.waiting === 'job' ? 'idle — waiting on a background job'
-    : runLabel(s, awaitingWake, waitingOnJob);
+  const title = dotTitle({ status, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource });
   return (
     <span
       className={cn('relative inline-flex size-2 shrink-0 rounded-full', fill,
@@ -129,6 +139,11 @@ export function CloseButton({ args }: { args: CloseArgs }) {
 
 // ── Session row ──────────────────────────────────────────────────────────
 
+/** A row's accessible name: what identifies and qualifies it, never its ago label, which would change it every minute. */
+export function rowName(label: string, status: string, stage: string | null, unread: number) {
+  return [label, status, stage, unread > 0 ? `${unread} unread` : null].filter(Boolean).join(' — ');
+}
+
 export function SessionRow({ session, projectName, worktreeName, activeId, unread, showOwner = false, showDelete = true, stage = null, ownerTitle }: {
   session: SessionItem; projectName: string; worktreeName: string | null; activeId: string | null; unread: number;
   showOwner?: boolean; showDelete?: boolean; stage?: string | null; ownerTitle?: (sid: string) => string;
@@ -165,7 +180,13 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
         )}
       >
         {/* No handler of its own: Enter and Space click it, and the click bubbles to the row's. */}
-        <button type="button" title={tooltip} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch py-1 pl-2 text-left outline-none" data-row-open>
+        <button
+          type="button"
+          title={tooltip}
+          aria-label={rowName(label, dotTitle({ status, awaitingWake: session.instanceAwaitingWake, waitingOnJob: session.instanceWaitingOnJob }), stage, unread)}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch py-1 pl-2 text-left outline-none"
+          data-row-open
+        >
           <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
           <span className="flex min-w-[2em] flex-1 flex-col">
             {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
