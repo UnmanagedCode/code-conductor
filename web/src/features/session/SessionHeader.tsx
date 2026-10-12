@@ -205,7 +205,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   const restartShown = groups.some(([, es]) => es.some((e) => e.state.kind === 'restart'));
 
   return (
-    <header ref={headerRef} className="touch-pan-x touch-pinch-zoom sticky top-[env(safe-area-inset-top,0px)] z-10 flex min-h-14 shrink-0 items-center gap-2 border-b bg-background/85 px-3 py-2 backdrop-blur md:px-5" data-session-header>
+    <header ref={headerRef} className="touch-pan-x touch-pinch-zoom sticky top-[env(safe-area-inset-top,0px)] z-10 flex min-h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 py-2 backdrop-blur md:px-5" data-session-header>
       <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open sidebar" onClick={onMenu}><MenuIcon /></Button>
 
       <div className="min-w-0 flex-1">

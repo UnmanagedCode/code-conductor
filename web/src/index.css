@@ -9,6 +9,8 @@
    naturally; status hues are shared by both themes and only shift lightness. */
 :root {
   --radius: 0.75rem;
+  /* The height of each view's top bar. App.tsx's Toaster sits below it, never over its controls. */
+  --header-height: 3.5rem;
 
   --background: oklch(0.99 0.002 60);
   --foreground: oklch(0.2 0.01 50);
