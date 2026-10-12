@@ -66,25 +66,26 @@ async function start(startedIn: string | null) {
     toast.error('Microphone access denied', e?.message || String(e));
     return;
   }
-  let recorder: MediaRecorder;
+  // `rec` is set only once the recorder runs: one that fails to construct or start releases the
+  // microphone and leaves the next start free.
   try {
-    recorder = new MediaRecorder(stream);
+    const recorder = new MediaRecorder(stream);
+    const entry = { recorder, stream, chunks: [] as Blob[], cancelled: false };
+    recorder.addEventListener('dataavailable', (ev) => { if (ev.data?.size) entry.chunks.push(ev.data); });
+    recorder.addEventListener('stop', () => {
+      const blob = new Blob(entry.chunks, { type: recorder.mimeType || 'audio/webm' });
+      stopTracks(stream);
+      rec = null;
+      if (entry.cancelled) return;
+      void transcribe(blob, startedIn);
+    });
+    recorder.start();
+    rec = entry;
   } catch (e: any) {
     stopTracks(stream);
     toast.error('Recording unavailable', e?.message || String(e));
     return;
   }
-  const entry = { recorder, stream, chunks: [] as Blob[], cancelled: false };
-  rec = entry;
-  recorder.addEventListener('dataavailable', (ev) => { if (ev.data?.size) entry.chunks.push(ev.data); });
-  recorder.addEventListener('stop', () => {
-    const blob = new Blob(entry.chunks, { type: recorder.mimeType || 'audio/webm' });
-    stopTracks(stream);
-    rec = null;
-    if (entry.cancelled) return;
-    void transcribe(blob, startedIn);
-  });
-  recorder.start();
   void acquireWakeLock();
   document.addEventListener('visibilitychange', onVisible);
   store.set({ state: 'recording' });

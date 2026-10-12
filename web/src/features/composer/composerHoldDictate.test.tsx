@@ -1,7 +1,8 @@
 // Holding Send with text in the box: the hold threshold, a recording that keeps running after the
 // release until a tap, focus kept in the box, a cancelled press, the tooltip naming the gesture; a
 // recording that keeps running while the composer is unmounted (the user left the session view);
-// a transcript with no words; and the transcription in flight, and one that fails.
+// a transcript with no words; the transcription in flight, and one that fails; and a recorder that
+// fails to start.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 
@@ -15,6 +16,7 @@ vi.mock('@/lib/core/ws.js', () => ({
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { voiceStore } from '@/features/voice/store';
+import { toast } from '@/ui/feedback';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
 import { DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS } from './drafts';
@@ -34,9 +36,13 @@ function mount(first: Instance) {
 }
 
 // ── Fakes: the microphone, a recorder, a held transcription ────────────────
+/** How many of the next recorders throw from `start()`. */
+let recorderStartFailures = 0;
 class FakeRecorder extends EventTarget {
   mimeType = 'audio/webm';
-  start() {}
+  start() {
+    if (recorderStartFailures > 0) { recorderStartFailures--; throw new Error('the recorder refused to start'); }
+  }
   stop() {
     this.dispatchEvent(Object.assign(new Event('dataavailable'), { data: new Blob(['x'], { type: 'audio/webm' }) }));
     this.dispatchEvent(new Event('stop'));
@@ -54,6 +60,7 @@ beforeEach(() => {
   transcript = 'spoken';
   microphone = { opened: 0, released: 0 };
   transcriptions = 0;
+  recorderStartFailures = 0;
   voiceStore.set({ supported: true, micAvailable: true });
   vi.stubGlobal('MediaRecorder', FakeRecorder);
   Object.defineProperty(navigator, 'mediaDevices', {
@@ -67,11 +74,12 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 // ── Reading and driving the composer ─────────────────────────────────────
 const box = () => screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
-const button = () => screen.getByRole('button', { name: /^(Send|Dictate|Stop recording)$/ }) as HTMLButtonElement;
+const button = () => screen.getByRole('button', { name: /^(Send|Dictate|Stop recording|Transcribing)$/ }) as HTMLButtonElement;
 const label = () => button().getAttribute('aria-label');
 const type = (value: string) => fireEvent.change(box(), { target: { value } });
 const sentTexts = () => sent.map((s) => s.payload.text);
@@ -253,6 +261,29 @@ describe('holding Send with text in the box', () => {
     act(() => voiceStore.set({ micAvailable: false }));
     expect(tooltip().textContent, 'without dictation it offers no hold').not.toMatch(/hold/i);
   });
+  it('a recorder that fails to start releases the microphone, says so, and the next hold records', async () => {
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => '');
+    recorderStartFailures = 1;
+    mount(inst('start-fails'));
+    type('hello');
+    await holdToRecord();
+    expect(microphone.opened, 'positive control: the hold opened the microphone').toBe(1);
+    release();
+    await wait(HOLD_MS);
+    expect(microphone.released, 'the microphone is released').toBe(1);
+    expect(error, 'the failure is shown to the user').toHaveBeenCalledTimes(1);
+    expect(label(), 'the composer is idle').toBe('Send');
+    expect(sent, 'the release sends nothing').toEqual([]);
+    await holdToRecord();
+    expect(label(), 'the next hold records').toBe('Stop recording');
+    expect(microphone.opened).toBe(2);
+    release();
+    await tap();
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+    expect(microphone.released, 'each microphone opened is released').toBe(2);
+  });
 });
 
 describe('leaving the session view (the composer unmounts)', () => {
@@ -413,7 +444,7 @@ describe('the transcription', () => {
     await tap();
     expect(transcriptions, 'the tap sent the audio for transcription').toBe(1);
     expect(button().disabled, 'the button is disabled while it transcribes').toBe(true);
-    expect(label(), 'it no longer offers to stop the recording').not.toBe('Stop recording');
+    expect(label(), 'it is named as transcribing, not Send and not Stop recording').toBe('Transcribing');
     expect(screen.queryByRole('button', { name: 'Cancel' }), 'nor to cancel it').toBeNull();
     await tap();
     expect(transcriptions, 'a press while it transcribes posts nothing more').toBe(1);
@@ -425,7 +456,10 @@ describe('the transcription', () => {
   });
 
   it('a failed transcription returns the composer to idle: the typed text stays, and Send works again', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => { transcriptions++; return { ok: false, status: 500, text: async () => 'whisper failed' }; }));
+    // The server's error body is JSON, as `errorBody` in src/routes.ts sends it.
+    const body = { error: 'whisper failed' };
+    vi.stubGlobal('fetch', vi.fn(async () => { transcriptions++; return { ok: false, status: 503, json: async () => body, text: async () => JSON.stringify(body) }; }));
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => '');
     mount(inst('failed'));
     type('hello');
     await holdToRecord();
@@ -433,9 +467,11 @@ describe('the transcription', () => {
     await tap();
     expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
     await flushMicrotasks();
+    expect(error, 'the failure is shown to the user').toHaveBeenCalledTimes(1);
+    expect(String(error.mock.calls[0][1]), "with the server's reason").toMatch(/whisper failed/);
     expect(button().disabled, 'the button is usable again').toBe(false);
     expect(label()).toBe('Send');
-    expect(box().value).toBe('hello');
+    expect(box().value, 'the typed text is unchanged').toBe('hello');
     await tap();
     expect(sentTexts(), 'and sends the typed text, untagged').toEqual(['hello']);
   });

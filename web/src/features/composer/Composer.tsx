@@ -362,7 +362,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
                 size={queueMode ? 'sm' : 'icon-sm'}
                 variant={mode === 'recording' ? 'destructive' : mode === 'mic' ? 'secondary' : 'default'}
                 className={cn('rounded-full', queueMode && 'px-3')}
-                aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : queueMode ? 'Queue message' : 'Send'}
+                aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : mode === 'transcribing' ? 'Transcribing' : queueMode ? 'Queue message' : 'Send'}
                 disabled={sendDisabled}
                 onPointerDown={onSendPointerDown}
                 onPointerUp={onSendPointerUp}

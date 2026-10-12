@@ -3502,6 +3502,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > a cancel after the recording started leaves it running until a tap',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > pressing Dictate, Send to hold, or Stop recording keeps the focus in the message box',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > the Send button\'s tooltip names the hold gesture while dictation is available, and not without it',
+        'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > a recorder that fails to start releases the microphone, says so, and the next hold records',
         'web/src/features/composer/composerHoldDictate.test.tsx::leaving the session view (the composer unmounts) > a recording keeps running: the composer shows Stop recording when it comes back, and a tap there lands the transcript in the box',
         'web/src/features/composer/composerHoldDictate.test.tsx::leaving the session view (the composer unmounts) > a transcript that lands while the composer is unmounted becomes its session\'s draft, flagged, and shows when the composer comes back',
         'web/src/features/composer/composerHoldDictate.test.tsx::leaving the session view (the composer unmounts) > a composer that comes back on another session shows the recording, and the transcript still lands in the session it was spoken to',
@@ -3514,6 +3515,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composerHoldDictate.test.tsx::the transcription > a failed transcription returns the composer to idle: the typed text stays, and Send works again',
         'web/e2e/composer-dictate.spec.ts::holding Send with text records until a tap and keeps the box focused; a short press sends, and a cancelled touch does nothing',
         'web/e2e/composer-dictate.spec.ts::a recording keeps running when the user leaves the session view and comes back, and its transcript lands in its session',
+        'web/e2e/composer-dictate.spec.ts::Cancel on the composer the user came back to discards the recording: nothing is posted and the box keeps its text',
       ] },
   },
 

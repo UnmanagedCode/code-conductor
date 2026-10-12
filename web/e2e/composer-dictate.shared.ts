@@ -2,7 +2,7 @@
 // in for it, and the page's own route answers the transcription endpoints. Holding Send with text in
 // the box records until a tap and keeps the box focused; a short press sends; a touch the browser
 // cancels does nothing; and a recording keeps running when the user leaves the session view and
-// comes back. The body is shared by the per-project spec files.
+// comes back, where Cancel discards it. The body is shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
@@ -146,4 +146,33 @@ export async function recordingSurvivesLeavingSessionViewFlow({ page, cc }: { pa
   await select(page, s);
   await expect(box, 'the transcript answered while the user was in Settings lands in its session').toHaveValue(`typed while recording ${SPOKEN}`);
   await expect(button(page, 'Send')).toBeEnabled();
+}
+
+export async function cancelAfterLeavingSessionViewFlow({ page, cc }: { page: Page; cc: Cc }): Promise<void> {
+  const transcription = await fakeTranscription(page);
+  const s = await startSession(cc, 'cancel');
+  await next.open(page);
+  await select(page, s);
+  const box = messageBox(page);
+  await box.fill('kept text');
+  await press(page, button(page, 'Send'), 800);
+  await twoFrames(page);
+  await expect(button(page, 'Stop recording'), 'positive control: the hold records').toBeVisible();
+
+  await next.openSettings(page);
+  await next.leaveSettings(page);
+  await select(page, s);
+  await expect(button(page, 'Stop recording'), 'the recording survives leaving the session view').toBeVisible();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(button(page, 'Send'), 'Cancel returns the control to Send').toBeEnabled();
+  await expect(box, 'and the box keeps its text').toHaveValue('kept text');
+  expect(transcription.posted, 'Cancel posts nothing').toEqual([]);
+
+  // A later recording is a barrier: its own post lands after the cancelled recorder has stopped, so a
+  // post from the cancelled one would show here as a second.
+  await press(page, button(page, 'Send'), 800);
+  await twoFrames(page);
+  await button(page, 'Stop recording').click();
+  await expect(box).toHaveValue(`kept text ${SPOKEN}`);
+  expect(transcription.posted, 'only the later recording was posted').toHaveLength(1);
 }
