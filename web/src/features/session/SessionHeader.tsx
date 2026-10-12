@@ -154,7 +154,7 @@ export function ModeToggle({ inst }: { inst: Instance }) {
 export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => void }) {
   useSignal(modelsSignal);
   useSignal(mutesSignal);
-  const worktree = (inst.worktree as any)?.worktreeName ? (inst.worktree as any) : null;
+  const worktree = inst.worktree?.worktreeName ? inst.worktree : null;
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
   // Sync sits in the bar from md up and in ⋮ below it; the one query places it
   // and decides whether a stopped worktree session has a ⋮ at all.

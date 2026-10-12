@@ -2,7 +2,7 @@ import { ChevronRightIcon } from 'lucide-react';
 import { conductorTitle, sessionFromInstance, stageText, workersOf } from '@shared/conductors';
 import { conductorColor } from '@shared/conductorColor';
 import { cn } from '@/lib/utils';
-import type { Instance, Project } from '@/state/types';
+import type { Instance, Project, Worktree } from '@/state/types';
 import { resumeSession } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { CONDUCT_PROJECT, chipsOf, wtName } from './derive';
@@ -48,7 +48,7 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
           if (!byWt.has(n)) byWt.set(n, []);
           byWt.get(n)!.push(w);
         }
-        const listed = new Map<string, any>((Array.isArray(p.worktrees) ? p.worktrees : []).map((w: any) => [w.worktreeName, w]));
+        const listed = new Map<string, Worktree>((Array.isArray(p.worktrees) ? p.worktrees : []).map((w) => [w.worktreeName, w]));
         const recorded = (chip.worktrees as string[]).filter((n) => listed.has(n) && !byWt.has(n));
         const names = [...byWt.keys(), ...recorded].sort((a, b) => a.localeCompare(b));
         return (
@@ -59,7 +59,7 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
               <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5">
                 {names.map((n) => {
                   const ws = byWt.get(n);
-                  const wt = listed.get(n) ?? { ...(ws![0].worktree as any), worktreeName: n };
+                  const wt: Worktree = listed.get(n) ?? { ...ws![0].worktree, worktreeName: n };
                   return (
                     <li key={n} data-idle={!ws || undefined}>
                       <WorktreeHead project={chip.project} wt={wt} readOnly dim={!ws} />

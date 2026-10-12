@@ -53,7 +53,7 @@ const BLOCKED = { ok: true, action: 'rebase-conflict', ahead: 1, behind: 1, bran
 const SENT = { ok: true, action: 'rebase-prompt-sent', blocker: 'conflict' };
 const inst = (id: string, worktree: string | null, extra: Partial<Instance> = {}): Instance => ({
   id, project: 'demo', sessionId: `sid-${id}-abcdef`, status: 'idle', mode: 'plan', title: `title ${id}`,
-  worktree: worktree ? ({ worktreeName: worktree } as any) : null, ...extra,
+  worktree: worktree ? { worktreeName: worktree, branch: `code-conductor/${worktree}`, baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null } : null, ...extra,
 });
 const setState = (activeId: string | null, instances: Instance[]) => appStore.set({ activeId, instances });
 const posts = (suffix: string) => calls.filter((c) => c.url.endsWith(suffix));

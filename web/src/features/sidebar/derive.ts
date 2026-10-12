@@ -31,7 +31,7 @@ export type SessionItem = {
 
 export type Conductors = { live: any[]; inactive: any[] };
 
-export const wtName = (i: Instance): string | null => (i.worktree as any)?.worktreeName ?? null;
+export const wtName = (i: Instance): string | null => i.worktree?.worktreeName ?? null;
 
 /** Sessions-cache / collapse key of a place: `project` or `project:worktree`. */
 export const placeKeyOf = (project: string, worktree?: string | null) => (worktree ? `${project}:${worktree}` : project);

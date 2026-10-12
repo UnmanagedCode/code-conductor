@@ -22,7 +22,7 @@ import { formatAutoResumeTime } from '@shared/usage';
 import { respawnActive, syncWorktree } from '@/app/sessionActions';
 import { stickyPrompt } from '@/app/controller';
 import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';
-import type { Instance } from '@/state/types';
+import type { Instance, InstanceWorktree } from '@/state/types';
 import { SessionHeader } from './SessionHeader';
 
 // ── fake viewport width ─────────────────────────────────────────────────────
@@ -71,13 +71,13 @@ function setWide(v: boolean) {
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
-const WORKTREE = { worktreeName: 'mobile-compact-header', baseBranch: 'main' };
+const WORKTREE: InstanceWorktree = { worktreeName: 'mobile-compact-header', branch: 'code-conductor/mobile-compact-header', baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null };
 const TITLE = 'Rework the compact session header so a long title never pushes the controls off a phone screen';
 
 const base = (extra: Partial<Instance> = {}): Instance => ({
   id: 'inst-1', project: 'demo', status: 'idle', displayStatus: 'idle', sessionId: 'sess-1', mode: 'bypassPermissions',
   model: 'claude-opus-5-5', backend: 'claude', effort: 'high', contextWindowTokens: 200_000,
-  title: TITLE, worktree: WORKTREE as any, ...extra,
+  title: TITLE, worktree: WORKTREE, ...extra,
 });
 const stopped = (status: 'crashed' | 'exited', extra: Partial<Instance> = {}) => base({ status, displayStatus: status, ...extra });
 
@@ -139,7 +139,7 @@ describe('Sync and ⋮ across md', () => {
   it('Sync is offered exactly once and never disabled, for every status: in the bar from md up, in ⋮ below, and nowhere without a worktree', async () => {
     for (const status of ['idle', 'turn', 'spawning', 'crashed', 'exited']) {
       for (const hasWorktree of [true, false]) {
-        const inst = base({ status, displayStatus: status, worktree: hasWorktree ? WORKTREE as any : null });
+        const inst = base({ status, displayStatus: status, worktree: hasWorktree ? WORKTREE : null });
         const label = `${status}, ${hasWorktree ? 'worktree' : 'no worktree'}`;
 
         setWide(true);
@@ -217,7 +217,7 @@ describe('Sync and ⋮ across md', () => {
 
   it('a dead conductor has no enforcement control at any width', async () => {
     for (const status of ['exited', 'crashed'] as const) {
-      for (const worktree of [WORKTREE as any, null]) {
+      for (const worktree of [WORKTREE, null]) {
         for (const w of [false, true]) {
           const label = `${status}, ${worktree ? 'worktree' : 'no worktree'}, ${w ? 'wide' : 'narrow'}`;
           setWide(w);

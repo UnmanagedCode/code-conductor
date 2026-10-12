@@ -12,6 +12,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
+import type { PostWorktreeHook } from '@/state/types';
 import { apiFetch } from '@shared/http';
 import {
   backendIdOf, CLAUDE_BACKEND, getActiveDefaultSpawnTier, getActiveTierBackend, getActiveTierEffort, getActiveTierEnabled,
@@ -47,8 +48,6 @@ function tierSublabel(tier: string) {
   return backendIdOf(b) !== CLAUDE_BACKEND ? b.model : getVersionLabel(b.model);
 }
 
-type Hook = { ran: boolean; timedOut?: boolean; exitCode?: number; durationMs?: number; truncated?: boolean; output?: string };
-
 function SpawnBody({ project, worktreeIntent }: { project: string; worktreeIntent: string | null }) {
   useSignal(modelsSignal);
   const proj = useStore(appStore, (s) => s.projects.find((p) => p.name === project));
@@ -63,7 +62,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
   const [advanced, setAdvanced] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
-  const [hook, setHook] = React.useState<Hook | null>(null);
+  const [hook, setHook] = React.useState<PostWorktreeHook | null>(null);
 
   const tiers = visibleTiers();
   // A tier disabled in Settings while the dialog is open falls back to the default.
@@ -112,7 +111,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       await refreshProjects();
       await refreshInstances();
       if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
-      const h: Hook | undefined = inst.worktree?.postWorktreeCreate;
+      const h: PostWorktreeHook | undefined = inst.worktree?.postWorktreeCreate;
       if (h?.ran) setHook(h);
       else closeDialog('spawn');
     } catch (e: any) {

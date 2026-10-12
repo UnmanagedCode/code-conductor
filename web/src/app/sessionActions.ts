@@ -257,7 +257,7 @@ export async function applySessionTitle(sessionId: string, title: string): Promi
 export type WorktreeTarget = { project: string; worktree: string };
 
 function worktreeSession({ project, worktree }: WorktreeTarget): Instance | undefined {
-  const mine = instances().filter((i) => i.project === project && (i.worktree as any)?.worktreeName === worktree);
+  const mine = instances().filter((i) => i.project === project && i.worktree?.worktreeName === worktree);
   const live = mine.filter((i) => i.status !== 'crashed' && i.status !== 'exited');
   return live.find((i) => i.id === activeId()) ?? live[0] ?? mine.find((i) => i.id === activeId()) ?? mine[0];
 }

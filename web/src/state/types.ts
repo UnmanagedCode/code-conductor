@@ -18,7 +18,7 @@ export type Instance = {
   tier?: string | null;
   role?: string | null;
   cwd?: string;
-  worktree?: string | null;
+  worktree?: InstanceWorktree | null;
   temp?: boolean;
   conducted?: boolean;
   callerInstanceId?: string | null;
@@ -50,6 +50,26 @@ export type Instance = {
   autoResumeAt?: number | null;
   queuedCount?: number;
   [k: string]: unknown;
+};
+
+/** `postWorktreeCreate` on a spawn's worktree (PostWorktreeHookResult, src/worktrees.ts). */
+export type PostWorktreeHook = {
+  ran: boolean;
+  timedOut?: boolean;
+  exitCode?: number | null;
+  durationMs?: number;
+  truncated?: boolean;
+  output?: string;
+  [k: string]: unknown;
+};
+
+/** An instance's worktree, as the summary carries it (src/instances.ts). */
+export type InstanceWorktree = {
+  worktreeName: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  postWorktreeCreate: PostWorktreeHook | null;
 };
 
 export type Worktree = {
