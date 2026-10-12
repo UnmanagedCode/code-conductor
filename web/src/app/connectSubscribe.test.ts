@@ -32,32 +32,43 @@ const B = inst('iB', 's-b');
 type Held = ReturnType<typeof held<RouteAnswer>>;
 let stop: (() => void) | null = null;
 
-/** A fresh controller (module state included) over a mocked socket that is not open yet; every GET /api/instances waits on its own deferred. */
-async function boot() {
+/**
+ * A fresh controller (module state included) over a mocked socket that is not open yet; every GET /api/instances
+ * waits on its own deferred, and with `holdProjects` so does every GET /api/projects.
+ */
+async function boot({ holdProjects = false } = {}) {
   stop?.();
   vi.resetModules();
   const ws = (await import('@/lib/core/ws.js')) as unknown as { bus: EventTarget; sent: [string, unknown, number][]; link: Link };
   ws.sent.length = 0;
   Object.assign(ws.link, { socket: 0, open: false, answer: null });
   const reads: Held[] = [];
+  const projectReads: Held[] = [];
   const calls = routeFetch({
     'GET /api/instances/': () => ({ json: { events: [], hasMore: false, nextBefore: null, segment: null } }),
     'GET /api/instances': () => { const h = held<RouteAnswer>(); reads.push(h); return h.answer; },
-    'GET /api/projects': () => ({ json: [] }),
+    'GET /api/projects/': () => ({ json: [] }),
+    'GET /api/projects': () => {
+      if (!holdProjects) return { json: [] };
+      const h = held<RouteAnswer>(); projectReads.push(h); return h.answer;
+    },
     'GET /api/workspaces': () => ({ json: [] }),
   });
   const c = await import('./controller');
+  const s = await import('./sessionActions');
   c.startController();
   stop = c.stopController;
   const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
   const frame = async (t: string) => { ws.bus.dispatchEvent(new CustomEvent(t)); await flush(); };
   return {
-    c, ws, reads, flush,
+    c, s, ws, reads, flush,
     open: () => frame('open'),
     close: () => frame('close'),
     hint: () => frame('instances'),
     /** Answers the n-th instance read (1-based) with `list`, then lets everything it unblocks run. */
     land: async (n: number, list: unknown[]) => { reads[n - 1].release({ json: list }); await flush(); },
+    /** Answers the n-th held projects read (1-based), then lets everything it unblocks run. */
+    landProjects: async (n: number) => { projectReads[n - 1].release({ json: [] }); await flush(); },
     /** Each subscribe sent, as `[instance id, socket]`. */
     subscribes: () => ws.sent.filter(([t]) => t === 'subscribe').map(([, p, s]) => [(p as { id: string }).id, s]),
     historyReads: () => calls.filter((x) => x.url.includes('/lineage-events')).length,
@@ -136,5 +147,64 @@ describe('subscribing the active session when the socket opens', () => {
     b.c.selectInstance('iB', { userGesture: true });
     await b.land(2, [A, B]);
     expect(b.subscribes()).toEqual([['iA', 1], ['iB', 2]]);
+  });
+
+  it('respawning the active session while the first connect\'s list read is in flight subscribes it once', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    const respawned = b.s.respawnActive();
+    await b.flush();
+    await b.land(3, [A, B]);
+    await respawned;
+    expect(b.subscribes(), 'fixture check: the respawn subscribed on the open socket').toEqual([['iB', 1]]);
+    await b.land(2, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 1]]);
+  });
+
+  it('a stale open whose list read lands after a newer open sends nothing on the new socket', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    await b.close();
+    await b.open();
+    await b.land(2, [A, B]);
+    expect(b.subscribes()).toEqual([]);
+    await b.land(3, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
+  });
+
+  it('the newer open subscribes the active session once when its list read lands before the stale open\'s', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    await b.close();
+    await b.open();
+    await b.land(3, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
+    await b.land(2, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
+  });
+
+  it('a stale open whose projects read lands after a newer open has subscribed sends nothing on the new socket', async () => {
+    const b = await boot({ holdProjects: true });
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    await b.close();
+    await b.open();
+    await b.landProjects(2);
+    await b.land(2, [A, B]);
+    expect(b.subscribes(), 'fixture check: the newer open subscribed the active session').toEqual([['iB', 2]]);
+    await b.landProjects(1);
+    await b.land(3, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
   });
 });

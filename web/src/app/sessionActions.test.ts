@@ -17,6 +17,7 @@ vi.mock('./controller', () => ({
   refreshInstances: vi.fn(async () => {}),
   selectInstance: vi.fn(),
   send: vi.fn(),
+  subscribe: vi.fn(),
 }));
 
 import { CLOSE_TITLES, closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
@@ -284,18 +285,20 @@ describe('resuming the active session', () => {
     await respawnActive();
     expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
     expect(controller.refreshInstances).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(controller.send).mock.calls).toEqual([['subscribe', { id: 'A' }]]);
+    expect(vi.mocked(controller.subscribe).mock.calls).toEqual([['A']]);
     expect(toasts).toEqual([]);
 
     calls = [];
     vi.mocked(controller.refreshInstances).mockClear();
     vi.mocked(controller.send).mockClear();
+    vi.mocked(controller.subscribe).mockClear();
     stubFetch(() => ({ status: 409, body: { error: 'instance is already running' } }));
     await respawnActive();
     expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
     expect(toasts).toEqual([['error', 'Resume failed', 'instance is already running']]);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.send).not.toHaveBeenCalled();
+    expect(controller.subscribe).not.toHaveBeenCalled();
 
     calls = [];
     toasts.length = 0;
