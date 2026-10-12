@@ -48,13 +48,15 @@ export async function projectsFlow({ page, cc }: Ctx): Promise<void> {
   await expect(rows).toHaveCount(4);
 }
 
-// Invariant: a worktree made and removed through MCP appears and goes under its project, and a
-// workspace assignment and rename regroup the project under the new name and never the old.
+// Invariant: a worktree made and removed through MCP appears and goes under its project, a
+// workspace assignment and rename regroup the project under the new name and never the old, and a
+// workspace created with no members shows its section until it is deleted.
 export async function regroupFlow({ page, cc }: Ctx): Promise<void> {
   const tag = test.info().project.name;
   const project = `api-w-${tag}`;
   const ws = `Api-WS-${tag}`;
   const renamed = `Api-WS2-${tag}`;
+  const empty = `Api-Empty-${tag}`;
   await createProject(cc, project);
   await next.open(page);
   await next.lens(page, 'projects');
@@ -80,4 +82,11 @@ export async function regroupFlow({ page, cc }: Ctx): Promise<void> {
   await tool(cc, 'rename_workspace', { oldName: ws, newName: renamed });
   await expect(section(renamed)).toHaveCount(1);
   await expect(section(ws)).toHaveCount(0);
+
+  await tool(cc, 'create_workspace', { name: empty });
+  await expect(section(empty)).toHaveCount(1);
+  await expect(section(empty).locator('[data-project-row]')).toHaveCount(0);
+  await tool(cc, 'delete_workspace', { name: empty });
+  await expect(section(empty)).toHaveCount(0);
+  await expect(section(renamed)).toHaveCount(1);
 }

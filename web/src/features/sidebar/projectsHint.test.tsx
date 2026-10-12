@@ -1,8 +1,10 @@
 // The Projects lens under the `projects` hint: every hint re-reads the project
 // list and the sidebar shows exactly what the read returned — a created project
-// gains a row, a deleted one loses it, a workspace move or rename regroups —
+// gains a row, a deleted one loses it, a workspace move or rename regroups, a
+// workspace with no members shows while it is registered —
 // while any other message re-reads nothing, and a read that answers after a
-// newer one has landed never overwrites it.
+// newer one has landed never overwrites it (one answering while the newer is
+// still in flight is applied).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -111,6 +113,20 @@ describe('the projects hint in the Projects lens', () => {
     expect(rows()).toEqual(['alpha', 'beta']);
   });
 
+  it('a hint shows a workspace with no members once it is registered, and drops it once it is not', async () => {
+    // Invariant: the sections are the server's workspace registry, not only the workspaces the projects name.
+    expect(groups()).toEqual(['']);
+    server = { projects: [{ name: 'alpha', workspace: 'Team' }, { name: 'beta', workspace: null }], workspaces: ['Team', 'Empty'] };
+    await hint('projects');
+    await waitFor(() => expect(groups()).toEqual(['', 'Empty', 'Team']));
+    expect(document.querySelector('section[data-workspace="Empty"] [data-project-row]')).toBe(null);
+    expect(groupOf('alpha')).toBe('Team');
+    server = { projects: [{ name: 'alpha', workspace: 'Team' }, { name: 'beta', workspace: null }], workspaces: ['Team'] };
+    await hint('projects');
+    await waitFor(() => expect(groups()).toEqual(['', 'Team']));
+    expect(groupOf('alpha')).toBe('Team');
+  });
+
   it('a message other than projects re-reads nothing and changes no row', async () => {
     // Invariant: only the projects hint re-reads the list.
     server.projects = [{ name: 'alpha', workspace: null }, { name: 'beta', workspace: null }];
@@ -138,5 +154,19 @@ describe('the projects hint in the Projects lens', () => {
     older.resolve([{ name: 'alpha', workspace: null }]);
     await settle();
     expect(rows()).toEqual(['alpha', 'beta']);
+  });
+
+  it('a read that answers while a newer one is still in flight is applied, and the newer one lands over it', async () => {
+    // Invariant: a read is dropped only once a newer read has landed, never merely because a newer one started.
+    const reads: { resolve: (rows: Row[]) => void }[] = [];
+    held = reads;
+    await hint('projects');
+    await hint('projects');
+    await waitFor(() => expect(reads).toHaveLength(2));
+    const [older, newer] = reads;
+    older.resolve([{ name: 'alpha', workspace: null }, { name: 'beta', workspace: null }]);
+    await waitFor(() => expect(rows()).toEqual(['alpha', 'beta']));
+    newer.resolve([{ name: 'alpha', workspace: null }, { name: 'gamma', workspace: null }]);
+    await waitFor(() => expect(rows()).toEqual(['alpha', 'gamma']));
   });
 });
