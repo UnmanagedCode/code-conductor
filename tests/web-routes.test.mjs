@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { bootServer } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { webHandler } from '../src/webBuild.ts';
+import { webHandler, WEB_DIST } from '../src/webBuild.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const get = (url) => fetch(url, { redirect: 'manual' });
@@ -104,6 +104,16 @@ test('the real server, booted with no build', async (t) => {
       assert.equal(await r.text(), await fs.readFile(path.join(__dirname, '..', 'public', 'pluginBridge.js'), 'utf8'));
     });
   } finally { await close(); }
+});
+
+test("webHandler() with no distDir serves the repo's web/dist", (t) => {
+  // Invariant: the no-argument handler server.ts mounts serves WEB_DIST, and WEB_DIST is this checkout's web/dist.
+  assert.equal(WEB_DIST, path.resolve(__dirname, '..', 'web', 'dist'));
+  const roots = [];
+  const real = express.static;
+  t.mock.method(express, 'static', (root, ...rest) => { roots.push(root); return real(root, ...rest); });
+  webHandler();
+  assert.deepEqual(roots, [WEB_DIST]);
 });
 
 async function fixtureApp({ distDir, getState }) {

@@ -37,6 +37,16 @@ test('a node_modules missing any runtime dependency is incomplete; one with all 
   assert.equal(complete.status, 0, `full install: ${complete.stderr}`);
 });
 
+test('a dependency directory with no package.json in it (an interrupted install) is incomplete', (t) => {
+  const dir = checkout(['a', 'b']);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.rmSync(path.join(dir, 'node_modules', 'b', 'package.json'));
+  assert.ok(fs.existsSync(path.join(dir, 'node_modules', 'b')), 'fixture check: the directory itself is still there');
+
+  const r = spawnSync(process.execPath, [PROBE], { cwd: dir, encoding: 'utf8' });
+  assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+});
+
 test("the entrypoint runs the probe from the checkout and, only when it fails, runs npm install --omit=dev", (t) => {
   // The entrypoint's deps block as shipped: from its heading up to the exec.
   const script = fs.readFileSync(ENTRYPOINT, 'utf8');
