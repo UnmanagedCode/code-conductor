@@ -139,9 +139,12 @@ export function CloseButton({ args }: { args: CloseArgs }) {
 
 // ── Session row ──────────────────────────────────────────────────────────
 
-/** A row's accessible name: what identifies and qualifies it, never its ago label, which would change it every minute. */
+/**
+ * A row's accessible name: what identifies and qualifies it, never its ago label, which would change it every minute.
+ * Fields join with commas: a status may itself carry ' — ' ('idle — waiting on a worker').
+ */
 export function rowName(label: string, status: string, stage: string | null, unread: number) {
-  return [label, status, stage, unread > 0 ? `${unread} unread` : null].filter(Boolean).join(' — ');
+  return [label, status, stage, unread > 0 ? `${unread} unread` : null].filter(Boolean).join(', ');
 }
 
 export function SessionRow({ session, projectName, worktreeName, activeId, unread, showOwner = false, showDelete = true, stage = null, ownerTitle }: {

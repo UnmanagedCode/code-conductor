@@ -45,12 +45,12 @@ describe("a sidebar row's open button", () => {
     seed({ projects: [proj('names')], instances: [hand('h-named', 'names', null, { title: 'Tidy the docs', lastResponseAt: now - 5_000, turnEndSeq: 3, viewedSeq: 0 })] });
     renderSidebar();
     await settle();
-    expect(named('Tidy the docs — idle — 3 unread')).toEqual([openOf('h-named')]);
+    expect(named('Tidy the docs, idle, 3 unread')).toEqual([openOf('h-named')]);
     const ago = rowOf('h-named').querySelector('[data-ago]')!.textContent;
     vi.spyOn(Date, 'now').mockReturnValue(now + 125_000);
     act(() => agoTick.bump());
     expect(rowOf('h-named').querySelector('[data-ago]')!.textContent, 'positive control: the ago label moved').not.toBe(ago);
-    expect(named('Tidy the docs — idle — 3 unread')).toEqual([openOf('h-named')]);
+    expect(named('Tidy the docs, idle, 3 unread')).toEqual([openOf('h-named')]);
   });
 
   it("names a read row by its label and status alone, and a worker's by its stage too", async () => {
@@ -66,8 +66,8 @@ describe("a sidebar row's open button", () => {
     });
     renderSidebar();
     await settle();
-    expect(named('Alpha — running')).toEqual([conductorOpenOf('cond-n')]);
-    expect(named('w-staged prompt — idle — pb · build')).toEqual([openOf('w-staged')]);
+    expect(named('Alpha, running')).toEqual([conductorOpenOf('cond-n')]);
+    expect(named('w-staged prompt, idle, pb · build')).toEqual([openOf('w-staged')]);
   });
 
   it('names a conductor row with its unread count', async () => {
@@ -75,6 +75,15 @@ describe("a sidebar row's open button", () => {
     seed({ instances: [conductor('cond-u', { title: 'Bravo', temp: false, turnEndSeq: 2, viewedSeq: 0 })] });
     renderSidebar();
     await settle();
-    expect(named('Bravo — idle — 2 unread')).toEqual([conductorOpenOf('cond-u')]);
+    expect(named('Bravo, idle, 2 unread')).toEqual([conductorOpenOf('cond-u')]);
+  });
+
+  it("keeps the status one field when the dot's own words carry a dash", async () => {
+    // Invariant: the fields are comma-separated, so a status like 'idle — waiting on a worker' reads as one field.
+    uiStore.set({ lens: 'projects' });
+    seed({ projects: [proj('names')], instances: [hand('h-wake', 'names', null, { title: 'Tidy the docs', awaitingWake: true, turnEndSeq: 3, viewedSeq: 0 })] });
+    renderSidebar();
+    await settle();
+    expect(named('Tidy the docs, idle — waiting on a worker, 3 unread')).toEqual([openOf('h-wake')]);
   });
 });
