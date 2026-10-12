@@ -10,7 +10,8 @@ import type { Instance } from '@/state/types';
 
 vi.mock('@/lib/core/ws.js', () => {
   const bus = new EventTarget();
-  return { bus, sent: [], connect: vi.fn(), send: vi.fn() };
+  const sent: [string, unknown][] = [];
+  return { bus, sent, connect: vi.fn(), send: vi.fn((t: string, payload: unknown) => { sent.push([t, payload]); }) };
 });
 vi.mock('./sessionActions', () => ({ resumeSession: vi.fn(async () => {}) }));
 
@@ -28,6 +29,7 @@ async function boot() {
   const c = await import('./controller');
   const { appStore } = await import('@/state/app');
   const { SubagentPanel } = await import('@/features/session/SessionPanels');
+  const ws = await import('@/lib/core/ws.js') as unknown as { sent: [string, unknown][] };
   appStore.set({ instances: [conductor, worker, pinged] });
   c.startController();
   stopPrevious = c.stopController;
@@ -35,7 +37,7 @@ async function boot() {
   render(<SubagentPanel inst={conductor} />);
   const at = () => ({ active: appStore.get().activeId, hash: location.hash });
   const openWorker = () => fireEvent.click(screen.getByRole('button', { name: 'Fix the parser' }));
-  return { c, at, openWorker };
+  return { c, at, openWorker, sent: ws.sent };
 }
 
 describe('session selection and the history', () => {
@@ -75,5 +77,51 @@ describe('session selection and the history', () => {
     const { c, at } = await boot();
     await c.handleNotificationClick({ instanceId: 'B', sessionId: 'sw' });
     expect(at()).toEqual({ active: 'B', hash: '#session=sb' });
+  });
+
+  it('Back onto an entry naming the session already shown leaves that session alone: nothing is selected or subscribed again', async () => {
+    // Invariant: popstate selects only when the popped anchor names a session other than the active one.
+    const { at, openWorker, sent } = await boot();
+    openWorker();
+    const entries = history.length;
+    const subscribes = sent.length;
+    // The workers panel opens the same worker again: a second entry with the same anchor.
+    openWorker();
+    expect(history.length).toBe(entries + 1);
+    expect(sent.slice(subscribes)).toEqual([['subscribe', { id: 'W' }]]);
+    const after = sent.length;
+    history.back();
+    expect(at()).toEqual({ active: 'W', hash: '#session=sw' });
+    expect(sent.slice(after)).toEqual([]);
+  });
+
+  it('a notification click without a service worker opens its session in place, adding no history entry', async () => {
+    // Invariant: the page notification's click, dispatched on window, reaches the controller and selects its instance without a push.
+    const { at } = await boot();
+    const { __setSwRegistrationForTests, fire } = await import('@/features/notifications/notifications');
+    __setSwRegistrationForTests(null);
+    const g = globalThis as { Notification?: unknown };
+    const original = g.Notification;
+    const created: { onclick: (() => void) | null }[] = [];
+    g.Notification = class {
+      static permission = 'granted';
+      onclick: (() => void) | null = null;
+      constructor() { created.push(this); }
+      close() {}
+    };
+    const focus = vi.spyOn(window, 'focus').mockImplementation(() => {});
+    try {
+      fire({ title: 't', body: 'b', tag: 'session:sb', data: { project: 'p', instanceId: 'B', sessionId: 'sb' } });
+      expect(created).toHaveLength(1);
+      const entries = history.length;
+      created[0].onclick?.();
+      await Promise.resolve();
+      expect(at()).toEqual({ active: 'B', hash: '#session=sb' });
+      expect(history.length).toBe(entries);
+    } finally {
+      if (original === undefined) delete g.Notification;
+      else g.Notification = original;
+      focus.mockRestore();
+    }
   });
 });
