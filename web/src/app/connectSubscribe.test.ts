@@ -47,12 +47,13 @@ async function boot() {
     'GET /api/workspaces': () => ({ json: [] }),
   });
   const c = await import('./controller');
+  const s = await import('./sessionActions');
   c.startController();
   stop = c.stopController;
   const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
   const frame = async (t: string) => { ws.bus.dispatchEvent(new CustomEvent(t)); await flush(); };
   return {
-    c, ws, reads, flush,
+    c, s, ws, reads, flush,
     open: () => frame('open'),
     close: () => frame('close'),
     hint: () => frame('instances'),
@@ -136,5 +137,48 @@ describe('subscribing the active session when the socket opens', () => {
     b.c.selectInstance('iB', { userGesture: true });
     await b.land(2, [A, B]);
     expect(b.subscribes()).toEqual([['iA', 1], ['iB', 2]]);
+  });
+
+  it('respawning the active session while the first connect\'s list read is in flight subscribes it once', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    const respawned = b.s.respawnActive();
+    await b.flush();
+    await b.land(3, [A, B]);
+    await respawned;
+    expect(b.subscribes(), 'fixture check: the respawn subscribed on the open socket').toEqual([['iB', 1]]);
+    await b.land(2, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 1]]);
+  });
+
+  it('a stale open whose list read lands after a newer open sends nothing on the new socket', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    await b.close();
+    await b.open();
+    await b.land(2, [A, B]);
+    expect(b.subscribes()).toEqual([]);
+    await b.land(3, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
+  });
+
+  it('the newer open subscribes the active session once when its list read lands before the stale open\'s', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    await b.open();
+    await b.close();
+    await b.open();
+    await b.land(3, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
+    await b.land(2, [A, B]);
+    expect(b.subscribes()).toEqual([['iB', 2]]);
   });
 });

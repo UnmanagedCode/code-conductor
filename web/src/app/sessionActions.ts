@@ -5,7 +5,7 @@ import { closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
 import { appStore } from '@/state/app';
 import type { Instance, Project } from '@/state/types';
 import { confirmDialog, toast } from '@/ui/feedback';
-import { refreshInstances, refreshProjects, selectInstance, send } from './controller';
+import { refreshInstances, refreshProjects, selectInstance, subscribe } from './controller';
 import { emit } from './events';
 import { beginGesture, gestureOvertaken } from './gestures';
 
@@ -348,7 +348,8 @@ export async function respawnActive() {
   try {
     await apiFetch(`/api/instances/${id}/respawn`, { method: 'POST' });
     await refreshInstances();
-    if (activeId()) send('subscribe', { id: activeId() });
+    const active = activeId();
+    if (active) subscribe(active);
   } catch (e: any) {
     toast.error('Resume failed', e.message);
   }

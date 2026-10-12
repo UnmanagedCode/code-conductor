@@ -94,8 +94,14 @@ function patchInstance(id: string, patch: Partial<Instance>) {
 /** `gesture`: the `beginGesture()` token of the async gesture making this selection; a pick omits it. */
 export type SelectOptions = { push?: boolean; userGesture?: boolean; gesture?: number };
 
-/** The session the latest selection subscribed since the socket last opened; that `open` re-subscribes any other. */
+/** The session last subscribed (by `subscribe`) since the socket last opened; that `open` re-subscribes any other. */
 let subscribedSinceOpen: string | null = null;
+
+/** Subscribe `id` and record it, so the `open` whose reads are in flight adds no second subscribe for it. */
+export function subscribe(id: string | null) {
+  subscribedSinceOpen = id;
+  if (id) send('subscribe', { id });
+}
 
 export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   if (opts.userGesture) gestureSelected(opts.gesture);
@@ -106,8 +112,7 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   lazyHistory.reset();
   const inst = id ? appStore.get().instances.find((i) => i.id === id) ?? null : null;
   emit('select', { id, sessionId: inst?.sessionId ?? null, userGesture: !!opts.userGesture });
-  subscribedSinceOpen = id;
-  if (id) send('subscribe', { id });
+  subscribe(id);
   // The hash carries the sessionId (stable across crash / resume), not the instance id.
   if (opts.push) pushSessionAnchor(inst?.sessionId || null);
   else writeSessionAnchor(inst?.sessionId || null);
@@ -310,7 +315,9 @@ export function startController() {
   addEventListener('cc-notification-click', (event) => void handleNotificationClick((event as CustomEvent).detail), { signal });
 
   let firstConnect = true;
+  let opens = 0;
   listen('open', async () => {
+    const gen = ++opens;
     // A selection made before now subscribed on no socket, or on one that closed.
     subscribedSinceOpen = null;
     appStore.set({ connection: 'open' });
@@ -323,6 +330,8 @@ export function startController() {
         if (anchor && (await resumeSessionByAnchor(anchor))) return;
       }
     }
+    // A newer open owns the socket now, and re-subscribes the active session itself.
+    if (gen !== opens) return;
     const { activeId, instances } = appStore.get();
     if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) send('subscribe', { id: activeId });
   });
