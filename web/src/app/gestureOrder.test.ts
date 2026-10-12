@@ -4,7 +4,8 @@
 // list refresh are done; a session the user picks meanwhile, or a gesture
 // started after them that has selected, stands over them. A gesture started
 // after one that is still in flight never yields to it, and one whose own
-// session is gone overtakes nothing.
+// session is gone overtakes nothing. A fork's gesture starts when the user
+// confirms it, so a click made while its confirmation is open is the older.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 
@@ -24,6 +25,7 @@ const inst = (id: string, sessionId: string): Inst => ({ id, sessionId, project:
 const resumed = (sessionId: string): Inst => inst(`i:${sessionId}`, sessionId);
 const A = inst('iA', 's-a');
 const C = inst('iC', 's-c');
+const L = inst('iL', 's-l');
 const X = resumed('s-x');
 const Y = resumed('s-y');
 const Z = resumed('s-z');
@@ -229,6 +231,31 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     expect(b.active()).toBe('iC');
     expect(location.hash).toBe('#session=s-c');
   });
+
+  it('the active session picked again while a notification click looks its session up stands, with its anchor, and the clicked one is never resumed', async () => {
+    const ctl = await boot([A, C]);
+    ctl.c.selectInstance('iA', { userGesture: true });
+    const ctlClick = ctl.c.handleNotificationClick({ sessionId: 's-y' });
+    await ctl.flush();
+    await ctl.lookup('s-y', ON_DISK);
+    await ctl.post('s-y', { json: Y });
+    await ctl.land([A, C, Y]);
+    await ctlClick;
+    expect(ctl.active(), 'control: the click opens its session over the session picked before it').toBe(Y.id);
+
+    const b = await boot([A, C]);
+    b.c.selectInstance('iA', { userGesture: true });
+    const click = b.c.handleNotificationClick({ sessionId: 's-y' });
+    await b.flush();
+    expect(b.active(), 'fixture check: the session picked again is the active one').toBe('iA');
+    b.c.selectInstance('iA', { userGesture: true });
+    await b.lookup('s-y', ON_DISK);
+    await b.drain([A, C, Y]);
+    await click;
+    expect(b.active()).toBe('iA');
+    expect(location.hash).toBe('#session=s-a');
+    expect(b.resumes()).toEqual([]);
+  });
 });
 
 describe('two gestures in flight at once', () => {
@@ -285,6 +312,73 @@ describe('two gestures in flight at once', () => {
     await later;
     expect(b.active()).toBe(Y.id);
     expect(location.hash).toBe('#session=s-y');
+  });
+
+  it('a notification click on a session already in the list, made while an earlier click looks its session up, opens it, and the earlier click landing after it neither resumes nor selects over it', async () => {
+    const ctl = await boot([C, L]);
+    const ctlClick = ctl.c.handleNotificationClick({ sessionId: 's-x' });
+    await ctl.flush();
+    await ctl.lookup('s-x', ON_DISK);
+    await ctl.post('s-x', { json: X });
+    await ctl.land([C, L, X]);
+    await ctlClick;
+    expect(ctl.active(), 'control: the earlier click alone opens its session').toBe(X.id);
+
+    const b = await boot([C, L]);
+    const first = b.c.handleNotificationClick({ sessionId: 's-x' });
+    await b.flush();
+    await b.c.handleNotificationClick({ sessionId: 's-l' });
+    expect(b.active(), 'fixture check: the later click opened the listed session').toBe('iL');
+    await b.lookup('s-x', ON_DISK);
+    await b.drain([C, L, X]);
+    await first;
+    expect(b.active()).toBe('iL');
+    expect(location.hash).toBe('#session=s-l');
+    expect(b.resumes()).toEqual([]);
+  });
+
+  it('a notification click made while a fork is being made opens its session when the fork lands first and opens', async () => {
+    const b = await boot([A, C]);
+    b.c.selectInstance('iA', { userGesture: true });
+    const fork = b.actions.forkActiveSession(1, 'fork me');
+    await b.flush();
+    const click = b.c.handleNotificationClick({ sessionId: 's-y' });
+    await b.flush();
+    await b.post('fork', { json: { instance: FORKED } });
+    await b.land([A, C, FORKED]);
+    await fork;
+    expect(b.active(), 'fixture check: the fork opened').toBe(FORKED.id);
+    await b.lookup('s-y', ON_DISK);
+    await b.post('s-y', { json: Y });
+    await b.land([A, C, FORKED, Y]);
+    await click;
+    expect(b.active()).toBe(Y.id);
+    expect(location.hash).toBe('#session=s-y');
+  });
+
+  it('a notification click made while Fork\'s confirmation is open opens its session, and the fork confirmed after it opens over it', async () => {
+    const b = await boot([A, C]);
+    const { confirmDialog } = await import('@/ui/feedback');
+    const confirm = held<boolean>();
+    vi.mocked(confirmDialog).mockImplementationOnce(() => confirm.answer);
+    b.c.selectInstance('iA', { userGesture: true });
+    const fork = b.actions.forkActiveSession(1, 'fork me');
+    await b.flush();
+    expect(vi.mocked(confirmDialog).mock.results.at(-1)?.value, 'fixture check: the fork is waiting on its confirmation').toBe(confirm.answer);
+    const click = b.c.handleNotificationClick({ sessionId: 's-y' });
+    await b.flush();
+    await b.lookup('s-y', ON_DISK);
+    await b.post('s-y', { json: Y });
+    await b.land([A, C, Y]);
+    await click;
+    expect(b.active(), 'fixture check: the click opened its session').toBe(Y.id);
+    confirm.release(true);
+    await b.flush();
+    await b.post('fork', { json: { instance: FORKED } });
+    await b.land([A, C, Y, FORKED]);
+    await fork;
+    expect(b.active()).toBe(FORKED.id);
+    expect(location.hash).toBe('#session=s-fork');
   });
 
   it('a later notification click whose session is gone does not stop an earlier click from opening its session', async () => {
