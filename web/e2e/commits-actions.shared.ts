@@ -91,7 +91,7 @@ export async function commitsActionsFlow({ page, cc }: Args): Promise<void> {
   await expect(named('Locked')).toBeEnabled();
   await expect(named('Merge'), 'still locked after the Sync').toBeDisabled();
   await page.unroute(syncRoute);
-  // A toast covers the drawer button on phone (a known issue, filed on the board): dismiss it.
+  // On phone the Sync toast covers the header's Open sidebar button, and pauses while hovered: dismiss it.
   await page.getByRole('button', { name: 'Close toast' }).click();
   await expect(page.getByRole('button', { name: 'Close toast' })).toHaveCount(0);
 

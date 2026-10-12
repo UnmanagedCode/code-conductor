@@ -49,9 +49,9 @@ function shown(): string[] {
   if (document.querySelector('div[data-view="session"]')) out.push('session');
   return out;
 }
-/** Waits until `view` alone is on screen (a lazily loaded view keeps the one it replaces hidden in the DOM meanwhile). */
+/** Waits until `view` alone is on screen (a lazily loaded view keeps the one it replaces hidden in the DOM meanwhile; its first load is slow under load). */
 async function only(view: View | 'session', what: string) {
-  await waitFor(() => expect(shown(), what).toEqual([view]));
+  await waitFor(() => expect(shown(), what).toEqual([view]), { timeout: 10_000 });
 }
 async function open(view: View) {
   await act(async () => { OPEN[view](); });

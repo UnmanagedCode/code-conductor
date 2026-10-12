@@ -14,6 +14,15 @@ type Args = { page: Page; cc: Cc };
 
 const reviewView = (page: Page) => page.locator('main[data-view="review"]');
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Every full-page view's root, the plugin view's only while it shows; the session pane is none of them. */
+const fullPageViews = (page: Page) => page.locator('main[data-view], main[data-settings-view], section[data-view="plugin"][aria-hidden="false"]');
+
+/** Asserts the page sits on the app's session pane: still inside /next/, with no full-page view showing. */
+async function onSession(page: Page, cc: Cc, what: string): Promise<void> {
+  await expect(page, `${what}: still in the app`).toHaveURL(new RegExp(`^${escapeRe(cc.url)}/next/`));
+  await expect(page.locator('main:not([data-view]):not([data-settings-view])'), `${what}: the session pane`).toBeVisible();
+  await expect(fullPageViews(page), `${what}: no full-page view`).toHaveCount(0);
+}
 
 export async function viewOrderFlow({ page, cc }: Args): Promise<void> {
   const project = `views-${test.info().project.name}`;
@@ -32,7 +41,7 @@ export async function viewOrderFlow({ page, cc }: Args): Promise<void> {
   await expect(reviewView(page)).toHaveCount(0);
   await back(page);
   await expect(page).not.toHaveURL(/#(commits|review)$/);
-  await expect(commitsView(page)).toHaveCount(0);
+  await onSession(page, cc, 'Back from the history');
 
   // Invariant: a view opened from another replaces it, and Back returns to the one it replaced.
   await next.openSettings(page);
@@ -44,7 +53,7 @@ export async function viewOrderFlow({ page, cc }: Args): Promise<void> {
   await expect(next.settingsView(page)).toBeVisible();
   await expect(commitsView(page)).toHaveCount(0);
   await next.leaveSettings(page);
-  await expect(next.settingsView(page)).toHaveCount(0);
+  await onSession(page, cc, 'Back from Settings');
 }
 
 export async function backAfterBrowserBackFlow({ page, cc }: Args): Promise<void> {
