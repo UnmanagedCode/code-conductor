@@ -36,7 +36,7 @@ afterEach(() => vi.unstubAllGlobals());
 const page = (live: ConversationModel, evs: any[]) => live.prependPage(live.renderPage(evs, null, null), live.leadingAssistantWrap);
 const unstamped = () => ({ kind: 'user_echo', userIndex: 4, text: formatUserQuestionAnswers([FRUIT], [{ kind: 'option', label: 'Banana', note: 'ripe ones only' }]) });
 const cardIn = (root: HTMLElement) => root.querySelector('[data-item="question"]') as HTMLElement;
-const pressed = (card: HTMLElement) => [...card.querySelectorAll<HTMLElement>('[aria-pressed="true"]')].map((b) => b.dataset.option);
+const pressed = (card: HTMLElement) => [...card.querySelectorAll<HTMLElement>('[data-option][aria-pressed="true"]')].map((b) => b.dataset.option);
 
 describe('answer bubble', () => {
   it('a single-question answer shows its header, the question, one chip and a head with no count, and no raw text', async () => {
@@ -246,7 +246,7 @@ describe('question card locking', () => {
       expect(within(bubble).getByRole('button', { name: 'Show raw text' }), `${name}: raw toggle`).toBeTruthy();
       expect(within(bubble).getByRole('button', { name: 'Copy message' }), `${name}: copy`).toBeTruthy();
       expect(statusOf(card()), `${name}: the card is locked`).toBe('Answered');
-      expect(card().querySelectorAll('[aria-pressed="true"]').length, `${name}: no option is picked`).toBe(0);
+      expect(card().querySelectorAll('[data-option][aria-pressed="true"]').length, `${name}: no option is picked`).toBe(0);
       for (const i of card().querySelectorAll('input')) {
         expect(i.disabled, `${name}: field disabled`).toBe(true);
         expect(i.value, `${name}: no field text`).toBe('');
@@ -267,7 +267,7 @@ describe('question card locking', () => {
       expect((bubble as HTMLElement).querySelectorAll('[data-kind]').length, `${name}: no structured rows`).toBe(0);
       expect((bubble as HTMLElement).querySelector('.md'), `${name}: the raw text is shown`).not.toBeNull();
       expect(statusOf(card), `${name}: the card is locked`).toBe('Answered');
-      expect(card.querySelectorAll('[aria-pressed="true"]').length, `${name}: no option is picked`).toBe(0);
+      expect(card.querySelectorAll('[data-option][aria-pressed="true"]').length, `${name}: no option is picked`).toBe(0);
       for (const i of card.querySelectorAll('input')) {
         expect(i.disabled, `${name}: field disabled`).toBe(true);
         expect(i.value, `${name}: no field text`).toBe('');
@@ -309,7 +309,7 @@ describe('question card locking', () => {
         m.apply(echoOf(text));
         await flush();
         expect(statusOf(card()), `${name}: the card is locked`).toBe('Answered');
-        expect(card().querySelectorAll('[aria-pressed="true"]').length, `${name}: the local pick is discarded`).toBe(0);
+        expect(card().querySelectorAll('[data-option][aria-pressed="true"]').length, `${name}: the local pick is discarded`).toBe(0);
         expect(input(card()).value, `${name}: no field text`).toBe('');
       }
     });
@@ -328,7 +328,7 @@ describe('question card locking', () => {
       await flush();
       const el = cardIn(r.root);
       expect(statusOf(el)).toBe('Answered');
-      expect(el.querySelectorAll('[aria-pressed="true"]').length).toBe(0);
+      expect(el.querySelectorAll('[data-option][aria-pressed="true"]').length).toBe(0);
       expect(input(el).value).toBe('');
       const bubble = r.root.querySelector('[data-item="user"][data-variant="answer"]') as HTMLElement | null;
       expect(bubble, 'an answer bubble').not.toBeNull();

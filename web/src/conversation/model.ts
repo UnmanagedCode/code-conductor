@@ -100,6 +100,8 @@ export type PlanNode = Base & {
   autoApproved: boolean;
   submitted: false | 'approve' | 'reject';
   failedReason: string | null;
+  /** The feedback typed into the card; its decision sends it, and it stays shown after. */
+  feedback: string;
 };
 export type AnswerState =
   | { kind: 'none' }
@@ -112,6 +114,8 @@ export type QuestionNode = Base & {
   questions: any[];
   answers: AnswerState[];
   drafts: string[];
+  /** The question whose tab is showing. */
+  tab: number;
   submitted: boolean;
   answered: boolean;
   failedReason: string | null;
@@ -435,6 +439,11 @@ export class ConversationModel {
     } else {
       node.answers[idx] = text.length === 0 ? { kind: 'none' } : { kind: 'custom', text };
     }
+    this.touchNow(node);
+  }
+
+  questionTab(node: QuestionNode, idx: number) {
+    node.tab = idx;
     this.touch(node);
   }
 
@@ -454,6 +463,11 @@ export class ConversationModel {
     node.submitted = false;
     node.failedReason = reason;
     this.touch(node);
+  }
+
+  planFeedback(node: PlanNode, text: string) {
+    node.feedback = text;
+    this.touchNow(node);
   }
 
   planSubmitted(node: PlanNode, decision: 'approve' | 'reject') {
@@ -479,6 +493,16 @@ export class ConversationModel {
   /** Records the reader's toggle on its node and renders it at once, as a click on a local toggle would. */
   setReader<N extends ReaderNode>(node: N, patch: Partial<N['reader']>) {
     Object.assign(node.reader, patch);
+    this.touchNow(node);
+  }
+
+  /**
+   * Touches `node` and renders at once instead of on the next microtask: a field the reader
+   * types into must render each keystroke within its own event, or the browser moves the caret
+   * to the end. Called while a `batch()` holds notifications, it renders anyway and defeats the
+   * batch's coalescing, so only setters the reader types or toggles through use it.
+   */
+  private touchNow(node: NodeT) {
     this.touch(node).root.flush();
   }
 
@@ -835,7 +859,7 @@ export class ConversationModel {
 
   private renderPlanRequest(ev: UiEvent) {
     if (this.planNodes.has(ev.toolUseId)) return;
-    const node = this.make<PlanNode>({ type: 'plan', ev, autoApproved: !!ev.autoApproved, submitted: false, failedReason: null }, this);
+    const node = this.make<PlanNode>({ type: 'plan', ev, autoApproved: !!ev.autoApproved, submitted: false, failedReason: null, feedback: '' }, this);
     this.planNodes.set(ev.toolUseId, node);
     this.pushRoot(node);
     const w = this.activeWrap;
@@ -853,6 +877,7 @@ export class ConversationModel {
       type: 'question', toolUseId: ev.toolUseId, questions,
       answers: questions.map(() => ({ kind: 'none' as const })),
       drafts: questions.map(() => ''),
+      tab: 0,
       submitted: false, answered: false, failedReason: null,
     }, this);
     this.questionNodes.set(ev.toolUseId, node);

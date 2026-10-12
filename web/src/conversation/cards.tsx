@@ -1,4 +1,3 @@
-import * as React from 'react';
 import { CheckIcon, ClipboardListIcon, MessageCircleQuestionIcon, PencilIcon, SendIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -22,7 +21,6 @@ function sendCardAnswer(instanceId: string, text: string, onFail: (reason: strin
 }
 
 export function PlanCard({ node, model }: { node: PlanNode; model: ConversationModel }) {
-  const [feedback, setFeedback] = React.useState('');
   const plan: string = typeof node.ev.plan === 'string' ? node.ev.plan : '';
   const locked = node.autoApproved || !!node.submitted;
   const status = node.autoApproved ? 'Auto-approved'
@@ -35,7 +33,7 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
     const id = appStore.get().activeId;
     if (!id || locked) return;
     model.planSubmitted(node, decision);
-    const fb = feedback.trim();
+    const fb = node.feedback.trim();
     const onFail = (reason: string) => model.planSendFailed(node.ev.toolUseId, reason);
     if (decision === 'approve') {
       // Leave plan mode first so the approved work isn't auto-denied tool by tool.
@@ -66,8 +64,8 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
       {!node.autoApproved && (
         <div className="space-y-3 border-t px-4 py-3">
           <Textarea
-            value={feedback}
-            onChange={(e) => setFeedback(e.target.value)}
+            value={node.feedback}
+            onChange={(e) => model.planFeedback(node, e.target.value)}
             disabled={locked}
             rows={2}
             placeholder="Feedback or refinements (sent with Reject; optional on Approve)"
@@ -84,7 +82,7 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
 }
 
 export function QuestionCard({ node, model }: { node: QuestionNode; model: ConversationModel }) {
-  const [active, setActive] = React.useState(0);
+  const active = node.tab;
   const q = node.questions[active] ?? {};
   const answer = node.answers[active] ?? { kind: 'none' };
   const ready = ConversationModel.questionReady(node);
@@ -115,13 +113,14 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
         <span className={cn('ml-auto text-xs', node.failedReason ? 'text-destructive' : 'text-muted-foreground')} data-status>{status}</span>
       </div>
       {multi && (
-        <div className="flex gap-1 overflow-x-auto border-b px-3 py-2">
+        <div role="group" aria-label="Questions" className="flex gap-1 overflow-x-auto border-b px-3 py-2">
           {node.questions.map((qq: any, i: number) => (
             <button
               key={i}
               type="button"
+              aria-pressed={i === active}
               data-tab={i}
-              onClick={() => setActive(i)}
+              onClick={() => model.questionTab(node, i)}
               className={cn(
                 'flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors',
                 i === active ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground',
