@@ -1,11 +1,12 @@
 // App-wide confirmation dialog and toasts — the designed replacements for the
 // browser's confirm() / alert(). `confirmDialog` resolves true/false; toasts
-// come from sonner (<Toaster/> is mounted once in App).
+// come from sonner (<ToastHost/> is mounted once in App).
 import * as React from 'react';
-import { toast as sonnerToast } from 'sonner';
+import { Toaster, toast as sonnerToast, type ToasterProps } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { createStore, useStore } from '@/state/createStore';
+import { installToastFocus } from '@/ui/toastFocus';
 
 export type ConfirmOptions = {
   title: string;
@@ -55,6 +56,13 @@ export function ConfirmHost() {
       </DialogContent>
     </Dialog>
   );
+}
+
+/** sonner's Toaster, with the keyboard focus handling of `installToastFocus`. */
+export function ToastHost(props: ToasterProps) {
+  const ref = React.useRef<HTMLElement>(null);
+  React.useEffect(() => installToastFocus(ref.current!), []);
+  return <Toaster ref={ref} {...props} />;
 }
 
 export const toast = {
