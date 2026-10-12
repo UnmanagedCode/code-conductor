@@ -11,7 +11,7 @@ import { voiceStore } from '@/features/voice/store';
 import { cn } from '@/lib/utils';
 import { NO_ATTACHMENTS, attachmentStore, type Pending } from './attachments';
 import { DRAFT_SAVE_DEBOUNCE_MS, EMPTY_DRAFT, draftStore, joinDictation, prependTranscribedTag } from './drafts';
-import { useDictation } from './useDictation';
+import { useDictation, type BoxDelivery } from './useDictation';
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_HEIGHT = 240;
@@ -181,39 +181,45 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   }
 
   // ── Dictation ───────────────────────────────────────────────────────
-  function startDictation() {
-    const startedIn = sidRef.current;
-    void dictation.start((t) => {
-      // Switched sessions while recording: the words belong to the session they were spoken to.
-      if (startedIn && startedIn !== sidRef.current) {
-        if (t?.trim()) {
-          const d = draftStore.load(startedIn) || EMPTY_DRAFT;
-          draftStore.save(startedIn, { text: joinDictation(d.text, t), transcribed: true });
-        }
-        return;
-      }
-      if (!t) return;
-      const ta = taRef.current;
-      const start = ta?.selectionStart ?? text.length;
-      const end = ta?.selectionEnd ?? text.length;
-      setText((cur) => {
-        const before = cur.slice(0, start);
-        const insert = joinDictation(before, t).slice(before.length);
-        const next = before + insert + cur.slice(end);
-        noteChange(next, true);
-        requestAnimationFrame(() => {
-          const caret = start + insert.length;
-          try { taRef.current?.setSelectionRange(caret, caret); taRef.current?.focus(); } catch { /* ignore */ }
-        });
-        return next;
+  // The box takes a transcript spoken to the session it shows, or one started before the instance
+  // had a session id; any other goes to its session's draft. A transcript with no words changes nothing.
+  const deliverToBox = React.useRef<BoxDelivery>(() => false);
+  deliverToBox.current = (startedIn, t) => {
+    if (startedIn && startedIn !== sidRef.current) return false;
+    if (!t.trim()) return true;
+    const ta = taRef.current;
+    const start = ta?.selectionStart ?? text.length;
+    const end = ta?.selectionEnd ?? text.length;
+    setText((cur) => {
+      const before = cur.slice(0, start);
+      const insert = joinDictation(before, t).slice(before.length);
+      const next = before + insert + cur.slice(end);
+      noteChange(next, true);
+      requestAnimationFrame(() => {
+        const caret = start + insert.length;
+        try { taRef.current?.setSelectionRange(caret, caret); taRef.current?.focus(); } catch { /* ignore */ }
       });
-      if (t.trim()) setTranscribed(true);
+      return next;
     });
+    setTranscribed(true);
+    return true;
+  };
+  const { offerBox } = dictation;
+  React.useEffect(() => offerBox((startedIn, t) => deliverToBox.current(startedIn, t)), [offerBox]);
+
+  function startDictation() {
+    void dictation.start(sidRef.current);
   }
 
+  // A hold that started a recording swallows the click its release fires, whenever that click comes
+  // (on touch it arrives a task later); the next press starts afresh.
   function onSendPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    holdDidRecord.current = false;
     if (mode === 'mic' || mode === 'recording') { e.preventDefault(); return; }
     if (mode === 'send' && voice.micAvailable && voiceOn) {
+      // Focus stays in the box: on a phone a blur closes the keyboard, and the button moves out from
+      // under the finger before the hold completes.
+      e.preventDefault();
       try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       holdTimer.current = setTimeout(() => {
         holdTimer.current = null;
@@ -223,11 +229,10 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     }
   }
   function onSendPointerUp() {
-    if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null; return; }
-    if (holdDidRecord.current) setTimeout(() => { holdDidRecord.current = false; }, 0);
+    if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null; }
   }
   function onSendClick() {
-    if (holdDidRecord.current) return;
+    if (holdDidRecord.current) { holdDidRecord.current = false; return; }
     if (mode === 'send') submit();
     else if (mode === 'mic') startDictation();
     else if (mode === 'recording') dictation.stop();
@@ -357,7 +362,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
                 size={queueMode ? 'sm' : 'icon-sm'}
                 variant={mode === 'recording' ? 'destructive' : mode === 'mic' ? 'secondary' : 'default'}
                 className={cn('rounded-full', queueMode && 'px-3')}
-                aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : queueMode ? 'Queue message' : 'Send'}
+                aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : mode === 'transcribing' ? 'Transcribing' : queueMode ? 'Queue message' : 'Send'}
                 disabled={sendDisabled}
                 onPointerDown={onSendPointerDown}
                 onPointerUp={onSendPointerUp}
