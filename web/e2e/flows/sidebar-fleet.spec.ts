@@ -470,7 +470,7 @@ test('the sidebar keeps its scroll offset across the phone drawer closing and re
       await landed(page, ui, sid);
       const selected = await ui.selectedProjectsRow(page);
       await expect(selected).toHaveCount(1);
-      expect(await selected.getAttribute('title')).toMatch(new RegExp(`^${sid}`));
+      expect(await selected.locator('[data-row-open]').getAttribute('title')).toMatch(new RegExp(`^${sid}`));
       await expect(selected).toBeInViewport();
     });
   } finally {

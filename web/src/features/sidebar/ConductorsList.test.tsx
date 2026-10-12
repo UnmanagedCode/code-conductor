@@ -102,12 +102,12 @@ describe('Conductors-lens conductor rows', () => {
     seedFleet(fleet());
     renderSidebar();
     await settle();
-    const rows = [...blockOf(A).querySelectorAll('[data-session-row] > [role="button"]')] as HTMLElement[];
+    const rows = [...blockOf(A).querySelectorAll('[data-session-row] > [data-row]')] as HTMLElement[];
     expect(rows.length).toBe(5);
     expect(rows.map(barOf)).toEqual([NO_BAR, NO_BAR, NO_BAR, NO_BAR, NO_BAR]);
     act(() => uiStore.set({ lens: 'projects' }));
     await settle();
-    expect(barOf(el('[data-project="main"] [data-session-row="wa-main1"] > [role="button"]'))).toEqual({ bar: true, color: COLOUR.A });
+    expect(barOf(el('[data-project="main"] [data-session-row="wa-main1"] > [data-row]'))).toEqual({ bar: true, color: COLOUR.A });
   });
 
   it("a conductor row's dot keeps the running, waiting-on-a-worker, waiting-on-a-job and idle semantics", async () => {
@@ -166,7 +166,7 @@ describe('Conductors-lens conductor rows', () => {
     expect(conductorRowOf(B).hasAttribute('data-active')).toBe(false);
     act(() => appStore.set({ activeId: 'i-wa-main1' }));
     expect(conductorRowOf(A).hasAttribute('data-active')).toBe(false);
-    expect((blockOf(A).querySelector('[data-session-row="wa-main1"] > [role="button"]') as HTMLElement).getAttribute('data-active')).toBe('true');
+    expect((blockOf(A).querySelector('[data-session-row="wa-main1"] > [data-row]') as HTMLElement).getAttribute('data-active')).toBe('true');
   });
 
   it("a conductor row's ago label refreshes on the ago tick, in place", async () => {

@@ -104,7 +104,9 @@ export function seed(over: Partial<ReturnType<typeof appStore.get>> = {}) {
 export const seedFleet = (f: Fleet, over: Partial<ReturnType<typeof appStore.get>> = {}) => seed({ ...f, ...over });
 
 export const el = (sel: string) => document.querySelector(sel) as HTMLElement;
-export const rowOf = (sid: string) => el(`[data-session-row="${sid}"] [role="button"]`);
+export const rowOf = (sid: string) => el(`[data-session-row="${sid}"] > [data-row]`);
+/** A session row's open button: its keyboard target, accessible name and tooltip. */
+export const openOf = (sid: string) => rowOf(sid).querySelector(':scope > [data-row-open]') as HTMLElement;
 export const labelOf = (sid: string) => rowOf(sid).querySelector('span.truncate') as HTMLElement;
 export const headOf = (wtName: string) => el(`[data-worktree-row="${wtName}"]`);
 export const projectRowOf = (name: string) => el(`[data-project-row="${name}"]`);
@@ -117,7 +119,8 @@ export const NO_BAR = { bar: false, color: '' };
 
 // Conductors lens and needs-you strip (card 2026-0629)
 export const blockOf = (sid: string) => el(`[data-conductor="${sid}"]`);
-export const conductorRowOf = (sid: string) => el(`[data-conductor="${sid}"] > [role="button"]`);
+export const conductorRowOf = (sid: string) => el(`[data-conductor="${sid}"] > [data-row]`);
+export const conductorOpenOf = (sid: string) => conductorRowOf(sid).querySelector(':scope > [data-row-open]') as HTMLElement;
 export const conductorDotOf = (sid: string) => conductorRowOf(sid).querySelector('[data-dot]') as HTMLElement;
 export const stripEntryOf = (sid: string) => el(`[data-strip-entry="${sid}"] > button`);
 

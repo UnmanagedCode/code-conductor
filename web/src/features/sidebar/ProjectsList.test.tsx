@@ -56,7 +56,7 @@ const byPlace = (rows: Record<string, any[]>) =>
   loadSessions.mockImplementation(async (_project: string, worktree: string | null) => rows[worktree ?? ''] ?? []);
 
 const el = (sel: string) => document.querySelector(sel) as HTMLElement;
-const rowOf = (sid: string) => el(`[data-session-row="${sid}"] [role="button"]`);
+const rowOf = (sid: string) => el(`[data-session-row="${sid}"] > [data-row]`);
 const labelOf = (sid: string) => rowOf(sid).querySelector('span.truncate') as HTMLElement;
 const dotOf = (sid: string) => rowOf(sid).querySelector('[data-dot]') as HTMLElement;
 const list = (key: string) => el(`[data-sessions="${key}"]`);
@@ -435,7 +435,7 @@ describe('Projects tree', () => {
     renderSidebar();
     await screen.findByText('do the thing');
     expect(items('demo')).toEqual(['a1b2c3d4']);
-    expect(rowOf('a1b2c3d4').title).toBe('a1b2c3d4');
+    expect(rowOf('a1b2c3d4').querySelector<HTMLElement>(':scope > [data-row-open]')!.title).toBe('a1b2c3d4');
     expect(labelOf('a1b2c3d4').textContent).toBe('do the thing');
     expect(dotOf('a1b2c3d4').getAttribute('data-dot')).toBe('idle');
   });

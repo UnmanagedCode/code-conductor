@@ -65,7 +65,7 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
         ...[...list.querySelectorAll<HTMLElement>('[data-conductor-tree] [data-session-row]')]
           .map((r) => ({ kind: 'worker', sid: r.dataset.sessionRow!, n: r.querySelectorAll(up).length })),
         ...[...list.querySelectorAll<HTMLElement>('[data-conductor]')]
-          .map((blk) => ({ kind: 'conductor', sid: blk.dataset.conductor!, n: blk.querySelector(':scope > [role="button"]')!.querySelectorAll(up).length })),
+          .map((blk) => ({ kind: 'conductor', sid: blk.dataset.conductor!, n: blk.querySelector(':scope > [data-row]')!.querySelectorAll(up).length })),
       ];
       return { rows, total: list.querySelectorAll(up).length };
     });

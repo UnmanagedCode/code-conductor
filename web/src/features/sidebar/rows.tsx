@@ -148,16 +148,15 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
   };
   return (
     <li className="group/row relative" data-session-row={session.sessionId}>
+      {/* The row is a pointer target as a whole; its keyboard and assistive-technology target is the button,
+          with the actions beside it, never inside it (a control inside a button is presentational). */}
       <div
-        role="button"
-        tabIndex={0}
-        title={tooltip}
         onClick={open}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
         style={ownerStyle(owner)}
+        data-row
         data-active={active || undefined}
         className={cn(
-          'flex min-h-8 cursor-pointer items-center gap-2 rounded-md py-1 pr-1 pl-2 text-sm text-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring',
+          'flex min-h-8 cursor-pointer items-center gap-2 rounded-md pr-1 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground has-[>[data-row-open]:focus-visible]:ring-2 has-[>[data-row-open]:focus-visible]:ring-ring',
           live && 'text-foreground/90',
           active && 'bg-sidebar-accent text-foreground ring-1 ring-border',
           // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
@@ -165,14 +164,17 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
           owner && OWNER_BAR,
         )}
       >
-        <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
-        <span className="flex min-w-[2em] flex-1 flex-col">
-          {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
-          <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}>{label}</span>
-          {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
-        </span>
-        <Ago ms={session.lastActivity} />
-        <UnreadPill n={unread} />
+        {/* No handler of its own: Enter and Space click it, and the click bubbles to the row's. */}
+        <button type="button" title={tooltip} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch py-1 pl-2 text-left outline-none" data-row-open>
+          <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
+          <span className="flex min-w-[2em] flex-1 flex-col">
+            {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
+            <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}>{label}</span>
+            {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
+          </span>
+          <Ago ms={session.lastActivity} />
+          <UnreadPill n={unread} />
+        </button>
         {showPromote && <PromoteButton getArgs={() => ({ projectName, instanceId: session.instanceId!, preview: label })} />}
         {showDelete && (
           <CloseButton args={{

@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import {
-  A, ALPHA, BRAVO, C, COLOUR, FLEET_UI, NO_BAR, barOf, conductor, disk, fleet, headOf, labelOf, proj, projectRowOf, rowOf,
+  A, ALPHA, BRAVO, C, COLOUR, FLEET_UI, NO_BAR, barOf, conductor, disk, fleet, headOf, labelOf, openOf, proj, projectRowOf, rowOf,
   seed, seedFleet, worker, wt,
 } from '@/test/sidebarFleet';
 
@@ -60,11 +60,11 @@ describe('Projects-lens ownership colour', () => {
     expect(barOf(headOf('solo-a'))).toEqual({ bar: true, color: COLOUR.A });
     expect(headOf('solo-a').getAttribute('title')).toBe('conductor: Alpha');
     expect(barOf(rowOf('wa-solo1'))).toEqual(NO_BAR);
-    expect(rowOf('wa-solo1').title).not.toContain('conductor:');
+    expect(openOf('wa-solo1').title).not.toContain('conductor:');
     expect(barOf(rowOf('wa-solo2'))).toEqual(NO_BAR);
-    expect(rowOf('wa-solo2').title).not.toContain('conductor:');
+    expect(openOf('wa-solo2').title).not.toContain('conductor:');
     expect(barOf(rowOf('h-solo'))).toEqual(NO_BAR);
-    expect(rowOf('h-solo').title).not.toContain('conductor:');
+    expect(openOf('h-solo').title).not.toContain('conductor:');
     expect(barOf(headOf('mix')).bar).toBe(false);
   });
 
@@ -76,9 +76,9 @@ describe('Projects-lens ownership colour', () => {
     expect(barOf(headOf('mix'))).toEqual(NO_BAR);
     expect(headOf('mix').hasAttribute('title')).toBe(false);
     expect(barOf(rowOf('wa-mix'))).toEqual({ bar: true, color: COLOUR.A });
-    expect(rowOf('wa-mix').title).toMatch(/\nconductor: Alpha$/);
+    expect(openOf('wa-mix').title).toMatch(/\nconductor: Alpha$/);
     expect(barOf(rowOf('wb-mix'))).toEqual({ bar: true, color: COLOUR.B });
-    expect(rowOf('wb-mix').title.endsWith(`\nconductor: ${BRAVO}`)).toBe(true);
+    expect(openOf('wb-mix').title.endsWith(`\nconductor: ${BRAVO}`)).toBe(true);
     expect(barOf(rowOf('h-mix'))).toEqual(NO_BAR);
   });
 
@@ -160,7 +160,7 @@ describe('Projects-lens ownership colour', () => {
     // The disk row's prompt, not the instance's: the overlay branch, not the synthetic row.
     expect(labelOf('wa-main1').textContent).toBe('resumed worker');
     expect(barOf(rowOf('wa-main1'))).toEqual({ bar: true, color: COLOUR.A });
-    expect(rowOf('wa-main1').title).toMatch(/\nconductor: Alpha$/);
+    expect(openOf('wa-main1').title).toMatch(/\nconductor: Alpha$/);
   });
 
   it('a single-owner worktree head keeps its bar while an owned worker remains, and loses it and its tooltip in place when the last one goes', async () => {

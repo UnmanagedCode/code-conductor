@@ -60,10 +60,10 @@ function select(id: string | null) {
   });
 }
 
-const caretOf = (sid: string) => el(`[data-conductor="${sid}"] > [role="button"] button[aria-label="Show workers"]`);
+const caretOf = (sid: string) => el(`[data-conductor="${sid}"] > [data-row] button[aria-label="Show workers"]`);
 /** `sid`'s row in a conductor's expanded tree, or null. */
 const treeRowOf = (conductor: string, sid: string) =>
-  blockOf(conductor).querySelector(`[data-session-row="${sid}"] > [role="button"]`) as HTMLElement | null;
+  blockOf(conductor).querySelector(`[data-session-row="${sid}"] > [data-row]`) as HTMLElement | null;
 /** How many session rows a conductor's bubble holds (none while collapsed). */
 const treeRows = (conductor: string) => blockOf(conductor).querySelectorAll('[data-session-row]').length;
 /** The workspace's open/close toggle (`[aria-expanded]`: the header row also holds the Edit-workspace pencil button). */
