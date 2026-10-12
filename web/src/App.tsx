@@ -1,5 +1,4 @@
 import { lazy, Suspense } from 'react';
-import { Toaster } from 'sonner';
 import { LoaderCircleIcon } from 'lucide-react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -7,7 +6,7 @@ import { useStore } from '@/state/createStore';
 import { useRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
 import { themeStore } from '@/app/theme';
-import { ConfirmHost } from '@/ui/feedback';
+import { ConfirmHost, ToastHost } from '@/ui/feedback';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
@@ -67,7 +66,7 @@ export function App() {
       </div>
       <DialogsHost />
       <ConfirmHost />
-      <Toaster theme={theme} position="top-right" offset={TOAST_OFFSET} mobileOffset={TOAST_OFFSET} richColors closeButton />
+      <ToastHost theme={theme} position="top-right" offset={TOAST_OFFSET} mobileOffset={TOAST_OFFSET} richColors closeButton />
     </TooltipProvider>
   );
 }
