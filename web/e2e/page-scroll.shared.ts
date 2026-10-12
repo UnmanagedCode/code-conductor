@@ -3,16 +3,14 @@
 // pane scrolls. An absolutely positioned box with no positioned ancestor (the
 // hidden <input> Radix renders beside a Checkbox, Switch, RadioGroup, Select or
 // Slider inside a <form>) escapes every clip that is not its containing block,
-// so each view's pane must be one. The bodies are shared by the per-project
-// spec files; this module declares no tests.
-import fs from 'node:fs';
-import path from 'node:path';
+// so each view's pane, or a wrapper around it, must be one. The bodies are
+// shared by the per-project spec files; this module declares no tests.
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
-import { REPO_ROOT } from './harness/boot.ts';
 import { api, createProject, installFakePlugin, spawnSession, LIVE_WORKER_MODEL } from './harness/api.ts';
 import { next } from './parity/ui.ts';
 import { commitsView, openHistory } from './commits-actions.shared.ts';
+import { SECTION_CATALOG, offeredSections, type SectionCaps } from '../src/features/settings/sections.ts';
 
 type Args = { page: Page; cc: Cc };
 const EPS = 0.5;
@@ -58,32 +56,21 @@ async function seed(cc: Cc, tag: string): Promise<{ project: string; sessionId: 
   return { project, sessionId };
 }
 
-/** The sections `SECTIONS` in SettingsView.tsx declares, in order, each with its capability gate; read from the source. */
-function declaredSections(): { id: string; capability: string | null }[] {
-  const src = fs.readFileSync(path.join(REPO_ROOT, 'web/src/features/settings/SettingsView.tsx'), 'utf8');
-  const start = src.indexOf('export const SECTIONS');
-  expect(start, 'SettingsView.tsx declares SECTIONS').toBeGreaterThanOrEqual(0);
-  const block = src.slice(start, src.indexOf('];', start));
-  const rows = [...block.matchAll(/^\s*\{ id: '(\w+)'(.*)$/gm)].map((m) => ({ id: m[1], capability: /capability: '(\w+)'/.exec(m[2])?.[1] ?? null }));
-  // Positive control on the parse: one row per section renderer.
-  expect(rows.length, 'one parsed row per SECTIONS entry').toBe(block.match(/render: \(\) => </g)?.length ?? 0);
-  expect(rows.length, 'SECTIONS parsed').toBeGreaterThan(0);
-  return rows;
-}
-
-/** The sections the nav must offer on this cc: `SECTIONS` filtered by the platform's capabilities, as `visibleSections` does. */
+/** The sections the nav must offer on this cc: the catalog SettingsView renders, offered by this platform's capabilities. */
 async function expectedSections(cc: Cc): Promise<string[]> {
-  const caps = (await api<{ capabilities: Record<string, boolean> }>(cc, 'GET', '/api/health')).body.capabilities;
-  return declaredSections().filter((s) => !s.capability || !!caps[s.capability]).map((s) => s.id);
+  const caps = (await api<{ capabilities: SectionCaps }>(cc, 'GET', '/api/health')).body.capabilities;
+  return offeredSections(SECTION_CATALOG, caps).map((s) => s.id);
 }
 
-/** Every Settings section the nav offers, read from the nav itself and checked against the source's list. */
+/** Every Settings section the nav offers, read from the nav once capabilities have pruned it, and checked against the catalog. */
 async function settingsSections(page: Page, cc: Cc): Promise<string[]> {
+  const expected = await expectedSections(cc);
   await page.goto('/next/#settings');
   const links = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link');
-  await expect(links.first()).toBeVisible();
+  // The nav lists every section until capabilities land: wait for the pruned list before reading it.
+  await expect(links, 'the nav once capabilities have pruned it').toHaveCount(expected.length);
   const ids = await links.evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).getAttribute('href')!.replace('#settings/', '')));
-  expect(ids, 'the nav offers the sections SettingsView.tsx declares for this platform').toEqual(await expectedSections(cc));
+  expect(ids, 'the nav offers the catalog sections this platform supports').toEqual(expected);
   return ids;
 }
 

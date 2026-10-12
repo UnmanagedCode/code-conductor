@@ -47,7 +47,7 @@ export function App() {
   const route = useRoute();
   return (
     <TooltipProvider delayDuration={400}>
-      {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane captures, so none can lengthen the page. Each pane's own `relative` keeps its content's boxes in the pane. */}
+      {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
       <div className="relative flex h-dvh overflow-hidden bg-background">
         <div className="hidden shrink-0 md:flex">
           <AppSidebar />
