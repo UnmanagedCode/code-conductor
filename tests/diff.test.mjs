@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { lineDiff, diffStats } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'diff.js')).href);
+const { lineDiff, diffStats } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'diff.ts')).href);
 
 function pretty(ops) {
   return ops.map(o => `${o.op}${o.text}`).join('\n');

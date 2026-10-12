@@ -5,7 +5,7 @@
 
 const STASH_KEY = 'cc:session-stash';
 
-export function readSessionAnchor() {
+export function readSessionAnchor(): string | null {
   const h = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
   if (!h) return null;
   const params = new URLSearchParams(h);
@@ -14,7 +14,7 @@ export function readSessionAnchor() {
 
 // Writes the session anchor without polluting browser history (replaceState).
 // Passing null/undefined clears the hash.
-export function writeSessionAnchor(sessionId) {
+export function writeSessionAnchor(sessionId: string | null | undefined): void {
   const base = location.pathname + location.search;
   if (sessionId) {
     history.replaceState(null, '', `${base}#session=${encodeURIComponent(sessionId)}`);
@@ -26,7 +26,7 @@ export function writeSessionAnchor(sessionId) {
 // Pushes a new history entry so the browser back button can return to the
 // current page. Used when navigating into a sub-agent session so the
 // conductor session is preserved in the back stack.
-export function pushSessionAnchor(sessionId) {
+export function pushSessionAnchor(sessionId: string | null | undefined): void {
   const base = location.pathname + location.search;
   if (sessionId) {
     history.pushState(null, '', `${base}#session=${encodeURIComponent(sessionId)}`);
@@ -41,7 +41,7 @@ export function pushSessionAnchor(sessionId) {
 // while it's backgrounded) — not on every session change — so the stash
 // doesn't outlive the round-trip and silently snap an unrelated future
 // launch back into an old conversation.
-export function stashCurrentAnchorForRelaunch(storage = safeStorage()) {
+export function stashCurrentAnchorForRelaunch(storage: Storage | null = safeStorage()): void {
   if (!storage) return;
   const id = readSessionAnchor();
   try {
@@ -52,7 +52,7 @@ export function stashCurrentAnchorForRelaunch(storage = safeStorage()) {
 
 // Read and remove the stashed session id. One-shot: a successful read clears
 // the stash so the next cold start doesn't keep resuming the same session.
-export function consumeStashedAnchor(storage = safeStorage()) {
+export function consumeStashedAnchor(storage: Storage | null = safeStorage()): string | null {
   if (!storage) return null;
   try {
     const id = storage.getItem(STASH_KEY);
@@ -63,7 +63,7 @@ export function consumeStashedAnchor(storage = safeStorage()) {
   }
 }
 
-function safeStorage() {
+function safeStorage(): Storage | null {
   try { return typeof localStorage !== 'undefined' ? localStorage : null; }
   catch { return null; }
 }

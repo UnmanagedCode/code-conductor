@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { apiFetch } = await import(
-  pathToFileURL(path.resolve(__dirname, '..', 'shared', 'http.js')).href);
+  pathToFileURL(path.resolve(__dirname, '..', 'shared', 'http.ts')).href);
 
 // Minimal Response stand-in: `json()` either resolves the parsed body or
 // rejects the way a real Response does on a non-JSON payload.

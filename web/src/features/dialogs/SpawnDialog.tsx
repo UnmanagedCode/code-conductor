@@ -12,7 +12,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
-import type { PostWorktreeHook } from '@/state/types';
+import type { Instance, PostWorktreeHook } from '@/state/types';
 import { apiFetch } from '@shared/http';
 import {
   backendIdOf, CLAUDE_BACKEND, getActiveDefaultSpawnTier, getActiveTierBackend, getActiveTierEffort, getActiveTierEnabled,
@@ -105,13 +105,13 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       autoApprovePlan: mode === 'plan' || undefined,
     };
     try {
-      const inst = await apiFetch('/api/instances', {
+      const inst = await apiFetch<Instance>('/api/instances', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
       await refreshProjects();
       await refreshInstances();
       if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
-      const h: PostWorktreeHook | undefined = inst.worktree?.postWorktreeCreate;
+      const h: PostWorktreeHook | null | undefined = inst.worktree?.postWorktreeCreate;
       if (h?.ran) setHook(h);
       else closeDialog('spawn');
     } catch (e: any) {

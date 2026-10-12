@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import * as actions from '@/app/sessionActions';
+import type { WorktreeOpResult } from '@/app/sessionActions';
 import { held, routeFetch, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { CommitsView } from './CommitsView';
 import { viewStore } from './api';
@@ -38,8 +39,8 @@ function holdList(url: string): (body: CommitsPayload) => Promise<void> {
 
 /** An action answer the test holds: `release` settles it with `result`. */
 function heldResult() {
-  const h = held<unknown>();
-  return { promise: h.answer, release: async (result: unknown) => { await act(async () => { h.release(result); }); await settle(); } };
+  const h = held<WorktreeOpResult | null>();
+  return { promise: h.answer, release: async (result: WorktreeOpResult | null) => { await act(async () => { h.release(result); }); await settle(); } };
 }
 
 const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); });

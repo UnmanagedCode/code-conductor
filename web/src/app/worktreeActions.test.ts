@@ -150,7 +150,7 @@ describe('targeted worktree sync', () => {
     bodies = { sync: { ok: true, action: 'fast-forwarded', newSha: 'abcdef0123456789' } };
     const result = await syncWorktree(TARGET);
     expect(calls).toEqual([{ url: '/api/projects/demo/worktrees/wt-a/sync', method: 'POST' }]);
-    expect(result.action).toBe('fast-forwarded');
+    expect(result?.action).toBe('fast-forwarded');
     expect(controller.refreshProjects).toHaveBeenCalledTimes(1);
   });
 
@@ -223,7 +223,7 @@ describe('targeted worktree sync', () => {
     bodies = { sync: { ok: false, reason: 'parent is dirty' } };
     const result = await syncWorktree(TARGET);
     expect(toastText()).toMatch(/Cannot sync\nparent is dirty/);
-    expect(result.ok).toBe(false);
+    expect(result?.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
@@ -261,7 +261,7 @@ describe('merge and lock', () => {
     bodies = { merge: { ok: false, reason: 'worktree is behind main — click Sync first' } };
     const result = await mergeWorktree(TARGET);
     expect(toastText()).toMatch(/Cannot merge\nworktree is behind main — click Sync first/);
-    expect(result.ok).toBe(false);
+    expect(result?.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
@@ -297,7 +297,7 @@ describe('merge and lock', () => {
     bodies = { lock: { ok: false, reason: 'nope' } };
     const result = await setWorktreeLock(TARGET, true);
     expect(toastText()).toMatch(/Cannot change the lock\nnope/);
-    expect(result.ok).toBe(false);
+    expect(result?.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 });

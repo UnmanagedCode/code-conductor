@@ -19,7 +19,7 @@ async function setup(initialHref = 'http://localhost/') {
   globalThis.URLSearchParams = window.URLSearchParams;
   // Cache-bust the module import so each test gets a fresh evaluation
   // against the current globals (happy-dom's location is per-Window).
-  const url = pathToFileURL(path.join(PUB, 'anchor.js')).href + `?t=${Math.random()}`;
+  const url = pathToFileURL(path.join(PUB, 'anchor.ts')).href + `?t=${Math.random()}`;
   const mod = await import(url);
   return { window, ...mod };
 }

@@ -5,7 +5,7 @@
 // The only colour source for conductor ownership.
 const HUE_SLOTS = 12;
 
-export function conductorColor(sessionId) {
+export function conductorColor(sessionId: string): string {
   let h = 0x811c9dc5;
   for (const ch of String(sessionId)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
   h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0;

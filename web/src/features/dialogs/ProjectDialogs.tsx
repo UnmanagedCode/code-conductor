@@ -108,7 +108,7 @@ function NewProjectBody() {
         body.systemPath = sp;
         if (p.chosenRemote) body.remoteId = p.chosenRemote;
       }
-      const res = await apiFetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await apiFetch<{ scaffold?: string; gitSkipped?: string }>('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       await refreshProjects();
       if (res.scaffold || res.gitSkipped) setCreated({ scaffold: res.scaffold, gitSkipped: res.gitSkipped });
       else closeDialog('newProject');

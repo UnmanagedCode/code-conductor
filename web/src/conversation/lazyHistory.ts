@@ -7,8 +7,19 @@
 import { apiFetch } from '@shared/http';
 import type { AssistantNode, ConversationModel } from './model';
 import { createStore } from '@/state/createStore';
+import type { UiEvent } from '@/state/types';
 
 const MAX_EMPTY_PAGES = 3;
+
+/** A /lineage-events page (LineagePage, src/lineagePager.ts). */
+type LineagePage = {
+  events: UiEvent[];
+  hasMore: boolean;
+  segment: string | null;
+  nextBefore: number | null;
+  pageSegment: string | null;
+  currentSegmentId: string | null;
+};
 
 export type Viewport = {
   clientHeight: () => number;
@@ -81,7 +92,7 @@ export function createLazyHistory({ model, getActiveId }: { model: ConversationM
       let q = 'limit=200';
       if (st.nextBefore != null) q += `&before=${st.nextBefore}`;
       if (st.segment != null) q += `&segment=${encodeURIComponent(st.segment)}`;
-      const page = await apiFetch(`/api/instances/${encodeURIComponent(id)}/lineage-events?${q}`);
+      const page = await apiFetch<LineagePage>(`/api/instances/${encodeURIComponent(id)}/lineage-events?${q}`);
       if (epoch !== st.epoch || id !== getActiveId()) return;
       st.silent = false;
       if (page.events.length) {

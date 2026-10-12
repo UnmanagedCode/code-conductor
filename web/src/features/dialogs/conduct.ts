@@ -6,6 +6,7 @@ import { createStore } from '@/state/createStore';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';
 import { toast } from '@/ui/feedback';
+import type { Instance } from '@/state/types';
 
 export const conductStore = createStore({ starting: false });
 
@@ -19,7 +20,7 @@ export async function startConducting() {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.error || `ensure failed (${r.status})`);
     }
-    const inst = await apiFetch('/api/instances', {
+    const inst = await apiFetch<Instance>('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' }),

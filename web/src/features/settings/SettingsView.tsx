@@ -58,7 +58,7 @@ export function SettingsView() {
     void loadModelsSettings();
     clearConventionsListErrors();
     resetPluginNotes();
-    loadCapabilities().then((c: any) => { setCaps(c); setCapsLoaded(true); });
+    loadCapabilities().then((c) => { setCaps(c); setCapsLoaded(true); });
   }, []);
 
   // A section this platform lacks (a stale link) lands on the first one.

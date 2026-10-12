@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { mdToSpeech } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'md-to-speech.js')).href);
+const { mdToSpeech } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'md-to-speech.ts')).href);
 
 // ── Fenced code blocks ────────────────────────────────────────────────────────
 
