@@ -61,7 +61,7 @@ describe('spawn dialog', () => {
     expect(body).not.toHaveProperty('model');
     expect(body).not.toHaveProperty('backend');
     expect(body.effort).toBeUndefined();
-    await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('i1', { userGesture: true }));
+    await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('i1', { userGesture: true, gesture: expect.any(Number) }));
     await waitFor(() => expect(dialogStore.get().spawn).toBeNull());
   });
 

@@ -279,7 +279,7 @@ describe('AppSidebar', () => {
     try {
       renderSidebar();
       fireEvent.click(document.querySelector('[data-conduct]') as HTMLElement);
-      await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('c-new', { userGesture: true }));
+      await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('c-new', { userGesture: true, gesture: expect.any(Number) }));
       expect(selectInstance).toHaveBeenCalledTimes(1);
       expect(calls.filter((c) => c.method === 'POST')).toEqual([
         { url: '/api/projects/.conduct/ensure', method: 'POST', body: undefined },

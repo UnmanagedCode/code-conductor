@@ -4,6 +4,7 @@
 import { apiFetch } from '@/lib/core/http.js';
 import { createStore } from '@/state/createStore';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
+import { beginGesture, gestureOvertaken } from '@/app/gestures';
 import { toast } from '@/ui/feedback';
 
 export const conductStore = createStore({ starting: false });
@@ -11,6 +12,7 @@ export const conductStore = createStore({ starting: false });
 export async function startConducting() {
   if (conductStore.get().starting) return;
   conductStore.set({ starting: true });
+  const gesture = beginGesture();
   try {
     const r = await fetch('/api/projects/.conduct/ensure', { method: 'POST' });
     if (!r.ok) {
@@ -24,7 +26,7 @@ export async function startConducting() {
     });
     await refreshProjects();
     await refreshInstances();
-    selectInstance(inst.id, { userGesture: true });
+    if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
   } catch (e: any) {
     toast.error('The conductor failed to start', e.message);
   } finally {

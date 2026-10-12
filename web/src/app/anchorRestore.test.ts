@@ -2,8 +2,8 @@
 // the instance list, the server's `instances` hints and the anchor lookup can
 // answer in: the named session opens whenever it is live or resumable, a stale
 // list never overwrites a newer one, an unknown session lands on the home
-// screen with nothing re-read, a session the user picks meanwhile stands, and a
-// notification clicked meanwhile opens its own session.
+// screen with nothing re-read, a session the user picks or Back returns to
+// meanwhile stands, and a notification clicked meanwhile opens its own session.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@/lib/core/anchor.js';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
@@ -219,6 +219,36 @@ describe('restoring the URL-named session on first connect', () => {
     expect(location.hash).toBe('#session=s-b');
     expect(b.active()).toBe('iB');
     expect(b.subscribes()).toEqual(['iB']);
+  });
+
+  it('a session Back returns to while the named one is looked up stands, with its anchor, and the named one is not resumed, when the lookup finds it on disk', async () => {
+    history.replaceState(null, '', '/#session=s-b');
+    history.pushState(null, '', '/#session=s-disk');
+    const ctlLookup = held<RouteAnswer>();
+    const ctl = await boot(() => ctlLookup.answer);
+    await ctl.open();
+    await ctl.land(1, [A, B]);
+    ctlLookup.release(ON_DISK);
+    await ctl.flush();
+    await ctl.landRest(2, [A, B, D]);
+    expect(ctl.active(), 'control: the restore alone resumes and opens the named session').toBe(D.id);
+
+    history.replaceState(null, '', '/#session=s-b');
+    history.pushState(null, '', '/#session=s-disk');
+    const lookup = held<RouteAnswer>();
+    const b = await boot(() => lookup.answer);
+    await b.open();
+    await b.land(1, [A, B]);
+    expect(b.locates(), 'fixture check: the unlisted anchor is being looked up').toBe(1);
+    history.back();
+    await b.flush();
+    expect(b.active(), 'fixture check: Back selected the session its entry names').toBe('iB');
+    lookup.release(ON_DISK);
+    await b.flush();
+    await b.landRest(2, [A, B, D]);
+    expect(b.posts()).toBe(0);
+    expect(b.active()).toBe('iB');
+    expect(location.hash).toBe('#session=s-b');
   });
 
   it('a hash the user changes while the list is loading is the one restored', async () => {

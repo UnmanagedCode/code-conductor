@@ -25,6 +25,6 @@ describe('Conduct', () => {
     const writes = calls.filter((c) => c.method !== 'GET');
     expect(writes.map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/projects/.conduct/ensure', 'POST /api/instances']);
     expect(writes[1].body).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' });
-    expect(selectInstance).toHaveBeenCalledWith('i9', { userGesture: true });
+    expect(selectInstance).toHaveBeenCalledWith('i9', { userGesture: true, gesture: expect.any(Number) });
   });
 });

@@ -216,7 +216,7 @@ describe('promote, resume, rewind, fork, delete', () => {
     stubFetch(() => ({ body: { id: 'new' } }));
     await resumeSession({ projectName: 'p', worktreeName: 'wt', sessionId: 's1' });
     expect(calls[0]).toEqual({ url: '/api/instances', method: 'POST', body: { project: 'p', resume: 's1', worktree: 'wt' } });
-    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: true });
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: true, gesture: expect.any(Number) });
     await resumeSession({ projectName: 'p', sessionId: 's1', silent: true });
     expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: false });
     stubFetch(() => ({ status: 409, body: { error: 'busy' } }));
@@ -238,7 +238,7 @@ describe('promote, resume, rewind, fork, delete', () => {
       ['/api/instances/A/rewind', { userMessageIndex: 3, text }],
       ['/api/instances/A/fork', { userMessageIndex: 3, text }],
     ]);
-    expect(controller.selectInstance).toHaveBeenCalledWith('forked', { userGesture: true });
+    expect(controller.selectInstance).toHaveBeenCalledWith('forked', { userGesture: true, gesture: expect.any(Number) });
   });
 
   it('a refused rewind surfaces the server\'s error as a toast (mirrors rewind-fork-client-text "rewindActiveSession surfaces a non-2xx …")', async () => {

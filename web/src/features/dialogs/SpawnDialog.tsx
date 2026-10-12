@@ -19,6 +19,7 @@ import {
 } from '@/lib/core/models.js';
 import { modelsSignal } from '@/app/models';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
+import { beginGesture, gestureOvertaken } from '@/app/gestures';
 import { cn } from '@/lib/utils';
 import { closeDialog, dialogStore } from './api';
 import { FormError } from './FormError';
@@ -90,6 +91,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
 
   async function spawn() {
     if (busy || hook) return;
+    const gesture = beginGesture();
     setBusy(true);
     setError('');
     const body = {
@@ -109,7 +111,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       });
       await refreshProjects();
       await refreshInstances();
-      selectInstance(inst.id, { userGesture: true });
+      if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
       const h: Hook | undefined = inst.worktree?.postWorktreeCreate;
       if (h?.ran) setHook(h);
       else closeDialog('spawn');

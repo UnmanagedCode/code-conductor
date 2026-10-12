@@ -14,6 +14,7 @@ import { getTaskTracker, getUsageTracker, rateLimits, trackerSignal } from './tr
 import { emit } from './events';
 import { closeSidebarOnMobile } from './ui';
 import { resumeSession } from './sessionActions';
+import { beginGesture, gestureOvertaken, gestureSelected } from './gestures';
 
 export { send };
 
@@ -90,9 +91,11 @@ function patchInstance(id: string, patch: Partial<Instance>) {
 
 // ── Selection ────────────────────────────────────────────────────────────
 
-export type SelectOptions = { push?: boolean; userGesture?: boolean };
+/** `gesture`: the `beginGesture()` token of the async gesture making this selection; a pick omits it. */
+export type SelectOptions = { push?: boolean; userGesture?: boolean; gesture?: number };
 
 export function selectInstance(id: string | null, opts: SelectOptions = {}) {
+  if (opts.userGesture) gestureSelected(opts.gesture);
   const prev = appStore.get().activeId;
   if (prev && prev !== id) send('unsubscribe', { id: prev });
   appStore.set({ activeId: id });
@@ -112,8 +115,8 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
  * Select a live instance owning `sessionId`, or locate it on disk and resume it.
  * An automatic lookup (no user gesture, e.g. the first-connect restore) yields to
  * a session selected while it runs: that one stands, with its anchor, and nothing
- * is cleared or resumed over it. A user's lookup (a notification click) never
- * yields: it is the newer intent.
+ * is cleared or resumed over it. A user's lookup (a notification click) yields
+ * only to a selection made by a gesture started after it, never to the restore.
  */
 export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss = true, userGesture = false } = {}): Promise<boolean> {
   const live = appStore.get().instances.find((i) => i.sessionId === anchor);
@@ -122,7 +125,8 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
     return true;
   }
   const selected = appStore.get().activeId;
-  const overtaken = () => !userGesture && appStore.get().activeId !== selected;
+  const gesture = userGesture ? beginGesture() : undefined;
+  const overtaken = () => (gesture === undefined ? appStore.get().activeId !== selected : gestureOvertaken(gesture));
   const clear = () => { if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); } };
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
@@ -133,7 +137,7 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
     if (hit.archived) { clear(); return true; }
     appStore.set({ sidebarStatus: { text: 'Resuming session…', warn: true } });
     try {
-      await resumeSession({ projectName: hit.project, worktreeName: hit.worktreeName, sessionId: anchor, silent: true, userGesture });
+      await resumeSession({ projectName: hit.project, worktreeName: hit.worktreeName, sessionId: anchor, silent: true, userGesture, gesture });
     } finally {
       appStore.set({ sidebarStatus: null });
     }
