@@ -5975,7 +5975,7 @@ export const LEDGER: readonly Row[] = [
         'account: opening Settings loads the Claude login state (public/claudeAuth.js)',
         'account: a Claude login that succeeds while Settings watches it calls onClaudeLogin once',
       ] },
-    behaviour: 'overage controls populate from the payload, stage behind Apply, survive failure and outside saves; the login panel loads and fires success once',
+    behaviour: 'overage controls populate from the payload and stage behind Apply; a staged edit (action, threshold switch and value) survives a failed Apply, outside saves and a section switch with its status, and reopening Settings discards it; the login panel loads and fires success once',
     viewports: ['desktop', 'phone'],
     area: 'settings',
     status: { kind: 'ported', by: [
@@ -5983,6 +5983,13 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/panels.test.tsx::Account → overage protection > a failed Apply keeps the edit staged and shows the error',
         'web/src/features/settings/panels.test.tsx::Account → overage protection > a prefs save elsewhere does not clobber a staged, unapplied edit',
         'web/src/features/settings/panels.test.tsx::Account → Claude login > Log in shows the URL and code field; Submit posts the trimmed code; success fires onLoginSuccess once',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > a staged overage edit survives a section switch with every field, and Apply still commits it',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > a save elsewhere while Account is not shown leaves the staged edit in place on return',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > a refused Apply keeps the edit and its error across a section switch, and reopening Settings discards both for the server values',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > a payload without overage prefs shows Off with no threshold, and switching the threshold on starts it at 85',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > reopening Settings at Account never renders the discarded edit, its error or an enabled Apply, even for a moment',
+        'web/e2e/settings-overage.spec.ts::a staged overage edit survives a section switch, Apply commits it and keeps its status, and reopening Settings discards an unapplied edit',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > reopening Settings at its default section and then picking Account never renders the discarded edit or its error, and shows the server values',
       ] },
   },
   {
@@ -5991,12 +5998,14 @@ export const LEDGER: readonly Row[] = [
         'account: the Account group option reveals the account panel',
         'account: Apply commits {onOverage, overageThreshold} and re-syncs to server values',
       ] },
-    behaviour: 'picking Account shows its panel; Apply re-syncs to the server\'s returned values',
+    behaviour: 'picking Account shows its panel; Apply re-syncs to the server\'s returned values, shown together with its status, and leaves no staged edit behind',
     viewports: ['desktop', 'phone'],
     area: 'settings',
     status: { kind: 'ported', by: [
         'web/src/features/settings/SettingsView.test.tsx::Settings view > picking Account shows the Account section and hides Models',
         'web/src/features/settings/panels.test.tsx::Account → overage protection > Apply re-syncs the controls to the values the server returns and clears the staged state',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > Apply clears the draft: a section switch then shows what the server committed with the applied status, a new edit clears that status, and reopening Settings discards the edit',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > the applied status first appears together with the values the server committed',
       ] },
   },
   {

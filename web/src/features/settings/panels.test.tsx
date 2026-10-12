@@ -14,7 +14,7 @@ import { resumeSession } from '@/app/sessionActions';
 import { applyModels } from '@/app/models';
 import { modelsSettingsStore, loadModelsSettings } from './models/store';
 import type { ModelsPayload } from './models/logic';
-import { OverageCard } from './AccountSection';
+import { OverageCard, discardOverageDraft } from './AccountSection';
 import { ClaudeLogin } from './ClaudeLogin';
 import { BackendsSection, backendsDraftStore } from './BackendsSection';
 import { SystemsSection, systemsDraftStore } from './SystemsSection';
@@ -59,6 +59,7 @@ beforeEach(() => {
   modelsDraftStore.set(DRAFTS[0]);
   backendsDraftStore.set(DRAFTS[1]);
   systemsDraftStore.set(DRAFTS[2]);
+  discardOverageDraft();
   vi.mocked(applyModels).mockClear();
 });
 afterEach(() => vi.unstubAllGlobals());
