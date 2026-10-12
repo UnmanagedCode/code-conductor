@@ -3373,6 +3373,7 @@ export const LEDGER: readonly Row[] = [
     area: 'android-shell',
     status: { kind: 'ported', by: [
         'web/src/app/sessionHistory.test.tsx::session selection and the history > a notification click selects its instance in place, pushing no entry: Back then skips the session it replaced',
+        'web/src/app/sessionHistory.test.tsx::session selection and the history > a notification click whose instanceId and sessionId name different live instances selects the one its instanceId names',
         'web/e2e/parity/android-shell.spec.ts::a notification click opens its session in place, adding no history entry: Back then returns past it to the conductor > next',
       ] },
   },

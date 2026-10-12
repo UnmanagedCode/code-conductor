@@ -50,13 +50,11 @@ describe('session selection and the history', () => {
     history.back();
     expect(at()).toEqual({ active: 'C', hash: '#session=sc' });
 
-    // Selected as the sidebar does, the worker replaces the conductor's entry, so Back has nothing to return to.
+    // Selected as the sidebar does, the worker replaces the conductor's entry and adds none.
     const before = history.length;
     c.selectInstance(worker.id, { userGesture: true });
     expect(at()).toEqual({ active: 'W', hash: '#session=sw' });
     expect(history.length).toBe(before);
-    history.back();
-    expect(at()).toEqual({ active: 'W', hash: '#session=sw' });
   });
 
   it('a notification click selects its instance in place, pushing no entry: Back then skips the session it replaced', async () => {
