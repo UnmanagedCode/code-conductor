@@ -24,7 +24,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 
 Where the `CONVENTIONS.md` rules land in this codebase. Rationale + examples in `docs/architecture.md` → "Conventions".
 
-- Thin wiring: UI feature logic lives in `web/src/features/<area>/` (DOM-free logic in the `@/lib/core` modules, the transcript model in `web/src/conversation/`); `main.tsx`/`App.tsx` only mount and start features. A feature opens another feature's dialog or view only through the `open*` APIs (`features/dialogs/api.ts`, `features/views/api.ts`) and otherwise imports only its store, action or component modules; `app/` imports no feature and reaches them through `app/events.ts`.
+- Thin wiring: UI feature logic lives in `web/src/features/<area>/` (DOM-free logic in the `@/lib/core` modules, the transcript model in `web/src/conversation/`); `main.tsx`/`App.tsx` only mount and start features. A feature opens another feature's dialog or view only through the `open*` APIs (`features/dialogs/api.ts`, `features/views/api.ts`) and otherwise imports only its store, action or component modules; `web/src/app/` imports no feature and reaches them through `app/events.ts`.
 - One implementation across surfaces: git/worktree/diff/session logic lives once in `src/worktrees.ts` + siblings, imported by both `routes.ts` and `mcp/handlers.ts`.
 - Single-source catalogs: `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side; the client fetches them.
 - Migrations go in `migrations/` (see `migrations/migrations.md`). cc has no external API clients, so the whole MCP/REST surface is unstable-by-design; the only read-time-tolerance exception is the Claude CLI's session jsonls.
