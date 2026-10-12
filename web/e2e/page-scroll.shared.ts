@@ -5,9 +5,12 @@
 // Slider inside a <form>) escapes every clip that is not its containing block,
 // so each view's pane must be one. The bodies are shared by the per-project
 // spec files; this module declares no tests.
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
-import { createProject, installFakePlugin, spawnSession, LIVE_WORKER_MODEL } from './harness/api.ts';
+import { REPO_ROOT } from './harness/boot.ts';
+import { api, createProject, installFakePlugin, spawnSession, LIVE_WORKER_MODEL } from './harness/api.ts';
 import { next } from './parity/ui.ts';
 import { commitsView, openHistory } from './commits-actions.shared.ts';
 
@@ -55,18 +58,49 @@ async function seed(cc: Cc, tag: string): Promise<{ project: string; sessionId: 
   return { project, sessionId };
 }
 
-/** Every Settings section the nav offers, read from the nav itself. */
-async function settingsSections(page: Page): Promise<string[]> {
+/** The sections `SECTIONS` in SettingsView.tsx declares, in order, each with its capability gate; read from the source. */
+function declaredSections(): { id: string; capability: string | null }[] {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'web/src/features/settings/SettingsView.tsx'), 'utf8');
+  const start = src.indexOf('export const SECTIONS');
+  expect(start, 'SettingsView.tsx declares SECTIONS').toBeGreaterThanOrEqual(0);
+  const block = src.slice(start, src.indexOf('];', start));
+  const rows = [...block.matchAll(/^\s*\{ id: '(\w+)'(.*)$/gm)].map((m) => ({ id: m[1], capability: /capability: '(\w+)'/.exec(m[2])?.[1] ?? null }));
+  // Positive control on the parse: one row per section renderer.
+  expect(rows.length, 'one parsed row per SECTIONS entry').toBe(block.match(/render: \(\) => </g)?.length ?? 0);
+  expect(rows.length, 'SECTIONS parsed').toBeGreaterThan(0);
+  return rows;
+}
+
+/** The sections the nav must offer on this cc: `SECTIONS` filtered by the platform's capabilities, as `visibleSections` does. */
+async function expectedSections(cc: Cc): Promise<string[]> {
+  const caps = (await api<{ capabilities: Record<string, boolean> }>(cc, 'GET', '/api/health')).body.capabilities;
+  return declaredSections().filter((s) => !s.capability || !!caps[s.capability]).map((s) => s.id);
+}
+
+/** Every Settings section the nav offers, read from the nav itself and checked against the source's list. */
+async function settingsSections(page: Page, cc: Cc): Promise<string[]> {
   await page.goto('/next/#settings');
   const links = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link');
   await expect(links.first()).toBeVisible();
-  return links.evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).getAttribute('href')!.replace('#settings/', '')));
+  const ids = await links.evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).getAttribute('href')!.replace('#settings/', '')));
+  expect(ids, 'the nav offers the sections SettingsView.tsx declares for this platform').toEqual(await expectedSections(cc));
+  return ids;
+}
+
+// Archived renders a control only with an archived session, which a scratch cc has none of: one is served page-locally.
+const ARCHIVED = { groups: [{ project: 'page-scroll-archived', sessions: [{ sessionId: 'aaaaaaaa-1111', title: 'An archived session', lastActivity: 1 }] }] };
+
+/** Fails unless Settings section `id` shows a control (a hidden form input does not count). */
+async function expectControl(page: Page, id: string): Promise<void> {
+  const controls = page.locator(`[data-section="${id}"]`).locator(':is(button, input, select, textarea, a[href]):not([aria-hidden="true"])');
+  await expect(controls.filter({ visible: true }).first(), `settings/${id} shows a control`).toBeVisible();
 }
 
 const sessionPane = (page: Page) => page.locator('main:not([data-view]):not([data-settings-view])');
 
-async function views(page: Page, s: { project: string; sessionId: string }): Promise<View[]> {
-  const sections = await settingsSections(page);
+async function views(page: Page, cc: Cc, s: { project: string; sessionId: string }): Promise<View[]> {
+  await page.route('**/api/archived', (r) => r.fulfill({ json: ARCHIVED }));
+  const sections = await settingsSections(page, cc);
   // Positive control: the reported section is in this cc's nav.
   expect(sections, 'the nav lists Models').toContain('models');
   const settings: View[] = sections.map((id) => ({
@@ -74,6 +108,7 @@ async function views(page: Page, s: { project: string; sessionId: string }): Pro
     open: async (p) => {
       await p.goto(`/next/#settings/${id}`);
       await expect(p.locator(`[data-section="${id}"]`)).toBeVisible();
+      await expectControl(p, id);
     },
     pane: { pane: SETTINGS_PANE, target: `[data-section="${id}"]` },
   }));
@@ -133,7 +168,7 @@ function pageViolations(b: PageBox): string[] {
 export async function pageNeverScrollsFlow({ page, cc }: Args): Promise<void> {
   const inFlight = trackRequests(page);
   const s = await seed(cc, 'never-scrolls');
-  const all = await views(page, s);
+  const all = await views(page, cc, s);
   const violations: string[] = [];
   const seen = new Set<string>();
   for (const vp of viewports(page)) {
@@ -202,7 +237,7 @@ function probe(a: { pane: string; target: string; spacer: boolean; shell: string
 export async function paneHoldsHiddenInputFlow({ page, cc }: Args): Promise<void> {
   const inFlight = trackRequests(page);
   const s = await seed(cc, 'pane-probe');
-  const scrolling = (await views(page, s)).filter((v) => v.pane !== null);
+  const scrolling = (await views(page, cc, s)).filter((v) => v.pane !== null);
   // Positive control: Settings and the ViewShell views are all probed.
   expect(scrolling.map((v) => v.label), 'probed views').toEqual(expect.arrayContaining(['settings/models', 'costs', 'commits', 'review']));
   const violations: string[] = [];
@@ -239,6 +274,41 @@ export async function pluginHoldsHiddenInputFlow({ page, cc }: Args): Promise<vo
     for (const m of pageViolations(r.page)) violations.push(`${at}: ${m}`);
   }
   expect(violations, `${violations.length} violation(s)`).toEqual([]);
+}
+
+/**
+ * Runs in the page: appends a small absolutely positioned box straight to the
+ * shell, outside every pane, at `top: 200vh`, reads how far the document then
+ * scrolls, and removes it before returning.
+ */
+function shellProbe(shellSel: string): { below: boolean; docOverY: number; docOverX: number } {
+  const shell = document.querySelector(shellSel)!;
+  const box = document.createElement('div');
+  box.setAttribute('aria-hidden', 'true');
+  Object.assign(box.style, { position: 'absolute', top: '200vh', left: '0', width: '10px', height: '10px', pointerEvents: 'none' });
+  shell.append(box);
+  try {
+    const se = document.scrollingElement!;
+    return { below: box.getBoundingClientRect().top >= innerHeight, docOverY: se.scrollHeight - se.clientHeight, docOverX: se.scrollWidth - se.clientWidth };
+  } finally {
+    box.remove();
+  }
+}
+
+export async function shellClipsStrayBoxFlow({ page }: Args): Promise<void> {
+  const inFlight = trackRequests(page);
+  for (const vp of viewports(page)) {
+    await page.setViewportSize(vp);
+    await page.goto('/next/#settings/models');
+    await expect(page.locator('[data-section="models"]')).toBeVisible();
+    await settle(page, inFlight);
+    const r = await page.evaluate(shellProbe, SHELL);
+    const at = `${vp.width}x${vp.height}`;
+    // Positive control: the box lies below the viewport, where an unclipped box would lengthen the page.
+    expect(r.below, `${at}: the probe sits below the viewport`).toBe(true);
+    expect(r.docOverY, `${at}: the page scrolls down`).toBeLessThanOrEqual(0);
+    expect(r.docOverX, `${at}: the page scrolls sideways`).toBeLessThanOrEqual(0);
+  }
 }
 
 type Fixed = { shell: number[]; sidebar: number[] | null; nav: number[]; header: number[] | null; docTop: number; pane: { top: number; max: number } };
