@@ -52,7 +52,7 @@ export function SessionView() {
   if (!inst) {
     return (
       <main className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-14 items-center px-3 md:hidden">
+        <div className="flex h-(--header-height) shrink-0 items-center px-3 md:hidden">
           <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={openSidebar}><MenuIcon /></Button>
         </div>
         <EmptyState />

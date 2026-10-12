@@ -88,7 +88,7 @@ export function SettingsView() {
 
   return (
     <main className="@container flex min-w-0 flex-1 flex-col" data-settings-view>
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur md:hidden">
+      <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur md:hidden">
         <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}><MenuIcon /></Button>
         <h1 className="flex-1 text-sm font-semibold">Settings</h1>
         <Button variant="ghost" size="sm" onClick={() => closeView(activeSid)}><ArrowLeftIcon /> Back</Button>

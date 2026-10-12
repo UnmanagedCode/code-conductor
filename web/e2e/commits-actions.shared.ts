@@ -28,7 +28,7 @@ export async function back(page: Page): Promise<void> {
 }
 
 /** Creates worktree `name` in `project` and returns its worktree name. */
-async function createWorktree(cc: Cc, project: string, name: string): Promise<string> {
+export async function createWorktree(cc: Cc, project: string, name: string): Promise<string> {
   const list = async () => ((await api(cc, 'GET', `/api/projects/${project}/worktrees`)).body as { worktreeName: string }[]).map((w) => w.worktreeName);
   const before = await list();
   await mcpCall(cc, 'create_worktree', { project, name });
@@ -91,9 +91,6 @@ export async function commitsActionsFlow({ page, cc }: Args): Promise<void> {
   await expect(named('Locked')).toBeEnabled();
   await expect(named('Merge'), 'still locked after the Sync').toBeDisabled();
   await page.unroute(syncRoute);
-  // On phone the Sync toast covers the header's Open sidebar button, and pauses while hovered: dismiss it.
-  await page.getByRole('button', { name: 'Close toast' }).click();
-  await expect(page.getByRole('button', { name: 'Close toast' })).toHaveCount(0);
 
   // Invariant: Merge asks first, and declining sends nothing.
   await openHistory(page, project, one);

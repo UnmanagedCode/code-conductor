@@ -19,6 +19,9 @@ const ReviewView = lazy(() => import('@/features/views/ReviewView').then((m) => 
 const CommitsView = lazy(() => import('@/features/views/CommitsView').then((m) => ({ default: m.CommitsView })));
 const CostsView = lazy(() => import('@/features/views/CostsView').then((m) => ({ default: m.CostsView })));
 
+// Toasts sit below the views' top bar at every width, so none covers its controls.
+const TOAST_OFFSET = { top: 'calc(env(safe-area-inset-top, 0px) + var(--header-height) + 0.5rem)' };
+
 function ViewFallback() {
   return (
     <div className="flex flex-1 items-center justify-center text-muted-foreground">
@@ -64,7 +67,7 @@ export function App() {
       </div>
       <DialogsHost />
       <ConfirmHost />
-      <Toaster theme={theme} position="top-right" richColors closeButton />
+      <Toaster theme={theme} position="top-right" offset={TOAST_OFFSET} mobileOffset={TOAST_OFFSET} richColors closeButton />
     </TooltipProvider>
   );
 }
