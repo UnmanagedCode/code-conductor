@@ -291,12 +291,14 @@ describe('resuming the active session', () => {
     calls = [];
     vi.mocked(controller.refreshInstances).mockClear();
     vi.mocked(controller.send).mockClear();
+    vi.mocked(controller.subscribe).mockClear();
     stubFetch(() => ({ status: 409, body: { error: 'instance is already running' } }));
     await respawnActive();
     expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
     expect(toasts).toEqual([['error', 'Resume failed', 'instance is already running']]);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.send).not.toHaveBeenCalled();
+    expect(controller.subscribe).not.toHaveBeenCalled();
 
     calls = [];
     toasts.length = 0;
