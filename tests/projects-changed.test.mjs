@@ -228,6 +228,8 @@ describe('the projects hint on the local system', () => {
   test('a refused, no-op or read-only call sends no frame', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'held' });
     await api(baseUrl, 'POST', '/api/workspaces', { name: 'Kept' });
+    // A member, so a rename of Kept onto itself that rewrote anything would be a real write.
+    await api(baseUrl, 'PUT', '/api/projects/held/workspace', { workspace: 'Kept' });
     const wt = await mcp(baseUrl, 'create_worktree', { project: 'held' });
     await fs.writeFile(path.join(wt.worktreePath, 'dirty.txt'), 'uncommitted\n');
 
@@ -240,6 +242,10 @@ describe('the projects hint on the local system', () => {
       ['REST workspace for an unknown project', async () => assert.equal((await api(baseUrl, 'PUT', '/api/projects/nope/workspace', { workspace: 'Kept' })).status, 404)],
       ['REST create of an existing workspace', async () => assert.equal((await api(baseUrl, 'POST', '/api/workspaces', { name: 'Kept' })).body.added, false)],
       ['MCP rename of a missing workspace', async () => assert.equal((await mcp(baseUrl, 'rename_workspace', { oldName: 'Gone', newName: 'Other' })).isError, true)],
+      ['REST delete of an unregistered workspace', async () => assert.deepEqual((await api(baseUrl, 'DELETE', '/api/workspaces/Never-Registered')).body, { ok: true, removed: false, name: 'Never-Registered', clearedProjects: [] })],
+      ['MCP delete_workspace of an unregistered workspace', async () => assert.deepEqual(await mcp(baseUrl, 'delete_workspace', { name: 'Never-Registered' }), { removed: false, name: 'Never-Registered', clearedProjects: [] })],
+      ['REST rename of a workspace to its own name', async () => assert.deepEqual((await api(baseUrl, 'PUT', '/api/workspaces/Kept', { name: 'Kept' })).body, { ok: true, renamed: false, name: 'Kept', movedProjects: [] })],
+      ['MCP rename_workspace to its own name', async () => assert.deepEqual(await mcp(baseUrl, 'rename_workspace', { oldName: 'Kept', newName: 'Kept' }), { renamed: false, name: 'Kept', movedProjects: [] })],
       ['MCP delete of a dirty worktree', async () => assert.equal((await mcp(baseUrl, 'delete_worktree', { project: 'held', worktree: wt.worktree })).code, 'WORKTREE_DIRTY')],
       ['REST target change on a local project', async () => assert.equal((await api(baseUrl, 'PUT', '/api/projects/held/remote', { remoteId: 'x' })).status, 400)],
       ['REST list', async () => assert.equal((await api(baseUrl, 'GET', '/api/projects')).status, 200)],
@@ -248,6 +254,8 @@ describe('the projects hint on the local system', () => {
     for (const [label, act] of refusals) {
       assert.equal(await framesFor(client, act), 0, label);
     }
+    assert.deepEqual((await api(baseUrl, 'GET', '/api/workspaces')).body.map((w) => w.name), ['Kept']);
+    assert.equal((await api(baseUrl, 'GET', '/api/projects')).body.find((p) => p.name === 'held').workspace, 'Kept');
   });
 
   test('the signal comes from the shared layer: projects.ts and worktrees.ts calls with no surface in front send one frame each', async () => {
